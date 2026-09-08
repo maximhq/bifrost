@@ -207,6 +207,36 @@ export interface BifrostEmbedding {
 	embedding: string | number[] | number[][];
 }
 
+export interface EmbeddingMediaPart {
+	data?: string;
+	url?: string;
+	mime_type?: string;
+	filename?: string;
+}
+
+export interface EmbeddingContentPart {
+	type: "text" | "image" | "audio" | "file" | "video" | "tokens";
+	text?: string;
+	image?: EmbeddingMediaPart;
+	audio?: EmbeddingMediaPart;
+	file?: EmbeddingMediaPart;
+	video?: EmbeddingMediaPart;
+	tokens?: number[];
+}
+
+export type EmbeddingContent = EmbeddingContentPart[];
+
+export interface EmbeddingInputItem {
+	content: EmbeddingContent;
+	params?: {
+		encoding_format?: string;
+		dimensions?: number;
+		task_type?: string;
+		title?: string;
+		auto_truncate?: boolean;
+	};
+}
+
 export interface RerankDocument {
 	text: string;
 	id?: string;
@@ -701,6 +731,8 @@ export interface LogEntry {
 	content_summary?: string;
 	output_message?: ChatMessage;
 	responses_output?: ResponsesMessage[];
+	// Each entry is either a bare EmbeddingContent or an item carrying its own params.
+	embedding_input?: (EmbeddingContent | EmbeddingInputItem)[];
 	embedding_output?: BifrostEmbedding[];
 	rerank_output?: RerankResult[];
 	ocr_input?: OCRDocument;

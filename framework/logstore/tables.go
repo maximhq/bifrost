@@ -242,6 +242,7 @@ type Log struct {
 	ResponsesInputHistory   string    `gorm:"type:text" json:"-"`                                                      // JSON serialized []schemas.ResponsesMessage
 	OutputMessage           string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.ChatMessage
 	ResponsesOutput         string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.ResponsesMessage
+	EmbeddingInput          string    `gorm:"type:text" json:"-"`                                                      // JSON serialized []schemas.EmbeddingInputItem
 	EmbeddingOutput         string    `gorm:"type:text" json:"-"`                                                      // JSON serialized [][]float32
 	RerankOutput            string    `gorm:"type:text" json:"-"`                                                      // JSON serialized []schemas.RerankResult
 	OCROutput               string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostOCRResponse
@@ -363,6 +364,7 @@ type Log struct {
 	ResponsesInputHistoryParsed []schemas.ResponsesMessage              `gorm:"-" json:"responses_input_history,omitempty"`
 	OutputMessageParsed         *schemas.ChatMessage                    `gorm:"-" json:"output_message,omitempty"`
 	ResponsesOutputParsed       []schemas.ResponsesMessage              `gorm:"-" json:"responses_output,omitempty"`
+	EmbeddingInputParsed        []schemas.EmbeddingInputItem            `gorm:"-" json:"embedding_input,omitempty"`
 	EmbeddingOutputParsed       []schemas.EmbeddingData                 `gorm:"-" json:"embedding_output,omitempty"`
 	RerankOutputParsed          []schemas.RerankResult                  `gorm:"-" json:"rerank_output,omitempty"`
 	OCROutputParsed             *schemas.BifrostOCRResponse             `gorm:"-" json:"ocr_output,omitempty"`
@@ -554,6 +556,14 @@ func (l *Log) SerializeFields() error {
 			return err
 		} else {
 			l.ResponsesOutput = string(data)
+		}
+	}
+
+	if l.EmbeddingInputParsed != nil {
+		if data, err := sonic.Marshal(l.EmbeddingInputParsed); err != nil {
+			return err
+		} else {
+			l.EmbeddingInput = string(data)
 		}
 	}
 
@@ -953,6 +963,12 @@ func (l *Log) DeserializeFields() error {
 		if err := sonic.Unmarshal([]byte(l.ResponsesOutput), &l.ResponsesOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.ResponsesOutputParsed = []schemas.ResponsesMessage{}
+		}
+	}
+
+	if l.EmbeddingInput != "" {
+		if err := sonic.Unmarshal([]byte(l.EmbeddingInput), &l.EmbeddingInputParsed); err != nil {
+			l.EmbeddingInputParsed = nil
 		}
 	}
 
@@ -1726,6 +1742,15 @@ type MCPToolLogStats struct {
 // BuildContentSummary creates a searchable text summary
 func (l *Log) BuildContentSummary() string {
 	var parts []string
+
+	// Add embedding input text parts
+	for _, item := range l.EmbeddingInputParsed {
+		for _, part := range item.Content {
+			if part.Type == schemas.EmbeddingContentPartTypeText && part.Text != nil && *part.Text != "" {
+				parts = append(parts, *part.Text)
+			}
+		}
+	}
 
 	// Add input messages
 	for _, msg := range l.InputHistoryParsed {

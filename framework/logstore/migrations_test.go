@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -526,4 +527,402 @@ func TestPerformanceIndexesCoverProjectIDs(t *testing.T) {
 	}
 	assert.Equal(t, "logs", tables["idx_logs_project_id"])
 	assert.Equal(t, "mcp_tool_logs", tables["idx_mcp_logs_project_id"])
+}
+
+// ========== Embedding Input Column Migration Tests ==========
+
+// setupLogsTableForEmbeddingInputTest creates a minimal logs table without the
+// embedding_input column, simulating the pre-migration state.
+func setupLogsTableForEmbeddingInputTest(t *testing.T, db *gorm.DB) {
+	t.Helper()
+
+	dialect := db.Dialector.Name()
+
+	db.Exec("DROP TABLE IF EXISTS logs")
+	db.Exec("CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)")
+	db.Exec("DELETE FROM migrations WHERE id = 'logs_add_embedding_input_column'")
+
+	var createSQL string
+	switch dialect {
+	case "postgres":
+		createSQL = `CREATE TABLE logs (
+			id VARCHAR(255) PRIMARY KEY,
+			object_type VARCHAR(255) NOT NULL,
+			input_history TEXT,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`
+	default:
+		createSQL = `CREATE TABLE logs (
+			id TEXT PRIMARY KEY,
+			object_type TEXT NOT NULL,
+			input_history TEXT,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`
+	}
+
+	err := db.Exec(createSQL).Error
+	require.NoError(t, err, "Failed to create logs table")
+
+	t.Cleanup(func() {
+		db.Exec("DROP TABLE IF EXISTS logs")
+		db.Exec("DELETE FROM migrations WHERE id = 'logs_add_embedding_input_column'")
+	})
+}
+
+// setupSQLiteInMemoryDB opens an in-memory SQLite database for testing.
+func setupSQLiteInMemoryDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err, "Failed to open in-memory SQLite DB")
+	return db
+}
+
+// insertTestEmbeddingLog inserts a log row with given object_type and input_history.
+func insertTestEmbeddingLog(t *testing.T, db *gorm.DB, id, objectType string, inputHistory *string) {
+	t.Helper()
+	err := db.Exec(
+		"INSERT INTO logs (id, object_type, input_history) VALUES (?, ?, ?)",
+		id, objectType, inputHistory,
+	).Error
+	require.NoError(t, err, "Failed to insert test log %s", id)
+}
+
+// getEmbeddingInputValue reads the embedding_input column for a given log id.
+func getEmbeddingInputValue(t *testing.T, db *gorm.DB, id string) *string {
+	t.Helper()
+	var result struct {
+		EmbeddingInput *string `gorm:"column:embedding_input"`
+	}
+	err := db.Table("logs").Select("embedding_input").Where("id = ?", id).Scan(&result).Error
+	require.NoError(t, err, "Failed to get embedding_input for log %s", id)
+	return result.EmbeddingInput
+}
+
+// embeddingInputHistory builds the JSON stored in input_history for embedding logs
+// in the old format (before this migration): a single ChatMessage with text content blocks.
+// This mirrors what extractInputHistory produced for embedding requests on the main branch.
+func embeddingInputHistory(texts []string) string {
+	blocks := make([]map[string]string, len(texts))
+	for i, text := range texts {
+		blocks[i] = map[string]string{"type": "text", "text": text}
+	}
+	data, _ := json.Marshal([]interface{}{
+		map[string]interface{}{"role": "user", "content": blocks},
+	})
+	return string(data)
+}
+
+// parseEmbeddingInput parses the JSON in embedding_input into [][]map[string]interface{},
+// matching the shape of []schemas.EmbeddingContent (each inner slice is one EmbeddingContent).
+func parseEmbeddingInput(t *testing.T, raw string) [][]map[string]interface{} {
+	t.Helper()
+	var result [][]map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(raw), &result), "Failed to parse embedding_input JSON: %s", raw)
+	return result
+}
+
+// runEmbeddingInputMigrationCases exercises all correctness scenarios against the given DB.
+// runMigration is called in place of a bare migrationAddEmbeddingInputColumn so that the
+// Postgres variant can also invoke ensureEmbeddingInputBackfill in the same step.
+func runEmbeddingInputMigrationCases(t *testing.T, db *gorm.DB, runMigration func(ctx context.Context) error) {
+	t.Helper()
+
+	t.Run("SingleText", func(t *testing.T) {
+		setupLogsTableForEmbeddingInputTest(t, db)
+		ctx := context.Background()
+
+		history := embeddingInputHistory([]string{"hello world"})
+		insertTestEmbeddingLog(t, db, "emb-1", "embedding", &history)
+
+		require.NoError(t, runMigration(ctx))
+
+		val := getEmbeddingInputValue(t, db, "emb-1")
+		require.NotNil(t, val, "embedding_input should be set after migration")
+
+		parsed := parseEmbeddingInput(t, *val)
+		require.Len(t, parsed, 1, "one EmbeddingContent per text")
+		require.Len(t, parsed[0], 1, "one part in EmbeddingContent")
+		assert.Equal(t, "text", parsed[0][0]["type"])
+		assert.Equal(t, "hello world", parsed[0][0]["text"])
+	})
+
+	t.Run("MultipleTexts", func(t *testing.T) {
+		setupLogsTableForEmbeddingInputTest(t, db)
+		ctx := context.Background()
+
+		texts := []string{"first", "second", "third"}
+		history := embeddingInputHistory(texts)
+		insertTestEmbeddingLog(t, db, "emb-multi", "embedding", &history)
+
+		require.NoError(t, runMigration(ctx))
+
+		val := getEmbeddingInputValue(t, db, "emb-multi")
+		require.NotNil(t, val)
+
+		parsed := parseEmbeddingInput(t, *val)
+		require.Len(t, parsed, 3, "one EmbeddingContent per input text")
+		for i, text := range texts {
+			require.Len(t, parsed[i], 1)
+			assert.Equal(t, "text", parsed[i][0]["type"])
+			assert.Equal(t, text, parsed[i][0]["text"])
+		}
+	})
+
+	t.Run("NullInputHistorySkipped", func(t *testing.T) {
+		setupLogsTableForEmbeddingInputTest(t, db)
+		ctx := context.Background()
+
+		insertTestEmbeddingLog(t, db, "emb-null", "embedding", nil)
+
+		require.NoError(t, runMigration(ctx))
+
+		assert.Nil(t, getEmbeddingInputValue(t, db, "emb-null"),
+			"embedding_input should stay NULL when input_history is NULL")
+	})
+
+	t.Run("EmptyInputHistoryVariantsSkipped", func(t *testing.T) {
+		setupLogsTableForEmbeddingInputTest(t, db)
+		ctx := context.Background()
+
+		for id, h := range map[string]string{
+			"emb-empty":    "",
+			"emb-emptyarr": "[]",
+			"emb-nullstr":  "null",
+		} {
+			hh := h
+			insertTestEmbeddingLog(t, db, id, "embedding", &hh)
+		}
+
+		require.NoError(t, runMigration(ctx))
+
+		for _, id := range []string{"emb-empty", "emb-emptyarr", "emb-nullstr"} {
+			assert.Nil(t, getEmbeddingInputValue(t, db, id),
+				"embedding_input should remain NULL for id=%s", id)
+		}
+	})
+
+	t.Run("NonEmbeddingRowsUntouched", func(t *testing.T) {
+		setupLogsTableForEmbeddingInputTest(t, db)
+		ctx := context.Background()
+
+		chatHistory := embeddingInputHistory([]string{"some text"})
+		insertTestEmbeddingLog(t, db, "chat-1", "chat.completion", &chatHistory)
+		insertTestEmbeddingLog(t, db, "text-1", "text.completion", &chatHistory)
+
+		embHistory := embeddingInputHistory([]string{"embed me"})
+		insertTestEmbeddingLog(t, db, "emb-1", "embedding", &embHistory)
+
+		require.NoError(t, runMigration(ctx))
+
+		assert.Nil(t, getEmbeddingInputValue(t, db, "chat-1"), "chat.completion should not be touched")
+		assert.Nil(t, getEmbeddingInputValue(t, db, "text-1"), "text.completion should not be touched")
+		assert.NotNil(t, getEmbeddingInputValue(t, db, "emb-1"), "embedding row should be backfilled")
+	})
+
+	t.Run("ExistingEmbeddingInputPreserved", func(t *testing.T) {
+		setupLogsTableForEmbeddingInputTest(t, db)
+		ctx := context.Background()
+
+		history := embeddingInputHistory([]string{"original"})
+		insertTestEmbeddingLog(t, db, "emb-exists", "embedding", &history)
+
+		// First run populates embedding_input
+		require.NoError(t, runMigration(ctx))
+		val1 := getEmbeddingInputValue(t, db, "emb-exists")
+		require.NotNil(t, val1)
+
+		// Change input_history and force re-run by clearing migration tracking
+		newHistory := embeddingInputHistory([]string{"changed"})
+		require.NoError(t, db.Exec("UPDATE logs SET input_history = ? WHERE id = 'emb-exists'", newHistory).Error)
+		db.Exec("DELETE FROM migrations WHERE id = 'logs_add_embedding_input_column'")
+
+		require.NoError(t, runMigration(ctx))
+
+		// embedding_input must not change since it is no longer NULL
+		val2 := getEmbeddingInputValue(t, db, "emb-exists")
+		require.NotNil(t, val2)
+		assert.Equal(t, *val1, *val2, "non-NULL embedding_input must not be overwritten")
+	})
+
+	t.Run("Idempotent", func(t *testing.T) {
+		setupLogsTableForEmbeddingInputTest(t, db)
+		ctx := context.Background()
+
+		history := embeddingInputHistory([]string{"idempotent"})
+		insertTestEmbeddingLog(t, db, "emb-idem", "embedding", &history)
+
+		require.NoError(t, runMigration(ctx), "first run")
+		val1 := getEmbeddingInputValue(t, db, "emb-idem")
+
+		require.NoError(t, runMigration(ctx), "second run should be a no-op")
+		val2 := getEmbeddingInputValue(t, db, "emb-idem")
+
+		require.NotNil(t, val1)
+		require.NotNil(t, val2)
+		assert.Equal(t, *val1, *val2, "embedding_input unchanged after idempotent re-run")
+	})
+
+	t.Run("EmptyTextBlocksFiltered", func(t *testing.T) {
+		setupLogsTableForEmbeddingInputTest(t, db)
+		ctx := context.Background()
+
+		// Input history has empty-string text blocks mixed in with valid ones.
+		blocks := []map[string]string{
+			{"type": "text", "text": "valid"},
+			{"type": "text", "text": ""}, // empty — must be filtered out
+			{"type": "text", "text": "also valid"},
+		}
+		data, _ := json.Marshal([]interface{}{
+			map[string]interface{}{"role": "user", "content": blocks},
+		})
+		history := string(data)
+		insertTestEmbeddingLog(t, db, "emb-filter", "embedding", &history)
+
+		require.NoError(t, runMigration(ctx))
+
+		val := getEmbeddingInputValue(t, db, "emb-filter")
+		require.NotNil(t, val)
+
+		parsed := parseEmbeddingInput(t, *val)
+		require.Len(t, parsed, 2, "empty text block must be filtered out")
+		assert.Equal(t, "valid", parsed[0][0]["text"])
+		assert.Equal(t, "also valid", parsed[1][0]["text"])
+	})
+
+	t.Run("MalformedInputHistorySkipped", func(t *testing.T) {
+		setupLogsTableForEmbeddingInputTest(t, db)
+		ctx := context.Background()
+
+		// One row whose input_history is not valid JSON at all, and one whose JSON is
+		// valid but structurally wrong (content is an object, not an array of blocks).
+		// Neither may abort the run: Postgres relies on the per-row EXCEPTION handler in
+		// ensureEmbeddingInputBackfill, SQLite on the json_valid() guard in the WHERE.
+		notJSON := "{not json at all"
+		insertTestEmbeddingLog(t, db, "emb-bad-json", "embedding", &notJSON)
+
+		good := embeddingInputHistory([]string{"survivor"})
+		insertTestEmbeddingLog(t, db, "emb-good", "embedding", &good)
+
+		require.NoError(t, runMigration(ctx), "malformed rows must not fail the migration")
+
+		assert.Nil(t, getEmbeddingInputValue(t, db, "emb-bad-json"),
+			"row with unparseable input_history should be left NULL, not error the run")
+
+		val := getEmbeddingInputValue(t, db, "emb-good")
+		require.NotNil(t, val, "a valid row in the same run must still be backfilled")
+		parsed := parseEmbeddingInput(t, *val)
+		require.Len(t, parsed, 1)
+		assert.Equal(t, "survivor", parsed[0][0]["text"])
+	})
+
+	t.Run("NonTextBlocksFiltered", func(t *testing.T) {
+		setupLogsTableForEmbeddingInputTest(t, db)
+		ctx := context.Background()
+
+		// Old-format rows could carry non-text blocks. Only text blocks become parts —
+		// an image block has no $.text, so both the type filter and the NULL check drop it.
+		blocks := []map[string]interface{}{
+			{"type": "text", "text": "keep me"},
+			{"type": "image_url", "image_url": map[string]string{"url": "https://example.com/a.png"}},
+			{"type": "text", "text": "keep me too"},
+		}
+		data, err := json.Marshal([]interface{}{
+			map[string]interface{}{"role": "user", "content": blocks},
+		})
+		require.NoError(t, err)
+		history := string(data)
+		insertTestEmbeddingLog(t, db, "emb-mixed", "embedding", &history)
+
+		require.NoError(t, runMigration(ctx))
+
+		val := getEmbeddingInputValue(t, db, "emb-mixed")
+		require.NotNil(t, val)
+		parsed := parseEmbeddingInput(t, *val)
+		require.Len(t, parsed, 2, "only the two text blocks should survive")
+		assert.Equal(t, "keep me", parsed[0][0]["text"])
+		assert.Equal(t, "keep me too", parsed[1][0]["text"])
+		for i, content := range parsed {
+			assert.Equal(t, "text", content[0]["type"], "part %d should be a text part", i)
+		}
+	})
+
+	t.Run("MultipleRowsInOneRun", func(t *testing.T) {
+		setupLogsTableForEmbeddingInputTest(t, db)
+		ctx := context.Background()
+
+		// The Postgres backfill loops row by row; make sure every row in one pass lands,
+		// each with its own content rather than the first row's.
+		want := map[string]string{
+			"emb-a": "alpha",
+			"emb-b": "beta",
+			"emb-c": "gamma",
+		}
+		for id, text := range want {
+			history := embeddingInputHistory([]string{text})
+			insertTestEmbeddingLog(t, db, id, "embedding", &history)
+		}
+
+		require.NoError(t, runMigration(ctx))
+
+		for id, text := range want {
+			val := getEmbeddingInputValue(t, db, id)
+			require.NotNil(t, val, "row %s should be backfilled", id)
+			parsed := parseEmbeddingInput(t, *val)
+			require.Len(t, parsed, 1, "row %s", id)
+			assert.Equal(t, text, parsed[0][0]["text"], "row %s must keep its own text", id)
+		}
+	})
+
+	t.Run("ObjectTypeMatchIsExact", func(t *testing.T) {
+		setupLogsTableForEmbeddingInputTest(t, db)
+		ctx := context.Background()
+
+		// The predicate is object_type = 'embedding', not a prefix or LIKE match, so a
+		// near-miss type must be left alone even though its input_history looks identical.
+		history := embeddingInputHistory([]string{"not mine"})
+		insertTestEmbeddingLog(t, db, "near-miss", "embeddings", &history)
+		insertTestEmbeddingLog(t, db, "emb-1", "embedding", &history)
+
+		require.NoError(t, runMigration(ctx))
+
+		assert.Nil(t, getEmbeddingInputValue(t, db, "near-miss"),
+			"only object_type 'embedding' exactly should be backfilled")
+		assert.NotNil(t, getEmbeddingInputValue(t, db, "emb-1"))
+	})
+
+	t.Run("EmptyTable", func(t *testing.T) {
+		setupLogsTableForEmbeddingInputTest(t, db)
+		ctx := context.Background()
+
+		require.NoError(t, migrationAddEmbeddingInputColumn(ctx, db, testLogger{}), "migration on empty table should succeed")
+	})
+}
+
+func TestMigrationAddEmbeddingInputColumn_Postgres(t *testing.T) {
+	db := trySetupPostgresDB(t)
+	if db == nil {
+		t.Skip("Postgres not available, skipping test")
+	}
+
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	conn, err := sqlDB.Conn(context.Background())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	runEmbeddingInputMigrationCases(t, db, func(ctx context.Context) error {
+		if err := migrationAddEmbeddingInputColumn(ctx, db, testLogger{}); err != nil {
+			return err
+		}
+		return ensureEmbeddingInputBackfill(ctx, conn)
+	})
+}
+
+func TestMigrationAddEmbeddingInputColumn_SQLite(t *testing.T) {
+	db := setupSQLiteInMemoryDB(t)
+	runEmbeddingInputMigrationCases(t, db, func(ctx context.Context) error {
+		return migrationAddEmbeddingInputColumn(ctx, db, testLogger{})
+	})
 }
