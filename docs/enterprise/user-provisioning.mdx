@@ -132,10 +132,15 @@ All providers share the same outer config shape in `config.json`:
     "provider": "okta | entra | zitadel | keycloak | google | sailpoint",
     "config": {
       "...": "provider-specific fields - see each IdP guide"
-    }
+    },
+    "trusted_networks": [
+      { "cidr": "10.20.0.0/16", "description": "On-prem Keycloak" }
+    ]
   }
 }
 ```
+
+`trusted_networks` sits alongside `config`, not inside it - it is a client-level allowlist rather than a provider credential. See [Trusted networks](#trusted-networks).
 
 Shared fields across providers:
 
@@ -155,6 +160,55 @@ Provider-specific fields (domain, tenant ID, server URL, service-account credent
 <Note>
   Changing `scim_config` at runtime through the UI is applied after saving. For file-based configuration, restart the Bifrost server to pick up changes.
 </Note>
+
+---
+
+## Trusted networks
+
+Discovering a self-hosted IdP's OIDC endpoints and claims is an outbound request Bifrost makes on an admin's behalf, so it is guarded against SSRF: the issuer URL must be `https`, and private ranges (`10.x`, `172.16-31.x`, `192.168.x`), loopback, link-local, multicast, and carrier-grade NAT (`100.64.0.0/10`) addresses are refused unless you explicitly trust them. An IdP on your internal network fails discovery with:
+
+```
+Invalid issuer URL: access to IP 10.20.4.11 is not allowed
+Invalid issuer URL: host idp.internal.company.com resolves to a disallowed address 10.20.4.11
+```
+
+Add its range to the allowlist, either in the dashboard (**Provider Configuration** → **Trusted Networks**) or declaratively under `scim_config.trusted_networks`:
+
+```json
+{
+  "scim_config": {
+    "enabled": true,
+    "provider": "generic",
+    "config": { "...": "provider fields" },
+    "trusted_networks": [
+      { "cidr": "10.20.0.0/16", "description": "On-prem Keycloak" },
+      { "cidr": "192.168.1.50" }
+    ]
+  }
+}
+```
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `cidr` | Yes | An IP or CIDR range. A bare IP is treated as a single host (`/32`, or `/128` for IPv6). Hostnames are rejected - DNS must not be able to decide which requests bypass the guard. |
+| `description` | No | Admin-facing label. |
+
+Behaviour of the `trusted_networks` key:
+
+- **Declared** - the array is the complete allowlist. Entries you remove from it are removed from Bifrost on the next restart; it is a replacement, not a merge.
+- **Omitted** - the stored allowlist is left alone, so dashboard-managed ranges and config files written before this key existed are unaffected.
+- **Empty array** (`[]`) - explicitly clears the allowlist.
+- An invalid `cidr` rejects the **whole list** rather than being silently dropped, so the allowlist never partially disagrees with what you declared. The failure is logged and the rest of the SCIM sync continues; check the server log after changing this key.
+
+`trusted_networks` is hashed with the rest of `scim_config`, so a change to it takes effect on the next server restart. While `scim_config` is unchanged, ranges added through the dashboard are preserved.
+
+<Note>
+  The allowlist only widens what admin-triggered IdP **discovery** may reach. It does not affect which networks can reach Bifrost, nor does it change provider credentials or token validation.
+</Note>
+
+The hostnames `localhost` and `metadata.google.internal` stay blocked even when a trusted range covers the address they resolve to - they are instance-metadata targets rather than a legitimate self-hosted IdP, so there is no way to opt back in. Reach a local IdP by its network address instead.
+
+Hostnames are resolved once, and the outbound connection is pinned to the addresses that resolution returned, so a name that answers with a public address during validation cannot swap to a private one at connect time.
 
 ---
 

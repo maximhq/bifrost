@@ -51408,6 +51408,20 @@
                       "all-data"
                     ],
                     "description": "Defaults to `all-data` when omitted."
+                  },
+                  "access_profile_ids": {
+                    "type": "array",
+                    "description": "Every access profile the role grants. Users holding the role materialize\nall of them. Omit to attach none.\n",
+                    "items": {
+                      "type": "integer",
+                      "format": "uint"
+                    }
+                  },
+                  "access_profile_id": {
+                    "type": "integer",
+                    "format": "uint",
+                    "deprecated": true,
+                    "description": "Deprecated single-profile form. Ignored when `access_profile_ids` is present."
                   }
                 }
               }
@@ -51630,7 +51644,7 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "description": "Partial update. Omitted fields preserve the current value.\n- `description` is a nullable string: omitting it preserves the existing description; sending an empty string clears it.\n- `dac` defaults to the existing value when omitted, preventing accidental scope escalation.\n",
+                "description": "Partial update. Omitted fields preserve the current value.\n- `description` is a nullable string: omitting it preserves the existing description; sending an empty string clears it.\n- `dac` defaults to the existing value when omitted, preventing accidental scope escalation.\n- `access_profile_ids` replaces the role's whole profile set: omit to preserve it, send `[]` to detach all.\n",
                 "properties": {
                   "name": {
                     "type": "string",
@@ -51649,6 +51663,20 @@
                       "all-data"
                     ],
                     "description": "Data access scope. Determines which rows members of the role can see.\n- `own-data` - Only rows the member personally owns.\n- `team-data` - Own rows plus rows owned by any team they belong to.\n- `all-data` - No row filtering.\n"
+                  },
+                  "access_profile_ids": {
+                    "type": "array",
+                    "description": "The role's complete access-profile set. Profiles absent from the list are\ndetached, and the role's users are reconciled onto the result. Omitted\npreserves the current set; `[]` detaches all.\n",
+                    "items": {
+                      "type": "integer",
+                      "format": "uint"
+                    }
+                  },
+                  "access_profile_id": {
+                    "type": "integer",
+                    "format": "uint",
+                    "deprecated": true,
+                    "description": "Deprecated single-profile form. Ignored when `access_profile_ids` is present."
                   }
                 }
               }
@@ -66447,6 +66475,20 @@
                       "all-data"
                     ],
                     "description": "Defaults to `all-data` when omitted."
+                  },
+                  "access_profile_ids": {
+                    "type": "array",
+                    "description": "Every access profile the role grants. Users holding the role materialize\nall of them. Omit to attach none.\n",
+                    "items": {
+                      "type": "integer",
+                      "format": "uint"
+                    }
+                  },
+                  "access_profile_id": {
+                    "type": "integer",
+                    "format": "uint",
+                    "deprecated": true,
+                    "description": "Deprecated single-profile form. Ignored when `access_profile_ids` is present."
                   }
                 }
               }
@@ -66675,7 +66717,7 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "description": "Partial update. Omitted fields preserve the current value.\n- `description` is a nullable string: omitting it preserves the existing description; sending an empty string clears it.\n- `dac` defaults to the existing value when omitted, preventing accidental scope escalation.\n",
+                "description": "Partial update. Omitted fields preserve the current value.\n- `description` is a nullable string: omitting it preserves the existing description; sending an empty string clears it.\n- `dac` defaults to the existing value when omitted, preventing accidental scope escalation.\n- `access_profile_ids` replaces the role's whole profile set: omit to preserve it, send `[]` to detach all.\n",
                 "properties": {
                   "name": {
                     "type": "string",
@@ -66694,6 +66736,20 @@
                       "all-data"
                     ],
                     "description": "Data access scope. Determines which rows members of the role can see.\n- `own-data` - Only rows the member personally owns.\n- `team-data` - Own rows plus rows owned by any team they belong to.\n- `all-data` - No row filtering.\n"
+                  },
+                  "access_profile_ids": {
+                    "type": "array",
+                    "description": "The role's complete access-profile set. Profiles absent from the list are\ndetached, and the role's users are reconciled onto the result. Omitted\npreserves the current set; `[]` detaches all.\n",
+                    "items": {
+                      "type": "integer",
+                      "format": "uint"
+                    }
+                  },
+                  "access_profile_id": {
+                    "type": "integer",
+                    "format": "uint",
+                    "deprecated": true,
+                    "description": "Deprecated single-profile form. Ignored when `access_profile_ids` is present."
                   }
                 }
               }
