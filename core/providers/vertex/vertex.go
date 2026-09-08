@@ -1703,15 +1703,29 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 		return nil, providerUtils.NewConfigurationError("region is not set in key config")
 	}
 
+	isGeminiEmbedding2Request := isVertexGeminiEmbeddingModel(request.Model)
+	isNativeMultimodalRequest := isVertexNativeMultimodalEmbeddingModel(request.Model)
+
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToVertexEmbeddingRequest(request), nil
+			if isGeminiEmbedding2Request {
+				return ToVertexGeminiEmbeddingRequest(request)
+			}
+			if isNativeMultimodalRequest {
+				return ToVertexMultimodalEmbeddingRequest(request)
+			}
+			return ToVertexEmbeddingRequest(request)
 		},
 	)
 	if bifrostErr != nil {
 		return nil, bifrostErr
+	}
+
+	authQuery := ""
+	if key.Value.GetValue() != "" {
+		authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
 	}
 
 	// For custom/fine-tuned models, validate projectNumber is set
@@ -1720,12 +1734,12 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 		return nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models")
 	}
 
-	// Build the native Vertex embedding API endpoint
-	authQuery := ""
-	if key.Value.GetValue() != "" {
-		authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
+	// Gemini embedding models use :embedContent; all others (text + native multimodal) use :predict.
+	endpointSuffix := ":predict"
+	if isGeminiEmbedding2Request {
+		endpointSuffix = ":embedContent"
 	}
-	completeURL := getCompleteURLForGeminiEndpoint(request.Model, region, projectID, projectNumber, ":predict")
+	completeURL := getCompleteURLForGeminiEndpoint(request.Model, region, projectID, projectNumber, endpointSuffix)
 
 	// Create HTTP request for streaming
 	req := fasthttp.AcquireRequest()
@@ -1818,6 +1832,7 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	if isLargeResp {
 		respOwned = false
 		return &schemas.BifrostEmbeddingResponse{
+			Model: request.Model,
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				Latency:                 latency.Milliseconds(),
 				ProviderResponseHeaders: providerUtils.ExtractProviderResponseHeaders(resp),
@@ -1825,10 +1840,16 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 		}, nil
 	}
 
-	// Parse Vertex's native embedding response using typed response
+	// Parse the provider's embedding response using the matching typed response
 	var vertexResponse VertexEmbeddingResponse
+	var geminiResponse gemini.GeminiEmbeddingResponse
+	var umErr error
 	pt, ph := providerUtils.StartResponseParseSpan(ctx)
-	umErr := sonic.Unmarshal(responseBody, &vertexResponse)
+	if isGeminiEmbedding2Request {
+		umErr = sonic.Unmarshal(responseBody, &geminiResponse)
+	} else {
+		umErr = sonic.Unmarshal(responseBody, &vertexResponse)
+	}
 	if pt != nil {
 		if umErr != nil {
 			pt.EndSpan(ph, schemas.SpanStatusError, "response parse failed")
@@ -1841,15 +1862,32 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	}
 
 	// Use centralized Vertex converter
+	var bifrostResponse *schemas.BifrostEmbeddingResponse
 	ct, ch := providerUtils.StartResponseConvertorSpan(ctx)
-	bifrostResponse := vertexResponse.ToBifrostEmbeddingResponse()
+	if isGeminiEmbedding2Request {
+		bifrostResponse = gemini.ToBifrostEmbeddingResponse(&geminiResponse, request.Model)
+	} else {
+		bifrostResponse = vertexResponse.ToBifrostEmbeddingResponse()
+	}
 	if ct != nil {
 		ct.EndSpan(ch, schemas.SpanStatusOk, "")
+	}
+
+	if bifrostResponse == nil {
+		return nil, providerUtils.EnrichError(
+			ctx,
+			providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, fmt.Errorf("provider returned empty embedding response")),
+			jsonBody,
+			responseBody,
+			provider.sendBackRawRequest,
+			provider.sendBackRawResponse,
+		)
 	}
 
 	// Set ExtraFields
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
+	bifrostResponse.Model = request.Model
 
 	// Set raw response if enabled
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {

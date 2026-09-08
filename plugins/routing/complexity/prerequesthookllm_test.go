@@ -79,11 +79,13 @@ func installSemanticEmbeddingFake(t *testing.T, plugin *routing.RoutingPlugin) {
 		if req == nil || req.Input == nil {
 			return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "embedding request did not contain text"}}
 		}
-		var texts []string
-		if req.Input.Text != nil {
-			texts = []string{*req.Input.Text}
-		} else {
-			texts = req.Input.Texts
+		texts := make([]string, 0, len(req.Input))
+		for _, item := range req.Input {
+			for _, part := range item.Content {
+				if part.Text != nil {
+					texts = append(texts, *part.Text)
+				}
+			}
 		}
 		data := make([]schemas.EmbeddingData, len(texts))
 		for index, text := range texts {

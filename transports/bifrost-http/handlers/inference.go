@@ -207,6 +207,11 @@ var embeddingParamsKnownFields = map[string]bool{
 	"fallbacks":       true,
 	"encoding_format": true,
 	"dimensions":      true,
+	"task_type":       true,
+	"title":           true,
+	"auto_truncate":   true,
+	"truncate":        true,
+	"max_tokens":      true,
 }
 
 var rerankParamsKnownFields = map[string]bool{
@@ -558,8 +563,79 @@ type CompactionHTTPRequest struct {
 }
 
 // EmbeddingRequest is a bifrost embedding request
+// EmbeddingRequestInput is a union of the input shapes /v1/embeddings accepts:
+//
+//	Str    → "input": "text"                              (single text shorthand)
+//	Strs   → "input": ["text1", "text2"]                   (multi-text shorthand)
+//	Tokens → "input": [15339, 1917]                        (single pre-tokenized input)
+//	TokenB → "input": [[15339, 1917], [9906]]               (several pre-tokenized inputs)
+//	Items  → "input": [[{"type":"text",...}], ...]         (multimodal parts)
+//	         "input": [{"content": [...], "params": {...}}] (per-item parameter overrides)
+//
+// The last two are both handled by EmbeddingInputItem, which accepts either shape per entry,
+// so one array may mix plain content entries and entries carrying their own params.
+type EmbeddingRequestInput struct {
+	Str          *string
+	Strs         []string
+	Tokens       []int
+	TokenBatches [][]int
+	Items        []schemas.EmbeddingInputItem
+}
+
+func (e *EmbeddingRequestInput) UnmarshalJSON(data []byte) error {
+	var str string
+	if err := sonic.Unmarshal(data, &str); err == nil {
+		e.Str = &str
+		return nil
+	}
+	var strs []string
+	if err := sonic.Unmarshal(data, &strs); err == nil {
+		e.Strs = strs
+		return nil
+	}
+	// Both token forms must precede Items: a bare number array would otherwise be read as
+	// an item list and fail to decode.
+	var tokens []int
+	if err := sonic.Unmarshal(data, &tokens); err == nil {
+		e.Tokens = tokens
+		return nil
+	}
+	var tokenBatches [][]int
+	if err := sonic.Unmarshal(data, &tokenBatches); err == nil {
+		e.TokenBatches = tokenBatches
+		return nil
+	}
+	return sonic.Unmarshal(data, &e.Items)
+}
+
+// toEmbeddingInput normalises every input variant into []EmbeddingInputItem.
+func (e *EmbeddingRequestInput) toEmbeddingInput() []schemas.EmbeddingInputItem {
+	switch {
+	case e.Str != nil:
+		t := *e.Str
+		return []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &t}}}}
+	case len(e.Strs) > 0:
+		items := make([]schemas.EmbeddingInputItem, len(e.Strs))
+		for i, str := range e.Strs {
+			sc := str
+			items[i] = schemas.EmbeddingInputItem{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &sc}}}
+		}
+		return items
+	case len(e.Tokens) > 0:
+		return []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeTokens, Tokens: e.Tokens}}}}
+	case len(e.TokenBatches) > 0:
+		items := make([]schemas.EmbeddingInputItem, len(e.TokenBatches))
+		for i, tokens := range e.TokenBatches {
+			items[i] = schemas.EmbeddingInputItem{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeTokens, Tokens: tokens}}}
+		}
+		return items
+	}
+	return e.Items
+}
+
+// EmbeddingRequest is a bifrost embedding request.
 type EmbeddingRequest struct {
-	Input *schemas.EmbeddingInput `json:"input"`
+	Input EmbeddingRequestInput `json:"input"`
 	BifrostParams
 	*schemas.EmbeddingParameters
 }
@@ -1176,8 +1252,12 @@ func prepareEmbeddingRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Emb
 	if err != nil {
 		return nil, nil, err
 	}
-	if req.Input == nil || (req.Input.Text == nil && req.Input.Texts == nil && req.Input.Embedding == nil && req.Input.Embeddings == nil) {
+	contents := req.Input.toEmbeddingInput()
+	if len(contents) == 0 {
 		return nil, nil, fmt.Errorf("input is required for embeddings")
+	}
+	if err := schemas.ValidateEmbeddingInput(contents); err != nil {
+		return nil, nil, err
 	}
 	if req.EmbeddingParameters == nil {
 		req.EmbeddingParameters = &schemas.EmbeddingParameters{}
@@ -1186,7 +1266,7 @@ func prepareEmbeddingRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Emb
 	return req, &schemas.BifrostEmbeddingRequest{
 		Provider:  base.Provider,
 		Model:     base.ModelName,
-		Input:     req.Input,
+		Input:     contents,
 		Params:    req.EmbeddingParameters,
 		Fallbacks: base.Fallbacks,
 	}, nil
