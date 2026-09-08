@@ -31,6 +31,8 @@ var contextDimSources = []struct {
 	{schemas.AttrBifrostCustomerName, schemas.BifrostContextKeyGovernanceCustomerName, "cust-name"},
 	{schemas.AttrBifrostBusinessUnitID, schemas.BifrostContextKeyGovernanceBusinessUnitID, "bu-id"},
 	{schemas.AttrBifrostBusinessUnitName, schemas.BifrostContextKeyGovernanceBusinessUnitName, "bu-name"},
+	{schemas.AttrBifrostProjectID, schemas.BifrostContextKeyGovernanceProjectID, "proj-id"},
+	{schemas.AttrBifrostProjectName, schemas.BifrostContextKeyGovernanceProjectName, "proj-name"},
 	{schemas.AttrBifrostTeamIDs, schemas.BifrostContextKeyGovernanceTeamIDs, []string{"team-id-1", "team-id-2"}},
 	{schemas.AttrBifrostTeamNames, schemas.BifrostContextKeyGovernanceTeamNames, []string{"team-name-1"}},
 	{schemas.AttrBifrostCustomerIDs, schemas.BifrostContextKeyGovernanceCustomerIDs, []string{"cust-id-1"}},
@@ -52,8 +54,10 @@ var dimsEmittedElsewhere = map[string]string{
 	schemas.AttrBifrostProviderName:      "request-sourced: span creation in bifrost.go",
 	schemas.AttrRequestModel:             "request-sourced: span creation in bifrost.go",
 	schemas.AttrLegacyRequestType:        "request-sourced: span creation in bifrost.go",
-	schemas.AttrBifrostAlias:             "framework ExtractedFields: framework/tracing/tracer.go",
-	schemas.AttrBifrostRoutingEngineUsed: "framework ExtractedFields: framework/tracing/tracer.go",
+	schemas.AttrBifrostAlias:               "framework ExtractedFields: framework/tracing/tracer.go",
+	schemas.AttrBifrostRoutingEngineUsed:   "framework ExtractedFields: framework/tracing/tracer.go",
+	schemas.AttrBifrostComplexityTier:      "context-sourced post-response: framework/tracing/tracer.go",
+	schemas.AttrBifrostComplexityMechanism: "context-sourced post-response: framework/tracing/tracer.go",
 }
 
 // TestContextSpanAttributesEmit drives applyContextSpanAttributes with every
