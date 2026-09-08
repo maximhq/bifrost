@@ -135,6 +135,9 @@ func TestHybrid_ContentHiddenBatchMixed(t *testing.T) {
 
 	require.NoError(t, hybrid.BatchCreateIfNotExists(ctx, []*Log{visibleEntry, hiddenEntry}))
 	waitForUploads(t, func() bool { return objStore.Len() == 2 })
+	// The hydration assertion below needs the visible row's has_object flag,
+	// which processUpload commits only after the object Put.
+	waitForOffload(t, inner, "batch-visible")
 
 	visibleRow, err := inner.FindByID(ctx, "batch-visible")
 	require.NoError(t, err)

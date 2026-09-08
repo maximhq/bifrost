@@ -46,36 +46,42 @@ const (
 
 // SearchFilters represents the available filters for log searches
 type SearchFilters struct {
-	Providers         []string          `json:"providers,omitempty"`
-	Models            []string          `json:"models,omitempty"`
-	Aliases           []string          `json:"aliases,omitempty"`
-	Status            []string          `json:"status,omitempty"`
-	StopReasons       []string          `json:"stop_reasons,omitempty"` // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
-	Objects           []string          `json:"objects,omitempty"`      // For filtering by request type (chat.completion, text.completion, embedding)
-	ParentRequestID   string            `json:"parent_request_id,omitempty"`
-	RootsOnly         bool              `json:"roots_only,omitempty"` // Hide rows whose parent_request_id points at another row matching these same filters, so each chain lists as its root request only. Ignored when ParentRequestID is set.
-	SelectedKeyIDs    []string          `json:"selected_key_ids,omitempty"`
-	VirtualKeyIDs     []string          `json:"virtual_key_ids,omitempty"`
-	RoutingRuleIDs    []string          `json:"routing_rule_ids,omitempty"`
-	TeamIDs           []string          `json:"team_ids,omitempty"`
-	CustomerIDs       []string          `json:"customer_ids,omitempty"`
-	UserIDs           []string          `json:"user_ids,omitempty"`
-	BusinessUnitIDs   []string          `json:"business_unit_ids,omitempty"`
-	RoutingEngineUsed []string          `json:"routing_engine_used,omitempty"` // For filtering by routing engine (routing-rule, governance, loadbalancing)
-	Apps              []string          `json:"apps,omitempty"`                // Backend-detected client apps
-	UserAgents        []string          `json:"user_agents,omitempty"`         // Raw User-Agent strings; kept for compatibility/debug filtering
-	StartTime         *time.Time        `json:"start_time,omitempty"`
-	EndTime           *time.Time        `json:"end_time,omitempty"`
-	MinLatency        *float64          `json:"min_latency,omitempty"`
-	MaxLatency        *float64          `json:"max_latency,omitempty"`
-	MinTokens         *int              `json:"min_tokens,omitempty"`
-	MaxTokens         *int              `json:"max_tokens,omitempty"`
-	MinCost           *float64          `json:"min_cost,omitempty"`
-	MaxCost           *float64          `json:"max_cost,omitempty"`
-	MissingCostOnly   bool              `json:"missing_cost_only,omitempty"`
-	CacheHitTypes     []string          `json:"cache_hit_types,omitempty"` // For filtering by local-cache hit type ("direct", "semantic")
-	ContentSearch     string            `json:"content_search,omitempty"`
-	MetadataFilters   map[string]string `json:"metadata_filters,omitempty"` // key=metadataKey, value=metadataValue for filtering by metadata
+	Providers            []string          `json:"providers,omitempty"`
+	Models               []string          `json:"models,omitempty"`
+	Aliases              []string          `json:"aliases,omitempty"`
+	Status               []string          `json:"status,omitempty"`
+	StopReasons          []string          `json:"stop_reasons,omitempty"`    // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
+	ToolCallNames        []string          `json:"tool_call_names,omitempty"` // Requests whose response called ANY of these function names (matched against the tool_call_names column)
+	Objects              []string          `json:"objects,omitempty"`         // For filtering by request type (chat.completion, text.completion, embedding)
+	ParentRequestID      string            `json:"parent_request_id,omitempty"`
+	RequestID            string            `json:"request_id,omitempty"` // Exact match on the log primary key, which is the request ID. Time-range filters are skipped for it so a unique ID is never hidden by the selected window.
+	RootsOnly            bool              `json:"roots_only,omitempty"` // Hide rows whose parent_request_id points at another row matching these same filters, so each chain lists as its root request only. Ignored when ParentRequestID is set.
+	SelectedKeyIDs       []string          `json:"selected_key_ids,omitempty"`
+	VirtualKeyIDs        []string          `json:"virtual_key_ids,omitempty"`
+	RoutingRuleIDs       []string          `json:"routing_rule_ids,omitempty"`
+	ComplexityTiers      []string          `json:"complexity_tiers,omitempty"`      // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
+	ComplexityMechanisms []string          `json:"complexity_mechanisms,omitempty"` // For filtering by complexity decision mechanism (semantic, llm, session, skipped)
+	SessionID            string            `json:"session_id,omitempty"`            // Exact Bifrost session ID used for key stickiness and request correlation
+	TeamIDs              []string          `json:"team_ids,omitempty"`
+	CustomerIDs          []string          `json:"customer_ids,omitempty"`
+	UserIDs              []string          `json:"user_ids,omitempty"`
+	BusinessUnitIDs      []string          `json:"business_unit_ids,omitempty"`
+	ProjectIDs           []string          `json:"project_ids,omitempty"`
+	RoutingEngineUsed    []string          `json:"routing_engine_used,omitempty"` // For filtering by routing engine (routing-rule, governance, loadbalancing)
+	Apps                 []string          `json:"apps,omitempty"`                // Backend-detected client apps
+	UserAgents           []string          `json:"user_agents,omitempty"`         // Raw User-Agent strings; kept for compatibility/debug filtering
+	StartTime            *time.Time        `json:"start_time,omitempty"`
+	EndTime              *time.Time        `json:"end_time,omitempty"`
+	MinLatency           *float64          `json:"min_latency,omitempty"`
+	MaxLatency           *float64          `json:"max_latency,omitempty"`
+	MinTokens            *int              `json:"min_tokens,omitempty"`
+	MaxTokens            *int              `json:"max_tokens,omitempty"`
+	MinCost              *float64          `json:"min_cost,omitempty"`
+	MaxCost              *float64          `json:"max_cost,omitempty"`
+	MissingCostOnly      bool              `json:"missing_cost_only,omitempty"`
+	CacheHitTypes        []string          `json:"cache_hit_types,omitempty"` // For filtering by local-cache hit type ("direct", "semantic")
+	ContentSearch        string            `json:"content_search,omitempty"`
+	MetadataFilters      map[string]string `json:"metadata_filters,omitempty"` // key=metadataKey, value=metadataValue for filtering by metadata
 	// RankingLimit caps the number of rows returned by the ranking queries
 	// (GetModelRankings / GetUserRankings / GetDimensionRankings). nil means
 	// "use the store default" (defaultMaxRankingsLimit); a value <= 0 means
@@ -195,6 +201,7 @@ type Log struct {
 	CanonicalModelName      *string   `gorm:"type:varchar(255)" json:"canonical_model_name,omitempty"` // Canonical model name configured on the resolved alias, when set
 	AliasModelFamily        *string   `gorm:"type:varchar(255)" json:"alias_model_family,omitempty"`   // Model family configured on the resolved alias, when set
 	ServerSideFallbackModel *string   `gorm:"type:varchar(255)" json:"server_side_fallback_model,omitempty"`
+	ServedModel             *string   `gorm:"type:varchar(255)" json:"served_model,omitempty"` // Model the provider named on the response body when it differs from Model
 	NumberOfRetries         int       `gorm:"default:0" json:"number_of_retries"`
 	FallbackIndex           int       `gorm:"default:0" json:"fallback_index"`
 	SelectedKeyID           string    `gorm:"type:varchar(255);index:idx_logs_selected_key_id" json:"selected_key_id"`
@@ -203,8 +210,13 @@ type Log struct {
 	VirtualKeyID            *string   `gorm:"type:varchar(255);index:idx_logs_virtual_key_id" json:"virtual_key_id"`
 	VirtualKeyName          *string   `gorm:"type:varchar(255)" json:"virtual_key_name"`
 	RoutingEnginesUsedStr   *string   `gorm:"type:varchar(255);column:routing_engines_used" json:"-"` // Comma-separated routing engines
+	ToolCallNamesStr        *string   `gorm:"type:text;column:tool_call_names" json:"-"`              // Comma-separated distinct function names the response called. Not a payload field, so it stays on the row in hybrid mode and is filterable. Names are recorded regardless of content logging; arguments live in tool_calls and follow content policy.
 	RoutingRuleID           *string   `gorm:"type:varchar(255);index:idx_logs_routing_rule_id" json:"routing_rule_id"`
 	RoutingRuleName         *string   `gorm:"type:varchar(255)" json:"routing_rule_name"`
+	ComplexityTier          *string   `gorm:"type:varchar(50);index:idx_logs_complexity_tier,where:complexity_tier IS NOT NULL" json:"complexity_tier,omitempty"`                // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); NULL when no routing rule demanded complexity. Partial index, matching its performanceIndexes entry
+	ComplexityMechanism     *string   `gorm:"type:varchar(50);index:idx_logs_complexity_mechanism,where:complexity_mechanism IS NOT NULL" json:"complexity_mechanism,omitempty"` // How the complexity tier was classified ("semantic", "llm", "session", "skipped"). NULL means no routing rule referenced complexity_tier, so classification never ran. Partial index, matching its performanceIndexes entry
+	ComplexityScore         *float64  `gorm:"column:complexity_score" json:"complexity_score,omitempty"`                                                                         // Raw complexity score behind the tier; unindexed (detail-view only)
+	SessionID               *string   `gorm:"type:varchar(255);index:idx_logs_session_id,where:session_id IS NOT NULL" json:"session_id,omitempty"`                              // Raw opaque session identity resolved at ingress for key stickiness and log correlation
 	SelectedPromptName      *string   `gorm:"type:varchar(255)" json:"selected_prompt_name"`
 	SelectedPromptVersion   *string   `gorm:"type:varchar(64)" json:"selected_prompt_version"`
 	SelectedPromptID        *string   `gorm:"type:varchar(36)" json:"selected_prompt_id"`
@@ -216,6 +228,8 @@ type Log struct {
 	CustomerName            *string   `gorm:"type:varchar(255)" json:"customer_name"`
 	BusinessUnitID          *string   `gorm:"type:varchar(255);index:idx_logs_business_unit_id" json:"business_unit_id"`
 	BusinessUnitName        *string   `gorm:"type:varchar(255)" json:"business_unit_name"`
+	ProjectID               *string   `gorm:"type:varchar(255);index:idx_logs_project_id" json:"project_id"`
+	ProjectName             *string   `gorm:"type:varchar(255)" json:"project_name"`
 	TeamIDs                 *string   `gorm:"type:text" json:"-"`
 	TeamNames               *string   `gorm:"type:text" json:"-"`
 	CustomerIDs             *string   `gorm:"type:text" json:"-"`
@@ -251,13 +265,15 @@ type Log struct {
 	VideoDownloadOutput     string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostVideoDownloadResponse
 	VideoListOutput         string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostVideoListResponse
 	VideoDeleteOutput       string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostVideoDeleteResponse
-	CacheDebug              string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostCacheDebug
-	GuardrailDebug          string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostGuardrailDebug
-	Latency                 *float64  `gorm:"index:idx_logs_latency" json:"latency,omitempty"`
-	UpstreamLatency         *float64  `gorm:"index:idx_logs_upstream_latency" json:"upstream_latency,omitempty"` // Provider socket time across all attempts, ms; nil = unmeasured
-	OverheadLatency         *float64  `gorm:"index:idx_logs_overhead_latency" json:"overhead_latency,omitempty"` // Bifrost overhead (total minus upstream), ms; nil = unmeasured
-	OverheadBreakdown       string    `gorm:"type:text" json:"-"`                                                // JSON serialized []OverheadBucket: per-span self-time decomposition of overhead
-	TokenUsage              string    `gorm:"type:text" json:"-"`                                                // JSON serialized *schemas.LLMUsage
+	// Debug spelling is retained for the persisted cache and guardrail columns.
+	CacheDebug        string   `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostCacheMetadata
+	GuardrailDebug    string   `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostGuardrailMetadata
+	RoutingMetadata   string   `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostRoutingMetadata
+	Latency           *float64 `gorm:"index:idx_logs_latency" json:"latency,omitempty"`
+	UpstreamLatency   *float64 `gorm:"index:idx_logs_upstream_latency" json:"upstream_latency,omitempty"` // Provider socket time across all attempts, ms; nil = unmeasured
+	OverheadLatency   *float64 `gorm:"index:idx_logs_overhead_latency" json:"overhead_latency,omitempty"` // Bifrost overhead (total minus upstream), ms; nil = unmeasured
+	OverheadBreakdown string   `gorm:"type:text" json:"-"`                                                // JSON serialized []OverheadBucket: per-span self-time decomposition of overhead
+	TokenUsage        string   `gorm:"type:text" json:"-"`                                                // JSON serialized *schemas.LLMUsage
 	// Denormalized cost split for per-category quota aggregation. input + output +
 	// additional reconcile to the cost column. Additional holds internal sidecar
 	// costs with no input/output token category (guardrail, MCP).
@@ -328,6 +344,11 @@ type Log struct {
 	// operational records rather than request content, so they must survive
 	// object-storage offload and content-hidden rows.
 	BatchDebug string `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostBatchDebug
+	// VideoDebug carries the video job id and lifecycle status, and on the aggregate
+	// cost row the pricing detail that distinguishes it from the submission it
+	// settles. Operational, like BatchDebug — it must survive object-storage offload
+	// and content-hidden rows.
+	VideoDebug string `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoDebug
 
 	ServiceTier  *string `gorm:"type:varchar(32)" json:"service_tier,omitempty"`  // OpenAI served tier, e.g. "priority", "flex", "ultrafast", or "default"
 	Speed        *string `gorm:"type:varchar(32)" json:"speed,omitempty"`         // Anthropic served speed: "fast" / "standard"
@@ -337,6 +358,7 @@ type Log struct {
 
 	// Virtual fields for JSON output - these will be populated when needed
 	RoutingEnginesUsed          []string                                `gorm:"-" json:"routing_engines_used,omitempty"` // Virtual field deserialized from JSON
+	ToolCallNames               []string                                `gorm:"-" json:"tool_call_names,omitempty"`      // Virtual field split from ToolCallNamesStr
 	InputHistoryParsed          []schemas.ChatMessage                   `gorm:"-" json:"input_history,omitempty"`
 	ResponsesInputHistoryParsed []schemas.ResponsesMessage              `gorm:"-" json:"responses_input_history,omitempty"`
 	OutputMessageParsed         *schemas.ChatMessage                    `gorm:"-" json:"output_message,omitempty"`
@@ -358,9 +380,12 @@ type Log struct {
 	SpeechOutputParsed          *schemas.BifrostSpeechResponse          `gorm:"-" json:"speech_output,omitempty"`
 	TranscriptionOutputParsed   *schemas.BifrostTranscriptionResponse   `gorm:"-" json:"transcription_output,omitempty"`
 	ImageGenerationOutputParsed *schemas.BifrostImageGenerationResponse `gorm:"-" json:"image_generation_output,omitempty"`
-	CacheDebugParsed            *schemas.BifrostCacheDebug              `gorm:"-" json:"cache_debug,omitempty"`
+	// Debug spelling is retained for the established cache and guardrail Go/JSON contracts.
+	CacheDebugParsed            *schemas.BifrostCacheMetadata           `gorm:"-" json:"cache_debug,omitempty"`
 	BatchDebugParsed            *schemas.BifrostBatchDebug              `gorm:"-" json:"batch_debug,omitempty"`
-	GuardrailDebugParsed        *schemas.BifrostGuardrailDebug          `gorm:"-" json:"guardrail_debug,omitempty"`
+	VideoDebugParsed            *schemas.BifrostVideoDebug              `gorm:"-" json:"video_debug,omitempty"`
+	GuardrailDebugParsed        *schemas.BifrostGuardrailMetadata       `gorm:"-" json:"guardrail_debug,omitempty"`
+	RoutingMetadataParsed       *schemas.BifrostRoutingMetadata         `gorm:"-" json:"routing_metadata,omitempty"`
 	ListModelsOutputParsed      []schemas.Model                         `gorm:"-" json:"list_models_output,omitempty"`
 	MetadataParsed              map[string]interface{}                  `gorm:"-" json:"metadata,omitempty"`
 	VideoGenerationInputParsed  *schemas.VideoGenerationInput           `gorm:"-" json:"video_generation_input,omitempty"`
@@ -445,6 +470,43 @@ func (l *Log) AfterFind(tx *gorm.DB) error {
 	return l.DeserializeFields()
 }
 
+// maxToolCallNamesBytes caps the serialized tool_call_names column. Whole names
+// past the cap are dropped; a name is never split.
+const maxToolCallNamesBytes = 2048
+
+// joinToolCallNames joins distinct, non-empty names with commas, keeping
+// first-seen order and stopping before the joined string would exceed
+// maxToolCallNamesBytes.
+func joinToolCallNames(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	seen := make(map[string]struct{}, len(names))
+	var b strings.Builder
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" || strings.Contains(name, ",") {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		extra := len(name)
+		if b.Len() > 0 {
+			extra++
+		}
+		if b.Len()+extra > maxToolCallNamesBytes {
+			break
+		}
+		seen[name] = struct{}{}
+		if b.Len() > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(name)
+	}
+	return b.String()
+}
+
 // SerializeFields converts Go structs to JSON strings for storage
 func (l *Log) SerializeFields() error {
 	// Serialize routing engines to comma-separated string
@@ -453,6 +515,14 @@ func (l *Log) SerializeFields() error {
 		l.RoutingEnginesUsedStr = &engineStr
 	} else {
 		l.RoutingEnginesUsedStr = nil
+	}
+
+	// Serialize tool call names to a comma-separated string, capped so an
+	// agentic response with hundreds of distinct tools cannot bloat the row.
+	if joined := joinToolCallNames(l.ToolCallNames); joined != "" {
+		l.ToolCallNamesStr = &joined
+	} else {
+		l.ToolCallNamesStr = nil
 	}
 
 	if l.InputHistoryParsed != nil {
@@ -724,11 +794,27 @@ func (l *Log) SerializeFields() error {
 		}
 	}
 
+	if !l.VideoDebugParsed.IsZero() {
+		if data, err := sonic.Marshal(l.VideoDebugParsed); err != nil {
+			return err
+		} else {
+			l.VideoDebug = string(data)
+		}
+	}
+
 	if l.GuardrailDebugParsed != nil {
 		if data, err := sonic.Marshal(l.GuardrailDebugParsed); err != nil {
 			return err
 		} else {
 			l.GuardrailDebug = string(data)
+		}
+	}
+
+	if l.RoutingMetadataParsed != nil {
+		if data, err := sonic.Marshal(l.RoutingMetadataParsed); err != nil {
+			return err
+		} else {
+			l.RoutingMetadata = string(data)
 		}
 	}
 
@@ -1068,10 +1154,23 @@ func (l *Log) DeserializeFields() error {
 		}
 	}
 
+	if l.VideoDebug != "" {
+		if err := sonic.Unmarshal([]byte(l.VideoDebug), &l.VideoDebugParsed); err != nil {
+			l.VideoDebugParsed = nil
+		}
+	}
+
 	if l.GuardrailDebug != "" {
 		if err := sonic.Unmarshal([]byte(l.GuardrailDebug), &l.GuardrailDebugParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.GuardrailDebugParsed = nil
+		}
+	}
+
+	if l.RoutingMetadata != "" {
+		if err := sonic.Unmarshal([]byte(l.RoutingMetadata), &l.RoutingMetadataParsed); err != nil {
+			// Log error but don't fail the operation - initialize as nil
+			l.RoutingMetadataParsed = nil
 		}
 	}
 
@@ -1141,6 +1240,12 @@ func (l *Log) DeserializeFields() error {
 		l.RoutingEnginesUsed = strings.Split(*l.RoutingEnginesUsedStr, ",")
 	} else {
 		l.RoutingEnginesUsed = []string{}
+	}
+
+	if l.ToolCallNamesStr != nil && *l.ToolCallNamesStr != "" {
+		l.ToolCallNames = strings.Split(*l.ToolCallNamesStr, ",")
+	} else {
+		l.ToolCallNames = nil
 	}
 
 	// Hybrid log store offloads token_usage to object storage but keeps denormalized
@@ -1261,6 +1366,8 @@ type MCPToolLog struct {
 	TeamID         *string   `gorm:"type:varchar(255);index:idx_mcp_logs_team_id" json:"team_id"`
 	CustomerID     *string   `gorm:"type:varchar(255);index:idx_mcp_logs_customer_id" json:"customer_id"`
 	BusinessUnitID *string   `gorm:"type:varchar(255);index:idx_mcp_logs_business_unit_id" json:"business_unit_id"`
+	ProjectID      *string   `gorm:"type:varchar(255);index:idx_mcp_logs_project_id" json:"project_id"`
+	ProjectName    *string   `gorm:"type:varchar(255)" json:"project_name"`
 	UserAgent      *string   `gorm:"type:varchar(512);index:idx_mcp_logs_user_agent" json:"user_agent,omitempty"` // Raw HTTP User-Agent of the calling client
 	App            *string   `gorm:"type:varchar(128);index:idx_mcp_logs_app" json:"app,omitempty"`               // Backend-detected client app derived from user_agent
 	Arguments      string    `gorm:"type:text" json:"-"`                                                          // JSON serialized tool arguments
@@ -1530,18 +1637,18 @@ func (o WebhookDeliveryOutcome) Value() (driver.Value, error) {
 type WebhookDelivery struct {
 	ID         string `gorm:"primaryKey;type:varchar(36)" json:"id"`
 	WebhookID  string `gorm:"type:varchar(36);index:idx_webhook_deliveries_webhook_id;not null" json:"webhook_id"`
-	EndpointID string `gorm:"type:varchar(36);index:idx_webhook_deliveries_endpoint_id;not null" json:"endpoint_id"`
+	EndpointID string `gorm:"type:varchar(36);index:idx_webhook_deliveries_endpoint_id;index:idx_webhook_deliveries_endpoint_created,priority:1;not null" json:"endpoint_id"`
 	AsyncJobID string `gorm:"type:varchar(255);not null" json:"async_job_id"`
 	// RequestID is the async job's inference request id — the same id the
 	// LLM logs record — copied here at attempt time. Empty when the job row
 	// expired before the attempt.
-	RequestID  string                 `gorm:"type:varchar(255)" json:"request_id,omitempty"`
-	Event      tables.WebhookEvent    `gorm:"type:varchar(255);not null" json:"event"`
+	RequestID  string                 `gorm:"type:varchar(255);index:idx_webhook_deliveries_request_id" json:"request_id,omitempty"`
+	Event      tables.WebhookEvent    `gorm:"type:varchar(255);index:idx_webhook_deliveries_event;not null" json:"event"`
 	AttemptNo  int                    `gorm:"not null;default:0" json:"attempt_no"`
-	Outcome    WebhookDeliveryOutcome `gorm:"type:varchar(50);not null" json:"outcome"`
+	Outcome    WebhookDeliveryOutcome `gorm:"type:varchar(50);index:idx_webhook_deliveries_outcome;not null" json:"outcome"`
 	StatusCode int                    `gorm:"default:0" json:"status_code,omitempty"`
 	Error      string                 `gorm:"type:text" json:"error,omitempty"`
-	CreatedAt  time.Time              `gorm:"index:idx_webhook_deliveries_created_at;not null" json:"created_at"`
+	CreatedAt  time.Time              `gorm:"index:idx_webhook_deliveries_created_at;index:idx_webhook_deliveries_endpoint_created,priority:2,sort:desc;not null" json:"created_at"`
 	ExpiresAt  *time.Time             `gorm:"index:idx_webhook_deliveries_expires_at" json:"expires_at,omitempty"`
 }
 
@@ -1554,6 +1661,35 @@ func (WebhookDelivery) TableName() string {
 type WebhookDeliverySearchResult struct {
 	Deliveries []WebhookDelivery `json:"deliveries"`
 	Pagination PaginationOptions `json:"pagination"`
+}
+
+// Webhook delivery status classes, used to filter by response band without the
+// caller having to enumerate individual status codes. StatusClassNone matches
+// attempts where no response arrived at all (a zero status code).
+const (
+	WebhookDeliveryStatusClass2xx  = "2xx"
+	WebhookDeliveryStatusClass4xx  = "4xx"
+	WebhookDeliveryStatusClass5xx  = "5xx"
+	WebhookDeliveryStatusClassNone = "none"
+)
+
+// WebhookDeliverySearchFilters represents the available filters for webhook
+// delivery history searches. Every field is optional; a zero-valued struct
+// matches all history. Slice fields are OR-ed within themselves and AND-ed
+// against each other.
+//
+// Note the naming: DeliveryID is WebhookDelivery.WebhookID, the delivery-run id
+// shared by every attempt of one delivery. EndpointIDs are the webhook
+// endpoints those deliveries were addressed to.
+type WebhookDeliverySearchFilters struct {
+	EndpointIDs []string   `json:"endpoint_ids,omitempty"`
+	Events      []string   `json:"events,omitempty"`
+	Outcomes    []string   `json:"outcomes,omitempty"`
+	StatusClass []string   `json:"status_class,omitempty"`
+	RequestID   string     `json:"request_id,omitempty"`
+	DeliveryID  string     `json:"delivery_id,omitempty"`
+	StartTime   *time.Time `json:"start_time,omitempty"`
+	EndTime     *time.Time `json:"end_time,omitempty"`
 }
 
 // MCPToolLogSearchFilters represents the available filters for MCP tool log searches
@@ -1930,6 +2066,7 @@ const (
 	DimensionCustomer     HistogramDimension = "customer_id"
 	DimensionUser         HistogramDimension = "user_id"
 	DimensionBusinessUnit HistogramDimension = "business_unit_id"
+	DimensionProject      HistogramDimension = "project_id"
 	DimensionApp          HistogramDimension = "app"
 	DimensionUserAgent    HistogramDimension = "user_agent"
 )
@@ -1941,6 +2078,7 @@ var ValidHistogramDimensions = map[HistogramDimension]bool{
 	DimensionCustomer:     true,
 	DimensionUser:         true,
 	DimensionBusinessUnit: true,
+	DimensionProject:      true,
 	DimensionApp:          true,
 	DimensionUserAgent:    true,
 }
@@ -1961,6 +2099,8 @@ func histogramDimensionColumn(dimension HistogramDimension) (string, bool) {
 		return "user_id", true
 	case DimensionBusinessUnit:
 		return "business_unit_id", true
+	case DimensionProject:
+		return "project_id", true
 	}
 	return "", false
 }
@@ -2141,6 +2281,7 @@ const (
 	RankingDimensionTeam         RankingDimension = "team"
 	RankingDimensionCustomer     RankingDimension = "customer"
 	RankingDimensionBusinessUnit RankingDimension = "business_unit"
+	RankingDimensionProject      RankingDimension = "project"
 	RankingDimensionUser         RankingDimension = "user"
 	RankingDimensionVirtualKey   RankingDimension = "virtual_key"
 	RankingDimensionApp          RankingDimension = "app"
@@ -2151,6 +2292,7 @@ var ValidRankingDimensions = map[RankingDimension]bool{
 	RankingDimensionTeam:         true,
 	RankingDimensionCustomer:     true,
 	RankingDimensionBusinessUnit: true,
+	RankingDimensionProject:      true,
 	RankingDimensionUser:         true,
 	RankingDimensionVirtualKey:   true,
 	RankingDimensionApp:          true,
@@ -2166,6 +2308,7 @@ var dimensionColumns = map[RankingDimension]dimensionColumnDef{
 	RankingDimensionTeam:         {IDCol: "team_id", NameCol: "team_name"},
 	RankingDimensionCustomer:     {IDCol: "customer_id", NameCol: "customer_name"},
 	RankingDimensionBusinessUnit: {IDCol: "business_unit_id", NameCol: "business_unit_name"},
+	RankingDimensionProject:      {IDCol: "project_id", NameCol: "project_name"},
 	RankingDimensionUser:         {IDCol: "user_id", NameCol: "user_name"},
 	RankingDimensionVirtualKey:   {IDCol: "virtual_key_id", NameCol: "virtual_key_name"},
 	RankingDimensionApp:          {IDCol: "app", NameCol: "app"},

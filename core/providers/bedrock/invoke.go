@@ -1343,8 +1343,8 @@ func toBedrockInvokeAnthropicResponse(resp *schemas.BifrostResponsesResponse, mo
 		// Reasoning content
 		if item.ResponsesReasoning != nil {
 			// Bedrock-origin reasoning lives in Content.ContentBlocks (see
-			// convertSingleBedrockMessageToBifrostMessages) — ResponsesReasoning.Summary
-			// is OpenAI Responses-API shape and is always empty for Bedrock. Fall back
+			// convertSingleBedrockMessageToBifrostMessages); the streaming path instead
+			// closes its reasoning items with a Summary. Fall back
 			// to Summary whenever ContentBlocks yields no usable reasoning block, not
 			// merely when ContentBlocks is empty — a non-empty ContentBlocks containing
 			// no reasoning-type block would otherwise silently lose the Summary data.
@@ -1370,12 +1370,21 @@ func toBedrockInvokeAnthropicResponse(resp *schemas.BifrostResponsesResponse, mo
 				}
 			}
 			if !emittedFromContentBlocks {
+				// The signature signs the first summary entry only, matching the sibling
+				// Converse converter. An unsigned thinking block is rejected on replay, so
+				// it has to travel with the text rather than being left behind here.
+				signature := reasoningSignatureForBedrock(item.ResponsesReasoning.EncryptedContent)
 				for _, summary := range item.ResponsesReasoning.Summary {
 					if summary.Text != "" {
-						result.Content = append(result.Content, BedrockInvokeMessagesContentBlock{
+						blk := BedrockInvokeMessagesContentBlock{
 							Type:     "thinking",
 							Thinking: summary.Text,
-						})
+						}
+						if signature != nil {
+							blk.Signature = *signature
+							signature = nil
+						}
+						result.Content = append(result.Content, blk)
 					}
 				}
 			}

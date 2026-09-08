@@ -54,6 +54,20 @@ func TestIsPublicIP(t *testing.T) {
 
 		// Deprecated IPv6 site-local (RFC 3879).
 		{"site-local fec0::/10", "fec0::1", false},
+
+		// Teredo (RFC 4380). The whole 2001:0000::/32 prefix is refused: the
+		// embedded client IPv4 is XOR-obfuscated so none of the stdlib
+		// predicates see through it, and the address carries a second,
+		// separately attacker-chosen relay IPv4 in bits 32-63.
+		// 2001:0000:4136:e378:8000:63bf:5601:5601 obfuscates 169.254.169.254
+		// (0xa9fea9fe ^ 0xffffffff = 0x56015601) as the client address.
+		{"teredo-wrapped IMDS", "2001:0000:4136:e378:8000:63bf:5601:5601", false},
+		{"teredo prefix low", "2001:0::1", false},
+		{"teredo prefix high", "2001:0:ffff:ffff:ffff:ffff:ffff:ffff", false},
+		// The block is a /32, not a /16: ordinary global unicast that merely
+		// starts with 2001: must stay reachable.
+		{"global unicast 2001:4860 (Google) stays public", "2001:4860:4860::8888", true},
+		{"global unicast 2001:1:: stays public", "2001:1::1", true},
 	}
 
 	for _, tt := range tests {
@@ -350,4 +364,80 @@ func TestSSRFSafeDialContextWithAllowlist_NilAllowlistMatchesPlainDialContext(t 
 	if err == nil || !strings.Contains(err.Error(), "blocked connection to non-public address") {
 		t.Fatalf("expected blocked-connection error, got %v", err)
 	}
+}
+
+func TestPrivateNetworkDialContextBlocksLinkLocal(t *testing.T) {
+	dial := PrivateNetworkDialContext(time.Second)
+	if _, err := dial(context.Background(), "tcp", "169.254.169.254:80"); err == nil || !strings.Contains(err.Error(), "blocked connection to link-local address") {
+		t.Fatalf("expected blocked link-local error, got %v", err)
+	}
+}
+
+func TestPrivateNetworkDialContextBlocksUnspecified(t *testing.T) {
+	dial := PrivateNetworkDialContext(time.Second)
+	if _, err := dial(context.Background(), "tcp", "0.0.0.0:80"); err == nil || !strings.Contains(err.Error(), "blocked connection to unspecified address") {
+		t.Fatalf("expected blocked unspecified error, got %v", err)
+	}
+}
+
+// TestPrivateNetworkDialContextAllowsLoopback locks in the deliberate
+// difference from SSRFSafeDialContext: a self-hosted MCP server on the same
+// host is the documented primary use case, so loopback must stay dialable.
+func TestPrivateNetworkDialContextAllowsLoopback(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to start test listener: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err == nil {
+			conn.Close()
+		}
+	}()
+
+	dial := PrivateNetworkDialContext(time.Second)
+	conn, err := dial(context.Background(), "tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("expected loopback dial to succeed, got %v", err)
+	}
+	conn.Close()
+}
+
+// TestPrivateNetworkDialContextFallsBackAcrossResolvedAddresses locks in the
+// multi-address behavior the MCP feature depends on: "localhost" resolves to
+// [::1, 127.0.0.1] on a dual-stack host, and an MCP server bound only to IPv4
+// must still be reachable. Pinning the first resolved address would make the
+// documented http://localhost:PORT/mcp target undialable.
+func TestPrivateNetworkDialContextFallsBackAcrossResolvedAddresses(t *testing.T) {
+	ips, err := net.DefaultResolver.LookupIP(context.Background(), "ip", "localhost")
+	if err != nil || len(ips) < 2 {
+		t.Skipf("localhost does not resolve to multiple addresses here (%v, err=%v)", ips, err)
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to start test listener: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			conn.Close()
+		}
+	}()
+	_, port, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("failed to split listener address: %v", err)
+	}
+
+	dial := PrivateNetworkDialContext(2 * time.Second)
+	conn, err := dial(context.Background(), "tcp", net.JoinHostPort("localhost", port))
+	if err != nil {
+		t.Fatalf("expected dial to fall back to the reachable resolved address, got %v", err)
+	}
+	conn.Close()
 }

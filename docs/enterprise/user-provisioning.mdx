@@ -1,6 +1,6 @@
 ---
 title: "User Provisioning (OIDC + SCIM)"
-description: "Authenticate users, sync teams, and provision roles and business units from your identity provider using OAuth 2.0 / OIDC, background directory sync, and inbound SCIM 2.0."
+description: "Authenticate users, sync teams, and provision roles, business units, and access profiles from your identity provider using OAuth 2.0 / OIDC, background directory sync, and inbound SCIM 2.0."
 icon: "users-gear"
 ---
 
@@ -12,6 +12,7 @@ Bifrost Enterprise connects your organization's identity provider to Bifrost thr
 - **Automatic role assignment** using custom claims, app roles, or group-to-role mappings
 - **Team synchronization** from IdP groups into Bifrost teams
 - **Business unit mapping** from IdP attributes to Bifrost business units
+- **Access profile mapping** from IdP attributes to Bifrost access profiles
 - **Bulk user provisioning** with filter-preview before import
 - **Background lifecycle reconciliation** every **24 hours** for imported users
 - **OIDC session refresh checks** every **15 minutes** to confirm users are still active with the IdP
@@ -79,7 +80,7 @@ Pick your IdP to follow a step-by-step setup guide. All providers share the same
 3. **Identity extraction** — configurable JWT claims (`userIdField`, `rolesField`, `teamIdsField`) are mapped to a Bifrost user, role, and teams. Provider-specific app roles or custom attributes override claim lookup.
 4. **Attribute mapping** — optional `attributeRoleMappings`, `attributeTeamMappings`, `attributeBusinessUnitMappings`, and `attributeAccessProfileMappings` translate arbitrary claim values (e.g., a department string or Okta group name) into Bifrost roles, teams, business units, or access profiles.
 5. **Session refresh checks** — every 15 minutes, Bifrost refreshes the OIDC session. If the session cannot be refreshed, Bifrost checks with the OIDC server whether the user is still active.
-6. **Background reconciliation** — Bifrost periodically calls the configured provider's directory APIs to reconcile imported users and mapped roles, teams, and business units.
+6. **Background reconciliation** — Bifrost periodically calls the configured provider's directory APIs to reconcile imported users and mapped roles, teams, business units, and access profiles.
 7. **Bulk import** — admins can preview users matching a filter and bulk-import them via the dashboard, which calls the provider's user directory API.
 8. **Daily sync** — Bifrost reconciles imported users every 24 hours.
 9. **SCIM push** — IdPs configured with a SCIM provisioning connector can push user creates, updates, and deletes to Bifrost in real time via `/scim/v2`.
@@ -95,14 +96,14 @@ Pick your IdP to follow a step-by-step setup guide. All providers share the same
 | **JWKS validation** | JWTs are validated against the provider's published JWKS keys; configuration is cached and auto-refreshed. |
 | **Role mapping** | Map from a claim value (string or array) to Admin / Developer / Viewer or a custom role. Highest-privilege wins when multiple match. |
 | **Team mapping** | Map multiple claim values to Bifrost teams in a single pass (a user can belong to many teams). |
-| **Business unit mapping** | Same as team mapping but scoped to business units. |
-| **Access profile mapping** | Map claim values directly to access profiles via `attributeAccessProfileMappings`, bypassing the default role-derived assignment. First matching rule wins (a user holds a single access profile). |
+| **Business unit mapping** | Map claim values to Bifrost business units. All matching rules apply, and a user can belong to many. |
+| **Access profile mapping** | Map claim values to [access profiles](/enterprise/access-profiles). All matching rules apply, and the user holds every profile they match. |
 | **Provisioning preview** | Preview up to 50 users matching filters (groups, roles, departments) before importing. |
 | **Bulk import** | Import matched users into Bifrost with role + team + BU assignments applied. |
 | **Team sync** | Sync IdP groups as Bifrost teams with a single action. |
 | **Business unit sync** | Sync IdP organizational units as Bifrost business units. |
 | **Inbound SCIM 2.0** | IdPs push user and group changes to Bifrost via `/scim/v2` in real time. Bearer-token authenticated. |
-| **SCIM attribute mapping** | SCIM user attributes (including enterprise extension fields) drive role, team, and BU assignments automatically on every SCIM write. |
+| **SCIM attribute mapping** | SCIM user attributes (including enterprise extension fields) drive role, team, business unit, and access profile assignments automatically on every SCIM write. |
 | **Deprovisioning** | Bifrost checks user status during each 15-minute OIDC session refresh and reconciles imported users against the provider directory every 24 hours. SCIM DELETE/deactivation (`active: false`) is also handled immediately. Users that are inactive, disabled, unassigned, or missing from the source set are decommissioned locally. |
 | **API key pass-through** | Requests using Bifrost API keys (`bfst-*`) bypass OIDC user-provisioning middleware so inference traffic is not affected. |
 
@@ -114,7 +115,7 @@ Bifrost's lifecycle model combines source-side reconciliation, OIDC session vali
 
 Every **15 minutes**, Bifrost refreshes active OIDC sessions. If a session cannot be refreshed, Bifrost checks with the OIDC server whether the user is still active; if the provider reports the user is inactive, Bifrost decommissions that user locally.
 
-After users are imported, Bifrost also uses the configured provider credentials to sync with the IdP in the background every **24 hours**. That sync updates mapped roles, teams, and business units, and decommissions imported users that are disabled, unassigned, or no longer present in the provider source set.
+After users are imported, Bifrost also uses the configured provider credentials to sync with the IdP in the background every **24 hours**. That sync updates mapped roles, teams, business units, and access profiles, and decommissions imported users that are disabled, unassigned, or no longer present in the provider source set.
 
 When an IdP SCIM connector is configured, user deactivation and deletion are also handled immediately as the IdP pushes changes.
 
@@ -172,9 +173,9 @@ Fields marked **env.\* supported** accept `"env.VAR_NAME"` in addition to a lite
 | Audience | `audience` | No | Yes | Only applies to Custom Authorization Server |
 | Team IDs field | `teamIdsField` | No | Yes | JWT claim for group IDs (default: `"groups"`) |
 | Role mappings | `attributeRoleMappings` | No | **Plain only** | Array of `{ attribute, value, role }` objects |
-| Team mappings | `attributeTeamMappings` | No | **Plain only** | Array of `{ attribute, value, team }` objects |
-| Business unit mappings | `attributeBusinessUnitMappings` | No | **Plain only** | Array of `{ attribute, value, businessUnit }` objects |
-| Access profile mappings | `attributeAccessProfileMappings` | No | **Plain only** | Array of `{ attribute, value, accessProfile }` objects (first match wins) |
+| Team mappings | `attributeTeamMappings` | No | **Plain only** | Array of `{ attribute, value, team, attributeType, attributeValue }` objects |
+| Business unit mappings | `attributeBusinessUnitMappings` | No | **Plain only** | Array of `{ attribute, value, businessUnit, attributeType, attributeValue }` objects |
+| Access profile mappings | `attributeAccessProfileMappings` | No | **Plain only** | Array of `{ attribute, value, accessProfile }` objects. One rule per profile; all matching rules apply. |
 | Claim SCIM attributes | `claimScimAttributes` | No | **Plain only** | Map of claim name -> `{ attributeType, attributeValue }` |
 
 ### Microsoft Entra ID
@@ -189,9 +190,9 @@ Fields marked **env.\* supported** accept `"env.VAR_NAME"` in addition to a lite
 | App ID URI | `appIdUri` | No | Yes | App ID URI for v1.0 tokens (e.g. `api://{clientId}`) |
 | Team IDs field | `teamIdsField` | No | Yes | JWT claim for group IDs (default: `"groups"`) |
 | Role mappings | `attributeRoleMappings` | No | **Plain only** | Array of `{ attribute, value, role }` objects |
-| Team mappings | `attributeTeamMappings` | No | **Plain only** | Array of `{ attribute, value, team }` objects |
-| Business unit mappings | `attributeBusinessUnitMappings` | No | **Plain only** | Array of `{ attribute, value, businessUnit }` objects |
-| Access profile mappings | `attributeAccessProfileMappings` | No | **Plain only** | Array of `{ attribute, value, accessProfile }` objects (first match wins) |
+| Team mappings | `attributeTeamMappings` | No | **Plain only** | Array of `{ attribute, value, team, attributeType, attributeValue }` objects |
+| Business unit mappings | `attributeBusinessUnitMappings` | No | **Plain only** | Array of `{ attribute, value, businessUnit, attributeType, attributeValue }` objects |
+| Access profile mappings | `attributeAccessProfileMappings` | No | **Plain only** | Array of `{ attribute, value, accessProfile }` objects. One rule per profile; all matching rules apply. |
 | Claim SCIM attributes | `claimScimAttributes` | No | **Plain only** | Map of claim name -> `{ attributeType, attributeValue }` |
 
 ### Keycloak
@@ -205,9 +206,9 @@ Fields marked **env.\* supported** accept `"env.VAR_NAME"` in addition to a lite
 | Audience | `audience` | No | Yes | JWT audience for token validation |
 | Team IDs field | `teamIdsField` | No | Yes | JWT claim for group IDs (default: `"groups"`) |
 | Role mappings | `attributeRoleMappings` | No | **Plain only** | Array of `{ attribute, value, role }` objects |
-| Team mappings | `attributeTeamMappings` | No | **Plain only** | Array of `{ attribute, value, team }` objects |
-| Business unit mappings | `attributeBusinessUnitMappings` | No | **Plain only** | Array of `{ attribute, value, businessUnit }` objects |
-| Access profile mappings | `attributeAccessProfileMappings` | No | **Plain only** | Array of `{ attribute, value, accessProfile }` objects (first match wins) |
+| Team mappings | `attributeTeamMappings` | No | **Plain only** | Array of `{ attribute, value, team, attributeType, attributeValue }` objects |
+| Business unit mappings | `attributeBusinessUnitMappings` | No | **Plain only** | Array of `{ attribute, value, businessUnit, attributeType, attributeValue }` objects |
+| Access profile mappings | `attributeAccessProfileMappings` | No | **Plain only** | Array of `{ attribute, value, accessProfile }` objects. One rule per profile; all matching rules apply. |
 | Claim SCIM attributes | `claimScimAttributes` | No | **Plain only** | Map of claim name -> `{ attributeType, attributeValue }` |
 
 ### Zitadel
@@ -223,9 +224,9 @@ Fields marked **env.\* supported** accept `"env.VAR_NAME"` in addition to a lite
 | Service account client secret | `serviceAccountClientSecret` | No | Yes | Service account secret |
 | Team IDs field | `teamIdsField` | No | Yes | JWT claim for group IDs |
 | Role mappings | `attributeRoleMappings` | No | **Plain only** | Array of `{ attribute, value, role }` objects |
-| Team mappings | `attributeTeamMappings` | No | **Plain only** | Array of `{ attribute, value, team }` objects |
-| Business unit mappings | `attributeBusinessUnitMappings` | No | **Plain only** | Array of `{ attribute, value, businessUnit }` objects |
-| Access profile mappings | `attributeAccessProfileMappings` | No | **Plain only** | Array of `{ attribute, value, accessProfile }` objects (first match wins) |
+| Team mappings | `attributeTeamMappings` | No | **Plain only** | Array of `{ attribute, value, team, attributeType, attributeValue }` objects |
+| Business unit mappings | `attributeBusinessUnitMappings` | No | **Plain only** | Array of `{ attribute, value, businessUnit, attributeType, attributeValue }` objects |
+| Access profile mappings | `attributeAccessProfileMappings` | No | **Plain only** | Array of `{ attribute, value, accessProfile }` objects. One rule per profile; all matching rules apply. |
 | Claim SCIM attributes | `claimScimAttributes` | No | **Plain only** | Map of claim name -> `{ attributeType, attributeValue }` |
 
 ### Google Workspace
@@ -244,9 +245,9 @@ Fields marked **env.\* supported** accept `"env.VAR_NAME"` in addition to a lite
 | Audience | `audience` | No | Yes | Optional JWT audience override |
 | Team IDs field | `teamIdsField` | No | Yes | Claim field for group IDs (default: `"groups"`) |
 | Role mappings | `attributeRoleMappings` | No | **Plain only** | Array of `{ attribute, value, role }` objects |
-| Team mappings | `attributeTeamMappings` | No | **Plain only** | Array of `{ attribute, value, team }` objects |
-| Business unit mappings | `attributeBusinessUnitMappings` | No | **Plain only** | Array of `{ attribute, value, businessUnit }` objects |
-| Access profile mappings | `attributeAccessProfileMappings` | No | **Plain only** | Array of `{ attribute, value, accessProfile }` objects (first match wins) |
+| Team mappings | `attributeTeamMappings` | No | **Plain only** | Array of `{ attribute, value, team, attributeType, attributeValue }` objects |
+| Business unit mappings | `attributeBusinessUnitMappings` | No | **Plain only** | Array of `{ attribute, value, businessUnit, attributeType, attributeValue }` objects |
+| Access profile mappings | `attributeAccessProfileMappings` | No | **Plain only** | Array of `{ attribute, value, accessProfile }` objects. One rule per profile; all matching rules apply. |
 | Claim SCIM attributes | `claimScimAttributes` | No | **Plain only** | Map of claim name -> `{ attributeType, attributeValue }` |
 
 ## Configuring from the dashboard
@@ -260,7 +261,7 @@ Fields marked **env.\* supported** accept `"env.VAR_NAME"` in addition to a lite
 </Frame>
 
 4. Click **Verify** to test credentials end-to-end. Bifrost will reach the provider's JWKS / directory endpoint and report any failures.
-5. Configure **Attribute → Role / Team / Business Unit** mappings as needed.
+5. Configure **Attribute → Role / Team / Business Unit / Access Profile** mappings as needed.
 6. Toggle **Enabled** and click **Save Configuration**.
 
 <Warning>
@@ -288,15 +289,38 @@ Each mapping is an ordered rule:
 ```
 
 Rules are evaluated top-to-bottom:
-- **Role mappings** — first match wins. Set a fallback with `"value": "*"` at the end.
-- **Team mappings** and **business unit mappings** — all matching rules apply, so a user with `department=Platform` and `group=sre` can be placed on multiple teams.
-- **Access profile mappings** — first match wins, like role mappings. A user holds a single access profile, so only the first matching rule (in declaration order) whose profile exists is applied.
+- **Role mappings** — first match wins, because a user holds exactly one role. Set a fallback with `"value": "*"` at the end.
+- **Team mappings**, **business unit mappings**, and **access profile mappings** — all matching rules apply, so a user with `department=Platform` and `group=sre` can be placed on multiple teams, business units, and access profiles at once.
 
 Claim values can be strings, arrays, or nested objects — Bifrost resolves dotted paths (e.g., `realm_access.roles`).
+
+### Access profile mappings
+
+`attributeAccessProfileMappings` grant [access profiles](/enterprise/access-profiles) from claim values, using the same rule shape as team and business unit mappings:
+
+```json
+{
+  "attribute": "department",
+  "value": "Engineering",
+  "accessProfile": "Engineering Baseline"
+}
+```
+
+**Every matching rule applies.** A user matching three rules holds all three profiles at once, and what they can reach is the sum of what each grants. A rule never replaces a profile granted by another rule, or one you assigned by hand — it only adds. See [Multiple profiles per user](/enterprise/access-profiles#multiple-profiles-per-user) for how a user's profiles behave once they hold several.
+
+Write one rule per profile. To grant two profiles from the same claim value, write two rules with the same `attribute` and `value` and different `accessProfile` names. In the dashboard you do this in one row by picking several profiles; `config.json` stores them as separate rules, so the file will have more entries than the screen shows.
+
+Every sync re-checks these rules. A profile the user still matches is left alone, keeping its budget and accumulated usage; newly matched profiles are added, and ones they no longer match are removed. Profiles they hold by hand or through their role are never affected. A profile granted this way cannot be detached from the user directly — change the mapping or the underlying attribute instead.
+
+
+### `attributeType` field
+
+Mappings have an optional `attributeType` field:
 
 ### `claimScimAttributes` field
 
 `attribute` in a role/team/business-unit mapping rule is always an **OIDC JWT claim name**, and supports dotted paths into nested objects (e.g. `realm_access.roles`). By default Bifrost also uses that same name to look up the attribute in a SCIM-provisioned user's stored profile (a flat key-value map) — so for standard SCIM attributes (`department`, `title`, `userType`, `costCenter`, etc.) mapping rules work unchanged across both the OIDC and SCIM paths.
+>>>>>>> main
 
 `claimScimAttributes` is a separate, top-level config field (a sibling of `attributeTeamMappings` / `attributeBusinessUnitMappings`, not a field on each rule) for the two cases where that default isn't enough:
 
@@ -325,9 +349,46 @@ It maps each claim name to its SCIM source type and lookup key:
 | `attributeType` | `"user"` (default) matches JWT claims or SCIM User resource attributes. `"group"` matches the `displayName` of SCIM Group resources instead — use this when the claim key (e.g. `groups`) corresponds to group membership pushed via SCIM. |
 | `attributeValue` | The SCIM lookup key for this claim — a SCIM User attribute key when `attributeType` is `"user"`, or the group match field (typically `displayName`) when `attributeType` is `"group"`. Defaults to the claim name when not set. |
 
+A **role** mapping can use `attributeType: "group"` too, so you can assign a role from group membership alone. `"value": "*"` works here and matches any group, which is useful as a catch-all giving every SCIM-provisioned group member a baseline role:
+
+```json
+{
+  "attribute": "groups",
+  "value": "*",
+  "role": "developer",
+  "attributeType": "group"
+}
+```
+
+```json
+{
+  "attribute": "displayName",
+  "value": "platform-team",
+  "team": "Platform",
+  "attributeType": "group"
+}
+```
 A mapping rule then references the claim by its normal `attribute` name — e.g. `{ "attribute": "groups", "value": "platform-team", "team": "Platform" }` — and Bifrost consults `claimScimAttributes["groups"]` to know it should match SCIM Group `displayName` rather than a SCIM User attribute.
 
 If you only use OIDC (no inbound SCIM push), `claimScimAttributes` has no effect.
+
+### Business unit membership
+
+A user can belong to any number of business units at once. Bifrost remembers how each membership was granted — by an admin, by SCIM, or from an OIDC claim — and uses that to decide what a later sync is allowed to change, so one source never quietly undoes another's work.
+
+| Granted by | How it is added | How it is removed |
+| --- | --- | --- |
+| An admin | Assigned from the dashboard or the API | By an admin. A sync never removes it. |
+| SCIM | A SCIM user attribute or group push | By SCIM, when the attribute or group no longer points at that business unit |
+| An OIDC claim | A business unit mapping matching a claim in the user's token | By an admin, or by changing the mapping — see below |
+
+What this means in practice:
+
+- **SCIM keeps its own assignments up to date.** Each push re-checks them: units the user still matches are added or kept, and ones they no longer match are removed.
+- **Claim-based assignments are only ever added, never withdrawn automatically.** If a user's token stops carrying the attribute that granted a business unit, they keep it. This is deliberate — a single token missing an attribute should not silently remove someone's access. Remove it by changing the mapping or removing the membership yourself.
+- **Turning SCIM on later is safe.** SCIM takes over managing an assignment that came from a claim rather than adding a duplicate.
+
+To view or change memberships from the API, use `GET` and `POST /api/governance/business-units/{id}/users` and `DELETE /api/governance/business-units/{id}/users/{user_id}`. The list response tells you how each member was granted, so you can tell an admin assignment from one your identity provider manages.
 
 ### SCIM attribute suggestions
 

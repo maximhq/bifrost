@@ -229,7 +229,7 @@ type BifrostResponsesResponse struct {
 	Instructions         *ResponsesResponseInstructions      `json:"instructions"`
 	MaxOutputTokens      *int                                `json:"max_output_tokens"`
 	MaxToolCalls         *int                                `json:"max_tool_calls"`
-	Metadata             *map[string]any                     `json:"metadata,omitempty"`
+	Metadata             *map[string]any                     `json:"metadata"`
 	Model                string                              `json:"model"`
 	Output               []ResponsesMessage                  `json:"output"`
 	ParallelToolCalls    *bool                               `json:"parallel_tool_calls,omitempty"`
@@ -1758,6 +1758,10 @@ const (
 	ResponsesOutputMessageContentTypeRefusal   ResponsesMessageContentBlockType = "refusal"
 	ResponsesOutputMessageContentTypeReasoning ResponsesMessageContentBlockType = "reasoning_text"
 
+	// Part type on response.reasoning_summary_part.{added,done}, where the event's
+	// part field is required.
+	ResponsesOutputMessageContentTypeSummaryText ResponsesMessageContentBlockType = "summary_text"
+
 	// gemini sends rendered content in google search results
 	ResponsesOutputMessageContentTypeRenderedContent ResponsesMessageContentBlockType = "rendered_content"
 
@@ -2581,6 +2585,45 @@ type ResponsesToolChoiceStruct struct {
 type ResponsesToolChoice struct {
 	ResponsesToolChoiceStr    *string
 	ResponsesToolChoiceStruct *ResponsesToolChoiceStruct
+}
+
+// IsForced reports whether the choice obliges the model to call a tool, in any
+// of its spellings — "any"/"required", a named function or custom tool, a
+// pinned server tool, or an allowed-tools set in "required" mode. Only "none"
+// and "auto" are unforced. Models that reject forced tool use (Fable 5.1+)
+// need the choice dropped; see ModelCaps.SupportsForcedToolChoice.
+func (tc *ResponsesToolChoice) IsForced() bool {
+	if tc == nil {
+		return false
+	}
+	if tc.ResponsesToolChoiceStr != nil {
+		return forcedResponsesToolChoiceMode(*tc.ResponsesToolChoiceStr)
+	}
+	if s := tc.ResponsesToolChoiceStruct; s != nil {
+		switch s.Type {
+		case ResponsesToolChoiceTypeNone, ResponsesToolChoiceTypeAuto:
+			return false
+		case ResponsesToolChoiceTypeAllowedTools:
+			// The set is a constraint, not a forcing; only its mode forces.
+			return s.Mode != nil && forcedResponsesToolChoiceMode(*s.Mode)
+		case "":
+			// Mode-only choice; it serializes as the bare mode string.
+			return s.Mode != nil && forcedResponsesToolChoiceMode(*s.Mode)
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+// forcedResponsesToolChoiceMode reports whether a bare mode string forces a call.
+func forcedResponsesToolChoiceMode(mode string) bool {
+	switch ResponsesToolChoiceType(mode) {
+	case ResponsesToolChoiceTypeNone, ResponsesToolChoiceTypeAuto:
+		return false
+	default:
+		return true
+	}
 }
 
 // MarshalJSON implements custom JSON marshalling for ChatMessageContent.

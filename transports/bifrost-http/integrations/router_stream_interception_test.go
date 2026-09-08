@@ -70,7 +70,7 @@ func runHandleStreamingWithInterceptor(t *testing.T, config RouteConfig, interce
 		mockHandlerStore: &mockHandlerStore{},
 		interceptor:      &stubChunkInterceptor{err: interceptErr},
 	}
-	router := NewGenericRouter(nil, handlerStore, nil, nil, bifrost.NewNoOpLogger())
+	router := NewGenericRouter(nil, handlerStore, nil, nil, nil, bifrost.NewNoOpLogger())
 	ctx := &fasthttp.RequestCtx{}
 	cancelCalled := false
 	router.handleStreaming(ctx, nil, config, stream, func() {

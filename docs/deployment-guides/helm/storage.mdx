@@ -9,12 +9,14 @@ Bifrost persists two types of data - **config** (providers, virtual keys, govern
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `storage.mode` | Default backend for both stores (`sqlite` or `postgres`) | `sqlite` |
-| `storage.configStore.type` | Override backend for the config store (`sqlite` or `postgres`) | `""` (inherits `storage.mode`) |
-| `storage.logsStore.type` | Override backend for the logs store (`sqlite`, `postgres`, or `clickhouse`) | `""` (inherits `storage.mode`) |
+| `storage.configStore.type` | Override backend for the config store | `""` (inherits `storage.mode`) |
+| `storage.logsStore.type` | Override backend for the logs store | `""` (inherits `storage.mode`) |
+| `storage.logsStore.hiddenRequestTypes` | Request types hidden from dashboard and log API reads; logs are still stored. Rendered as `client.hidden_request_types`. Also editable in the UI under **Logs Settings**. See [Hiding request types from the dashboard](/architecture/framework/log-store#hiding-request-types-from-the-dashboard). | `[]` |
 
 <Note>
 **ClickHouse is a logs-store-only backend.** The config store supports only `sqlite` and `postgres`. To use ClickHouse for logs, set `storage.logsStore.type: clickhouse` and keep the config store on SQLite or PostgreSQL — see [ClickHouse Logs Store](#clickhouse-logs-store) below.
 </Note>
+
 
 <Note>
 When any store uses SQLite the chart deploys a **StatefulSet** with a PVC. With PostgreSQL only (no SQLite) it deploys a **Deployment**. Mixing backends (e.g. config=postgres, logs=sqlite) still requires a StatefulSet.

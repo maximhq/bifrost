@@ -6,27 +6,17 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { getErrorMessage, useGetWebhookDeliveriesQuery, useRedeliverWebhookDeliveryMutation } from "@/lib/store";
-import { WEBHOOK_TUNING_DEFAULTS, WebhookDelivery, WebhookDeliveryOutcome, WebhookEndpoint, WebhookEvent } from "@/lib/types/webhooks";
+import { WEBHOOK_TUNING_DEFAULTS, WebhookEndpoint, WebhookEvent } from "@/lib/types/webhooks";
+import { useNavigate } from "@tanstack/react-router";
 import { format, formatDistanceToNow } from "date-fns";
-import { ChevronDown, ChevronLeft, ChevronRight, Info, Loader2, RefreshCcw, Send } from "lucide-react";
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { ArrowRight, ChevronDown, ChevronRight, Info, Loader2, RefreshCcw, Send } from "lucide-react";
+import { Fragment, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { attemptSequence, groupDeliveries, outcomeBadge } from "./deliveries.utils";
 
-const PAGE_SIZE = 25;
-
-const OUTCOME_COLORS: Record<WebhookDeliveryOutcome, string> = {
-	delivered: "bg-green-100 text-green-800",
-	retryable_failure: "bg-yellow-100 text-yellow-800",
-	permanent_failure: "bg-red-100 text-red-800",
-	exhausted: "bg-red-100 text-red-800",
-};
-
-const OUTCOME_LABELS: Record<WebhookDeliveryOutcome, string> = {
-	delivered: "delivered",
-	retryable_failure: "retrying",
-	permanent_failure: "failed",
-	exhausted: "retries exhausted",
-};
+// The sheet shows only a preview; the dedicated deliveries page owns the
+// full, filterable, paginated history.
+const PREVIEW_SIZE = 5;
 
 const DetailEntry = ({ label, value }: { label: string; value: React.ReactNode }) => (
 	<div>
@@ -37,56 +27,14 @@ const DetailEntry = ({ label, value }: { label: string; value: React.ReactNode }
 
 const relativeTime = (timestamp?: string) => (timestamp ? formatDistanceToNow(new Date(timestamp), { addSuffix: true }) : "never");
 
-// Wraps a badge with the attempt's error text as a tooltip when present.
-const withErrorTooltip = (badge: React.ReactNode, error?: string) => {
-	if (!error) {
-		return badge;
-	}
-	return (
-		<Tooltip>
-			<TooltipTrigger>{badge}</TooltipTrigger>
-			{/* text-wrap overrides the component's text-balance, which leaves a
-			    right-side gap by shortening lines inside a full-width box. */}
-			<TooltipContent className="max-w-[400px] text-wrap break-words">{error}</TooltipContent>
-		</Tooltip>
-	);
+// Why the redeliver control is (or is not) available. Ordered by precedence:
+// an in-flight replay first, then the reasons the button is disabled.
+const redeliverHint = (outcome: string, endpointDisabled?: boolean, redelivering?: boolean) => {
+	if (redelivering) return "Redelivering...";
+	if (endpointDisabled) return "Enable this webhook to redeliver";
+	if (outcome === "retryable_failure") return "Still retrying automatically - redelivery is available once it settles";
+	return "Redeliver";
 };
-
-// Run-level outcome: where the delivery as a whole stands.
-const outcomeBadge = (attempt: WebhookDelivery) =>
-	withErrorTooltip(
-		<Badge variant="outline" className={OUTCOME_COLORS[attempt.outcome]}>
-			{OUTCOME_LABELS[attempt.outcome]}
-		</Badge>,
-		attempt.error,
-	);
-
-// Colour a response status code by band: 2xx delivered, 429/5xx retryable,
-// other 4xx permanent.
-const statusCodeClass = (code: number | undefined): string => {
-	if (code && code >= 200 && code < 300) return "bg-green-100 text-green-800";
-	if (code === 429 || (code && code >= 500)) return "bg-yellow-100 text-yellow-800";
-	return "bg-red-100 text-red-800";
-};
-
-// A send's attempts, oldest first, as a "503 → 503 → 200" sequence of
-// status-code chips. Failed attempts surface their error on hover. A response
-// that never arrived (network error) has a zero status code, shown as a dash.
-const attemptSequence = (attemptsNewestFirst: WebhookDelivery[]) => (
-	<div className="flex items-center gap-1">
-		{[...attemptsNewestFirst].reverse().map((attempt, index) => (
-			<Fragment key={attempt.id}>
-				{index > 0 && <span className="text-muted-foreground text-xs">→</span>}
-				{withErrorTooltip(
-					<Badge variant="outline" className={`font-mono text-xs ${statusCodeClass(attempt.status_code)}`}>
-						{attempt.status_code || "-"}
-					</Badge>,
-					attempt.error,
-				)}
-			</Fragment>
-		))}
-	</div>
-);
 
 interface WebhookDetailsSheetProps {
 	endpoint: WebhookEndpoint | null;
@@ -102,62 +50,18 @@ interface WebhookDetailsSheetProps {
 
 export function WebhookDetailsSheet({ endpoint, isTesting, canManage, onTest, onClose }: WebhookDetailsSheetProps) {
 	const open = !!endpoint;
-	const [offset, setOffset] = useState(0);
 	const [redeliverWebhookDelivery] = useRedeliverWebhookDeliveryMutation();
 	const [redeliveringIds, setRedeliveringIds] = useState<Set<string>>(new Set());
 	const { copy } = useCopyToClipboard();
-
-	useEffect(() => {
-		setOffset(0);
-	}, [endpoint?.id]);
+	const navigate = useNavigate();
 
 	const { data, isLoading, isError } = useGetWebhookDeliveriesQuery(
-		{ endpointId: endpoint?.id ?? "", limit: PAGE_SIZE, offset },
+		{ endpointId: endpoint?.id ?? "", limit: PREVIEW_SIZE, offset: 0 },
 		{ skip: !open, pollingInterval: 5000 },
 	);
 	const totalCount = data?.pagination.total_count ?? 0;
 
-	// The history groups into two levels. Level 1 is one row per delivery
-	// (webhook_id): the notification owed to the endpoint for a job event.
-	// Level 2 is its sends: the original plus each manual redelivery, which
-	// reuse the webhook_id and restart attempt numbering, so a send boundary is
-	// where attempt_no stops decreasing. Attempts within a send stay inline as a
-	// status-code sequence. Rows arrive newest-first, so the delivery order and
-	// the newest attempt of each send both come for free.
-	const deliveries = useMemo(() => {
-		const rows = data?.deliveries ?? [];
-		const order: string[] = [];
-		const byWebhookId = new Map<string, WebhookDelivery[]>();
-		for (const row of rows) {
-			const existing = byWebhookId.get(row.webhook_id);
-			if (existing) {
-				existing.push(row);
-			} else {
-				byWebhookId.set(row.webhook_id, [row]);
-				order.push(row.webhook_id);
-			}
-		}
-		return order.map((webhookId) => {
-			const attempts = byWebhookId.get(webhookId) ?? [];
-			// Split the newest-first attempts into sends at each attempt-number restart.
-			const sendsNewestFirst: WebhookDelivery[][] = [];
-			for (const attempt of attempts) {
-				const current = sendsNewestFirst[sendsNewestFirst.length - 1];
-				if (current && attempt.attempt_no < current[current.length - 1].attempt_no) {
-					current.push(attempt);
-				} else {
-					sendsNewestFirst.push([attempt]);
-				}
-			}
-			// The oldest send is the original; label the rest as redeliveries in order.
-			const sends = [...sendsNewestFirst].reverse().map((sendAttempts, index) => ({
-				key: `${webhookId}:${index}`,
-				label: index === 0 ? "Original" : `Redelivery ${index}`,
-				attempts: sendAttempts,
-			}));
-			return { webhookId, latest: attempts[0], latestSend: sends[sends.length - 1], sends };
-		});
-	}, [data]);
+	const deliveries = useMemo(() => groupDeliveries(data?.deliveries ?? []), [data]);
 
 	const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 	const toggleExpanded = (webhookId: string) => {
@@ -242,7 +146,22 @@ export function WebhookDetailsSheet({ endpoint, isTesting, canManage, onTest, on
 				</div>
 
 				<div className="mt-4 flex items-center justify-between">
-					<h3 className="font-semibold">Delivery History</h3>
+					<div className="flex items-center gap-2">
+						<h3 className="font-semibold">Recent Deliveries</h3>
+						<Button
+							variant="link"
+							size="sm"
+							className="h-auto p-0 text-xs"
+							onClick={() => {
+								onClose();
+								navigate({ to: "/workspace/webhooks/deliveries", search: { webhook_id: [endpoint?.id ?? ""] } as never });
+							}}
+							data-testid="webhook-view-delivery-history-btn"
+						>
+							{totalCount > PREVIEW_SIZE ? `View all ${totalCount.toLocaleString()}` : "View delivery history"}
+							<ArrowRight className="size-3" />
+						</Button>
+					</div>
 					{canManage && (
 						<DropdownMenu>
 							<DropdownMenuTrigger asChild>
@@ -411,20 +330,33 @@ export function WebhookDetailsSheet({ endpoint, isTesting, canManage, onTest, on
 												<TableCell>{attemptSequence(headlineSend.attempts)}</TableCell>
 												<TableCell className="text-right">
 													{canManage && (
-														<Button
-															variant="ghost"
-															size="sm"
-															onClick={() => handleRedeliver(latest.id)}
-															disabled={redeliveringIds.has(latest.id) || latest.outcome === "retryable_failure" || endpoint?.disabled}
-															data-testid={`webhook-redeliver-btn-${webhookId}`}
-															aria-label="Redeliver"
-														>
-															{redeliveringIds.has(latest.id) ? (
-																<Loader2 className="h-4 w-4 animate-spin" />
-															) : (
-																<RefreshCcw className="h-4 w-4" />
-															)}
-														</Button>
+														<Tooltip>
+															{/* A disabled button emits no pointer events, so the trigger wraps it —
+																	    otherwise the tooltip vanishes exactly when it explains the most. */}
+															<TooltipTrigger asChild>
+																<span className="inline-flex">
+																	<Button
+																		variant="ghost"
+																		size="sm"
+																		onClick={() => handleRedeliver(latest.id)}
+																		disabled={
+																			redeliveringIds.has(latest.id) || latest.outcome === "retryable_failure" || endpoint?.disabled
+																		}
+																		data-testid={`webhook-redeliver-btn-${webhookId}`}
+																		aria-label="Redeliver"
+																	>
+																		{redeliveringIds.has(latest.id) ? (
+																			<Loader2 className="h-4 w-4 animate-spin" />
+																		) : (
+																			<RefreshCcw className="h-4 w-4" />
+																		)}
+																	</Button>
+																</span>
+															</TooltipTrigger>
+															<TooltipContent>
+																{redeliverHint(latest.outcome, endpoint?.disabled, redeliveringIds.has(latest.id))}
+															</TooltipContent>
+														</Tooltip>
 													)}
 												</TableCell>
 											</TableRow>
@@ -460,40 +392,6 @@ export function WebhookDetailsSheet({ endpoint, isTesting, canManage, onTest, on
 						</TableBody>
 					</Table>
 				</div>
-
-				{totalCount > 0 && (
-					<div className="flex shrink-0 items-center justify-between text-xs" data-testid="webhook-delivery-pagination">
-						<div className="text-muted-foreground flex items-center gap-2">
-							{(offset + 1).toLocaleString()}-{Math.min(offset + PAGE_SIZE, totalCount).toLocaleString()} of {totalCount.toLocaleString()}{" "}
-							deliveries
-						</div>
-						<div className="flex items-center gap-2">
-							<Button
-								variant="ghost"
-								size="sm"
-								onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
-								disabled={offset === 0}
-								aria-label="Previous page"
-							>
-								<ChevronLeft className="size-3" />
-							</Button>
-							<div className="flex items-center gap-1">
-								<span>Page</span>
-								<span>{Math.floor(offset / PAGE_SIZE) + 1}</span>
-								<span>of {Math.ceil(totalCount / PAGE_SIZE)}</span>
-							</div>
-							<Button
-								variant="ghost"
-								size="sm"
-								onClick={() => setOffset(offset + PAGE_SIZE)}
-								disabled={offset + PAGE_SIZE >= totalCount}
-								aria-label="Next page"
-							>
-								<ChevronRight className="size-3" />
-							</Button>
-						</div>
-					</div>
-				)}
 			</SheetContent>
 		</Sheet>
 	);

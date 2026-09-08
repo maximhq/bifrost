@@ -458,6 +458,7 @@ export interface OutputCostDetails {
 export interface AdditionalCostDetails {
 	guardrail_cost?: number; // guardrail judge-call cost
 	mcp_cost?: number; // MCP tool-execution cost
+	routing_cost?: number; // routing-classification call cost
 	semantic_cache_cost?: number; // semantic-cache embedding-lookup cost
 }
 
@@ -471,7 +472,7 @@ export interface CostBreakdown {
 	total_cost?: number;
 }
 
-export interface CacheDebug {
+export interface CacheMetadata {
 	cache_hit: boolean;
 	cache_id?: string;
 	hit_type?: string;
@@ -510,6 +511,22 @@ export interface BatchAccountingDebug {
 
 // Batch detail for batch rows. `accounting` is present only on the aggregate
 // cost row written when a settled batch is priced.
+/** Video-kind detail on a log row. `accounting` is set only on the aggregate cost
+ * row a settled video writes, which is what tells it apart from the submission it
+ * settles — the two are otherwise identical but for a cost. */
+export interface VideoDebug {
+	video_id?: string;
+	status?: string; // Provider video lifecycle status, e.g. "queued" / "completed"
+	accounting?: VideoAccountingDebug;
+}
+
+export interface VideoAccountingDebug {
+	seconds?: number;
+	size?: string;
+	output_count?: number;
+	incomplete?: boolean;
+}
+
 export interface BatchDebug {
 	batch_id?: string;
 	status?: string; // Provider batch lifecycle status, e.g. "in_progress" / "completed"
@@ -533,8 +550,26 @@ export interface GuardrailJudgeCall {
 	total_tokens?: number;
 }
 
-export interface GuardrailDebug {
+export interface GuardrailMetadata {
 	judge_calls?: GuardrailJudgeCall[];
+}
+
+export interface RoutingCall {
+	provider_used?: string;
+	model_used?: string;
+	input_tokens?: number;
+	// Present only when this call was a chat completion (the llm classifier);
+	// absent for a semantic classification embed.
+	output_tokens?: number;
+	count_toward_budgets?: boolean;
+}
+
+export interface RoutingMetadata {
+	// One entry per billable routing-classification call this request made: a
+	// semantic classification embed, an llm classification completion, or
+	// both when semantic classification produced no tier and the llm fallback
+	// ran.
+	calls?: RoutingCall[];
 }
 
 // Error types
@@ -623,6 +658,7 @@ export interface LogEntry {
 	// single call (Anthropic server-side fallback). Distinct from fallback_index, which
 	// counts Bifrost's own cross-provider failover attempts.
 	server_side_fallback_model?: string;
+	served_model?: string;
 	number_of_retries: number;
 	fallback_index: number;
 	attempt_trail?: KeyAttemptRecord[]; // Per-attempt key selection history
@@ -642,6 +678,8 @@ export interface LogEntry {
 	customer_names?: string[];
 	business_unit_ids?: string[];
 	business_unit_names?: string[];
+	project_id?: string;
+	project_name?: string;
 	user_id?: string;
 	user_name?: string;
 	virtual_key_id?: string;
@@ -649,6 +687,10 @@ export interface LogEntry {
 	routing_engines_used?: string[];
 	routing_rule_id?: string;
 	routing_rule_name?: string;
+	complexity_tier?: string; // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); absent when no routing rule referenced complexity_tier
+	complexity_mechanism?: string; // How the complexity tier was classified ("semantic", "llm", "session", "skipped"); absent when no routing rule referenced complexity_tier
+	complexity_score?: number; // Classifier score: the semantic classifier's similarity to the nearest reference phrase
+	session_id?: string; // Raw opaque session ID resolved by Bifrost for key stickiness and request correlation
 	routing_engine_logs?: string; // Human-readable routing decision logs
 	plugin_logs?: string; // JSON string of plugin execution logs grouped by plugin name
 	selected_key?: DBKey;
@@ -681,14 +723,17 @@ export interface LogEntry {
 	list_models_output?: Model[];
 	tools?: Tool[];
 	tool_calls?: ToolCall[];
+	tool_call_names?: string[]; // Distinct function names the response called; kept on the row even when content is offloaded
 	latency?: number;
 	upstream_latency?: number; // provider socket time across all attempts, ms
 	overhead_latency?: number; // Bifrost overhead (total minus upstream), ms
 	overhead_breakdown?: OverheadBucket[]; // per-span self-time decomposition of overhead (microseconds)
 	token_usage?: LLMUsage;
-	cache_debug?: CacheDebug;
+	cache_debug?: CacheMetadata;
 	batch_debug?: BatchDebug;
-	guardrail_debug?: GuardrailDebug;
+	video_debug?: VideoDebug;
+	guardrail_debug?: GuardrailMetadata;
+	routing_metadata?: RoutingMetadata;
 	cost?: number; // Cost in dollars (total cost of the request - includes cache lookup cost and also guardrail judge calls)
 	cost_breakdown?: CostBreakdown; // Per-category split (input/output/additional); present whenever cost is
 	// Served billing tier, denormalized onto the log row so cost recomputation can reprice
@@ -725,6 +770,8 @@ export interface LogFilters {
 	providers?: string[];
 	models?: string[];
 	aliases?: string[];
+	/** Exact lookup on the log primary key (which is the request ID). Bypasses the time range. */
+	request_id?: string;
 	parent_request_id?: string;
 	selected_key_ids?: string[];
 	virtual_key_ids?: string[];
@@ -732,6 +779,10 @@ export interface LogFilters {
 	routing_engine_used?: string[]; // For filtering by routing engine (routing-rule, governance, loadbalancing)
 	status?: string[];
 	stop_reasons?: string[]; // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
+	tool_call_names?: string[]; // Requests whose response called any of these function names
+	complexity_tiers?: string[]; // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
+	complexity_mechanisms?: string[]; // For filtering by complexity decision mechanism (semantic, llm, session, skipped)
+	session_id?: string; // Exact session ID used for key stickiness and request correlation
 	objects?: string[]; // For filtering by request type (chat.completion, text.completion, embedding)
 	start_time?: string; // RFC3339 format
 	end_time?: string; // RFC3339 format
@@ -748,6 +799,7 @@ export interface LogFilters {
 	team_ids?: string[];
 	customer_ids?: string[];
 	business_unit_ids?: string[];
+	project_ids?: string[];
 	apps?: string[]; // Backend-detected client apps
 	user_agents?: string[]; // Raw User-Agent strings; kept for backward compatibility/debug filtering
 }
@@ -772,6 +824,15 @@ export interface LogStats {
 	cache_hit_rate_total_requests?: number | null;
 	direct_cache_hits?: number | null;
 	semantic_cache_hits?: number | null;
+}
+
+// LogStatsResponse is the GET /api/logs/stats payload. The current period's
+// fields stay at the top level, so this is a superset of LogStats: `previous` and
+// `has_previous_period` are only populated when the caller passes
+// compare_to_previous and the window is bounded.
+export interface LogStatsResponse extends LogStats {
+	previous?: LogStats;
+	has_previous_period?: boolean;
 }
 
 export interface LogSessionDetailResponse {
@@ -1413,7 +1474,7 @@ export interface UserRankingsResponse {
 	rankings: UserRankingEntry[];
 }
 
-export type RankingDimension = "team" | "customer" | "business_unit" | "user" | "app" | "user_agent" | "virtual_key";
+export type RankingDimension = "team" | "customer" | "business_unit" | "project" | "user" | "app" | "user_agent" | "virtual_key";
 
 export interface DimensionRankingTrend {
 	has_previous_period: boolean;

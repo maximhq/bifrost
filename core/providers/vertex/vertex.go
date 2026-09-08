@@ -711,10 +711,14 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		return nil, bifrostErr
 	}
 	if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
+		gt, gh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
 		if rawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && rawBody {
 			jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(jsonBody)
 		}
 		jsonBody = stripVertexGeminiUnsupportedFieldsRaw(jsonBody)
+		if gt != nil {
+			gt.EndSpan(gh, schemas.SpanStatusOk, "")
+		}
 	}
 
 	projectID := resolveVertexProjectID(ctx, key)
@@ -729,9 +733,13 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 
 	// Remap unsupported tool versions for Vertex (handles raw passthrough bodies)
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) && jsonBody != nil {
+		mt, mh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
 		capModel := schemas.ResolveCanonicalModel(ctx, request.Model)
 		remappedBody, remapErr := anthropic.RemapRawToolVersionsForProvider(jsonBody, schemas.Vertex, capModel)
 		if remapErr != nil {
+			if mt != nil {
+				mt.EndSpan(mh, schemas.SpanStatusError, remapErr.Error())
+			}
 			return nil, providerUtils.NewBifrostOperationError(remapErr.Error(), nil)
 		}
 		jsonBody = remappedBody
@@ -740,7 +748,13 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		var stripErr error
 		jsonBody, stripErr = anthropic.StripUnsupportedFieldsFromRawBody(jsonBody, schemas.Vertex, capModel)
 		if stripErr != nil {
+			if mt != nil {
+				mt.EndSpan(mh, schemas.SpanStatusError, stripErr.Error())
+			}
 			return nil, providerUtils.NewBifrostOperationError(stripErr.Error(), nil)
+		}
+		if mt != nil {
+			mt.EndSpan(mh, schemas.SpanStatusOk, "")
 		}
 	}
 
@@ -861,7 +875,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		anthropicResponse := anthropic.AcquireAnthropicMessageResponse()
 		defer anthropic.ReleaseAnthropicMessageResponse(anthropicResponse)
 
-		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, anthropicResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, responseBody, anthropicResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		if bifrostErr != nil {
 			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
@@ -888,7 +902,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	} else if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
 		geminiResponse := gemini.GenerateContentResponse{}
 
-		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &geminiResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, responseBody, &geminiResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		if bifrostErr != nil {
 			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
@@ -910,7 +924,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		response := &schemas.BifrostChatResponse{}
 
 		// Use enhanced response handler with pre-allocated response
-		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, responseBody, response, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		if bifrostErr != nil {
 			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
@@ -972,10 +986,14 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 
 		// Remap unsupported tool versions for Vertex streaming (handles raw passthrough bodies)
 		if jsonData != nil {
+			mt, mh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
 			capModel := schemas.ResolveCanonicalModel(ctx, request.Model)
 			var remapErr error
 			jsonData, remapErr = anthropic.RemapRawToolVersionsForProvider(jsonData, schemas.Vertex, capModel)
 			if remapErr != nil {
+				if mt != nil {
+					mt.EndSpan(mh, schemas.SpanStatusError, remapErr.Error())
+				}
 				return nil, providerUtils.NewBifrostOperationError(remapErr.Error(), nil)
 			}
 
@@ -983,7 +1001,13 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			var stripErr error
 			jsonData, stripErr = anthropic.StripUnsupportedFieldsFromRawBody(jsonData, schemas.Vertex, capModel)
 			if stripErr != nil {
+				if mt != nil {
+					mt.EndSpan(mh, schemas.SpanStatusError, stripErr.Error())
+				}
 				return nil, providerUtils.NewBifrostOperationError(stripErr.Error(), nil)
+			}
+			if mt != nil {
+				mt.EndSpan(mh, schemas.SpanStatusOk, "")
 			}
 		}
 
@@ -1288,7 +1312,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		anthropicResponse := anthropic.AcquireAnthropicMessageResponse()
 		defer anthropic.ReleaseAnthropicMessageResponse(anthropicResponse)
 
-		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, anthropicResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, responseBody, anthropicResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		if bifrostErr != nil {
 			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
@@ -1332,10 +1356,14 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
+		gt, gh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
 		if rawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && rawBody {
 			jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(jsonBody)
 		}
 		jsonBody = stripVertexGeminiUnsupportedFieldsRaw(jsonBody)
+		if gt != nil {
+			gt.EndSpan(gh, schemas.SpanStatusOk, "")
+		}
 
 		projectID := resolveVertexProjectID(ctx, key)
 		if projectID == "" {
@@ -1442,7 +1470,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 
 		geminiResponse := &gemini.GenerateContentResponse{}
 
-		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, geminiResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, responseBody, geminiResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		if bifrostErr != nil {
 			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
@@ -1799,12 +1827,25 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 
 	// Parse Vertex's native embedding response using typed response
 	var vertexResponse VertexEmbeddingResponse
-	if err := sonic.Unmarshal(responseBody, &vertexResponse); err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err), jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	pt, ph := providerUtils.StartResponseParseSpan(ctx)
+	umErr := sonic.Unmarshal(responseBody, &vertexResponse)
+	if pt != nil {
+		if umErr != nil {
+			pt.EndSpan(ph, schemas.SpanStatusError, "response parse failed")
+		} else {
+			pt.EndSpan(ph, schemas.SpanStatusOk, "")
+		}
+	}
+	if umErr != nil {
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, umErr), jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
 	// Use centralized Vertex converter
+	ct, ch := providerUtils.StartResponseConvertorSpan(ctx)
 	bifrostResponse := vertexResponse.ToBifrostEmbeddingResponse()
+	if ct != nil {
+		ct.EndSpan(ch, schemas.SpanStatusOk, "")
+	}
 
 	// Set ExtraFields
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
@@ -2147,7 +2188,7 @@ func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 	if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) {
 		geminiResponse := gemini.GenerateContentResponse{}
 
-		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &geminiResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, responseBody, &geminiResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		if bifrostErr != nil {
 			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
@@ -2173,7 +2214,7 @@ func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 		// Handle Imagen responses
 		imagenResponse := gemini.GeminiImagenResponse{}
 
-		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &imagenResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, responseBody, &imagenResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		if bifrostErr != nil {
 			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
@@ -2355,7 +2396,7 @@ func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 	if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) {
 		geminiResponse := gemini.GenerateContentResponse{}
 
-		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &geminiResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, responseBody, &geminiResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		if bifrostErr != nil {
 			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
@@ -2381,7 +2422,7 @@ func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 		// Handle Imagen responses
 		imagenResponse := gemini.GeminiImagenResponse{}
 
-		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &imagenResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, responseBody, &imagenResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		if bifrostErr != nil {
 			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
@@ -4574,16 +4615,12 @@ func (provider *VertexProvider) Passthrough(
 	}
 
 	if len(req.Body) > 0 && strings.Contains(strings.ToLower(string(fasthttpReq.Header.ContentType())), "application/json") {
-		region := keyRegion
-		// Replace fully-qualified model paths that have placeholder project/location
-		// e.g. "projects/None/locations/None/publishers/..." -> "projects/real-id/locations/real-region/..."
-		body := req.Body
-		bodyStr := vertexBodyProjectsRe.ReplaceAllString(string(body), "${1}projects/"+projectID)
-		bodyStr = vertexLocationsPathRe.ReplaceAllString(bodyStr, "/locations/"+region)
-		// Expand short-form model names: "models/X" -> "projects/P/locations/L/publishers/google/models/X"
-		bodyStr = vertexShortModelRe.ReplaceAllString(bodyStr,
-			fmt.Sprintf(`"projects/%s/locations/%s/publishers/google/$1"`, projectID, keyRegion))
-		fasthttpReq.SetBodyString(bodyStr)
+		// Replace placeholder project/location and expand short-form model names.
+		if rewritten, changed := rewritePassthroughBody(req.Body, projectID, keyRegion); changed {
+			fasthttpReq.SetBodyRaw(rewritten)
+		} else {
+			fasthttpReq.SetBody(req.Body)
+		}
 	} else if len(req.Body) > 0 {
 		fasthttpReq.SetBody(req.Body)
 	}
@@ -4610,7 +4647,16 @@ func (provider *VertexProvider) Passthrough(
 
 	var passthroughUsage *schemas.BifrostPassthroughUsage
 	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
-		passthroughUsage = gemini.ExtractGeminiPassthroughUsage(req.Path, req.Body, body)
+		switch {
+		case isAnthropicPassthroughPath(req.Path):
+			passthroughUsage = anthropic.ExtractAnthropicMessagesUsage(body)
+		case isMistralPassthroughPath(req.Path):
+			passthroughUsage = openai.ExtractOAIChatUsage(body)
+		case isOpenAICompatPassthroughPath(req.Path):
+			passthroughUsage = openai.ExtractOpenAIPassthroughUsage(req.Method, req.Path, req.Body, body)
+		default:
+			passthroughUsage = gemini.ExtractGeminiPassthroughUsage(req.Path, req.Body, body)
+		}
 	}
 
 	bifrostResponse := &schemas.BifrostPassthroughResponse{
@@ -4720,11 +4766,11 @@ func (provider *VertexProvider) PassthroughStream(
 	}
 
 	if len(req.Body) > 0 && strings.Contains(strings.ToLower(string(fasthttpReq.Header.ContentType())), "application/json") {
-		bodyStr := vertexBodyProjectsRe.ReplaceAllString(string(req.Body), "${1}projects/"+projectID)
-		bodyStr = vertexLocationsPathRe.ReplaceAllString(bodyStr, "/locations/"+keyRegion)
-		bodyStr = vertexShortModelRe.ReplaceAllString(bodyStr,
-			fmt.Sprintf(`"projects/%s/locations/%s/publishers/google/$1"`, projectID, keyRegion))
-		fasthttpReq.SetBodyString(bodyStr)
+		if rewritten, changed := rewritePassthroughBody(req.Body, projectID, keyRegion); changed {
+			fasthttpReq.SetBodyRaw(rewritten)
+		} else {
+			fasthttpReq.SetBody(req.Body)
+		}
 	} else if len(req.Body) > 0 {
 		fasthttpReq.SetBody(req.Body)
 	}
@@ -4771,6 +4817,30 @@ func (provider *VertexProvider) PassthroughStream(
 	}
 
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
+
+	// Anthropic on Vertex streams Anthropic Messages events, so usage is merged across
+	// by the Anthropic accumulator instead of the Gemini parser.
+	hasUsage := gemini.HasGeminiPassthroughUsage
+	observe := func(event []byte) *schemas.BifrostPassthroughUsage {
+		return gemini.ExtractGeminiPassthroughUsage(req.Path, req.Body, event)
+	}
+	switch {
+	case isAnthropicPassthroughPath(req.Path):
+		messagesUsage := &anthropic.AnthropicPassthroughStreamUsage{}
+		hasUsage = anthropic.HasAnthropicPassthroughUsage
+		observe = messagesUsage.ObserveEvent
+	case isMistralPassthroughPath(req.Path):
+		hasUsage = openai.HasOpenAIPassthroughUsage
+		observe = func(event []byte) *schemas.BifrostPassthroughUsage {
+			return openai.ExtractOAIChatUsage(event)
+		}
+	case isOpenAICompatPassthroughPath(req.Path):
+		hasUsage = openai.HasOpenAIPassthroughUsage
+		observe = func(event []byte) *schemas.BifrostPassthroughUsage {
+			return openai.ExtractOpenAIPassthroughUsage(req.Method, req.Path, req.Body, event)
+		}
+	}
+
 	return providerUtils.StreamPassthrough(
 		ctx, postHookRunner, postHookSpanFinalizer, resp, bodyStream,
 		providerUtils.PassthroughStreamParams{
@@ -4782,10 +4852,8 @@ func (provider *VertexProvider) PassthroughStream(
 			StartTime:           time.Now(),
 			UseTerminalDetector: true,
 			Logger:              provider.logger,
-			HasUsage:            gemini.HasGeminiPassthroughUsage,
-			Observe: func(event []byte) *schemas.BifrostPassthroughUsage {
-				return gemini.ExtractGeminiPassthroughUsage(req.Path, req.Body, event)
-			},
+			HasUsage:            hasUsage,
+			Observe:             observe,
 		},
 	), nil
 }

@@ -317,8 +317,8 @@
                   "// it at the shared key-lookup chokepoint, oauth-strict rejects the header",
                   "// credential outright.",
                   "var code = pm.response.code;",
-                  "pm.test('inactive virtual key is rejected (401)', function () {",
-                  "  pm.expect(code, pm.response.text()).to.equal(401);",
+                  "pm.test('inactive virtual key is rejected (403)', function () {",
+                  "  pm.expect(code, pm.response.text()).to.equal(403);",
                   "});"
                 ]
               }

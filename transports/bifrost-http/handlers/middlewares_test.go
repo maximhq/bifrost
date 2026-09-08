@@ -748,6 +748,10 @@ func TestAuthMiddleware_WhitelistedRoutes(t *testing.T) {
 	whitelistedRoutes := []string{
 		"/api/session/is-auth-enabled",
 		"/api/session/login",
+		// Logout is idempotent (clears the cookie, revokes the session if a
+		// token is present) and must never 401, or a repeat logout cascades
+		// into a redirect loop in the dashboard.
+		"/api/session/logout",
 		"/api/oauth/callback",
 		"/health",
 	}
@@ -1723,7 +1727,13 @@ func TestRequestDecompressionMiddleware_UnsupportedEncoding(t *testing.T) {
 	if err := json.Unmarshal(ctx.Response.Body(), &bifrostErr); err != nil {
 		t.Fatalf("failed to decode error response: %v", err)
 	}
-	if bifrostErr.Error == nil || !strings.Contains(bifrostErr.Error.Message, "unsupported Content-Encoding") {
+	// The wording is fasthttp's, wrapped by the middleware with %v, so match it
+	// case-insensitively rather than pinning an upstream string. fasthttp changed
+	// it from "unsupported Content-Encoding: snappy" to
+	// `unsupported content-encoding: "snappy"`; what this test cares about is that
+	// the unsupported encoding is reported, not how upstream capitalises it.
+	if bifrostErr.Error == nil ||
+		!strings.Contains(strings.ToLower(bifrostErr.Error.Message), "unsupported content-encoding") {
 		t.Fatalf("unexpected error message: %#v", bifrostErr.Error)
 	}
 }

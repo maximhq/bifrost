@@ -1,0 +1,2 @@
+- feat: replace the keyword complexity scorer with a semantic classifier over three tiers and curated exemplars, add vector stores with the chromem backend, harness-aware input extraction, LLM classifier fallback, session-aware routing, cross-node warm coordination with generation reclamation, and a 750-phrase combined limit; `tier_boundaries` is deprecated and ignored (#6163, #6164, #6165, #6166, #6177, #6317, #6722, #6727, #6807, #6838, #6846)
+- feat: evaluate routing rules from a `GovernanceScope` read off the resolved access grant (#6308, #6313)

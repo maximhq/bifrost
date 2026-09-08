@@ -389,6 +389,7 @@ func estimateLogEntrySize(log *logstore.Log) int {
 		len(log.ContentSummary) +
 		len(log.CacheDebug) +
 		len(log.GuardrailDebug) +
+		len(log.RoutingMetadata) +
 		len(log.RoutingEngineLogs)
 	// Baseline for fixed-width columns and struct overhead
 	return n + 512
@@ -563,6 +564,19 @@ func applyResolvedAliasInfo(entry *logstore.Log, resolvedAlias *schemas.Resolved
 	}
 }
 
+// applyServedModel records the model the provider named on the response body when
+// it differs from the one the caller addressed.
+func applyServedModel(entry *logstore.Log, result *schemas.BifrostResponse) {
+	if entry == nil {
+		return
+	}
+	served := result.ServedModel()
+	if served == "" || served == entry.Model {
+		return
+	}
+	entry.ServedModel = &served
+}
+
 // applyOutputFieldsToEntry sets common output fields on a log entry.
 func applyOutputFieldsToEntry(
 	entry *logstore.Log,
@@ -574,6 +588,7 @@ func applyOutputFieldsToEntry(
 	customerID, customerName string,
 	userID, userName string,
 	businessUnitID, businessUnitName string,
+	projectID, projectName string,
 	numberOfRetries int,
 	latency int64,
 	upstreamLatency, overheadLatency *int64,
@@ -625,6 +640,12 @@ func applyOutputFieldsToEntry(
 	}
 	if businessUnitName != "" {
 		entry.BusinessUnitName = &businessUnitName
+	}
+	if projectID != "" {
+		entry.ProjectID = &projectID
+	}
+	if projectName != "" {
+		entry.ProjectName = &projectName
 	}
 	if numberOfRetries != 0 {
 		entry.NumberOfRetries = numberOfRetries

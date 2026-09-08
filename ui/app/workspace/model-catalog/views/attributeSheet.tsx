@@ -197,7 +197,7 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 				}}
 				data-testid="model-catalog-attribute-sheet"
 			>
-				<SheetHeader className="flex flex-col items-start p-0 px-4 py-4 md:px-8" headerClassName="mb-0 sticky -top-4 bg-card z-10">
+				<SheetHeader className="flex flex-col items-start p-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8">
 					<SheetTitle>Edit Model Attributes</SheetTitle>
 					<SheetDescription>
 						Update the description and other attributes for this model. These attributes are stored on the pricing row and preserved across

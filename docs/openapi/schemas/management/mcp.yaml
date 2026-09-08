@@ -745,11 +745,82 @@ MCPClient:
         $ref: '#/ChatToolFunction'
     state:
       $ref: '#/MCPConnectionState'
+    last_failure:
+      $ref: '#/MCPConnectionFailure'
+    node_states:
+      type: object
+      additionalProperties:
+        $ref: '#/MCPInstanceState'
+      description: |
+        Per-instance breakdown behind `state` in a distributed deployment:
+        instance ID -> that instance's own self-reported state and
+        last_failure. Present when instances disagree (`state` is then
+        `degraded`) and when they all agree on `unstable`, so each instance's
+        own reason is visible. Never present in a single-instance deployment.
     vk_configs:
       type: array
       items:
         $ref: '#/MCPVKConfigResponse'
       description: Virtual key assignments for this MCP client
+
+MCPConnectionFailure:
+  type: object
+  description: |
+    The latest failure recorded by the instance serving the request for its
+    own connection handling of this client: which step failed, the error it
+    failed with, when that last happened, and when the current run of
+    failures began. Present only after that instance has attempted a connect
+    or check that failed. Absent while `healthy`, cleared the moment a check
+    passes, and absent when a state changed without such an attempt, for
+    example `needs_reauth` projected from a credential row that died before
+    the next scheduled check ran. Describes only Bifrost's own connection
+    checks and connect attempts, never the outcome of real tool calls made
+    through the client.
+  required: [stage, message, at, since]
+  properties:
+    stage:
+      type: string
+      enum: [connect, ping, list_tools, tool_discovery, transport_lost, credential]
+      description: |
+        The step that failed:
+        - connect: establishing the shared connection (dial, initialize,
+          connect gate, or the initial list_tools a new connection must pass)
+        - ping: the periodic check's ping over an existing sticky connection
+        - list_tools: the periodic check's list_tools over an existing sticky
+          connection
+        - tool_discovery: the periodic check's ephemeral connect-discover-close
+          cycle for per-call auth types
+        - transport_lost: a live SSE connection dropped outside any check
+        - credential: a credential the connection depends on was rejected
+          upstream or rotated by an admin
+    message:
+      type: string
+      description: The error the step failed with, whitespace-collapsed and capped at 512 characters.
+    at:
+      type: string
+      format: date-time
+      description: |
+        The most recent failed attempt. While a client is unstable the check
+        retries every 10 seconds, so this keeps moving for as long as the
+        outage lasts.
+    since:
+      type: string
+      format: date-time
+      description: The first failed attempt of the current unhealthy run.
+
+MCPInstanceState:
+  type: object
+  description: One instance's own view of an MCP client in a distributed deployment.
+  required: [state]
+  properties:
+    state:
+      type: string
+      enum: [healthy, unstable, error, pending_verification, needs_reauth, disabled]
+      description: |
+        That instance's own self-reported connection state. Never `degraded`,
+        which only ever exists as the aggregate above this map.
+    last_failure:
+      $ref: '#/MCPConnectionFailure'
 
 MCPClientsListResponse:
   type: object

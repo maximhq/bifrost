@@ -66,6 +66,8 @@ export const ModelPlaceholders = {
 	fireworks: "e.g. accounts/fireworks/models/deepseek-v3p2",
 	sarvam: "e.g. sarvam-30b, sarvam-105b",
 	wafer: "e.g. glm-5.2, kimi-k2.6",
+	databricks: "e.g. databricks-claude-sonnet-4-5, system.ai.claude-sonnet-4-5",
+	"github-copilot": "e.g. gpt-5.5, claude-sonnet-4-6",
 };
 
 export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
@@ -99,6 +101,8 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	fireworks: true,
 	sarvam: true,
 	wafer: true,
+	databricks: false,
+	"github-copilot": false,
 };
 
 export const DefaultNetworkConfig = {
@@ -122,27 +126,47 @@ export const DefaultPerformanceConfig = {
 	buffer_size: 5000,
 } satisfies ConcurrencyAndBufferSize;
 
+// Each entry sets its own border to match its family; without it the badge
+// falls back to the default variant's border-primary (green), which clashes
+// on the red/amber/blue states.
 export const MCP_STATUS_COLORS: Record<string, string> = {
-	healthy: "bg-green-100 text-green-800",
-	error: "bg-red-100 text-red-800",
+	healthy: "bg-green-100 text-green-800 border-green-200",
+	error: "bg-red-100 text-red-800 border-red-200",
 	// Amber, not red/gray: Bifrost's own connection check most recently
 	// failed, but this is purely informational — nothing is gated on it, and
 	// it self-heals on the next successful check. Same mild treatment as
 	// pending_verification, deliberately distinct from needs_reauth's red
 	// ("action required").
-	unstable: "bg-yellow-100 text-yellow-800",
-	pending_verification: "bg-yellow-100 text-yellow-800",
-	disabled: "bg-orange-100 text-orange-800",
+	unstable: "bg-yellow-100 text-yellow-800 border-yellow-200",
+	pending_verification: "bg-yellow-100 text-yellow-800 border-yellow-200",
+	disabled: "bg-orange-100 text-orange-800 border-orange-200",
 	// Same red as `error`: the client's credential has died and it can't be
 	// used until a human reauthorizes it, mirroring the "destructive" treatment
 	// this status already gets on the MCP sessions table.
-	needs_reauth: "bg-red-100 text-red-800",
+	needs_reauth: "bg-red-100 text-red-800 border-red-200",
 	// Distinct blue/purple, not amber/red: unlike unstable, this isn't "one
 	// instance's check currently failing" — it's "instances disagree with
 	// each other about the state," which needs its own visual signal to
 	// prompt a look at the per-instance breakdown rather than being read as
 	// just another flavor of unhealthy.
-	degraded: "bg-blue-100 text-blue-800",
+	degraded: "bg-blue-100 text-blue-800 border-blue-200",
+};
+
+// Credential row statuses (the admin/shared OAuth token or the admin header
+// values a server holds on its own behalf), in the same soft-pill palette as
+// MCP_STATUS_COLORS so a credential badge reads like every other status
+// badge: green for usable, red for "a human must act", amber for
+// informational.
+export const MCP_CREDENTIAL_STATUS_COLORS: Record<string, string> = {
+	active: "bg-green-100 text-green-800 border-green-200",
+	needs_reauth: "bg-red-100 text-red-800 border-red-200",
+	needs_update: "bg-red-100 text-red-800 border-red-200",
+	orphaned: "bg-yellow-100 text-yellow-800 border-yellow-200",
+	// Sessions table only: an OAuth flow that was started but not completed.
+	pending: "bg-gray-100 text-gray-800 border-gray-200",
+	// Fallback for a status value this build does not know. Neutral on
+	// purpose: an unrecognized status must not read as usable.
+	unknown: "bg-gray-100 text-gray-800 border-gray-200",
 };
 
 // Mapping of what IS supported by each base provider

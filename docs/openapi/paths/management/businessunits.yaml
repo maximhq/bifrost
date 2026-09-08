@@ -1,10 +1,13 @@
 # Paths for Business Unit management (Enterprise).
 #
-# Business units are organizational groupings above teams (1:N with teams) with
-# their own governance (budget + rate limit). They live entirely under
-# /api/governance/business-units, mirroring the other governance entities; the
-# budget + rate-limit configuration is nested under /{id}/governance. Implemented
-# in bifrost-enterprise/handlers/businessunits.go.
+# Business units are organizational groupings that own governance (budget + rate
+# limit). Membership is a many-to-many relation with users: a user may belong to
+# several business units, and each membership edge carries its own provenance
+# (manual / SCIM / OIDC) so one sync channel never clears another's. They live
+# entirely under /api/governance/business-units, mirroring the other governance
+# entities; the budget + rate-limit configuration is nested under
+# /{id}/governance, and the member roster under /{id}/users. Implemented in
+# bifrost-enterprise/handlers/businessunits.go.
 
 # ---- Business Unit CRUD ----
 
@@ -19,7 +22,7 @@ business-units:
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
     summary: List business units
-    description: Returns a paginated list of business units, each with its team count.
+    description: Returns a paginated list of business units, each with its user count.
     tags:
       - Governance
     parameters:
@@ -107,7 +110,7 @@ business-units-by-id:
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
     summary: Get business unit
-    description: Returns a specific business unit by ID, including governance and team count.
+    description: Returns a specific business unit by ID, including governance and user count.
     tags:
       - Governance
     parameters:
@@ -196,8 +199,9 @@ business-units-by-id:
         </Note>
     summary: Delete business unit
     description: |
-      Deletes a business unit. Any teams assigned to it are atomically unassigned
-      as part of the deletion.
+      Deletes a business unit. Every user membership of it is atomically removed as part of the
+      deletion, and each affected user's governance is refreshed so the business unit stops
+      applying to their requests.
     tags:
       - Governance
     parameters:
@@ -226,11 +230,11 @@ business-units-by-id:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
-# ---- Business Unit - Team Association ----
+# ---- Business Unit - User Membership (M:N) ----
 
-business-units-teams:
+business-units-users:
   get:
-    operationId: listBusinessUnitTeams
+    operationId: listBusinessUnitUsers
     x-mint:
       metadata:
         tag: Enterprise
@@ -238,8 +242,11 @@ business-units-teams:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
-    summary: List business unit teams
-    description: Returns a paginated list of teams assigned to the business unit.
+    summary: List business unit users
+    description: |
+      Returns a paginated list of users that belong to the business unit, each with the
+      provenance of its membership edge so a caller can tell an admin assignment apart from
+      an identity-provider-synced one.
     tags:
       - Governance
     parameters:
@@ -258,7 +265,7 @@ business-units-teams:
           default: 0
       - name: limit
         in: query
-        description: Maximum number of teams to return (max 100)
+        description: Maximum number of users to return (max 100)
         schema:
           type: integer
           minimum: 1
@@ -266,7 +273,7 @@ business-units-teams:
           default: 20
       - name: search
         in: query
-        description: Case-insensitive search by team name
+        description: Case-insensitive search by user name or email
         schema:
           type: string
     security:
@@ -278,7 +285,7 @@ business-units-teams:
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/governance.yaml#/BusinessUnitTeamsResponse'
+              $ref: '../../schemas/management/governance.yaml#/BusinessUnitUsersResponse'
       '404':
         description: Business unit not found
         content:
@@ -289,7 +296,7 @@ business-units-teams:
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
   post:
-    operationId: assignTeamToBusinessUnit
+    operationId: assignUserToBusinessUnit
     x-mint:
       metadata:
         tag: Enterprise
@@ -297,10 +304,10 @@ business-units-teams:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
-    summary: Assign team to business unit
+    summary: Assign user to business unit
     description: |
-      Assigns an existing team to the business unit. Returns 409 if the team is
-      already assigned to a different business unit.
+      Assigns an existing user to the business unit. Membership is many-to-many, so a user may
+      belong to several business units and there is no conflict to reject.
     tags:
       - Governance
     parameters:
@@ -315,13 +322,13 @@ business-units-teams:
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/governance.yaml#/AssignTeamToBusinessUnitRequest'
+            $ref: '../../schemas/management/governance.yaml#/AssignUserToBusinessUnitRequest'
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
     responses:
       '200':
-        description: Team assigned to business unit
+        description: User assigned to business unit
         content:
           application/json:
             schema:
@@ -329,13 +336,7 @@ business-units-teams:
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '404':
-        description: Business unit or team not found
-        content:
-          application/json:
-            schema:
-              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
-      '409':
-        description: Team is already assigned to another business unit
+        description: Business unit or user not found
         content:
           application/json:
             schema:
@@ -343,9 +344,9 @@ business-units-teams:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
-business-units-team-by-id:
+business-units-user-by-id:
   delete:
-    operationId: removeTeamFromBusinessUnit
+    operationId: removeUserFromBusinessUnit
     x-mint:
       metadata:
         tag: Enterprise
@@ -353,8 +354,8 @@ business-units-team-by-id:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
-    summary: Remove team from business unit
-    description: Unassigns a team from the business unit.
+    summary: Remove user from business unit
+    description: Removes a user's membership of the business unit.
     tags:
       - Governance
     parameters:
@@ -364,10 +365,10 @@ business-units-team-by-id:
         description: Business unit ID
         schema:
           type: string
-      - name: team_id
+      - name: user_id
         in: path
         required: true
-        description: Team ID
+        description: User ID
         schema:
           type: string
     security:
@@ -375,7 +376,7 @@ business-units-team-by-id:
       - BasicAuth: []
     responses:
       '200':
-        description: Team removed from business unit
+        description: User removed from business unit
         content:
           application/json:
             schema:
@@ -383,7 +384,7 @@ business-units-team-by-id:
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '404':
-        description: Business unit or team not found
+        description: Membership not found
         content:
           application/json:
             schema:

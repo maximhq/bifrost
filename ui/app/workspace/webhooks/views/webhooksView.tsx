@@ -27,9 +27,10 @@ import {
 import { WEBHOOK_EVENTS, WebhookEndpoint, WebhookEndpointRequest, WebhookEvent } from "@/lib/types/webhooks";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { ChevronLeft, ChevronRight, MoreHorizontal, PencilIcon, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { useNavigate } from "@tanstack/react-router";
+import { ChevronLeft, ChevronRight, History, MoreHorizontal, PencilIcon, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { parseAsArrayOf, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { WebhookSecretDialog, WebhookSecretReveal } from "../dialogs/webhookSecretDialog";
 import { WebhookDetailsSheet } from "./webhookDetailsSheet";
@@ -74,6 +75,7 @@ function WebhookActionsMenu({
 	onEdit,
 	onRotate,
 	onDelete,
+	onViewDeliveries,
 }: {
 	endpoint: WebhookEndpoint;
 	hasUpdateAccess: boolean;
@@ -81,6 +83,7 @@ function WebhookActionsMenu({
 	onEdit: (endpoint: WebhookEndpoint) => void;
 	onRotate: (endpoint: WebhookEndpoint) => void;
 	onDelete: (endpoint: WebhookEndpoint) => void;
+	onViewDeliveries: (endpoint: WebhookEndpoint) => void;
 }) {
 	const [isOpen, setIsOpen] = useState(false);
 
@@ -105,6 +108,17 @@ function WebhookActionsMenu({
 					e.preventDefault();
 				}}
 			>
+				<DropdownMenuItem
+					className="cursor-pointer"
+					data-testid={`webhook-deliveries-btn-${endpoint.name}`}
+					onSelect={(e) => {
+						e.preventDefault();
+						setIsOpen(false);
+						onViewDeliveries(endpoint);
+					}}
+				>
+					<History className="h-4 w-4" /> View deliveries
+				</DropdownMenuItem>
 				{hasUpdateAccess && (
 					<DropdownMenuItem
 						className="cursor-pointer"
@@ -154,6 +168,14 @@ export default function WebhooksView() {
 	const hasCreateAccess = useRbac(RbacResource.Governance, RbacOperation.Create);
 	const hasUpdateAccess = useRbac(RbacResource.Governance, RbacOperation.Update);
 	const hasDeleteAccess = useRbac(RbacResource.Governance, RbacOperation.Delete);
+	const navigate = useNavigate();
+
+	const handleViewDeliveries = useCallback(
+		(endpoint: WebhookEndpoint) => {
+			navigate({ to: "/workspace/webhooks/deliveries", search: { webhook_id: [endpoint.id] } as never });
+		},
+		[navigate],
+	);
 
 	const [urlState, setUrlState] = useQueryStates({
 		q: parseAsString.withDefault(""),
@@ -405,6 +427,7 @@ export default function WebhooksView() {
 													onEdit={handleEdit}
 													onRotate={setRotateTarget}
 													onDelete={setDeleteTarget}
+													onViewDeliveries={handleViewDeliveries}
 												/>
 											</TableCell>
 										</TableRow>

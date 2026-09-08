@@ -9,9 +9,20 @@ websocket:
       Server pushes log events, MCP log events, and store update notifications.
       Heartbeat pings are sent every 30 seconds.
 
-      Browsers cannot set an `Authorization` header on a WebSocket handshake, so this
-      endpoint additionally accepts a single-use `ticket` query parameter obtained from
-      `POST /api/session/ws-ticket`, or the HTTPOnly `token` session cookie.
+      Every message is an envelope with a `type` discriminator. Two carry
+      governance-project state:
+
+      - `store_update` names the resources that changed, so a client holding a
+        cached list can refetch it. A project create, edit, delete or member
+        change sends `{"type": "store_update", "tags": ["Projects"]}`.
+      - `redivision_progress` reports an equal-split project recalculating
+        every member's share of every cap. Its `operation_id` matches the
+        `redivision_job_id` returned by the project and member routes, and by
+        a user deletion, so a client can follow the job it started.
+
+      The message shapes are documented as `StoreUpdateMessage` and
+      `RedivisionProgressMessage`; they arrive over the socket rather than as
+      an HTTP response body.
     tags:
       - Infrastructure
     parameters:
@@ -28,10 +39,17 @@ websocket:
       - BasicAuth: []
       - SessionCookieAuth: []
     responses:
-      '101':
+      "101":
         description: WebSocket upgrade successful
-      '401':
-        $ref: '../../openapi.yaml#/components/responses/Unauthorized'
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: "../../schemas/management/infrastructure.yaml#/StoreUpdateMessage"
+                - $ref: "../../schemas/management/infrastructure.yaml#/RedivisionProgressMessage"
+              description: >-
+                One of the server-pushed message envelopes. Listed here because
+                the spec has nowhere else to describe a socket payload.
 
 mcp-server:
   post:
@@ -62,7 +80,7 @@ mcp-server:
                   - type: string
                   - type: integer
     responses:
-      '200':
+      "200":
         description: JSON-RPC 2.0 response
         content:
           application/json:
@@ -98,7 +116,7 @@ mcp-server:
     tags:
       - Infrastructure
     responses:
-      '200':
+      "200":
         description: SSE stream opened
         content:
           text/event-stream:
@@ -123,7 +141,7 @@ metrics:
       - ManagementBearerAuth: []
       - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Prometheus metrics
         content:
           text/plain:
@@ -141,5 +159,5 @@ websocket-responses:
     tags:
       - Infrastructure
     responses:
-      '101':
+      "101":
         description: WebSocket upgrade successful

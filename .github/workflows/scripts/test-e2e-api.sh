@@ -176,6 +176,10 @@ if ! ./runners/run-newman-inference-features-tests.sh $REPORT_ARGS; then
   exit 1
 fi
 
+# The governance suites (vk quota, rate limit / budget, vk rotation cooldown)
+# are not listed separately here: run-newman-api-tests.sh above runs them as
+# part of the /api suite. Set BIFROST_E2E_SKIP_GOVERNANCE=1 to skip them.
+
 # The auth matrix boots its own servers (one per config combination), so it only
 # runs when we were given a binary to boot. When tests run against an externally
 # managed server we cannot vary its boot config, so the suite is skipped.
@@ -192,4 +196,4 @@ else
 fi
 
 echo ""
-echo "✅ All E2E API tests passed (/v1, /integrations, /api, inference features, auth matrix)"
+echo "✅ All E2E API tests passed (/v1, /integrations, /api incl. governance suites, inference features, auth matrix)"

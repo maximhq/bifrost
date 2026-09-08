@@ -4159,7 +4159,8 @@ func TestNovaReasoningEffortClamped(t *testing.T) {
 
 // TestReasoningSignatureEchoedOnlyWhenNonEmpty verifies that an empty reasoning
 // signature is dropped before sending to Bedrock (MiniMax emits ""), while a real
-// signature is preserved (Anthropic requires it). Keyed on the value, not the model.
+// signature is preserved. Runs on a Nova id: on Claude an unsigned block is not
+// sent at all (#6624), which TestUnsignedReasoningReplay_Chat pins.
 func TestReasoningSignatureEchoedOnlyWhenNonEmpty(t *testing.T) {
 	cases := map[string]struct {
 		in   *string
@@ -4172,7 +4173,7 @@ func TestReasoningSignatureEchoedOnlyWhenNonEmpty(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			bifrostReq := &schemas.BifrostChatRequest{
-				Model: "anthropic.claude-sonnet-4-5",
+				Model: "amazon.nova-pro-v1:0",
 				Input: []schemas.ChatMessage{
 					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
 					{

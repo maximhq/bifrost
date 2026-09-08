@@ -418,8 +418,15 @@ least 1536) is billed at the 1536×1024 rate, which is checked first.
 | `output_cost_per_audio_token` | Cost per audio output token |
 | `output_cost_per_second` | Cost per second of audio output |
 | `output_cost_per_video_per_second` | Cost per second of video output |
+| `output_cost_per_video_per_second_480p` | Cost per second of 480p video output |
+| `output_cost_per_video_per_second_720p` | Cost per second of 720p video output |
+| `output_cost_per_video_per_second_1024p` | Cost per second of 1024p video output |
+| `output_cost_per_video_per_second_1080p` | Cost per second of 1080p video output |
+| `output_cost_per_video_per_second_4k` | Cost per second of 4K video output |
 | `input_cost_per_video_per_second_above_128k_tokens` | Video input cost above 128k context |
 | `input_cost_per_audio_per_second_above_128k_tokens` | Audio input cost above 128k context |
+
+The resolution-banded video rates are matched on the short edge of the generated video's size, so `1920x1080` and `1080x1920` both resolve to `output_cost_per_video_per_second_1080p`. A size matching no band falls back to `output_cost_per_video_per_second`, then `output_cost_per_second`. The resolved rate is multiplied by the number of clips the job returned.
 
 ### Other costs
 

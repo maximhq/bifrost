@@ -737,6 +737,8 @@ paths:
     $ref: "./paths/management/users.yaml#/users-by-id"
   /api/governance/users/me/permissions:
     $ref: "./paths/management/users.yaml#/users-me-permissions"
+  /api/governance/users/me/vk-creation-policy:
+    $ref: "./paths/management/governanceextensions.yaml#/user-vk-creation-policy"
   /api/governance/users/{user_id}/role:
     $ref: "./paths/management/users.yaml#/users-role"
   /api/governance/users/{user_id}/teams:
@@ -859,6 +861,10 @@ paths:
     $ref: "./paths/management/governanceextensions.yaml#/virtual-key-users"
   /api/governance/virtual-keys/{vk_id}/users/{user_id}:
     $ref: "./paths/management/governanceextensions.yaml#/virtual-key-user"
+  /api/governance/virtual-keys/rotate:
+    $ref: "./paths/management/governance.yaml#/virtual-keys-rotate"
+  /api/governance/virtual-keys/{vk_id}/rotate:
+    $ref: "./paths/management/governance.yaml#/virtual-keys-by-id-rotate"
 
   # Governance - Teams
   /api/governance/teams:
@@ -885,10 +891,10 @@ paths:
     $ref: "./paths/management/businessunits.yaml#/business-units"
   /api/governance/business-units/{business_unit_id}:
     $ref: "./paths/management/businessunits.yaml#/business-units-by-id"
-  /api/governance/business-units/{business_unit_id}/teams:
-    $ref: "./paths/management/businessunits.yaml#/business-units-teams"
-  /api/governance/business-units/{business_unit_id}/teams/{team_id}:
-    $ref: "./paths/management/businessunits.yaml#/business-units-team-by-id"
+  /api/governance/business-units/{business_unit_id}/users:
+    $ref: "./paths/management/businessunits.yaml#/business-units-users"
+  /api/governance/business-units/{business_unit_id}/users/{user_id}:
+    $ref: "./paths/management/businessunits.yaml#/business-units-user-by-id"
   /api/governance/business-units/{business_unit_id}/governance:
     $ref: "./paths/management/businessunits.yaml#/business-units-governance"
   /api/governance/business-units/{business_unit_id}/customers:
@@ -969,6 +975,18 @@ paths:
     $ref: "./paths/management/accessprofiles.yaml#/users-access-profile-virtual-keys"
   /api/governance/users/{user_id}/access-profiles/virtual-keys/{vk_id}:
     $ref: "./paths/management/accessprofiles.yaml#/users-access-profile-virtual-key-by-id"
+
+  # Governance - Projects (Enterprise)
+  /api/governance/projects:
+    $ref: "./paths/management/projects.yaml#/projects"
+  /api/governance/projects/{project_id}:
+    $ref: "./paths/management/projects.yaml#/projects-by-id"
+  /api/governance/projects/{project_id}/members:
+    $ref: "./paths/management/projects.yaml#/projects-members"
+  /api/governance/projects/{project_id}/members/{member_id}:
+    $ref: "./paths/management/projects.yaml#/projects-member-by-id"
+  /api/governance/users/{user_id}/projects:
+    $ref: "./paths/management/projects.yaml#/users-projects"
 
   # Deprecated Governance aliases (Enterprise compatibility; remove in the following major release)
   /api/virtual-keys/{vk_id}/users:
@@ -1098,6 +1116,14 @@ paths:
     $ref: "./paths/management/routing.yaml#/complexity"
   /api/routing/complexity-analyzer-config/reset:
     $ref: "./paths/management/routing.yaml#/complexity-reset"
+  /api/routing/complexity-analyzer-status:
+    $ref: "./paths/management/routing.yaml#/complexity-status"
+  /api/routing/complexity-analyzer-status/retry:
+    $ref: "./paths/management/routing.yaml#/complexity-status-retry"
+  /api/routing/complexity-analyzer-generations:
+    $ref: "./paths/management/routing.yaml#/complexity-generations"
+  /api/routing/complexity-analyzer-generations/{namespace}:
+    $ref: "./paths/management/routing.yaml#/complexity-generation-delete"
 
   # Routing - deprecated paths, kept so existing clients keep working
   /api/governance/routing-rules:
@@ -1146,8 +1172,16 @@ paths:
     $ref: "./paths/management/logging.yaml#/logs-dropped"
   /api/logs/filterdata:
     $ref: "./paths/management/logging.yaml#/logs-filterdata"
+  /api/logs/histogram/throughput:
+    $ref: "./paths/management/logging.yaml#/logs-histogram-throughput"
+  /api/logs/histogram/throughput/by-provider:
+    $ref: "./paths/management/logging.yaml#/logs-histogram-throughput-by-provider"
   /api/logs/rankings:
     $ref: "./paths/management/logging.yaml#/logs-rankings"
+  /api/logs/rankings/by-dimension:
+    $ref: "./paths/management/logging.yaml#/logs-rankings-by-dimension"
+  /api/logs/rankings/users:
+    $ref: "./paths/management/logging.yaml#/logs-rankings-users"
   /api/logs/dashboard:
     $ref: "./paths/management/logging.yaml#/logs-dashboard"
   /api/logs/recalculate-cost:
@@ -1238,6 +1272,8 @@ paths:
     $ref: "./paths/management/infrastructure.yaml#/mcp-server"
   /metrics:
     $ref: "./paths/management/infrastructure.yaml#/metrics"
+  /inspect:
+    $ref: "./paths/management/inspect.yaml#/inspect"
 
   # Webhooks
   /api/webhooks:
@@ -1250,6 +1286,8 @@ paths:
     $ref: "./paths/management/webhooks.yaml#/webhooks-test"
   /api/webhooks/{id}/deliveries:
     $ref: "./paths/management/webhooks.yaml#/webhooks-deliveries"
+  /api/webhooks/deliveries:
+    $ref: "./paths/management/webhooks.yaml#/webhooks-deliveries-search"
   /api/webhooks/deliveries/{id}/redeliver:
     $ref: "./paths/management/webhooks.yaml#/webhooks-deliveries-redeliver"
 
@@ -1687,6 +1725,10 @@ components:
       $ref: "./schemas/management/mcp.yaml#/MCPClient"
     MCPClientConfig:
       $ref: "./schemas/management/mcp.yaml#/MCPClientConfig"
+    MCPConnectionFailure:
+      $ref: "./schemas/management/mcp.yaml#/MCPConnectionFailure"
+    MCPInstanceState:
+      $ref: "./schemas/management/mcp.yaml#/MCPInstanceState"
     ExecuteToolRequest:
       $ref: "./schemas/management/mcp.yaml#/ExecuteToolRequest"
     MCPAuthType:
@@ -1885,6 +1927,8 @@ components:
       $ref: "./schemas/management/logging.yaml#/SearchLogsResponse"
     LogStats:
       $ref: "./schemas/management/logging.yaml#/LogStats"
+    LogStatsResponse:
+      $ref: "./schemas/management/logging.yaml#/LogStatsResponse"
     DeleteLogsRequest:
       $ref: "./schemas/management/logging.yaml#/DeleteLogsRequest"
     RecalculateCostRequest:

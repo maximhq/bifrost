@@ -450,8 +450,8 @@ func TestPreLLMHook_NoDebugLogsOnFlow(t *testing.T) {
 	}
 }
 
-// TestPreLLMHookStoresEmbeddingDebug verifies a successful semantic lookup remains billable if the main request later fails.
-func TestPreLLMHookStoresEmbeddingDebug(t *testing.T) {
+// TestPreLLMHookStoresEmbeddingMetadata verifies a successful semantic lookup remains billable if the main request later fails.
+func TestPreLLMHookStoresEmbeddingMetadata(t *testing.T) {
 	plugin := newTestPlugin(t, newObservableStore())
 	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 		return &schemas.BifrostEmbeddingResponse{
@@ -470,18 +470,18 @@ func TestPreLLMHookStoresEmbeddingDebug(t *testing.T) {
 	if _, _, err := plugin.PreLLMHook(ctx, req); err != nil {
 		t.Fatalf("PreLLMHook failed: %v", err)
 	}
-	cacheDebug, ok := schemas.CacheDebugFromContext(ctx)
+	cacheMetadata, ok := schemas.CacheMetadataFromContext(ctx)
 	if !ok {
-		t.Fatal("expected semantic embedding debug on request context")
+		t.Fatal("expected semantic embedding metadata on request context")
 	}
-	if cacheDebug.ProviderUsed == nil || *cacheDebug.ProviderUsed != string(plugin.config.Provider) {
-		t.Fatalf("cache debug provider = %v, want %q", cacheDebug.ProviderUsed, plugin.config.Provider)
+	if cacheMetadata.ProviderUsed == nil || *cacheMetadata.ProviderUsed != string(plugin.config.Provider) {
+		t.Fatalf("cache metadata provider = %v, want %q", cacheMetadata.ProviderUsed, plugin.config.Provider)
 	}
-	if cacheDebug.ModelUsed == nil || *cacheDebug.ModelUsed != plugin.config.EmbeddingModel {
-		t.Fatalf("cache debug model = %v, want %q", cacheDebug.ModelUsed, plugin.config.EmbeddingModel)
+	if cacheMetadata.ModelUsed == nil || *cacheMetadata.ModelUsed != plugin.config.EmbeddingModel {
+		t.Fatalf("cache metadata model = %v, want %q", cacheMetadata.ModelUsed, plugin.config.EmbeddingModel)
 	}
-	if cacheDebug.InputTokens == nil || *cacheDebug.InputTokens != 12 {
-		t.Fatalf("cache debug input tokens = %v, want 12", cacheDebug.InputTokens)
+	if cacheMetadata.InputTokens == nil || *cacheMetadata.InputTokens != 12 {
+		t.Fatalf("cache metadata input tokens = %v, want 12", cacheMetadata.InputTokens)
 	}
 }
 
@@ -645,6 +645,7 @@ func TestGenerateEmbedding_ClearsInheritedKeyRoutingState(t *testing.T) {
 	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 	ctx.SetValue(schemas.BifrostContextKeySendBackRawRequest, true)
 	ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
+	ctx.SetValue(schemas.BifrostContextKeyStoreRawRequestResponse, true)
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, true)
 	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
 	ctx.SetValue(schemas.BifrostContextKeyLargeResponseMode, true)
@@ -674,8 +675,6 @@ func TestGenerateEmbedding_ClearsInheritedKeyRoutingState(t *testing.T) {
 		schemas.BifrostContextKeyDirectKey,
 		schemas.BifrostContextKeySkipKeySelection,
 		schemas.BifrostContextKeyUseRawRequestBody,
-		schemas.BifrostContextKeySendBackRawRequest,
-		schemas.BifrostContextKeySendBackRawResponse,
 		schemas.BifrostContextKeyPassthroughOverridesPresent,
 		schemas.BifrostContextKeyLargePayloadMode,
 		schemas.BifrostContextKeyLargeResponseMode,
@@ -684,6 +683,18 @@ func TestGenerateEmbedding_ClearsInheritedKeyRoutingState(t *testing.T) {
 	} {
 		if v := captured.Value(key); v != nil {
 			t.Fatalf("expected %q cleared on internal embedding context, got %v", key, v)
+		}
+	}
+
+	// Raw capture is deliberately false, rather than absent: these values
+	// override provider-level raw-capture configuration for internal embeddings.
+	for _, key := range []schemas.BifrostContextKey{
+		schemas.BifrostContextKeySendBackRawRequest,
+		schemas.BifrostContextKeySendBackRawResponse,
+		schemas.BifrostContextKeyStoreRawRequestResponse,
+	} {
+		if enabled, _ := captured.Value(key).(bool); enabled {
+			t.Fatalf("expected %q disabled on internal embedding context", key)
 		}
 	}
 
