@@ -319,7 +319,7 @@ func buildResponseFromConfig(deployments schemas.KeyAliases, allowedModels schem
 
 	// First add models from deployments (filtered by allowedModels when set)
 	for alias, deploymentValue := range deployments {
-		if restrictAllowed && !allowedModels.Contains(alias) {
+		if restrictAllowed && !allowedModels.Matches(alias) {
 			continue
 		}
 		if blacklistedModels.IsBlocked(alias) {
@@ -346,6 +346,10 @@ func buildResponseFromConfig(deployments schemas.KeyAliases, allowedModels schem
 		return response
 	}
 	for _, allowedModel := range allowedModels {
+		// A regex entry is a pattern, not a model to surface.
+		if schemas.IsRegexEntry(allowedModel) {
+			continue
+		}
 		modelID := string(schemas.Vertex) + "/" + allowedModel
 		if addedModelIDs[modelID] {
 			continue

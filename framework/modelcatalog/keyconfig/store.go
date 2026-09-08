@@ -194,20 +194,20 @@ func (s *Store) IsAllowed(provider schemas.ModelProvider, model string) bool {
 	// Keyless unrestricted provider: no per-key entries to gate on, but the
 	// aggregated allow-list ("*") governs and ambient/IAM auth routes without a key.
 	if len(st.entries) == 0 {
-		return st.allowed.IsAllowed(model) && !st.blacklisted.IsBlocked(model)
+		return st.allowed.AllowsModel(string(provider), model) && !st.blacklisted.BlocksModel(string(provider), model)
 	}
-	return anyKeyAllows(st, model)
+	return anyKeyAllows(st, provider, model)
 }
 
 // anyKeyAllows reports whether any enabled key in the snapshot can serve the
 // model (allowed and not blacklisted). Shares the per-key gating predicate with
 // KeysAllowingModel.
-func anyKeyAllows(st *providerState, model string) bool {
+func anyKeyAllows(st *providerState, provider schemas.ModelProvider, model string) bool {
 	for _, e := range st.entries {
-		if !e.Enabled || e.Blacklisted.IsBlockAll() || e.Blacklisted.IsBlocked(model) {
+		if !e.Enabled || e.Blacklisted.IsBlockAll() || e.Blacklisted.BlocksModel(string(provider), model) {
 			continue
 		}
-		if e.Allowed.IsAllowed(model) {
+		if e.Allowed.AllowsModel(string(provider), model) {
 			return true
 		}
 	}
@@ -253,10 +253,10 @@ func (s *Store) KeysAllowingModel(provider schemas.ModelProvider, model string) 
 	}
 	var out []string
 	for _, e := range st.entries {
-		if !e.Enabled || e.Blacklisted.IsBlockAll() || e.Blacklisted.IsBlocked(model) {
+		if !e.Enabled || e.Blacklisted.IsBlockAll() || e.Blacklisted.BlocksModel(string(provider), model) {
 			continue
 		}
-		if e.Allowed.IsAllowed(model) {
+		if e.Allowed.AllowsModel(string(provider), model) {
 			out = append(out, e.KeyID)
 		}
 	}
@@ -336,7 +336,10 @@ func (s *Store) buildState(provider schemas.ModelProvider, keys []schemas.Key) *
 			allModelsAllowed = true
 		} else {
 			for _, m := range key.Models {
-				if key.BlacklistedModels.IsBlocked(m) {
+				// A regex entry is a pattern; keep it verbatim so consumers can
+				// evaluate it, and do not run it through the blacklist (which
+				// gates concrete names, not patterns).
+				if !schemas.IsRegexEntry(m) && key.BlacklistedModels.IsBlocked(m) {
 					continue
 				}
 				if !allowed.Contains(m) {

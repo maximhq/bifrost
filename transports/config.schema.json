@@ -3836,14 +3836,14 @@
         },
         "allowed_models": {
           "type": "array",
-          "description": "Allowed models for this provider config. Use [\"*\"] to allow all models; empty array denies all (deny-by-default).",
+          "description": "Allowed models for this provider config. Use [\"*\"] to allow all models; empty array denies all (deny-by-default). Entries prefixed with \"regex:\" are RE2 patterns matched case-insensitively as a full match against the model name (and provider/model).",
           "items": {
             "type": "string"
           }
         },
         "blacklisted_models": {
           "type": "array",
-          "description": "Models blocked for this provider config even if matched by allowed_models. Use [\"*\"] to block all; empty array blocks none.",
+          "description": "Models blocked for this provider config even if matched by allowed_models. Use [\"*\"] to block all; empty array blocks none. Entries prefixed with \"regex:\" are RE2 patterns matched case-insensitively as a full match against the model name (and provider/model).",
           "items": {
             "type": "string"
           }
@@ -4509,7 +4509,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Models this key can access. Use [\"*\"] to allow all models; empty array denies all (deny-by-default)."
+          "description": "Models this key can access. Use [\"*\"] to allow all models; empty array denies all (deny-by-default). Entries prefixed with \"regex:\" are RE2 patterns matched case-insensitively as a full match against the model name (and provider/model)."
         },
         "weight": {
           "type": "number",
@@ -7858,7 +7858,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Allowed model names (ignored when all_models_allowed is true)"
+          "description": "Allowed model names (ignored when all_models_allowed is true). Entries prefixed with \"regex:\" are RE2 patterns matched case-insensitively as a full match against the model name (and provider/model)."
         },
         "budgets": {
           "type": "array",
@@ -7871,7 +7871,7 @@
         },
         "blacklisted_models": {
           "type": "array",
-          "description": "Models blocked for this provider even if matched by allowed_models (denylist wins). Use [\"*\"] to block all; empty array or omitted blocks none.",
+          "description": "Models blocked for this provider even if matched by allowed_models (denylist wins). Use [\"*\"] to block all; empty array or omitted blocks none. Entries prefixed with \"regex:\" are RE2 patterns matched case-insensitively as a full match against the model name (and provider/model).",
           "items": {
             "type": "string"
           }
@@ -8144,11 +8144,11 @@
           "items": {
             "type": "string"
           },
-          "description": "Allowed model names (ignored when all_models_allowed is true)"
+          "description": "Allowed model names (ignored when all_models_allowed is true). Entries prefixed with \"regex:\" are RE2 patterns matched case-insensitively as a full match against the model name (and provider/model)."
         },
         "blacklisted_models": {
           "type": "array",
-          "description": "Models blocked for this provider even if matched by allowed_models (denylist wins). Use [\"*\"] to block all; empty array or omitted blocks none.",
+          "description": "Models blocked for this provider even if matched by allowed_models (denylist wins). Use [\"*\"] to block all; empty array or omitted blocks none. Entries prefixed with \"regex:\" are RE2 patterns matched case-insensitively as a full match against the model name (and provider/model).",
           "items": {
             "type": "string"
           }

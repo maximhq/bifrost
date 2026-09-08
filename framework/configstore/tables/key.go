@@ -141,7 +141,7 @@ func (TableKey) TableName() string { return "config_keys" }
 // operates on the final serialized values.
 func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 	if err := k.Models.Validate(); err != nil {
-		return err
+		return fmt.Errorf("invalid models: %w", err)
 	}
 	data, err := json.Marshal(k.Models)
 	if err != nil {
@@ -149,7 +149,7 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 	}
 	k.ModelsJSON = string(data)
 	if err := k.BlacklistedModels.Validate(); err != nil {
-		return err
+		return fmt.Errorf("invalid blacklisted_models: %w", err)
 	}
 	data, err = json.Marshal(k.BlacklistedModels)
 	if err != nil {

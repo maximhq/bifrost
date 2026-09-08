@@ -641,7 +641,7 @@ func (a *Access) permitAllowsModel(p schemas.Permit, provider string, model stri
 // one and by name otherwise.
 func (a *Access) permitsModel(pp *schemas.ProviderPermit, model string) bool {
 	if a.matcher == nil {
-		return pp.AllowedModels.IsAllowed(model)
+		return pp.AllowedModels.AllowsModel(pp.Provider, model)
 	}
 	return a.matcher(pp.Provider, model, pp.AllowedModels)
 }

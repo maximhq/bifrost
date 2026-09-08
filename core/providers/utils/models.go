@@ -105,7 +105,8 @@ func isDigitsOnly(s string) bool {
 type MatchFn func(a, b string) bool
 
 // DefaultMatchFns returns the standard matching functions used by most providers.
-// Currently only performs case-insensitive exact matching.
+// Performs case-insensitive exact matching, and evaluates regex entries
+// (schemas.ModelRegexPrefix) in the configured list against the model name.
 //
 // SameBaseModel (strips version suffixes, e.g. "claude-3-5-sonnet-20241022" ≈ "claude-3-5-sonnet")
 // is intentionally excluded — users should use aliases for explicit version-to-base-name mapping.
@@ -113,6 +114,8 @@ type MatchFn func(a, b string) bool
 func DefaultMatchFns() []MatchFn {
 	return []MatchFn{
 		func(a, b string) bool { return strings.EqualFold(a, b) },
+		// b is the configured entry (allowlist / blacklist / alias key); a is the model name.
+		func(a, b string) bool { return schemas.IsRegexEntry(b) && schemas.MatchesEntry(b, a, "") },
 	}
 }
 
@@ -350,6 +353,10 @@ func (p *ListModelsPipeline) BackfillModels(included map[string]bool) []schemas.
 	if !p.Unfiltered && p.AllowedModels.IsRestricted() {
 		// Case A: backfill explicit allowlist entries not yet matched.
 		for _, entry := range p.AllowedModels {
+			// A regex entry is a pattern, not a model to surface.
+			if schemas.IsRegexEntry(entry) {
+				continue
+			}
 			if included[strings.ToLower(entry)] {
 				continue
 			}

@@ -87,7 +87,9 @@ func (mc *ModelCatalog) computeModelsForProvider(provider schemas.ModelProvider)
 			out = append(out, alias)
 		}
 		for _, m := range e.Allowed {
-			if m == "*" || blacklisted.IsBlocked(m) {
+			// Regex entries are patterns, not model names: the models they admit
+			// are already included above through IsAllowed.
+			if m == "*" || schemas.IsRegexEntry(m) || blacklisted.IsBlocked(m) {
 				continue
 			}
 			if _, ok := seen[m]; ok {
@@ -269,14 +271,14 @@ func (mc *ModelCatalog) computeProvidersForModel(model string) []schemas.ModelPr
 		if _, ok := seen[p]; ok {
 			continue
 		}
-		if mc.keyconf.BlacklistedFor(p).IsBlocked(model) {
+		if mc.keyconf.BlacklistedFor(p).BlocksModel(string(p), model) {
 			continue
 		}
 		allowed := mc.keyconf.AllowedFor(p)
 		matched := false
-		if _, hit := mc.keyconf.ResolveAlias(p, model); hit && allowed.IsAllowed(model) {
+		if _, hit := mc.keyconf.ResolveAlias(p, model); hit && allowed.AllowsModel(string(p), model) {
 			matched = true
-		} else if allowed.Contains(model) {
+		} else if allowed.IsRestricted() && allowed.AllowsModel(string(p), model) {
 			matched = true
 		} else if allowed.IsUnrestricted() &&
 			len(mc.datasheet.DatasheetModelsForProvider(p)) == 0 &&
@@ -319,19 +321,27 @@ func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider
 		return false
 	}
 
-	// Bare-name match needs no catalog access and covers most allowlists.
-	if slices.Contains(allowedModels, model) {
-		return true
+	// Bare-name and regex matches need no catalog access and cover most
+	// allowlists. Regex entries are tried against both the bare name and
+	// "<provider>/<model>" so a provider-qualified pattern works too.
+	hasPrefixedLiteral := false
+	for _, entry := range allowedModels {
+		if schemas.MatchesEntry(entry, model, string(provider)) {
+			return true
+		}
+		if !schemas.IsRegexEntry(entry) && strings.Contains(entry, "/") {
+			hasPrefixedLiteral = true
+		}
 	}
 
-	// Only provider-prefixed entries ("openai/gpt-4o") need the provider
-	// catalog; build it once, and only when one exists.
-	if !slices.ContainsFunc(allowedModels, func(m string) bool { return strings.Contains(m, "/") }) {
+	// Only provider-prefixed literal entries ("openai/gpt-4o") need the
+	// provider catalog; build it once, and only when one exists.
+	if !hasPrefixedLiteral {
 		return false
 	}
 	providerCatalogModels := mc.GetModelsForProvider(provider)
 	for _, allowedModel := range allowedModels {
-		if !strings.Contains(allowedModel, "/") {
+		if schemas.IsRegexEntry(allowedModel) || !strings.Contains(allowedModel, "/") {
 			continue
 		}
 		if slices.Contains(providerCatalogModels, allowedModel) {

@@ -34,3 +34,27 @@ func TestVirtualKeyProviderConfigKeyIDs(t *testing.T) {
 		}
 	})
 }
+
+// TestVirtualKeyProviderConfigBeforeSaveValidatesModelLists pins that the save hook applies the
+// shared list rules, including that a "regex:" entry has to compile.
+func TestVirtualKeyProviderConfigBeforeSaveValidatesModelLists(t *testing.T) {
+	ok := &TableVirtualKeyProviderConfig{Provider: "openai", AllowedModels: []string{"gpt-4o", "regex:^claude-3-.*"}, BlacklistedModels: []string{"regex:.*-preview$"}}
+	if err := ok.BeforeSave(nil); err != nil {
+		t.Fatalf("valid regex entries should save: %v", err)
+	}
+
+	badAllowed := &TableVirtualKeyProviderConfig{Provider: "openai", AllowedModels: []string{"regex:("}}
+	if err := badAllowed.BeforeSave(nil); err == nil {
+		t.Fatalf("an invalid regex in allowed_models should be rejected")
+	}
+
+	badBlocked := &TableVirtualKeyProviderConfig{Provider: "openai", AllowedModels: []string{"*"}, BlacklistedModels: []string{"regex:"}}
+	if err := badBlocked.BeforeSave(nil); err == nil {
+		t.Fatalf("an empty regex in blacklisted_models should be rejected")
+	}
+
+	mixed := &TableVirtualKeyProviderConfig{Provider: "openai", AllowedModels: []string{"*", "regex:^gpt.*"}}
+	if err := mixed.BeforeSave(nil); err == nil {
+		t.Fatalf("the wildcard may not be mixed with a pattern")
+	}
+}

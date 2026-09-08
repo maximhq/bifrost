@@ -413,3 +413,30 @@ func TestPermitTypePrettyStringNeverRendersAnIdentifier(t *testing.T) {
 	// acted on at all.
 	assert.Equal(t, "something_else", PermitType("something_else").PrettyString())
 }
+
+// TestProviderPermitAllowsModelRegex covers regex entries (schemas.ModelRegexPrefix) in a provider
+// permit's allow and block lists: a pattern admits a family, a blocking pattern wins over an
+// allowing one, and a provider-qualified pattern only applies to its own provider.
+func TestProviderPermitAllowsModelRegex(t *testing.T) {
+	family := &schemas.ProviderPermit{Provider: "openai", AllowedModels: []string{"regex:^gpt-4.*"}, BlacklistedModels: []string{"regex:.*-preview$"}}
+	assert.True(t, providerPermitAllowsModel(family, "gpt-4o"))
+	assert.True(t, providerPermitAllowsModel(family, "GPT-4o-mini"), "regex entries match case-insensitively")
+	assert.False(t, providerPermitAllowsModel(family, "gpt-4o-preview"), "the blacklist pattern wins over the allow pattern")
+	assert.False(t, providerPermitAllowsModel(family, "o3"))
+	exact := &schemas.ProviderPermit{Provider: "openai", AllowedModels: []string{"regex:gpt-4"}}
+	assert.True(t, providerPermitAllowsModel(exact, "gpt-4"))
+	assert.False(t, providerPermitAllowsModel(exact, "gpt-4o"), "a pattern is a full match, not a prefix")
+
+	qualified := &schemas.ProviderPermit{Provider: "azure", AllowedModels: []string{"regex:azure/gpt-.*"}}
+	assert.True(t, providerPermitAllowsModel(qualified, "gpt-4o"), "a provider-qualified pattern is tried against provider/model")
+	other := &schemas.ProviderPermit{Provider: "openai", AllowedModels: []string{"regex:azure/gpt-.*"}}
+	assert.False(t, providerPermitAllowsModel(other, "gpt-4o"), "a pattern naming another provider does not apply here")
+
+	p := newPermit(permitSpec{
+		Type: PermitVirtualKey, ID: "vk-1", Name: "vk", IsActive: true,
+		ProviderPermits: []schemas.ProviderPermit{{Provider: "openai", AllowedModels: []string{"regex:^gpt-4.*"}, BlacklistedModels: []string{"regex:.*-preview$"}}},
+	})
+	assert.True(t, allowsModelByName(p, "openai", "gpt-4o"))
+	assert.False(t, allowsModelByName(p, "openai", "gpt-4o-preview"))
+	assert.True(t, blacklistsModel(p, "openai", "gpt-4o-preview"))
+}
