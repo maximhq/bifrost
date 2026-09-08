@@ -1,0 +1,3 @@
+- fix: handle hex value fields and remove the score filter in the Redis store (#6772, #6773)
+- feat: share vector store warm coordination and chromem cleanup with the complexity router (#6727, #6807)
+- feat: rename cache debug payloads to cache metadata (#6722)

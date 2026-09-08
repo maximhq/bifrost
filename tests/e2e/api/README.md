@@ -2,6 +2,41 @@
 
 End-to-end API tests for the Bifrost API using Postman collections and [Newman](https://www.npmjs.com/package/newman) (CLI).
 
+## Azure streaming preamble fallback
+
+These two deterministic cases use a local SSE fixture and an isolated gateway.
+They make no live provider calls. Run the following commands from the repository root.
+
+Start the fixture in one terminal:
+
+```bash
+node tests/e2e/api/runners/azure-stream-preamble-fixture.mjs
+```
+
+Start a separate gateway in another terminal:
+
+```bash
+azure_fixture_dir=$(mktemp -d)
+cp tests/e2e/api/provider_config/azure-stream-preamble.config.json "$azure_fixture_dir/config.json"
+go run ./transports/bifrost-http -app-dir "$azure_fixture_dir" -host 127.0.0.1 -port 8790
+```
+
+Run the cases in a third terminal:
+
+```bash
+newman run tests/e2e/api/collections/provider-harness.json \
+  --folder "74. Azure streaming preamble fallback" \
+  --env-var baseUrl=http://127.0.0.1:8790 \
+  --env-var azureStreamPreambleFixture=1
+```
+
+The fixture emits metadata followed by an error for `preamble-error`, then returns
+`hello` for the configured fallback, `preamble-success`. Both Chat Completions and
+Responses must return only the successful attempt's events and a terminal result.
+The cases are skipped unless `azureStreamPreambleFixture=1`.
+
+Stop the fixture and isolated gateway with Ctrl+C after testing.
+
 ## Contents
 
 ### V1 Endpoint Tests
