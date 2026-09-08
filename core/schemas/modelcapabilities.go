@@ -276,6 +276,17 @@ type ModelCapabilities struct {
 	//
 	// Absent or unrecognised falls back to the caller's family detection.
 	BedrockReasoningShape BedrockReasoningShape `json:"bedrock_reasoning_shape,omitempty"`
+
+	// Whether this model verifies the signature on every reasoningText block it
+	// is handed back on Bedrock Converse. Claude does: a thinking block with no
+	// signature is rejected in every serialisation (field absent gives
+	// "thinking.signature: Field required", present but empty gives "each
+	// thinking block must contain thinking" or "Invalid signature"), so an
+	// unsigned block must be left out of the replay. Nova and MiniMax do not,
+	// and reject a present-but-empty signature instead.
+	//
+	// Absent falls back to the caller's family detection.
+	BedrockRequiresSignedReasoning *bool `json:"bedrock_requires_signed_reasoning,omitempty"`
 }
 
 // BedrockAPI names one wire API on a Bedrock endpoint. Which endpoint serves it
