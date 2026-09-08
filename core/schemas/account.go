@@ -830,9 +830,11 @@ type SGLKeyConfig struct {
 type DatabricksAPIFormat string
 
 const (
-	// DatabricksAPIFormatAuto picks the surface from the model name: a dotted name
+	// DatabricksAPIFormatAuto picks the surface from the model name: a catalog-qualified name
 	// (system.ai.*, or a <catalog>.<schema>.<service> Unity Catalog model service) goes to the
-	// Unity AI Gateway; anything else is treated as a Model Serving endpoint name.
+	// Unity AI Gateway; a databricks-* name or an alias model_id is a Model Serving endpoint;
+	// any other bare name is a short name for a system.ai model and goes to the Unity AI
+	// Gateway with the system.ai. prefix added.
 	DatabricksAPIFormatAuto DatabricksAPIFormat = "auto"
 	// DatabricksAPIFormatModelServing targets /serving-endpoints — the Foundation Model APIs,
 	// covering pay-per-token endpoints (databricks-*) and provisioned-throughput endpoints.

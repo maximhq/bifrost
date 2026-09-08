@@ -263,6 +263,50 @@ func stripUnsupportedResponsesFields(ctx *schemas.BifrostContext, request *schem
 	return &requestCopy
 }
 
+// withChatWireModel returns request with its model rewritten to the name Databricks expects
+// on the wire (see wireModel). The caller's request is never mutated: a shallow copy carries
+// the rewritten name, and the original keeps the user-facing model for logging and pricing.
+func withChatWireModel(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) *schemas.BifrostChatRequest {
+	if request == nil {
+		return nil
+	}
+	wire := wireModel(ctx, key, request.Model)
+	if wire == request.Model {
+		return request
+	}
+	requestCopy := *request
+	requestCopy.Model = wire
+	return &requestCopy
+}
+
+// withEmbeddingWireModel is withChatWireModel for embedding requests.
+func withEmbeddingWireModel(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostEmbeddingRequest) *schemas.BifrostEmbeddingRequest {
+	if request == nil {
+		return nil
+	}
+	wire := wireModel(ctx, key, request.Model)
+	if wire == request.Model {
+		return request
+	}
+	requestCopy := *request
+	requestCopy.Model = wire
+	return &requestCopy
+}
+
+// withResponsesWireModel is withChatWireModel for Responses requests.
+func withResponsesWireModel(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
+	if request == nil {
+		return nil
+	}
+	wire := wireModel(ctx, key, request.Model)
+	if wire == request.Model {
+		return request
+	}
+	requestCopy := *request
+	requestCopy.Model = wire
+	return &requestCopy
+}
+
 // ChatCompletion performs a chat completion request against the resolved Databricks surface.
 func (provider *DatabricksProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	request = stripUnsupportedChatFields(ctx, request)
@@ -270,6 +314,7 @@ func (provider *DatabricksProvider) ChatCompletion(ctx *schemas.BifrostContext, 
 	if bErr != nil {
 		return nil, bErr
 	}
+	request = withChatWireModel(ctx, key, request)
 	url, auth, bErr := provider.prepareRequest(ctx, key, request.Model, "/chat/completions")
 	if bErr != nil {
 		return nil, bErr
@@ -299,6 +344,7 @@ func (provider *DatabricksProvider) ChatCompletionStream(ctx *schemas.BifrostCon
 	if bErr != nil {
 		return nil, bErr
 	}
+	request = withChatWireModel(ctx, key, request)
 	url, auth, bErr := provider.prepareRequest(ctx, key, request.Model, "/chat/completions")
 	if bErr != nil {
 		return nil, bErr
@@ -328,6 +374,7 @@ func (provider *DatabricksProvider) ChatCompletionStream(ctx *schemas.BifrostCon
 
 // Embedding performs an embedding request against the resolved Databricks surface.
 func (provider *DatabricksProvider) Embedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+	request = withEmbeddingWireModel(ctx, key, request)
 	url, auth, bErr := provider.prepareRequest(ctx, key, request.Model, "/embeddings")
 	if bErr != nil {
 		return nil, bErr
@@ -361,7 +408,7 @@ func (provider *DatabricksProvider) Responses(ctx *schemas.BifrostContext, key s
 		}
 		return chatResponse.ToBifrostResponsesResponse(), nil
 	}
-	if provider.emulateResponses(key, request.Model) {
+	if provider.emulateResponses(ctx, key, request.Model) {
 		return emulate()
 	}
 
@@ -370,6 +417,7 @@ func (provider *DatabricksProvider) Responses(ctx *schemas.BifrostContext, key s
 	if bErr != nil {
 		return nil, bErr
 	}
+	wireRequest = withResponsesWireModel(ctx, key, wireRequest)
 	url, auth, bErr := provider.prepareRequest(ctx, key, wireRequest.Model, "/responses")
 	if bErr != nil {
 		return nil, bErr
@@ -404,7 +452,7 @@ func (provider *DatabricksProvider) ResponsesStream(ctx *schemas.BifrostContext,
 		ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
 		return provider.ChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request.ToChatRequest())
 	}
-	if provider.emulateResponses(key, request.Model) {
+	if provider.emulateResponses(ctx, key, request.Model) {
 		return emulate()
 	}
 
@@ -413,6 +461,7 @@ func (provider *DatabricksProvider) ResponsesStream(ctx *schemas.BifrostContext,
 	if bErr != nil {
 		return nil, bErr
 	}
+	wireRequest = withResponsesWireModel(ctx, key, wireRequest)
 	url, auth, bErr := provider.prepareRequest(ctx, key, wireRequest.Model, "/responses")
 	if bErr != nil {
 		return nil, bErr
@@ -463,8 +512,8 @@ func isResponsesPassthroughUnsupported(bErr *schemas.BifrostError) bool {
 // emulateResponses decides whether a Responses request is served through chat completions
 // without trying the native route first: always on the AI Gateway, and on Model Serving once
 // the endpoint has declined the surface for this workspace and model.
-func (provider *DatabricksProvider) emulateResponses(key schemas.Key, model string) bool {
-	if resolveAPIFormat(key, model) == schemas.DatabricksAPIFormatAIGateway {
+func (provider *DatabricksProvider) emulateResponses(ctx *schemas.BifrostContext, key schemas.Key, model string) bool {
+	if resolveAPIFormat(ctx, key, model) == schemas.DatabricksAPIFormatAIGateway {
 		return true
 	}
 	_, unsupported := provider.responsesUnsupported.Load(provider.responsesCacheKey(key, model))
