@@ -194,6 +194,30 @@ export class ObservabilityPage extends BasePage {
   }
 
   /**
+   * Enable Log Export (GenAI events). Uses the first profile's toggle.
+   */
+  async enableLogExport(): Promise<void> {
+    await this.selectConnector('otel')
+    const switch_ = this.page.getByTestId('otel-profile-0-logs-export-toggle')
+    await switch_.waitFor({ state: 'visible', timeout: 5000 })
+    const checked = await switch_.getAttribute('data-state') === 'checked'
+    if (!checked) {
+      await switch_.click()
+      await this.page.waitForTimeout(400)
+    }
+  }
+
+  /**
+   * Get the logs endpoint placeholder, which is only in the DOM once log export is on.
+   */
+  async getLogsEndpointPlaceholder(): Promise<string | null> {
+    const logsInput = this.page.getByPlaceholder(/v1\/logs|OTEL_LOGS_ENDPOINT/i).first()
+    const isVisible = await logsInput.isVisible().catch(() => false)
+    if (!isVisible) return null
+    return await logsInput.getAttribute('placeholder')
+  }
+
+  /**
    * Configure OTel endpoint
    */
   async configureOtelEndpoint(endpoint: string): Promise<void> {
