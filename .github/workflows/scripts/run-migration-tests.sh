@@ -822,6 +822,7 @@ append_dynamic_mcp_clients_insert() {
     generate_oauth2_issuance_tables_insert_postgres "$now" "$faker_sql"
     generate_sidekiq_insert_postgres "$now" "$past" "$faker_sql"
     append_dynamic_columns_postgres "$now" "$past" "$faker_sql"
+    append_v200_fixtures "$db_type" "$faker_sql" "$now" "$future"
   else
     now="datetime('now')"
     future="datetime('now', '+1 hour')"
@@ -844,7 +845,184 @@ append_dynamic_mcp_clients_insert() {
     generate_oauth2_issuance_tables_insert_sqlite "$now" "$faker_sql" "$config_db"
     generate_sidekiq_insert_sqlite "$now" "$past" "$faker_sql" "$config_db"
     append_dynamic_columns_sqlite "$now" "$past" "$faker_sql" "$config_db"
+    append_v200_fixtures "$db_type" "$faker_sql" "$now" "$future" "$config_db" "$logs_db"
   fi
+}
+
+# v2.0.0 introduced these columns and tables. Probe each column so the same
+# fixture set still runs against older releases. SQL literals below work in both
+# dialects; timestamps are supplied by the caller.
+v200_column_exists() {
+  local table="$1" column="$2"
+  if [ "$fixture_db_type" = "postgres" ]; then
+    column_exists_postgres "$table" "$column"
+  else
+    local db="$fixture_config_db"
+    case "$table" in logs|mcp_tool_logs|user_agent_mappings) db="$fixture_logs_db" ;; esac
+    column_exists_sqlite "$db" "$table" "$column"
+  fi
+}
+
+# Read column|SQL-value pairs from stdin, retaining only columns in this schema.
+v200_insert() {
+  local table="$1" column value cols="" vals=""
+  if ! v200_column_exists "$table" "id"; then
+    return
+  fi
+  while IFS='|' read -r column value; do
+    if v200_column_exists "$table" "$column"; then
+      cols="${cols:+$cols, }$column"
+      vals="${vals:+$vals, }$value"
+    fi
+  done
+  echo "INSERT INTO $table ($cols) VALUES ($vals) ON CONFLICT DO NOTHING;" >> "$fixture_output"
+}
+
+append_v200_fixtures() {
+  local fixture_db_type="$1" fixture_output="$2" now="$3" future="$4"
+  local fixture_config_db="${5:-}" fixture_logs_db="${6:-}"
+  local table column value predicate
+  while IFS='|' read -r table column value predicate; do
+    if v200_column_exists "$table" "$column"; then
+      echo "UPDATE $table SET $column = $value WHERE $predicate;" >> "$fixture_output"
+    fi
+  done <<'V200_COLUMNS'
+config_keys|bedrock_endpoints_json|NULL|name = 'migration-test-key-anthropic'
+config_keys|bedrock_mantle_endpoints_json|NULL|name = 'migration-test-key-anthropic'
+config_mcp_clients|needs_session_stickiness|false|client_id = 'mcp-migration-test-001'
+config_mcp_clients|token_exchange_json|NULL|client_id = 'mcp-migration-test-001'
+config_mcp_clients|pending_oauth_config_json|NULL|client_id = 'mcp-migration-test-001'
+governance_model_pricing|input_cost_per_token_ultrafast|NULL|id = 1
+governance_model_pricing|output_cost_per_token_ultrafast|NULL|id = 1
+governance_model_pricing|cache_read_input_token_cost_ultrafast|NULL|id = 1
+governance_model_pricing|cache_creation_input_token_cost_ultrafast|NULL|id = 1
+governance_model_pricing|output_cost_per_image_above_4_megapixels|NULL|id = 1
+governance_model_pricing|output_cost_per_image_above_8_megapixels|NULL|id = 1
+governance_model_pricing|output_cost_per_image_above_16_megapixels|NULL|id = 1
+governance_model_pricing|output_cost_per_image_above_32_megapixels|NULL|id = 1
+governance_model_pricing|output_cost_per_image_above_64_megapixels|NULL|id = 1
+governance_model_pricing|input_cost_per_query|NULL|id = 1
+governance_model_pricing|cost_per_request|NULL|id = 1
+logs|user_agent|'migration-test/2.0'|id = 'log-migration-test-001'
+logs|app|'migration-test'|id = 'log-migration-test-001'
+logs|video_edit_input|''|id = 'log-migration-test-001'
+logs|guardrail_debug|''|id = 'log-migration-test-001'
+logs|upstream_latency|100|id = 'log-migration-test-001'
+logs|overhead_latency|5|id = 'log-migration-test-001'
+logs|overhead_breakdown|'[]'|id = 'log-migration-test-001'
+logs|input_cost|0.001|id = 'log-migration-test-001'
+logs|output_cost|0.002|id = 'log-migration-test-001'
+logs|additional_cost|0.003|id = 'log-migration-test-001'
+logs|batch_debug|''|id = 'log-migration-test-001'
+mcp_tool_logs|user_agent|'migration-test/2.0'|id = 'mcp-log-migration-001'
+mcp_tool_logs|app|'migration-test'|id = 'mcp-log-migration-001'
+mcp_tool_logs|plugin_logs|'[]'|id = 'mcp-log-migration-001'
+mcp_tool_logs|redaction_mapping|NULL|id = 'mcp-log-migration-001'
+mcp_tool_logs|device_id|'migration-device'|id = 'mcp-log-migration-001'
+mcp_tool_logs|app_key|'migration-app'|id = 'mcp-log-migration-001'
+mcp_tool_logs|decision|'allow'|id = 'mcp-log-migration-001'
+mcp_tool_logs|source|'migration-test'|id = 'mcp-log-migration-001'
+V200_COLUMNS
+
+  # Terminal accounting state keeps the sweeper from polling the fake batch.
+  v200_insert batch_jobs <<V200_ROW
+id|'batch-migration-001'
+kind|'batch'
+provider|'openai'
+batch_id|'batch-provider-migration-001'
+model|'gpt-4'
+endpoint|'/v1/chat/completions'
+params|'{}'
+provider_status|'completed'
+input_file_id|'file-migration-001'
+output_file_id|NULL
+error_file_id|NULL
+results_url|NULL
+next_check_at|NULL
+poll_attempts|1
+accounting_status|'accounted'
+runner_id|NULL
+claimed_at|NULL
+unpriceable_reason|NULL
+last_error|NULL
+aggregate_log_written_at|$now
+governance_reported_at|$now
+selected_key_id|''
+virtual_key_id|NULL
+user_id|NULL
+team_id|NULL
+customer_id|NULL
+budget_ids|'[]'
+rate_limit_ids|'[]'
+source_log_id|NULL
+created_at|$now
+updated_at|$now
+V200_ROW
+
+  v200_insert mcp_oauth_flows <<V200_ROW
+id|'mcp-flow-migration-001'
+mcp_client_id|'mcp-migration-test-001'
+oauth_config_id|'oauth-config-migration-test-001'
+state|'migration-v200-state'
+redirect_uri|'https://example.com/callback'
+code_verifier|'migration-verifier'
+session_id|'migration-session'
+virtual_key_id|NULL
+user_id|NULL
+flow_mode|'session'
+status|'authorized'
+encryption_status|'plain_text'
+expires_at|$future
+created_at|$now
+updated_at|$now
+V200_ROW
+
+  v200_insert mcp_oauth_tokens <<V200_ROW
+id|'mcp-token-migration-001'
+auth_mode|'session'
+mcp_client_id|'mcp-migration-test-001'
+oauth_config_id|'oauth-config-migration-test-001'
+session_id|'migration-session'
+virtual_key_id|NULL
+user_id|NULL
+status|'active'
+status_reason|''
+access_token|'migration-access-token'
+refresh_token|'migration-refresh-token'
+token_type|'Bearer'
+expires_at|$future
+scopes|'[]'
+last_refreshed_at|$now
+encryption_status|'plain_text'
+created_at|$now
+updated_at|$now
+V200_ROW
+
+  v200_insert notifications <<V200_ROW
+id|'notification-migration-001'
+audience|'all'
+role_ids|'[]'
+severity|'info'
+title|'Migration test'
+message|'Preserve this notification during migration'
+action_label|'View logs'
+action_path|'/workspace/logs'
+created_at|$now
+expires_at|$future
+V200_ROW
+
+  v200_insert user_agent_mappings <<V200_ROW
+id|'user-agent-migration-001'
+pattern|'migration-test/2.0'
+match_type|'exact'
+app|'migration-test'
+logo|NULL
+logo_mime|NULL
+is_active|true
+created_at|$now
+updated_at|$now
+V200_ROW
+
 }
 
 # Append dynamic column UPDATEs for columns that may not exist in older schemas (PostgreSQL)

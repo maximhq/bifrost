@@ -291,8 +291,8 @@ github.com/keybase/go-keychain v0.0.1/go.mod h1:PdEILRW3i9D8JcdM+FmY6RwkHGnhHxXw
 github.com/kisielk/errcheck v1.5.0/go.mod h1:pFxgyoBC7bSaBwPgfKdkLd5X25qrDl4LWUI2bnpBCr8=
 github.com/kisielk/gotool v1.0.0/go.mod h1:XhKaO+MFFWcvkIS/tQcRk01m1F5IRFswLeQ+oQHNcck=
 github.com/klauspost/compress v1.13.6/go.mod h1:/3/Vjq9QcHkK5uEr5lBEmyoZ1iFhe47etQ6QUkpK6sk=
-github.com/klauspost/compress v1.19.2 h1:hMRETovs/pu/dVWN7zIT1PGG8t509MwT6bO7XSi26R8=
-github.com/klauspost/compress v1.19.2/go.mod h1:cwPg85FWrGar70rWktvGQj8/hthj3wpl0PGDogxkrSQ=
+github.com/klauspost/compress v1.20.0 h1:a3C1ke2ohxFymNlb2HWAHjDeKCI90scRskErZkR0ezA=
+github.com/klauspost/compress v1.20.0/go.mod h1:LUdAzn7YLVvxLpc7y3V1m40wESHTgc1422pwwBSKYuI=
 github.com/klauspost/cpuid/v2 v2.3.0 h1:S4CRMLnYUhGeDFDqkGriYKdfoFlDnMtqTiI/sFzhA9Y=
 github.com/klauspost/cpuid/v2 v2.3.0/go.mod h1:hqwkgyIinND0mEev00jJYCxPNVRVXFQeu1XKlok6oO0=
 github.com/kr/pretty v0.1.0/go.mod h1:dAy3ld7l9f0ibDNOQOHHMYYIIbhfbHSm3C4ZsoJORNo=
@@ -343,8 +343,6 @@ github.com/maximhq/bifrost/plugins/semanticcache v1.6.0 h1:8XCCHVqdpCp1rOSElC1BO
 github.com/maximhq/bifrost/plugins/semanticcache v1.6.0/go.mod h1:+b8DoeecS9ZiQUP8+KzbUjMQbVIwu/R0sxcHVO40SV8=
 github.com/maximhq/bifrost/plugins/telemetry v1.6.0 h1:Bxa5nfnf8B58H6i0tzZ4suRFZJuZ7txUZDAWEtsmeew=
 github.com/maximhq/bifrost/plugins/telemetry v1.6.0/go.mod h1:CyNNHtcXqZbiTjx1rEyhz8bYeUq1epsQs5it9dUL1yc=
-github.com/maximhq/fasthttp v1.73.1 h1:nzm9mzZD1HEylzF41gk/4jW3jDGGRcOMaJmbX1OmQBg=
-github.com/maximhq/fasthttp v1.73.1/go.mod h1:KqkgZrjpWx1jdy99/J9SlOVjSp9H+uWJaVAHTNGAgeU=
 github.com/maximhq/maxim-go v0.2.1 h1:hCp8dQ4HsyyNC+y5HCUuY/HFD0sOnGkjL5MdYCHkgEQ=
 github.com/maximhq/maxim-go v0.2.1/go.mod h1:nwFznXy0Dn4mxXGU4X+BCnE3VP68L+FPEaW0yUgk96o=
 github.com/molecule-man/go-brrr v1.0.1 h1:cEjgx8hgNw6UGdhQ94SPDbPkKuRbkUcxBO3IzbGpA/o=
@@ -479,6 +477,8 @@ github.com/twitchyliquid64/golang-asm v0.15.1 h1:SU5vSMR7hnwNxj24w34ZyCi/FmDZTkS
 github.com/twitchyliquid64/golang-asm v0.15.1/go.mod h1:a1lVb/DtPvCB8fslRZhAngC2+aY1QWCk3Cedj/Gdt08=
 github.com/valyala/bytebufferpool v1.0.0 h1:GqA5TC/0021Y/b9FG4Oi9Mr3q7XYx6KllzawFIhcdPw=
 github.com/valyala/bytebufferpool v1.0.0/go.mod h1:6bBcMArwyJ5K/AmCkWv1jt77kVWyCJ6HpOuEn7z0Csc=
+github.com/valyala/fasthttp v1.74.0 h1:wMS9fnO2QTALozYx5pId2Vi7ZwU/epUkY8i/KPWCHoU=
+github.com/valyala/fasthttp v1.74.0/go.mod h1:3ARmLamUcw7ElxVtC8PXaGzQ6VEuvnetlkrwIklQBSE=
 github.com/weaviate/weaviate v1.38.0 h1:QmlF5XC+v9vObvnSZ7QClgBgDK8YKJqx6+H3Q2Mshpo=
 github.com/weaviate/weaviate v1.38.0/go.mod h1:FdY91pueSghcAI6ocMjq7eo0P0IL2A5rvZv3LvLUYZE=
 github.com/weaviate/weaviate-go-client/v5 v5.7.1 h1:vEMxh486QqRqWaq58UEe/TiTbGbo9T5x7ZPFd5QENvQ=
