@@ -350,7 +350,7 @@
                       "integrations/guardrails/crowdstrike-aidr",
                       "integrations/guardrails/grayswan",
                       "integrations/guardrails/patronus-ai",
-                      "integrations/guardrails/lakera",
+                      "integrations/guardrails/checkpoint",
                       "integrations/guardrails/repello-argus"
                     ]
                   }
@@ -603,7 +603,7 @@
               "integrations/guardrails/crowdstrike-aidr",
               "integrations/guardrails/grayswan",
               "integrations/guardrails/patronus-ai",
-              "integrations/guardrails/lakera",
+              "integrations/guardrails/checkpoint",
               "integrations/guardrails/repello-argus"
             ]
           },
@@ -2261,6 +2261,10 @@
     ]
   },
   "redirects": [
+    {
+      "source": "/integrations/guardrails/lakera",
+      "destination": "/integrations/guardrails/checkpoint"
+    },
     {
       "source": "/enterprise/mcp-tool-groups",
       "destination": "/enterprise/virtual-mcps"
