@@ -17,15 +17,25 @@ import (
 //     by the name the caller sent. A client that maps a caller-facing name back
 //     to the wrong upstream tool produces a correct-looking response and a
 //     wrong counter, and nothing else catches that.
+//   - OpenStreams is the stream-level leak signal. TCP-level leak detection
+//     lives on the Fleet instead (see Fleet.Connections), because one listener
+//     serves every virtual server and a connection cannot be attributed to one
+//     of them.
 type CountersSnapshot struct {
 	Requests    int64 `json:"requests"`    // MCP requests served, including ones later faulted
 	Initializes int64 `json:"initializes"` // successful initialize handshakes
 	Sessions    int64 `json:"sessions"`    // distinct session ids issued
 	ToolsList   int64 `json:"tools_list"`  // tools/list requests answered, faulted or not
 	Pings       int64 `json:"pings"`
+	OpenStreams int64 `json:"open_streams"` // server-to-client streams currently held open
+	MaxStreams  int64 `json:"max_streams"`  // high-water mark of the above
+	Faulted     int64 `json:"faulted"`      // requests that returned an injected failure
 
 	// Calls counts tools/call by resolved tool name.
 	Calls map[string]int64 `json:"calls"`
+	// CallsByIdentity counts tools/call by the identity that made them, which
+	// is how "revoking user A did not affect user B" becomes checkable.
+	CallsByIdentity map[string]int64 `json:"calls_by_identity"`
 	// Methods counts every JSON-RPC method seen, including ones this mock does
 	// not implement, so an unexpected method surfaces rather than vanishing.
 	Methods map[string]int64 `json:"methods"`
@@ -67,6 +77,7 @@ func newCounters() *Counters {
 func newSnapshot() CountersSnapshot {
 	return CountersSnapshot{
 		Calls:           map[string]int64{},
+		CallsByIdentity: map[string]int64{},
 		Methods:         map[string]int64{},
 		SessionRequests: map[string]int64{},
 	}
@@ -111,9 +122,35 @@ func (c *Counters) ping() {
 	c.mu.Unlock()
 }
 
-func (c *Counters) call(tool string) {
+func (c *Counters) call(tool, identity string) {
 	c.mu.Lock()
 	c.d.Calls[tool]++
+	if identity != "" {
+		c.d.CallsByIdentity[identity]++
+	}
+	c.mu.Unlock()
+}
+
+func (c *Counters) faulted() {
+	c.mu.Lock()
+	c.d.Faulted++
+	c.mu.Unlock()
+}
+
+func (c *Counters) streamOpened() {
+	c.mu.Lock()
+	c.d.OpenStreams++
+	if c.d.OpenStreams > c.d.MaxStreams {
+		c.d.MaxStreams = c.d.OpenStreams
+	}
+	c.mu.Unlock()
+}
+
+func (c *Counters) streamClosed() {
+	c.mu.Lock()
+	if c.d.OpenStreams > 0 {
+		c.d.OpenStreams--
+	}
 	c.mu.Unlock()
 }
 
@@ -123,6 +160,7 @@ func (c *Counters) Snapshot() CountersSnapshot {
 	defer c.mu.Unlock()
 	out := c.d
 	out.Calls = copyCounts(c.d.Calls)
+	out.CallsByIdentity = copyCounts(c.d.CallsByIdentity)
 	out.Methods = copyCounts(c.d.Methods)
 	out.SessionRequests = copyCounts(c.d.SessionRequests)
 	return out
@@ -133,7 +171,12 @@ func (c *Counters) Snapshot() CountersSnapshot {
 func (c *Counters) Reset() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	open := c.d.OpenStreams
 	c.d = newSnapshot()
+	// Open streams are a live fact about the world rather than a tally, so
+	// resetting counts must not claim the streams went away.
+	c.d.OpenStreams = open
+	c.d.MaxStreams = open
 }
 
 func copyCounts(in map[string]int64) map[string]int64 {
