@@ -253,3 +253,112 @@ func TestCheckAnthropicPassthrough_OAuthHeaderRouting(t *testing.T) {
 		}
 	}
 }
+
+// TestIsClaudeModel_MultiFamilyProvidersResolveFamily locks in that the response-side raw
+// passthrough decision resolves the model family instead of sniffing names. An alias labelled
+// "claude-opus" on Bedrock Mantle may point at an OpenAI model; forwarding that provider's
+// Responses body verbatim to an Anthropic client produced a malformed HTTP 200 ("body is JSON
+// but not a Message") in Claude Code. The alias's ModelID — not its label — decides.
+func TestIsClaudeModel_MultiFamilyProvidersResolveFamily(t *testing.T) {
+	claudeAlias := &schemas.ResolvedAlias{
+		Key:    "claude-opus",
+		Config: &schemas.AliasConfig{ModelID: "openai.gpt-5.6-sol"},
+	}
+	neutralAlias := &schemas.ResolvedAlias{
+		Key:    "fast-model",
+		Config: &schemas.AliasConfig{ModelID: "anthropic.claude-sonnet-4-20250514-v1:0"},
+	}
+	// Azure deployment names / Vertex endpoint ids: the Claude identity lives in ModelName, not ModelID.
+	deploymentAlias := &schemas.ResolvedAlias{
+		Key:    "fast-model",
+		Config: &schemas.AliasConfig{ModelID: "prod-deployment-01", ModelName: schemas.Ptr("claude-sonnet-4")},
+	}
+
+	cases := []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string // ExtraFields.OriginalModelRequested
+		alias    string // ExtraFields.ResolvedModelUsed (the wire model)
+		resolved *schemas.ResolvedAlias
+		want     bool
+	}{
+		{"mantle claude-named alias to openai model", schemas.BedrockMantle, "claude-opus", "openai.gpt-5.6-sol", claudeAlias, false},
+		{"vertex claude-named alias to openai model", schemas.Vertex, "claude-opus", "openai.gpt-5.6-sol", claudeAlias, false},
+		{"azure claude-named alias to openai model", schemas.Azure, "claude-opus", "openai.gpt-5.6-sol", claudeAlias, false},
+		{"mantle neutral alias to claude model", schemas.BedrockMantle, "fast-model", "anthropic.claude-sonnet-4-20250514-v1:0", neutralAlias, true},
+		{"mantle unaliased claude model", schemas.BedrockMantle, "claude-sonnet-4-20250514", "claude-sonnet-4-20250514", nil, true},
+		{"mantle unaliased openai model", schemas.BedrockMantle, "gpt-5-6-luna", "gpt-5-6-luna", nil, false},
+		{
+			// Neither name looks Claude, so this keeps converting exactly as it did before the family
+			// check existed — the predicate must never newly enable raw passthrough.
+			name:     "azure deployment alias naming claude only in model_name",
+			provider: schemas.Azure,
+			model:    "fast-model",
+			alias:    "prod-deployment-01",
+			resolved: deploymentAlias,
+			want:     false,
+		},
+		{"anthropic provider always native", schemas.Anthropic, "claude-sonnet-4-20250514", "claude-sonnet-4-20250514", nil, true},
+		{"bedrock is never native", schemas.Bedrock, "claude-sonnet-4-20250514", "anthropic.claude-sonnet-4-20250514-v1:0", nil, false},
+		// Ingress: no alias is resolved yet, so the caller-sent model is all there is to go on.
+		{"ingress claude model", "", "claude-sonnet-5", "", nil, true},
+		{"ingress non-claude model", "", "gpt-5", "", nil, false},
+		{"ingress mantle claude model", schemas.BedrockMantle, "claude-haiku-4-5", "", nil, true},
+		{"ingress vertex claude model", schemas.Vertex, "claude-haiku-4-5", "", nil, true},
+		{"ingress azure claude model", schemas.Azure, "claude-haiku-4-5", "", nil, true},
+		{"ingress mantle openai model", schemas.BedrockMantle, "gpt-5-6-luna", "", nil, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			if tc.resolved != nil {
+				ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, tc.resolved)
+			}
+
+			if got := isClaudeModel(ctx, tc.model, tc.alias, string(tc.provider)); got != tc.want {
+				t.Errorf("isClaudeModel(%q, %q, %q) = %v, want %v", tc.model, tc.alias, tc.provider, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCheckAnthropicPassthrough_ProviderPrefixedClaudeModel pins the ingress half of the
+// passthrough decision for provider-prefixed Claude requests. TestCheckAnthropicPassthrough_
+// OutputConfigEscapeHatch cannot cover this: it asserts UseRawRequestBody ends up false for these
+// providers, which also holds when passthrough was never enabled at all.
+func TestCheckAnthropicPassthrough_ProviderPrefixedClaudeModel(t *testing.T) {
+	cases := []struct {
+		name      string
+		model     string
+		wantRawOn bool
+	}{
+		{"vertex claude", "vertex/claude-haiku-4-5", true},
+		{"bedrock_mantle claude", "bedrock_mantle/claude-haiku-4-5", true},
+		{"azure claude", "azure/claude-haiku-4-5", true},
+		{"bedrock_mantle openai", "bedrock_mantle/gpt-5-6-luna", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reqCtx := &fasthttp.RequestCtx{}
+			reqCtx.Request.Header.SetMethod(fasthttp.MethodPost)
+			reqCtx.Request.Header.Set("user-agent", "claude-code/1.0")
+			reqCtx.Request.Header.Set("x-api-key", "sk-ant-test")
+
+			bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+
+			req := &anthropic.AnthropicMessageRequest{Model: tc.model, MaxTokens: 1024}
+			if err := checkAnthropicPassthrough(reqCtx, bifrostCtx, req); err != nil {
+				t.Fatalf("checkAnthropicPassthrough: %v", err)
+			}
+
+			useRaw, _ := bifrostCtx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool)
+			if useRaw != tc.wantRawOn {
+				t.Errorf("UseRawRequestBody = %v, want %v for %s", useRaw, tc.wantRawOn, tc.model)
+			}
+		})
+	}
+}

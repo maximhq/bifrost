@@ -55,8 +55,7 @@ Runs entirely in-process with no external dependency. Patterns use RE2 syntax. S
               "redaction_strategy": "replace",
               "redaction_mode": "logs_only"
             }
-          ],
-          "sampling_rate": 100
+          ]
         }
       }
     ]
@@ -215,9 +214,7 @@ Supports three auth modes: `keys` (static credentials), `api_key` (Bedrock API k
           "auth_type": "keys",
           "access_key": "env.AWS_ACCESS_KEY_ID",
           "secret_key": "env.AWS_SECRET_ACCESS_KEY",
-          "session_token": "env.AWS_SESSION_TOKEN",
-
-          "sampling_rate": 100
+          "session_token": "env.AWS_SESSION_TOKEN"
         }
       }
     ]
@@ -270,8 +267,7 @@ Supports three auth modes: `api_key`, `default_credential` (managed identity / A
           "indirect_attack_shield_enabled": true,
           "copyright_enabled": false,
           "text_blocklist_enabled": false,
-          "blocklist_names": [],
-          "sampling_rate": 100
+          "blocklist_names": []
         }
       }
     ]
@@ -420,8 +416,7 @@ Calls CrowdStrike AIDR's `guard_chat_completions` endpoint for policy-driven AI 
           "violation_threshold": 0.7,
           "policy_id": "YOUR_GRAYSWAN_POLICY_ID",
           "policy_ids": [],
-          "rules": {},
-          "sampling_rate": 100
+          "rules": {}
         }
       }
     ]
@@ -525,7 +520,6 @@ Any field marked **env.\* supported** accepts a bare `"env.VAR_NAME"` string in 
 | `role_arn` | No | Yes | IAM role ARN to assume (optional, `auth_type="iam_role"`) |
 | `external_id` | No | Yes | External ID for role assumption |
 | `session_name` | No | Yes | Session name for role assumption |
-| `sampling_rate` | No | **Plain only** | `0`–`100`; percentage of requests to evaluate (default: `100`) |
 | `timeout` | No | **Plain only** | Execution timeout in seconds |
 
 ### Azure Content Safety
@@ -546,7 +540,6 @@ Any field marked **env.\* supported** accepts a bare `"env.VAR_NAME"` string in 
 | `text_blocklist_enabled` | No | **Plain only** | Enable custom blocklists (default: `false`) |
 | `scopes` | No | **Plain only** | OAuth scopes (string array) |
 | `blocklist_names` | No | **Plain only** | Blocklist names to apply (string array) |
-| `sampling_rate` | No | **Plain only** | `0`–`100`; percentage of requests to evaluate (default: `100`) |
 | `timeout` | No | **Plain only** | Execution timeout in seconds |
 
 ### Microsoft Presidio
@@ -632,7 +625,6 @@ Any field marked **env.\* supported** accepts a bare `"env.VAR_NAME"` string in 
 | `policy_id` | Yes | **Plain only** | Required Gray Swan policy ID string |
 | `policy_ids` | No | **Plain only** | Multiple policy IDs (string array) |
 | `rules` | No | **Plain only** | Inline rule map (`{ "rule_name": "description" }`) |
-| `sampling_rate` | No | **Plain only** | `0`–`100`; percentage of requests to evaluate (default: `100`) |
 | `timeout` | No | **Plain only** | Execution timeout in seconds |
 
 ### Lakera Guard
@@ -664,7 +656,6 @@ Any field marked **env.\* supported** accepts a bare `"env.VAR_NAME"` string in 
 | `patterns[].action` | No | **Plain only** | `detect_only` \| `block` \| `redact` (default: `block`) |
 | `patterns[].redaction_strategy` | No | **Plain only** | `replace` \| `mask` \| `hash` (default: `replace`) |
 | `patterns[].redaction_mode` | No | **Plain only** | `runtime` \| `logs_only` \| `runtime_reversible` (default: `runtime`) |
-| `sampling_rate` | No | **Plain only** | `0`–`100`; percentage of requests to evaluate (default: `100`) |
 
 ### Secrets
 
@@ -747,6 +738,8 @@ Target-specific variables are isolated. For example, `model` is unavailable to M
         "apply_to": "output",
         "sampling_rate": 100,
         "timeout": 15,
+        "max_turns_to_send": 8,
+        "evaluation_mode": "per_turn",
         "stream_replay_event_interval_ms": 25,
         "provider_config_ids": [3]
       },
@@ -790,6 +783,9 @@ Target-specific variables are isolated. For example, `model` is unavailable to M
 | `apply_to` | Yes | `"input"`, `"output"`, or `"both"`. For MCP rules, input is the tool arguments and output is the tool result |
 | `sampling_rate` | No | `0`–`100`; percentage of requests to evaluate (default: `100`) |
 | `timeout` | No | Rule timeout in seconds |
+| `max_turns_to_send` | No | Number of historical conversation turns to send to the guardrail provider; the latest message is always included. `0` sends all turns |
+| `evaluation_mode` | No | `bundled` (default) sends all selected turns in one guardrail call; `per_turn` evaluates each turn in isolation and uses more provider calls |
+| `stream_replay_event_interval_ms` | No | Delay in milliseconds between buffered events after block-capable streaming output guardrails allow the response. `0` sends buffered events immediately; maximum `1000` |
 | `provider_config_ids` | No | `id` values of providers to invoke when this rule matches. Multiple providers run in parallel |
 
 `max_turns_to_send`, `evaluation_mode`, and `stream_replay_event_interval_ms` configure LLM conversation and streaming behavior. They do not change MCP tool execution behavior.
@@ -861,6 +857,9 @@ Target-specific variables are isolated. For example, `model` is unavailable to M
         "apply_to": "both",
         "sampling_rate": 100,
         "timeout": 15,
+        "max_turns_to_send": 8,
+        "evaluation_mode": "per_turn",
+        "stream_replay_event_interval_ms": 25,
         "provider_config_ids": [2]
       }
     ]

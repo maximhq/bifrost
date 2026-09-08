@@ -87,7 +87,7 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 			},
 			ResponsesResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
 				soToolName, _ := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string)
-				if soToolName == "" && isClaudeModel(resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed, string(resp.ExtraFields.Provider)) {
+				if soToolName == "" && isClaudeModel(ctx, resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed, string(resp.ExtraFields.Provider)) {
 					if resp.ExtraFields.RawResponse != nil {
 						return resp.ExtraFields.RawResponse, nil
 					}
@@ -359,7 +359,7 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 
 // shouldUsePassthrough checks if the request should be sent to the passthrough endpoint.
 func shouldUsePassthrough(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, alias string) bool {
-	return anthropic.IsClaudeCodeRequest(ctx) && isClaudeModel(model, alias, string(provider))
+	return anthropic.IsClaudeCodeRequest(ctx) && isClaudeModel(ctx, model, alias, string(provider))
 }
 
 // serverToolSynthesizesResultBlock reports whether an item's output_item.done
@@ -428,12 +428,32 @@ func mustConvertInPassthrough(resp *schemas.BifrostResponsesStreamResponse) bool
 	return false
 }
 
-func isClaudeModel(model, alias, provider string) bool {
-	return (provider == string(schemas.Anthropic) ||
-		(provider == "" && (schemas.IsAnthropicModel(model) || schemas.IsAnthropicModel(alias)))) ||
-		(provider == string(schemas.BedrockMantle) && (schemas.IsAnthropicModel(model) || schemas.IsAnthropicModel(alias))) ||
-		(provider == string(schemas.Vertex) && (schemas.IsAnthropicModel(model) || schemas.IsAnthropicModel(alias))) ||
-		(provider == string(schemas.Azure) && (schemas.IsAnthropicModel(model) || schemas.IsAnthropicModel(alias)))
+// isClaudeModel reports whether this attempt talks to a native Anthropic Messages surface, which
+// is what makes forwarding the upstream response verbatim safe. model is the caller-sent model and
+// alias the resolved wire model, empty at ingress; provider is empty only when the caller sent no
+// provider prefix.
+//
+// Bedrock Mantle, Vertex and Azure are multi-family, so they resolve the model family instead of
+// sniffing names: an alias labelled "claude-opus" may well point at an OpenAI model, and passing an
+// OpenAI Responses body back to an Anthropic client yields a malformed (HTTP 200) response.
+func isClaudeModel(ctx *schemas.BifrostContext, model, alias, provider string) bool {
+	switch provider {
+	case string(schemas.Anthropic):
+		return true
+	case string(schemas.BedrockMantle), string(schemas.Vertex), string(schemas.Azure):
+		// alias is empty at ingress, where the caller-sent model is all there is to resolve against.
+		candidate := alias
+		if candidate == "" {
+			candidate = model
+		}
+		// Name check first so this stays a strict subset of the pre-family behavior: the family
+		// resolution can only downgrade a Claude-looking name, never promote a non-Claude one.
+		return (schemas.IsAnthropicModel(model) || schemas.IsAnthropicModel(alias)) &&
+			schemas.IsAnthropicModelFamily(ctx, candidate)
+	case "":
+		return schemas.IsAnthropicModel(model) || schemas.IsAnthropicModel(alias)
+	}
+	return false
 }
 
 // extractAnthropicListModelsParams extracts query parameters for list models request

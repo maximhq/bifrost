@@ -4482,13 +4482,20 @@
                   }
                 },
                 {
-                  "not": {
-                    "required": ["password", "passwordCommand"]
-                  }
-                },
-                {
-                  "not": {
-                    "required": ["existingSecret", "passwordCommand"]
+                  "if": {
+                    "required": ["passwordCommand"]
+                  },
+                  "then": {
+                    "properties": {
+                      "password": {
+                        "const": "",
+                        "description": "Must be empty (or omitted) when passwordCommand is set."
+                      },
+                      "existingSecret": {
+                        "const": "",
+                        "description": "Must be empty (or omitted) when passwordCommand is set."
+                      }
+                    }
                   }
                 }
               ],
@@ -4758,13 +4765,20 @@
               }
             },
             {
-              "not": {
-                "required": ["password", "passwordCommand"]
-              }
-            },
-            {
-              "not": {
-                "required": ["existingSecret", "passwordCommand"]
+              "if": {
+                "required": ["passwordCommand"]
+              },
+              "then": {
+                "properties": {
+                  "password": {
+                    "const": "",
+                    "description": "Must be empty (or omitted) when passwordCommand is set."
+                  },
+                  "existingSecret": {
+                    "const": "",
+                    "description": "Must be empty (or omitted) when passwordCommand is set."
+                  }
+                }
               }
             }
           ]

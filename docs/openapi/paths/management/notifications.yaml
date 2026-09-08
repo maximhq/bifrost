@@ -47,6 +47,7 @@ notifications:
         $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
   post:
     operationId: createNotification
     summary: Publish a dashboard notification
@@ -84,3 +85,4 @@ notifications:
         $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []

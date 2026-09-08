@@ -128,6 +128,7 @@ logs:
           default: desc
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -154,6 +155,7 @@ logs:
             $ref: '../../schemas/management/logging.yaml#/DeleteLogsRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Logs deleted successfully
@@ -268,6 +270,7 @@ logs-stats:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -289,6 +292,7 @@ logs-dropped:
       - Logging
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -306,6 +310,7 @@ logs-filterdata:
       - Logging
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -332,6 +337,7 @@ logs-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -387,6 +393,7 @@ logs-histogram:
       - $ref: '#/_histogram-parameters/content_search'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -427,6 +434,7 @@ logs-histogram-tokens:
       - $ref: '#/_histogram-parameters/content_search'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -467,6 +475,7 @@ logs-histogram-cost:
       - $ref: '#/_histogram-parameters/content_search'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -507,6 +516,7 @@ logs-histogram-models:
       - $ref: '#/_histogram-parameters/content_search'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -547,6 +557,7 @@ logs-histogram-latency:
       - $ref: '#/_histogram-parameters/content_search'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -587,6 +598,7 @@ logs-histogram-cost-by-provider:
       - $ref: '#/_histogram-parameters/content_search'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -627,6 +639,7 @@ logs-histogram-tokens-by-provider:
       - $ref: '#/_histogram-parameters/content_search'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -667,6 +680,7 @@ logs-histogram-latency-by-provider:
       - $ref: '#/_histogram-parameters/content_search'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -880,6 +894,10 @@ logs-recalculate-cost:
     description: |
       Starts an asynchronous background job that recalculates log costs in batches.
       The returned payload is a job status object that can be polled via the status endpoint.
+
+      Recalculation updates the cost fields on matching log records only. It does not
+      retroactively debit, credit, or otherwise adjust governance budget usage. Governance
+      budgets retain the usage recorded when each request was originally processed.
     tags:
       - Logging
     requestBody:
@@ -890,6 +908,7 @@ logs-recalculate-cost:
             $ref: '../../schemas/management/logging.yaml#/RecalculateCostRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '202':
         description: Cost recalculation job accepted
@@ -931,6 +950,7 @@ logs-recalculate-cost-status:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Recalculation job status
@@ -940,6 +960,58 @@ logs-recalculate-cost-status:
               $ref: '../../schemas/management/logging.yaml#/RecalculateCostResponse'
       '404':
         description: Recalculation job not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '503':
+        description: Background job runner is not available
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+logs-recalculate-cost-cancel:
+  post:
+    operationId: cancelRecalculateCost
+    summary: Cancel log cost recalculation
+    description: |
+      Cancels the recalculation job selected by `id`, or the current in-flight recalculation
+      when `id` is omitted. Cancellation stops further batches; cost updates already committed
+      to log records are retained and are not rolled back. Logs that the job has not processed
+      remain unchanged.
+
+      The response uses the same job-status shape as the status endpoint and includes the
+      partial progress recorded at the time of the response. The worker may still be unwinding,
+      so poll the status endpoint with the returned `id` to obtain its final counters. If the
+      selected job has already reached a terminal state, the endpoint returns it unchanged.
+    tags:
+      - Logging
+    parameters:
+      - name: id
+        in: query
+        description: Optional recalculation job ID. Omit to cancel the current in-flight recalculation.
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Recalculation cancellation accepted, or the selected job was already terminal
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/RecalculateCostResponse'
+      '400':
+        description: The supplied job ID belongs to a different background-job type
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '404':
+        description: The requested job was not found, or there is no in-flight recalculation to cancel
         content:
           application/json:
             schema:
@@ -1044,6 +1116,7 @@ mcp-logs:
           default: desc
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -1070,6 +1143,7 @@ mcp-logs:
             $ref: '../../schemas/management/logging.yaml#/DeleteMCPLogsRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: MCP tool logs deleted successfully
@@ -1098,6 +1172,7 @@ mcp-logs-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: MCP tool log found
@@ -1175,6 +1250,7 @@ mcp-logs-stats:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -1196,6 +1272,7 @@ mcp-logs-filterdata:
       - Logging
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -1244,6 +1321,7 @@ logs-sessions-by-id:
           default: asc
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Session logs retrieved successfully
@@ -1272,6 +1350,7 @@ logs-sessions-summary-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Session summary retrieved successfully
@@ -1327,6 +1406,7 @@ logs-rankings:
       - $ref: '#/_ranking-parameters/all'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Model rankings retrieved successfully
@@ -1401,6 +1481,7 @@ logs-dashboard:
       - $ref: '#/_ranking-parameters/all'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Dashboard data retrieved successfully
@@ -1450,6 +1531,7 @@ logs-histogram-cost-by-dimension:
       - $ref: '#/_histogram-parameters/content_search'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Dimension cost histogram retrieved successfully
@@ -1498,6 +1580,7 @@ logs-histogram-tokens-by-dimension:
       - $ref: '#/_histogram-parameters/content_search'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Dimension token histogram retrieved successfully
@@ -1546,6 +1629,7 @@ logs-histogram-latency-by-dimension:
       - $ref: '#/_histogram-parameters/content_search'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Dimension latency histogram retrieved successfully
@@ -1620,6 +1704,7 @@ mcp-logs-histogram:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: MCP histogram retrieved successfully
@@ -1694,6 +1779,7 @@ mcp-logs-histogram-cost:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: MCP cost histogram retrieved successfully
@@ -1768,6 +1854,7 @@ mcp-logs-histogram-top-tools:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: MCP top tools retrieved successfully

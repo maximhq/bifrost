@@ -240,7 +240,13 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 			return gemini.ToGeminiError(err)
 		},
 		StreamConfig: &StreamConfig{
-			HeartbeatFraming: lib.SSEHeartbeatDelimitedCommentBlock,
+			// No SSE heartbeat on this route. The official google-genai Python SDK (and
+			// LangChain's ChatGoogleGenerativeAI on top of it) json.loads every stream line
+			// that is not "data:" or blank, so a comment line in either framing aborts the
+			// stream with UnknownApiResponseError. The delimited block from PR 6252 only
+			// satisfied the JavaScript SDK. Disconnect detection here is therefore reactive
+			// only, the same trade-off the Bedrock route makes.
+			HeartbeatFraming: lib.SSEHeartbeatNone,
 			ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
 				// Store state in context so it persists across chunks of the same stream
 				const stateKey = "gemini_stream_state"

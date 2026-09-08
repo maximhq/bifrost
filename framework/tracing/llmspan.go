@@ -148,6 +148,60 @@ func PopulateErrorAttributes(err *schemas.BifrostError) map[string]any {
 		attrs[schemas.AttrHTTPResponseStatusCode] = *err.StatusCode
 	}
 
+	// Usage the provider billed us for even though the request failed or was
+	// cancelled (see BifrostError.ExtraFields.BilledUsage). Governance and the
+	// logging plugin already charge for this; without emitting it here every
+	// span-based consumer — the otel plugin and the BigQuery / Datadog / Kafka /
+	// Pub-Sub connectors — records zero tokens for the same request.
+	if u := err.ExtraFields.BilledUsage; u != nil {
+		// Everything below is gated on > 0: attachBilledUsageFromContext
+		// (core/providers/utils) attaches a BilledUsage when *any* of tokens,
+		// details or cost is set, so a details-only usage reaches here with
+		// zero totals; emitting those would stamp explicit zeros on the span
+		// where the success paths only ever see provider-reported values.
+		if u.PromptTokens > 0 {
+			attrs[schemas.AttrInputTokens] = u.PromptTokens
+		}
+		if u.CompletionTokens > 0 {
+			attrs[schemas.AttrOutputTokens] = u.CompletionTokens
+		}
+		if u.TotalTokens > 0 {
+			attrs[schemas.AttrTotalTokens] = u.TotalTokens
+		}
+
+		if d := u.PromptTokensDetails; d != nil {
+			// The nested cached-write detail keys are namespaced per request
+			// type on the success paths (input_token_details.* for Responses,
+			// prompt_token_details.* for chat); mirror that here instead of
+			// emitting both families, which would break the otel plugin's
+			// assumption that the two namespaces are mutually exclusive.
+			isResponses := err.ExtraFields.RequestType == schemas.ResponsesRequest ||
+				err.ExtraFields.RequestType == schemas.ResponsesStreamRequest
+			if d.CachedReadTokens > 0 {
+				attrs[schemas.AttrUsageCacheReadInputTokens] = d.CachedReadTokens
+			}
+			if d.CachedWriteTokens > 0 {
+				attrs[schemas.AttrUsageCacheCreationInputTokens] = d.CachedWriteTokens
+			}
+			if wd := d.CachedWriteTokenDetails; wd != nil {
+				if wd.CachedWriteTokens5m > 0 {
+					if isResponses {
+						attrs[schemas.AttrInputTokenDetailsCachedWrite5m] = wd.CachedWriteTokens5m
+					} else {
+						attrs[schemas.AttrPromptTokenDetailsCachedWrite5m] = wd.CachedWriteTokens5m
+					}
+				}
+				if wd.CachedWriteTokens1h > 0 {
+					if isResponses {
+						attrs[schemas.AttrInputTokenDetailsCachedWrite1h] = wd.CachedWriteTokens1h
+					} else {
+						attrs[schemas.AttrPromptTokenDetailsCachedWrite1h] = wd.CachedWriteTokens1h
+					}
+				}
+			}
+		}
+	}
+
 	return attrs
 }
 

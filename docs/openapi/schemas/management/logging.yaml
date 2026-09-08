@@ -580,10 +580,19 @@ RecalculateCostRequest:
   description: Recalculate cost request
   properties:
     filters:
-      $ref: '#/SearchFilters'
-    limit:
-      type: integer
-      description: Maximum number of logs to process (default 200, max 1000)
+      $ref: '#/RecalculateCostFilters'
+
+RecalculateCostFilters:
+  allOf:
+    - $ref: '#/SearchFilters'
+    - type: object
+      properties:
+        period:
+          type: string
+          enum: [1h, 6h, 24h, 7d, 30d]
+          description: >-
+            Relative time window resolved when the job is created. When recognized, it takes
+            precedence over start_time and end_time.
 
 RecalculateCostResponse:
   type: object
@@ -595,6 +604,7 @@ RecalculateCostResponse:
     status:
       type: string
       description: Current job status
+      enum: [pending, running, completed, failed, cancelled, idle]
     total:
       type: integer
       format: int64
@@ -611,6 +621,12 @@ RecalculateCostResponse:
       type: integer
       format: int64
       description: Logs skipped during processing
+    unpriceable:
+      type: integer
+      format: int64
+      description: >-
+        Subset of skipped logs whose pricing inputs could not be recovered, so their existing
+        cost was left unchanged.
     message:
       type: string
       description: Optional progress message

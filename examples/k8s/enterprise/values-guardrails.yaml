@@ -57,6 +57,9 @@ bifrost:
         apply_to: "output"
         sampling_rate: 90
         timeout: 1800
+        max_turns_to_send: 8
+        evaluation_mode: "per_turn"
+        stream_replay_event_interval_ms: 25
         provider_config_ids: [2002, 2006, 2008, 2009, 2010]
       - id: 1004
         name: "both-phases-safety-net"

@@ -254,6 +254,9 @@ Guardrail Rules are custom policies that define when and how content validation 
 | `apply_to` | enum | Yes | When to apply: `input`, `output`, or `both`. For MCP rules, input means tool arguments and output means the tool result |
 | `sampling_rate` | integer | No | Percentage of requests to evaluate (0-100) |
 | `timeout` | integer | No | Execution timeout in seconds (default: 60) |
+| `max_turns_to_send` | integer | No | Number of historical conversation turns sent to the guardrail provider; the latest message is always included. `0` sends all turns |
+| `evaluation_mode` | enum | No | `bundled` (default) sends selected turns in one guardrail call; `per_turn` evaluates each turn in isolation and uses more provider calls |
+| `stream_replay_event_interval_ms` | integer | No | Delay in milliseconds between buffered events after block-capable streaming output guardrails allow the response. `0` sends buffered events immediately; maximum `1000` |
 | `provider_config_ids` | array | No | IDs of profiles to use for evaluation |
 
 ### Creating Rules
@@ -396,6 +399,8 @@ curl -X DELETE http://localhost:8080/api/guardrails/rules/1
         "apply_to": "output",
         "sampling_rate": 100,
         "timeout": 3000,
+        "max_turns_to_send": 8,
+        "evaluation_mode": "per_turn",
         "provider_config_ids": [2]
       },
       {
@@ -441,6 +446,8 @@ bifrost:
         apply_to: "output"
         sampling_rate: 100
         timeout: 3000
+        max_turns_to_send: 8
+        evaluation_mode: per_turn
         stream_replay_event_interval_ms: 25
         provider_config_ids: [2]
       - id: 3

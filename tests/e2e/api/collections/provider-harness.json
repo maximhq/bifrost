@@ -137066,6 +137066,144 @@
           }
         }
       ]
+    },
+    {
+      "name": "60. Bedrock Kimi reasoning signature replay fail-soft",
+      "description": "reasoningContent.reasoningText.signature is minted and verified by Anthropic models only. A conversation that\nswitches model mid-flight - a routing rule, a fallback, or a client picking a new model per turn - replays the\nearlier model's signature onto whatever answers next, and a non-Anthropic Bedrock model refuses it outright:\n\n  400 ValidationException: \"This model doesn't support the reasoningContent.reasoningText.signature field.\n       Remove reasoningContent.reasoningText.signature and try again.\"\n\nProduction path: POST /v1/chat/completions -> ChatAssistantMessage.ReasoningDetails[].Signature ->\nbedrock convertMessage (core/providers/bedrock/utils.go) -> reasoningContent.reasoningText.signature on Converse.\ncore/encryptedreasoning.go's fail-soft is what heals it: isEncryptedReasoningRejection recognises the refusal,\nstripChatUnverifiableReasoning clears every signature, and the request is retried once on the same key.\n\nThe detector originally required the upstream to say the payload was UNVERIFIABLE (invalid / could not be\nverified / malformed). Bedrock's wording here says the opposite - the field is not accepted at all - so it\nmatched no marker, no strip ran, and the 400 reached the client. unsupportedFieldMarkers closes that.\n\nCoverage note: folder 44 pins the same fail-soft, but only on /openai/v1/responses for Anthropic and OpenAI\nmodels - a different carrier (encrypted_content on a reasoning item) and a different strip function\n(stripResponsesEncryptedContent). This folder is the chat-shape, non-Anthropic-Bedrock half.\n\nFIXTURE CONSTRAINT - do not 'clean up' these bodies. The signature on the assistant turn IS the trigger; a case\nthat drops it silently stops testing anything (case 3 is the deliberate signature-free control). The signature\nvalue is a fixture and is not expected to verify anywhere - being unverifiable is the point.",
+      "item": [
+        {
+          "name": "bedrock/moonshotai.kimi-k2.5 /v1/chat/completions foreign reasoning signature degrades - failsoft",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('foreign reasoning signature degrades instead of 400ing', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'Bedrock rejection reached the client; the reasoning-replay fail-soft did not fire').to.not.include('reasoningContent.reasoningText.signature');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  pm.expect(pm.response.json().choices, 'no choices returned after the stripped retry').to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/moonshotai.kimi-k2.5\",\"max_tokens\":32,\"messages\":[{\"role\":\"user\",\"content\":\"What is 2+2?\"},{\"role\":\"assistant\",\"content\":\"4\",\"reasoning_details\":[{\"index\":0,\"type\":\"reasoning.text\",\"text\":\"The user asked for 2+2. That is 4.\",\"signature\":\"ErUBCkYIBxgCKkDQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvEgyBFHARNESSfixture0001GhjSnIj7hU8mGofiw3SE2HL8kuMRcnfV3pGV7iU\"}]},{\"role\":\"user\",\"content\":\"Now what is 3+3? Answer with just the number.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/moonshotai.kimi-k2.5 /v1/chat/completions streaming foreign reasoning signature degrades - failsoft",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('streaming foreign reasoning signature degrades instead of 400ing', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'Bedrock rejection reached the client on the streaming path; the reasoning-replay fail-soft did not fire').to.not.include('reasoningContent.reasoningText.signature');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  pm.expect(body, 'no SSE chunks returned after the stripped retry').to.include('data:');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/moonshotai.kimi-k2.5\",\"max_tokens\":32,\"messages\":[{\"role\":\"user\",\"content\":\"What is 2+2?\"},{\"role\":\"assistant\",\"content\":\"4\",\"reasoning_details\":[{\"index\":0,\"type\":\"reasoning.text\",\"text\":\"The user asked for 2+2. That is 4.\",\"signature\":\"ErUBCkYIBxgCKkDQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvEgyBFHARNESSfixture0001GhjSnIj7hU8mGofiw3SE2HL8kuMRcnfV3pGV7iU\"}]},{\"role\":\"user\",\"content\":\"Now what is 3+3? Answer with just the number.\"}],\"stream\":true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/moonshotai.kimi-k2.5 /v1/chat/completions signature-free reasoning replay accepted",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('signature-free reasoning replay is accepted as-is', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'the model refused the reasoningContent block itself, so stripping only the signature could not heal a replay').to.not.include('support the reasoningContent');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  pm.expect(pm.response.json().choices, 'no choices returned').to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/moonshotai.kimi-k2.5\",\"max_tokens\":32,\"messages\":[{\"role\":\"user\",\"content\":\"What is 2+2?\"},{\"role\":\"assistant\",\"content\":\"4\",\"reasoning_details\":[{\"index\":0,\"type\":\"reasoning.text\",\"text\":\"The user asked for 2+2. That is 4.\"}]},{\"role\":\"user\",\"content\":\"Now what is 3+3? Answer with just the number.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

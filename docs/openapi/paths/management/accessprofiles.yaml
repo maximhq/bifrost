@@ -38,6 +38,7 @@ access-profiles:
           type: boolean
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -71,6 +72,7 @@ access-profiles:
             $ref: '../../schemas/management/accessprofiles.yaml#/CreateAccessProfileRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '201':
         description: Profile created
@@ -107,6 +109,7 @@ access-profiles-by-id:
           type: integer
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -149,6 +152,7 @@ access-profiles-by-id:
             $ref: '../../schemas/management/accessprofiles.yaml#/UpdateAccessProfileRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Profile updated
@@ -186,6 +190,7 @@ access-profiles-by-id:
           type: integer
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Profile deleted
@@ -222,6 +227,7 @@ access-profiles-activate:
           type: integer
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Profile is active.
@@ -256,6 +262,7 @@ access-profiles-deactivate:
           type: integer
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Profile is inactive.
@@ -296,6 +303,7 @@ access-profiles-clone:
             $ref: '../../schemas/management/accessprofiles.yaml#/CloneProfileRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '201':
         description: Cloned profile created.
@@ -342,6 +350,7 @@ access-profiles-propagate:
             $ref: '../../schemas/management/accessprofiles.yaml#/PropagateRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Propagation result.
@@ -386,6 +395,7 @@ access-profiles-roles:
             $ref: '../../schemas/management/accessprofiles.yaml#/AttachRolesRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Roles attached.
@@ -426,6 +436,7 @@ access-profiles-role-by-id:
           type: integer
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Role detached.
@@ -459,6 +470,7 @@ access-profiles-versions:
           type: integer
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -495,6 +507,7 @@ access-profiles-version-by-number:
           type: integer
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -545,6 +558,7 @@ access-profiles-audit-logs-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -587,6 +601,7 @@ access-profiles-audit-logs-all:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -618,6 +633,7 @@ users-access-profiles:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -655,6 +671,7 @@ users-access-profile-by-id:
           type: integer
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Profile detached.
@@ -722,6 +739,7 @@ users-access-profile-budget-override:
             $ref: '../../schemas/management/governance.yaml#/BudgetOverrideRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Budget override applied successfully
@@ -775,6 +793,7 @@ users-access-profile-budget-override:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Budget override removed successfully
@@ -819,6 +838,7 @@ users-access-profile-virtual-keys:
             $ref: '../../schemas/management/accessprofiles.yaml#/AddVirtualKeyRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Virtual key created.
@@ -857,6 +877,7 @@ users-access-profile-virtual-key-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Virtual key deleted.

@@ -451,7 +451,19 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 		return
 	}
 	respAttrs := PopulateResponseAttributes(resp)
+	// A cancelled stream arrives here with an accumulated response whose usage
+	// is missing the final chunk, so its aggregate token counts read zero. When
+	// the error carries the authoritative BilledUsage, drop those zeros from
+	// the response side: PopulateErrorAttributes gates its own emissions on
+	// > 0, so a zero stamped here would survive the merge and turn "not
+	// recorded" into a false zero on the span.
+	billed := err != nil && err.ExtraFields.BilledUsage != nil
 	for k, v := range respAttrs {
+		if billed && (k == schemas.AttrInputTokens || k == schemas.AttrOutputTokens || k == schemas.AttrTotalTokens) {
+			if n, ok := v.(int); ok && n == 0 {
+				continue
+			}
+		}
 		if k == schemas.AttrFinishReasons {
 			// Spec: gen_ai.response.finish_reasons (string[]) belongs on the GenAI (llm.call) span.
 			span.SetAttribute(schemas.AttrFinishReasons, v)
@@ -481,8 +493,40 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 		span.SetAttribute(schemas.AttrBifrostRoutingEngineUsed, strings.Join(engines, ","))
 	}
 
-	// Populate cost attribute using pricing manager
-	if t.pricingManager != nil && resp != nil {
+	// Populate cost attribute using pricing manager. BilledUsage wins when it is
+	// present: it is what the provider actually charged for a failed or cancelled
+	// turn. A cancelled stream still yields a non-nil accumulated response (see
+	// providers/utils, which passes both accumulatedResp and err), but that
+	// response is missing the final usage chunk, so pricing it would report 0.
+	if t.pricingManager != nil && err != nil && err.ExtraFields.BilledUsage != nil {
+		// Core calls BifrostError.PopulateExtraFields around RunPostLLMHooks, so
+		// Provider / RequestType / the model fields are always set here.
+		ef := err.ExtraFields
+		model := ef.ResolvedModelUsed
+		if model == "" {
+			model = ef.OriginalModelRequested
+		}
+		cost := t.pricingManager.CalculateCostForUsage(
+			ef.BilledUsage,
+			ef.Provider,
+			model,
+			ef.RequestType,
+			modelcatalog.PricingLookupScopesFromContext(ctx, string(ef.Provider)),
+		)
+		// When the catalog cannot price the model, fall back to the cost the
+		// provider itself reported (deep-copied into BilledUsage by
+		// attachBilledUsageFromContext) rather than discarding it.
+		if cost == 0 && ef.BilledUsage.Cost != nil {
+			cost = ef.BilledUsage.Cost.TotalCost
+		}
+		// Guarded write: a resp == nil failure emitted no cost attribute before
+		// this path existed, and consumers rely on distinguishing "no cost
+		// recorded" from a genuine zero (see plugins/logging, which guards the
+		// same way).
+		if cost > 0 {
+			span.SetAttribute(schemas.AttrUsageCost, cost)
+		}
+	} else if t.pricingManager != nil && resp != nil {
 		cost := t.pricingManager.CalculateCost(resp, modelcatalog.PricingLookupScopesFromContext(ctx, string(resp.GetExtraFields().Provider)))
 		span.SetAttribute(schemas.AttrUsageCost, cost)
 	}

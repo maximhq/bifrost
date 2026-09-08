@@ -417,6 +417,50 @@ func TestTracer_SetAttribute(t *testing.T) {
 	}
 }
 
+// A cancelled stream reaches PopulateLLMResponseAttributes with an accumulated
+// response whose usage exists but reads zero (the final usage chunk never
+// arrived) and an error carrying the authoritative BilledUsage. The response
+// side's zero aggregates must not survive onto the span: PopulateErrorAttributes
+// gates its emissions on > 0, so a details-only BilledUsage would otherwise
+// leave a false zero in gen_ai.usage.*.
+func TestTracer_PopulateLLMResponseAttributesDropsZeroAggregatesWhenBilled(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	traceID := tracer.CreateTrace("")
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+	_, handle := tracer.StartSpan(ctx, "llm.call", schemas.SpanKindLLMCall)
+
+	resp := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Usage: &schemas.BifrostLLMUsage{PromptTokens: 0, CompletionTokens: 0, TotalTokens: 0},
+		},
+	}
+	bifrostErr := &schemas.BifrostError{Error: &schemas.ErrorField{Message: "client cancelled the stream"}}
+	bifrostErr.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
+	bifrostErr.ExtraFields.BilledUsage = &schemas.BifrostLLMUsage{
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{CachedWriteTokens5m: 120},
+		},
+	}
+
+	bctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	tracer.PopulateLLMResponseAttributes(bctx, handle, resp, bifrostErr)
+
+	span := store.GetTrace(traceID).RootSpan
+	for _, key := range []string{schemas.AttrInputTokens, schemas.AttrOutputTokens, schemas.AttrTotalTokens} {
+		if v, ok := span.Attributes[key]; ok {
+			t.Errorf("zero-valued response aggregate %s = %v survived onto the billed failed span", key, v)
+		}
+	}
+	if got := span.Attributes[schemas.AttrPromptTokenDetailsCachedWrite5m]; got != 120 {
+		t.Errorf("attribute %s = %v, want 120", schemas.AttrPromptTokenDetailsCachedWrite5m, got)
+	}
+}
+
 func TestTracer_GetSpanHandleByID_RootSpan(t *testing.T) {
 	store := NewTraceStore(5*time.Minute, nil)
 	defer store.Stop()
