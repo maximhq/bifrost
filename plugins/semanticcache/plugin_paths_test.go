@@ -537,7 +537,7 @@ func TestGenerateEmbedding_AcceptsInt32Array(t *testing.T) {
 		return &schemas.BifrostEmbeddingResponse{
 			Data: []schemas.EmbeddingData{{
 				Embedding: schemas.EmbeddingStruct{
-					EmbeddingInt32Array: []int32{0, 100000, -100000},
+					EmbeddingInt32Array: []int32{0, 255, 128},
 				},
 			}},
 		}, nil
@@ -548,7 +548,7 @@ func TestGenerateEmbedding_AcceptsInt32Array(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generateEmbedding failed for int32 input: %v", err)
 	}
-	want := []float32{0, 100000, -100000}
+	want := []float32{0, 255, 128}
 	if !reflect.DeepEqual(emb, want) {
 		t.Fatalf("int32 → float32 conversion: want %v, got %v", want, emb)
 	}

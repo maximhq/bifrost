@@ -1571,6 +1571,7 @@ func (tc *GenerationConfigThinkingConfig) UnmarshalJSON(data []byte) error {
 }
 
 type GeminiBatchEmbeddingRequest struct {
+	Model       string                   `json:"-"` // populated from URL path by Bifrost; not part of wire format
 	Requests    []GeminiEmbeddingRequest `json:"requests,omitempty"`
 	ExtraParams map[string]interface{}   `json:"-"` // Optional: Extra parameters
 }
@@ -1583,6 +1584,8 @@ func (r *GeminiBatchEmbeddingRequest) GetExtraParams() map[string]interface{} {
 // GeminiEmbeddingRequest represents a single embedding request in a batch.
 type GeminiEmbeddingRequest struct {
 	Content              *Content               `json:"content,omitempty"`
+	DocumentOCR          *bool                  `json:"documentOcr,omitempty"`
+	AudioTrackExtraction *bool                  `json:"audioTrackExtraction,omitempty"`
 	TaskType             *string                `json:"taskType,omitempty"`
 	Title                *string                `json:"title,omitempty"`
 	OutputDimensionality *int                   `json:"outputDimensionality,omitempty"`
@@ -2117,7 +2120,8 @@ type FunctionResponse struct {
 
 // GeminiEmbeddingResponse represents a Google GenAI embedding response.
 type GeminiEmbeddingResponse struct {
-	Embeddings []GeminiEmbedding     `json:"embeddings"`
+	Embedding  *GeminiEmbedding      `json:"embedding,omitempty"`
+	Embeddings []GeminiEmbedding     `json:"embeddings,omitempty"`
 	Metadata   *EmbedContentMetadata `json:"metadata,omitempty"`
 }
 
