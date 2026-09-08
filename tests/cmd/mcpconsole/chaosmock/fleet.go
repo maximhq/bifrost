@@ -21,7 +21,9 @@ import (
 // Paths are stable and derivable from a server's name, so a test that
 // provisions a client can compute the URL without asking the fleet:
 //
-//	/s/<name>/mcp   streamable HTTP
+//	/s/<name>/mcp        streamable HTTP
+//	/control/<name>/...  that server's control API
+//	/control             fleet-wide control API
 type Fleet struct {
 	mu      sync.RWMutex
 	servers map[string]*Server
@@ -164,6 +166,8 @@ func (f *Fleet) ServerURL(name string) string {
 func (f *Fleet) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/s/", f.routeServer)
+	mux.HandleFunc("/control", f.routeFleetControl)
+	mux.HandleFunc("/control/", f.routeControl)
 	return mux
 }
 
