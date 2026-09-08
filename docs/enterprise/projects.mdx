@@ -172,14 +172,14 @@ A project holds at most one configuration per provider. Each one carries:
 |---|---|
 | `provider_name` | The provider this configuration allows |
 | `all_models_allowed` | Allows every model the provider offers |
-| `allowed_models` | An allowlist; `["*"]` means all models |
-| `blacklisted_models` | A denylist, which wins over the allowlist |
+| `allowed_models` | An allowlist; `["*"]` means all models. An entry prefixed with `regex:` is an RE2 pattern matched against the whole model name |
+| `blacklisted_models` | A denylist, which wins over the allowlist. Accepts `regex:` entries |
 | `key_ids` | Which provider keys may serve it; `["*"]` means all, and an empty list means none |
 | `weight` | Load-balancing preference for this provider inside the project |
 | `budgets`, `rate_limit` | Money for this provider specifically |
 | `model_budgets` | Money for individual models under this provider |
 
-A list may not mix a wildcard with named entries: `["*", "gpt-4o"]` is refused rather than interpreted. Key ids are validated when you save, and a key that does not exist or belongs to a different provider is rejected. A provider may carry up to 100 per-model budgets, each naming a concrete model; the `*` tier belongs on the provider configuration itself.
+A list may not mix a wildcard with named entries: `["*", "gpt-4o"]` is refused rather than interpreted. A regex entry that does not compile is refused the same way. See [Allowing or blocking model families with regex](/features/governance/virtual-keys#allowing-or-blocking-model-families-with-regex) for how patterns are matched. Key ids are validated when you save, and a key that does not exist or belongs to a different provider is rejected. A provider may carry up to 100 per-model budgets, each naming a concrete model; the `*` tier belongs on the provider configuration itself.
 
 ### MCP servers and virtual MCPs
 

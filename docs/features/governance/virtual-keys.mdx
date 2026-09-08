@@ -306,6 +306,26 @@ curl -X POST http://localhost:8080/api/governance/virtual-keys \
 
 `allow_all_providers` **coexists** with `provider_configs`. When it is on, a provider that also has a `provider_configs` entry still has that entry's model allow/blacklist, budgets, rate limits, and key selection applied; providers without an entry get all models, all keys, and no per-provider limits. This lets you allow everything while still capping or restricting specific providers.
 
+#### Allowing or blocking model families with regex
+
+`allowed_models` and `blacklisted_models` accept regex entries alongside model names. Prefix an entry with `regex:` and Bifrost compiles the rest as an [RE2](https://github.com/google/re2/wiki/Syntax) pattern, matched case-insensitively as a full match against the model name and against `provider/model`. One entry then covers a whole family:
+
+```json
+{
+  "provider": "openai",
+  "allowed_models": ["regex:^gpt-4.*", "o3"],
+  "blacklisted_models": ["regex:.*-preview$"]
+}
+```
+
+- A pattern has to match the whole name. `regex:gpt-4` matches `gpt-4` only; `regex:gpt-4.*` matches `gpt-4o` and `gpt-4o-mini`.
+- The denylist still wins. In the example, `gpt-4o-preview` is blocked even though the allowlist pattern matches it.
+- `["*"]` keeps its meaning and cannot be mixed with other entries, patterns included.
+- A pattern is not expanded into model names. `/v1/models` lists the catalog models the pattern matches, and per-model budgets still name concrete models.
+- An entry that does not compile is rejected when the key is saved.
+
+The same syntax works on provider key `models` and `blacklisted_models`, and on access profile and project provider configurations. In the web UI, switch the model picker from **Models** to **Regex** to add a pattern.
+
 #### How access is resolved
 
 Access depends on the `allow_all_providers` value and whether the provider has a `provider_configs` entry:

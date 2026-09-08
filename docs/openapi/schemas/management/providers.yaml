@@ -196,12 +196,16 @@ Key:
       type: array
       items:
         type: string
-      description: List of models this key can access (whitelist)
+      description: >-
+        Models this key can serve (allowlist). `["*"]` allows every model; an
+        empty list denies all. Entries prefixed with `regex:` are RE2 patterns, matched case-insensitively as a full match against the model name and `provider/model`.
     blacklisted_models:
       type: array
       items:
         type: string
-      description: List of models this key cannot access (blacklist)
+      description: >-
+        Models this key must never serve (denylist, wins over the allowlist).
+        Entries prefixed with `regex:` are RE2 patterns, matched case-insensitively as a full match against the model name and `provider/model`.
     weight:
       type: number
       description: Weight for load balancing

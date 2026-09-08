@@ -244,7 +244,7 @@ ProjectProviderConfig:
         type: string
       description: >-
         Allowlist. `["*"]` allows every model. A list may not mix `*` with named
-        entries.
+        entries. Entries prefixed with `regex:` are RE2 patterns, matched case-insensitively as a full match against the model name and `provider/model`.
     blacklisted_models:
       type: array
       nullable: true
@@ -252,6 +252,7 @@ ProjectProviderConfig:
         type: string
       description: >-
         Denylist, which wins over the allowlist. `["*"]` blocks everything.
+        Entries prefixed with `regex:` are RE2 patterns, matched case-insensitively as a full match against the model name and `provider/model`.
     key_ids:
       type: array
       nullable: true
