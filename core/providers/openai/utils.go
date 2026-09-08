@@ -49,7 +49,9 @@ func IsOpenAIReasoningModel(model string) bool {
 			return true
 		}
 	}
-	return strings.Contains(modelLower, "gpt-5")
+	return strings.Contains(modelLower, "gpt-5") ||
+		strings.Contains(modelLower, "gpt-6") ||
+		strings.Contains(modelLower, "astra")
 }
 
 // defaultEffortControl widens the base low/medium/high ladder with the effort
@@ -86,7 +88,9 @@ func acceptsXHighEffort(model string) bool {
 		strings.Contains(modelLower, "gpt-5.3-codex") ||
 		strings.Contains(modelLower, "gpt-5.4") ||
 		strings.Contains(modelLower, "gpt-5.5") ||
-		strings.Contains(modelLower, "gpt-5.6")
+		strings.Contains(modelLower, "gpt-5.6") ||
+		strings.Contains(modelLower, "gpt-6") ||
+		strings.Contains(modelLower, "astra")
 }
 
 // acceptsMinimalEffort reports models that natively accept "minimal" effort:
@@ -113,7 +117,8 @@ func acceptsMinimalEffort(model string) bool {
 func acceptsMaxEffort(model string) bool {
 	modelLower := bareModelLower(model)
 	return strings.Contains(modelLower, "gpt-5.6") ||
-		strings.Contains(modelLower, "gpt-6-astra") ||
+		strings.Contains(modelLower, "gpt-6") ||
+		strings.Contains(modelLower, "astra") ||
 		strings.Contains(modelLower, "deepseek-v4") ||
 		strings.Contains(modelLower, "glm-5.2")
 }

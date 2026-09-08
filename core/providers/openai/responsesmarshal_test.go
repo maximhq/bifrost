@@ -157,6 +157,8 @@ func TestOpenAIResponsesRequest_MarshalJSON_ReasoningMaxTokensAbsent(t *testing.
 	}
 }
 
+// TestNormalizeOpenAIReasoningEffort verifies reasoning effort normalization across
+// OpenAI and third-party models, including minimal, xhigh, and max clamping.
 func TestNormalizeOpenAIReasoningEffort(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -176,6 +178,8 @@ func TestNormalizeOpenAIReasoningEffort(t *testing.T) {
 		{"maps minimal to low for gpt-oss", "gpt-oss", "minimal", "low"},
 		{"gpt-5.6 keeps max", "gpt-5.6", "max", "max"},
 		{"gpt-6-astra keeps max", "gpt-6-astra", "max", "max"},
+		{"gpt-6-astra keeps xhigh", "gpt-6-astra", "xhigh", "xhigh"},
+		{"maps minimal to low for gpt-6-astra", "gpt-6-astra", "minimal", "low"},
 		{"gpt-5.6 variant keeps max", "gpt-5.6-terra", "max", "max"},
 		{"gpt-5.6 keeps xhigh", "gpt-5.6", "xhigh", "xhigh"},
 		{"provider-prefixed gpt-5.6 keeps max", "openai/gpt-5.6", "max", "max"},
@@ -1142,6 +1146,9 @@ func TestEffortPredicatesAgainstCatalogIDs(t *testing.T) {
 		{"gpt-5.4", false, true, false},
 		{"gpt-5.6-terra", false, true, true},
 		{"openai.gpt-5.6-sol", false, true, true},
+		// gpt-6 family
+		{"gpt-6-astra", false, true, true},
+		{"azure/eu/gpt-6-astra", false, true, true},
 		// non-gpt families
 		{"deepseek-v4-pro", false, false, true},
 		{"glm-5.2", false, false, true},
@@ -1157,6 +1164,77 @@ func TestEffortPredicatesAgainstCatalogIDs(t *testing.T) {
 		if got := acceptsMaxEffort(c.model); got != c.max {
 			t.Errorf("max(%q) = %v, want %v", c.model, got, c.max)
 		}
+	}
+}
+
+// TestIsOpenAIReasoningModel verifies that OpenAI reasoning models (including o-series,
+// GPT-5, GPT-6, and Astra families, with and without provider prefixes) are correctly identified.
+func TestIsOpenAIReasoningModel(t *testing.T) {
+	tests := []struct {
+		name  string
+		model string
+		want  bool
+	}{
+		// gpt-6 and astra family
+		{"gpt-6 bare", "gpt-6", true},
+		{"gpt-6-mini", "gpt-6-mini", true},
+		{"gpt-6-astra", "gpt-6-astra", true},
+		{"astra bare", "astra", true},
+		{"astra-pro", "astra-pro", true},
+		{"openai/gpt-6-astra", "openai/gpt-6-astra", true},
+		{"azure/gpt-6-astra", "azure/gpt-6-astra", true},
+		{"azure/eu/gpt-6-astra", "azure/eu/gpt-6-astra", true},
+		{"azure/astra-preview", "azure/astra-preview", true},
+		{"databricks/gpt-6-astra", "databricks/gpt-6-astra", true},
+
+		// o-series reasoning models
+		{"o1", "o1", true},
+		{"o1-preview", "o1-preview", true},
+		{"o1-mini", "o1-mini", true},
+		{"o3", "o3", true},
+		{"o3-mini", "o3-mini", true},
+		{"o3-pro", "o3-pro", true},
+		{"o4", "o4", true},
+		{"o4-mini", "o4-mini", true},
+		{"openai/o3", "openai/o3", true},
+		{"azure/o1", "azure/o1", true},
+		{"azure/o3-mini", "azure/o3-mini", true},
+
+		// gpt-5 family
+		{"gpt-5", "gpt-5", true},
+		{"gpt-5-mini", "gpt-5-mini", true},
+		{"gpt-5.1", "gpt-5.1", true},
+		{"gpt-5.2", "gpt-5.2", true},
+		{"gpt-5.4", "gpt-5.4", true},
+		{"gpt-5.6", "gpt-5.6", true},
+		{"gpt-5.6-terra", "gpt-5.6-terra", true},
+		{"azure/gpt-5", "azure/gpt-5", true},
+		{"azure/eu/gpt-5.2", "azure/eu/gpt-5.2", true},
+
+		// gpt-oss family
+		{"gpt-oss", "gpt-oss", true},
+		{"gpt-oss-120b", "gpt-oss-120b", true},
+		{"azure/gpt-oss", "azure/gpt-oss", true},
+
+		// non-reasoning / negative cases
+		{"gpt-4o", "gpt-4o", false},
+		{"gpt-4o-mini", "gpt-4o-mini", false},
+		{"gpt-4-turbo", "gpt-4-turbo", false},
+		{"gpt-3.5-turbo", "gpt-3.5-turbo", false},
+		{"text-embedding-3-large", "text-embedding-3-large", false},
+		{"claude-3-5-sonnet", "claude-3-5-sonnet", false},
+		{"gemini-2.5-pro", "gemini-2.5-pro", false},
+		{"co1", "co1", false},
+		{"model-o3x", "model-o3x", false},
+		{"empty string", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsOpenAIReasoningModel(tt.model); got != tt.want {
+				t.Errorf("IsOpenAIReasoningModel(%q) = %v, want %v", tt.model, got, tt.want)
+			}
+		})
 	}
 }
 

@@ -1,3 +1,4 @@
+- [fix]: preserve reasoning parameters and xhigh effort for GPT-6 Astra
 - fix: map forced tool choice `any` to `required` on OpenAI Responses and Chat egress (#6887) [@Atharva-Kanherkar](https://github.com/Atharva-Kanherkar)
 - [fix]: preserve max reasoning effort for GPT-6 Astra [@nettee](https://github.com/nettee)
 - fix: give a Bedrock message a placeholder text block instead of a null `content` field when it has no text and no tool calls - `BedrockMessage.Content` has no `omitempty`, so a message with empty text and no tool calls (or an empty `tool_calls` array) serialized as `content:null`, which Converse rejects with "Member must not be null" (#2765)
