@@ -161,6 +161,13 @@ func (f *Fleet) ServerURL(name string) string {
 	return f.URL() + "/s/" + name + "/mcp"
 }
 
+// SSEURL returns the legacy HTTP+SSE endpoint for one server. The message
+// endpoint is not exposed separately because a client is told where it is by
+// the endpoint event, which is part of what this transport is for.
+func (f *Fleet) SSEURL(name string) string {
+	return f.URL() + "/s/" + name + "/sse"
+}
+
 // Handler returns the fleet's HTTP handler, exported so a test can mount it in
 // its own server when it needs control over the listener.
 func (f *Fleet) Handler() http.Handler {
@@ -189,6 +196,10 @@ func (f *Fleet) routeServer(w http.ResponseWriter, r *http.Request) {
 	switch rest {
 	case "mcp":
 		s.ServeStreamableHTTP(w, r)
+	case "sse":
+		s.ServeSSE(w, r)
+	case "sse/message":
+		s.ServeSSEMessage(w, r)
 	default:
 		http.NotFound(w, r)
 	}
