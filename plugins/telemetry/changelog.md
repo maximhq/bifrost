@@ -1,3 +1,0 @@
-- feat: add `project_id` and `project_name` metric labels (#6705)
-- feat: add routing embedding and LLM classifier request and cost counters (#6166, #6177)
-- feat: rename cache and routing debug attributes to metadata (#6722)

@@ -1,3 +1,0 @@
-- feat: add `project_id` and `project_name` span attributes and metric labels (#6705)
-- feat: add the `export_overhead_spans` toggle to filter internal overhead spans (#6945)
-- feat: rename cache and routing debug attributes to metadata (#6722)
