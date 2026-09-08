@@ -942,7 +942,7 @@ func (provider *CohereProvider) Embedding(ctx *schemas.BifrostContext, key schem
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToCohereEmbeddingRequest(request), nil
+			return ToCohereEmbeddingRequest(request)
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
