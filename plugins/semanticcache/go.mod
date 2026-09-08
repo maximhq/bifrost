@@ -5,8 +5,8 @@ go 1.27.0
 require (
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/google/uuid v1.6.0
-	github.com/maximhq/bifrost/core v1.8.3
-	github.com/maximhq/bifrost/framework v1.6.0
+	github.com/maximhq/bifrost/core v1.8.5
+	github.com/maximhq/bifrost/framework v1.6.1
 	github.com/maximhq/bifrost/plugins/mocker v1.5.19
 )
 
@@ -84,6 +84,7 @@ require (
 	github.com/molecule-man/go-brrr v1.0.1 // indirect
 	github.com/oapi-codegen/runtime v1.1.1 // indirect
 	github.com/oklog/ulid v1.3.1 // indirect
+	github.com/philippgille/chromem-go v0.7.0 // indirect
 	github.com/pinecone-io/go-pinecone/v5 v5.3.0 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
 	github.com/pkg/errors v0.9.1 // indirect
