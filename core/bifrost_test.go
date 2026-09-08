@@ -620,6 +620,96 @@ func TestHandleProviderRequest_OCROperationNotAllowed(t *testing.T) {
 	}
 }
 
+// https://github.com/maximhq/bifrost/issues/6784: an OpenAI-compatible upstream that ends
+// generation on finish_reason, never sends [DONE] and then parks the connection behind SSE
+// heartbeats holds the stream open indefinitely — heartbeat bytes reset the idle timer without
+// making semantic progress. custom_provider_config.does_not_send_done_marker is the operator's
+// declaration that finish_reason is terminal for this upstream; this pins the whole path, from
+// the account config through the per-attempt context stamp to the provider's read loop.
+func TestCustomProviderDoesNotSendDoneMarkerEndsParkedStream(t *testing.T) {
+	const chunk = `data: {"id":"chatcmpl-repro","object":"chat.completion.chunk","created":1,"model":"repro-model",` +
+		`"choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}` + "\n\n" +
+		`data: {"id":"chatcmpl-repro","object":"chat.completion.chunk","created":1,"model":"repro-model",` +
+		`"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}` + "\n\n"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl, ok := w.(http.Flusher)
+		if !ok {
+			return
+		}
+		if _, err := w.Write([]byte(chunk)); err != nil {
+			return
+		}
+		fl.Flush()
+
+		ticker := time.NewTicker(20 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-ticker.C:
+				if _, err := w.Write([]byte(": ping\n\n")); err != nil {
+					return
+				}
+				fl.Flush()
+			}
+		}
+	}))
+	defer server.Close()
+
+	const customProvider = schemas.ModelProvider("custom-openai")
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(customProvider, 1, 1, server.URL)
+	account.configs[customProvider].NetworkConfig.MaxRetries = 0
+	account.SetCustomProviderConfig(customProvider, &schemas.CustomProviderConfig{
+		BaseProviderType:      schemas.OpenAI,
+		DoesNotSendDoneMarker: true,
+	})
+	account.SetKeysForProvider(customProvider, []schemas.Key{
+		{ID: "custom-key", Value: *schemas.NewSecretVar("sk-custom"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+
+	client := newStreamTestClient(t, account)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: customProvider,
+		Model:    "repro-model",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: Ptr("hi")},
+		}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("stream request failed: %v", bifrostErr)
+	}
+
+	type drained struct {
+		content string
+		errs    []string
+	}
+	done := make(chan drained, 1)
+	go func() {
+		content, errs := drainChatStream(stream)
+		done <- drained{content: content, errs: errs}
+	}()
+
+	select {
+	case result := <-done:
+		if len(result.errs) > 0 {
+			t.Fatalf("stream carried errors: %v", result.errs)
+		}
+		if result.content != "hello" {
+			t.Errorf("expected the streamed content to survive the early break, got %q", result.content)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("stream never terminated: does_not_send_done_marker did not reach the provider read loop")
+	}
+}
+
 // Test that transientServerStatusCodes are properly defined.
 // These are upstream-side failures unrelated to the credential — the same key is retried.
 func TestTransientServerStatusCodes(t *testing.T) {

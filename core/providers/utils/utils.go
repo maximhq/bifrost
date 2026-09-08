@@ -3380,6 +3380,10 @@ func (r *idleTimeoutReader) Read(p []byte) (n int, err error) {
 // stream_idle_timeout_in_seconds window.
 var ErrStreamIdleTimeout = errors.New("stream idle timeout: no data received within configured window")
 
+// errStreamParkedAfterFinish closes a body stream that ended on finish_reason while the
+// upstream kept the connection open. Internal to ReleaseStreamingResponse; never surfaced.
+var errStreamParkedAfterFinish = errors.New("stream ended on finish_reason with the connection still open")
+
 // ErrStreamClosed is returned when a stream has already been closed by
 // cancellation or cleanup before the next read starts.
 var ErrStreamClosed = errors.New("stream closed")
@@ -3714,7 +3718,14 @@ func GetProviderName(defaultProvider schemas.ModelProvider, customConfig *schema
 // ProviderSendsDoneMarker returns true if the provider sends the [DONE] marker in streaming responses.
 // Some OpenAI-compatible providers (like Cerebras) don't send [DONE] and instead end the stream
 // after sending the finish_reason. This function helps determine the correct stream termination logic.
-func ProviderSendsDoneMarker(providerName schemas.ModelProvider) bool {
+// A custom provider can opt into the same treatment via custom_provider_config.does_not_send_done_marker,
+// which only ever ends the read loop earlier - it cannot make a provider wait for a marker it never sends.
+func ProviderSendsDoneMarker(ctx *schemas.BifrostContext, providerName schemas.ModelProvider) bool {
+	if ctx != nil {
+		if doesNotSendDoneMarker, ok := ctx.Value(schemas.BifrostContextKeyDoesNotSendDoneMarker).(bool); ok && doesNotSendDoneMarker {
+			return false
+		}
+	}
 	switch providerName {
 	case schemas.Cerebras, schemas.Perplexity, schemas.Bedrock, schemas.BedrockMantle:
 		// Cerebras, Perplexity, Bedrock and Bedrock mantle don't send [DONE] marker, ends stream after finish_reason
@@ -3780,6 +3791,18 @@ func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Respon
 	// parseChunkSize waiting for a chunk the upstream will never send, which
 	// deadlocks this deferred cleanup and stops the stream channel from closing.
 	if exhausted, _ := ctx.Value(schemas.BifrostContextKeyStreamBodyExhausted).(bool); !exhausted {
+		// An upstream declared via custom_provider_config.does_not_send_done_marker ends on
+		// finish_reason and may then park the connection, heartbeating instead of closing.
+		// Draining that blocks here forever, so abandon the connection: closing with a
+		// non-nil error takes fasthttp's CloseConn path and keeps the half-read stream
+		// out of the idle pool. The response is left to GC as in the branches above.
+		// The same applies when the read loop itself stopped on a post-finish heartbeat.
+		parked, _ := ctx.Value(schemas.BifrostContextKeyStreamParkedAfterFinish).(bool)
+		doesNotSendDoneMarker, _ := ctx.Value(schemas.BifrostContextKeyDoesNotSendDoneMarker).(bool)
+		if parked || doesNotSendDoneMarker {
+			closeBodyStream(bodyStream, errStreamParkedAfterFinish)
+			return
+		}
 		if _, err := io.Copy(io.Discard, bodyStream); err != nil {
 			getLogger().Warn("failed to drain streaming response body before release (may cause stale connection reuse): %v", err)
 		}

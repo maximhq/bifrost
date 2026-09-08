@@ -407,13 +407,9 @@ func TestCacheRealtimeEphemeralKeyMappingStoresKeyID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store.Get() error = %v", err)
 	}
-	value, ok := raw.([]byte)
+	mapping, ok := raw.(realtimeEphemeralKeyMapping)
 	if !ok {
-		t.Fatalf("cached value type = %T, want []byte", raw)
-	}
-	var mapping realtimeEphemeralKeyMapping
-	if err := json.Unmarshal(value, &mapping); err != nil {
-		t.Fatalf("json.Unmarshal() error = %v", err)
+		t.Fatalf("cached value type = %T, want realtimeEphemeralKeyMapping", raw)
 	}
 	if mapping.KeyID != "key_123" {
 		t.Fatalf("mapping.KeyID = %q, want %q", mapping.KeyID, "key_123")

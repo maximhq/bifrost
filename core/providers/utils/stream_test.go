@@ -2,11 +2,248 @@ package utils
 
 import (
 	"context"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
+
+func TestCheckStreamPreambleNilClassifierCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	source := make(chan *schemas.BifrostStreamChunk)
+	closeSource := sync.OnceFunc(func() { close(source) })
+	defer closeSource()
+	result := make(chan *schemas.BifrostError, 1)
+	cleanup := make(chan (<-chan struct{}), 1)
+	go func() {
+		_, done, err := CheckStreamPreambleForError(ctx, t.Name(), source, nil)
+		cleanup <- done
+		result <- err
+	}()
+	cancel()
+
+	select {
+	case err := <-result:
+		if err == nil || err.Error == nil || err.Error.Type == nil ||
+			*err.Error.Type != schemas.RequestCancelled {
+			t.Fatalf("expected cancellation error, got %v", err)
+		}
+		if err.AllowFallbacks == nil || *err.AllowFallbacks {
+			t.Fatal("cancellation must block fallbacks")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("nil classifier blocked cancellation")
+	}
+	done := <-cleanup
+	select {
+	case <-done:
+		t.Fatal("cleanup completed before upstream closed")
+	default:
+	}
+	closeSource()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("cancelled stream failed to drain")
+	}
+}
+
+func TestCheckStreamPreambleDeadlineAllowsFallbacks(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	source := make(chan *schemas.BifrostStreamChunk)
+	closeSource := sync.OnceFunc(func() { close(source) })
+	defer closeSource()
+
+	wrapped, done, err := CheckStreamPreambleForError(
+		ctx, t.Name(), source,
+		func(*schemas.BifrostStreamChunk) bool { return true },
+	)
+	if wrapped != nil || err == nil || err.Error == nil ||
+		err.Error.Type == nil || *err.Error.Type != schemas.RequestTimedOut {
+		t.Fatalf("expected timeout error, got %v", err)
+	}
+	if err.StatusCode == nil || *err.StatusCode != 504 {
+		t.Fatalf("expected status 504, got %v", err.StatusCode)
+	}
+	if err.AllowFallbacks != nil {
+		t.Fatal("timeout must preserve default fallback eligibility")
+	}
+	closeSource()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed-out stream failed to drain")
+	}
+}
+
+func TestCheckStreamPreambleCancellation(t *testing.T) {
+	for _, phase := range []string{"startup", "replay"} {
+		t.Run(phase, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			source := make(chan *schemas.BifrostStreamChunk, 2)
+			closeSource := sync.OnceFunc(func() { close(source) })
+			defer closeSource()
+			preamble := &schemas.BifrostStreamChunk{
+				BifrostChatResponse: &schemas.BifrostChatResponse{ID: "metadata"},
+			}
+			output := &schemas.BifrostStreamChunk{
+				BifrostChatResponse: &schemas.BifrostChatResponse{ID: "output"},
+			}
+			source <- preamble
+			if phase == "replay" {
+				source <- output
+			}
+
+			wrapped, done, err := CheckStreamPreambleForError(
+				ctx, t.Name(), source,
+				func(chunk *schemas.BifrostStreamChunk) bool {
+					if phase == "startup" {
+						cancel()
+					}
+					return chunk == preamble
+				},
+			)
+			if phase == "startup" {
+				if wrapped != nil || err == nil || err.Error == nil ||
+					err.Error.Type == nil || *err.Error.Type != schemas.RequestCancelled {
+					t.Fatalf("expected cancellation error, got %v", err)
+				}
+				if err.AllowFallbacks == nil || *err.AllowFallbacks {
+					t.Fatal("cancelled request must not allow fallbacks")
+				}
+			} else {
+				if wrapped == nil || err != nil {
+					t.Fatalf("expected replay stream, got %v", err)
+				}
+				// Abandon the returned channel without consuming its chunks.
+				cancel()
+			}
+
+			select {
+			case <-done:
+				t.Fatal("cleanup completed before upstream closed")
+			default:
+			}
+			// The drain must accept remaining upstream chunks after cancellation.
+			source <- preamble
+			closeSource()
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("cancelled stream failed to drain")
+			}
+			key := streamPreambleKey{requestID: t.Name(), source: source}
+			if _, exists := streamPreambles.Load(key); exists {
+				t.Fatal("cancelled stream retained preamble storage")
+			}
+		})
+	}
+}
+
+func TestCheckStreamPreambleForError(t *testing.T) {
+	preamble := &schemas.BifrostStreamChunk{
+		BifrostChatResponse: &schemas.BifrostChatResponse{ID: "metadata"},
+	}
+	output := &schemas.BifrostStreamChunk{
+		BifrostChatResponse: &schemas.BifrostChatResponse{ID: "output"},
+	}
+	oversized := &schemas.BifrostStreamChunk{
+		BifrostChatResponse: &schemas.BifrostChatResponse{
+			ID: strings.Repeat("x", maxStreamPreambleBytes),
+		},
+	}
+	failure := &schemas.BifrostStreamChunk{
+		BifrostError: &schemas.BifrostError{
+			Error: &schemas.ErrorField{Message: "rate limit exceeded"},
+		},
+	}
+	atLimit := make([]*schemas.BifrostStreamChunk, maxStreamPreambleChunks+1)
+	for i := 0; i < maxStreamPreambleChunks; i++ {
+		atLimit[i] = preamble
+	}
+	atLimit[maxStreamPreambleChunks] = failure
+
+	tests := []struct {
+		name  string
+		input []*schemas.BifrostStreamChunk
+		want  []*schemas.BifrostStreamChunk
+		err   *schemas.BifrostError
+	}{
+		{"empty", nil, nil, nil},
+		{"preamble then EOF",
+			[]*schemas.BifrostStreamChunk{preamble},
+			[]*schemas.BifrostStreamChunk{preamble}, nil},
+		{"error after three preambles",
+			[]*schemas.BifrostStreamChunk{preamble, preamble, preamble, failure},
+			nil, failure.BifrostError},
+		{"output then error stays in stream",
+			[]*schemas.BifrostStreamChunk{preamble, output, failure},
+			[]*schemas.BifrostStreamChunk{preamble, output, failure}, nil},
+		{"chunk limit commits", atLimit, atLimit, nil},
+		{"byte limit commits",
+			[]*schemas.BifrostStreamChunk{preamble, oversized, failure},
+			[]*schemas.BifrostStreamChunk{preamble, oversized, failure}, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			source := make(chan *schemas.BifrostStreamChunk, len(tt.input))
+			for _, chunk := range tt.input {
+				source <- chunk
+			}
+			close(source)
+
+			wrapped, done, err := CheckStreamPreambleForError(
+				ctx, t.Name(), source,
+				func(chunk *schemas.BifrostStreamChunk) bool {
+					return chunk == preamble || chunk == oversized
+				},
+			)
+			if err != tt.err {
+				t.Fatalf("error = %v, want %v", err, tt.err)
+			}
+			if (wrapped == nil) != (tt.want == nil) {
+				t.Fatalf("unexpected stream presence: %v", wrapped != nil)
+			}
+			if wrapped != nil {
+				count := 0
+			read:
+				for {
+					select {
+					case chunk, ok := <-wrapped:
+						if !ok {
+							break read
+						}
+						if count >= len(tt.want) || chunk != tt.want[count] {
+							t.Fatalf("unexpected chunk at position %d", count)
+						}
+						count++
+					case <-ctx.Done():
+						t.Fatal("timed out reading replay")
+					}
+				}
+				if count != len(tt.want) {
+					t.Fatalf("received %d chunks, want %d", count, len(tt.want))
+				}
+			}
+			select {
+			case <-done:
+			case <-ctx.Done():
+				t.Fatal("timed out waiting for cleanup")
+			}
+			key := streamPreambleKey{requestID: t.Name(), source: source}
+			if _, exists := streamPreambles.Load(key); exists {
+				t.Fatal("preamble storage survived cleanup")
+			}
+		})
+	}
+}
 
 func TestCheckFirstStreamChunk_ErrorInFirstChunk(t *testing.T) {
 	stream := make(chan *schemas.BifrostStreamChunk, 2)

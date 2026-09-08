@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -174,6 +175,7 @@ func TestNormalizeOpenAIReasoningEffort(t *testing.T) {
 		{"maps minimal to low for o4", "o4", "minimal", "low"},
 		{"maps minimal to low for gpt-oss", "gpt-oss", "minimal", "low"},
 		{"gpt-5.6 keeps max", "gpt-5.6", "max", "max"},
+		{"gpt-6-astra keeps max", "gpt-6-astra", "max", "max"},
 		{"gpt-5.6 variant keeps max", "gpt-5.6-terra", "max", "max"},
 		{"gpt-5.6 keeps xhigh", "gpt-5.6", "xhigh", "xhigh"},
 		{"provider-prefixed gpt-5.6 keeps max", "openai/gpt-5.6", "max", "max"},
@@ -1156,4 +1158,701 @@ func TestEffortPredicatesAgainstCatalogIDs(t *testing.T) {
 			t.Errorf("max(%q) = %v, want %v", c.model, got, c.max)
 		}
 	}
+}
+
+// TestToOpenAIResponsesRequest_OpenRouterCacheControlBreakpoint is the
+// Responses-path parallel of TestToOpenAIChatRequest_CacheControl_OpenRouterOnly
+// (added by the Chat-path fix in #4203). Regression test for #6290.
+//
+// OpenRouter does NOT expose Anthropic-style per-block cache_control through
+// /v1/responses. The documented Responses equivalent is prompt_cache_breakpoint
+// on an individual input_text block, which OpenRouter converts into a default
+// Anthropic cache_control breakpoint when the request routes to Claude:
+// https://openrouter.ai/docs/features/prompt-caching#anthropic-claude
+//
+// Both OpenRouterProvider.Responses and OpenRouterProvider.ResponsesStream build
+// their outbound body through ToOpenAIResponsesRequest + MarshalJSON, so
+// asserting on the marshalled body covers streaming and non-streaming alike.
+func TestToOpenAIResponsesRequest_OpenRouterCacheControlBreakpoint(t *testing.T) {
+	newBifrostReq := func(provider schemas.ModelProvider, model string) *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{
+			Provider: provider,
+			Model:    model,
+			Input: []schemas.ResponsesMessage{
+				{
+					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{
+						ContentBlocks: []schemas.ResponsesMessageContentBlock{
+							{
+								Type:         schemas.ResponsesInputMessageContentBlockTypeText,
+								Text:         schemas.Ptr("REUSABLE_PREFIX"),
+								CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
+							},
+							{
+								Type: schemas.ResponsesInputMessageContentBlockTypeText,
+								Text: schemas.Ptr("Reply with OK."),
+							},
+						},
+					},
+				},
+			},
+		}
+	}
+
+	// contentBlocks marshals the request and digs out input[0].content[] so the
+	// assertions read against the exact bytes that go on the wire.
+	contentBlocks := func(t *testing.T, bifrostReq *schemas.BifrostResponsesRequest) ([]any, string) {
+		t.Helper()
+		request := ToOpenAIResponsesRequest(nil, bifrostReq)
+		if request == nil {
+			t.Fatal("expected non-nil request")
+		}
+		jsonBytes, err := request.MarshalJSON()
+		if err != nil {
+			t.Fatalf("failed to marshal responses request: %v", err)
+		}
+		raw := string(jsonBytes)
+
+		var jsonMap map[string]any
+		if err := sonic.Unmarshal(jsonBytes, &jsonMap); err != nil {
+			t.Fatalf("failed to parse marshaled JSON: %v\nraw=%s", err, raw)
+		}
+		input, ok := jsonMap["input"].([]any)
+		if !ok || len(input) == 0 {
+			t.Fatalf("expected input array on the wire; raw=%s", raw)
+		}
+		msg, ok := input[0].(map[string]any)
+		if !ok {
+			t.Fatalf("expected input[0] to be an object; raw=%s", raw)
+		}
+		blocks, ok := msg["content"].([]any)
+		if !ok || len(blocks) != 2 {
+			t.Fatalf("expected 2 content blocks on input[0]; raw=%s", raw)
+		}
+		return blocks, raw
+	}
+
+	t.Run("openrouter converts cache_control to prompt_cache_breakpoint", func(t *testing.T) {
+		blocks, raw := contentBlocks(t, newBifrostReq(schemas.OpenRouter, "anthropic/claude-sonnet-4"))
+
+		marked, ok := blocks[0].(map[string]any)
+		if !ok {
+			t.Fatalf("expected content[0] to be an object; raw=%s", raw)
+		}
+
+		// The caching intent must survive in the form OpenRouter's Responses
+		// endpoint actually accepts.
+		bp, ok := marked["prompt_cache_breakpoint"].(map[string]any)
+		if !ok {
+			t.Fatalf("OpenRouter Responses: cache_control must be converted to prompt_cache_breakpoint on the marked text block; raw=%s", raw)
+		}
+		if mode, _ := bp["mode"].(string); mode != "explicit" {
+			t.Errorf("prompt_cache_breakpoint.mode = %q, want \"explicit\"; raw=%s", mode, raw)
+		}
+
+		// Per-block cache_control is not exposed through the Responses API, so
+		// it must not remain on the wire once translated.
+		if _, present := marked["cache_control"]; present {
+			t.Errorf("OpenRouter Responses: per-block cache_control must not be forwarded; raw=%s", raw)
+		}
+
+		// Only the marked block becomes a breakpoint; an unmarked block must
+		// not acquire one (that would move the cached prefix boundary).
+		unmarked, ok := blocks[1].(map[string]any)
+		if !ok {
+			t.Fatalf("expected content[1] to be an object; raw=%s", raw)
+		}
+		if _, present := unmarked["prompt_cache_breakpoint"]; present {
+			t.Errorf("unmarked block must not receive a prompt_cache_breakpoint; raw=%s", raw)
+		}
+	})
+
+	t.Run("openai still strips cache_control and adds no breakpoint", func(t *testing.T) {
+		blocks, raw := contentBlocks(t, newBifrostReq(schemas.OpenAI, "gpt-4o"))
+
+		for i, b := range blocks {
+			block, ok := b.(map[string]any)
+			if !ok {
+				t.Fatalf("expected content[%d] to be an object; raw=%s", i, raw)
+			}
+			if _, present := block["cache_control"]; present {
+				t.Errorf("OpenAI Responses: cache_control must still be stripped on content[%d]; raw=%s", i, raw)
+			}
+			if _, present := block["prompt_cache_breakpoint"]; present {
+				t.Errorf("OpenAI Responses: no prompt_cache_breakpoint may be synthesized on content[%d]; raw=%s", i, raw)
+			}
+		}
+	})
+}
+
+// openRouterCacheReq builds a single user message whose input_text blocks each
+// carry an Anthropic cache_control marker, one per entry in texts.
+func openRouterCacheReq(texts ...string) *schemas.BifrostResponsesRequest {
+	blocks := make([]schemas.ResponsesMessageContentBlock, 0, len(texts))
+	for _, text := range texts {
+		blocks = append(blocks, schemas.ResponsesMessageContentBlock{
+			Type:         schemas.ResponsesInputMessageContentBlockTypeText,
+			Text:         schemas.Ptr(text),
+			CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
+		})
+	}
+	return &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenRouter,
+		Model:    "anthropic/claude-sonnet-4",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentBlocks: blocks},
+			},
+		},
+	}
+}
+
+// breakpointModes returns the prompt_cache_breakpoint.mode of every block in
+// input[0].content, using "" for a block that carries no breakpoint.
+func breakpointModes(t *testing.T, bifrostReq *schemas.BifrostResponsesRequest) ([]string, string) {
+	t.Helper()
+	request := ToOpenAIResponsesRequest(nil, bifrostReq)
+	if request == nil {
+		t.Fatal("expected non-nil request")
+	}
+	jsonBytes, err := request.MarshalJSON()
+	if err != nil {
+		t.Fatalf("failed to marshal responses request: %v", err)
+	}
+	raw := string(jsonBytes)
+
+	var jsonMap map[string]any
+	if err := sonic.Unmarshal(jsonBytes, &jsonMap); err != nil {
+		t.Fatalf("failed to parse marshaled JSON: %v\nraw=%s", err, raw)
+	}
+	input, _ := jsonMap["input"].([]any)
+	if len(input) == 0 {
+		t.Fatalf("expected input array; raw=%s", raw)
+	}
+	msg, _ := input[0].(map[string]any)
+	blocks, _ := msg["content"].([]any)
+	modes := make([]string, 0, len(blocks))
+	for _, b := range blocks {
+		block, _ := b.(map[string]any)
+		bp, ok := block["prompt_cache_breakpoint"].(map[string]any)
+		if !ok {
+			modes = append(modes, "")
+			continue
+		}
+		mode, _ := bp["mode"].(string)
+		modes = append(modes, mode)
+	}
+	return modes, raw
+}
+
+// TestToOpenAIResponsesRequest_OpenRouterClampsCacheBreakpoints pins the clamp
+// that makes the #6290 fix safe to ship. OpenRouter turns each
+// prompt_cache_breakpoint into an Anthropic cache_control block, and Anthropic
+// rejects a request carrying more than four outright ("A maximum of 4 blocks
+// with cache_control may be provided. Found 5.") rather than degrading. Before
+// the fix, unconditional stripping hid that; converting every marker without a
+// clamp would turn today's silent cache miss into a hard upstream error.
+//
+// The earliest markers are the ones dropped: caching is cumulative up to each
+// breakpoint, so a later marker anchors a strictly longer prefix.
+func TestToOpenAIResponsesRequest_OpenRouterClampsCacheBreakpoints(t *testing.T) {
+	modes, raw := breakpointModes(t, openRouterCacheReq("p1", "p2", "p3", "p4", "p5"))
+	if len(modes) != 5 {
+		t.Fatalf("expected 5 content blocks, got %d; raw=%s", len(modes), raw)
+	}
+
+	want := []string{"", "explicit", "explicit", "explicit", "explicit"}
+	for i, wantMode := range want {
+		if modes[i] != wantMode {
+			t.Errorf("block %d breakpoint mode = %q, want %q (earliest marker must be the one dropped); raw=%s",
+				i, modes[i], wantMode, raw)
+		}
+	}
+}
+
+// TestToOpenAIResponsesRequest_OpenRouterRespectsCallerBreakpoints verifies the
+// conversion neither overwrites a breakpoint the caller set explicitly nor
+// spends budget the caller has already committed. A caller who fills the
+// four-breakpoint ceiling by hand gets their request forwarded as written; the
+// converter declines to push it over the edge.
+func TestToOpenAIResponsesRequest_OpenRouterRespectsCallerBreakpoints(t *testing.T) {
+	t.Run("caller breakpoint is not overwritten", func(t *testing.T) {
+		bifrostReq := openRouterCacheReq("p1", "p2")
+		// Caller marked the first block themselves, and also left a cache_control
+		// on it; the explicit breakpoint wins and is left untouched.
+		bifrostReq.Input[0].Content.ContentBlocks[0].PromptCacheBreakpoint = &schemas.PromptCacheBreakpoint{
+			Mode: schemas.Ptr(PromptCacheBreakpointModeExplicit),
+		}
+
+		modes, raw := breakpointModes(t, bifrostReq)
+		if len(modes) != 2 {
+			t.Fatalf("expected 2 content blocks, got %d; raw=%s", len(modes), raw)
+		}
+		for i, mode := range modes {
+			if mode != "explicit" {
+				t.Errorf("block %d breakpoint mode = %q, want \"explicit\"; raw=%s", i, mode, raw)
+			}
+		}
+	})
+
+	t.Run("caller-filled ceiling leaves no budget", func(t *testing.T) {
+		// Five blocks: the first four already carry caller breakpoints, so the
+		// fifth block's cache_control has no budget left and must not be
+		// converted. Converting it would make five, which Anthropic rejects.
+		bifrostReq := openRouterCacheReq("p1", "p2", "p3", "p4", "p5")
+		for i := 0; i < 4; i++ {
+			bifrostReq.Input[0].Content.ContentBlocks[i].CacheControl = nil
+			bifrostReq.Input[0].Content.ContentBlocks[i].PromptCacheBreakpoint = &schemas.PromptCacheBreakpoint{
+				Mode: schemas.Ptr(PromptCacheBreakpointModeExplicit),
+			}
+		}
+
+		modes, raw := breakpointModes(t, bifrostReq)
+		want := []string{"explicit", "explicit", "explicit", "explicit", ""}
+		for i, wantMode := range want {
+			if modes[i] != wantMode {
+				t.Errorf("block %d breakpoint mode = %q, want %q; raw=%s", i, modes[i], wantMode, raw)
+			}
+		}
+	})
+}
+
+// TestToOpenAIResponsesRequest_OpenRouterDoesNotMutateInput guards the
+// copy-on-write in applyOpenRouterCacheBreakpoints. The ResponsesMessage
+// Content pointer and its block array are shared with the caller's
+// BifrostResponsesRequest, which plugins and the fallback chain reuse. Writing a
+// breakpoint in place would leak an OpenRouter-only field into a retry against a
+// different provider.
+func TestToOpenAIResponsesRequest_OpenRouterDoesNotMutateInput(t *testing.T) {
+	bifrostReq := openRouterCacheReq("p1", "p2")
+
+	request := ToOpenAIResponsesRequest(nil, bifrostReq)
+	if request == nil {
+		t.Fatal("expected non-nil request")
+	}
+	if _, err := request.MarshalJSON(); err != nil {
+		t.Fatalf("failed to marshal responses request: %v", err)
+	}
+
+	for i, block := range bifrostReq.Input[0].Content.ContentBlocks {
+		if block.PromptCacheBreakpoint != nil {
+			t.Errorf("caller input block %d was mutated: prompt_cache_breakpoint written back onto the source request", i)
+		}
+		if block.CacheControl == nil {
+			t.Errorf("caller input block %d was mutated: cache_control removed from the source request", i)
+		}
+	}
+}
+
+// TestToOpenAIResponsesRequest_OpenRouterIgnoresNonEphemeralCacheControl pins the
+// type guard on the conversion. "ephemeral" is the only cache type Anthropic
+// defines, and nothing upstream of ToOpenAIResponsesRequest validates the field -
+// schemas.CacheControl.Type is a bare string with no allowed-value check. Without
+// the guard, a malformed marker such as {"cache_control": {}} would be upgraded
+// into a valid prompt_cache_breakpoint that the caller never asked for, and would
+// consume budget against the four-breakpoint ceiling.
+//
+// The Chat path forwards cache_control verbatim and lets upstream reject a bad
+// value; the Responses path must not be more permissive just because it rewrites
+// the field.
+func TestToOpenAIResponsesRequest_OpenRouterIgnoresNonEphemeralCacheControl(t *testing.T) {
+	cases := []struct {
+		name string
+		cc   *schemas.CacheControl
+		want string // expected prompt_cache_breakpoint.mode, "" for none
+	}{
+		{name: "empty type is not converted", cc: &schemas.CacheControl{}, want: ""},
+		{name: "unknown type is not converted", cc: &schemas.CacheControl{Type: "persistent"}, want: ""},
+		{name: "ephemeral type is converted", cc: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral}, want: "explicit"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bifrostReq := openRouterCacheReq("p1")
+			bifrostReq.Input[0].Content.ContentBlocks[0].CacheControl = tc.cc
+
+			modes, raw := breakpointModes(t, bifrostReq)
+			if len(modes) != 1 {
+				t.Fatalf("expected 1 content block, got %d; raw=%s", len(modes), raw)
+			}
+			if modes[0] != tc.want {
+				t.Errorf("breakpoint mode = %q, want %q for cache_control %+v; raw=%s",
+					modes[0], tc.want, tc.cc, raw)
+			}
+
+			// Whatever the type, the marker itself must never reach the wire:
+			// per-block cache_control is not exposed on OpenRouter Responses.
+			if strings.Contains(raw, "cache_control") {
+				t.Errorf("cache_control must not be forwarded regardless of type; raw=%s", raw)
+			}
+		})
+	}
+}
+
+// TestToOpenAIResponsesRequest_OpenRouterNonEphemeralDoesNotSpendClampBudget
+// verifies the type guard also keeps malformed markers from displacing valid
+// ones. Five blocks carry cache_control but only the last four are ephemeral, so
+// all four valid markers must survive - a naive nil-only guard would count the
+// malformed first block toward the ceiling and drop a real breakpoint.
+func TestToOpenAIResponsesRequest_OpenRouterNonEphemeralDoesNotSpendClampBudget(t *testing.T) {
+	bifrostReq := openRouterCacheReq("p1", "p2", "p3", "p4", "p5")
+	bifrostReq.Input[0].Content.ContentBlocks[0].CacheControl = &schemas.CacheControl{Type: "bogus"}
+
+	modes, raw := breakpointModes(t, bifrostReq)
+	want := []string{"", "explicit", "explicit", "explicit", "explicit"}
+	if len(modes) != len(want) {
+		t.Fatalf("expected %d content blocks, got %d; raw=%s", len(want), len(modes), raw)
+	}
+	for i, wantMode := range want {
+		if modes[i] != wantMode {
+			t.Errorf("block %d breakpoint mode = %q, want %q; raw=%s", i, modes[i], wantMode, raw)
+		}
+	}
+}
+
+// gpt56CacheReq builds a Responses request whose first input_text block carries an
+// Anthropic-style cache_control marker, with no prompt_cache_options of its own.
+func gpt56CacheReq(provider schemas.ModelProvider, model string) *schemas.BifrostResponsesRequest {
+	return &schemas.BifrostResponsesRequest{
+		Provider: provider,
+		Model:    model,
+		Input: []schemas.ResponsesMessage{{
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{
+					{
+						Type:         schemas.ResponsesInputMessageContentBlockTypeText,
+						Text:         schemas.Ptr("REUSABLE_PREFIX"),
+						CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
+					},
+					{
+						Type: schemas.ResponsesInputMessageContentBlockTypeText,
+						Text: schemas.Ptr("Reply with OK."),
+					},
+				},
+			},
+		}},
+	}
+}
+
+// marshalResponses returns the outbound body as a generic map plus the raw bytes.
+func marshalResponses(t *testing.T, bifrostReq *schemas.BifrostResponsesRequest) (map[string]any, string) {
+	t.Helper()
+	request := ToOpenAIResponsesRequest(nil, bifrostReq)
+	if request == nil {
+		t.Fatal("expected non-nil request")
+	}
+	jsonBytes, err := request.MarshalJSON()
+	if err != nil {
+		t.Fatalf("failed to marshal responses request: %v", err)
+	}
+	raw := string(jsonBytes)
+	var m map[string]any
+	if err := sonic.Unmarshal(jsonBytes, &m); err != nil {
+		t.Fatalf("failed to parse marshaled JSON: %v\nraw=%s", err, raw)
+	}
+	return m, raw
+}
+
+// firstBlock digs out input[0].content[idx].
+func firstBlock(t *testing.T, m map[string]any, idx int, raw string) map[string]any {
+	t.Helper()
+	input, ok := m["input"].([]any)
+	if !ok || len(input) == 0 {
+		t.Fatalf("expected input array; raw=%s", raw)
+	}
+	msg, _ := input[0].(map[string]any)
+	blocks, ok := msg["content"].([]any)
+	if !ok || idx >= len(blocks) {
+		t.Fatalf("expected content block %d; raw=%s", idx, raw)
+	}
+	block, _ := blocks[idx].(map[string]any)
+	return block
+}
+
+// TestToOpenAIResponsesRequest_GPT56CacheBreakpoint extends the #6290 OpenRouter
+// translation to the gpt-5.6 family (#6180). These models define
+// prompt_cache_breakpoint natively but default to IMPLICIT caching, which anchors the
+// breakpoint on the latest message - so an agent loop rewrites the whole growing
+// prompt every turn at the cache-write rate. Translating the marker is only half the
+// fix; prompt_cache_options.mode=explicit is what actually pins the prefix.
+func TestToOpenAIResponsesRequest_GPT56CacheBreakpoint(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+	}{
+		{"openai", schemas.OpenAI, "gpt-5.6-sol"},
+		{"azure", schemas.Azure, "eu/gpt-5.6-sol"},
+		{"bedrock mantle", schemas.BedrockMantle, "openai.gpt-5.6-terra"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, raw := marshalResponses(t, gpt56CacheReq(tc.provider, tc.model))
+
+			marked := firstBlock(t, m, 0, raw)
+			bp, ok := marked["prompt_cache_breakpoint"].(map[string]any)
+			if !ok {
+				t.Fatalf("cache_control must be translated to prompt_cache_breakpoint on gpt-5.6; raw=%s", raw)
+			}
+			if mode, _ := bp["mode"].(string); mode != "explicit" {
+				t.Errorf("prompt_cache_breakpoint.mode = %q, want \"explicit\"; raw=%s", mode, raw)
+			}
+			if _, present := marked["cache_control"]; present {
+				t.Errorf("cache_control must not be forwarded to an OpenAI-shaped endpoint; raw=%s", raw)
+			}
+
+			opts, ok := m["prompt_cache_options"].(map[string]any)
+			if !ok {
+				t.Fatalf("gpt-5.6 needs prompt_cache_options.mode=explicit; the block marker alone leaves implicit caching on. raw=%s", raw)
+			}
+			if mode, _ := opts["mode"].(string); mode != "explicit" {
+				t.Errorf("prompt_cache_options.mode = %q, want \"explicit\"; raw=%s", mode, raw)
+			}
+
+			unmarked := firstBlock(t, m, 1, raw)
+			if _, present := unmarked["prompt_cache_breakpoint"]; present {
+				t.Errorf("unmarked block must not receive a breakpoint; raw=%s", raw)
+			}
+		})
+	}
+}
+
+// TestToOpenAIResponsesRequest_PreGPT56Unaffected pins the negative. Earlier OpenAI
+// models have no prompt_cache_breakpoint field at all, so translating into it would
+// send an unknown key; the serializer's existing strip is the right behaviour there.
+func TestToOpenAIResponsesRequest_PreGPT56Unaffected(t *testing.T) {
+	for _, model := range []string{"gpt-4o", "gpt-5.5", "gpt-5"} {
+		t.Run(model, func(t *testing.T) {
+			m, raw := marshalResponses(t, gpt56CacheReq(schemas.OpenAI, model))
+
+			marked := firstBlock(t, m, 0, raw)
+			if _, present := marked["prompt_cache_breakpoint"]; present {
+				t.Errorf("%s predates prompt_cache_breakpoint; nothing may be synthesized. raw=%s", model, raw)
+			}
+			if _, present := marked["cache_control"]; present {
+				t.Errorf("cache_control must still be stripped for %s; raw=%s", model, raw)
+			}
+			if _, present := m["prompt_cache_options"]; present {
+				t.Errorf("%s must not gain prompt_cache_options; raw=%s", model, raw)
+			}
+		})
+	}
+}
+
+// TestToOpenAIResponsesRequest_GPT56RespectsCallerCacheOptions verifies Bifrost does
+// not overwrite a caller that already made a caching decision.
+func TestToOpenAIResponsesRequest_GPT56RespectsCallerCacheOptions(t *testing.T) {
+	req := gpt56CacheReq(schemas.OpenAI, "gpt-5.6-sol")
+	req.Params = &schemas.ResponsesParameters{
+		PromptCacheOptions: &schemas.PromptCacheOptions{
+			Mode: schemas.Ptr("implicit"),
+			TTL:  schemas.Ptr("30m"),
+		},
+	}
+
+	m, raw := marshalResponses(t, req)
+
+	opts, ok := m["prompt_cache_options"].(map[string]any)
+	if !ok {
+		t.Fatalf("caller's prompt_cache_options disappeared; raw=%s", raw)
+	}
+	if mode, _ := opts["mode"].(string); mode != "implicit" {
+		t.Errorf("caller's mode was overwritten: got %q, want \"implicit\"; raw=%s", mode, raw)
+	}
+	if ttl, _ := opts["ttl"].(string); ttl != "30m" {
+		t.Errorf("caller's ttl was lost: got %q; raw=%s", ttl, raw)
+	}
+}
+
+// TestToOpenAIResponsesRequest_GPT56NoBreakpointNoExplicitMode guards a footgun:
+// switching a request to explicit mode with no breakpoint anywhere opts it out of
+// caching entirely, which is strictly worse than the implicit default it replaced.
+func TestToOpenAIResponsesRequest_GPT56NoBreakpointNoExplicitMode(t *testing.T) {
+	req := gpt56CacheReq(schemas.OpenAI, "gpt-5.6-sol")
+	req.Input[0].Content.ContentBlocks[0].CacheControl = nil // nothing to translate
+
+	m, raw := marshalResponses(t, req)
+
+	if _, present := m["prompt_cache_options"]; present {
+		t.Errorf("explicit mode without a breakpoint disables caching outright; raw=%s", raw)
+	}
+}
+
+// TestToOpenAIResponsesRequest_GPT56MarkerTTLIsNotCarried pins the decision NOT to
+// translate a marker's TTL onto prompt_cache_options.ttl, which is a request-wide
+// field and not a per-block one.
+//
+// There is no valid value to carry. OpenAI documents that on prompt_cache_options.ttl
+// "The only supported value, 30m, is also the default"
+// (https://developers.openai.com/api/docs/guides/prompt-caching), while a cache_control
+// marker carries either nothing (5m) or "1h"
+// (https://platform.claude.com/docs/en/build-with-claude/prompt-caching). So "30m"
+// never arrives and would be inert if it did, and forwarding the "1h" that does arrive
+// would send a value OpenAI rejects, turning a working request into a 400.
+//
+// The mode must still be set: that is what pins the prefix, and it is unrelated to TTL.
+func TestToOpenAIResponsesRequest_GPT56MarkerTTLIsNotCarried(t *testing.T) {
+	req := gpt56CacheReq(schemas.OpenAI, "gpt-5.6-sol")
+	req.Input[0].Content.ContentBlocks[0].CacheControl = &schemas.CacheControl{
+		Type: schemas.CacheControlTypeEphemeral,
+		TTL:  schemas.Ptr("1h"),
+	}
+
+	m, raw := marshalResponses(t, req)
+
+	opts, ok := m["prompt_cache_options"].(map[string]any)
+	if !ok {
+		t.Fatalf("the explicit-mode option must still be set; raw=%s", raw)
+	}
+	if mode, _ := opts["mode"].(string); mode != "explicit" {
+		t.Errorf("prompt_cache_options.mode = %q, want \"explicit\"; raw=%s", mode, raw)
+	}
+	if ttl, present := opts["ttl"]; present {
+		t.Errorf("a marker TTL must not become prompt_cache_options.ttl (got %v); OpenAI accepts "+
+			"only \"30m\" there and rejects \"1h\"; raw=%s", ttl, raw)
+	}
+	if strings.Contains(raw, "\"ttl\"") {
+		t.Errorf("no ttl may reach an OpenAI-shaped endpoint from a cache_control marker; raw=%s", raw)
+	}
+}
+
+// TestToOpenAIResponsesRequest_CustomProviderResolvesBaseForCacheBreakpoints pins the
+// gate on the breakpoint translation to the BASE provider rather than the key the
+// request arrived under.
+//
+// A custom provider reports its own name. Matching the raw name against a switch that
+// only knows "openai"/"azure"/"bedrock_mantle"/"openrouter" sends every such request to
+// the default branch, where the serializer strips cache_control and puts nothing in its
+// place - so the caller's explicit breakpoint vanishes and the request silently drops
+// back to the implicit caching that #6180 exists to escape. Nothing in the response
+// says so; it is only visible on the wire.
+//
+// The failure is invisible to any test that names a standard provider, which is how it
+// survived: the injector (core/bifrost.go) and providers/utils both resolve the base
+// first, and this call site was the odd one out.
+func TestToOpenAIResponsesRequest_CustomProviderResolvesBaseForCacheBreakpoints(t *testing.T) {
+	newReq := func(provider schemas.ModelProvider) *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{
+			Provider: provider,
+			Model:    "gpt-5.6-sol",
+			Input: []schemas.ResponsesMessage{
+				{
+					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{
+						ContentBlocks: []schemas.ResponsesMessageContentBlock{
+							{
+								Type:         schemas.ResponsesInputMessageContentBlockTypeText,
+								Text:         schemas.Ptr("REUSABLE_PREFIX"),
+								CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
+							},
+							{
+								Type: schemas.ResponsesInputMessageContentBlockTypeText,
+								Text: schemas.Ptr("Reply with OK."),
+							},
+						},
+					},
+				},
+			},
+		}
+	}
+
+	// wire marshals the request and returns both the parsed body and the raw bytes, so
+	// a failure message shows exactly what the provider would have received.
+	wire := func(t *testing.T, ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostResponsesRequest) (map[string]any, string) {
+		t.Helper()
+		request := ToOpenAIResponsesRequest(ctx, bifrostReq)
+		if request == nil {
+			t.Fatal("expected non-nil request")
+		}
+		jsonBytes, err := request.MarshalJSON()
+		if err != nil {
+			t.Fatalf("failed to marshal responses request: %v", err)
+		}
+		raw := string(jsonBytes)
+		var jsonMap map[string]any
+		if err := sonic.Unmarshal(jsonBytes, &jsonMap); err != nil {
+			t.Fatalf("failed to parse marshaled JSON: %v\nraw=%s", err, raw)
+		}
+		return jsonMap, raw
+	}
+
+	markedBlock := func(t *testing.T, jsonMap map[string]any, raw string) map[string]any {
+		t.Helper()
+		input, ok := jsonMap["input"].([]any)
+		if !ok || len(input) == 0 {
+			t.Fatalf("expected input array on the wire; raw=%s", raw)
+		}
+		msg, ok := input[0].(map[string]any)
+		if !ok {
+			t.Fatalf("expected input[0] to be an object; raw=%s", raw)
+		}
+		blocks, ok := msg["content"].([]any)
+		if !ok || len(blocks) != 2 {
+			t.Fatalf("expected 2 content blocks on input[0]; raw=%s", raw)
+		}
+		block, ok := blocks[0].(map[string]any)
+		if !ok {
+			t.Fatalf("expected content[0] to be an object; raw=%s", raw)
+		}
+		return block
+	}
+
+	assertTranslated := func(t *testing.T, jsonMap map[string]any, raw string) {
+		t.Helper()
+		block := markedBlock(t, jsonMap, raw)
+		if _, present := block["cache_control"]; present {
+			t.Errorf("cache_control must never reach an OpenAI-shaped endpoint; raw=%s", raw)
+		}
+		bp, ok := block["prompt_cache_breakpoint"].(map[string]any)
+		if !ok {
+			t.Fatalf("cache_control must be translated to prompt_cache_breakpoint on the marked block; raw=%s", raw)
+		}
+		if mode, _ := bp["mode"].(string); mode != "explicit" {
+			t.Errorf("prompt_cache_breakpoint.mode = %q, want \"explicit\"; raw=%s", mode, raw)
+		}
+		// The block marker alone does not switch gpt-5.6 off implicit caching; without
+		// request-level explicit mode the breakpoint is inert and the win is lost.
+		opts, ok := jsonMap["prompt_cache_options"].(map[string]any)
+		if !ok {
+			t.Fatalf("gpt-5.6 needs request-level prompt_cache_options to honour the breakpoint; raw=%s", raw)
+		}
+		if mode, _ := opts["mode"].(string); mode != "explicit" {
+			t.Errorf("prompt_cache_options.mode = %q, want \"explicit\"; raw=%s", mode, raw)
+		}
+	}
+
+	t.Run("standard openai translates", func(t *testing.T) {
+		jsonMap, raw := wire(t, nil, newReq(schemas.OpenAI))
+		assertTranslated(t, jsonMap, raw)
+	})
+
+	t.Run("custom provider on an openai base translates identically", func(t *testing.T) {
+		ctx := schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline,
+			schemas.BifrostContextKeyBaseProviderType, schemas.OpenAI)
+		jsonMap, raw := wire(t, ctx, newReq(schemas.ModelProvider("openai_pc_auto")))
+		assertTranslated(t, jsonMap, raw)
+	})
+
+	t.Run("custom provider on an azure base translates identically", func(t *testing.T) {
+		ctx := schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline,
+			schemas.BifrostContextKeyBaseProviderType, schemas.Azure)
+		jsonMap, raw := wire(t, ctx, newReq(schemas.ModelProvider("azure_pc_auto")))
+		assertTranslated(t, jsonMap, raw)
+	})
+
+	// The resolution must not become a blanket "translate for everyone": a base that
+	// genuinely has no breakpoint field still gets the strip, which is correct there.
+	t.Run("a base without breakpoints is still left alone", func(t *testing.T) {
+		ctx := schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline,
+			schemas.BifrostContextKeyBaseProviderType, schemas.Anthropic)
+		jsonMap, raw := wire(t, ctx, newReq(schemas.ModelProvider("anthropic_pc_auto")))
+		block := markedBlock(t, jsonMap, raw)
+		if _, present := block["prompt_cache_breakpoint"]; present {
+			t.Errorf("an Anthropic-based provider must not gain a prompt_cache_breakpoint; raw=%s", raw)
+		}
+		if _, present := jsonMap["prompt_cache_options"]; present {
+			t.Errorf("an Anthropic-based provider must not gain prompt_cache_options; raw=%s", raw)
+		}
+	})
 }

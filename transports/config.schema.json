@@ -250,6 +250,12 @@
           "description": "When true, deleted virtual keys are omitted from logs and MCP logs filter data.",
           "default": false
         },
+        "hidden_request_types": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Request types excluded from dashboard and log API reads. Logs are still stored; an empty array shows all request types. Editable from the UI under Logs Settings."
+        },
         "allowed_headers": {
           "type": "array",
           "items": {
@@ -1114,6 +1120,9 @@
               },
               "openai_config": {
                 "$ref": "#/$defs/openai_config"
+              },
+              "prompt_cache": {
+                "$ref": "#/$defs/prompt_cache"
               }
             },
             "required": ["name"]
@@ -1545,9 +1554,17 @@
             }
           ]
         },
+        "virtual_mcps": {
+          "type": "array",
+          "description": "Virtual MCPs: named bundles of tools from one or more MCP clients, served at /mcp/<endpoint_slug> and attachable to virtual keys. Canonical key; supersedes the deprecated tool_groups alias.",
+          "items": {
+            "$ref": "#/$defs/virtual_mcp_config"
+          }
+        },
         "tool_groups": {
           "type": "array",
-          "description": "Enterprise MCP tool groups with optional governance associations",
+          "description": "DEPRECATED: use virtual_mcps instead. Enterprise MCP tool groups with optional governance associations. Kept for backward compatibility.",
+          "deprecated": true,
           "items": {
             "$ref": "#/$defs/mcp_tool_group_config"
           }
@@ -4390,6 +4407,50 @@
       },
       "additionalProperties": false
     },
+    "cache_control_injection_point": {
+      "type": "object",
+      "description": "One place to add a cache breakpoint. Must set role, index, or both; a point with neither matches nothing.",
+      "properties": {
+        "location": {
+          "type": "string",
+          "enum": ["message"],
+          "description": "What to target. Only conversation messages are supported today."
+        },
+        "role": {
+          "type": "string",
+          "enum": ["system", "developer", "user", "assistant"],
+          "description": "Match messages with this role."
+        },
+        "index": {
+          "type": "integer",
+          "description": "Match the message at this position. Negative values count from the end, so -1 is the last message. An index past either end matches nothing."
+        }
+      },
+      "additionalProperties": false
+    },
+    "prompt_cache": {
+      "type": "object",
+      "description": "Synthesize prompt-cache breakpoints for requests that carry none. Off by default. Agentic clients such as Codex send no cache markers, so providers that cache implicitly slide the cached prefix onto the latest message and bill a cache write every turn. Requests that already carry their own cache_control or prompt_cache_breakpoint are never modified.",
+      "properties": {
+        "auto_inject": {
+          "type": "boolean",
+          "description": "Mark the first cacheable content block. That block is the prefix an agent loop replays verbatim each turn, so the cached region stays stable and turn 2 onward is a cache read."
+        },
+        "ttl": {
+          "type": "string",
+          "enum": ["1h"],
+          "description": "Lifetime for injected markers. Omit for the provider default (5 minutes on Anthropic). Providers that cannot carry a TTL ignore it."
+        },
+        "cache_control_injection_points": {
+          "type": "array",
+          "description": "Target specific messages instead of the first cacheable block. When set, this REPLACES auto_inject rather than adding to it. At most four markers are injected, matching the Anthropic ceiling.",
+          "items": {
+            "$ref": "#/$defs/cache_control_injection_point"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "concurrency_and_buffer_size": {
       "type": "object",
       "properties": {
@@ -5059,6 +5120,9 @@
         },
         "openai_config": {
           "$ref": "#/$defs/openai_config"
+        },
+        "prompt_cache": {
+          "$ref": "#/$defs/prompt_cache"
         },
         "network_config": {
           "$ref": "#/$defs/network_config"
@@ -5969,8 +6033,82 @@
         }
       }
     },
+    "virtual_mcp_config": {
+      "type": "object",
+      "description": "A Virtual MCP: a named bundle of tools from one or more MCP clients, served at /mcp/<endpoint_slug> and attachable to virtual keys.",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "DB ID of this Virtual MCP. When set, the reconciler updates the existing Virtual MCP with this ID rather than matching by name."
+        },
+        "name": {
+          "type": "string",
+          "description": "Virtual MCP display name (unique)"
+        },
+        "endpoint_slug": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "description": "URL-safe path the Virtual MCP is served at (/mcp/<endpoint_slug>). Honored on create only (immutable after); derived from the name when omitted. Unique across Virtual MCPs and MCP clients."
+        },
+        "description": {
+          "type": "string",
+          "description": "Virtual MCP description"
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether the Virtual MCP is enabled. A disabled Virtual MCP is not served.",
+          "default": true
+        },
+        "tools": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Per-client tool specs the Virtual MCP exposes",
+          "items": {
+            "type": "object",
+            "properties": {
+              "mcp_client_id": {
+                "type": "string",
+                "description": "MCP client ID"
+              },
+              "mcp_client_name": {
+                "type": "string",
+                "description": "MCP client name (resolved to client_id at startup)"
+              },
+              "tool_names": {
+                "type": "array",
+                "description": "Tool names to expose. [\"*\"] means all tools (including future ones); [] means none; a named list means only those tools.",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "oneOf": [
+              {
+                "required": ["mcp_client_id"]
+              },
+              {
+                "required": ["mcp_client_name"]
+              }
+            ],
+            "additionalProperties": false
+          }
+        },
+        "virtual_key_ids": {
+          "type": "array",
+          "description": "Virtual keys this Virtual MCP is attached to.",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["name", "tools"],
+      "additionalProperties": false
+    },
     "mcp_tool_group_config": {
       "type": "object",
+      "description": "DEPRECATED: use virtual_mcp_config (mcp.virtual_mcps) instead.",
+      "deprecated": true,
       "properties": {
         "id": {
           "type": "integer",
@@ -6007,7 +6145,7 @@
               },
               "tool_names": {
                 "type": "array",
-                "description": "Tool names to allow. Empty means all tools from this MCP client.",
+                "description": "Tool names to expose. [\"*\"] means all tools (including future ones); [] means none; a named list means only those tools.",
                 "items": {
                   "type": "string"
                 }
@@ -6032,30 +6170,40 @@
         },
         "team_ids": {
           "type": "array",
+          "description": "DEPRECATED: attach Virtual MCPs to virtual keys via virtual_key_ids instead.",
+          "deprecated": true,
           "items": {
             "type": "string"
           }
         },
         "customer_ids": {
           "type": "array",
+          "description": "DEPRECATED: attach Virtual MCPs to virtual keys via virtual_key_ids instead.",
+          "deprecated": true,
           "items": {
             "type": "string"
           }
         },
         "user_ids": {
           "type": "array",
+          "description": "DEPRECATED: attach Virtual MCPs to virtual keys via virtual_key_ids instead.",
+          "deprecated": true,
           "items": {
             "type": "string"
           }
         },
         "provider_names": {
           "type": "array",
+          "description": "DEPRECATED: attach Virtual MCPs to virtual keys via virtual_key_ids instead.",
+          "deprecated": true,
           "items": {
             "type": "string"
           }
         },
         "api_key_ids": {
           "type": "array",
+          "description": "DEPRECATED: attach Virtual MCPs to virtual keys via virtual_key_ids instead.",
+          "deprecated": true,
           "items": {
             "type": "integer"
           }
@@ -6728,6 +6876,9 @@
         "attributeBusinessUnitMappings": {
           "$ref": "#/$defs/scim_attribute_business_unit_mappings"
         },
+        "attributeAccessProfileMappings": {
+          "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+        },
         "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
         "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" },
         "provisioningToken": { "$ref": "#/$defs/scim_provisioning_token" }
@@ -6781,12 +6932,20 @@
           "description": "JWT claim field for roles (default: 'roles')",
           "default": "roles"
         },
+        "enableBulkSync": {
+          "type": "boolean",
+          "description": "Whether Bifrost may bulk-sync users and groups from Microsoft Graph. Set automatically by the SCIM verify step (disabled when the app registration is missing the required Graph permissions); set it explicitly to opt out of bulk sync while keeping login-time claim sync.",
+          "default": true
+        },
         "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
         "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
         "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
         "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
         "attributeBusinessUnitMappings": {
           "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+        },
+        "attributeAccessProfileMappings": {
+          "$ref": "#/$defs/scim_attribute_access_profile_mappings"
         },
         "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
         "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" },
@@ -6841,6 +7000,9 @@
         "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
         "attributeBusinessUnitMappings": {
           "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+        },
+        "attributeAccessProfileMappings": {
+          "$ref": "#/$defs/scim_attribute_access_profile_mappings"
         },
         "authProxy": { "$ref": "#/$defs/scim_auth_proxy" }
       },
@@ -6904,6 +7066,9 @@
         "attributeBusinessUnitMappings": {
           "$ref": "#/$defs/scim_attribute_business_unit_mappings"
         },
+        "attributeAccessProfileMappings": {
+          "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+        },
         "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
         "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" },
         "provisioningToken": { "$ref": "#/$defs/scim_provisioning_token" }
@@ -6956,6 +7121,9 @@
         "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
         "attributeBusinessUnitMappings": {
           "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+        },
+        "attributeAccessProfileMappings": {
+          "$ref": "#/$defs/scim_attribute_access_profile_mappings"
         },
         "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
         "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" }
@@ -7012,12 +7180,20 @@
           "description": "Claim field for team/group IDs (default: 'groups')",
           "default": "groups"
         },
+        "enableBulkSync": {
+          "type": "boolean",
+          "description": "Whether Bifrost may bulk-sync users and groups from the Google Workspace Directory API. Set automatically by the SCIM verify step (disabled when the service account is missing the required Directory API scopes); set it explicitly to opt out of bulk sync while keeping login-time claim sync.",
+          "default": true
+        },
         "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
         "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
         "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
         "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
         "attributeBusinessUnitMappings": {
           "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+        },
+        "attributeAccessProfileMappings": {
+          "$ref": "#/$defs/scim_attribute_access_profile_mappings"
         },
         "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
         "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" }
@@ -7106,6 +7282,9 @@
         "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
         "attributeBusinessUnitMappings": {
           "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+        },
+        "attributeAccessProfileMappings": {
+          "$ref": "#/$defs/scim_attribute_access_profile_mappings"
         },
         "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
         "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" },
@@ -7573,6 +7752,11 @@
           "description": "Snap budget and rate-limit reset windows to clean calendar boundaries (day, week, month, year) for this profile",
           "default": false
         },
+        "allow_all_providers": {
+          "type": "boolean",
+          "description": "Grant access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs.",
+          "default": false
+        },
         "provider_configs": {
           "type": "array",
           "description": "Per-provider restrictions and limits for this profile",
@@ -7687,7 +7871,7 @@
     },
     "project": {
       "type": "object",
-      "description": "A project declared under governance.projects: what it grants, what it may spend, and how that is divided between its members. Members themselves are added from the dashboard.",
+      "description": "A project declared under governance.projects: what it allows, what it may spend, and how that is divided between its members. Members themselves are added from the dashboard or the API.",
       "allOf": [
         {
           "if": {
@@ -7718,17 +7902,17 @@
         },
         "is_active": {
           "type": "boolean",
-          "description": "Whether the project grants and accounts for anything",
+          "description": "Whether the project allows and accounts for anything",
           "default": true
         },
         "expires_at": {
           "type": "string",
           "format": "date-time",
-          "description": "When the project stops granting anything; omit to never expire"
+          "description": "When the project stops allowing anything; omit to never expire"
         },
         "access_rule": {
           "type": "string",
-          "description": "How the project's grants compose with the grants a caller already holds: union leaves the caller's own access untouched (a project with no provider or MCP config then only accounts for spend), intersect permits only what both allow.",
+          "description": "How the project's own access composes with the access a caller already holds: union leaves the caller's own access untouched (a project with no provider or MCP config then only accounts for spend), intersect permits only what both allow.",
           "enum": ["union", "intersect"]
         },
         "membership_mode": {
@@ -7751,7 +7935,12 @@
         },
         "calendar_aligned": {
           "type": "boolean",
-          "description": "Snap the project's budget and rate-limit reset windows to calendar boundaries (day, week, month, year) instead of rolling from first use",
+          "description": "Snap the project's budget and rate-limit reset windows to calendar boundaries (day, week, month, quarter, year) instead of rolling from first use. Windows shorter than a day cannot be aligned and stay rolling.",
+          "default": false
+        },
+        "allow_all_providers": {
+          "type": "boolean",
+          "description": "Grant access to every provider, including ones without a provider_configs entry and providers added later. Listed providers keep their own model, key, budget, and rate-limit rules.",
           "default": false
         },
         "budgets": {
@@ -7766,20 +7955,40 @@
         },
         "provider_configs": {
           "type": "array",
-          "description": "Per-provider grants and accounting, one entry per provider",
+          "description": "Per-provider access and accounting, one entry per provider",
           "items": {
             "$ref": "#/$defs/project_provider_config"
           }
         },
         "mcp_configs": {
           "type": "array",
-          "description": "MCP clients the project grants, one entry per client",
+          "description": "MCP clients the project allows, one entry per client",
           "items": {
             "$ref": "#/$defs/project_mcp_config"
+          }
+        },
+        "virtual_mcps": {
+          "type": "array",
+          "description": "Virtual MCPs assigned to the project, one entry per assignment. A request scoped to the project can reach each one at its /mcp/<slug> endpoint.",
+          "items": {
+            "$ref": "#/$defs/project_virtual_mcp"
           }
         }
       },
       "required": ["name", "access_rule"],
+      "additionalProperties": false
+    },
+    "project_virtual_mcp": {
+      "type": "object",
+      "description": "A virtual MCP assigned to a project. Assignments are a set, so a repeated id is ignored rather than doubled.",
+      "properties": {
+        "virtual_mcp_id": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Virtual MCP ID. Ids are assigned by the database, so a file that has to be portable across environments should assign virtual MCPs from the dashboard or the API instead."
+        }
+      },
+      "required": ["virtual_mcp_id"],
       "additionalProperties": false
     },
     "project_budget": {
@@ -7955,11 +8164,11 @@
       "properties": {
         "mcp_client_name": {
           "type": "string",
-          "description": "Name of the MCP client (as declared under mcp.client_configs) the project grants. Resolved to the stored client on startup; a name that matches no client is refused."
+          "description": "Name of the MCP client (as declared under mcp.client_configs) the project allows. Resolved to the stored client on startup; a name that matches no client is refused."
         },
         "tools_to_execute": {
           "type": "array",
-          "description": "Tools of the client the project grants. Use [\"*\"] to grant every tool; empty array or omitted grants none, regardless of the top-level version.",
+          "description": "Tools of the client the project may execute. Use [\"*\"] to allow every tool; empty array or omitted allows none, regardless of the top-level version.",
           "items": {
             "type": "string"
           }
@@ -8376,6 +8585,10 @@
           "type": "boolean",
           "description": "Whether the custom provider requires a key"
         },
+        "does_not_send_done_marker": {
+          "type": "boolean",
+          "description": "Whether the provider ends streams on finish_reason without sending a data: [DONE] marker"
+        },
         "base_provider_type": {
           "type": "string",
           "enum": [
@@ -8395,8 +8608,10 @@
             "parasail",
             "perplexity",
             "cerebras",
+            "databricks",
             "deepseek",
             "gemini",
+            "github-copilot",
             "openrouter",
             "elevenlabs",
             "huggingface",
@@ -8777,6 +8992,29 @@
           }
         },
         "required": ["attribute", "value"],
+        "additionalProperties": false
+      }
+    },
+    "scim_attribute_access_profile_mappings": {
+      "type": "array",
+      "description": "Attribute -> access-profile mappings. Every matching rule applies: the user is granted the union of the profiles it matches, on top of any profile assigned by role or from the dashboard. Bifrost keeps the tightest limit across the granted profiles.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "attribute": {
+            "type": "string",
+            "description": "JWT claim name (supports dot paths, e.g. 'realm_access.roles')"
+          },
+          "value": {
+            "type": "string",
+            "description": "Claim value to match (case-insensitive). '*' matches whenever the claim carries any non-empty value; glob patterns (e.g. 'bifrost-*') are also supported."
+          },
+          "accessProfile": {
+            "type": "string",
+            "description": "Name of the access profile (defined in access_profiles) to grant on match"
+          }
+        },
+        "required": ["attribute", "value", "accessProfile"],
         "additionalProperties": false
       }
     },

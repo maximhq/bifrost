@@ -758,6 +758,25 @@ export const openaiConfigFormSchema = z.object({
 
 export type OpenAIConfigFormSchema = z.infer<typeof openaiConfigFormSchema>;
 
+// Prompt cache tab
+export const cacheControlInjectionPointSchema = z
+	.object({
+		location: z.literal("message"),
+		role: z.enum(["system", "developer", "user", "assistant"]).optional(),
+		index: z.number().int().optional(),
+	})
+	.refine((p) => p.role !== undefined || p.index !== undefined, {
+		message: "Set a role, an index, or both - a point with neither matches nothing",
+	});
+
+export const promptCacheFormSchema = z.object({
+	auto_inject: z.boolean(),
+	ttl: z.string().optional(),
+	cache_control_injection_points: z.array(cacheControlInjectionPointSchema).optional(),
+});
+
+export type PromptCacheFormSchema = z.infer<typeof promptCacheFormSchema>;
+
 // Allowed requests schema
 export const allowedRequestsSchema = z.object({
 	text_completion: z.boolean(),
@@ -801,6 +820,7 @@ export const customProviderConfigSchema = z
 	.object({
 		base_provider_type: knownProviderSchema,
 		is_key_less: z.boolean().optional(),
+		does_not_send_done_marker: z.boolean().optional(),
 		allowed_requests: allowedRequestsSchema.optional(),
 		request_path_overrides: z.record(z.string(), z.string().optional()).optional(),
 	})
@@ -822,6 +842,7 @@ export const formCustomProviderConfigSchema = z
 	.object({
 		base_provider_type: z.string().min(1, "Base provider type is required"),
 		is_key_less: z.boolean().optional(),
+		does_not_send_done_marker: z.boolean().optional(),
 		allowed_requests: allowedRequestsSchema.optional(),
 		request_path_overrides: z.record(z.string(), z.string().optional()).optional(),
 	})
@@ -884,6 +905,7 @@ export const addProviderRequestSchema = z.object({
 	store_raw_request_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 	openai_config: openaiConfigFormSchema.optional(),
+	prompt_cache: promptCacheFormSchema.optional(),
 });
 
 // Update provider request schema
@@ -897,6 +919,7 @@ export const updateProviderRequestSchema = z.object({
 	store_raw_request_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 	openai_config: openaiConfigFormSchema.optional(),
+	prompt_cache: promptCacheFormSchema.optional(),
 });
 
 // Cache config schema
@@ -940,6 +963,7 @@ export const coreConfigSchema = z.object({
 	disable_content_logging: z.boolean().default(false),
 	enforce_auth_on_inference: z.boolean().default(false),
 	hide_deleted_virtual_keys_in_filters: z.boolean().default(false),
+	hidden_request_types: z.array(z.string()).default([]),
 	allowed_origins: z.array(z.string()).default(["*"]),
 	max_request_body_size_mb: z.number().min(1).default(100),
 	mcp_agent_depth: z.number().min(1).default(10),

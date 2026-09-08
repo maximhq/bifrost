@@ -209,6 +209,11 @@ type MCPConfig struct {
 	ToolManagerConfig *MCPToolManagerConfig `json:"tool_manager_config,omitempty"` // MCP tool manager configuration
 	ToolSyncInterval  time.Duration         `json:"tool_sync_interval,omitempty"`  // Global default interval for syncing tools from MCP servers (0 = use default 10 min)
 
+	// VirtualMCPs are Virtual MCP definitions declared in config.json: named bundles of tools from one
+	// or more MCP clients, served at /mcp/<endpoint_slug> and assignable to virtual keys. Reconciled
+	// into the config store at load. This is the canonical key; mcp.tool_groups is a deprecated alias.
+	VirtualMCPs []VirtualMCPConfig `json:"virtual_mcps,omitempty"`
+
 	// Function to fetch a new request ID for each tool call result message in agent mode,
 	// this is used to ensure that the tool call result messages are unique and can be tracked in plugins or by the user.
 	// This id is attached to ctx.Value(schemas.BifrostContextKeyRequestID) in the agent mode.
@@ -223,6 +228,35 @@ type MCPConfig struct {
 	// ReleasePluginPipeline releases a plugin pipeline back to the pool.
 	// This should be called after the plugin pipeline is no longer needed.
 	ReleasePluginPipeline func(pipeline interface{}) `json:"-"`
+}
+
+// VirtualMCPConfig is a Virtual MCP declared in config.json (mcp.virtual_mcps). It reconciles into a
+// Virtual MCP in the config store: a bundle of tools from one or more MCP clients, served at
+// /mcp/<endpoint_slug> and attachable to virtual keys.
+type VirtualMCPConfig struct {
+	// ID, when set, updates the Virtual MCP with this DB id rather than matching by name.
+	ID uint `json:"id,omitempty"`
+	// Name is the display name (required, unique).
+	Name string `json:"name"`
+	// EndpointSlug is the URL-safe path the Virtual MCP is served at (/mcp/<slug>). Honored on create
+	// only (immutable after); derived from the name when omitted. Unique across Virtual MCPs and MCP clients.
+	EndpointSlug string `json:"endpoint_slug,omitempty"`
+	// Description is free text.
+	Description *string `json:"description,omitempty"`
+	// Enabled defaults to true when omitted; a disabled Virtual MCP is not served.
+	Enabled *bool `json:"enabled,omitempty"`
+	// Tools are the per-client tool specs the Virtual MCP exposes (required).
+	Tools []MCPToolSpecConfig `json:"tools"`
+	// VirtualKeyIDs are the virtual keys this Virtual MCP is attached to (reachable through them).
+	VirtualKeyIDs []string `json:"virtual_key_ids,omitempty"`
+}
+
+// MCPToolSpecConfig names a source MCP client (by id or name) and which of its tools a Virtual MCP
+// exposes: ["*"] = all (including future tools), [] = none, a named list = only those.
+type MCPToolSpecConfig struct {
+	MCPClientID   string   `json:"mcp_client_id,omitempty"`
+	MCPClientName string   `json:"mcp_client_name,omitempty"`
+	ToolNames     []string `json:"tool_names,omitempty"`
 }
 
 // UnmarshalJSON supports Go duration strings (e.g. "10m") for tool_sync_interval.

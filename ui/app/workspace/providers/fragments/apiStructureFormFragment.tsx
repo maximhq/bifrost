@@ -36,6 +36,7 @@ export function ApiStructureFormFragment({ provider }: Props) {
 		defaultValues: {
 			base_provider_type: provider.custom_provider_config?.base_provider_type ?? "openai",
 			is_key_less: provider.custom_provider_config?.is_key_less ?? false,
+			does_not_send_done_marker: provider.custom_provider_config?.does_not_send_done_marker ?? false,
 			allowed_requests: {
 				text_completion: provider.custom_provider_config?.allowed_requests?.text_completion ?? true,
 				text_completion_stream: provider.custom_provider_config?.allowed_requests?.text_completion_stream ?? true,
@@ -76,6 +77,7 @@ export function ApiStructureFormFragment({ provider }: Props) {
 				custom_provider_config: {
 					base_provider_type: data.base_provider_type as unknown as BaseProvider,
 					is_key_less: data.is_key_less ?? false,
+					does_not_send_done_marker: data.does_not_send_done_marker ?? false,
 					allowed_requests: data.allowed_requests,
 					request_path_overrides: cleanPathOverrides(data.request_path_overrides),
 				},
@@ -95,6 +97,12 @@ export function ApiStructureFormFragment({ provider }: Props) {
 
 	const isKeyLessDisabled = useMemo(
 		() => provider.custom_provider_config?.base_provider_type === "bedrock",
+		[provider.custom_provider_config?.base_provider_type],
+	);
+
+	// Only the OpenAI stream loops read this flag; every other base format ignores it.
+	const isDoneMarkerToggleDisabled = useMemo(
+		() => provider.custom_provider_config?.base_provider_type !== "openai",
 		[provider.custom_provider_config?.base_provider_type],
 	);
 
@@ -143,6 +151,33 @@ export function ApiStructureFormFragment({ provider }: Props) {
 										</div>
 										<Switch
 											id="drop-excess-requests"
+											size="md"
+											checked={field.value}
+											onCheckedChange={field.onChange}
+											disabled={!hasUpdateProviderAccess}
+										/>
+									</div>
+								</FormItem>
+							)}
+						/>
+					)}
+					{!isDoneMarkerToggleDisabled && (
+						<FormField
+							control={form.control}
+							name="does_not_send_done_marker"
+							render={({ field }) => (
+								<FormItem>
+									<div className="flex items-center justify-between space-x-2 rounded-lg border p-3">
+										<div className="space-y-0.5">
+											<label htmlFor="does-not-send-done-marker" className="text-sm font-medium">
+												Does Not Send [DONE] Marker?
+											</label>
+											<p className="text-muted-foreground text-sm">
+												Whether the provider ends streams on finish_reason without sending a [DONE] marker
+											</p>
+										</div>
+										<Switch
+											id="does-not-send-done-marker"
 											size="md"
 											checked={field.value}
 											onCheckedChange={field.onChange}

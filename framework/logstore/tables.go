@@ -50,8 +50,9 @@ type SearchFilters struct {
 	Models               []string          `json:"models,omitempty"`
 	Aliases              []string          `json:"aliases,omitempty"`
 	Status               []string          `json:"status,omitempty"`
-	StopReasons          []string          `json:"stop_reasons,omitempty"` // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
-	Objects              []string          `json:"objects,omitempty"`      // For filtering by request type (chat.completion, text.completion, embedding)
+	StopReasons          []string          `json:"stop_reasons,omitempty"`    // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
+	ToolCallNames        []string          `json:"tool_call_names,omitempty"` // Requests whose response called ANY of these function names (matched against the tool_call_names column)
+	Objects              []string          `json:"objects,omitempty"`         // For filtering by request type (chat.completion, text.completion, embedding)
 	ParentRequestID      string            `json:"parent_request_id,omitempty"`
 	RequestID            string            `json:"request_id,omitempty"` // Exact match on the log primary key, which is the request ID. Time-range filters are skipped for it so a unique ID is never hidden by the selected window.
 	RootsOnly            bool              `json:"roots_only,omitempty"` // Hide rows whose parent_request_id points at another row matching these same filters, so each chain lists as its root request only. Ignored when ParentRequestID is set.
@@ -209,6 +210,7 @@ type Log struct {
 	VirtualKeyID            *string   `gorm:"type:varchar(255);index:idx_logs_virtual_key_id" json:"virtual_key_id"`
 	VirtualKeyName          *string   `gorm:"type:varchar(255)" json:"virtual_key_name"`
 	RoutingEnginesUsedStr   *string   `gorm:"type:varchar(255);column:routing_engines_used" json:"-"` // Comma-separated routing engines
+	ToolCallNamesStr        *string   `gorm:"type:text;column:tool_call_names" json:"-"`              // Comma-separated distinct function names the response called. Not a payload field, so it stays on the row in hybrid mode and is filterable. Names are recorded regardless of content logging; arguments live in tool_calls and follow content policy.
 	RoutingRuleID           *string   `gorm:"type:varchar(255);index:idx_logs_routing_rule_id" json:"routing_rule_id"`
 	RoutingRuleName         *string   `gorm:"type:varchar(255)" json:"routing_rule_name"`
 	ComplexityTier          *string   `gorm:"type:varchar(50);index:idx_logs_complexity_tier,where:complexity_tier IS NOT NULL" json:"complexity_tier,omitempty"`                // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); NULL when no routing rule demanded complexity. Partial index, matching its performanceIndexes entry
@@ -356,6 +358,7 @@ type Log struct {
 
 	// Virtual fields for JSON output - these will be populated when needed
 	RoutingEnginesUsed          []string                                `gorm:"-" json:"routing_engines_used,omitempty"` // Virtual field deserialized from JSON
+	ToolCallNames               []string                                `gorm:"-" json:"tool_call_names,omitempty"`      // Virtual field split from ToolCallNamesStr
 	InputHistoryParsed          []schemas.ChatMessage                   `gorm:"-" json:"input_history,omitempty"`
 	ResponsesInputHistoryParsed []schemas.ResponsesMessage              `gorm:"-" json:"responses_input_history,omitempty"`
 	OutputMessageParsed         *schemas.ChatMessage                    `gorm:"-" json:"output_message,omitempty"`
@@ -467,6 +470,43 @@ func (l *Log) AfterFind(tx *gorm.DB) error {
 	return l.DeserializeFields()
 }
 
+// maxToolCallNamesBytes caps the serialized tool_call_names column. Whole names
+// past the cap are dropped; a name is never split.
+const maxToolCallNamesBytes = 2048
+
+// joinToolCallNames joins distinct, non-empty names with commas, keeping
+// first-seen order and stopping before the joined string would exceed
+// maxToolCallNamesBytes.
+func joinToolCallNames(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	seen := make(map[string]struct{}, len(names))
+	var b strings.Builder
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" || strings.Contains(name, ",") {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		extra := len(name)
+		if b.Len() > 0 {
+			extra++
+		}
+		if b.Len()+extra > maxToolCallNamesBytes {
+			break
+		}
+		seen[name] = struct{}{}
+		if b.Len() > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(name)
+	}
+	return b.String()
+}
+
 // SerializeFields converts Go structs to JSON strings for storage
 func (l *Log) SerializeFields() error {
 	// Serialize routing engines to comma-separated string
@@ -475,6 +515,14 @@ func (l *Log) SerializeFields() error {
 		l.RoutingEnginesUsedStr = &engineStr
 	} else {
 		l.RoutingEnginesUsedStr = nil
+	}
+
+	// Serialize tool call names to a comma-separated string, capped so an
+	// agentic response with hundreds of distinct tools cannot bloat the row.
+	if joined := joinToolCallNames(l.ToolCallNames); joined != "" {
+		l.ToolCallNamesStr = &joined
+	} else {
+		l.ToolCallNamesStr = nil
 	}
 
 	if l.InputHistoryParsed != nil {
@@ -1192,6 +1240,12 @@ func (l *Log) DeserializeFields() error {
 		l.RoutingEnginesUsed = strings.Split(*l.RoutingEnginesUsedStr, ",")
 	} else {
 		l.RoutingEnginesUsed = []string{}
+	}
+
+	if l.ToolCallNamesStr != nil && *l.ToolCallNamesStr != "" {
+		l.ToolCallNames = strings.Split(*l.ToolCallNamesStr, ",")
+	} else {
+		l.ToolCallNames = nil
 	}
 
 	// Hybrid log store offloads token_usage to object storage but keeps denormalized

@@ -433,6 +433,11 @@ legacy-user-virtual-keys:
     operationId: listUserVirtualKeysLegacy
     x-bifrost-successor: '/api/governance/users/{user_id}/virtual-keys'
     x-bifrost-removal: following-major-release
+  post:
+    $ref: './governanceextensions.yaml#/user-virtual-keys/post'
+    operationId: addUserVirtualKeyLegacy
+    x-bifrost-successor: '/api/governance/users/{user_id}/virtual-keys'
+    x-bifrost-removal: following-major-release
 
 legacy-user-access-profile-budget-override:
   put:
@@ -457,7 +462,7 @@ legacy-users-access-profile-virtual-keys:
   post:
     $ref: './accessprofiles.yaml#/users-access-profile-virtual-keys/post'
     operationId: addUserAccessProfileVirtualKeyLegacy
-    x-bifrost-successor: '/api/governance/users/{user_id}/access-profiles/{profile_id}/virtual-keys'
+    x-bifrost-successor: '/api/governance/users/{user_id}/virtual-keys'
     x-bifrost-removal: following-major-release
 
 legacy-users-access-profile-virtual-key-by-id:

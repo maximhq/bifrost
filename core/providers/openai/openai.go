@@ -622,8 +622,18 @@ func HandleOpenAITextCompletionStreaming(
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
 					return
 				}
-				// The body is fully consumed, so the deferred release must not drain it again.
-				ctx.SetValue(schemas.BifrostContextKeyStreamBodyExhausted, true)
+				if providerUtils.SSEEndedOnComment(sseReader) {
+					// Stopped on a heartbeat: the body is still open, so cleanup must abandon it.
+					ctx.SetValue(schemas.BifrostContextKeyStreamParkedAfterFinish, true)
+					// Bifrost defaults stream_options.include_usage, so no usage by now means the
+					// upstream parked before sending it and this request cannot be costed.
+					if usage.TotalTokens == 0 {
+						logger.Warn("provider %s ended the stream on heartbeats after finish_reason without sending usage; token counts and cost are unavailable for this request", providerName)
+					}
+				} else {
+					// The body is fully consumed, so the deferred release must not drain it again.
+					ctx.SetValue(schemas.BifrostContextKeyStreamBodyExhausted, true)
+				}
 				break
 			}
 			jsonData := string(data)
@@ -727,6 +737,8 @@ func HandleOpenAITextCompletionStreaming(
 				// Collect finish reason and send at the end of the stream
 				finishReason = choice.FinishReason
 				response.Choices[0].FinishReason = nil
+				// An upstream that parks instead of sending [DONE] can only heartbeat now.
+				providerUtils.SSEEndOnCommentAfterFinish(sseReader)
 			}
 
 			if response.ID != "" && messageID == "" {
@@ -752,7 +764,7 @@ func HandleOpenAITextCompletionStreaming(
 			}
 
 			// For providers that don't send [DONE] marker break on finish_reason
-			if !providerUtils.ProviderSendsDoneMarker(providerName) && finishReason != nil {
+			if !providerUtils.ProviderSendsDoneMarker(ctx, providerName) && finishReason != nil {
 				break
 			}
 		}
@@ -1297,8 +1309,18 @@ func HandleOpenAIChatCompletionStreaming(
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
 					return
 				}
-				// The body is fully consumed, so the deferred release must not drain it again.
-				ctx.SetValue(schemas.BifrostContextKeyStreamBodyExhausted, true)
+				if providerUtils.SSEEndedOnComment(sseReader) {
+					// Stopped on a heartbeat: the body is still open, so cleanup must abandon it.
+					ctx.SetValue(schemas.BifrostContextKeyStreamParkedAfterFinish, true)
+					// Bifrost defaults stream_options.include_usage, so no usage by now means the
+					// upstream parked before sending it and this request cannot be costed.
+					if usage.TotalTokens == 0 {
+						logger.Warn("provider %s ended the stream on heartbeats after finish_reason without sending usage; token counts and cost are unavailable for this request", providerName)
+					}
+				} else {
+					// The body is fully consumed, so the deferred release must not drain it again.
+					ctx.SetValue(schemas.BifrostContextKeyStreamBodyExhausted, true)
+				}
 				break
 			}
 			jsonData := string(data)
@@ -1499,6 +1521,8 @@ func HandleOpenAIChatCompletionStreaming(
 				if choice.FinishReason != nil && *choice.FinishReason != "" {
 					// Collect finish reason and send at the end of the stream
 					finishReason = choice.FinishReason
+					// An upstream that parks instead of sending [DONE] can only heartbeat now.
+					providerUtils.SSEEndOnCommentAfterFinish(sseReader)
 				}
 
 				if response.ID != "" && messageID == "" {
@@ -1533,7 +1557,7 @@ func HandleOpenAIChatCompletionStreaming(
 				}
 
 				// For providers that don't send [DONE] marker break on finish_reason
-				if !providerUtils.ProviderSendsDoneMarker(providerName) && finishReason != nil {
+				if !providerUtils.ProviderSendsDoneMarker(ctx, providerName) && finishReason != nil {
 					break
 				}
 			}

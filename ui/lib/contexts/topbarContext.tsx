@@ -1,5 +1,13 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
-import { EMPTY_TITLE_ENTRY, claimTitle, releaseTitle, type TopbarTitleEntry, type TopbarTitleValue } from "./topbarContext.utils";
+import {
+	EMPTY_TITLE_ENTRY,
+	claimTitle,
+	releaseTitle,
+	titleKey,
+	type Breadcrumb,
+	type TopbarTitleEntry,
+	type TopbarTitleValue,
+} from "./topbarContext.utils";
 
 interface TopbarContextValue {
 	/** Page-supplied title override; null means "fall back to the route-derived title". */
@@ -82,9 +90,36 @@ export function useSetTopbarTitle(title: TopbarTitleValue | null | undefined) {
 	// A breadcrumb trail is a fresh array literal each render, so the effect
 	// keys off its content rather than its identity — otherwise it would refire
 	// on every parent render.
-	const titleKey = Array.isArray(resolved) ? JSON.stringify(resolved) : resolved;
+	const key = titleKey(resolved);
 	const resolvedRef = useRef(resolved);
 	resolvedRef.current = resolved;
+
+	// What actually gets parked in context. A crumb's onSelect is a fresh closure
+	// every render and the equality guard ignores its identity, so parking the
+	// caller's own closure would leave the topbar invoking the one from whichever
+	// render happened to claim the title — captured state and all. Each handler
+	// is replaced by a forwarder that re-reads the caller's newest closure out of
+	// resolvedRef when the crumb is actually clicked, which keeps the guard cheap
+	// and the callback current at the same time.
+	const forwarding = useMemo(() => {
+		if (!Array.isArray(resolved)) return resolved;
+		return resolved.map(
+			(crumb, index): Breadcrumb =>
+				crumb.onSelect
+					? {
+							...crumb,
+							onSelect: () => {
+								const latest = resolvedRef.current;
+								if (Array.isArray(latest)) latest[index]?.onSelect?.();
+							},
+						}
+					: crumb,
+		);
+		// Rebuilt only when the trail itself changes; see titleKey.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [key]);
+	const forwardingRef = useRef(forwarding);
+	forwardingRef.current = forwarding;
 	// One token per hook instance, stable for its whole lifetime.
 	const ownerRef = useRef<symbol | null>(null);
 	if (ownerRef.current === null) ownerRef.current = Symbol("topbar-title");
@@ -92,8 +127,8 @@ export function useSetTopbarTitle(title: TopbarTitleValue | null | undefined) {
 
 	useEffect(() => {
 		if (!setTitleEntry) return;
-		setTitleEntry((current) => claimTitle(current, owner, resolvedRef.current));
-	}, [setTitleEntry, owner, titleKey]);
+		setTitleEntry((current) => claimTitle(current, owner, forwardingRef.current));
+	}, [setTitleEntry, owner, key]);
 
 	useEffect(() => {
 		if (!setTitleEntry) return;

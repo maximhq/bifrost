@@ -175,7 +175,7 @@ curl -X POST http://localhost:8080/api/mcp/virtual-mcps \
 | `endpoint_slug` | string | No | Honored on create only; derived from `name` when omitted; immutable after |
 | `description` | string | No | Free text |
 | `enabled` | boolean | No | Defaults to `true` |
-| `tools` | array | Yes | Tool specs: `mcp_client_id` + `tool_names` (`["*"]` = all, `[]` = none) |
+| `tools` | array | Yes | Tool specs: `mcp_client_id` + `tool_names` (`["*"]` = all current and future tools, `[]` = none) |
 
 <Note>
 Unknown `mcp_client_id`s are rejected on save. Unknown tool **names** are not validated on save; they're enforced at call time. A slug already used by another vMCP or a direct MCP client returns `409`.
@@ -184,18 +184,19 @@ Unknown `mcp_client_id`s are rejected on save. Unknown tool **names** are not va
 </Tab>
 <Tab title="config.json">
 
-Virtual MCPs are declared under `mcp.tool_groups` (the config key retains its original name for backward compatibility):
+Virtual MCPs are declared under `mcp.virtual_mcps`. They are reconciled into the config store at load and served at `/mcp/<endpoint_slug>`:
 
 ```json
 {
   "mcp": {
-    "tool_groups": [
+    "virtual_mcps": [
       {
         "name": "Support Tools",
+        "endpoint_slug": "support-tools",
         "description": "Ticketing + docs search",
         "enabled": true,
         "tools": [
-          { "mcp_client_name": "zendesk", "tool_names": [] },
+          { "mcp_client_name": "zendesk", "tool_names": ["*"] },
           { "mcp_client_name": "docs-search", "tool_names": ["query", "get_page"] }
         ],
         "virtual_key_ids": ["vk-support"]
@@ -207,16 +208,21 @@ Virtual MCPs are declared under `mcp.tool_groups` (the config key retains its or
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `id` | integer | No | When set, the reconciler updates the group with this ID instead of matching by name |
-| `name` | string | Yes | Group name |
+| `id` | integer | No | Positive integer (>= 1). When set, the reconciler matches by this ID first and falls back to name when no stored vMCP has that ID; a name match keeps its existing stored ID |
+| `name` | string | Yes | Display name (unique) |
+| `endpoint_slug` | string | No | Lowercase URL-safe kebab-case (pattern `^[a-z0-9]+(-[a-z0-9]+)*$`) path served at `/mcp/<endpoint_slug>`. Derived from the name when omitted; immutable after creation; unique across vMCPs and direct MCP clients |
 | `description` | string | No | Free text |
-| `enabled` | boolean | No | Defaults to `true` |
-| `tools` | array | Yes | Each item needs `mcp_client_id` or `mcp_client_name`, plus `tool_names` (empty = all tools) |
-| `virtual_key_ids` | string[] | No | Virtual keys the group is attached to |
+| `enabled` | boolean | No | Defaults to `true`. A disabled vMCP is not served |
+| `tools` | array | Yes | At least one entry. Each item needs `mcp_client_id` or `mcp_client_name`, plus `tool_names` (`["*"]` = all current and future tools, `[]` = none) |
+| `virtual_key_ids` | string[] | No | Virtual keys the vMCP is attached to |
 
-<Warning>
-The config.json schema for `mcp.tool_groups` does not yet expose `endpoint_slug` (the slug is derived from the name on this path), and it still carries the legacy attachment arrays (`team_ids`, `customer_ids`, `user_ids`, `provider_names`, `api_key_ids`). The Web UI and API model the feature around slug-addressing and virtual-key / access-profile attachment; prefer those for new setups.
-</Warning>
+When `source_of_truth` is `config.json` and `mcp.virtual_mcps` is present, it is authoritative for vMCPs: any stored vMCP absent from it is removed, and an explicit `"virtual_mcps": []` prunes them all. Omitting `mcp.virtual_mcps` leaves stored vMCPs unchanged. In `split` mode the file creates and updates vMCPs but never prunes runtime-managed ones.
+
+<Note>
+`mcp.tool_groups` is the deprecated former name for this key and is kept for backward compatibility. It carries legacy attachment arrays (`team_ids`, `customer_ids`, `user_ids`, `provider_names`, `api_key_ids`) and does not expose `endpoint_slug`. Prefer `mcp.virtual_mcps` for new setups; when both keys are present, `mcp.virtual_mcps` wins and `mcp.tool_groups` is ignored.
+</Note>
+
+The same fields are available in the Helm chart under `bifrost.mcp.virtualMcps` (camelCase keys, e.g. `endpointSlug`, `virtualKeyIds`), which renders into `mcp.virtual_mcps`.
 
 </Tab>
 </Tabs>

@@ -402,8 +402,10 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 		am := cm.ChatAssistantMessage
 		if len(am.ReasoningDetails) > 0 {
 			var contentBlocks []ResponsesMessageContentBlock
-			var summaries []ResponsesReasoningSummary
 			var encryptedContent *string
+			// Non-nil: the Responses schema requires summary to be an array, and a nil
+			// slice marshals to null, which upstreams reject for the whole input item.
+			summaries := []ResponsesReasoningSummary{}
 			for _, d := range am.ReasoningDetails {
 				switch d.Type {
 				case BifrostReasoningDetailsTypeText:
@@ -1397,6 +1399,40 @@ func responsesTerminalFromChatFinishReason(finishReason *string) (eventType Resp
 	return eventType, mappedStatus, mappedIncompleteDetails
 }
 
+// chatFinishReasonFromResponses derives a Chat finish_reason from a Responses terminal state.
+// Returns nil for non-terminal or unrecognized states so finish_reason stays unset.
+func chatFinishReasonFromResponses(status *string, incompleteDetails *ResponsesResponseIncompleteDetails, stopReason *string, output []ResponsesMessage) *string {
+	if status != nil && (*status == ResponsesResponseStatusInProgress || *status == ResponsesResponseStatusQueued) {
+		return nil
+	}
+
+	if stopReason != nil && *stopReason != "" {
+		if _, _, mapped := responsesStatusFromChatFinishReason(*stopReason); mapped {
+			return Ptr(*stopReason)
+		}
+	}
+
+	if incompleteDetails != nil {
+		switch incompleteDetails.Reason {
+		case ResponsesResponseIncompleteReasonMaxOutputTokens:
+			return Ptr(string(BifrostFinishReasonLength))
+		case ResponsesResponseIncompleteReasonContentFilter:
+			return Ptr("content_filter")
+		}
+	}
+
+	if status != nil && *status == ResponsesResponseStatusCompleted {
+		for _, item := range output {
+			if item.Type != nil && *item.Type == ResponsesMessageTypeFunctionCall {
+				return Ptr(string(BifrostFinishReasonToolCalls))
+			}
+		}
+		return Ptr(string(BifrostFinishReasonStop))
+	}
+
+	return nil
+}
+
 // ToBifrostResponsesResponse converts the BifrostChatResponse to BifrostResponsesResponse format
 // This converts Chat-style fields (Choices) to Responses API format
 func (cr *BifrostChatResponse) ToBifrostResponsesResponse() *BifrostResponsesResponse {
@@ -1493,11 +1529,14 @@ func (responsesResp *BifrostResponsesResponse) ToBifrostChatResponse() *BifrostC
 		// Convert ResponsesMessages back to ChatMessages
 		chatMessages := ToChatMessages(responsesResp.Output)
 
+		finishReason := chatFinishReasonFromResponses(responsesResp.Status, responsesResp.IncompleteDetails, responsesResp.StopReason, responsesResp.Output)
+
 		// Create choices from chat messages
 		choices := make([]BifrostResponseChoice, 0, len(chatMessages))
 		for i, chatMsg := range chatMessages {
 			choice := BifrostResponseChoice{
-				Index: i,
+				Index:        i,
+				FinishReason: finishReason,
 				ChatNonStreamResponseChoice: &ChatNonStreamResponseChoice{
 					Message: &chatMsg,
 				},
@@ -2546,33 +2585,40 @@ func (rsr *BifrostResponsesStreamResponse) ToBifrostChatResponse() *BifrostChatR
 		return resp
 
 	case ResponsesStreamResponseTypeCompleted, ResponsesStreamResponseTypeIncomplete:
-		finishReason := string(BifrostFinishReasonStop)
+		status := ResponsesResponseStatusCompleted
+		fallback := string(BifrostFinishReasonStop)
 		if rsr.Type == ResponsesStreamResponseTypeIncomplete {
-			finishReason = string(BifrostFinishReasonLength)
+			status = ResponsesResponseStatusIncomplete
+			fallback = string(BifrostFinishReasonLength)
 		}
+
+		var (
+			incompleteDetails *ResponsesResponseIncompleteDetails
+			stopReason        *string
+			output            []ResponsesMessage
+		)
+		if rsr.Response != nil {
+			incompleteDetails = rsr.Response.IncompleteDetails
+			stopReason = rsr.Response.StopReason
+			output = rsr.Response.Output
+			if rsr.Response.Usage != nil {
+				resp.Usage = rsr.Response.Usage.ToBifrostLLMUsage()
+			}
+		}
+
+		finishReason := chatFinishReasonFromResponses(&status, incompleteDetails, stopReason, output)
+		if finishReason == nil {
+			finishReason = &fallback
+		}
+
 		resp.Choices = []BifrostResponseChoice{
 			{
 				Index:        0,
-				FinishReason: &finishReason,
+				FinishReason: finishReason,
 				ChatStreamResponseChoice: &ChatStreamResponseChoice{
 					Delta: &ChatStreamResponseChoiceDelta{},
 				},
 			},
-		}
-		if rsr.Response != nil {
-			if rsr.Response.Usage != nil {
-				resp.Usage = rsr.Response.Usage.ToBifrostLLMUsage()
-			}
-			// Check for tool_calls finish reason
-			if rsr.Type == ResponsesStreamResponseTypeCompleted {
-				for _, output := range rsr.Response.Output {
-					if output.Type != nil && *output.Type == ResponsesMessageTypeFunctionCall {
-						finishReason = string(BifrostFinishReasonToolCalls)
-						resp.Choices[0].FinishReason = &finishReason
-						break
-					}
-				}
-			}
 		}
 		return resp
 

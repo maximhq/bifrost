@@ -490,6 +490,8 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_mcp_client_endpoint_slug"}, run: migrationAddMCPClientEndpointSlug},
 	{IDs: []string{"add_allow_all_providers_to_virtual_key"}, run: migrationAddAllowAllProvidersToVirtualKey},
 	{IDs: []string{"backfill_vk_allow_all_providers_hash"}, run: migrationBackfillVirtualKeyAllowAllProvidersHash},
+	{IDs: []string{"add_prompt_cache_json_column"}, run: migrationAddPromptCacheJSONColumn},
+	{IDs: []string{"add_hidden_request_types_json_column"}, run: migrationAddHiddenRequestTypesJSONColumn},
 }
 
 // videoResolutionPricingColumns are the resolution-banded video output rate columns.
@@ -7446,6 +7448,39 @@ func migrationAddOpenAIConfigJSONColumn(ctx context.Context, db *gorm.DB, logger
 	return nil
 }
 
+// migrationAddPromptCacheJSONColumn adds the prompt_cache_json column to the provider
+// table, backing ProviderConfig.PromptCache.
+//
+// Provider config is stored as one text column per sub-struct rather than a single
+// JSON blob, so a new config struct needs its own column. Without this the field
+// round-trips through the API and the UI but is dropped at the database boundary.
+func migrationAddPromptCacheJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_prompt_cache_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableProvider{}, "PromptCacheJSON"); err != nil {
+				return err
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableProvider{}, "prompt_cache_json"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running add_prompt_cache_json_column migration: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddPromptVariablesColumns adds variables_json column to prompt_sessions and prompt_versions
 func migrationAddPromptVariablesColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_prompt_variables_columns"
@@ -13427,4 +13462,34 @@ func migrationAddGithubCopilotConfigColumns(ctx context.Context, db *gorm.DB, lo
 // columns are additive, so an older binary ignores them and there is nothing to undo.
 func rollbackGithubCopilotConfigColumns(*gorm.DB) error {
 	return fmt.Errorf("add_github_copilot_config_columns is non-rollbackable: dropping the github_copilot_* columns would permanently delete every stored GitHub App private key, which GitHub only issues once and cannot re-supply; the columns are additive and older binaries safely ignore them")
+}
+
+// migrationAddHiddenRequestTypesJSONColumn adds the hidden_request_types_json column to
+// config_client so hidden request types can be edited from the UI as well as config.json.
+// Existing rows get an empty list; a value in config.json's client section reconciles in on boot.
+func migrationAddHiddenRequestTypesJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_hidden_request_types_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "HiddenRequestTypesJSON"); err != nil {
+				return fmt.Errorf("failed to add hidden_request_types_json column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "hidden_request_types_json"); err != nil {
+				return fmt.Errorf("failed to drop hidden_request_types_json column: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
 }

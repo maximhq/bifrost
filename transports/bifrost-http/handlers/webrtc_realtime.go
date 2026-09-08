@@ -400,6 +400,8 @@ func lookupRealtimeEphemeralKeyMapping(kv schemas.KVStore, token string) (realti
 	}
 
 	switch value := raw.(type) {
+	case realtimeEphemeralKeyMapping:
+		return value, true
 	case string:
 		return parseRealtimeEphemeralKeyMappingValue([]byte(value))
 	case []byte:
