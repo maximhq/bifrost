@@ -963,7 +963,7 @@ export const MultiSelect = React.forwardRef<MultiSelectRef, MultiSelectProps>(
 													{option.icon && <option.icon className="text-muted-foreground mr-2 h-4 w-4" aria-hidden="true" />}
 													<div className="pr-2">
 														<div className="truncate break-words">{option.label}</div>
-														{option.description && <span className="text-muted-foreground text-xs break-words">{option.description}</span>}
+														{option.description && <OptionDescription text={option.description} />}
 													</div>
 												</CommandItem>
 											);
@@ -992,4 +992,46 @@ export const MultiSelect = React.forwardRef<MultiSelectRef, MultiSelectProps>(
 );
 
 MultiSelect.displayName = "MultiSelect";
+
+// Option descriptions can run long; clamp to 3 lines with a toggle so a verbose
+// description doesn't dominate the list. The toggle shows only when the text overflows.
+function OptionDescription({ text }: { text: string }) {
+	const ref = React.useRef<HTMLParagraphElement>(null);
+	const [expanded, setExpanded] = React.useState(false);
+	const [overflowing, setOverflowing] = React.useState(false);
+	React.useEffect(() => {
+		const el = ref.current;
+		if (!el) return;
+		const measure = () => setOverflowing(el.scrollHeight > el.clientHeight + 1);
+		measure();
+		// Re-measure on width changes so the toggle stays correct when the container/viewport resizes.
+		const observer = new ResizeObserver(measure);
+		observer.observe(el);
+		return () => observer.disconnect();
+	}, [text, expanded]);
+	return (
+		<div className="mt-0.5">
+			<p ref={ref} className={cn("text-muted-foreground text-xs break-words", !expanded && "line-clamp-3")}>
+				{text}
+			</p>
+			{(overflowing || expanded) && (
+				<div className="mt-0.5 flex justify-end">
+					<button
+						type="button"
+						className="text-primary text-xs font-medium hover:underline"
+						onMouseDown={(e) => e.preventDefault()}
+						onClick={(e) => {
+							e.stopPropagation();
+							e.preventDefault();
+							setExpanded((v) => !v);
+						}}
+					>
+						{expanded ? "View less" : "View more"}
+					</button>
+				</div>
+			)}
+		</div>
+	);
+}
+
 export type { MultiSelectGroup, MultiSelectOption, MultiSelectProps };

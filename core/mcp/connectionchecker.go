@@ -313,7 +313,7 @@ func (c *ClientConnectionChecker) checkLiveConnection(conn *client.Client, clien
 			return c.manager.runPingWithHooks(c.markAsCheck(attemptCtx), conn, clientName)
 		}, ProbeRetryConfig, c.logger)
 		if pingErr != nil {
-			c.recordFailure(clientName, "ping", pingErr, connGeneration)
+			c.recordFailure(clientName, schemas.MCPConnectionFailureStagePing, pingErr, connGeneration)
 			return false
 		}
 	}
@@ -328,7 +328,7 @@ func (c *ClientConnectionChecker) checkLiveConnection(conn *client.Client, clien
 		return err
 	}, ProbeRetryConfig, c.logger)
 	if listErr != nil {
-		c.recordFailure(clientName, "list_tools", listErr, connGeneration)
+		c.recordFailure(clientName, schemas.MCPConnectionFailureStageListTools, listErr, connGeneration)
 		return false
 	}
 
@@ -351,7 +351,7 @@ func (c *ClientConnectionChecker) checkPerCall(config *schemas.MCPClientConfig, 
 		return innerErr
 	}, ProbeRetryConfig, c.logger)
 	if err != nil {
-		c.recordFailure(config.Name, "admin tool discovery", err, connGeneration)
+		c.recordFailure(config.Name, schemas.MCPConnectionFailureStageToolDiscovery, err, connGeneration)
 		return false
 	}
 
@@ -413,21 +413,28 @@ func (c *ClientConnectionChecker) writeBackTools(connGeneration uint64, newTools
 // recordFailure marks the client Unstable — a single transient-classified
 // failure is enough, no consecutive-failure counter: the retry-with-backoff
 // each check already went through (ProbeRetryConfig) is what absorbs an
-// ordinary blip before it ever reaches here. connGeneration is the value
-// captured at the start of this check (see performCheck) — see setState for
-// why it must be threaded through even though this write, unlike
-// writeBackTools, isn't about the connection itself.
-func (c *ClientConnectionChecker) recordFailure(clientName, stage string, err error, connGeneration uint64) {
-	c.logger.Warn("%s Connection check (%s) failed for %s: %v", MCPLogPrefix, stage, clientName, err)
-	c.setState(schemas.MCPConnectionStateUnstable, connGeneration)
+// ordinary blip before it ever reaches here. The stage and error are kept on
+// the client as its MCPConnectionFailure, refreshed on every failed tick so
+// the record always describes the most recent attempt. connGeneration is the
+// value captured at the start of this check (see performCheck) — see
+// setState for why it must be threaded through even though this write,
+// unlike writeBackTools, isn't about the connection itself.
+//
+// Logged at Debug, not Warn: while a client is Unstable this runs every
+// UnstableConnectionCheckInterval for the whole outage, and the reason is
+// already surfaced once, at the transition, by setState's Info line and
+// durably by the record itself.
+func (c *ClientConnectionChecker) recordFailure(clientName string, stage schemas.MCPConnectionFailureStage, err error, connGeneration uint64) {
+	c.logger.Debug("%s Connection check (%s) failed for %s: %v", MCPLogPrefix, stage, clientName, err)
+	c.setState(schemas.MCPConnectionStateUnstable, connGeneration, stage, err)
 }
 
-// recordSuccess marks the client Healthy. A single success is enough to
-// recover — asymmetric on purpose: slow and deliberate into Unstable
-// (respecting the retry budget), instant back out of it once a check
-// actually proves the connection is fine again.
+// recordSuccess marks the client Healthy and clears its failure record. A
+// single success is enough to recover — asymmetric on purpose: slow and
+// deliberate into Unstable (respecting the retry budget), instant back out
+// of it once a check actually proves the connection is fine again.
 func (c *ClientConnectionChecker) recordSuccess(clientName string, connGeneration uint64) {
-	c.setState(schemas.MCPConnectionStateHealthy, connGeneration)
+	c.setState(schemas.MCPConnectionStateHealthy, connGeneration, "", nil)
 }
 
 // setState is the guarded writer every transition in this file funnels
@@ -443,7 +450,13 @@ func (c *ClientConnectionChecker) recordSuccess(clientName string, connGeneratio
 // its state write would land on an entry that has since moved on — e.g.
 // marking Unstable a client that just became per-call and has no connection
 // left to be unstable about.
-func (c *ClientConnectionChecker) setState(state schemas.MCPConnectionState, connGeneration uint64) {
+//
+// stage and err describe the failure behind a non-Healthy state and are
+// recorded on the client under the same guards as the state itself, on every
+// accepted write rather than only on a transition, so a long outage keeps a
+// current "last attempt" timestamp. A Healthy write clears the record. Both
+// are ignored for a Healthy state.
+func (c *ClientConnectionChecker) setState(state schemas.MCPConnectionState, connGeneration uint64, stage schemas.MCPConnectionFailureStage, err error) {
 	c.manager.mu.Lock()
 	clientState, exists := c.manager.clientMap[c.clientID]
 	if !exists {
@@ -465,14 +478,25 @@ func (c *ClientConnectionChecker) setState(state schemas.MCPConnectionState, con
 	if clientState.ExecutionConfig != nil {
 		name = clientState.ExecutionConfig.Name
 	}
-	if stateChanged {
+	var recorded *schemas.MCPConnectionFailure
+	if state == schemas.MCPConnectionStateHealthy {
+		markClientHealthy(clientState)
+	} else {
 		clientState.State = state
+		if err != nil {
+			recordClientFailure(clientState, stage, err)
+			recorded = clientState.LastFailure
+		}
 	}
 	cb := c.manager.stateChangeCallback
 	c.manager.mu.Unlock()
 
 	if stateChanged {
-		c.logger.Info("%s Client %s connection state changed to: %s", MCPLogPrefix, name, state)
+		if recorded != nil {
+			c.logger.Info("%s Client %s connection state changed to: %s (%s failed: %s)", MCPLogPrefix, name, state, recorded.Stage, recorded.Message)
+		} else {
+			c.logger.Info("%s Client %s connection state changed to: %s", MCPLogPrefix, name, state)
+		}
 		// Fired outside the lock — a registered callback is caller-supplied
 		// and may do arbitrary work (including I/O), which must never run
 		// while holding m.mu.

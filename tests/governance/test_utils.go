@@ -31,12 +31,15 @@ var TestModels = map[string]ModelCost{
 		MaxInputTokens:     128000,
 		MaxOutputTokens:    16384,
 	},
-	"anthropic/claude-3-7-sonnet-20250219": {
+	// claude-3-7-sonnet-20250219 was retired by Anthropic (the API now returns
+	// 404 not_found_error for it); claude-sonnet-4-5 keeps the same $3/$15
+	// per-MTok pricing.
+	"anthropic/claude-sonnet-4-5": {
 		Provider:           "anthropic",
 		InputCostPerToken:  0.000003,
 		OutputCostPerToken: 0.000015,
 		MaxInputTokens:     200000,
-		MaxOutputTokens:    128000,
+		MaxOutputTokens:    64000,
 	},
 	"anthropic/claude-4-opus-20250514": {
 		Provider:           "anthropic",
@@ -221,15 +224,16 @@ func generateRandomID() string {
 
 // CreateVirtualKeyRequest represents a request to create a virtual key
 type CreateVirtualKeyRequest struct {
-	Name            string                  `json:"name"`
-	Description     string                  `json:"description,omitempty"`
-	IsActive        *bool                   `json:"is_active,omitempty"`
-	TeamID          *string                 `json:"team_id,omitempty"`
-	CustomerID      *string                 `json:"customer_id,omitempty"`
-	Budgets         []BudgetRequest         `json:"budgets,omitempty"`
-	RateLimit       *CreateRateLimitRequest `json:"rate_limit,omitempty"`
-	ProviderConfigs []ProviderConfigRequest `json:"provider_configs,omitempty"`
-	CalendarAligned bool                    `json:"calendar_aligned,omitempty"`
+	Name              string                  `json:"name"`
+	Description       string                  `json:"description,omitempty"`
+	IsActive          *bool                   `json:"is_active,omitempty"`
+	TeamID            *string                 `json:"team_id,omitempty"`
+	CustomerID        *string                 `json:"customer_id,omitempty"`
+	Budgets           []BudgetRequest         `json:"budgets,omitempty"`
+	RateLimit         *CreateRateLimitRequest `json:"rate_limit,omitempty"`
+	ProviderConfigs   []ProviderConfigRequest `json:"provider_configs,omitempty"`
+	CalendarAligned   bool                    `json:"calendar_aligned,omitempty"`
+	AllowAllProviders bool                    `json:"allow_all_providers,omitempty"`
 }
 
 // ProviderConfigRequest represents a provider configuration for a virtual key

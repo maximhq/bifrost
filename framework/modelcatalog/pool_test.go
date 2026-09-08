@@ -52,6 +52,35 @@ func TestUpsertLiveFromResponse_PopulatesFromResponse(t *testing.T) {
 	}
 }
 
+// TestGetUnfilteredModelsForProvider_UsesDatabricksPricing verifies the management catalog
+// still returns Databricks models when the provider intentionally publishes no live models.
+func TestGetUnfilteredModelsForProvider_UsesDatabricksPricing(t *testing.T) {
+	pricingPath := filepath.Join(t.TempDir(), "pricing.json")
+	pricingJSON := []byte(`{
+		"databricks/databricks-pricing-model": {
+			"provider":"databricks",
+			"mode":"chat",
+			"base_model":"pricing-model"
+		}
+	}`)
+	if err := os.WriteFile(pricingPath, pricingJSON, 0o600); err != nil {
+		t.Fatalf("write pricing testdata: %v", err)
+	}
+
+	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + pricingPath})
+	if err := ds.LoadFromURLIntoMemory(t.Context()); err != nil {
+		t.Fatalf("load pricing testdata: %v", err)
+	}
+	mc := NewTestCatalogWithDatasheet(ds)
+	mc.UpsertLive(schemas.Databricks, "key-1", true, []string{})
+
+	got := mc.GetUnfilteredModelsForProvider(schemas.Databricks)
+	want := []string{"databricks-pricing-model"}
+	if !slices.Equal(got, want) {
+		t.Errorf("GetUnfilteredModelsForProvider(Databricks) = %v, want %v", got, want)
+	}
+}
+
 func TestGetModelsForProvider_IncludesDeprecatedDatasheetModelsWhenLiveExists(t *testing.T) {
 	pricingPath := filepath.Join(t.TempDir(), "pricing.json")
 	pricingJSON := []byte(`{

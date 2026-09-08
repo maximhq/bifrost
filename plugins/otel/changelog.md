@@ -1,1 +1,4 @@
 - feat: optionally merge `x-bf-dim-*` dimensions from `trace.Attributes[bifrost.dimensions]` onto every exported span when `propagate_trace_attributes` is enabled; span-level attributes win on conflict, reserved `path`/`method` suffixes are skipped (#3770)
+- feat: add `project_id` and `project_name` span attributes and metric labels (#6705)
+- feat: add the `export_overhead_spans` toggle to filter internal overhead spans (#6945)
+- feat: rename cache and routing debug attributes to metadata (#6722)

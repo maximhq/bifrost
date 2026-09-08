@@ -63,9 +63,9 @@ type CohereRouter struct {
 }
 
 // NewCohereRouter creates a new CohereRouter with the given bifrost client.
-func NewCohereRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *CohereRouter {
+func NewCohereRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *CohereRouter {
 	return &CohereRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, CreateCohereRouteConfigs("/cohere"), nil, logger),
+		GenericRouter: NewGenericRouter(client, handlerStore, accessResolver, CreateCohereRouteConfigs("/cohere"), nil, logger),
 	}
 }
 

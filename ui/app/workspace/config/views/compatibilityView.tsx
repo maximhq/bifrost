@@ -28,7 +28,8 @@ export default function CompatibilityView() {
 			localCompatConfig.convert_text_to_chat !== baseline.convert_text_to_chat ||
 			localCompatConfig.convert_chat_to_responses !== baseline.convert_chat_to_responses ||
 			localCompatConfig.should_drop_params !== baseline.should_drop_params ||
-			localCompatConfig.should_convert_params !== baseline.should_convert_params
+			localCompatConfig.should_convert_params !== baseline.should_convert_params ||
+			(localCompatConfig.azure_deepseek ?? true) !== (baseline.azure_deepseek ?? true)
 		);
 	}, [config, localCompatConfig]);
 
@@ -138,6 +139,25 @@ export default function CompatibilityView() {
 						size="md"
 						checked={localCompatConfig.should_convert_params}
 						onCheckedChange={(checked) => handleCompatChange("should_convert_params", checked)}
+						disabled={!hasSettingsUpdateAccess}
+					/>
+				</div>
+
+				<div className="flex items-center justify-between space-x-2">
+					<div className="space-y-0.5">
+						<label htmlFor="compat-azure-deepseek" className="text-sm font-medium">
+                            Use Chat Completion APIs for Azure Deepseek models
+						</label>
+						<p className="text-muted-foreground text-sm">
+                            Use Chat Completion APIs for Claude Code, Codex, etc. for Azure Deepseek models.
+						</p>
+					</div>
+					<Switch
+						id="compat-azure-deepseek"
+						data-testid="compat-azure-deepseek"
+						size="md"
+						checked={localCompatConfig.azure_deepseek ?? true}
+						onCheckedChange={(checked) => handleCompatChange("azure_deepseek", checked)}
 						disabled={!hasSettingsUpdateAccess}
 					/>
 				</div>

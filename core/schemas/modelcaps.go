@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"slices"
+	"strings"
 	"sync/atomic"
 )
 
@@ -165,6 +166,64 @@ func (c ModelCaps) FieldName(logical string, fallback string) string {
 	return fallback
 }
 
+// PublishesParameter reports whether the datasheet row lists a request parameter
+// under model_parameters, matched on the descriptor's id ("reasoning_effort",
+// "top_p", ...).
+//
+// Positive signal only: the list is the datasheet's prompt-playground surface and
+// rows populate it to varying depth, so a hit means the model takes the parameter
+// while a miss only means the row does not say. Callers pass it as the fallback to
+// a supports_* check rather than treating it as an allowlist.
+func (c ModelCaps) PublishesParameter(id string) bool {
+	if c.record == nil || id == "" {
+		return false
+	}
+	for _, param := range c.record.ModelParameters {
+		if param.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// SupportsSamplingParams reports whether the model accepts the sampling knobs —
+// temperature, top_p, top_k. False on the adaptive-only thinking models (Claude
+// Opus 4.7+, Sonnet 5+, the Fable/Mythos family), which reject them with a 400.
+func (c ModelCaps) SupportsSamplingParams(fallback bool) bool {
+	if c.record != nil && c.record.SupportsSamplingParams != nil {
+		return *c.record.SupportsSamplingParams
+	}
+	return fallback
+}
+
+// SupportsToolChoice reports whether the model accepts a tool_choice pin.
+func (c ModelCaps) SupportsToolChoice(fallback bool) bool {
+	if c.record != nil && c.record.SupportsToolChoice != nil {
+		return *c.record.SupportsToolChoice
+	}
+	return fallback
+}
+
+// SupportsParallelFunctionCalling reports whether the model accepts
+// parallel_tool_calls.
+func (c ModelCaps) SupportsParallelFunctionCalling(fallback bool) bool {
+	if c.record != nil && c.record.SupportsParallelFunctionCalling != nil {
+		return *c.record.SupportsParallelFunctionCalling
+	}
+	return fallback
+}
+
+// SupportsResponseSchema reports whether the model accepts a structured-output
+// schema — response_format on the chat surface, text.format on Responses.
+// Distinct from SupportsResponseSchemaWithTools, which gates the combination
+// with function tools.
+func (c ModelCaps) SupportsResponseSchema(fallback bool) bool {
+	if c.record != nil && c.record.SupportsResponseSchema != nil {
+		return *c.record.SupportsResponseSchema
+	}
+	return fallback
+}
+
 // SupportsSystemMessages reports whether the (provider, model) pair accepts a
 // system message. Providers differ in how they carry one — Replicate exposes a
 // system_prompt input field per model — so callers that must reroute the text
@@ -194,6 +253,21 @@ func (c ModelCaps) SupportsCachePoint(fallback bool) bool {
 	return fallback
 }
 
+// SupportsPromptCaching reports whether the model supports explicit prompt caching
+// at all. It is the base feature that SupportsPromptCachingScope and
+// SupportsExtendedCacheTTL refine, and it is what gates breakpoint injection: a
+// model that answers false must never be sent a marker it did not ask for.
+//
+// The datasheet field existed before this accessor did, so callers must pass a
+// meaningful fallback (see ModelSupportsPromptCaching) rather than relying on
+// datasheet coverage.
+func (c ModelCaps) SupportsPromptCaching(fallback bool) bool {
+	if c.record != nil && c.record.SupportsPromptCaching != nil {
+		return *c.record.SupportsPromptCaching
+	}
+	return fallback
+}
+
 // SupportsPromptCachingScope reports whether the model accepts
 // cache_control.scope (Anthropic's prompt-caching-scope beta). Distinct from
 // SupportsExtendedCacheTTL, which gates the cache TTL rather than its scope.
@@ -219,6 +293,25 @@ func (c ModelCaps) SupportsExtendedCacheTTL(fallback bool) bool {
 func (c ModelCaps) ToolChoiceStructSupported(fallback bool) bool {
 	if c.record != nil && c.record.ToolChoiceStructSupported != nil {
 		return *c.record.ToolChoiceStructSupported
+	}
+	return fallback
+}
+
+// ToolChoiceAnySupported reports whether the endpoint accepts the forced tool
+// choice "any" on the wire. Providers without it need it spelled "required".
+func (c ModelCaps) ToolChoiceAnySupported(fallback bool) bool {
+	if c.record != nil && c.record.ToolChoiceAnySupported != nil {
+		return *c.record.ToolChoiceAnySupported
+	}
+	return fallback
+}
+
+// SupportsForcedToolChoice reports whether the model accepts a forced tool
+// choice at all — Anthropic "any"/"tool", OpenAI "required"/named function.
+// Models without it need the choice dropped so they answer under "auto".
+func (c ModelCaps) SupportsForcedToolChoice(fallback bool) bool {
+	if c.record != nil && c.record.SupportsForcedToolChoice != nil {
+		return *c.record.SupportsForcedToolChoice
 	}
 	return fallback
 }
@@ -480,4 +573,76 @@ func (c ModelCaps) SupportsTextEditorTool(fallback bool) bool {
 		return *c.record.SupportsTextEditorTool
 	}
 	return fallback
+}
+
+// ---- Bedrock surface selection ----
+
+// BedrockAPIs returns the wire APIs the datasheet says this (provider, model)
+// pair accepts, in the row's preference order, dropping any value this binary
+// does not recognise. Returns nil when the row says nothing, publishes an empty
+// list, or lists only unrecognised values — callers then fall back to their own
+// detection.
+//
+// The endpoint is the one the resolved row is scoped to, so a caller spanning
+// both Bedrock surfaces resolves ModelCaps once per provider and reads each.
+func (c ModelCaps) BedrockAPIs() []BedrockAPI {
+	if c.record == nil || len(c.record.BedrockAPIs) == 0 {
+		return nil
+	}
+	apis := make([]BedrockAPI, 0, len(c.record.BedrockAPIs))
+	for _, api := range c.record.BedrockAPIs {
+		if api.IsValid() && !slices.Contains(apis, api) {
+			apis = append(apis, api)
+		}
+	}
+	if len(apis) == 0 {
+		return nil
+	}
+	return apis
+}
+
+// MinOutputTokens returns the floor the model enforces on max_output_tokens.
+// Prefers the datasheet's min_output_tokens, falling back to the caller's
+// name-based answer. Zero means no floor, so callers clamp only above zero.
+func (c ModelCaps) MinOutputTokens(fallback int) int {
+	if c.record != nil && c.record.MinOutputTokens != nil {
+		return *c.record.MinOutputTokens
+	}
+	return fallback
+}
+
+// BedrockReasoningShape returns the reasoning wire shape the datasheet says this
+// (provider, model) pair uses on Converse, falling back to the caller's
+// name-based answer when the row says nothing or publishes a value this binary
+// does not recognise.
+func (c ModelCaps) BedrockReasoningShape(fallback BedrockReasoningShape) BedrockReasoningShape {
+	if c.record != nil && c.record.BedrockReasoningShape.IsValid() {
+		return c.record.BedrockReasoningShape
+	}
+	return fallback
+}
+
+// BedrockRequiresSignedReasoning reports whether the (provider, model) pair
+// verifies reasoning signatures on Converse, so an unsigned reasoningText block
+// cannot be replayed to it. Falls back to the caller's name-based answer when
+// the row says nothing.
+func (c ModelCaps) BedrockRequiresSignedReasoning(fallback bool) bool {
+	if c.record != nil && c.record.BedrockRequiresSignedReasoning != nil {
+		return *c.record.BedrockRequiresSignedReasoning
+	}
+	return fallback
+}
+
+// SupportsResponsesEndpoint reports whether the datasheet's supported_endpoints list
+// includes the Responses API.
+func (c ModelCaps) SupportsResponsesEndpoint(fallback bool) bool {
+	if c.record == nil || len(c.record.SupportedEndpoints) == 0 {
+		return fallback
+	}
+	for _, endpoint := range c.record.SupportedEndpoints {
+		if strings.Contains(endpoint, "/v1/responses") {
+			return true
+		}
+	}
+	return false
 }

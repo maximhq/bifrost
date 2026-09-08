@@ -1,0 +1,585 @@
+{
+  "$comment": [
+    "Cases for runners/run-video-costing.mjs \u2014 one entry per line of the video-costing checklist.",
+    "",
+    "Each case is: submit a real video job, poll it to terminal, wait for the settlement row,",
+    "then assert the dollar figure on that row. `expect.cost.rate_per_second` is the OFFICIAL",
+    "published provider rate, so a case failing means Bifrost disagrees with the provider's",
+    "price list \u2014 that is the whole point of the file.",
+    "",
+    "`needs_rate: true` marks a case whose official rate has not been sourced from provider",
+    "docs yet. The runner reports those as SKIP rather than guessing: a made-up number in a",
+    "billing test is worse than no test. Fill in rate_per_second and drop the flag.",
+    "",
+    "Model ids are the one field to re-confirm against each provider before a run \u2014 they move.",
+    "No multi-clip case exists: Veo 3.1 rejects sampleCount > 1 ('between 1 and 1, inclusive') and no other provider here returns more than one clip, so the max(1, output_count) multiplier is covered by the lib unit tests rather than end to end."
+  ],
+  "defaults": {
+    "poll_timeout_ms": 900000,
+    "poll_interval_ms": 10000,
+    "settle_timeout_ms": 420000,
+    "settle_interval_ms": 10000
+  },
+  "cases": [
+    {
+      "id": "runware-video-provider-cost",
+      "group": "Runware",
+      "checklist": "Video generation -> cost matches the provider's cost field exactly",
+      "provider": "runware",
+      "endpoint": "/v1/videos",
+      "body": {
+        "model": "runware/klingai:kling-video@3-standard",
+        "prompt": "a red ceramic teapot on a wooden table, slow camera push in",
+        "size": "1280x720",
+        "seconds": "5"
+      },
+      "expect": {
+        "status": "completed",
+        "cost": {
+          "mode": "provider"
+        }
+      },
+      "notes": "size is required here: kling-video derives dimensions from a reference image on image-to-video, but mandates them for text-to-video, and it is not in Bifrost's runwareVideoModelsRequiringDimensions default list. Kling 3 Standard accepts only 1280x720, 720x1280 and 960x960 \u2014 Bifrost's 1920x1080 default would be rejected."
+    },
+    {
+      "id": "runware-3d-provider-cost",
+      "group": "Runware",
+      "checklist": "3D model settles correctly with cost",
+      "provider": "runware",
+      "endpoint": "/v1/videos",
+      "body": {
+        "model": "runware/tencent:hunyuan-3d@3.1-rapid",
+        "prompt": "a plate of scones",
+        "input_reference": "https://storage.googleapis.com/generativeai-downloads/images/scones.jpg",
+        "type": "3d"
+      },
+      "expect": {
+        "status": "completed",
+        "cost": {
+          "mode": "provider"
+        }
+      },
+      "notes": "type=3d is a different price basis entirely \u2014 seconds are meaningless. Only the provider-reported cost is correct here, so this case also proves the per-second path is not being applied to it."
+    },
+    {
+      "id": "runware-settle-via-sweeper",
+      "group": "Runware",
+      "checklist": "Cost is identical whether the sweeper or your own retrieve settles it (sweeper half)",
+      "provider": "runware",
+      "endpoint": "/v1/videos",
+      "settle_via": "sweeper",
+      "body": {
+        "model": "runware/klingai:kling-video@3-standard",
+        "prompt": "a paper boat drifting on still water",
+        "size": "1280x720",
+        "seconds": "5"
+      },
+      "expect": {
+        "status": "completed",
+        "cost": {
+          "mode": "provider"
+        }
+      },
+      "notes": "size is required here: kling-video derives dimensions from a reference image on image-to-video, but mandates them for text-to-video, and it is not in Bifrost's runwareVideoModelsRequiringDimensions default list. Kling 3 Standard accepts only 1280x720, 720x1280 and 960x960 \u2014 Bifrost's 1920x1080 default would be rejected."
+    },
+    {
+      "id": "runware-settle-via-retrieve",
+      "group": "Runware",
+      "checklist": "Cost is identical whether the sweeper or your own retrieve settles it (retrieve half)",
+      "provider": "runware",
+      "endpoint": "/v1/videos",
+      "settle_via": "retrieve",
+      "compare_cost_with": "runware-settle-via-sweeper",
+      "body": {
+        "model": "runware/klingai:kling-video@3-standard",
+        "prompt": "a paper boat drifting on still water",
+        "size": "1280x720",
+        "seconds": "5"
+      },
+      "expect": {
+        "status": "completed",
+        "cost": {
+          "mode": "provider"
+        }
+      },
+      "notes": "size is required here: kling-video derives dimensions from a reference image on image-to-video, but mandates them for text-to-video, and it is not in Bifrost's runwareVideoModelsRequiringDimensions default list. Kling 3 Standard accepts only 1280x720, 720x1280 and 960x960 \u2014 Bifrost's 1920x1080 default would be rejected."
+    },
+    {
+      "id": "openai-sora2-720p-4s",
+      "group": "OpenAI",
+      "checklist": "sora-2 720p, 4s -> banded 720p rate x seconds",
+      "provider": "openai",
+      "endpoint": "/v1/videos",
+      "body": {
+        "model": "sora-2",
+        "prompt": "a cat knocking a pen off a desk",
+        "size": "1280x720",
+        "seconds": "4"
+      },
+      "expect": {
+        "status": "completed",
+        "seconds": 4,
+        "size": "1280x720",
+        "band": "720p",
+        "cost": {
+          "mode": "rate",
+          "rate_per_second": 0.1
+        }
+      },
+      "notes": "OpenAI's Videos API shuts down 2026-09-24. Run these before then; after that the whole OpenAI group is expected to fail on submit."
+    },
+    {
+      "id": "openai-sora2pro-720p",
+      "group": "OpenAI",
+      "checklist": "sora-2-pro at 720p (1 of 2 reachable rates)",
+      "provider": "openai",
+      "endpoint": "/v1/videos",
+      "body": {
+        "model": "sora-2-pro",
+        "prompt": "steam rising from a coffee cup",
+        "size": "1280x720",
+        "seconds": "4"
+      },
+      "expect": {
+        "status": "completed",
+        "seconds": 4,
+        "size": "1280x720",
+        "band": "720p",
+        "cost": {
+          "mode": "rate",
+          "rate_per_second": 0.3
+        }
+      }
+    },
+    {
+      "id": "openai-sora2pro-1024p",
+      "group": "OpenAI",
+      "checklist": "sora-2-pro at 1024p (2 of 2 reachable rates)",
+      "provider": "openai",
+      "endpoint": "/v1/videos",
+      "body": {
+        "model": "sora-2-pro",
+        "prompt": "steam rising from a coffee cup",
+        "size": "1792x1024",
+        "seconds": "4"
+      },
+      "expect": {
+        "status": "completed",
+        "seconds": 4,
+        "size": "1792x1024",
+        "band": "1024p",
+        "cost": {
+          "mode": "rate",
+          "rate_per_second": 0.5
+        }
+      },
+      "notes": "This is the row the synthetic sora-2-pro-high-res datasheet entry was meant to price and never could \u2014 callers send model sora-2-pro plus a size, and nothing rewrote the model name."
+    },
+    {
+      "id": "openai-sora2pro-1024p-portrait",
+      "group": "OpenAI",
+      "checklist": "sora-2-pro portrait 1024p -> same band as landscape (short edge decides)",
+      "provider": "openai",
+      "endpoint": "/v1/videos",
+      "body": {
+        "model": "sora-2-pro",
+        "prompt": "steam rising from a coffee cup",
+        "size": "1024x1792",
+        "seconds": "4"
+      },
+      "expect": {
+        "status": "completed",
+        "seconds": 4,
+        "size": "1024x1792",
+        "band": "1024p",
+        "cost": {
+          "mode": "rate",
+          "rate_per_second": 0.5
+        }
+      },
+      "notes": "Replaces an earlier 1080p case that could never pass: Sora accepts only 720x1280, 1280x720, 1024x1792 and 1792x1024 (core/providers/openai/types.go), so there is no 1080p Sora size and no third sora-2-pro rate. This asserts the short-edge rule instead \u2014 portrait 1024x1792 must bill the same as landscape 1792x1024."
+    },
+    {
+      "id": "openai-invalid-size-falls-back",
+      "group": "OpenAI",
+      "checklist": "an unsupported size is substituted with the default, and billed as such",
+      "provider": "openai",
+      "endpoint": "/v1/videos",
+      "body": {
+        "model": "sora-2",
+        "prompt": "a cat knocking a pen off a desk",
+        "size": "1920x1080",
+        "seconds": "4"
+      },
+      "expect": {
+        "status": "completed",
+        "seconds": 4,
+        "size": "720x1280",
+        "band": "720p",
+        "cost": {
+          "mode": "rate",
+          "rate_per_second": 0.1
+        }
+      },
+      "notes": "1920x1080 is not a valid Sora size. Bifrost replaces it with the 720x1280 default (core/providers/openai/videos.go) rather than erroring, so the row must be priced from what was generated, not from what was requested."
+    },
+    {
+      "id": "veo31-720p",
+      "group": "Gemini/Vertex",
+      "checklist": "Veo 3.1 at 720p -> correct band",
+      "provider": "gemini",
+      "endpoint": "/v1/videos",
+      "body": {
+        "model": "gemini/veo-3.1-generate-preview",
+        "prompt": "waves breaking on a rocky shore",
+        "size": "1280x720",
+        "seconds": "8"
+      },
+      "expect": {
+        "status": "completed",
+        "seconds": 8,
+        "size": "1280x720",
+        "band": "720p",
+        "output_count": 1,
+        "cost": {
+          "mode": "rate",
+          "rate_per_second": 0.4
+        }
+      },
+      "expect_job_params": {
+        "seconds": "8",
+        "size": "1280x720"
+      },
+      "notes": "expect_job_params is the 'params on the job row holds seconds + size' check. Gemini's retrieve returns neither, so the captured request params are the only pricing basis \u2014 if they are missing, every Gemini video prices off the hardcoded 8s default."
+    },
+    {
+      "id": "veo31-1080p",
+      "group": "Gemini/Vertex",
+      "checklist": "Veo 3.1 at 1080p -> correct band",
+      "provider": "gemini",
+      "endpoint": "/v1/videos",
+      "body": {
+        "model": "gemini/veo-3.1-generate-preview",
+        "prompt": "waves breaking on a rocky shore",
+        "size": "1920x1080",
+        "seconds": "8"
+      },
+      "expect": {
+        "status": "completed",
+        "seconds": 8,
+        "size": "1920x1080",
+        "band": "1080p",
+        "output_count": 1,
+        "cost": {
+          "mode": "rate",
+          "rate_per_second": 0.4
+        }
+      },
+      "expect_job_params": {
+        "seconds": "8",
+        "size": "1920x1080"
+      }
+    },
+    {
+      "id": "veo31-4k",
+      "group": "Gemini/Vertex",
+      "checklist": "Veo 3.1 at 4K -> correct band",
+      "provider": "gemini",
+      "endpoint": "/v1/videos",
+      "body": {
+        "model": "gemini/veo-3.1-generate-preview",
+        "prompt": "waves breaking on a rocky shore",
+        "size": "3840x2160",
+        "seconds": "8"
+      },
+      "expect": {
+        "status": "completed",
+        "seconds": 8,
+        "size": "3840x2160",
+        "band": "4k",
+        "output_count": 1,
+        "cost": {
+          "mode": "rate",
+          "rate_per_second": 0.6
+        }
+      },
+      "expect_job_params": {
+        "seconds": "8",
+        "size": "3840x2160"
+      },
+      "notes": "Billed at $0.40/s today against an official $0.60/s."
+    },
+    {
+      "id": "veo31-fast-720p",
+      "group": "Gemini/Vertex",
+      "checklist": "Veo 3.1 Fast at 720p -> correct band",
+      "provider": "gemini",
+      "endpoint": "/v1/videos",
+      "body": {
+        "model": "gemini/veo-3.1-fast-generate-preview",
+        "prompt": "a hummingbird at a feeder",
+        "size": "1280x720",
+        "seconds": "8"
+      },
+      "expect": {
+        "status": "completed",
+        "seconds": 8,
+        "size": "1280x720",
+        "band": "720p",
+        "output_count": 1,
+        "cost": {
+          "mode": "rate",
+          "rate_per_second": 0.1
+        }
+      }
+    },
+    {
+      "id": "veo31-fast-1080p",
+      "group": "Gemini/Vertex",
+      "checklist": "Veo 3.1 Fast at 1080p -> correct band",
+      "provider": "gemini",
+      "endpoint": "/v1/videos",
+      "body": {
+        "model": "gemini/veo-3.1-fast-generate-preview",
+        "prompt": "a hummingbird at a feeder",
+        "size": "1920x1080",
+        "seconds": "8"
+      },
+      "expect": {
+        "status": "completed",
+        "seconds": 8,
+        "size": "1920x1080",
+        "band": "1080p",
+        "output_count": 1,
+        "cost": {
+          "mode": "rate",
+          "rate_per_second": 0.12
+        }
+      }
+    },
+    {
+      "id": "veo31-fast-4k",
+      "group": "Gemini/Vertex",
+      "checklist": "Veo 3.1 Fast at 4K -> correct band",
+      "provider": "gemini",
+      "endpoint": "/v1/videos",
+      "body": {
+        "model": "gemini/veo-3.1-fast-generate-preview",
+        "prompt": "a hummingbird at a feeder",
+        "size": "3840x2160",
+        "seconds": "8"
+      },
+      "expect": {
+        "status": "completed",
+        "seconds": 8,
+        "size": "3840x2160",
+        "band": "4k",
+        "output_count": 1,
+        "cost": {
+          "mode": "rate",
+          "rate_per_second": 0.3
+        }
+      }
+    },
+    {
+      "id": "veo31-lite-720p",
+      "group": "Gemini/Vertex",
+      "checklist": "Veo 3.1 Lite at 720p -> correct band",
+      "provider": "gemini",
+      "endpoint": "/v1/videos",
+      "body": {
+        "model": "gemini/veo-3.1-lite-generate-preview",
+        "prompt": "a hummingbird at a feeder",
+        "size": "1280x720",
+        "seconds": "8"
+      },
+      "expect": {
+        "status": "completed",
+        "seconds": 8,
+        "size": "1280x720",
+        "band": "720p",
+        "output_count": 1,
+        "cost": {
+          "mode": "rate",
+          "rate_per_second": 0.05
+        }
+      }
+    },
+    {
+      "id": "veo31-lite-1080p",
+      "group": "Gemini/Vertex",
+      "checklist": "Veo 3.1 Lite at 1080p -> correct band",
+      "provider": "gemini",
+      "endpoint": "/v1/videos",
+      "body": {
+        "model": "gemini/veo-3.1-lite-generate-preview",
+        "prompt": "a hummingbird at a feeder",
+        "size": "1920x1080",
+        "seconds": "8"
+      },
+      "expect": {
+        "status": "completed",
+        "seconds": 8,
+        "size": "1920x1080",
+        "band": "1080p",
+        "output_count": 1,
+        "cost": {
+          "mode": "rate",
+          "rate_per_second": 0.08
+        }
+      },
+      "notes": "Lite publishes no 4K rate, so there is deliberately no lite-4k case. A 4K Lite request should fall through to the unbanded rate rather than borrow another band's."
+    },
+    {
+      "id": "runway-gen45",
+      "group": "Runway",
+      "checklist": "gen4.5 via Runway",
+      "provider": "runway",
+      "endpoint": "/v1/videos",
+      "needs_rate": true,
+      "body": {
+        "model": "gen4.5",
+        "prompt": "a train pulling into a misty station",
+        "seconds": "5",
+        "size": "1280x720"
+      },
+      "expect": {
+        "status": "completed",
+        "seconds": 5,
+        "size": "1280x720",
+        "band": "720p",
+        "output_count": 1,
+        "cost": {
+          "mode": "rate",
+          "rate_per_second": null
+        }
+      },
+      "notes": "Runway prices in credits, not dollars per second. Source the credit rate and the credit-to-dollar conversion from Runway's docs, convert, then fill rate_per_second and drop needs_rate."
+    },
+    {
+      "id": "runway-veo31",
+      "group": "Runway",
+      "checklist": "veo3.1 via Runway",
+      "provider": "runway",
+      "endpoint": "/v1/videos",
+      "needs_rate": true,
+      "body": {
+        "model": "veo3.1",
+        "prompt": "a train pulling into a misty station",
+        "seconds": "8",
+        "size": "1280x720"
+      },
+      "expect": {
+        "status": "completed",
+        "seconds": 8,
+        "size": "1280x720",
+        "band": "720p",
+        "output_count": 1,
+        "cost": {
+          "mode": "rate",
+          "rate_per_second": null
+        }
+      },
+      "notes": "Same model as the Gemini group but resold through Runway, so the rate is Runway's, not Google's. Runway never echoes the model back \u2014 this case also proves the resolved model captured at submission is what prices the row."
+    },
+    {
+      "id": "runway-seedance25-input-seconds",
+      "group": "Runway",
+      "checklist": "seedance2_5 bills input seconds too \u2014 check whether we under-bill it",
+      "provider": "runway",
+      "endpoint": "/v1/videos",
+      "needs_rate": true,
+      "body": {
+        "model": "seedance2_5",
+        "prompt": "extend this shot",
+        "seconds": "5",
+        "size": "1280x720"
+      },
+      "expect": {
+        "status": "completed",
+        "seconds": 5,
+        "size": "1280x720",
+        "band": "720p",
+        "output_count": 1,
+        "cost": {
+          "mode": "rate",
+          "rate_per_second": null
+        }
+      },
+      "notes": "KNOWN GAP, expected to fail on price even once the rate is filled. Runway bills seedance for input seconds plus output seconds; Bifrost has an output-only per-second model, so a video-to-video call under-bills by the input duration. Run it to measure the size of the gap \u2014 the fix is a separate input-seconds pricing dimension."
+    },
+    {
+      "id": "replicate-p-video-720p",
+      "group": "Replicate",
+      "checklist": "p-video 720p -> correct band",
+      "provider": "replicate",
+      "endpoint": "/v1/videos",
+      "needs_rate": true,
+      "body": {
+        "model": "replicate/p-video",
+        "prompt": "a kite in a clear sky",
+        "size": "1280x720",
+        "seconds": "5"
+      },
+      "expect": {
+        "status": "completed",
+        "seconds": 5,
+        "size": "1280x720",
+        "band": "720p",
+        "output_count": 1,
+        "cost": {
+          "mode": "rate",
+          "rate_per_second": null
+        }
+      },
+      "notes": "Confirm the exact Replicate model slug before running \u2014 Replicate ids are owner/name and version-pinned."
+    },
+    {
+      "id": "replicate-p-video-1080p",
+      "group": "Replicate",
+      "checklist": "p-video 1080p -> correct band",
+      "provider": "replicate",
+      "endpoint": "/v1/videos",
+      "needs_rate": true,
+      "body": {
+        "model": "replicate/p-video",
+        "prompt": "a kite in a clear sky",
+        "size": "1920x1080",
+        "seconds": "5"
+      },
+      "expect": {
+        "status": "completed",
+        "seconds": 5,
+        "size": "1920x1080",
+        "band": "1080p",
+        "output_count": 1,
+        "cost": {
+          "mode": "rate",
+          "rate_per_second": null
+        }
+      }
+    },
+    {
+      "id": "failed-generation-bills-zero",
+      "group": "Regression",
+      "checklist": "a failed generation settles at exactly zero, not at the submission estimate",
+      "provider": "openai",
+      "endpoint": "/v1/videos",
+      "optional": true,
+      "body": {
+        "model": "sora-2",
+        "prompt": "__force a content policy rejection__",
+        "size": "1280x720",
+        "seconds": "4"
+      },
+      "expect": {
+        "status": "failed",
+        "cost": {
+          "mode": "fixed",
+          "value": 0
+        }
+      },
+      "notes": "optional=true because provoking a terminal failure on demand is provider-dependent and the prompt may simply succeed. When it does fail, this is the headline regression: charged at queue time and never zeroed."
+    }
+  ]
+}

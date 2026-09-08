@@ -174,7 +174,8 @@ func findRoot(spans []*Span) *Span {
 // makeSessionTrace builds a single-request trace (root + one LLM child) optionally carrying an
 // x-bf-session-id attribute and an inbound traceparent parent on the root span.
 func makeSessionTrace(traceID, sessionID, rootParentID string) *schemas.Trace {
-	root := makeSpan("aaaa", rootParentID, "request", schemas.SpanKindInternal)
+	// The HTTP request span is the trace root in production (never an internal span).
+	root := makeSpan("aaaa", rootParentID, "request", schemas.SpanKindHTTPRequest)
 	child := makeSpan("bbbb", "aaaa", "chat", schemas.SpanKindLLMCall)
 	tr := &schemas.Trace{
 		TraceID:  traceID,

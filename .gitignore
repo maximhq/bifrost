@@ -74,6 +74,10 @@ settings.local.json
 
 # MCP servers
 examples/mcps/**/bin/
+# `go build` inside an example MCP module drops the binary next to main.go.
+# The tests read examples/mcps/**/bin/ instead (see `make setup-mcp-tests`),
+# so this stray copy is never used and must not be committed.
+examples/mcps/remote-test-server/remote-test-server
 examples/mcps/http-no-ping-server/http-server
 examples/mcps/test-tools-server/dist/
 

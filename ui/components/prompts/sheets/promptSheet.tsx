@@ -78,7 +78,7 @@ export function PromptSheet({ open, onOpenChange, prompt, folderId, onSaved }: P
 				}}
 			>
 				<form onSubmit={handleSubmit(onSubmit)} className="flex grow flex-col">
-					<SheetHeader className="flex flex-col items-start px-4 pt-8 md:px-8">
+					<SheetHeader className="flex flex-col items-start pt-8" headerClassName="px-4 md:px-8">
 						<SheetTitle>{isEditing ? "Rename Prompt" : "Create Prompt"}</SheetTitle>
 						<SheetDescription>
 							{isEditing ? "Update the prompt name." : folderId ? "Create a new prompt in this folder." : "Create a new prompt."}

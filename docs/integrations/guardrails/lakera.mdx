@@ -275,7 +275,7 @@ For Chat Completions and Text Completions with multiple output choices, Bifrost 
 | Streaming requests | Yes | Screens input before the LLM call; screens output after the complete stream is buffered. |
 | Direct MCP or A2A traffic | No | These proxy surfaces are not converted into Lakera guard requests. |
 
-The earlier retained messages provide conversation context; Lakera evaluates the latest interaction rather than independently reclassifying every old turn. Use the rule's `max_turns_to_send` setting to limit how much conversation history Bifrost includes.
+The earlier retained messages provide conversation context; Lakera evaluates the latest interaction rather than independently reclassifying every old turn. Set a rule's `send_all_conversation_turns` to `false`, then use `max_turns_to_send` to include the current input plus a chosen number of preceding turns.
 
 For output rules, Bifrost sends the retained request conversation together with the selected model output. Earlier history is context only and is not rewritten during the output pass.
 

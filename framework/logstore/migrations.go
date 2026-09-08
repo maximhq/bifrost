@@ -31,6 +31,25 @@ var addColumnIfNotExists = migrator.AddColumnIfNotExists
 // same reason as above so call sites can use dropColumnIfExists(tx, ...).
 var dropColumnIfExists = migrator.DropColumnIfExists
 
+// boundDDLLockWait caps how long the DDL that follows waits for its table lock,
+// on PostgreSQL only.
+//
+// ADD COLUMN and DROP COLUMN both take ACCESS EXCLUSIVE on logs. The change
+// itself is metadata-only, but waiting for the lock parks the statement at the
+// head of the lock queue, where every query arriving behind a long-running read
+// waits on it too - a cluster-wide stall on the highest-volume table. Bounding
+// the wait fails this boot's migration instead, and the next boot retries it.
+//
+// SET LOCAL needs the transaction opts.UseTransaction gives the migration, and
+// reverts with it. It applies to the whole transaction, so it is set once per
+// callback rather than before each statement.
+func boundDDLLockWait(tx *gorm.DB) error {
+	if tx.Dialector.Name() != "postgres" {
+		return nil
+	}
+	return tx.Exec("SET LOCAL lock_timeout = '5s'").Error
+}
+
 const (
 	// migrationAdvisoryLockKey is used for PostgreSQL advisory locks
 	// to serialize migrations across cluster nodes.
@@ -290,10 +309,19 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"mcp_tool_logs_add_plugin_logs_column"}, run: migrationAddMCPPluginLogsColumn},
 	{IDs: []string{"logs_add_video_edit_input_column"}, run: migrationAddVideoEditInputColumn},
 	{IDs: []string{"logs_add_upstream_and_overhead_latency_columns"}, run: migrationAddUpstreamAndOverheadLatencyColumns},
+	{IDs: []string{"logs_add_complexity_routing_columns"}, run: migrationAddComplexityRoutingColumns},
+	{IDs: []string{"logs_add_session_id_column"}, run: migrationAddSessionIDColumn},
+	{IDs: []string{"logs_add_routing_metadata_column"}, run: migrationAddRoutingMetadataColumn},
 	{IDs: []string{"logs_add_batch_debug_column"}, run: migrationAddBatchDebugColumn},
 	{IDs: []string{"logs_add_cost_breakdown_columns"}, run: migrationAddCostBreakdownColumns},
 	{IDs: []string{"logs_recreate_matviews_with_cost_breakdown"}, run: migrationRecreateMatViewsWithCostBreakdown},
 	{IDs: []string{"logs_add_overhead_breakdown_column"}, run: migrationAddOverheadBreakdownColumn},
+	{IDs: []string{"webhook_deliveries_add_filter_indexes_v1"}, run: migrationAddWebhookDeliveryFilterIndexes},
+	{IDs: []string{"logs_add_video_debug_column"}, run: migrationAddVideoDebugColumn},
+	{IDs: []string{"logs_add_project_columns"}, run: migrationAddProjectColumns},
+	{IDs: []string{"mcp_tool_logs_add_project_columns"}, run: migrationAddProjectColumnsToMCPToolLogs},
+	{IDs: []string{"logs_add_served_model_column"}, run: migrationAddServedModelColumn},
+	{IDs: []string{"logs_add_tool_call_names_column"}, run: migrationAddToolCallNamesColumn},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -693,6 +721,39 @@ func migrationAddOverheadBreakdownColumn(ctx context.Context, db *gorm.DB, logge
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while adding overhead_breakdown column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddRoutingMetadataColumn adds the routing_metadata column to the logs
+// table, so the semantic classification embed and llm classification calls
+// the routing plugin made for a request are visible in the log detail view,
+// mirroring how guardrail_debug already surfaces guardrail judge calls.
+func migrationAddRoutingMetadataColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_routing_metadata_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			return addColumnIfNotExists(tx, logger, &Log{}, "routing_metadata")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			return dropColumnIfExists(tx, logger, &Log{}, "routing_metadata")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding routing_metadata column: %s", err.Error())
 	}
 	return nil
 }
@@ -1792,6 +1853,96 @@ func migrationAddWebhookDeliveryRequestIDColumn(ctx context.Context, db *gorm.DB
 	return nil
 }
 
+// migrationAddWebhookDeliveryFilterIndexes creates the indexes backing the
+// delivery-history filters (outcome, event, request_id, plus the composite
+// endpoint_id+created_at used by the default page query) on databases that
+// predate them.
+//
+// Postgres is deliberately skipped: there the same indexes are built
+// post-startup and CONCURRENTLY by ensurePerformanceIndexes, so a rolling
+// upgrade never blocks writes on this insert-heavy table.
+func migrationAddWebhookDeliveryFilterIndexes(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	logger.Info("[logstore] starting migration %s", webhookDeliveryFilterIndexMigrationName)
+	defer logger.Info("[logstore] finished migration %s", webhookDeliveryFilterIndexMigrationName)
+	if err := webhookDeliveryFilterIndexMigration(ctx, db, logger).Migrate(); err != nil {
+		return fmt.Errorf("error while adding webhook delivery filter indexes: %s", err.Error())
+	}
+	return nil
+}
+
+const webhookDeliveryFilterIndexMigrationName = "webhook_deliveries_add_filter_indexes_v1"
+
+// webhookDeliveryFilterIndexNames are the indexes this migration owns on the
+// dialects it applies to. On Postgres the same four are built post-startup and
+// CONCURRENTLY by ensurePerformanceIndexes instead.
+var webhookDeliveryFilterIndexNames = []string{
+	"idx_webhook_deliveries_endpoint_created",
+	"idx_webhook_deliveries_outcome",
+	"idx_webhook_deliveries_event",
+	"idx_webhook_deliveries_request_id",
+}
+
+// webhookDeliveryFilterIndexMigration builds the migration so both directions
+// are reachable from a test — the rollback in particular, which must stay as
+// Postgres-exempt as the forward direction.
+func webhookDeliveryFilterIndexMigration(ctx context.Context, db *gorm.DB, logger schemas.Logger) *migrator.Gormigrate {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	indexes := webhookDeliveryFilterIndexNames
+	return migrator.New(db, &opts, []*migrator.Migration{{
+		ID: webhookDeliveryFilterIndexMigrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if skipWebhookDeliveryFilterIndexes(tx) {
+				return nil
+			}
+			dbMigrator := tx.Migrator()
+			if !dbMigrator.HasTable(&WebhookDelivery{}) {
+				return nil
+			}
+			for _, index := range indexes {
+				if dbMigrator.HasIndex(&WebhookDelivery{}, index) {
+					continue
+				}
+				logger.Info("[logstore] %s: creating index %s on WebhookDelivery", webhookDeliveryFilterIndexMigrationName, index)
+				if err := dbMigrator.CreateIndex(&WebhookDelivery{}, index); err != nil {
+					return fmt.Errorf("failed to create index %s: %w", index, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// Symmetric with Migrate: on Postgres this migration never created
+			// these indexes, so it must not drop them either. They belong to
+			// ensurePerformanceIndexes, which builds them CONCURRENTLY — a plain
+			// DropIndex here would take an ACCESS EXCLUSIVE lock on
+			// webhook_deliveries inside this transaction, blocking reads and
+			// writes on an insert-heavy table.
+			if skipWebhookDeliveryFilterIndexes(tx) {
+				return nil
+			}
+			dbMigrator := tx.Migrator()
+			for _, index := range indexes {
+				if !dbMigrator.HasIndex(&WebhookDelivery{}, index) {
+					continue
+				}
+				if err := dbMigrator.DropIndex(&WebhookDelivery{}, index); err != nil {
+					return fmt.Errorf("failed to drop index %s: %w", index, err)
+				}
+			}
+			return nil
+		},
+	}})
+}
+
+// skipWebhookDeliveryFilterIndexes reports whether this migration leaves the
+// filter indexes alone on the given dialect. See the comment on
+// migrationAddWebhookDeliveryFilterIndexes.
+func skipWebhookDeliveryFilterIndexes(tx *gorm.DB) bool {
+	return tx.Dialector.Name() == "postgres"
+}
+
 // migrationAddMetadataColumn adds the metadata JSON column to the logs table.
 func migrationAddMetadataColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "logs_add_metadata_column"
@@ -2708,6 +2859,13 @@ var performanceIndexes = []performanceIndexDef{
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_routing_engines_arr ON logs USING GIN (string_to_array(routing_engines_used, ',')) WHERE routing_engines_used IS NOT NULL",
 	},
 	{
+		table: "logs",
+		name:  "idx_logs_tool_call_names_arr",
+		// Backs the tool_call_names filter's array-overlap predicate; partial so
+		// the (dominant) rows that called no tools stay out of the index.
+		sql: "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_tool_call_names_arr ON logs USING GIN (string_to_array(tool_call_names, ',')) WHERE tool_call_names IS NOT NULL",
+	},
+	{
 		table: "mcp_tool_logs",
 		name:  "idx_mcp_logs_timestamp",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_timestamp ON mcp_tool_logs (timestamp)",
@@ -2764,6 +2922,23 @@ var performanceIndexes = []performanceIndexDef{
 		table: "logs",
 		name:  "idx_logs_stop_reason",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_stop_reason ON logs(stop_reason)",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_complexity_tier",
+		// Partial: only requests routed through a complexity_tier rule carry a tier,
+		// so the index skips the (dominant) NULL rows.
+		sql: "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_complexity_tier ON logs(complexity_tier) WHERE complexity_tier IS NOT NULL",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_complexity_mechanism",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_complexity_mechanism ON logs(complexity_mechanism) WHERE complexity_mechanism IS NOT NULL",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_session_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_session_id ON logs(session_id) WHERE session_id IS NOT NULL",
 	},
 	{
 		table: "mcp_tool_logs",
@@ -2829,6 +3004,39 @@ var performanceIndexes = []performanceIndexDef{
 		table: "logs",
 		name:  "idx_logs_cluster_node_inc_usage",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_cluster_node_inc_usage ON logs(cluster_node_id, status, inc_number) WHERE cluster_node_id IS NOT NULL AND inc_number IS NOT NULL",
+	},
+	// Webhook delivery history filtering (see WebhookDeliverySearchFilters).
+	// The composite backs the default endpoint-scoped, newest-first page query;
+	// the rest back the sidebar filters.
+	{
+		table: "webhook_deliveries",
+		name:  "idx_webhook_deliveries_endpoint_created",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_webhook_deliveries_endpoint_created ON webhook_deliveries(endpoint_id, created_at DESC)",
+	},
+	{
+		table: "webhook_deliveries",
+		name:  "idx_webhook_deliveries_outcome",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_webhook_deliveries_outcome ON webhook_deliveries(outcome)",
+	},
+	{
+		table: "webhook_deliveries",
+		name:  "idx_webhook_deliveries_event",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_webhook_deliveries_event ON webhook_deliveries(event)",
+	},
+	{
+		table: "webhook_deliveries",
+		name:  "idx_webhook_deliveries_request_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_webhook_deliveries_request_id ON webhook_deliveries(request_id)",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_project_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_project_id ON logs(project_id)",
+	},
+	{
+		table: "mcp_tool_logs",
+		name:  "idx_mcp_logs_project_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_project_id ON mcp_tool_logs(project_id)",
 	},
 }
 
@@ -2904,7 +3112,6 @@ func migrationAddImageEditInputColumn(ctx context.Context, db *gorm.DB, logger s
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while adding image edit input column: %s", err.Error())
-
 	}
 	return nil
 }
@@ -3019,7 +3226,6 @@ func migrationAddAliasColumn(ctx context.Context, db *gorm.DB, logger schemas.Lo
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding alias column: %s", err.Error())
-
 	}
 	return nil
 }
@@ -3302,6 +3508,90 @@ func migrationAddGovernanceContextColumns(ctx context.Context, db *gorm.DB, logg
 // the full deduped set of teams / business units a request belongs to (enterprise
 // user/AP path). The scalar team_id/business_unit_id remain the primary; these
 // power display, multi-team filtering (jsonb @> + GIN), and fan-out aggregation.
+// migrationAddProjectColumns adds the project dimension to the request log. A request records the
+// project it was scoped to the way it records the team or business unit it was made under: as the
+// resolved id and its display name, so a log row still reads correctly after the project is renamed
+// or deleted.
+//
+// Indexed on the id alone, because that is what filtering and rollups ask about; the name is only
+// ever read back off a row that has already been found. The index is built CONCURRENTLY by
+// ensurePerformanceIndexes (an entry appended to performanceIndexes), since addColumnIfNotExists
+// adds only the column and an in-migration build would block writes on a populated table.
+func migrationAddProjectColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_project_columns"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+
+	columns := []string{"project_id", "project_name"}
+
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, col := range columns {
+				if err := addColumnIfNotExists(tx, logger, &Log{}, col); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, col := range columns {
+				if err := dropColumnIfExists(tx, logger, &Log{}, col); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding project columns: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddProjectColumnsToMCPToolLogs is the same dimension on the tool log, so a tool call made
+// inside a project is attributable to it exactly as a model call is. Its index is likewise built by
+// ensurePerformanceIndexes rather than here.
+func migrationAddProjectColumnsToMCPToolLogs(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "mcp_tool_logs_add_project_columns"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+
+	columns := []string{"project_id", "project_name"}
+
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, col := range columns {
+				if err := addColumnIfNotExists(tx, logger, &MCPToolLog{}, col); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, col := range columns {
+				if err := dropColumnIfExists(tx, logger, &MCPToolLog{}, col); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding project columns to mcp tool logs: %s", err.Error())
+	}
+	return nil
+}
+
 func migrationAddMultiTeamBusinessUnitColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "logs_add_multi_team_business_unit_columns"
 	logger.Info("[logstore] starting migration %s", migrationName)
@@ -3761,6 +4051,136 @@ func migrationAddStopReasonColumn(ctx context.Context, db *gorm.DB, logger schem
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while adding stop_reason column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddToolCallNamesColumn adds the tool_call_names column to the logs table.
+// It holds the comma-separated distinct function names a response called, kept
+// on the row (not offloaded as payload) so the logs filter works in hybrid mode.
+func migrationAddToolCallNamesColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_tool_call_names_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			return addColumnIfNotExists(tx, logger, &Log{}, "tool_call_names")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			return dropColumnIfExists(tx, logger, &Log{}, "tool_call_names")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding tool_call_names column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddComplexityRoutingColumns adds the complexity_tier, complexity_mechanism,
+// and complexity_score columns to the logs table. They record how the governance
+// complexity classifier routed each request; all three stay NULL for requests where
+// no routing rule referenced complexity_tier.
+func migrationAddComplexityRoutingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_complexity_routing_columns"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "complexity_tier"); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "complexity_mechanism"); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "complexity_score"); err != nil {
+				return err
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "complexity_score"); err != nil {
+				return err
+			}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "complexity_mechanism"); err != nil {
+				return err
+			}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "complexity_tier"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding complexity routing columns: %w", err)
+	}
+	return nil
+}
+
+// migrationAddSessionIDColumn adds the generic session identity resolved at
+// ingress so callers can correlate all requests in a Bifrost session.
+func migrationAddSessionIDColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_session_id_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "session_id"); err != nil {
+				return err
+			}
+			if tx.Dialector.Name() != "postgres" && !tx.Migrator().HasIndex(&Log{}, "idx_logs_session_id") {
+				if err := tx.Migrator().CreateIndex(&Log{}, "idx_logs_session_id"); err != nil {
+					return fmt.Errorf("create session_id index: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			if tx.Dialector.Name() != "postgres" && tx.Migrator().HasIndex(&Log{}, "idx_logs_session_id") {
+				if err := tx.Migrator().DropIndex(&Log{}, "idx_logs_session_id"); err != nil {
+					return err
+				}
+			}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "session_id"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding session ID column: %w", err)
 	}
 	return nil
 }
@@ -4349,6 +4769,57 @@ func migrationAddVideoEditInputColumn(ctx context.Context, db *gorm.DB, logger s
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding video edit input column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddVideoDebugColumn adds the video_debug column to the logs table. It
+// carries the video job id and lifecycle status on video rows, and on the aggregate
+// cost row the pricing detail that tells it apart from the submission it settles —
+// which is otherwise identical to it but for a cost. Nullable and unindexed, so this
+// is a metadata-only DDL change with no table rewrite and no backfill: rows written
+// before it simply have no video detail.
+func migrationAddVideoDebugColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_video_debug_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return addColumnIfNotExists(tx.WithContext(ctx), logger, &Log{}, "video_debug")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &Log{}, "video_debug")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding video_debug column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddServedModelColumn adds the served_model column to the logs table.
+// Records the model the provider named on the response body when it differs from
+// the one the caller addressed.
+func migrationAddServedModelColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_served_model_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return addColumnIfNotExists(tx.WithContext(ctx), logger, &Log{}, "served_model")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &Log{}, "served_model")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding served model column: %s", err.Error())
 	}
 	return nil
 }

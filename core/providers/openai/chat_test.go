@@ -897,7 +897,6 @@ func TestToOpenAIChatRequest_StripsAssistantReasoningContentForCompatibleProvide
 		provider schemas.ModelProvider
 		model    string
 	}{
-		{name: "cerebras", provider: schemas.Cerebras, model: "gpt-oss-120b"},
 		{name: "deepseek", provider: schemas.DeepSeek, model: "deepseek-v4-pro"},
 	}
 
@@ -968,6 +967,96 @@ func TestToOpenAIChatRequest_StripsAssistantReasoningContentForCompatibleProvide
 				t.Fatalf("expected reasoning_content to be absent from %s assistant payload, got %#v", tt.provider, assistantMessage["reasoning_content"])
 			}
 		})
+	}
+}
+
+// Groq rejects reasoning_content on assistant messages ("property 'reasoning_content'
+// is unsupported") but accepts the OpenRouter-style "reasoning" spelling, so replayed
+// reasoning has to move to that key rather than be dropped.
+func TestToOpenAIChatRequest_MovesAssistantReasoningToAliasForGroq(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+	}{
+		{name: "groq", provider: schemas.Groq, model: "qwen/qwen3.8-27b"},
+		{name: "cerebras", provider: schemas.Cerebras, model: "gpt-oss-120b"},
+	} {
+		t.Run(tt.name, func(t *testing.T) { assertMovesAssistantReasoningToAlias(t, tt.provider, tt.model) })
+	}
+}
+
+func assertMovesAssistantReasoningToAlias(t *testing.T, provider schemas.ModelProvider, model string) {
+	t.Helper()
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+
+	reasoning := "step by step"
+	assistantContent := "The weather in Paris is mild today."
+	userContent := "What is the weather in Paris?"
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: provider,
+		Model:    model,
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: &userContent},
+			},
+			{
+				Role:    schemas.ChatMessageRoleAssistant,
+				Content: &schemas.ChatMessageContent{ContentStr: &assistantContent},
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					Reasoning: &reasoning,
+				},
+			},
+		},
+	}
+
+	result := ToOpenAIChatRequest(ctx, bifrostReq)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if len(result.Messages) != 2 || result.Messages[1].OpenAIChatAssistantMessage == nil {
+		t.Fatalf("expected assistant message with OpenAI assistant payload, got %#v", result.Messages)
+	}
+	assistant := result.Messages[1].OpenAIChatAssistantMessage
+	if assistant.Reasoning != nil {
+		t.Fatalf("expected reasoning_content to be cleared, got %#v", assistant.Reasoning)
+	}
+	if assistant.ReasoningAlias == nil || *assistant.ReasoningAlias != reasoning {
+		t.Fatalf("expected reasoning alias %q, got %#v", reasoning, assistant.ReasoningAlias)
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	wireBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		bifrostReq,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToOpenAIChatRequest(ctx, bifrostReq), nil
+		},
+	)
+	if bifrostErr != nil {
+		t.Fatalf("failed to build request body: %v", bifrostErr.Error.Message)
+	}
+
+	var jsonMap map[string]any
+	if err := sonic.Unmarshal(wireBody, &jsonMap); err != nil {
+		t.Fatalf("failed to parse marshaled request body: %v", err)
+	}
+	messages, ok := jsonMap["messages"].([]any)
+	if !ok || len(messages) != 2 {
+		t.Fatalf("expected 2 messages in wire payload, got %#v", jsonMap["messages"])
+	}
+	assistantMessage, ok := messages[1].(map[string]any)
+	if !ok {
+		t.Fatalf("expected assistant message object, got %#v", messages[1])
+	}
+	if _, ok := assistantMessage["reasoning_content"]; ok {
+		t.Fatalf("expected reasoning_content to be absent from %s assistant payload, got %#v", provider, assistantMessage["reasoning_content"])
+	}
+	if got, ok := assistantMessage["reasoning"].(string); !ok || got != reasoning {
+		t.Fatalf("expected reasoning %q in %s assistant payload, got %#v", reasoning, provider, assistantMessage["reasoning"])
 	}
 }
 
@@ -1581,6 +1670,7 @@ func TestToOpenAIChatRequest_OpencodeUsesLegacyMaxTokensOnWire(t *testing.T) {
 	}{
 		{name: "Go", provider: schemas.OpencodeGo},
 		{name: "Zen", provider: schemas.OpencodeZen},
+		{name: "Ollama", provider: schemas.Ollama},
 	}
 
 	for _, tt := range tests {

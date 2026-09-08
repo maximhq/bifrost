@@ -117,6 +117,48 @@ export interface RedeliverWebhookResponse {
 	webhook_id: string;
 }
 
+export type WebhookDeliveryStatusClass = "2xx" | "4xx" | "5xx" | "none";
+
+export const WEBHOOK_DELIVERY_OUTCOMES: { value: WebhookDeliveryOutcome; label: string }[] = [
+	{ value: "delivered", label: "Delivered" },
+	{ value: "retryable_failure", label: "Retrying" },
+	{ value: "permanent_failure", label: "Failed" },
+	{ value: "exhausted", label: "Retries exhausted" },
+];
+
+export const WEBHOOK_DELIVERY_STATUS_CLASSES: { value: WebhookDeliveryStatusClass; label: string }[] = [
+	{ value: "2xx", label: "2xx success" },
+	{ value: "4xx", label: "4xx client error" },
+	{ value: "5xx", label: "5xx server error" },
+	{ value: "none", label: "No response" },
+];
+
+/**
+ * Filters for the dedicated delivery history page.
+ *
+ * Naming: `endpoint_ids` are webhook endpoints — what the UI calls "webhooks",
+ * and what the page's `?webhook_id=` URL param maps to. `delivery_id` is the
+ * delivery-run id (`WebhookDelivery.webhook_id`), shared by every attempt of
+ * one delivery. Keeping the two apart matters; the wire names are the source
+ * of truth.
+ */
+export interface WebhookDeliveryFilters {
+	endpoint_ids?: string[];
+	events?: WebhookEvent[];
+	outcomes?: WebhookDeliveryOutcome[];
+	status_class?: WebhookDeliveryStatusClass[];
+	request_id?: string;
+	delivery_id?: string;
+	start_time?: string;
+	end_time?: string;
+	period?: string;
+}
+
+export interface SearchWebhookDeliveriesParams extends WebhookDeliveryFilters {
+	limit?: number;
+	offset?: number;
+}
+
 // Delivery worker defaults, shown as placeholders for unset (0) knobs.
 export const WEBHOOK_TUNING_DEFAULTS = {
 	max_retries: 4,

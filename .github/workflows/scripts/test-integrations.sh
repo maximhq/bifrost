@@ -281,19 +281,17 @@ install_python_dependencies() {
   echo "="
   cd "$PYTHON_TEST_DIR"
 
-  if command -v uv >/dev/null 2>&1; then
-    echo "📦 Installing Python dependencies with uv..."
-    uv sync --frozen --quiet
-    PYTHON_TEST_COMMAND=(uv run pytest)
-  else
-    echo "⚠️  uv not found, trying pip..."
-    if [ ! -d ".venv" ]; then
-      python3 -m venv .venv
-    fi
-    source .venv/bin/activate
-    pip install -q -e .
-    PYTHON_TEST_COMMAND=(pytest)
+  # uv is the only supported installer: `uv sync --frozen` is the locked,
+  # reproducible path, and tests/integrations/python is a dependency manifest
+  # rather than a package, so a `pip install -e .` fallback cannot build it anyway.
+  # Every CI workflow that runs this script installs uv first.
+  if ! command -v uv >/dev/null 2>&1; then
+    echo "❌ uv not found. Install it from https://docs.astral.sh/uv/ and re-run."
+    exit 1
   fi
+  echo "📦 Installing Python dependencies with uv..."
+  uv sync --frozen --quiet
+  PYTHON_TEST_COMMAND=(uv run pytest)
 }
 
 install_typescript_dependencies() {
