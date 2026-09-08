@@ -709,6 +709,29 @@ func (gs *LocalGovernanceStore) BumpRateLimitUsage(ctx context.Context, rateLimi
 	}
 }
 
+// BumpBudgetUsageBy atomically adds an arbitrary delta without applying a
+// window reset. The CAS retry preserves concurrent request increments.
+func (gs *LocalGovernanceStore) BumpBudgetUsageBy(_ context.Context, budgetID string, delta float64) error {
+	if delta == 0 {
+		return nil
+	}
+	for {
+		raw, exists := gs.budgets.Load(budgetID)
+		if !exists || raw == nil {
+			return nil
+		}
+		old, ok := raw.(*configstoreTables.TableBudget)
+		if !ok || old == nil {
+			return nil
+		}
+		clone := *old
+		clone.CurrentUsage = max(clone.CurrentUsage+delta, 0)
+		if gs.budgets.CompareAndSwap(budgetID, raw, &clone) {
+			return nil
+		}
+	}
+}
+
 // BumpRateLimitUsageBy atomically adds arbitrary token and request deltas to the
 // rate limit identified by rateLimitID. Unlike BumpRateLimitUsage (which adds a
 // token count and a single request), this adds caller-supplied counts on both
