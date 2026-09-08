@@ -63,7 +63,8 @@ func TestAnthropicMessageRequestUnmarshalJSONExtraParams(t *testing.T) {
 }
 
 func TestAnthropicMessageRequestUnmarshalJSONDuplicateAndReuseSemantics(t *testing.T) {
-	req := AnthropicMessageRequest{ExtraParams: map[string]interface{}{"existing": "preserved"}}
+	req := AnthropicMessageRequest{}
+	req.ExtraParams = map[string]interface{}{"existing": "preserved"}
 	err := sonic.Unmarshal([]byte(`{
 		"model":"claude-sonnet-4-20250514",
 		"max_tokens":1024,
