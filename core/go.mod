@@ -20,13 +20,13 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/hajimehoshi/go-mp3 v0.3.4
-	github.com/klauspost/compress v1.19.2
+	github.com/klauspost/compress v1.20.0
 	github.com/mark3labs/mcp-go v0.43.2
 	github.com/rs/zerolog v1.34.0
 	github.com/stretchr/testify v1.11.1
 	github.com/tidwall/gjson v1.18.0
 	github.com/tidwall/sjson v1.2.5
-	github.com/valyala/fasthttp v1.71.0
+	github.com/valyala/fasthttp v1.74.0
 	go.starlark.net v0.0.0-20260102030733-3fee463870c9
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/text v0.41.0
@@ -79,16 +79,3 @@ require (
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-// Streaming cancellation in this module closes a body stream that may still have
-// a read in flight. That is only safe on a fasthttp carrying the pooled-resource
-// synchronization fix; on upstream v1.71.0 through v1.73.0 the close returns the
-// requestStream and the connection's bufio.Reader to their pools underneath the
-// active reader, so a later request reads another request's bytes.
-//
-// Go ignores replace directives from any module that is not the main module, so
-// this line does NOT reach anyone who runs `go get github.com/maximhq/bifrost/core`
-// - their build resolves upstream fasthttp and loses the fix. SDK consumers must
-// copy this replace into their own go.mod. Every module in this workspace has to
-// carry it too; TestFasthttpReplaceIsConsistentAcrossModules enforces that.
-replace github.com/valyala/fasthttp => github.com/maximhq/fasthttp v1.73.1

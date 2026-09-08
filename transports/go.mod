@@ -13,7 +13,7 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/pprof v0.0.0-20260802141513-ef3492d7dac3
 	github.com/google/uuid v1.6.0
-	github.com/klauspost/compress v1.19.2
+	github.com/klauspost/compress v1.20.0
 	github.com/mark3labs/mcp-go v0.43.2
 	github.com/maximhq/bifrost/core v1.8.3
 	github.com/maximhq/bifrost/framework v1.6.0
@@ -35,7 +35,7 @@ require (
 	github.com/stretchr/testify v1.11.1
 	github.com/tidwall/gjson v1.18.0
 	github.com/tidwall/sjson v1.2.5
-	github.com/valyala/fasthttp v1.71.0
+	github.com/valyala/fasthttp v1.74.0
 	go.uber.org/automaxprocs v1.6.0
 	golang.org/x/sync v0.22.0
 	golang.org/x/text v0.41.0
@@ -240,5 +240,3 @@ require (
 	gorm.io/driver/clickhouse v0.7.0 // indirect
 	gorm.io/driver/postgres v1.6.0 // indirect
 )
-
-replace github.com/valyala/fasthttp => github.com/maximhq/fasthttp v1.73.1
