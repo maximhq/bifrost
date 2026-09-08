@@ -6,9 +6,9 @@ require (
 	github.com/blevesearch/go-porterstemmer v1.0.3
 	github.com/google/cel-go v0.30.0
 	github.com/google/uuid v1.6.0
-	github.com/maximhq/bifrost/core v1.8.3
-	github.com/maximhq/bifrost/framework v1.6.0
-	github.com/maximhq/bifrost/plugins/governance v1.7.0
+	github.com/maximhq/bifrost/core v1.8.5
+	github.com/maximhq/bifrost/framework v1.6.1
+	github.com/maximhq/bifrost/plugins/governance v1.7.1
 	github.com/stretchr/testify v1.11.1
 	gorm.io/gorm v1.31.1
 )
@@ -118,6 +118,7 @@ require (
 	github.com/oapi-codegen/runtime v1.1.1 // indirect
 	github.com/oklog/ulid v1.3.1 // indirect
 	github.com/paulmach/orb v0.11.1 // indirect
+	github.com/philippgille/chromem-go v0.7.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.22 // indirect
 	github.com/pinecone-io/go-pinecone/v5 v5.3.0 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
