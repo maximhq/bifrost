@@ -16,6 +16,7 @@ circuit-breaker-policies:
       - Circuit Breaker
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -49,6 +50,7 @@ circuit-breaker-policies:
             $ref: '../../schemas/management/circuitbreaker.yaml#/CircuitBreakerPolicy'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '201':
         description: Policy created
@@ -94,6 +96,7 @@ circuit-breaker-policy-by-name:
             $ref: '../../schemas/management/circuitbreaker.yaml#/CircuitBreakerPolicy'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Policy updated
@@ -132,6 +135,7 @@ circuit-breaker-policy-by-name:
         description: Name of the policy to delete.
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Policy deleted
@@ -163,6 +167,7 @@ circuit-breaker-state:
       - Circuit Breaker
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response

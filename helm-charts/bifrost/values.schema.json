@@ -667,10 +667,7 @@
                 },
                 "mcpLibraryUrl": {
                   "description": "URL to a custom MCP server catalog. Leave empty to use the default Bifrost catalog.",
-                  "anyOf": [
-                    {"type": "string", "format": "uri"},
-                    {"const": ""}
-                  ]
+                  "anyOf": [{ "type": "string", "format": "uri" }, { "const": "" }]
                 },
                 "mcpLibrarySyncInterval": {
                   "type": "integer",
@@ -682,10 +679,7 @@
                   "type": "integer",
                   "description": "How often each provider's list-models response is re-fetched in the background, in seconds. Set to 0 to disable background refresh. Default is 3600 (1 hour); minimum when enabled is 60 seconds.",
                   "default": 3600,
-                  "anyOf": [
-                    {"const": 0},
-                    {"minimum": 60}
-                  ]
+                  "anyOf": [{ "const": 0 }, { "minimum": 60 }]
                 }
               },
               "additionalProperties": false
@@ -2171,8 +2165,14 @@
                           "type": "object",
                           "properties": {
                             "location": { "type": "string", "enum": ["message"] },
-                            "role": { "type": "string", "enum": ["system", "developer", "user", "assistant"] },
-                            "index": { "type": "integer", "description": "Negative values count from the end" }
+                            "role": {
+                              "type": "string",
+                              "enum": ["system", "developer", "user", "assistant"]
+                            },
+                            "index": {
+                              "type": "integer",
+                              "description": "Negative values count from the end"
+                            }
                           }
                         }
                       }
@@ -2472,7 +2472,12 @@
                           "minItems": 1
                         }
                       },
-                      "required": ["code_keywords", "reasoning_keywords", "technical_keywords", "simple_keywords"],
+                      "required": [
+                        "code_keywords",
+                        "reasoning_keywords",
+                        "technical_keywords",
+                        "simple_keywords"
+                      ],
                       "additionalProperties": false
                     }
                   ]
@@ -2766,7 +2771,16 @@
             },
             "provider": {
               "type": "string",
-              "enum": ["", "okta", "entra", "keycloak", "zitadel", "google", "sailpoint", "generic"],
+              "enum": [
+                "",
+                "okta",
+                "entra",
+                "keycloak",
+                "zitadel",
+                "google",
+                "sailpoint",
+                "generic"
+              ],
               "description": "SCIM/SSO provider type (empty when not configured)"
             },
             "config": {
@@ -2785,7 +2799,15 @@
               "then": {
                 "properties": {
                   "provider": {
-                    "enum": ["okta", "entra", "keycloak", "zitadel", "google", "sailpoint", "generic"]
+                    "enum": [
+                      "okta",
+                      "entra",
+                      "keycloak",
+                      "zitadel",
+                      "google",
+                      "sailpoint",
+                      "generic"
+                    ]
                   }
                 },
                 "required": ["provider"]
@@ -2855,15 +2877,19 @@
                         "description": "JWT claim field for roles (default: 'roles')",
                         "default": "roles"
                       },
-                      "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
-                      "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
-                      "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
-                      "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
-                      "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-                      "attributeAccessProfileMappings": {"$ref": "#/$defs/scim_attribute_access_profile_mappings"},
-                      "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
-                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
-                      "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
+                      "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
+                      "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
+                      "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+                      "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
+                      "attributeBusinessUnitMappings": {
+                        "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+                      },
+                      "attributeAccessProfileMappings": {
+                        "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+                      },
+                      "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
+                      "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" },
+                      "provisioningToken": { "$ref": "#/$defs/scim_provisioning_token" }
                     },
                     "required": ["issuerUrl", "clientId", "clientSecret"],
                     "additionalProperties": false
@@ -2936,15 +2962,19 @@
                         "description": "Whether Bifrost may bulk-sync users and groups from Microsoft Graph. Normally set by the SCIM verify step (disabled when the app registration lacks the required Graph permissions); set it explicitly to opt out of bulk sync while keeping login-time claim sync.",
                         "default": true
                       },
-                      "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
-                      "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
-                      "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
-                      "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
-                      "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-                      "attributeAccessProfileMappings": {"$ref": "#/$defs/scim_attribute_access_profile_mappings"},
-                      "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
-                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
-                      "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
+                      "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
+                      "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
+                      "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+                      "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
+                      "attributeBusinessUnitMappings": {
+                        "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+                      },
+                      "attributeAccessProfileMappings": {
+                        "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+                      },
+                      "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
+                      "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" },
+                      "provisioningToken": { "$ref": "#/$defs/scim_provisioning_token" }
                     },
                     "required": ["tenantId", "clientId"],
                     "additionalProperties": false
@@ -3006,14 +3036,18 @@
                         "description": "JWT claim field for roles (default: 'roles')",
                         "default": "roles"
                       },
-                      "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
-                      "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
-                      "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
-                      "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
-                      "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-                      "attributeAccessProfileMappings": {"$ref": "#/$defs/scim_attribute_access_profile_mappings"},
-                      "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
-                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
+                      "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
+                      "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
+                      "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+                      "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
+                      "attributeBusinessUnitMappings": {
+                        "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+                      },
+                      "attributeAccessProfileMappings": {
+                        "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+                      },
+                      "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
+                      "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" }
                     },
                     "required": ["serverUrl", "realm", "clientId", "clientSecret"],
                     "additionalProperties": false
@@ -3074,14 +3108,18 @@
                         "description": "JWT claim field for team/group IDs (default: 'groups')",
                         "default": "groups"
                       },
-                      "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
-                      "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
-                      "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
-                      "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
-                      "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-                      "attributeAccessProfileMappings": {"$ref": "#/$defs/scim_attribute_access_profile_mappings"},
-                      "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
-                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
+                      "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
+                      "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
+                      "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+                      "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
+                      "attributeBusinessUnitMappings": {
+                        "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+                      },
+                      "attributeAccessProfileMappings": {
+                        "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+                      },
+                      "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
+                      "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" }
                     },
                     "required": ["domain", "clientId"],
                     "additionalProperties": false
@@ -3157,14 +3195,18 @@
                         "description": "Whether Bifrost may bulk-sync users and groups from the Google Workspace Directory API. Normally set by the SCIM verify step (disabled when the service account lacks the required Directory API scopes); set it explicitly to opt out of bulk sync while keeping login-time claim sync.",
                         "default": true
                       },
-                      "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
-                      "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
-                      "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
-                      "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
-                      "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-                      "attributeAccessProfileMappings": {"$ref": "#/$defs/scim_attribute_access_profile_mappings"},
-                      "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
-                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
+                      "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
+                      "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
+                      "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+                      "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
+                      "attributeBusinessUnitMappings": {
+                        "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+                      },
+                      "attributeAccessProfileMappings": {
+                        "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+                      },
+                      "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
+                      "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" }
                     },
                     "required": ["domain", "clientId"],
                     "additionalProperties": false,
@@ -3257,15 +3299,19 @@
                         "type": "string",
                         "description": "JWT claim field for team IDs"
                       },
-                      "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
-                      "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
-                      "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
-                      "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
-                      "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-                      "attributeAccessProfileMappings": {"$ref": "#/$defs/scim_attribute_access_profile_mappings"},
-                      "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
-                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
-                      "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
+                      "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
+                      "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
+                      "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+                      "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
+                      "attributeBusinessUnitMappings": {
+                        "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+                      },
+                      "attributeAccessProfileMappings": {
+                        "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+                      },
+                      "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
+                      "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" },
+                      "provisioningToken": { "$ref": "#/$defs/scim_provisioning_token" }
                     },
                     "required": ["product"],
                     "additionalProperties": false
@@ -3332,15 +3378,19 @@
                         "description": "Additional OAuth2 scopes to request",
                         "items": { "type": "string" }
                       },
-                      "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
-                      "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
-                      "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
-                      "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
-                      "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-                      "attributeAccessProfileMappings": {"$ref": "#/$defs/scim_attribute_access_profile_mappings"},
-                      "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
-                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
-                      "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
+                      "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
+                      "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
+                      "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+                      "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
+                      "attributeBusinessUnitMappings": {
+                        "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+                      },
+                      "attributeAccessProfileMappings": {
+                        "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+                      },
+                      "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
+                      "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" },
+                      "provisioningToken": { "$ref": "#/$defs/scim_provisioning_token" }
                     },
                     "required": ["issuerUrl", "clientId"],
                     "additionalProperties": false
@@ -3985,13 +4035,19 @@
                             "webhook_url": {
                               "type": "string",
                               "minLength": 1,
-                              "anyOf": [{ "format": "uri" }, { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }],
+                              "anyOf": [
+                                { "format": "uri" },
+                                { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }
+                              ],
                               "description": "Slack incoming webhook URL. Supports env.VAR_NAME references."
                             },
                             "url": {
                               "type": "string",
                               "minLength": 1,
-                              "anyOf": [{ "format": "uri" }, { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }],
+                              "anyOf": [
+                                { "format": "uri" },
+                                { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }
+                              ],
                               "description": "Alias for webhook_url. Supports env.VAR_NAME references."
                             }
                           },
@@ -4015,13 +4071,19 @@
                             "webhook_url": {
                               "type": "string",
                               "minLength": 1,
-                              "anyOf": [{ "format": "uri" }, { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }],
+                              "anyOf": [
+                                { "format": "uri" },
+                                { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }
+                              ],
                               "description": "Microsoft Teams incoming webhook or workflow URL. Supports env.VAR_NAME references."
                             },
                             "url": {
                               "type": "string",
                               "minLength": 1,
-                              "anyOf": [{ "format": "uri" }, { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }],
+                              "anyOf": [
+                                { "format": "uri" },
+                                { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }
+                              ],
                               "description": "Alias for webhook_url. Supports env.VAR_NAME references."
                             }
                           },
@@ -4053,7 +4115,10 @@
                               "description": "Alias for routing_key. Supports env.VAR_NAME references."
                             }
                           },
-                          "oneOf": [{ "required": ["routing_key"] }, { "required": ["integration_key"] }],
+                          "oneOf": [
+                            { "required": ["routing_key"] },
+                            { "required": ["integration_key"] }
+                          ],
                           "additionalProperties": true
                         }
                       },
@@ -4073,13 +4138,19 @@
                             "url": {
                               "type": "string",
                               "minLength": 1,
-                              "anyOf": [{ "format": "uri" }, { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }],
+                              "anyOf": [
+                                { "format": "uri" },
+                                { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }
+                              ],
                               "description": "Generic webhook URL. Supports env.VAR_NAME references."
                             },
                             "webhook_url": {
                               "type": "string",
                               "minLength": 1,
-                              "anyOf": [{ "format": "uri" }, { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }],
+                              "anyOf": [
+                                { "format": "uri" },
+                                { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }
+                              ],
                               "description": "Alias for url. Supports env.VAR_NAME references."
                             },
                             "headers": {
@@ -4114,7 +4185,10 @@
                     "enum": ["virtual_key", "team", "customer"],
                     "description": "Governance owner scope to evaluate"
                   },
-                  "scope_id": { "type": "string", "description": "ID of the virtual key, team, or customer" },
+                  "scope_id": {
+                    "type": "string",
+                    "description": "ID of the virtual key, team, or customer"
+                  },
                   "cel_expression": {
                     "type": "string",
                     "description": "CEL expression evaluated against usage variables (budget_usage_percent, budget_spent, request_usage, token_usage, etc.)"
@@ -4148,7 +4222,15 @@
                   },
                   "target_id": { "type": "string", "description": "ID of the explicit target" }
                 },
-                "required": ["id", "name", "enabled", "scope_type", "scope_id", "cel_expression", "channel_ids"],
+                "required": [
+                  "id",
+                  "name",
+                  "enabled",
+                  "scope_type",
+                  "scope_id",
+                  "cel_expression",
+                  "channel_ids"
+                ],
                 "allOf": [
                   {
                     "if": {
@@ -4549,7 +4631,14 @@
                     "description": "Response header whose value (in ms) overrides default_cooldown"
                   }
                 },
-                "required": ["name", "primary_provider", "primary_model", "fallback_provider", "fallback_model", "condition"],
+                "required": [
+                  "name",
+                  "primary_provider",
+                  "primary_model",
+                  "fallback_provider",
+                  "fallback_model",
+                  "condition"
+                ],
                 "additionalProperties": false
               }
             }
@@ -5945,8 +6034,14 @@
                 "type": "object",
                 "properties": {
                   "location": { "type": "string", "enum": ["message"] },
-                  "role": { "type": "string", "enum": ["system", "developer", "user", "assistant"] },
-                  "index": { "type": "integer", "description": "Negative values count from the end" }
+                  "role": {
+                    "type": "string",
+                    "enum": ["system", "developer", "user", "assistant"]
+                  },
+                  "index": {
+                    "type": "integer",
+                    "description": "Negative values count from the end"
+                  }
                 }
               }
             }
@@ -6716,7 +6811,14 @@
         },
         "authType": {
           "type": "string",
-          "enum": ["none", "headers", "oauth", "per_user_oauth", "per_user_headers", "token_exchange"],
+          "enum": [
+            "none",
+            "headers",
+            "oauth",
+            "per_user_oauth",
+            "per_user_headers",
+            "token_exchange"
+          ],
           "description": "Authentication type for MCP connection. 'token_exchange' is only honored on Enterprise builds."
         },
         "oauthConfig": {
@@ -7577,9 +7679,7 @@
                 "const": "open"
               }
             },
-            "required": [
-              "membership_mode"
-            ]
+            "required": ["membership_mode"]
           },
           "then": {
             "properties": {
@@ -7612,37 +7712,24 @@
         "access_rule": {
           "type": "string",
           "description": "How the project's own access composes with the access a caller already holds: union leaves the caller's own access untouched (a project with no provider or MCP config then only accounts for spend), intersect permits only what both allow.",
-          "enum": [
-            "union",
-            "intersect"
-          ]
+          "enum": ["union", "intersect"]
         },
         "membership_mode": {
           "type": "string",
           "description": "explicit consults the membership rows; open lets any caller opt in. An open project cannot divide its budget between members.",
-          "enum": [
-            "explicit",
-            "open"
-          ],
+          "enum": ["explicit", "open"],
           "default": "explicit"
         },
         "accounting_mode": {
           "type": "string",
           "description": "Which ledgers a request's spend lands on: the project's, the calling principal's, or both",
-          "enum": [
-            "both",
-            "project_only",
-            "principal_only"
-          ],
+          "enum": ["both", "project_only", "principal_only"],
           "default": "both"
         },
         "split_policy": {
           "type": "string",
           "description": "How the budgets and rate limits the project holds, at every tier (its own, each provider's, and each model's), are divided between members: none leaves them shared, equal gives every member an equal share of each. A change to an equal split's roster or caps recomputes every share in the background.",
-          "enum": [
-            "none",
-            "equal"
-          ],
+          "enum": ["none", "equal"],
           "default": "none"
         },
         "calendar_aligned": {
@@ -7687,10 +7774,7 @@
           }
         }
       },
-      "required": [
-        "name",
-        "access_rule"
-      ],
+      "required": ["name", "access_rule"],
       "additionalProperties": false
     },
     "project_budget": {
@@ -7699,14 +7783,10 @@
       "allOf": [
         {
           "if": {
-            "required": [
-              "reset_config"
-            ]
+            "required": ["reset_config"]
           },
           "then": {
-            "required": [
-              "reset_duration"
-            ],
+            "required": ["reset_duration"],
             "properties": {
               "reset_duration": {
                 "const": "1Q"
@@ -7739,10 +7819,7 @@
           "additionalProperties": false
         }
       },
-      "required": [
-        "max_limit",
-        "reset_duration"
-      ],
+      "required": ["max_limit", "reset_duration"],
       "additionalProperties": false
     },
     "project_rate_limit": {
@@ -7769,29 +7846,17 @@
         }
       },
       "dependentRequired": {
-        "token_max_limit": [
-          "token_reset_duration"
-        ],
-        "token_reset_duration": [
-          "token_max_limit"
-        ],
-        "request_max_limit": [
-          "request_reset_duration"
-        ],
-        "request_reset_duration": [
-          "request_max_limit"
-        ]
+        "token_max_limit": ["token_reset_duration"],
+        "token_reset_duration": ["token_max_limit"],
+        "request_max_limit": ["request_reset_duration"],
+        "request_reset_duration": ["request_max_limit"]
       },
       "anyOf": [
         {
-          "required": [
-            "token_max_limit"
-          ]
+          "required": ["token_max_limit"]
         },
         {
-          "required": [
-            "request_max_limit"
-          ]
+          "required": ["request_max_limit"]
         }
       ],
       "additionalProperties": false
@@ -7830,10 +7895,7 @@
           }
         },
         "weight": {
-          "type": [
-            "number",
-            "null"
-          ],
+          "type": ["number", "null"],
           "description": "Load-balancer seed weight for this provider (null opts out of weighted routing / no override)",
           "default": null
         },
@@ -7855,9 +7917,7 @@
           }
         }
       },
-      "required": [
-        "provider_name"
-      ],
+      "required": ["provider_name"],
       "additionalProperties": false
     },
     "project_provider_model_budget": {
@@ -7882,9 +7942,7 @@
           "$ref": "#/$defs/project_rate_limit"
         }
       },
-      "required": [
-        "model_name"
-      ],
+      "required": ["model_name"],
       "additionalProperties": false
     },
     "project_mcp_config": {
@@ -7902,9 +7960,7 @@
           }
         }
       },
-      "required": [
-        "mcp_client_name"
-      ],
+      "required": ["mcp_client_name"],
       "additionalProperties": false
     },
     "project_virtual_mcp": {
@@ -7917,9 +7973,7 @@
           "description": "Virtual MCP ID. Ids are assigned by the database, so a file that has to be portable across environments should assign virtual MCPs from the dashboard or the API instead."
         }
       },
-      "required": [
-        "virtual_mcp_id"
-      ],
+      "required": ["virtual_mcp_id"],
       "additionalProperties": false
     },
     "scim_attribute_access_profile_mappings": {
@@ -8072,7 +8126,10 @@
         },
         {
           "if": {
-            "properties": { "enabled": { "const": true }, "provider": { "const": "cloudflare-access" } },
+            "properties": {
+              "enabled": { "const": true },
+              "provider": { "const": "cloudflare-access" }
+            },
             "required": ["enabled", "provider"]
           },
           "then": {

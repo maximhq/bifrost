@@ -9,6 +9,7 @@ plugins-builtins:
       - Plugins
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Built-in plugin names retrieved successfully
@@ -38,6 +39,7 @@ plugins:
       - Plugins
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -71,6 +73,7 @@ plugins:
             $ref: '../../schemas/management/plugins.yaml#/CreatePluginRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '201':
         description: Plugin created successfully
@@ -113,6 +116,7 @@ plugins:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -163,6 +167,7 @@ plugins:
             $ref: '../../schemas/management/plugins.yaml#/UpdatePluginRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Plugin updated successfully
@@ -200,6 +205,7 @@ plugins:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Plugin deleted successfully
