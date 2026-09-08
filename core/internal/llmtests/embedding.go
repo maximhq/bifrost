@@ -58,18 +58,6 @@ func RunEmbeddingTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 			"Goodnight, moon!",
 		}
 
-		request := &schemas.BifrostEmbeddingRequest{
-			Provider: testConfig.Provider,
-			Model:    testConfig.EmbeddingModel,
-			Input: &schemas.EmbeddingInput{
-				Texts: testTexts,
-			},
-			Params: &schemas.EmbeddingParameters{
-				EncodingFormat: bifrost.Ptr("float"),
-			},
-			Fallbacks: testConfig.EmbeddingFallbacks,
-		}
-
 		// Use retry framework with enhanced validation
 		retryConfig := GetTestRetryConfigForScenario("Embedding", testConfig)
 		retryContext := TestRetryContext{
@@ -84,10 +72,6 @@ func RunEmbeddingTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 			},
 		}
 
-		// Enhanced embedding validation
-		expectations := EmbeddingExpectations(testTexts)
-		expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
-
 		// Create Embedding retry config
 		embeddingRetryConfig := EmbeddingRetryConfig{
 			MaxAttempts: retryConfig.MaxAttempts,
@@ -98,13 +82,39 @@ func RunEmbeddingTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 			OnFinalFail: retryConfig.OnFinalFail,
 		}
 
-		embeddingResponse, bifrostErr := WithEmbeddingTestRetry(t, embeddingRetryConfig, retryContext, expectations, "Embedding", func() (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
-			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
-			return client.EmbeddingRequest(bfCtx, request)
-		})
+		// One request per text: some embedding endpoints (e.g. Vertex :predict) accept a single input.
+		embeddingResponse := &schemas.BifrostEmbeddingResponse{Data: make([]schemas.EmbeddingData, 0, len(testTexts))}
+		for i, text := range testTexts {
+			request := &schemas.BifrostEmbeddingRequest{
+				Provider: testConfig.Provider,
+				Model:    testConfig.EmbeddingModel,
+				Input: []schemas.EmbeddingInputItem{
+					{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}},
+				},
+				Params: &schemas.EmbeddingParameters{
+					EncodingFormat: bifrost.Ptr("float"),
+				},
+				Fallbacks: testConfig.EmbeddingFallbacks,
+			}
 
-		if bifrostErr != nil {
-			t.Fatalf("❌ Embedding request failed after retries: %v", GetErrorMessage(bifrostErr))
+			expectations := EmbeddingExpectations([]string{text})
+			expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
+
+			resp, bifrostErr := WithEmbeddingTestRetry(t, embeddingRetryConfig, retryContext, expectations, "Embedding", func() (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+				bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+				return client.EmbeddingRequest(bfCtx, request)
+			})
+
+			if bifrostErr != nil {
+				t.Fatalf("❌ Embedding request failed after retries for text '%s': %v", text, GetErrorMessage(bifrostErr))
+			}
+			if resp == nil || len(resp.Data) != 1 {
+				t.Fatalf("Expected 1 embedding result for text '%s'", text)
+			}
+
+			data := resp.Data[0]
+			data.Index = i
+			embeddingResponse.Data = append(embeddingResponse.Data, data)
 		}
 
 		// Additional embedding-specific validation (complementary to the main validation)
@@ -123,12 +133,7 @@ func validateEmbeddingSemantics(t *testing.T, response *schemas.BifrostEmbedding
 	embeddings := make([][]float64, len(testTexts))
 	responseDataLength := len(response.Data)
 	if responseDataLength != len(testTexts) {
-		if responseDataLength > 0 && response.Data[0].Embedding.Embedding2DArray != nil {
-			responseDataLength = len(response.Data[0].Embedding.Embedding2DArray)
-		}
-		if responseDataLength != len(testTexts) {
-			t.Fatalf("Expected %d embedding results, got %d", len(testTexts), responseDataLength)
-		}
+		t.Fatalf("Expected %d embedding results, got %d", len(testTexts), responseDataLength)
 	}
 
 	for i := range responseDataLength {
