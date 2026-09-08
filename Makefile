@@ -2052,6 +2052,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' ""                "  Retry reports merge LAST, so a successful attempt supersedes its own failure in tmp/newman-report.json."; \
 		printf '  %-18s %s\n' "SHARD_LINES=0"  "Drop the per-shard completion lines (<shard> N total/pass/fail) and show only the provider table."; \
 		printf '  %-18s %s\n' "SKIP_STREAM_CANCEL=1" "Skip the post-Newman stream-abort probes that verify server-side cancellation on client disconnect."; \
+		printf '  %-18s %s\n' "HARNESS_SERVER_CWD" "Server working directory for relative logs_store SQLite paths (default: transports/bifrost-http, matching make dev). BIFROST_LOGS_DB_URL overrides config resolution."; \
 		printf '  %-18s %s\n' "DB_VERIFY=0"      "Disable the dbverify reporter (ON by default). When on, [Costing]/[Accounting] requests assert the logs DB cost matches the getbifrost.ai/datasheet-computed cost (resolves DB from APP_DIR/config.json or BIFROST_LOGS_DB_URL); skips gracefully if no logs DB is reachable."; \
 		printf '  %-18s %s\n' "USE_INFISICAL=1" "Source secrets from Infisical CLI ('infisical export --path /local --format dotenv') instead of .env."; \
 		printf '  %-18s %s\n' "VERTEX_GCS_BUCKET" "Env-sourced (.env/Infisical): GCS bucket for Vertex file ops (forwarded to Newman as vertexGcsBucket)."; \
@@ -2241,10 +2242,10 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	if [ "$(DB_VERIFY)" != "0" ] && [ "$$E2E_DEPS_READY" = "1" ]; then \
 		DBVERIFY_READY=1; \
 		DBVERIFY_REPORTER=",dbverify"; \
-		LOGS_DB_VAL="$${BIFROST_LOGS_DB_URL:-sqlite://$(CURDIR)/$$APP_DIR_VAL/logs.db}"; \
+		LOGS_DB_VAL="$$(node tests/e2e/api/lib/logs-db-url.js "$$APP_DIR_VAL/config.json" "$(or $(HARNESS_SERVER_CWD),$(CURDIR)/transports/bifrost-http)")"; \
 		export BIFROST_LOGS_DB_URL="$$LOGS_DB_VAL"; \
 		DBVERIFY_ARGS="--reporter-dbverify-config $$APP_DIR_VAL/config.json"; \
-		say "$(CYAN)dbverify reporter enabled (logs DB: $$LOGS_DB_VAL). Set DB_VERIFY=0 to disable.$(NC)"; \
+		say "$(CYAN)dbverify reporter enabled (logs DB resolved from configuration or BIFROST_LOGS_DB_URL). Set DB_VERIFY=0 to disable.$(NC)"; \
 	fi; \
 	TOKEN_PARITY_REPORTER=""; \
 	CACHE_PARITY_REPORTER=""; \
@@ -2820,6 +2821,8 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		say "$(CYAN)Running stream cancellation probes...$(NC)"; \
 		$(USE_NODE); node tests/e2e/api/runners/run-stream-cancellation.mjs \
 			--base-url "$$BASE_URL_VAL" \
+			--config "$$APP_DIR_VAL/config.json" \
+			--server-working-dir "$(or $(HARNESS_SERVER_CWD),$(CURDIR)/transports/bifrost-http)" \
 			$(if $(PROVIDER),--provider "$(PROVIDER)",) \
 			--out tmp/stream-cancel-report.json > tmp/stream-cancel-cli.log 2>&1; \
 		STREAM_CANCEL_EXIT=$$?; \
