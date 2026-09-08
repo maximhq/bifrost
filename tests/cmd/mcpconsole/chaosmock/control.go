@@ -29,6 +29,9 @@ type State struct {
 	Counters CountersSnapshot `json:"counters"`
 	Sessions int              `json:"sessions"`
 	Streams  int              `json:"streams"`
+	// StdioPID is the child process bridging this server over stdin and
+	// stdout, or 0 when none has registered.
+	StdioPID int `json:"stdio_pid"`
 }
 
 // State captures a server's current state.
@@ -42,6 +45,7 @@ func (s *Server) State() State {
 		Counters: s.counters.Snapshot(),
 		Sessions: s.sessions.count(),
 		Streams:  s.streams.count(),
+		StdioPID: s.StdioPID(),
 	}
 }
 
@@ -123,6 +127,7 @@ type controlBody struct {
 	Schema   json.RawMessage `json:"schema,omitempty"`
 	Identity string          `json:"identity,omitempty"`
 	Token    string          `json:"token,omitempty"`
+	PID      int             `json:"pid,omitempty"`
 	Faults   *Faults         `json:"faults,omitempty"`
 	Auth     *Auth           `json:"auth,omitempty"`
 	// Clear distinguishes an overlay being removed from one being set to an
@@ -192,6 +197,15 @@ func (s *Server) applyControl(verb string, r *http.Request) error {
 		s.streams.closeAll()
 	case "notify/tools-changed":
 		s.NotifyToolListChanged()
+	case "stdio/register":
+		if body.PID <= 0 {
+			return errBadRequest("pid is required")
+		}
+		s.RegisterStdioPID(body.PID)
+	case "stdio/kill":
+		if err := s.KillStdio(); err != nil {
+			return errBadRequest(err.Error())
+		}
 	case "counters/reset":
 		s.counters.Reset()
 	default:

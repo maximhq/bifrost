@@ -33,7 +33,26 @@ func main() {
 	servers := flag.String("servers", "alpha", "comma-separated virtual server names")
 	tools := flag.String("tools", "echo_tool,add_tool", "comma-separated tools to seed every server with")
 	seed := flag.String("seed", "", "path to a JSON file describing the initial fleet, overriding -servers and -tools")
+	stdio := flag.Bool("stdio", false, "serve one virtual server over stdin and stdout, bridging to a running fleet")
+	fleetURL := flag.String("fleet", "", "fleet base URL to bridge to (with -stdio)")
+	serverName := flag.String("server", "", "virtual server to bridge (with -stdio)")
 	flag.Parse()
+
+	// In stdio mode this process is spawned by whatever is under test, so it
+	// serves one virtual server over pipes and holds no state of its own; the
+	// fleet it bridges to remains the single place tools, faults and counters
+	// live. Nothing may be written to stdout but protocol messages, so every
+	// diagnostic here goes to stderr.
+	if *stdio {
+		if err := chaosmock.RunStdioBridge(context.Background(), chaosmock.StdioBridgeConfig{
+			FleetURL:   *fleetURL,
+			ServerName: *serverName,
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "mcpchaos: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	fleet := chaosmock.NewFleet()
 
