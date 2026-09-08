@@ -19,8 +19,6 @@ type Config struct {
 	// ObjectStorageExcludeFields lists payload field names (DB column names) that
 	// should NOT be offloaded to object storage and instead remain in the database.
 	ObjectStorageExcludeFields []string `json:"object_storage_exclude_fields,omitempty"`
-	// HiddenRequestTypes excludes request types from dashboard reads, without changing log writes.
-	HiddenRequestTypes []string `json:"hidden_request_types,omitempty"`
 }
 
 const (
@@ -68,7 +66,6 @@ func (c *WriterConfig) WithDefaults() WriterConfig {
 func (c *Config) UnmarshalJSON(data []byte) error {
 	// First, unmarshal into a temporary struct to get the basic fields
 	type TempConfig struct {
-		HiddenRequestTypes         []string            `json:"hidden_request_types,omitempty"`
 		Enabled                    bool                `json:"enabled"`
 		Type                       LogStoreType        `json:"type"`
 		Config                     json.RawMessage     `json:"config"` // Keep as raw JSON
@@ -84,7 +81,6 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	}
 
 	// Set basic fields
-	c.HiddenRequestTypes = temp.HiddenRequestTypes
 	c.Enabled = temp.Enabled
 	c.Type = temp.Type
 	c.RetentionDays = temp.RetentionDays

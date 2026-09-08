@@ -11,7 +11,7 @@ Bifrost persists two types of data - **config** (providers, virtual keys, govern
 | `storage.mode` | Default backend for both stores (`sqlite` or `postgres`) | `sqlite` |
 | `storage.configStore.type` | Override backend for the config store | `""` (inherits `storage.mode`) |
 | `storage.logsStore.type` | Override backend for the logs store | `""` (inherits `storage.mode`) |
-| `storage.logsStore.hiddenRequestTypes` | Request types hidden from dashboard and log API reads; logs are still stored. See [Hiding request types from the dashboard](/architecture/framework/log-store#hiding-request-types-from-the-dashboard). | `[]` |
+| `storage.logsStore.hiddenRequestTypes` | Request types hidden from dashboard and log API reads; logs are still stored. Rendered as `client.hidden_request_types`. Also editable in the UI under **Logs Settings**. See [Hiding request types from the dashboard](/architecture/framework/log-store#hiding-request-types-from-the-dashboard). | `[]` |
 
 <Note>
 When any store uses SQLite the chart deploys a **StatefulSet** with a PVC. With PostgreSQL only (no SQLite) it deploys a **Deployment**. Mixing backends (e.g. config=postgres, logs=sqlite) still requires a StatefulSet.

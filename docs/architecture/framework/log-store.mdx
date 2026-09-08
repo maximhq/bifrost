@@ -29,14 +29,11 @@ The backend is configured in Bifrost's main configuration file.
 
 ### Hiding request types from the dashboard
 
-Set `logs_store.hidden_request_types` to an array of request type strings in `config.json`:
+Set `client.hidden_request_types` to an array of request type strings in `config.json`:
 
 ```json
 {
-  "logs_store": {
-    "enabled": true,
-    "type": "sqlite",
-    "config": { "path": "./logs.db" },
+  "client": {
     "hidden_request_types": ["count_tokens", "embedding"]
   }
 }
@@ -52,6 +49,12 @@ storage:
       - embedding
 ```
 
+The setting is also editable in the UI under **Logs Settings** as **Hidden Request Types**.
+Changes from either place apply to the next request, no restart needed. The value is stored
+on the client config and reconciled like every other client setting on boot: when
+`config.json` changed, the file value is applied; when it is unchanged, edits made in the
+UI are kept.
+
 This setting hides matching log rows from the dashboard and log read APIs, including
 pagination counts, statistics, charts, rankings, session details, and filter options.
 A direct lookup of a hidden log returns not found. All requests continue to be logged
@@ -62,7 +65,7 @@ Use exact request type values, such as `count_tokens`, `embedding`, `chat_comple
 `chat_completion_stream`, `responses`, or `responses_stream`. Streaming and
 non-streaming types are separate. An omitted or empty array shows all request types.
 The setting works with SQLite, PostgreSQL, and ClickHouse, including object storage
-for log payloads. Apply the configuration and restart Bifrost to use the new setting.
+for log payloads.
 
 ### Initialization
 

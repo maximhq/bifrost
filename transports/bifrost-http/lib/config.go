@@ -1170,6 +1170,26 @@ func initStores(ctx context.Context, config *Config, configData *ConfigData, con
 
 // applyClientConfigDefaults fills in default values for zero-value fields in a ClientConfig.
 // This ensures partial configs (from file or DB) get sensible defaults for unset fields.
+// NormalizeHiddenRequestTypes trims, drops empty entries, and de-duplicates a list of
+// request types while preserving the caller's order. A list with nothing left returns nil
+// so "hide nothing" has a single representation in the store and the config hash.
+func NormalizeHiddenRequestTypes(types []string) []string {
+	var out []string
+	seen := make(map[string]struct{}, len(types))
+	for _, t := range types {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		if _, ok := seen[t]; ok {
+			continue
+		}
+		seen[t] = struct{}{}
+		out = append(out, t)
+	}
+	return out
+}
+
 func applyClientConfigDefaults(cc *configstore.ClientConfig) {
 	if cc.InitialPoolSize == 0 {
 		cc.InitialPoolSize = DefaultClientConfig.InitialPoolSize
