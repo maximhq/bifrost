@@ -1373,6 +1373,11 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 			copy.ResponsesToolMessage.Arguments = &copyArguments
 		}
 
+		if original.ResponsesToolMessage.ResponsesCustomToolCall != nil {
+			copyCustomToolCall := *original.ResponsesToolMessage.ResponsesCustomToolCall
+			copy.ResponsesToolMessage.ResponsesCustomToolCall = &copyCustomToolCall
+		}
+
 		if original.ResponsesToolMessage.Namespace != nil {
 			copyNamespace := *original.ResponsesToolMessage.Namespace
 			copy.ResponsesToolMessage.Namespace = &copyNamespace

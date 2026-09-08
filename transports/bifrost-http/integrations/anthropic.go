@@ -381,20 +381,25 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 // anthropicRawStreamTextCodec owns Anthropic's native text-delta JSON shape.
 type anthropicRawStreamTextCodec struct{}
 
-// Inspect returns text only for assistant content_block_delta text_delta events.
+// Inspect exposes assistant text and tool-argument deltas while keeping reasoning and lifecycle events opaque.
 func (anthropicRawStreamTextCodec) Inspect(rawResponse string) (schemas.RawStreamTextEvent, bool, error) {
 	if !gjson.Valid(rawResponse) {
 		return schemas.RawStreamTextEvent{}, false, fmt.Errorf("anthropic raw stream event is not valid JSON")
 	}
+	deltaType := gjson.Get(rawResponse, "delta.type").String()
 	if gjson.Get(rawResponse, "type").String() != "content_block_delta" ||
-		gjson.Get(rawResponse, "delta.type").String() != "text_delta" {
+		(deltaType != "text_delta" && deltaType != "input_json_delta") {
 		return schemas.RawStreamTextEvent{}, false, nil
 	}
 	index := gjson.Get(rawResponse, "index")
 	if !index.Exists() || index.Type != gjson.Number || index.Int() < 0 {
 		return schemas.RawStreamTextEvent{}, false, fmt.Errorf("anthropic text_delta event has invalid index")
 	}
-	text := gjson.Get(rawResponse, "delta.text")
+	path := "delta.text"
+	if deltaType == "input_json_delta" {
+		path = "delta.partial_json"
+	}
+	text := gjson.Get(rawResponse, path)
 	if !text.Exists() || text.Type != gjson.String {
 		return schemas.RawStreamTextEvent{}, false, fmt.Errorf("anthropic text_delta event has invalid delta.text")
 	}
@@ -404,14 +409,18 @@ func (anthropicRawStreamTextCodec) Inspect(rawResponse string) (schemas.RawStrea
 	}, true, nil
 }
 
-// Rewrite replaces only delta.text on an eligible Anthropic raw stream event.
+// Rewrite changes only the inspected text or argument fragment, preserving native event identity.
 func (codec anthropicRawStreamTextCodec) Rewrite(rawResponse string, text string) (string, error) {
 	if _, eligible, err := codec.Inspect(rawResponse); err != nil {
 		return "", err
 	} else if !eligible {
 		return "", fmt.Errorf("anthropic raw stream event is not an eligible text_delta")
 	}
-	rewritten, err := sjson.Set(rawResponse, "delta.text", text)
+	path := "delta.text"
+	if gjson.Get(rawResponse, "delta.type").String() == "input_json_delta" {
+		path = "delta.partial_json"
+	}
+	rewritten, err := sjson.Set(rawResponse, path, text)
 	if err != nil {
 		return "", fmt.Errorf("rewrite anthropic text_delta: %w", err)
 	}
@@ -511,6 +520,8 @@ func collectAnthropicRawContentBlockPaths(paths *[]string, block gjson.Result, p
 		switch anthropic.AnthropicContentBlockType(blockType.String()) {
 		case anthropic.AnthropicContentBlockTypeText:
 			return appendRawRequestStringPath(paths, block.Get("text"), rawRequestObjectPath(path, "text"))
+		case anthropic.AnthropicContentBlockTypeToolUse:
+			return collectAnthropicArgumentStringPaths(paths, block.Get("input"), rawRequestObjectPath(path, "input"))
 		case anthropic.AnthropicContentBlockTypeToolResult, anthropic.AnthropicContentBlockTypeMCPToolResult:
 			return collectAnthropicRawContentPaths(
 				paths,
@@ -1352,4 +1363,23 @@ func NewAnthropicRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, 
 	return &AnthropicRouter{
 		GenericRouter: NewGenericRouter(client, handlerStore, accessResolver, routes, nil, logger),
 	}
+}
+
+// collectAnthropicArgumentStringPaths mirrors JSON argument values without changing tool metadata or object keys.
+func collectAnthropicArgumentStringPaths(paths *[]string, value gjson.Result, path string) error {
+	if value.Type == gjson.String {
+		return appendRawRequestStringPath(paths, value, path)
+	}
+	var err error
+	if value.IsObject() || value.IsArray() {
+		value.ForEach(func(key, child gjson.Result) bool {
+			childPath := rawRequestObjectPath(path, key.String())
+			if value.IsArray() {
+				childPath = rawRequestArrayPath(path, int(key.Int()))
+			}
+			err = collectAnthropicArgumentStringPaths(paths, child, childPath)
+			return err == nil
+		})
+	}
+	return err
 }
