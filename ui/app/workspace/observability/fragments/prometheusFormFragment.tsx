@@ -19,6 +19,7 @@ import { useForm, type Resolver } from "react-hook-form";
 interface PrometheusFormFragmentProps {
 	currentConfig?: {
 		metrics_enabled?: boolean;
+		overhead_breakdown_enabled?: boolean;
 		push_gateway_enabled?: boolean;
 		push_gateway_url?: string | SecretVar;
 		job_name?: string;
@@ -41,6 +42,7 @@ const hasAuth = (v?: string | SecretVar): boolean =>
 
 const buildDefaults = (initialConfig?: PrometheusFormFragmentProps["currentConfig"]): PrometheusFormSchema => ({
 	metrics_enabled: initialConfig?.metrics_enabled ?? true,
+	overhead_breakdown_enabled: initialConfig?.overhead_breakdown_enabled ?? false,
 	push_gateway_enabled: initialConfig?.push_gateway_enabled ?? false,
 	prometheus_config: {
 		push_gateway_url: toSecretVarFormValue(initialConfig?.push_gateway_url),
@@ -54,7 +56,7 @@ const buildDefaults = (initialConfig?: PrometheusFormFragmentProps["currentConfi
 
 // Field paths considered "owned" by each tab — used for per-tab Reset and to
 // gate the per-tab Save button on whether *this* tab has unsaved changes.
-const PULL_FIELDS = ["metrics_enabled"] as const;
+const PULL_FIELDS = ["metrics_enabled", "overhead_breakdown_enabled"] as const;
 const PUSH_FIELDS = [
 	"push_gateway_enabled",
 	"prometheus_config.push_gateway_url",
@@ -128,6 +130,10 @@ export function PrometheusFormFragment({
 			shouldDirty: true,
 			shouldValidate: true,
 		});
+		form.setValue("overhead_breakdown_enabled", defaults.overhead_breakdown_enabled, {
+			shouldDirty: true,
+			shouldValidate: true,
+		});
 	};
 
 	const resetPushTab = () => {
@@ -179,7 +185,7 @@ export function PrometheusFormFragment({
 	// hunting through a tab they can't see.
 	const formIsInvalid = !form.formState.isValid;
 	const errors = form.formState.errors as Record<string, any>;
-	const hasPullErrors = !!errors.metrics_enabled;
+	const hasPullErrors = !!errors.metrics_enabled || !!errors.overhead_breakdown_enabled;
 	const hasPushErrors = !!errors.push_gateway_enabled || !!errors.prometheus_config;
 
 	const renderActions = (tabKey: "pull" | "push", tabDirty: boolean, onResetTab: () => void) => {
@@ -302,6 +308,30 @@ export function PrometheusFormFragment({
 							<p className="text-muted-foreground mt-2 text-xs">
 								Configure your Prometheus server to scrape this endpoint. Served only while Pull-based scraping is enabled.
 							</p>
+						</div>
+
+						<div className="flex items-center justify-between gap-4">
+							<div className="flex flex-col gap-1">
+								<h3 className="text-sm font-medium">Overhead breakdown</h3>
+								<p className="text-muted-foreground text-xs">Export per-component Bifrost overhead latency as a histogram.</p>
+							</div>
+							<FormField
+								control={form.control}
+								name="overhead_breakdown_enabled"
+								render={({ field }) => (
+									<FormItem className="flex items-center gap-2">
+										<FormLabel className="text-muted-foreground text-sm font-medium">Enabled</FormLabel>
+										<FormControl>
+											<Switch
+												checked={field.value}
+												onCheckedChange={field.onChange}
+												disabled={!hasPrometheusAccess}
+												data-testid="prometheus-overhead-breakdown-toggle"
+											/>
+										</FormControl>
+									</FormItem>
+								)}
+							/>
 						</div>
 
 						{renderActions("pull", isPullDirty, resetPullTab)}
