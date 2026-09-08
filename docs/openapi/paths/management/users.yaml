@@ -35,6 +35,7 @@ users:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -66,6 +67,7 @@ users:
             $ref: '../../schemas/management/users.yaml#/CreateUserRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: User created successfully
@@ -115,6 +117,7 @@ users-email-virtual-keys:
           format: email
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -156,6 +159,7 @@ users-by-email:
           format: email
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -191,6 +195,7 @@ users-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -228,13 +233,27 @@ users-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: User deleted successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+              allOf:
+                - $ref: '../../schemas/management/common.yaml#/MessageResponse'
+                - type: object
+                  properties:
+                    redivision_job_ids:
+                      type: array
+                      items:
+                        type: string
+                      description: >-
+                        One queued job per equal-split governance project the
+                        user belonged to, since removing them enlarges every
+                        remaining member's slice of every cap. Present only when
+                        such projects were affected. Progress is reported on the
+                        `redivision_progress` WebSocket channel under each id.
       '400':
         description: Bad request (e.g. cannot delete yourself)
         content:
@@ -269,6 +288,7 @@ users-me-permissions:
       - Users
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -322,6 +342,7 @@ users-role:
             $ref: '../../schemas/management/users.yaml#/AssignUserRoleRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Role assigned successfully
@@ -363,6 +384,7 @@ users-teams:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -411,6 +433,7 @@ users-teams:
             $ref: '../../schemas/management/users.yaml#/UpdateUserTeamsRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Teams updated successfully
@@ -459,6 +482,7 @@ users-governance:
             $ref: '../../schemas/management/users.yaml#/UserGovernanceRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Governance created
@@ -503,6 +527,7 @@ users-governance:
             $ref: '../../schemas/management/users.yaml#/UserGovernanceRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Governance updated
@@ -535,6 +560,7 @@ users-governance:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Governance deleted
@@ -572,6 +598,7 @@ team-members:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -618,6 +645,7 @@ team-members:
             $ref: '../../schemas/management/users.yaml#/AddTeamMemberRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Member added successfully
@@ -669,6 +697,7 @@ team-member-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Member removed successfully

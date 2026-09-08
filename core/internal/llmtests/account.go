@@ -378,7 +378,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:  *schemas.NewSecretVar("env.VERTEX_API_KEY"),
-				Models: []string{"text-multilingual-embedding-002", "gemini-2.5-pro", "gemini-2.5-flash-image", "imagen-4.0-generate-001", "imagen-3.0-capability-001", "semantic-ranker-default@latest", "semantic-ranker-default-004"},
+				Models: []string{"text-multilingual-embedding-002", "gemini-2.5-pro", "gemini-2.5-flash-image", "imagen-4.0-generate-001", "semantic-ranker-default@latest", "semantic-ranker-default-004"},
 				Weight: 1.0,
 				VertexKeyConfig: &schemas.VertexKeyConfig{
 					ProjectID:       *schemas.NewSecretVar("env.VERTEX_PROJECT_ID"),
@@ -505,6 +505,10 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
 					WorkspaceURL: *schemas.NewSecretVar("env.DATABRICKS_WORKSPACE_URL"),
 				},
+				// Databricks has no batch surface. The flag is still required so the
+				// router hands batch and file requests to the provider, whose
+				// unsupported_operation answer is what the harness asserts on.
+				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
 	case schemas.GithubCopilot:
@@ -592,7 +596,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewSecretVar("env.FIREWORKS_API_KEY"),
-				Models:         []string{"accounts/fireworks/models/deepseek-v4-pro", "fireworks/qwen3-embedding-8b"},
+				Models:         []string{"accounts/fireworks/models/kimi-k2p7-code", "fireworks/qwen3-embedding-8b"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
@@ -1446,7 +1450,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 	},
 	{
 		Provider:  schemas.Groq,
-		ChatModel: "llama-3.3-70b-versatile",
+		ChatModel: "qwen/qwen3.8-27b",
 		TextModel: "", // Groq doesn't support text completion
 		Scenarios: TestScenarios{
 			TextCompletion:             false, // Not supported
@@ -1482,9 +1486,9 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 	},
 	{
 		Provider:       schemas.Fireworks,
-		ChatModel:      "accounts/fireworks/models/deepseek-v3p2",
-		TextModel:      "accounts/fireworks/models/deepseek-v3p2",
-		EmbeddingModel: "nomic-ai/nomic-embed-text-v1.5",
+		ChatModel:      "accounts/fireworks/models/kimi-k2p7-code",
+		TextModel:      "accounts/fireworks/models/kimi-k2p7-code",
+		EmbeddingModel: "fireworks/qwen3-embedding-8b",
 		Scenarios: TestScenarios{
 			TextCompletion:        true,
 			TextCompletionStream:  true,

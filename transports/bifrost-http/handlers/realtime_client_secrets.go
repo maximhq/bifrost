@@ -391,16 +391,12 @@ func cacheRealtimeEphemeralKeyMapping(kv schemas.KVStore, body []byte, keyID str
 		return
 	}
 
-	payload, err := json.Marshal(realtimeEphemeralKeyMapping{
+	mapping := realtimeEphemeralKeyMapping{
 		KeyID:      strings.TrimSpace(keyID),
 		VirtualKey: strings.TrimSpace(virtualKey),
-	})
-	if err != nil {
-		logger.Warn("failed to encode realtime ephemeral key mapping for key_id=%s: %v", keyID, err)
-		return
 	}
 
-	if err := kv.SetWithTTL(buildRealtimeEphemeralKeyMappingKey(token), payload, ttl); err != nil {
+	if err := kv.SetWithTTL(buildRealtimeEphemeralKeyMappingKey(token), mapping, ttl); err != nil {
 		logger.Warn("failed to cache realtime ephemeral key mapping for key_id=%s: %v", keyID, err)
 	}
 }

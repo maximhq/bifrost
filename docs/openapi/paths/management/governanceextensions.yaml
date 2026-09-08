@@ -17,6 +17,7 @@ virtual-key-users:
         schema: { type: string }
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Attached users
@@ -61,6 +62,7 @@ virtual-key-users:
               preserve_usage: { type: boolean, default: false }
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Users attached
@@ -92,6 +94,7 @@ virtual-key-user:
         schema: { type: string }
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: User detached
@@ -111,6 +114,9 @@ user-virtual-keys:
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
     summary: List virtual keys available to a user
+    description: |
+      Returns every virtual key assigned to the user, independent of access profiles, so
+      directly-assigned standalone keys are visible alongside profile-issued ones.
     tags: [Users, Virtual Keys]
     parameters:
       - name: user_id
@@ -119,6 +125,7 @@ user-virtual-keys:
         schema: { type: string }
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: User virtual keys
@@ -131,7 +138,102 @@ user-virtual-keys:
                   type: array
                   items:
                     type: object
-                    additionalProperties: true
+                    properties:
+                      id: { type: string }
+                      name: { type: string }
+                      value: { type: string }
+                      is_access_profile_managed:
+                        type: boolean
+                        description: >
+                          True when an access profile governs this key, in which case its policy
+                          is edit-locked and changed by editing and propagating the profile.
+  post:
+    operationId: addUserVirtualKey
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Mint an extra virtual key for a user
+    description: |
+      Issues an additional virtual key for the user.
+
+      Virtual keys are scoped to the **user**, not to any one access profile: what a request may
+      do with the key is read from whichever of the user's active profiles grants it, and each of
+      those profiles is a separate routing candidate the request may be served by. The user must
+      therefore hold at least one access profile — the request returns 404 otherwise — but the key
+      is not tied to the profile that happened to be current when it was minted, and it survives
+      that profile being detached as long as the user still holds another.
+    tags: [Users, Virtual Keys]
+    parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema: { type: string }
+    requestBody:
+      required: false
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/accessprofiles.yaml#/AddVirtualKeyRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Virtual key created.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/accessprofiles.yaml#/AddVirtualKeyResponse'
+      '404':
+        description: User has no access profiles
+      '409':
+        description: A virtual key with this name already exists
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+user-vk-creation-policy:
+  get:
+    operationId: getMyVirtualKeyCreationPolicy
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Get the calling user's virtual-key creation policy
+    description: |
+      Reports whether virtual keys the **calling** user creates will be adopted into one of their
+      access profiles, and if so which one. The create form uses this to lock the policy fields
+      up front rather than letting a user author a policy that is about to be overwritten.
+
+      Self-scoped: it always describes the caller and takes no user ID. Returns
+      `{"governed": false}` when the caller has no per-user identity (local admin or password
+      auth) or when no profile they hold has **Govern virtual keys created by members** enabled.
+      When more than one of their profiles has it on, the first such profile governs.
+    tags: [Users, Virtual Keys]
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Virtual-key creation policy for the calling user
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [governed]
+              properties:
+                governed:
+                  type: boolean
+                  description: Whether an access profile will adopt keys this user creates.
+                profile_name:
+                  type: string
+                  description: Name of the governing access profile. Present only when `governed` is true.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
 
 team-customers:
   get:
@@ -152,6 +254,7 @@ team-customers:
         schema: { type: string }
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Attached customers
@@ -194,6 +297,7 @@ team-customers:
               customer_id: { type: string }
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Customer attached
@@ -225,6 +329,7 @@ team-customer:
         schema: { type: string }
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Customer detached
@@ -252,6 +357,7 @@ customer-teams:
         schema: { type: string }
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Attached teams
@@ -293,6 +399,7 @@ business-unit-customers:
         schema: { type: integer, minimum: 0, default: 0 }
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Attached customers
@@ -341,6 +448,7 @@ business-unit-customers:
                 items: { type: string }
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Customers attached
@@ -372,6 +480,7 @@ business-unit-customer:
         schema: { type: string }
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Customer detached
@@ -399,6 +508,7 @@ customer-business-units:
         schema: { type: string }
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Attached business units

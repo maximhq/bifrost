@@ -2,9 +2,186 @@ package utils
 
 import (
 	"context"
+	"sync"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
+
+const (
+	maxStreamPreambleChunks = 64
+	maxStreamPreambleBytes  = 256 * 1024
+)
+
+// Include the source channel to isolate attempts sharing a request ID.
+type streamPreambleKey struct {
+	requestID string
+	source    chan *schemas.BifrostStreamChunk
+}
+
+type streamPreambleBuffer struct {
+	chunks []*schemas.BifrostStreamChunk
+	bytes  int
+}
+
+// Entries are owned by the startup checker, then its replay goroutine.
+// The owner must delete its entry on error, cancellation, or replay completion.
+var streamPreambles sync.Map // map[streamPreambleKey]*streamPreambleBuffer
+
+// tryAppend returns false when the caller should commit the stream.
+// On false, the chunk remains unbuffered; the caller must forward it
+// after replaying the buffered prefix.
+func (buffer *streamPreambleBuffer) tryAppend(chunk *schemas.BifrostStreamChunk) bool {
+	if len(buffer.chunks)+1 >= maxStreamPreambleChunks {
+		return false
+	}
+	encoded, err := MarshalSorted(chunk)
+	if err != nil || len(encoded) >= maxStreamPreambleBytes-buffer.bytes {
+		return false
+	}
+	buffer.chunks = append(buffer.chunks, chunk)
+	buffer.bytes += len(encoded)
+	return true
+}
+
+// replayStreamPreamble transfers buffer ownership to the forwarding goroutine.
+// first is the unbuffered chunk that committed the stream, or nil at EOF.
+func replayStreamPreamble(
+	ctx context.Context,
+	key streamPreambleKey,
+	buffer *streamPreambleBuffer,
+	first *schemas.BifrostStreamChunk,
+) (chan *schemas.BifrostStreamChunk, <-chan struct{}) {
+	wrapped := make(chan *schemas.BifrostStreamChunk, max(cap(key.source), 1))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer close(wrapped)
+		defer func() {
+			buffer.chunks = nil
+			buffer.bytes = 0
+			streamPreambles.CompareAndDelete(key, buffer)
+			// Unblock the producer if cancellation interrupted forwarding.
+			for range key.source {
+			}
+		}()
+
+		send := func(chunk *schemas.BifrostStreamChunk) bool {
+			if ctx.Err() != nil {
+				return false
+			}
+			select {
+			case wrapped <- chunk:
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
+		for i, chunk := range buffer.chunks {
+			if !send(chunk) {
+				return
+			}
+			buffer.chunks[i] = nil
+		}
+		buffer.chunks = nil
+		buffer.bytes = 0
+		if first != nil && !send(first) {
+			return
+		}
+		first = nil
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case chunk, ok := <-key.source:
+				if !ok {
+					return
+				}
+				if !send(chunk) {
+					return
+				}
+			}
+		}
+	}()
+	return wrapped, done
+}
+
+// CheckStreamPreambleForError checks for errors before meaningful output.
+// On success, buffered startup events are replayed in their original order.
+// Callers must await drainDone after an error before starting another attempt.
+func CheckStreamPreambleForError(
+	ctx context.Context,
+	requestID string,
+	stream chan *schemas.BifrostStreamChunk,
+	isPreamble func(*schemas.BifrostStreamChunk) bool,
+) (chan *schemas.BifrostStreamChunk, <-chan struct{}, *schemas.BifrostError) {
+	if stream == nil {
+		done := make(chan struct{})
+		close(done)
+		return nil, done, nil
+	}
+	if isPreamble == nil {
+		isPreamble = func(*schemas.BifrostStreamChunk) bool { return false }
+	}
+
+	key := streamPreambleKey{requestID: requestID, source: stream}
+	buffer := &streamPreambleBuffer{}
+	streamPreambles.Store(key, buffer)
+	release := func() {
+		buffer.chunks = nil
+		buffer.bytes = 0
+		streamPreambles.CompareAndDelete(key, buffer)
+	}
+	drain := func() <-chan struct{} {
+		release()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for range stream {
+			}
+		}()
+		return done
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			err := NewBifrostOperationError(schemas.ErrRequestCancelled, ctx.Err())
+			err.StatusCode = schemas.Ptr(499)
+			err.Error.Type = schemas.Ptr(schemas.RequestCancelled)
+			if ctx.Err() == context.DeadlineExceeded {
+				err = NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, ctx.Err())
+			} else {
+				err.AllowFallbacks = schemas.Ptr(false)
+			}
+			return nil, drain(), err
+
+		case chunk, ok := <-stream:
+			if !ok {
+				if len(buffer.chunks) == 0 {
+					release()
+					done := make(chan struct{})
+					close(done)
+					return nil, done, nil
+				}
+				wrapped, done := replayStreamPreamble(ctx, key, buffer, nil)
+				return wrapped, done, nil
+			}
+			if chunk == nil {
+				continue
+			}
+			if err := chunk.BifrostError; err != nil && err.Error != nil &&
+				(err.Error.Message != "" || err.Error.Code != nil || err.Error.Type != nil) {
+				return nil, drain(), err
+			}
+			if isPreamble(chunk) && buffer.tryAppend(chunk) {
+				continue
+			}
+			wrapped, done := replayStreamPreamble(ctx, key, buffer, chunk)
+			return wrapped, done, nil
+		}
+	}
+}
 
 // CheckFirstStreamChunkForError reads the first chunk from a streaming channel to detect
 // errors returned inside HTTP 200 SSE streams (e.g., providers that send rate limit

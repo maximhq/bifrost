@@ -114,10 +114,33 @@ func (s *BifrostHTTPServer) WireBatchAccountingSweeper() {
 		}
 	}
 	loggerPlugin.SetBatchUsageReporter(usageReporter)
+	// Re-wire the settlement tracer on reload. No-op at first bootstrap (tracer not
+	// built yet); Bootstrap calls it again once the tracer exists.
+	s.setSettlementTracer()
 	loggerPlugin.StartBatchAccountingSweeper(&bifrostBatchResultFetcher{client: s.Client}, time.Minute, s.Config.KVStore)
 	// Video jobs finish in minutes, not hours, so their sweeper runs on a much
 	// tighter tick than the batch one.
 	loggerPlugin.StartVideoAccountingSweeper(&bifrostVideoRetriever{client: s.Client}, 30*time.Second, s.Config.KVStore)
+}
+
+// setSettlementTracer gives the logging plugin the tracer for emitSettlementSpan.
+// No-op until the tracing middleware exists. Re-run on reload to re-wire the rebuilt
+// logging plugin (the tracer itself is stable).
+func (s *BifrostHTTPServer) setSettlementTracer() {
+	if s == nil || s.Config == nil || s.TracingMiddleware == nil {
+		return
+	}
+	loggerPlugin, err := lib.FindPluginAs[*logging.LoggerPlugin](s.Config, logging.PluginName)
+	if err != nil || loggerPlugin == nil {
+		return
+	}
+	// Nil-check the concrete *tracing.Tracer so a missing tracer stays a nil interface
+	// (not a non-nil interface wrapping a nil pointer, which would panic).
+	tracer := s.TracingMiddleware.GetTracer()
+	if tracer == nil {
+		return
+	}
+	loggerPlugin.SetSettlementTracer(tracer)
 }
 
 type bifrostVideoRetriever struct {

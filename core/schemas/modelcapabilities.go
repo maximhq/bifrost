@@ -56,6 +56,7 @@ type ModelCapabilities struct {
 	SupportsReasoningContentBlocks  *bool `json:"supports_reasoning_content_blocks,omitempty"`
 	SupportsMultimodalToolOutput    *bool `json:"supports_multimodal_tool_output,omitempty"`
 	SupportsResponseSchemaWithTools *bool `json:"supports_response_schema_with_tools,omitempty"`
+	SupportsForcedToolChoice        *bool `json:"supports_forced_tool_choice,omitempty"` // false ⇒ tool_choice any/tool rejected (Fable 5.1+)
 
 	// Baseline request-surface flags. These drive the compat plugin's
 	// parameter allowlist rather than provider request shaping, so they are
@@ -224,6 +225,10 @@ type ModelCapabilities struct {
 	// Mirrors UnsupportedFields["tool_choice_struct"].
 	ToolChoiceStructSupported *bool `json:"tool_choice_struct_supported,omitempty"`
 
+	// Endpoint accepts the forced tool choice "any" on the wire (Mistral,
+	// Fireworks). False ⇒ it must be spelled "required" instead.
+	ToolChoiceAnySupported *bool `json:"tool_choice_any_supported,omitempty"`
+
 	// Fireworks: keep `prediction` field through the openai-compat filter.
 	PreservesPrediction *bool `json:"preserves_prediction,omitempty"`
 
@@ -271,6 +276,17 @@ type ModelCapabilities struct {
 	//
 	// Absent or unrecognised falls back to the caller's family detection.
 	BedrockReasoningShape BedrockReasoningShape `json:"bedrock_reasoning_shape,omitempty"`
+
+	// Whether this model verifies the signature on every reasoningText block it
+	// is handed back on Bedrock Converse. Claude does: a thinking block with no
+	// signature is rejected in every serialisation (field absent gives
+	// "thinking.signature: Field required", present but empty gives "each
+	// thinking block must contain thinking" or "Invalid signature"), so an
+	// unsigned block must be left out of the replay. Nova and MiniMax do not,
+	// and reject a present-but-empty signature instead.
+	//
+	// Absent falls back to the caller's family detection.
+	BedrockRequiresSignedReasoning *bool `json:"bedrock_requires_signed_reasoning,omitempty"`
 }
 
 // BedrockAPI names one wire API on a Bedrock endpoint. Which endpoint serves it

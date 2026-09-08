@@ -297,7 +297,8 @@ func (mc *ModelCatalog) computeProvidersForModel(model string) []schemas.ModelPr
 // checks, not by the static keyconfig allow set).
 //
 //   - allowedModels=["*"]: defer to GetProvidersForModel (with custom-provider
-//     fast path when list-models is disabled).
+//     fast path when list-models is disabled), falling back to allow for a
+//     provider the datasheet describes but list-models cannot enumerate.
 //   - allowedModels=[]: deny-by-default.
 //   - explicit allowedModels: direct or provider-prefixed match against the
 //     provider's catalog.
@@ -313,7 +314,22 @@ func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider
 		if isCustomProvider && hasListModelsEndpointDisabled {
 			return true
 		}
-		return slices.Contains(mc.GetProvidersForModel(model), provider)
+		if slices.Contains(mc.GetProvidersForModel(model), provider) {
+			return true
+		}
+		// A provider the datasheet describes but list-models cannot enumerate is
+		// known only through the pricing sheet, which lags new releases by weeks.
+		// Refusing on that list makes ["*"] narrower than the provider itself, so
+		// a wildcard denies every model released since the last sync (issue
+		// #6657). Defer to the provider instead: it 404s a model it does not
+		// have, and it is the authority on its own catalog.
+		//
+		// Both other cases are already right and stay untouched. A provider with
+		// no datasheet rows either is handled by computeProvidersForModel's
+		// keyconfig fallback, and a provider whose live list-models did answer is
+		// enumerable, so its catalog is authoritative and still narrows.
+		return len(mc.live.UnfilteredModelsForProvider(provider)) == 0 &&
+			len(mc.datasheet.DatasheetModelsForProvider(provider)) > 0
 	}
 	if allowedModels.IsEmpty() {
 		return false
@@ -377,8 +393,34 @@ func (mc *ModelCatalog) RefineModelForProvider(provider schemas.ModelProvider, m
 	switch provider {
 	case schemas.Groq, schemas.Replicate, schemas.Perplexity, schemas.OpenRouter:
 		return mc.refineNestedProviderModel(provider, model)
+	case schemas.Databricks:
+		return refineDatabricksModel(model), nil
 	}
 	return model, nil
+}
+
+// Mirrors Databricks model refinement:
+// - Catalog-qualified names (2+ dots) and `databricks-*` endpoints pass through.
+// - Other names get the `system.ai.` prefix.
+// - A single dot is treated as a version separator (e.g. `gpt-5.5`).
+//
+// Aliases and explicit `api_format` are handled by the provider and are not visible here.
+func refineDatabricksModel(model string) string {
+	const (
+		// defaultCatalogPrefix is the Unity Catalog prefix under which Databricks publishes
+		// its ready-to-use AI Gateway models.
+		defaultCatalogPrefix = "system.ai."
+		// modelServingEndpointPrefix is the naming convention for Databricks pay-per-token
+		// Foundation Model endpoints, which live on Model Serving and take a bare name.
+		modelServingEndpointPrefix = "databricks-"
+	)
+	if model == "" || strings.Count(model, ".") >= 2 {
+		return model
+	}
+	if strings.HasPrefix(strings.ToLower(model), modelServingEndpointPrefix) {
+		return model
+	}
+	return defaultCatalogPrefix + model
 }
 
 // refineNestedProviderModel resolves provider-native model slugs such as

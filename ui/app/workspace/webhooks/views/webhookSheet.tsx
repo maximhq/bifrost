@@ -52,25 +52,25 @@ const TUNING_FIELDS: {
 	label: string;
 	description: string;
 }[] = [
-	{ key: "max_retries", label: "Max retries", description: "Retries after the first delivery attempt." },
-	{
-		key: "retry_backoff_initial_seconds",
-		label: "Initial retry backoff (seconds)",
-		description: "Delay before the first retry; doubles per retry.",
-	},
-	{ key: "retry_backoff_max_seconds", label: "Max retry backoff (seconds)", description: "Cap on the per-retry delay." },
-	{ key: "attempt_timeout_seconds", label: "Attempt timeout (seconds)", description: "End-to-end bound for one delivery attempt." },
-	{
-		key: "max_response_payload_kbs",
-		label: "Max response payload (KB)",
-		description: "Responses above this size are omitted from the payload.",
-	},
-	{
-		key: "max_concurrent_deliveries",
-		label: "Max concurrent deliveries",
-		description: "Concurrent in-flight deliveries to this endpoint per node.",
-	},
-];
+		{ key: "max_retries", label: "Max retries", description: "Retries after the first delivery attempt." },
+		{
+			key: "retry_backoff_initial_seconds",
+			label: "Initial retry backoff (seconds)",
+			description: "Delay before the first retry; doubles per retry.",
+		},
+		{ key: "retry_backoff_max_seconds", label: "Max retry backoff (seconds)", description: "Cap on the per-retry delay." },
+		{ key: "attempt_timeout_seconds", label: "Attempt timeout (seconds)", description: "End-to-end bound for one delivery attempt." },
+		{
+			key: "max_response_payload_kbs",
+			label: "Max response payload (KB)",
+			description: "Responses above this size are omitted from the payload.",
+		},
+		{
+			key: "max_concurrent_deliveries",
+			label: "Max concurrent deliveries",
+			description: "Concurrent in-flight deliveries to this endpoint per node.",
+		},
+	];
 
 const formDefaults = (endpoint: WebhookEndpoint | null): WebhookFormData => ({
 	name: endpoint?.name ?? "",
@@ -194,7 +194,7 @@ export function WebhookSheet({ open, endpoint, onClose, onSecret }: WebhookSheet
 	return (
 		<Sheet open={open} onOpenChange={(sheetOpen) => !sheetOpen && onClose()}>
 			<SheetContent className="flex w-full flex-col overflow-x-hidden px-0" data-testid="webhook-sheet-content">
-				<SheetHeader className="flex flex-col items-start px-4 pt-8 md:px-7">
+				<SheetHeader className="flex flex-col items-start pt-8" headerClassName="px-4 md:px-6">
 					<SheetTitle>{isEditing ? endpoint.name : "Add Webhook Endpoint"}</SheetTitle>
 					<SheetDescription>
 						{isEditing

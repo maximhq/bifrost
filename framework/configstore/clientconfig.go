@@ -109,6 +109,7 @@ type ClientConfig struct {
 	LoggingHeaders                        []string                              `json:"logging_headers,omitempty"`                   // Headers to capture in log metadata
 	WhitelistedRoutes                     []string                              `json:"whitelisted_routes,omitempty"`                // Routes that bypass auth middleware
 	HideDeletedVirtualKeysInFilters       bool                                  `json:"hide_deleted_virtual_keys_in_filters"`        // Hide deleted virtual keys from logs/MCP filter data
+	HiddenRequestTypes                    []string                              `json:"hidden_request_types,omitempty"`              // Request types excluded from dashboard and log API reads; logs are still written
 	RoutingChainMaxDepth                  int                                   `json:"routing_chain_max_depth"`                     // Maximum depth for routing rule chain evaluation (default: 10)
 	MCPExternalClientURL                  *schemas.SecretVar                    `json:"mcp_external_client_url,omitempty"`           // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")
 	MCPServerAuthMode                     tables.MCPServerAuthMode              `json:"mcp_server_auth_mode,omitempty"`              // How /mcp authenticates inbound clients: headers (default), both, or oauth.
@@ -358,6 +359,20 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write(data)
 	}
 
+	// Hash HiddenRequestTypes (sorted for deterministic hashing). Only hashed when
+	// set so existing config hashes do not churn on upgrade.
+	if len(c.HiddenRequestTypes) > 0 {
+		sortedHidden := make([]string, len(c.HiddenRequestTypes))
+		copy(sortedHidden, c.HiddenRequestTypes)
+		sort.Strings(sortedHidden)
+		data, err := sonic.Marshal(sortedHidden)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("hiddenRequestTypes:"))
+		hash.Write(data)
+	}
+
 	// Hash RequiredHeaders (sorted for deterministic hashing)
 	if len(c.RequiredHeaders) > 0 {
 		sortedRequired := make([]string, len(c.RequiredHeaders))
@@ -485,6 +500,7 @@ type ProviderConfig struct {
 	StoreRawRequestResponse  bool                              `json:"store_raw_request_response"`            // Capture raw request/response for internal logging only; strip from API responses returned to clients
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`               // OpenAI-specific configuration
+	PromptCache              *schemas.PromptCacheConfig        `json:"prompt_cache,omitempty"`                // Prompt-cache breakpoint injection
 	ConfigHash               string                            `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
 	Status                   string                            `json:"status,omitempty"`                      // Model discovery status for keyless providers
 	Description              string                            `json:"description,omitempty"`                 // Model discovery error message for keyless providers
@@ -505,6 +521,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		StoreRawRequestResponse:  p.StoreRawRequestResponse,
 		CustomProviderConfig:     p.CustomProviderConfig,
 		OpenAIConfig:             p.OpenAIConfig,
+		PromptCache:              p.PromptCache,
 		ConfigHash:               p.ConfigHash,
 		Status:                   p.Status,
 		Description:              p.Description,
@@ -776,6 +793,15 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 	// Hash OpenAIConfig
 	if p.OpenAIConfig != nil {
 		data, err := sonic.Marshal(p.OpenAIConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
+	// Hash PromptCache
+	if p.PromptCache != nil {
+		data, err := sonic.Marshal(p.PromptCache)
 		if err != nil {
 			return "", err
 		}

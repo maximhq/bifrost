@@ -253,6 +253,21 @@ func (c ModelCaps) SupportsCachePoint(fallback bool) bool {
 	return fallback
 }
 
+// SupportsPromptCaching reports whether the model supports explicit prompt caching
+// at all. It is the base feature that SupportsPromptCachingScope and
+// SupportsExtendedCacheTTL refine, and it is what gates breakpoint injection: a
+// model that answers false must never be sent a marker it did not ask for.
+//
+// The datasheet field existed before this accessor did, so callers must pass a
+// meaningful fallback (see ModelSupportsPromptCaching) rather than relying on
+// datasheet coverage.
+func (c ModelCaps) SupportsPromptCaching(fallback bool) bool {
+	if c.record != nil && c.record.SupportsPromptCaching != nil {
+		return *c.record.SupportsPromptCaching
+	}
+	return fallback
+}
+
 // SupportsPromptCachingScope reports whether the model accepts
 // cache_control.scope (Anthropic's prompt-caching-scope beta). Distinct from
 // SupportsExtendedCacheTTL, which gates the cache TTL rather than its scope.
@@ -278,6 +293,25 @@ func (c ModelCaps) SupportsExtendedCacheTTL(fallback bool) bool {
 func (c ModelCaps) ToolChoiceStructSupported(fallback bool) bool {
 	if c.record != nil && c.record.ToolChoiceStructSupported != nil {
 		return *c.record.ToolChoiceStructSupported
+	}
+	return fallback
+}
+
+// ToolChoiceAnySupported reports whether the endpoint accepts the forced tool
+// choice "any" on the wire. Providers without it need it spelled "required".
+func (c ModelCaps) ToolChoiceAnySupported(fallback bool) bool {
+	if c.record != nil && c.record.ToolChoiceAnySupported != nil {
+		return *c.record.ToolChoiceAnySupported
+	}
+	return fallback
+}
+
+// SupportsForcedToolChoice reports whether the model accepts a forced tool
+// choice at all — Anthropic "any"/"tool", OpenAI "required"/named function.
+// Models without it need the choice dropped so they answer under "auto".
+func (c ModelCaps) SupportsForcedToolChoice(fallback bool) bool {
+	if c.record != nil && c.record.SupportsForcedToolChoice != nil {
+		return *c.record.SupportsForcedToolChoice
 	}
 	return fallback
 }
@@ -584,6 +618,17 @@ func (c ModelCaps) MinOutputTokens(fallback int) int {
 func (c ModelCaps) BedrockReasoningShape(fallback BedrockReasoningShape) BedrockReasoningShape {
 	if c.record != nil && c.record.BedrockReasoningShape.IsValid() {
 		return c.record.BedrockReasoningShape
+	}
+	return fallback
+}
+
+// BedrockRequiresSignedReasoning reports whether the (provider, model) pair
+// verifies reasoning signatures on Converse, so an unsigned reasoningText block
+// cannot be replayed to it. Falls back to the caller's name-based answer when
+// the row says nothing.
+func (c ModelCaps) BedrockRequiresSignedReasoning(fallback bool) bool {
+	if c.record != nil && c.record.BedrockRequiresSignedReasoning != nil {
+		return *c.record.BedrockRequiresSignedReasoning
 	}
 	return fallback
 }

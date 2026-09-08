@@ -22,7 +22,7 @@ Bifrost exposes Prometheus metrics via two methods:
 Bifrost automatically exposes a `/metrics` endpoint when the telemetry plugin is enabled (enabled by default). No additional configuration is needed.
 
 <Info>
-  When Bifrost's authentication is enabled (`auth_config.is_enabled = true`), the `/metrics` endpoint requires Basic auth credentials. You must include the same `admin_username` and `admin_password` from your `auth_config` in the Prometheus scrape configuration. Without this, Prometheus will receive `401 Unauthorized` responses and scraping will silently fail.
+  When Bifrost's authentication is enabled (`auth_config.is_enabled = true`), the `/metrics` endpoint requires credentials. You can authenticate the scraper with either the admin **Basic auth** credentials (`admin_username` / `admin_password` from your `auth_config`) or, on Enterprise, a **Bifrost API key** with the Metrics permission. Without valid credentials, Prometheus receives `401 Unauthorized` responses and scraping silently fails.
 </Info>
 
 ### Prometheus Configuration
@@ -49,6 +49,35 @@ scrape_configs:
       username: '<admin_username>'
       password: '<admin_password>'
 ```
+
+<Warning>
+  Prometheus scrapes over plain `http` by default, which sends the Basic auth credentials or API key in cleartext. When Bifrost is served over TLS, set `scheme: https` (and any required `tls_config`) in the scrape config so credentials are not exposed in transit.
+</Warning>
+
+#### Authenticating with an API Key <sup>Enterprise</sup>
+
+On Enterprise deployments, you can scrape `/metrics` with a Bifrost API key instead of the admin Basic auth credentials. Create an API key with the **Metrics** permission (included in all default roles) from **Settings → API Keys** (see [Creating API Keys](/api/procuring-api-keys)), then pass it as a bearer token in your scrape config:
+
+```yaml
+scrape_configs:
+  - job_name: 'bifrost'
+    static_configs:
+      - targets: ['bifrost-host:8080']
+    scrape_interval: 15s
+    authorization:
+      type: Bearer
+      credentials: '<bfst-your-api-key>'
+```
+
+Older Prometheus versions that lack the `authorization` block can use `bearer_token` instead:
+
+```yaml
+    bearer_token: '<bfst-your-api-key>'
+```
+
+<Note>
+  API-key auth for `/metrics` is an Enterprise feature. On the open-source build, the `/metrics` endpoint accepts only Basic auth (the `admin_username` / `admin_password` above).
+</Note>
 
 ### Endpoint
 
@@ -225,7 +254,7 @@ Emitted for MCP (Model Context Protocol) tool calls executed through Bifrost:
 |--------|------|-------------|
 | `bifrost_mcp_client_operation_duration_seconds` | Histogram | Duration of an MCP tool call, observed by Bifrost (the MCP client). `_count` is call volume; a non-empty `error_type` marks failures. |
 
-Labels: `mcp_client` (server label), `mcp_tool_name`, `mcp_method` (`tools/call`), `error_type` (`auth_required` / `_OTHER` on failure, empty on success), plus the governance labels `virtual_key_id`/`virtual_key_name`, `team_id`/`team_name`, `customer_id`/`customer_name`, `business_unit_id`/`business_unit_name`, and any custom labels. Only tool executions are recorded (lifecycle `ping`/`list_tools` and codemode tools are skipped); provider/model and `network_transport` are not labels here.
+Labels: `mcp_client` (server label), `mcp_tool_name`, `mcp_method` (`tools/call`), `error_type` (`auth_required` / `_OTHER` on failure, empty on success), plus the governance labels `virtual_key_id`/`virtual_key_name`, `team_id`/`team_name`, `customer_id`/`customer_name`, `business_unit_id`/`business_unit_name`, `project_id`/`project_name`, and any custom labels. Only tool executions are recorded (lifecycle `ping`/`list_tools` and codemode tools are skipped); provider/model and `network_transport` are not labels here.
 
 ### Default Labels
 
@@ -244,6 +273,7 @@ Most request-level Bifrost LLM metrics include these labels (the `bifrost_key_ro
 - `fallback_index` - Fallback position
 - `team_id` / `team_name` - Team identifiers (empty when governance is not used)
 - `customer_id` / `customer_name` - Customer identifiers (empty when governance is not used)
+- `project_id` / `project_name` - Project the request was scoped to (empty when the request named no project). A request is scoped to at most one project, so these stay singular where team and customer identifiers can fan out
 
 <Note>
   **v1.5.0-prerelease4+**: `selected_key_id` / `selected_key_name` are only populated when the request succeeds. On final errors both are empty — use the `attempt_trail` log field to see which keys were tried.

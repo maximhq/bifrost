@@ -321,6 +321,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_project_columns"}, run: migrationAddProjectColumns},
 	{IDs: []string{"mcp_tool_logs_add_project_columns"}, run: migrationAddProjectColumnsToMCPToolLogs},
 	{IDs: []string{"logs_add_served_model_column"}, run: migrationAddServedModelColumn},
+	{IDs: []string{"logs_add_tool_call_names_column"}, run: migrationAddToolCallNamesColumn},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -2858,6 +2859,13 @@ var performanceIndexes = []performanceIndexDef{
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_routing_engines_arr ON logs USING GIN (string_to_array(routing_engines_used, ',')) WHERE routing_engines_used IS NOT NULL",
 	},
 	{
+		table: "logs",
+		name:  "idx_logs_tool_call_names_arr",
+		// Backs the tool_call_names filter's array-overlap predicate; partial so
+		// the (dominant) rows that called no tools stay out of the index.
+		sql: "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_tool_call_names_arr ON logs USING GIN (string_to_array(tool_call_names, ',')) WHERE tool_call_names IS NOT NULL",
+	},
+	{
 		table: "mcp_tool_logs",
 		name:  "idx_mcp_logs_timestamp",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_timestamp ON mcp_tool_logs (timestamp)",
@@ -4043,6 +4051,38 @@ func migrationAddStopReasonColumn(ctx context.Context, db *gorm.DB, logger schem
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while adding stop_reason column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddToolCallNamesColumn adds the tool_call_names column to the logs table.
+// It holds the comma-separated distinct function names a response called, kept
+// on the row (not offloaded as payload) so the logs filter works in hybrid mode.
+func migrationAddToolCallNamesColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_tool_call_names_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			return addColumnIfNotExists(tx, logger, &Log{}, "tool_call_names")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			return dropColumnIfExists(tx, logger, &Log{}, "tool_call_names")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding tool_call_names column: %s", err.Error())
 	}
 	return nil
 }

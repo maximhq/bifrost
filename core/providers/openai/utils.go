@@ -113,6 +113,7 @@ func acceptsMinimalEffort(model string) bool {
 func acceptsMaxEffort(model string) bool {
 	modelLower := bareModelLower(model)
 	return strings.Contains(modelLower, "gpt-5.6") ||
+		strings.Contains(modelLower, "gpt-6-astra") ||
 		strings.Contains(modelLower, "deepseek-v4") ||
 		strings.Contains(modelLower, "glm-5.2")
 }
@@ -245,4 +246,21 @@ func SanitizeUserField(user *string) *string {
 		return nil
 	}
 	return user
+}
+
+// toolChoiceAnySupported is the name-based fallback for
+// ModelCaps.ToolChoiceAnySupported, used when the datasheet says nothing. It
+// reports whether the target accepts the provider-generic forced tool choice
+// "any" on the wire. Mistral accepts it natively (including Mistral models
+// served through Vertex), and Fireworks documents it with "required" as an
+// alias; every other OpenAI-compatible destination rejects it with a 400.
+func toolChoiceAnySupported(provider schemas.ModelProvider, model string) bool {
+	switch provider {
+	case schemas.Mistral, schemas.Fireworks:
+		return true
+	case schemas.Vertex:
+		return schemas.IsMistralModel(model)
+	default:
+		return false
+	}
 }

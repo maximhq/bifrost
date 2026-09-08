@@ -709,6 +709,29 @@ func (gs *LocalGovernanceStore) BumpRateLimitUsage(ctx context.Context, rateLimi
 	}
 }
 
+// BumpBudgetUsageBy atomically adds an arbitrary delta without applying a
+// window reset. The CAS retry preserves concurrent request increments.
+func (gs *LocalGovernanceStore) BumpBudgetUsageBy(_ context.Context, budgetID string, delta float64) error {
+	if delta == 0 {
+		return nil
+	}
+	for {
+		raw, exists := gs.budgets.Load(budgetID)
+		if !exists || raw == nil {
+			return nil
+		}
+		old, ok := raw.(*configstoreTables.TableBudget)
+		if !ok || old == nil {
+			return nil
+		}
+		clone := *old
+		clone.CurrentUsage = max(clone.CurrentUsage+delta, 0)
+		if gs.budgets.CompareAndSwap(budgetID, raw, &clone) {
+			return nil
+		}
+	}
+}
+
 // BumpRateLimitUsageBy atomically adds arbitrary token and request deltas to the
 // rate limit identified by rateLimitID. Unlike BumpRateLimitUsage (which adds a
 // token count and a single request), this adds caller-supplied counts on both
@@ -3487,9 +3510,9 @@ func (gs *LocalGovernanceStore) CollectModelScopedGovernanceIDs(ctx context.Cont
 }
 
 // ScopedID names a (scope, scope_id) pair for a model-config lookup, and the holder kind its
-// per-model limits are attributed to when used to resolve request-time enforcement scopes (see
-// modelConfigScopesFor). Left empty by a caller that only wants CollectModelScopedGovernanceIDs's
-// budget/rate-limit IDs, since that path never attributes a limit to a holder.
+// per-model limits are attributed to when the scope is enforced by name (see ScopedModelLimits).
+// Left empty by a caller that only wants CollectModelScopedGovernanceIDs's budget/rate-limit IDs,
+// since that path never attributes a limit to a holder.
 type ScopedID struct {
 	Scope   string
 	ScopeID string
@@ -3503,8 +3526,9 @@ type ScopedID struct {
 // virtual_key set without this package needing to know their scope semantics.
 // Must be fast and non-blocking (in-memory only) — called on every request.
 //
-// When used to resolve request-time enforcement scopes (modelConfigScopesFor), each ScopedID's Kind
-// is what a refusal names as the holder of the limit that ran out — see ScopedID.
+// modelConfigScopesFor does not consult these resolvers: a caller wanting one of these scopes
+// enforced passes it to ScopedModelLimits / ProviderScopedModelLimitsInScope, where the ScopedID's
+// Kind is what a refusal names as the holder of the limit that ran out — see ScopedID.
 type ExtraScopedIDsResolver func(ctx context.Context, virtualKeyID, userID string) []ScopedID
 
 var (

@@ -632,7 +632,10 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 		thinkingEnabled := bifrostReq.Params.Reasoning != nil &&
 			(bifrostReq.Params.Reasoning.MaxTokens != nil ||
 				(bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none"))
-		if !caps.SyntheticSOToolChoiceOmitted(schemas.IsLlamaModelFamily(ctx, bifrostReq.Model)) && !thinkingEnabled {
+		// Fable 5.1+ rejects a forced tool_choice outright, so the synthetic tool
+		// is left unpinned there too and reached under Converse's default "auto".
+		if !caps.SyntheticSOToolChoiceOmitted(schemas.IsLlamaModelFamily(ctx, bifrostReq.Model)) && !thinkingEnabled &&
+			caps.SupportsForcedToolChoice(schemas.DefaultSupportsForcedToolChoice(caps.Model())) {
 			bedrockReq.ToolConfig.ToolChoice = &BedrockToolChoice{
 				Tool: &BedrockToolChoiceTool{
 					Name: responseFormatTool.ToolSpec.Name,
@@ -1084,6 +1087,14 @@ func convertMessage(ctx context.Context, model string, msg schemas.ChatMessage) 
 				continue
 			}
 			if detail.Type == schemas.BifrostReasoningDetailsTypeText {
+				// Claude verifies the signature on every thinking block it is
+				// handed back and rejects an unsigned one in every serialisation
+				// (#6624), so the block cannot be replayed at all; the turn's
+				// text and tool calls still go through. Nova keeps receiving
+				// unsigned blocks with the field omitted, as before.
+				if reasoningSignatureForBedrock(detail.Signature) == nil && converseRequiresSignedReasoning(model) {
+					continue
+				}
 				// Text must never reach Bedrock as nil. It is
 				// `*string json:"text,omitempty"`, so a nil pointer drops the key
 				// from the request rather than sending an explicit null, and
@@ -1915,6 +1926,17 @@ func converseReasoningShape(model string) schemas.BedrockReasoningShape {
 	return schemas.ResolveModelCaps(schemas.Bedrock, model).BedrockReasoningShape(fallback)
 }
 
+// converseRequiresSignedReasoning reports whether the model verifies reasoning
+// signatures on Converse, in which case a reasoningText block with no signature
+// must be dropped from the replay rather than sent (#6624). Claude does; Nova,
+// MiniMax and DeepSeek accept an unsigned block with the field omitted.
+//
+// Same resolution as converseReasoningShape: the datasheet row wins when it
+// says anything, the model family answers otherwise.
+func converseRequiresSignedReasoning(model string) bool {
+	return schemas.ResolveModelCaps(schemas.Bedrock, model).BedrockRequiresSignedReasoning(schemas.IsAnthropicModel(model))
+}
+
 // setConverseReasoningEffort writes the OpenAI-shaped reasoning field, mapping
 // the requested effort onto a rung the model publishes.
 func setConverseReasoningEffort(fields *schemas.OrderedMap, caps schemas.ModelCaps, levels *schemas.EffortControl, effort string) {
@@ -2333,6 +2355,12 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 			// (mirrors the synthetic-tool gate in convertChatParameters).
 			if toolChoice != nil && toolChoice.Tool != nil &&
 				!caps.ToolChoiceStructSupported(!schemas.IsLlamaModelFamily(ctx, model)) {
+				toolChoice = nil
+			}
+			// Fable 5.1+ rejects forced tool use outright; drop both spellings so
+			// the model answers under Converse's default "auto".
+			if toolChoice != nil && (toolChoice.Any != nil || toolChoice.Tool != nil) &&
+				!caps.SupportsForcedToolChoice(schemas.DefaultSupportsForcedToolChoice(caps.Model())) {
 				toolChoice = nil
 			}
 			if toolChoice != nil {

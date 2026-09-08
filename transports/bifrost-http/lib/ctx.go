@@ -229,6 +229,7 @@ func ResolveSessionIDFromRequest(h *fasthttp.RequestHeader) string {
 //
 // 9. Raw Capture Headers (per-request override of provider config; accepts "true" or "false"):
 //   - x-bf-send-back-raw-request: include raw provider request in the BifrostResponse returned to the caller
+//   - x-bf-prompt-cache-auto-inject: override prompt_cache.auto_inject for this request
 //   - x-bf-send-back-raw-response: include raw provider response in the BifrostResponse returned to the caller
 //   - x-bf-store-raw-request-response: capture raw request/response for logging only (stripped from client response)
 
@@ -629,6 +630,16 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 		if keyStr == "x-bf-send-back-raw-request" {
 			if b, err := strconv.ParseBool(string(value)); err == nil {
 				bifrostCtx.SetValue(schemas.BifrostContextKeySendBackRawRequest, b)
+			}
+			return true
+		}
+		// Per-request override of prompt_cache.auto_inject. Fully overrides the
+		// provider config for this request in both directions, so a caller can opt a
+		// single request in without changing config, or opt one out when the provider
+		// has it on. The model capability gate still applies.
+		if keyStr == "x-bf-prompt-cache-auto-inject" {
+			if b, err := strconv.ParseBool(string(value)); err == nil {
+				bifrostCtx.SetValue(schemas.BifrostContextKeyPromptCacheAutoInject, b)
 			}
 			return true
 		}

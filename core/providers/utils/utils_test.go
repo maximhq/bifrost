@@ -2306,9 +2306,37 @@ func TestProviderSendsDoneMarker(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(string(tt.provider), func(t *testing.T) {
-			if got := ProviderSendsDoneMarker(tt.provider); got != tt.want {
+			if got := ProviderSendsDoneMarker(nil, tt.provider); got != tt.want {
 				t.Errorf("ProviderSendsDoneMarker(%s) = %v, want %v", tt.provider, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestProviderSendsDoneMarkerCustomProviderOptIn covers custom_provider_config.does_not_send_done_marker,
+// which core stamps on the context per attempt. An OpenAI-compatible upstream that ends its stream on
+// finish_reason without [DONE] otherwise keeps the read loop open for as long as it sends SSE heartbeats,
+// since heartbeat bytes reset the idle timeout without making semantic progress.
+func TestProviderSendsDoneMarkerCustomProviderOptIn(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	if !ProviderSendsDoneMarker(ctx, schemas.OpenAI) {
+		t.Fatal("without the opt-in, an OpenAI-based custom provider must still wait for [DONE]")
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyDoesNotSendDoneMarker, true)
+	if ProviderSendsDoneMarker(ctx, schemas.OpenAI) {
+		t.Error("opt-in must end the stream on finish_reason instead of waiting for [DONE]")
+	}
+	// The opt-in only ever ends the loop earlier; it can never make a provider that
+	// already terminates on finish_reason start waiting for a marker it never sends.
+	if ProviderSendsDoneMarker(ctx, schemas.Cerebras) {
+		t.Error("opt-in must not flip a provider that never sends [DONE] back to waiting for one")
+	}
+
+	// A fallback attempt onto a provider without the opt-in clears the key.
+	ctx.ClearValue(schemas.BifrostContextKeyDoesNotSendDoneMarker)
+	if !ProviderSendsDoneMarker(ctx, schemas.OpenAI) {
+		t.Error("cleared opt-in must fall back to the built-in provider default")
 	}
 }

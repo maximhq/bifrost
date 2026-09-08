@@ -39,6 +39,16 @@ export type ProviderName = (typeof KnownProvidersNames)[number];
 
 export const ProviderNames: readonly ProviderName[] = KnownProvidersNames;
 
+// Providers that exist in code but are not yet released. They are kept out of the
+// "Add Provider" picker and the first-party-integration nudge so users cannot configure
+// them from the UI. Everything else (types, schemas, icons, labels) still resolves, so a
+// provider configured via config.json continues to render correctly.
+// TODO: remove "github-copilot" once the integration has been tested and released.
+export const HiddenProviders: ReadonlySet<ProviderName> = new Set<ProviderName>(["github-copilot"]);
+
+// Known providers that users can add from the UI.
+export const VisibleProviderNames: readonly ProviderName[] = KnownProvidersNames.filter((name) => !HiddenProviders.has(name));
+
 // Built-in providers whose Bifrost implementation supports embedding requests.
 // Custom providers must instead be checked via custom_provider_config.allowed_requests.embedding.
 export const EmbeddingSupportedProviders: readonly ProviderName[] = [

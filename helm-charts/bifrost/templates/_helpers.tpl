@@ -368,6 +368,9 @@ false
 {{- if .Values.bifrost.client.loggingHeaders }}
 {{- $_ := set $client "logging_headers" .Values.bifrost.client.loggingHeaders }}
 {{- end }}
+{{- if .Values.storage.logsStore.hiddenRequestTypes }}
+{{- $_ := set $client "hidden_request_types" .Values.storage.logsStore.hiddenRequestTypes }}
+{{- end }}
 {{- if .Values.bifrost.client.whitelistedRoutes }}
 {{- $_ := set $client "whitelisted_routes" .Values.bifrost.client.whitelistedRoutes }}
 {{- end }}
@@ -388,6 +391,9 @@ false
 {{- end }}
 {{- if hasKey .Values.bifrost.client "hideDeletedVirtualKeysInFilters" }}
 {{- $_ := set $client "hide_deleted_virtual_keys_in_filters" .Values.bifrost.client.hideDeletedVirtualKeysInFilters }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client "vkRotationCooldown" }}
+{{- $_ := set $client "vk_rotation_cooldown" .Values.bifrost.client.vkRotationCooldown }}
 {{- end }}
 {{- if hasKey .Values.bifrost.client "mcpDisableAutoToolInject" }}
 {{- $_ := set $client "mcp_disable_auto_tool_inject" .Values.bifrost.client.mcpDisableAutoToolInject }}
@@ -610,6 +616,9 @@ false
 {{- end }}
 {{- $_ := set $governance "virtual_keys" $vks }}
 {{- end }}
+{{- if hasKey .Values.bifrost.governance "projects" }}
+{{- $_ := set $governance "projects" (default (list) .Values.bifrost.governance.projects) }}
+{{- end }}
 {{- if .Values.bifrost.governance.routingRules }}
 {{- $_ := set $governance "routing_rules" .Values.bifrost.governance.routingRules }}
 {{- end }}
@@ -647,7 +656,7 @@ false
 {{- $_ := set $governance "auth_config" $authConfig }}
 {{- end }}
 {{- end }}
-{{- if or $governance.budgets $governance.rate_limits $governance.customers $governance.teams $governance.business_units $governance.roles $governance.virtual_keys $governance.routing_rules $governance.model_configs $governance.providers $governance.pricing_overrides $governance.complexity_analyzer_config $governance.auth_config }}
+{{- if or $governance.budgets $governance.rate_limits $governance.customers $governance.teams $governance.business_units $governance.roles $governance.virtual_keys (hasKey $governance "projects") $governance.routing_rules $governance.model_configs $governance.providers $governance.pricing_overrides $governance.complexity_analyzer_config $governance.auth_config }}
 {{- $_ := set $config "governance" $governance }}
 {{- end }}
 {{- end }}
@@ -1338,8 +1347,16 @@ false
 {{- if $client.allowedExtraHeaders }}
 {{- $_ := set $cc "allowed_extra_headers" $client.allowedExtraHeaders }}
 {{- end }}
-{{- if hasKey $client "allowOnAllVirtualKeys" }}
+{{- /* allowByDefault supersedes allowOnAllVirtualKeys. Emit exactly one key so the backend's
+       ResolveAllowByDefault sees an unambiguous declaration: the current key when it is given,
+       otherwise the deprecated one passed through untranslated. */ -}}
+{{- if hasKey $client "allowByDefault" }}
+{{- $_ := set $cc "allow_by_default" $client.allowByDefault }}
+{{- else if hasKey $client "allowOnAllVirtualKeys" }}
 {{- $_ := set $cc "allow_on_all_virtual_keys" $client.allowOnAllVirtualKeys }}
+{{- end }}
+{{- if $client.endpointSlug }}
+{{- $_ := set $cc "endpoint_slug" $client.endpointSlug }}
 {{- end }}
 {{- /* Map tlsConfig -> tls_config (only for http/sse/websocket connection types) */ -}}
 {{- if and $client.tlsConfig (or (eq $client.connectionType "http") (eq $client.connectionType "sse") (eq $client.connectionType "websocket")) }}
@@ -1383,7 +1400,7 @@ false
 {{- if hasKey .Values.bifrost.mcp "toolSyncInterval" }}
 {{- $_ := set $mcpConfig "tool_sync_interval" .Values.bifrost.mcp.toolSyncInterval }}
 {{- end }}
-{{- if .Values.bifrost.mcp.toolGroups }}
+{{- if hasKey .Values.bifrost.mcp "toolGroups" }}
 {{- $toolGroups := list }}
 {{- range .Values.bifrost.mcp.toolGroups }}
 {{- $group := dict "name" .name }}
@@ -1410,6 +1427,30 @@ false
 {{- $toolGroups = append $toolGroups $group }}
 {{- end }}
 {{- $_ := set $mcpConfig "tool_groups" $toolGroups }}
+{{- end }}
+{{- if hasKey .Values.bifrost.mcp "virtualMcps" }}
+{{- $virtualMcps := list }}
+{{- range .Values.bifrost.mcp.virtualMcps }}
+{{- $vmcp := dict "name" .name }}
+{{- if .id }}{{- $_ := set $vmcp "id" .id }}{{- end }}
+{{- if .endpointSlug }}{{- $_ := set $vmcp "endpoint_slug" .endpointSlug }}{{- end }}
+{{- if hasKey . "enabled" }}{{- $_ := set $vmcp "enabled" .enabled }}{{- end }}
+{{- if .description }}{{- $_ := set $vmcp "description" .description }}{{- end }}
+{{- if .tools }}
+{{- $tools := list }}
+{{- range .tools }}
+{{- $tool := dict }}
+{{- if .mcpClientId }}{{- $_ := set $tool "mcp_client_id" .mcpClientId }}{{- end }}
+{{- if .mcpClientName }}{{- $_ := set $tool "mcp_client_name" .mcpClientName }}{{- end }}
+{{- if .toolNames }}{{- $_ := set $tool "tool_names" .toolNames }}{{- end }}
+{{- $tools = append $tools $tool }}
+{{- end }}
+{{- $_ := set $vmcp "tools" $tools }}
+{{- end }}
+{{- if .virtualKeyIds }}{{- $_ := set $vmcp "virtual_key_ids" .virtualKeyIds }}{{- end }}
+{{- $virtualMcps = append $virtualMcps $vmcp }}
+{{- end }}
+{{- $_ := set $mcpConfig "virtual_mcps" $virtualMcps }}
 {{- end }}
 {{- $_ := set $config "mcp" $mcpConfig }}
 {{- end }}
@@ -2508,11 +2549,21 @@ Call this template at the beginning of deployment/stateful templates
 {{- end }}
 {{- if .Values.bifrost.mcp.toolGroups }}
 {{- range $idx, $group := .Values.bifrost.mcp.toolGroups }}
-{{- if not $group.name }}
+{{- if not (trim (default "" $group.name)) }}
 {{- fail (printf "ERROR: bifrost.mcp.toolGroups[%d].name is required." $idx) }}
 {{- end }}
 {{- if not $group.tools }}
 {{- fail (printf "ERROR: bifrost.mcp.toolGroups[%d].tools is required for group '%s'." $idx $group.name) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if .Values.bifrost.mcp.virtualMcps }}
+{{- range $idx, $vmcp := .Values.bifrost.mcp.virtualMcps }}
+{{- if not (trim (default "" $vmcp.name)) }}
+{{- fail (printf "ERROR: bifrost.mcp.virtualMcps[%d].name is required." $idx) }}
+{{- end }}
+{{- if not $vmcp.tools }}
+{{- fail (printf "ERROR: bifrost.mcp.virtualMcps[%d].tools is required for Virtual MCP '%s'." $idx $vmcp.name) }}
 {{- end }}
 {{- end }}
 {{- end }}

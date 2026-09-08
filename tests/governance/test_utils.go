@@ -224,15 +224,16 @@ func generateRandomID() string {
 
 // CreateVirtualKeyRequest represents a request to create a virtual key
 type CreateVirtualKeyRequest struct {
-	Name            string                  `json:"name"`
-	Description     string                  `json:"description,omitempty"`
-	IsActive        *bool                   `json:"is_active,omitempty"`
-	TeamID          *string                 `json:"team_id,omitempty"`
-	CustomerID      *string                 `json:"customer_id,omitempty"`
-	Budgets         []BudgetRequest         `json:"budgets,omitempty"`
-	RateLimit       *CreateRateLimitRequest `json:"rate_limit,omitempty"`
-	ProviderConfigs []ProviderConfigRequest `json:"provider_configs,omitempty"`
-	CalendarAligned bool                    `json:"calendar_aligned,omitempty"`
+	Name              string                  `json:"name"`
+	Description       string                  `json:"description,omitempty"`
+	IsActive          *bool                   `json:"is_active,omitempty"`
+	TeamID            *string                 `json:"team_id,omitempty"`
+	CustomerID        *string                 `json:"customer_id,omitempty"`
+	Budgets           []BudgetRequest         `json:"budgets,omitempty"`
+	RateLimit         *CreateRateLimitRequest `json:"rate_limit,omitempty"`
+	ProviderConfigs   []ProviderConfigRequest `json:"provider_configs,omitempty"`
+	CalendarAligned   bool                    `json:"calendar_aligned,omitempty"`
+	AllowAllProviders bool                    `json:"allow_all_providers,omitempty"`
 }
 
 // ProviderConfigRequest represents a provider configuration for a virtual key

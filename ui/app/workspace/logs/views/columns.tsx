@@ -85,6 +85,10 @@ function LogActionsMenu({ log, onDelete }: { log: LogEntry; onDelete: (log: LogE
 
 function getAssistantToolCallSummary(log?: LogEntry): string {
 	const toolCalls = log?.output_message?.tool_calls || [];
+	if (toolCalls.length === 0) {
+		// Hybrid list rows carry only the denormalized names; the full calls live in the offloaded payload.
+		return (log?.tool_call_names || []).join("\n");
+	}
 	return toolCalls
 		.map((toolCall) => {
 			const name = toolCall?.function?.name;
