@@ -24,23 +24,61 @@ const (
 //   - "*" (alone) means all values are allowed.
 //   - Empty list means nothing is allowed.
 //   - Non-empty list (without "*") means only the listed values are allowed.
+//   - An entry prefixed with ModelRegexPrefix ("regex:") is a pattern; see
+//     MatchesEntry. Pattern entries only take part in Matches / IsAllowed /
+//     AllowsModel; Contains compares them by their literal string.
 //
 // This type is used generically for any field that needs whitelist behavior
 // (e.g., allowed models, allowed tools).
 type WhiteList []string
 
-// Contains reports whether value is in the whitelist.
-// Returns true if value is in the list.
+// Contains reports whether value is literally in the whitelist (case-insensitive).
+// Regex entries are compared by their raw string, not evaluated. Use Matches or
+// IsAllowed when the list may hold patterns.
 func (wl WhiteList) Contains(value string) bool {
 	return slices.ContainsFunc(wl, func(s string) bool {
 		return strings.EqualFold(s, value)
 	})
 }
 
-// IsAllowed reports whether value is in the whitelist.
-// Returns true if value is in the list.
+// Matches reports whether any entry matches value: exact entries by
+// case-insensitive equality, regex entries by pattern. It does not consider
+// the "*" wildcard; see IsAllowed.
+func (wl WhiteList) Matches(value string) bool {
+	return slices.ContainsFunc(wl, func(s string) bool {
+		return MatchesEntry(s, value, "")
+	})
+}
+
+// IsAllowed reports whether value is allowed: the list is unrestricted, or an
+// entry matches it.
 func (wl WhiteList) IsAllowed(value string) bool {
-	return wl.IsUnrestricted() || wl.Contains(value)
+	return wl.IsUnrestricted() || wl.Matches(value)
+}
+
+// AllowsModel is IsAllowed for a model whose provider is known, so regex
+// entries are also tried against "<provider>/<model>".
+func (wl WhiteList) AllowsModel(provider, model string) bool {
+	if wl.IsUnrestricted() {
+		return true
+	}
+	return slices.ContainsFunc(wl, func(s string) bool {
+		return MatchesEntry(s, model, provider)
+	})
+}
+
+// LiteralEntries returns the entries that name a concrete value: neither the
+// "*" wildcard nor a regex entry. Use it wherever the list is expanded into
+// names rather than evaluated against one.
+func (wl WhiteList) LiteralEntries() []string {
+	out := make([]string, 0, len(wl))
+	for _, v := range wl {
+		if v == "*" || IsRegexEntry(v) {
+			continue
+		}
+		out = append(out, v)
+	}
+	return out
 }
 
 // IsEmpty reports whether the whitelist has no entries.
@@ -61,7 +99,8 @@ func (wl WhiteList) IsRestricted() bool {
 }
 
 // Validate checks that the whitelist is well-formed.
-// Returns an error if "*" is present alongside other values, or if there are duplicate entries.
+// Returns an error if "*" is present alongside other values, if there are
+// duplicate entries, or if a regex entry does not compile.
 func (wl WhiteList) Validate() error {
 	if wl.Contains("*") && len(wl) > 1 {
 		return fmt.Errorf("wildcard '*' cannot be used with other values in the whitelist")
@@ -73,6 +112,9 @@ func (wl WhiteList) Validate() error {
 			return fmt.Errorf("duplicate value '%s' in whitelist", v)
 		}
 		seen[normalized] = struct{}{}
+		if err := ValidateModelEntry(v); err != nil {
+			return fmt.Errorf("invalid regex entry '%s' in whitelist: %w", v, err)
+		}
 	}
 	return nil
 }
@@ -82,17 +124,40 @@ func (wl WhiteList) Validate() error {
 //   - "*" (alone) means all values are blocked.
 //   - Empty list means nothing is blocked.
 //   - Non-empty list (without "*") means only the listed values are blocked.
+//   - An entry prefixed with ModelRegexPrefix ("regex:") is a pattern; see
+//     MatchesEntry.
 type BlackList []string
 
+// Contains reports whether value is literally in the blacklist (case-insensitive).
+// Regex entries are compared by their raw string, not evaluated.
 func (bl BlackList) Contains(value string) bool {
 	return slices.ContainsFunc(bl, func(s string) bool {
 		return strings.EqualFold(s, value)
 	})
 }
 
+// Matches reports whether any entry matches value, evaluating regex entries.
+// It does not consider the "*" wildcard; see IsBlocked.
+func (bl BlackList) Matches(value string) bool {
+	return slices.ContainsFunc(bl, func(s string) bool {
+		return MatchesEntry(s, value, "")
+	})
+}
+
 // IsBlocked reports whether value is blocked.
 func (bl BlackList) IsBlocked(value string) bool {
-	return bl.IsBlockAll() || bl.Contains(value)
+	return bl.IsBlockAll() || bl.Matches(value)
+}
+
+// BlocksModel is IsBlocked for a model whose provider is known, so regex
+// entries are also tried against "<provider>/<model>".
+func (bl BlackList) BlocksModel(provider, model string) bool {
+	if bl.IsBlockAll() {
+		return true
+	}
+	return slices.ContainsFunc(bl, func(s string) bool {
+		return MatchesEntry(s, model, provider)
+	})
 }
 
 // IsEmpty reports whether the blacklist has no entries (nothing is blocked).
@@ -117,6 +182,9 @@ func (bl BlackList) Validate() error {
 			return fmt.Errorf("duplicate value '%s' in blacklist", v)
 		}
 		seen[normalized] = struct{}{}
+		if err := ValidateModelEntry(v); err != nil {
+			return fmt.Errorf("invalid regex entry '%s' in blacklist: %w", v, err)
+		}
 	}
 	return nil
 }
