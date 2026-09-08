@@ -1,7 +1,7 @@
 import { cn } from "@/components/ui/utils";
 import { useLazyGetBaseModelsQuery, useLazyGetModelsQuery } from "@/lib/store/apis/providersApi";
 import { X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { components, MultiValueProps, OptionProps, SingleValueProps } from "react-select";
 import { AsyncMultiSelect } from "./asyncMultiselect";
 import { Option } from "./multiselectUtils";
@@ -32,6 +32,8 @@ interface ModelMultiselectPropsBase {
 	menuPosition?: "absolute" | "fixed";
 	/** Target element for the menu portal. */
 	menuPortalTarget?: HTMLElement | null;
+	/** Custom rendering for a selected value chip (multi-select only). Defaults to the option label. */
+	renderValueLabel?: (option: { label: string; value: string }) => ReactNode;
 }
 
 interface ModelMultiselectPropsSingle extends ModelMultiselectPropsBase {
@@ -317,7 +319,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 									{...multiValueProps.innerProps}
 									className="bg-accent dark:!bg-card flex cursor-pointer items-center gap-1 rounded-sm px-1 py-0.5 text-sm"
 								>
-									{multiValueProps.data.label}{" "}
+									{props.renderValueLabel ? props.renderValueLabel(multiValueProps.data) : multiValueProps.data.label}{" "}
 									<X
 										className="hover:text-foreground text-muted-foreground h-4 w-4 cursor-pointer"
 										onClick={(e) => {

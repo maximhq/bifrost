@@ -52,6 +52,7 @@ import {
 import { VirtualMcpAssignmentsEditor } from "@/components/mcp/virtualMcpAssignmentsEditor";
 import { diffVmcpAssignments, vmcpAssignmentsDirty } from "./virtualKeySheet.utils";
 import { BudgetOverrideRequest, CreateVirtualKeyRequest, UpdateVirtualKeyRequest, VirtualKey } from "@/lib/types/governance";
+import { modelListEntrySchema } from "@/lib/types/schemas";
 import {
 	type BudgetComparisonEntry,
 	budgetSignature,
@@ -91,8 +92,8 @@ const providerConfigSchema = z.object({
 	id: z.number().optional(),
 	provider: z.string().min(1, "Provider is required"),
 	weight: z.number().min(0, "Weight must be at least 0").max(1, "Weight must be at most 1").optional(),
-	allowed_models: z.array(z.string()).optional(),
-	blacklisted_models: z.array(z.string()).optional(),
+	allowed_models: z.array(modelListEntrySchema).optional(),
+	blacklisted_models: z.array(modelListEntrySchema).optional(),
 	key_ids: z.array(z.string()).optional(), // Keys associated with this provider config
 	// Provider-level budget
 	budgets: z
