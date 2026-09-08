@@ -153,12 +153,28 @@ A key needs either a `value` (personal access token) or both `client_id` and `cl
 
 With `api_format: "auto"` (the default) the model name decides:
 
-- A name containing a dot — `system.ai.claude-sonnet-4-5`, or a `<catalog>.<schema>.<service>` Unity Catalog model service — routes to the **Unity AI Gateway**.
-- Any other name — `databricks-claude-sonnet-4-5`, or your own serving endpoint name — routes to **Model Serving**.
+- A catalog-qualified name — `system.ai.claude-sonnet-4-5`, or a `<catalog>.<schema>.<service>` Unity Catalog model service — routes to the **Unity AI Gateway**.
+- A `databricks-*` name — `databricks-claude-sonnet-4-5` — is a pay-per-token endpoint and routes to **Model Serving**.
+- A model name that came from a key alias is sent exactly as configured; when it is bare it routes to **Model Serving**.
+- Any other bare name — `gpt-5.5`, `claude-opus-5` — is treated as a short name for a ready-to-use `system.ai` model and routes to the **Unity AI Gateway** with the `system.ai.` prefix added (see below).
 
-Set `api_format` explicitly to pin one surface. For production, an explicit setting is safer than relying on the naming convention.
+Set `api_format` explicitly to pin one surface. For production, an explicit setting is safer than relying on the naming convention. Provisioned-throughput endpoints with a custom name need `api_format: "model_serving"` or a key alias, since nothing in their name separates them from a short gateway name.
 
 Model aliases need no extra configuration: alias resolution rewrites the model to its upstream `model_id` before the provider sees it, so the surface is chosen from the upstream name.
+
+### Short names on the Unity AI Gateway
+
+The AI Gateway addresses models by their full Unity Catalog name, but you do not have to spell out the `system.ai` catalog yourself. When a request targets the AI Gateway and the model name is not already catalog-qualified, Bifrost prefixes it with `system.ai.` before sending it upstream:
+
+| You send | Databricks receives |
+|----------|---------------------|
+| `databricks/gpt-5.5` (under `auto` or `ai_gateway`) | `system.ai.gpt-5.5` |
+| `databricks/claude-opus-5` (under `auto` or `ai_gateway`) | `system.ai.claude-opus-5` |
+| `databricks/system.ai.gpt-5.5` | `system.ai.gpt-5.5` |
+| `databricks/main.default.my-service` | `main.default.my-service` |
+| `databricks/databricks-claude-sonnet-4-5` under `auto` | `databricks-claude-sonnet-4-5` (Model Serving, no prefix) |
+
+A name counts as catalog-qualified when it has at least two dots, so a version dot such as the one in `gpt-5.5` does not stop the prefix from being added. Names that come from a key alias are always sent exactly as the alias's `model_id`, so an alias is the way to point a short name at a model service in a different catalog.
 
 ## Usage
 
