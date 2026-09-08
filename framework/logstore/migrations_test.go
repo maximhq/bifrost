@@ -566,3 +566,47 @@ func TestMCPGovernanceSnapshotsMigrationIsRegistered(t *testing.T) {
 	}
 	t.Fatal("mcp_tool_logs_add_governance_snapshots is not registered in logstoreMigrationSteps")
 }
+
+// ========== Embedding Input Column Migration Tests ==========
+
+// runEmbeddingInputColumnCases pins that the migration only adds the column and leaves existing rows NULL.
+func runEmbeddingInputColumnCases(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	db.Exec("DROP TABLE IF EXISTS logs")
+	db.Exec("CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)")
+	db.Exec("DELETE FROM migrations WHERE id = 'logs_add_embedding_input_column'")
+	require.NoError(t, db.Exec(`CREATE TABLE logs (id VARCHAR(255) PRIMARY KEY, object_type VARCHAR(255) NOT NULL, input_history TEXT)`).Error)
+	t.Cleanup(func() {
+		db.Exec("DROP TABLE IF EXISTS logs")
+		db.Exec("DELETE FROM migrations WHERE id = 'logs_add_embedding_input_column'")
+	})
+
+	history := `[{"role":"user","content":[{"type":"text","text":"hello"}]}]`
+	require.NoError(t, db.Exec("INSERT INTO logs (id, object_type, input_history) VALUES (?, ?, ?)", "emb-1", "embedding", history).Error)
+
+	ctx := context.Background()
+	require.NoError(t, migrationAddEmbeddingInputColumn(ctx, db, testLogger{}))
+	require.True(t, db.Migrator().HasColumn(&Log{}, "embedding_input"))
+
+	var result struct {
+		EmbeddingInput *string `gorm:"column:embedding_input"`
+	}
+	require.NoError(t, db.Table("logs").Select("embedding_input").Where("id = ?", "emb-1").Scan(&result).Error)
+	assert.Nil(t, result.EmbeddingInput, "historical rows are not backfilled; the UI falls back to input_history")
+
+	require.NoError(t, migrationAddEmbeddingInputColumn(ctx, db, testLogger{}), "re-run should be a no-op")
+}
+
+func TestMigrationAddEmbeddingInputColumn_Postgres(t *testing.T) {
+	db := trySetupPostgresDB(t)
+	if db == nil {
+		t.Skip("Postgres not available, skipping test")
+	}
+	runEmbeddingInputColumnCases(t, db)
+}
+
+func TestMigrationAddEmbeddingInputColumn_SQLite(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	runEmbeddingInputColumnCases(t, db)
+}
