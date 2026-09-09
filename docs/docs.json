@@ -327,7 +327,6 @@
               "enterprise/rbac",
               "enterprise/data-access-control",
               "enterprise/virtual-mcps",
-              "enterprise/mcp-tool-groups",
               "enterprise/projects",
               {
                 "group": "Guardrails",
