@@ -109,3 +109,42 @@ func TestProcessGeminiStreamChunk(t *testing.T) {
 		})
 	}
 }
+
+func TestProcessGeminiStreamChunkMergesArrayObjects(t *testing.T) {
+	payload := []byte(`[
+        {"candidates":[{"content":{"parts":[{"text":"first"}]}}]},
+        {"candidates":[{"content":{"parts":[{"text":"second"}]},"finishReason":"STOP"}]}
+    ]`)
+
+	response, err := processGeminiStreamChunk(payload)
+	if err != nil {
+		t.Fatalf("processGeminiStreamChunk() unexpected error: %v", err)
+	}
+	if response == nil || len(response.Candidates) != 1 {
+		t.Fatalf("processGeminiStreamChunk() response = %#v, want one candidate", response)
+	}
+	if got := len(response.Candidates[0].Content.Parts); got != 2 {
+		t.Fatalf("merged parts = %d, want 2", got)
+	}
+	if got := response.Candidates[0].Content.Parts[1].Text; got != "second" {
+		t.Fatalf("merged second part = %q, want %q", got, "second")
+	}
+	if got := response.Candidates[0].FinishReason; got != FinishReasonStop {
+		t.Fatalf("merged finish reason = %q, want %q", got, FinishReasonStop)
+	}
+}
+
+func TestProcessGeminiStreamChunkPropagatesLaterArrayError(t *testing.T) {
+	payload := []byte(`[
+        {"candidates":[{"content":{"parts":[{"text":"first"}]}}]},
+        {"error":{"code":429,"message":"rate limited"}}
+    ]`)
+
+	response, err := processGeminiStreamChunk(payload)
+	if response != nil {
+		t.Fatalf("processGeminiStreamChunk() response = %#v, want nil", response)
+	}
+	if err == nil || !strings.Contains(err.Error(), "gemini api error:") {
+		t.Fatalf("processGeminiStreamChunk() error = %v, want Gemini API error", err)
+	}
+}
