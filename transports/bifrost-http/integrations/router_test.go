@@ -9,10 +9,12 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -36,6 +38,46 @@ func TestParsePassthroughBody_MultipartExtractsModelAfterFilePart(t *testing.T) 
 	model, stream := parsePassthroughBody(writer.FormDataContentType(), body.Bytes())
 	assert.Equal(t, "openai/whisper-1", model)
 	assert.True(t, stream)
+}
+
+func TestChatGPTPassthroughRouterRegistersCodexResponsesPost(t *testing.T) {
+	r := router.New()
+	passthroughRouter := NewChatGPTPassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{})
+	passthroughRouter.RegisterRoutes(r, func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			ctx.SetStatusCode(fasthttp.StatusNoContent)
+		}
+	})
+
+	var ctx fasthttp.RequestCtx
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI("/chatgpt_passthrough/backend-api/codex/responses")
+
+	r.Handler(&ctx)
+
+	require.Equal(t, fasthttp.StatusNoContent, ctx.Response.StatusCode())
+}
+
+func TestRunwarePassthroughRouterRegistersCatchAll(t *testing.T) {
+	r := router.New()
+	passthroughRouter := NewRunwarePassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{})
+	passthroughRouter.RegisterRoutes(r, func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			ctx.SetStatusCode(fasthttp.StatusNoContent)
+		}
+	})
+
+	// Runware is a single-endpoint API, so the passthrough router forwards any path under the
+	// prefix; /runware_passthrough/v1 is the canonical way clients hit the base endpoint.
+	for _, uri := range []string{"/runware_passthrough/v1", "/runware_passthrough/v1/anything"} {
+		var ctx fasthttp.RequestCtx
+		ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+		ctx.Request.SetRequestURI(uri)
+
+		r.Handler(&ctx)
+
+		require.Equal(t, fasthttp.StatusNoContent, ctx.Response.StatusCode(), "POST %s should match a registered route", uri)
+	}
 }
 
 func TestRequestWithSettableExtraParams_OpenAIChatRequest(t *testing.T) {
@@ -347,7 +389,7 @@ func TestOpenAIChatStructuredOutputRequestParserAndConverter(t *testing.T) {
 					"properties": {
 						"city": {"type": "string"},
 						"country": {"type": "string"},
-						"population": {"type": "number"}
+						"population": {"type": "number", "multipleOf": 1.50}
 					},
 					"required": ["city", "country", "population"],
 					"additionalProperties": false
@@ -371,10 +413,43 @@ func TestOpenAIChatStructuredOutputRequestParserAndConverter(t *testing.T) {
 	assert.Equal(t, "gemini-2.5-flash", bifrostReq.ChatRequest.Model)
 	assert.False(t, req.(*openai.OpenAIChatRequest).IsStreamingRequested())
 
-	responseFormat, ok := (*bifrostReq.ChatRequest.Params.ResponseFormat).(map[string]interface{})
+	// Object-valued response_format is carried as json.RawMessage now, so that the client's
+	// exact bytes (numeric literals included) survive to the provider. Read it through the
+	// shared accessor rather than asserting one concrete representation.
+	responseFormat, ok := schemas.ParseChatResponseFormat(bifrostReq.ChatRequest.Params.ResponseFormat)
 	require.True(t, ok)
-	assert.Equal(t, "json_schema", responseFormat["type"])
-	assert.Contains(t, responseFormat, "json_schema")
+	assert.Equal(t, "json_schema", responseFormat.Type)
+	assert.True(t, responseFormat.HasJSONSchema(), "the json_schema payload must survive the conversion")
+
+	name, ok := responseFormat.Name()
+	require.True(t, ok)
+	assert.Equal(t, "city", name)
+
+	// HasJSONSchema only proves json_schema is an object and Name only reads its name, so
+	// neither would notice conversion dropping or replacing json_schema.schema. Assert the
+	// retained schema payload itself, which is the contract the comment above claims.
+	rawSchema := responseFormat.RawSchema()
+	require.NotEmpty(t, rawSchema, "the json_schema.schema payload must survive the conversion")
+
+	schemaStr := string(rawSchema)
+	assert.Contains(t, schemaStr, `"population"`, "every declared property must survive")
+	assert.Contains(t, schemaStr, `"additionalProperties"`, "schema keywords must survive, not just properties")
+
+	// Property order is the thing this PR exists to preserve, so pin it rather than just
+	// membership: city before country before population, as the client wrote them.
+	iCity := strings.Index(schemaStr, `"city"`)
+	iCountry := strings.Index(schemaStr, `"country"`)
+	iPopulation := strings.Index(schemaStr, `"population"`)
+	require.True(t, iCity >= 0 && iCountry >= 0 && iPopulation >= 0, "schema: %s", schemaStr)
+	assert.Less(t, iCity, iCountry, "client property order must survive; schema: %s", schemaStr)
+	assert.Less(t, iCountry, iPopulation, "client property order must survive; schema: %s", schemaStr)
+
+	// The numeric literal is the only thing in this payload a re-encoder can actually
+	// damage: "number" above is a string, so without a real numeric token the assertions
+	// above would pass even if 1.50 arrived as 1.5. This is what makes the byte-preservation
+	// claim in the comment at the top of this block testable rather than aspirational.
+	assert.Contains(t, schemaStr, "1.50",
+		"the client's exact numeric literal must survive; a re-encode would render it 1.5; schema: %s", schemaStr)
 }
 
 // TestCreateHandler_AnthropicRouteSetsPassthroughFlags verifies that a Claude
@@ -412,7 +487,7 @@ func TestCreateHandler_AnthropicRouteSetsPassthroughFlags(t *testing.T) {
 		},
 	}
 
-	router := NewGenericRouter(nil, handlerStore, nil, nil, nil)
+	router := NewGenericRouter(nil, handlerStore, nil, nil, nil, nil)
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
 	ctx.Request.Header.Set("user-agent", "claude-code/1.0")
@@ -453,7 +528,7 @@ func TestCreateHandler_CustomParserFailureClosesConnection(t *testing.T) {
 		},
 	}
 
-	router := NewGenericRouter(nil, handlerStore, nil, nil, nil)
+	router := NewGenericRouter(nil, handlerStore, nil, nil, nil, nil)
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
 	ctx.Request.SetBodyString(`{"model":"gemini/gemini-2.5-flash","messages":[]}}`)
@@ -487,7 +562,7 @@ func TestCreateHandler_DefaultJSONParserFailureClosesConnection(t *testing.T) {
 		},
 	}
 
-	router := NewGenericRouter(nil, handlerStore, nil, nil, nil)
+	router := NewGenericRouter(nil, handlerStore, nil, nil, nil, nil)
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
 	ctx.Request.SetBodyString(`{"model":"gemini/gemini-2.5-flash","messages":[]}x`)
@@ -523,7 +598,7 @@ func TestCreateHandler_ParseFailureClosesKeepAliveSocket(t *testing.T) {
 			return err
 		},
 	}
-	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil)
+	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, nil)
 	server := &fasthttp.Server{
 		Handler: router.createHandler(route),
 	}
@@ -691,6 +766,11 @@ func TestExtractPassthroughModel(t *testing.T) {
 		{"body fallback when path has no model", "/openai/v1/chat/completions", "gpt-4o", "gpt-4o"},
 		{"path wins over body", "/openai/deployments/dep-a/chat/completions", "ignored-body-model", "dep-a"},
 		{"both empty", "/v1/chat/completions", "", ""},
+		// Vertex/GenAI bodies (cachedContents, batch jobs) name the model as a resource path;
+		// governance and key selection match bare ids, so it must be reduced to one.
+		{"vertex resource body model", "/projects/p/locations/global/cachedContents", "projects/p/locations/global/publishers/google/models/gemini-3.7-flash", "gemini-3.7-flash"},
+		{"genai resource body model", "/v1beta/cachedContents", "models/gemini-2.5-flash", "gemini-2.5-flash"},
+		{"slashed non-resource model untouched", "/api/v1/chat/completions", "openai/gpt-4o", "openai/gpt-4o"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

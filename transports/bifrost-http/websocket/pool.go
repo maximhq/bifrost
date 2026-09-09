@@ -57,8 +57,10 @@ func NewPool(config *schemas.WSPoolConfig) *Pool {
 
 // Get retrieves an idle connection for the given key, or dials a new one.
 // The returned connection is removed from the idle pool and must be returned
-// via Return or discarded via Discard.
-func (p *Pool) Get(key PoolKey, headers http.Header) (*UpstreamConn, error) {
+// via Return or discarded via Discard. proxyConfig is only consulted when a
+// new connection is dialed; idle connections were already dialed under
+// whatever proxy configuration was in effect at the time.
+func (p *Pool) Get(key PoolKey, headers http.Header, proxyConfig *schemas.ProxyConfig) (*UpstreamConn, error) {
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
@@ -101,7 +103,7 @@ func (p *Pool) Get(key PoolKey, headers http.Header) (*UpstreamConn, error) {
 	p.inFlight++
 	p.mu.Unlock()
 
-	conn, err := p.dial(key, headers)
+	conn, err := p.dial(key, headers, proxyConfig)
 	if err != nil {
 		p.mu.Lock()
 		p.inFlight--
@@ -181,8 +183,8 @@ func (p *Pool) Close() {
 
 // dial establishes a new WebSocket connection to the upstream endpoint
 // identified by key, forwarding the supplied HTTP headers during the handshake.
-func (p *Pool) dial(key PoolKey, headers http.Header) (*UpstreamConn, error) {
-	wsConn, resp, err := Dial(key.Endpoint, headers)
+func (p *Pool) dial(key PoolKey, headers http.Header, proxyConfig *schemas.ProxyConfig) (*UpstreamConn, error) {
+	wsConn, resp, err := Dial(key.Endpoint, headers, proxyConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial upstream websocket %s: %w", key.Endpoint, wrapHandshakeError(resp, err))
 	}

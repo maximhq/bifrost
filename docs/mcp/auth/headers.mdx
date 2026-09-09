@@ -22,7 +22,7 @@ This auth type is only valid for **HTTP** and **SSE** connections.
 - Custom header-based schemes (`X-Tenant-ID`, `X-Region`, etc.)
 - Anything where you'd add headers to a `curl` command
 
-For per-user OAuth see [OAuth 2.0](./oauth) (admin authenticates once) or [Per-User OAuth](./per-user-oauth) (each user authenticates).
+If the upstream service speaks OAuth instead, see [OAuth 2.0](./oauth) (admin authenticates once) or [Per-User OAuth](./per-user-oauth) (each user authenticates themselves). For per-user header values, see [Per-User Headers](./per-user-headers).
 
 ---
 
@@ -99,6 +99,8 @@ Use `"env.MY_VAR"` for environment variable references — e.g. `"Authorization"
 
 </Tab>
 </Tabs>
+
+By default this connection is per-call (a fresh connection per tool call, no shared upstream connection to keep alive) — see [Session Stickiness](../connecting-to-servers#session-stickiness-http-only) to make it sticky instead.
 
 ---
 

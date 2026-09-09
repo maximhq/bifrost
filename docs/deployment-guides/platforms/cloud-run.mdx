@@ -1,0 +1,145 @@
+---
+title: "Google Cloud Run"
+description: "Deploy the Bifrost container on Google Cloud Run"
+icon: "google"
+---
+
+Cloud Run can run a Bifrost HTTP gateway. This page shows how to configure its container port, external storage, health check, and scaling behavior.
+
+<Note>
+**Support level: Preview.** The repository has Terraform resources with mocked provider tests, but no continuously exercised live Cloud Run deployment.
+</Note>
+
+## Compatibility summary
+
+| Deployment model | Compatibility | Reason |
+|---|---|---|
+| Disposable one-instance evaluation | **Compatible** | The writable in-memory filesystem is enough until the instance is replaced. |
+| Durable one-instance PostgreSQL 16+ | **Preview** | External stores survive replacement; live qualification is still required. |
+| SQLite | **Not supported for Enterprise; not durable on the default filesystem for OSS** | Enterprise does not support SQLite, and Cloud Run filesystem writes do not survive instance termination. |
+| OSS DB-managed multiple instances | **Not supported** | OSS processes do not synchronize live DB-backed configuration. |
+| Enterprise mesh clustering | **Not supported by Cloud Run services** | Instances do not provide the stable peer ingress and multiple inbound cluster protocols required by mesh mode. |
+| Enterprise broker clustering | **Potentially compatible; qualify release** | Gateway nodes need only outbound broker connectivity, but the Enterprise broker and platform timeout behavior require release-specific validation. |
+
+Cloud Run supports `linux/amd64` for a multi-architecture image, matching the Bifrost release manifest.
+
+## Deploy Bifrost
+
+This path stores both Bifrost stores in PostgreSQL 16 or later. It mounts `config.json` from Secret Manager outside `/app/data`, copies it into the writable application directory, and starts one Cloud Run instance.
+
+Cloud Run's normal writable filesystem is ephemeral, so it cannot provide durable SQLite storage. Enterprise does not support SQLite on any filesystem. Use PostgreSQL 16 or later for configuration and logs that must survive revision or instance replacement.
+
+### Step 1: Set the deployment values
+
+```bash
+export GCP_PROJECT='<GCP_PROJECT_ID>'
+export GCP_REGION='<GCP_REGION>'
+export BIFROST_VERSION='<BIFROST_VERSION>'
+export CLOUD_RUN_SA='<CLOUD_RUN_SERVICE_ACCOUNT_EMAIL>'
+
+gcloud auth login
+gcloud config set project "$GCP_PROJECT"
+gcloud services enable run.googleapis.com secretmanager.googleapis.com
+```
+
+### Step 2: Create `config.json` and its secret
+
+```bash
+cat > config.json <<'JSON'
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "encryption_key": "env.BIFROST_ENCRYPTION_KEY",
+  "config_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {"host": "env.PG_HOST", "port": "5432", "user": "env.PG_USER", "password": "env.PG_PASSWORD", "db_name": "env.PG_DATABASE", "ssl_mode": "require"}
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {"host": "env.PG_HOST", "port": "5432", "user": "env.PG_USER", "password": "env.PG_PASSWORD", "db_name": "env.PG_DATABASE", "ssl_mode": "require"}
+  }
+}
+JSON
+
+gcloud secrets create bifrost-config --data-file=config.json
+```
+
+If `bifrost-config` already exists, add a version with `gcloud secrets versions add bifrost-config --data-file=config.json`.
+
+### Step 3: Store credentials and deploy
+
+```bash
+read -r -s -p 'PostgreSQL password: ' PG_PASSWORD; echo
+read -r -s -p 'Bifrost encryption key: ' BIFROST_ENCRYPTION_KEY; echo
+
+printf '%s' "$PG_PASSWORD" | gcloud secrets create bifrost-pg-password --data-file=-
+printf '%s' "$BIFROST_ENCRYPTION_KEY" | gcloud secrets create bifrost-encryption-key --data-file=-
+
+for SECRET_NAME in bifrost-config bifrost-pg-password bifrost-encryption-key; do
+  gcloud secrets add-iam-policy-binding "$SECRET_NAME" \
+    --member="serviceAccount:${CLOUD_RUN_SA}" \
+    --role='roles/secretmanager.secretAccessor'
+done
+
+gcloud run deploy bifrost \
+  --image "docker.io/maximhq/bifrost:${BIFROST_VERSION}" \
+  --region "$GCP_REGION" \
+  --service-account "$CLOUD_RUN_SA" \
+  --port 8080 \
+  --memory 1Gi \
+  --min-instances 1 \
+  --max-instances 1 \
+  --set-env-vars 'APP_HOST=0.0.0.0,APP_PORT=8080,PG_HOST=<POSTGRES_HOST>,PG_USER=<POSTGRES_USER>,PG_DATABASE=<POSTGRES_DATABASE>' \
+  --set-secrets 'PG_PASSWORD=bifrost-pg-password:latest,BIFROST_ENCRYPTION_KEY=bifrost-encryption-key:latest,/var/run/bifrost-config/config.json=bifrost-config:latest' \
+  --command /bin/sh \
+  --args '-c,cp /var/run/bifrost-config/config.json /app/data/config.json && exec /app/docker-entrypoint.sh' \
+  --no-allow-unauthenticated
+```
+
+The service account must already exist and be usable by the deployer. The database can be Cloud SQL or any reachable PostgreSQL service configured for version 16 or later.
+
+### Step 4: Verify
+
+```bash
+export BIFROST_URL="$(gcloud run services describe bifrost \
+  --region "$GCP_REGION" --format='value(status.url)')"
+
+curl --fail --show-error \
+  -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
+  "$BIFROST_URL/health"
+```
+
+## Platform requirements
+
+- Bind `0.0.0.0` on the configured target port.
+- Set a startup probe on `/health` and allow enough time for PostgreSQL migrations.
+- Choose a Cloud Run request timeout that covers the intended non-streaming and streaming requests. Requests that exceed it receive a platform `504`.
+- Use instance-based billing/minimum instances if required background work must receive CPU outside requests; qualify this behavior for enabled Bifrost features.
+- Keep the service private until Bifrost authentication and public-access policy are configured.
+- Configure egress for model providers, PostgreSQL, MCP servers, and observability destinations.
+
+## Scaling
+
+- Keep OSS DB-managed deployment at `max-instances=1`.
+- File-only OSS replicas require identical immutable configuration on every revision and no shared SQLite state.
+- Do not enable Enterprise mesh ports/discovery on Cloud Run services.
+- For Enterprise broker mode, use the exact configuration and broker operational model supplied for the Enterprise release; see [Enterprise Clustering](/enterprise/clustering#broker-mode).
+
+## Upgrade and troubleshooting
+
+Deploy a new version as a revision, verify it, then shift traffic. Retain the prior revision for rollback; a revision rollback does not reverse database migrations.
+
+```bash
+gcloud run services update-traffic bifrost \
+  --region "$GCP_REGION" \
+  --to-revisions '<PREVIOUS_REVISION>=100'
+```
+
+- Revision never becomes ready: check the port mapping, `APP_HOST`, database connectivity, migrations, and `/app/data` permissions.
+- Configuration disappears: the service relied on Cloud Run's ephemeral filesystem.
+- Request returns `504`: compare request duration with the configured Cloud Run timeout.
+- Background behavior pauses: verify CPU allocation/billing mode for idle instances.
+- Multiple OSS instances diverge: return to one instance or the file-only pattern.
+
+Cloud Load Balancing, Cloud SQL, VPC egress, Secret Manager, custom domains, certificate management, Cloud Armor, and monitoring are optional Google Cloud implementations. Complete the [deployment verification checklist](/deployment-guides/runtime-contract#verify-the-deployment).

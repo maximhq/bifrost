@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
@@ -61,6 +62,12 @@ type LogManager interface {
 	// GetProviderLatencyHistogram returns time-bucketed latency percentiles with provider breakdown for the given filters
 	GetProviderLatencyHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderLatencyHistogramResult, error)
 
+	// GetThroughputHistogram returns time-bucketed token-generation throughput (tokens/sec) for the given filters
+	GetThroughputHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ThroughputHistogramResult, error)
+
+	// GetProviderThroughputHistogram returns time-bucketed tokens/sec with provider breakdown for the given filters
+	GetProviderThroughputHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderThroughputHistogramResult, error)
+
 	// GetModelRankings returns models ranked by usage with trend comparison
 	GetModelRankings(ctx context.Context, filters *logstore.SearchFilters) (*logstore.ModelRankingResult, error)
 
@@ -91,6 +98,14 @@ type LogManager interface {
 	// GetAvailableStopReasons returns all unique stop reason values from logs
 	GetAvailableStopReasons(ctx context.Context, limit int, query string) ([]string, error)
 
+	// GetAvailableToolCallNames returns all unique function names that responses called
+	GetAvailableToolCallNames(ctx context.Context, limit int, query string) ([]string, error)
+
+	// GetAvailableUserAgents returns all unique raw User-Agent strings from logs
+	GetAvailableUserAgents(ctx context.Context, limit int, query string) ([]string, error)
+	// GetAvailableApps returns all unique backend-detected app labels from logs
+	GetAvailableApps(ctx context.Context, limit int, query string) ([]string, error)
+
 	// GetAvailableTeams returns all unique team ID-Name pairs from logs
 	GetAvailableTeams(ctx context.Context, limit int, query string) ([]KeyPair, error)
 
@@ -102,6 +117,9 @@ type LogManager interface {
 
 	// GetAvailableBusinessUnits returns all unique business unit ID-Name pairs from logs
 	GetAvailableBusinessUnits(ctx context.Context, limit int, query string) ([]KeyPair, error)
+
+	// GetAvailableProjects returns all unique project ID-Name pairs from logs
+	GetAvailableProjects(ctx context.Context, limit int, query string) ([]KeyPair, error)
 
 	// GetAvailableMetadataKeys returns distinct metadata keys and their values from recent logs
 	GetAvailableMetadataKeys(ctx context.Context, limit int, query string) (map[string][]string, error)
@@ -150,6 +168,11 @@ type LogManager interface {
 	// GetAvailableServerLabels returns all unique server labels from MCP tool logs
 	GetAvailableServerLabels(ctx context.Context, limit int, query string) ([]string, error)
 
+	// GetAvailableMCPUserAgents returns all unique raw User-Agent strings from MCP tool logs
+	GetAvailableMCPUserAgents(ctx context.Context, limit int, query string) ([]string, error)
+	// GetAvailableMCPApps returns all unique backend-detected app labels from MCP tool logs
+	GetAvailableMCPApps(ctx context.Context, limit int, query string) ([]string, error)
+
 	// GetAvailableMCPVirtualKeys returns all unique virtual key ID-Name pairs from MCP tool logs
 	GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]KeyPair, error)
 
@@ -164,6 +187,11 @@ type LogManager interface {
 
 	// DeleteMCPToolLogs deletes multiple MCP tool log entries by their IDs
 	DeleteMCPToolLogs(ctx context.Context, ids []string) error
+
+	ListUserAgentMappings(ctx context.Context) ([]logstore.UserAgentMapping, error)
+	CreateUserAgentMapping(ctx context.Context, mapping *logstore.UserAgentMapping) (*logstore.UserAgentMapping, error)
+	UpdateUserAgentMapping(ctx context.Context, id string, mapping *logstore.UserAgentMapping) (*logstore.UserAgentMapping, error)
+	DeleteUserAgentMapping(ctx context.Context, id string) error
 }
 
 // PluginLogManager implements LogManager interface wrapping the plugin
@@ -262,6 +290,20 @@ func (p *PluginLogManager) GetProviderLatencyHistogram(ctx context.Context, filt
 	return p.plugin.GetProviderLatencyHistogram(ctx, *filters, bucketSizeSeconds)
 }
 
+func (p *PluginLogManager) GetThroughputHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ThroughputHistogramResult, error) {
+	if filters == nil {
+		return nil, fmt.Errorf("filters cannot be nil")
+	}
+	return p.plugin.GetThroughputHistogram(ctx, *filters, bucketSizeSeconds)
+}
+
+func (p *PluginLogManager) GetProviderThroughputHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderThroughputHistogramResult, error) {
+	if filters == nil {
+		return nil, fmt.Errorf("filters cannot be nil")
+	}
+	return p.plugin.GetProviderThroughputHistogram(ctx, *filters, bucketSizeSeconds)
+}
+
 func (p *PluginLogManager) GetModelRankings(ctx context.Context, filters *logstore.SearchFilters) (*logstore.ModelRankingResult, error) {
 	if filters == nil {
 		return nil, fmt.Errorf("filters cannot be nil")
@@ -309,6 +351,20 @@ func (p *PluginLogManager) GetAvailableStopReasons(ctx context.Context, limit in
 	return p.plugin.GetAvailableStopReasons(ctx, limit, query)
 }
 
+func (p *PluginLogManager) GetAvailableToolCallNames(ctx context.Context, limit int, query string) ([]string, error) {
+	return p.plugin.GetAvailableToolCallNames(ctx, limit, query)
+}
+
+// GetAvailableUserAgents returns distinct raw User-Agent strings from logs for the logs "App" filter.
+func (p *PluginLogManager) GetAvailableUserAgents(ctx context.Context, limit int, query string) ([]string, error) {
+	return p.plugin.GetAvailableUserAgents(ctx, limit, query)
+}
+
+// GetAvailableApps returns distinct backend-detected app labels from logs for the logs "App" filter.
+func (p *PluginLogManager) GetAvailableApps(ctx context.Context, limit int, query string) ([]string, error) {
+	return p.plugin.GetAvailableApps(ctx, limit, query)
+}
+
 func (p *PluginLogManager) GetAvailableTeams(ctx context.Context, limit int, query string) ([]KeyPair, error) {
 	return p.plugin.GetAvailableTeams(ctx, limit, query)
 }
@@ -323,6 +379,10 @@ func (p *PluginLogManager) GetAvailableUsers(ctx context.Context, limit int, que
 
 func (p *PluginLogManager) GetAvailableBusinessUnits(ctx context.Context, limit int, query string) ([]KeyPair, error) {
 	return p.plugin.GetAvailableBusinessUnits(ctx, limit, query)
+}
+
+func (p *PluginLogManager) GetAvailableProjects(ctx context.Context, limit int, query string) ([]KeyPair, error) {
+	return p.plugin.GetAvailableProjects(ctx, limit, query)
 }
 
 // GetDimensionCostHistogram returns time-bucketed cost data grouped by the specified dimension.
@@ -442,6 +502,22 @@ func (p *PluginLogManager) GetAvailableServerLabels(ctx context.Context, limit i
 	return p.plugin.store.GetAvailableServerLabels(ctx, limit, query)
 }
 
+// GetAvailableMCPUserAgents returns distinct raw User-Agent strings from MCP tool logs for the MCP "App" filter.
+func (p *PluginLogManager) GetAvailableMCPUserAgents(ctx context.Context, limit int, query string) ([]string, error) {
+	if p == nil || p.plugin == nil || p.plugin.store == nil {
+		return []string{}, nil
+	}
+	return p.plugin.store.GetAvailableMCPUserAgents(ctx, limit, query)
+}
+
+// GetAvailableMCPApps returns distinct backend-detected app labels from MCP tool logs for the MCP "App" filter.
+func (p *PluginLogManager) GetAvailableMCPApps(ctx context.Context, limit int, query string) ([]string, error) {
+	if p == nil || p.plugin == nil || p.plugin.store == nil {
+		return []string{}, nil
+	}
+	return p.plugin.store.GetAvailableMCPApps(ctx, limit, query)
+}
+
 func (p *PluginLogManager) GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]KeyPair, error) {
 	if p == nil || p.plugin == nil {
 		return []KeyPair{}, nil
@@ -479,6 +555,38 @@ func (p *PluginLogManager) DeleteMCPToolLogs(ctx context.Context, ids []string) 
 		return fmt.Errorf("log store not initialized")
 	}
 	return p.plugin.store.DeleteMCPToolLogs(ctx, ids)
+}
+
+// ListUserAgentMappings returns all custom User-Agent mappings.
+func (p *PluginLogManager) ListUserAgentMappings(ctx context.Context) ([]logstore.UserAgentMapping, error) {
+	return p.plugin.ListUserAgentMappings(ctx)
+}
+
+// CreateUserAgentMapping creates a custom User-Agent mapping through the logging plugin.
+func (p *PluginLogManager) CreateUserAgentMapping(ctx context.Context, mapping *logstore.UserAgentMapping) (*logstore.UserAgentMapping, error) {
+	if mapping == nil {
+		return nil, fmt.Errorf("%w: mapping cannot be nil", ErrInvalidUserAgentMapping)
+	}
+	return p.plugin.CreateUserAgentMapping(ctx, mapping)
+}
+
+// UpdateUserAgentMapping updates a custom User-Agent mapping through the logging plugin.
+func (p *PluginLogManager) UpdateUserAgentMapping(ctx context.Context, id string, mapping *logstore.UserAgentMapping) (*logstore.UserAgentMapping, error) {
+	if strings.TrimSpace(id) == "" {
+		return nil, fmt.Errorf("%w: id cannot be empty", ErrInvalidUserAgentMapping)
+	}
+	if mapping == nil {
+		return nil, fmt.Errorf("%w: mapping cannot be nil", ErrInvalidUserAgentMapping)
+	}
+	return p.plugin.UpdateUserAgentMapping(ctx, id, mapping)
+}
+
+// DeleteUserAgentMapping deletes a custom User-Agent mapping through the logging plugin.
+func (p *PluginLogManager) DeleteUserAgentMapping(ctx context.Context, id string) error {
+	if strings.TrimSpace(id) == "" {
+		return fmt.Errorf("%w: id cannot be empty", ErrInvalidUserAgentMapping)
+	}
+	return p.plugin.DeleteUserAgentMapping(ctx, id)
 }
 
 // GetPluginLogManager returns a LogManager interface for this plugin
@@ -709,7 +817,7 @@ func convertToProcessedStreamResponse(result *schemas.StreamAccumulatorResult, r
 		streamType = streaming.StreamTypeText
 	case schemas.ChatCompletionStreamRequest:
 		streamType = streaming.StreamTypeChat
-	case schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
+	case schemas.ResponsesStreamRequest, schemas.ResponsesRetrieveStreamRequest, schemas.WebSocketResponsesRequest:
 		streamType = streaming.StreamTypeResponses
 	case schemas.SpeechStreamRequest:
 		streamType = streaming.StreamTypeAudio
@@ -735,7 +843,9 @@ func convertToProcessedStreamResponse(result *schemas.StreamAccumulatorResult, r
 		OutputMessages:        result.OutputMessages,
 		ErrorDetails:          result.ErrorDetails,
 		TokenUsage:            result.TokenUsage,
+		ServiceTier:           result.ServiceTier,
 		CacheDebug:            result.CacheDebug,
+		GuardrailDebug:        result.GuardrailDebug,
 		Cost:                  result.Cost,
 		AudioOutput:           result.AudioOutput,
 		TranscriptionOutput:   result.TranscriptionOutput,
@@ -796,7 +906,9 @@ func mergeRealtimeMetadata(metadata map[string]interface{}, ctx *schemas.Bifrost
 }
 
 // formatRoutingEngineLogs formats routing engine logs into a human-readable string.
-// Format: [timestamp] [engine] - message
+// Format: [timestamp] [engine] [level] - message
+// The level token lets the log detail view filter and badge each line by severity.
+// An entry recorded without a level is written as info so every line keeps the same shape.
 // Parameters:
 //   - logs: Slice of routing engine log entries
 //
@@ -808,7 +920,22 @@ func formatRoutingEngineLogs(logs []schemas.RoutingEngineLogEntry) string {
 	}
 	var sb strings.Builder
 	for _, log := range logs {
-		sb.WriteString(fmt.Sprintf("[%d] [%s] - %s\n", log.Timestamp, log.Engine, log.Message))
+		level := log.Level
+		if level == "" {
+			level = schemas.LogLevelInfo
+		}
+		sb.WriteString(fmt.Sprintf("[%d] [%s] [%s] - %s\n", log.Timestamp, log.Engine, level, log.Message))
 	}
 	return sb.String()
+}
+
+func stringSlicePtr(values []string) *string {
+	if len(values) == 0 {
+		return nil
+	}
+	out, err := sonic.MarshalString(values)
+	if err != nil {
+		return nil
+	}
+	return &out
 }

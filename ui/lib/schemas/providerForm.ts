@@ -1,5 +1,5 @@
 import { KnownProvidersNames } from "@/lib/constants/logs";
-import { aliasConfigSchema, secretVarSchema } from "@/lib/types/schemas";
+import { aliasConfigSchema, githubCopilotKeyConfigComplete, githubCopilotKeyConfigSchema, secretVarSchema } from "@/lib/types/schemas";
 import { isValidAliases, isValidVertexAuthCredentials } from "@/lib/utils/validation";
 import { z } from "zod";
 
@@ -40,8 +40,10 @@ const NetworkConfigSchema = z
 		insecure_skip_verify: z.boolean().optional(),
 		ca_cert_pem: z.union([z.string(), secretVarSchema]).optional(),
 		stream_idle_timeout_in_seconds: z.number().int().min(5).max(3600).optional(),
+		keep_alive_timeout_in_seconds: z.number().int().min(1).max(3600).optional(),
 		max_conns_per_host: z.number().int().min(1).max(10000).optional(),
 		enforce_http2: z.boolean().optional(),
+		http2_ping_interval_in_seconds: z.number().int().min(0).max(3600).optional(),
 	})
 	.refine((v) => v.retry_backoff_initial <= v.retry_backoff_max, {
 		message: "Initial backoff must be <= max backoff",
@@ -103,6 +105,22 @@ const BatchS3ConfigSchema = z.object({
 	buckets: z.array(S3BucketConfigSchema).optional(),
 });
 
+// A VPC endpoint value must be a DNS name, so it always contains a dot. The check exists to
+// catch a pasted endpoint ID, which resolves to nothing: AWS appends a random string to the ID
+// that the DNS name carries and the ID does not.
+const VPCEndpointHostSchema = z
+	.string()
+	.refine((v) => v.trim() === "" || v.includes("."), "Enter the endpoint's DNS name from the VPC console, not its ID")
+	.optional();
+
+const BedrockEndpointsSchema = z.object({
+	runtime: VPCEndpointHostSchema,
+	control_plane: VPCEndpointHostSchema,
+	mantle: VPCEndpointHostSchema,
+	agent_runtime: VPCEndpointHostSchema,
+	s3: VPCEndpointHostSchema,
+});
+
 const BedrockKeyConfigSchema = z
 	.object({
 		access_key: z.string(),
@@ -112,9 +130,11 @@ const BedrockKeyConfigSchema = z
 		role_arn: z.string().optional(),
 		external_id: z.string().optional(),
 		session_name: z.string().optional(),
+		batch_role_arn: z.string().optional(),
 		arn: z.string().optional(),
 		project_id: z.string().optional(),
 		batch_s3_config: BatchS3ConfigSchema.optional(),
+		endpoints: BedrockEndpointsSchema.optional(),
 	})
 	.refine(
 		(data) => {
@@ -152,6 +172,7 @@ const BedrockMantleKeyConfigSchema = z
 		external_id: z.string().optional(),
 		session_name: z.string().optional(),
 		project_id: z.string().optional(),
+		endpoints: BedrockEndpointsSchema.optional(),
 	})
 	.refine(
 		(data) => {
@@ -173,8 +194,10 @@ const BedrockMantleKeyConfigSchema = z
 		},
 	);
 
+// Optional for the same reason as replicateKeyConfigSchema in lib/types/schemas.ts:
+// the registered-but-untouched switch leaves an empty object behind.
 const ReplicateKeyConfigSchema = z.object({
-	use_deployments_endpoint: z.boolean(),
+	use_deployments_endpoint: z.boolean().optional(),
 });
 
 const KeySchema = z.object({
@@ -192,6 +215,7 @@ const KeySchema = z.object({
 	bedrock_key_config: BedrockKeyConfigSchema.optional(),
 	bedrock_mantle_key_config: BedrockMantleKeyConfigSchema.optional(),
 	replicate_key_config: ReplicateKeyConfigSchema.optional(),
+	github_copilot_key_config: githubCopilotKeyConfigSchema.optional(),
 	use_for_batch_api: z.boolean().optional(),
 });
 
@@ -285,7 +309,18 @@ export const ProviderFormSchema = z
 			// Validate individual key values based on provider type
 			const effectiveProviderType = data.baseProviderType || data.selectedProvider;
 			data.keys.forEach((key, index) => {
-				if (effectiveProviderType !== "vertex" && effectiveProviderType !== "bedrock" && !key.value.trim()) {
+				// GitHub Copilot is checked separately below: the credential can live entirely
+				// in github_copilot_key_config, so an empty top-level value is only a fault
+				// when the App credentials are absent too.
+				if (effectiveProviderType === "github-copilot") {
+					if (!key.value.trim() && !githubCopilotKeyConfigComplete(key.github_copilot_key_config)) {
+						ctx.addIssue({
+							code: z.ZodIssueCode.custom,
+							message: "Set a Copilot API token, or fill in all four GitHub App credentials",
+							path: ["keys", index, "value"],
+						});
+					}
+				} else if (effectiveProviderType !== "vertex" && effectiveProviderType !== "bedrock" && !key.value.trim()) {
 					ctx.addIssue({
 						code: z.ZodIssueCode.custom,
 						message: "API key value cannot be empty",

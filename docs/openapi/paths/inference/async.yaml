@@ -14,6 +14,7 @@ async-chat-completions:
     - Async Jobs
     parameters:
     - $ref: '#/components/parameters/AsyncResultTTL'
+    - $ref: '#/components/parameters/AsyncWebhookEndpoint'
     requestBody:
       required: true
       content:
@@ -34,7 +35,6 @@ async-chat-completions:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-text-completions:
@@ -49,6 +49,7 @@ async-text-completions:
     - Async Jobs
     parameters:
     - $ref: '#/components/parameters/AsyncResultTTL'
+    - $ref: '#/components/parameters/AsyncWebhookEndpoint'
     requestBody:
       required: true
       content:
@@ -69,7 +70,6 @@ async-text-completions:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-responses:
@@ -84,6 +84,7 @@ async-responses:
     - Async Jobs
     parameters:
     - $ref: '#/components/parameters/AsyncResultTTL'
+    - $ref: '#/components/parameters/AsyncWebhookEndpoint'
     requestBody:
       required: true
       content:
@@ -104,7 +105,6 @@ async-responses:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-embeddings:
@@ -118,6 +118,7 @@ async-embeddings:
     - Async Jobs
     parameters:
     - $ref: '#/components/parameters/AsyncResultTTL'
+    - $ref: '#/components/parameters/AsyncWebhookEndpoint'
     requestBody:
       required: true
       content:
@@ -138,7 +139,6 @@ async-embeddings:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-speech:
@@ -153,6 +153,7 @@ async-speech:
     - Async Jobs
     parameters:
     - $ref: '#/components/parameters/AsyncResultTTL'
+    - $ref: '#/components/parameters/AsyncWebhookEndpoint'
     requestBody:
       required: true
       content:
@@ -173,7 +174,6 @@ async-speech:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-transcriptions:
@@ -188,6 +188,7 @@ async-transcriptions:
     - Async Jobs
     parameters:
     - $ref: '#/components/parameters/AsyncResultTTL'
+    - $ref: '#/components/parameters/AsyncWebhookEndpoint'
     requestBody:
       required: true
       content:
@@ -208,7 +209,6 @@ async-transcriptions:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-image-generation:
@@ -223,6 +223,7 @@ async-image-generation:
     - Async Jobs
     parameters:
     - $ref: '#/components/parameters/AsyncResultTTL'
+    - $ref: '#/components/parameters/AsyncWebhookEndpoint'
     requestBody:
       required: true
       content:
@@ -243,7 +244,6 @@ async-image-generation:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-image-edit:
@@ -258,12 +258,16 @@ async-image-edit:
     - Async Jobs
     parameters:
     - $ref: '#/components/parameters/AsyncResultTTL'
+    - $ref: '#/components/parameters/AsyncWebhookEndpoint'
     requestBody:
       required: true
       content:
-        multipart/form-data:
+        application/json:
           schema:
             $ref: '../../schemas/inference/images.yaml#/ImageEditRequest'
+        multipart/form-data:
+          schema:
+            $ref: '../../schemas/inference/images.yaml#/ImageEditMultipartRequest'
     responses:
       '202':
         description: Job accepted for processing
@@ -278,7 +282,6 @@ async-image-edit:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-image-variation:
@@ -292,6 +295,7 @@ async-image-variation:
     - Async Jobs
     parameters:
     - $ref: '#/components/parameters/AsyncResultTTL'
+    - $ref: '#/components/parameters/AsyncWebhookEndpoint'
     requestBody:
       required: true
       content:
@@ -314,7 +318,6 @@ async-image-variation:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-chat-completions-job:
@@ -350,7 +353,6 @@ async-chat-completions-job:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-text-completions-job:
@@ -386,7 +388,6 @@ async-text-completions-job:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-responses-job:
@@ -422,7 +423,6 @@ async-responses-job:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-embeddings-job:
@@ -458,7 +458,6 @@ async-embeddings-job:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-speech-job:
@@ -494,7 +493,6 @@ async-speech-job:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-transcriptions-job:
@@ -530,7 +528,6 @@ async-transcriptions-job:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-image-generation-job:
@@ -566,7 +563,6 @@ async-image-generation-job:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-image-edit-job:
@@ -602,7 +598,6 @@ async-image-edit-job:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-image-variation-job:
@@ -638,7 +633,6 @@ async-image-variation-job:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-rerank:
@@ -652,6 +646,7 @@ async-rerank:
     - Async Jobs
     parameters:
     - $ref: '#/components/parameters/AsyncResultTTL'
+    - $ref: '#/components/parameters/AsyncWebhookEndpoint'
     requestBody:
       required: true
       content:
@@ -671,7 +666,6 @@ async-rerank:
         $ref: '../../openapi.yaml#/components/responses/InternalError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-rerank-job:
@@ -706,7 +700,6 @@ async-rerank-job:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -731,3 +724,16 @@ components:
       schema:
         type: integer
         default: 3600
+    AsyncWebhookEndpoint:
+      name: x-bf-async-webhook
+      in: header
+      required: false
+      description: |
+        Name of a registered webhook endpoint to notify when this job reaches a terminal
+        state (`completed` or `failed`). The endpoint must already exist and be enabled;
+        otherwise the submission is rejected with HTTP 400. If the endpoint is not subscribed
+        to the resulting event, the job still completes normally but no delivery is enqueued.
+        When omitted, no webhook is sent for the job and results are retrieved by polling.
+        See the Webhooks management API to register endpoints.
+      schema:
+        type: string

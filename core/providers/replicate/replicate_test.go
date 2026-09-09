@@ -629,16 +629,185 @@ func TestBifrostToReplicateImageGenerationConversion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			actual := replicate.ToReplicateImageGenerationInput(tt.input)
+			actual, err := replicate.ToReplicateImageGenerationInput(tt.input)
 			if tt.wantErr {
+				assert.Error(t, err)
 				assert.Nil(t, actual)
 			} else {
+				require.NoError(t, err)
 				if tt.validate != nil {
 					tt.validate(t, actual)
 				}
 			}
 		})
 	}
+}
+
+// TestReplicateImageGenerationInputImagesFieldMapping pins the input_images →
+// model-specific field mapping on the image generation path across every model in the
+// mapping table plus the default. This is the fallback-critical invariant: the same
+// input_images array must land in whatever field name the target model expects, so a
+// fallback re-sending the body under a different model still delivers the image.
+func TestReplicateImageGenerationInputImagesFieldMapping(t *testing.T) {
+	const prompt = "a lighthouse at night"
+
+	// fieldOf reports which single image field (if any) the mapping populated, and its value.
+	imageFieldOf := func(t *testing.T, in *replicate.ReplicatePredictionRequestInput) (field string, single string, array []string) {
+		t.Helper()
+		set := 0
+		if in.ImagePrompt != nil {
+			field, single = "image_prompt", *in.ImagePrompt
+			set++
+		}
+		if in.InputImage != nil {
+			field, single = "input_image", *in.InputImage
+			set++
+		}
+		if in.Image != nil {
+			field, single = "image", *in.Image
+			set++
+		}
+		if in.InputImages != nil {
+			field, array = "input_images", in.InputImages
+			set++
+		}
+		require.LessOrEqual(t, set, 1, "at most one image field may be populated, got %d", set)
+		return field, single, array
+	}
+
+	// Every model in modelInputImageFieldMap, grouped by the field it should map to.
+	byField := map[string][]string{
+		"image_prompt": {
+			"black-forest-labs/flux-1.1-pro",
+			"black-forest-labs/flux-1.1-pro-ultra",
+			"black-forest-labs/flux-pro",
+			"black-forest-labs/flux-1.1-pro-ultra-finetuned",
+		},
+		"input_image": {
+			"black-forest-labs/flux-kontext-pro",
+			"black-forest-labs/flux-kontext-max",
+			"black-forest-labs/flux-kontext-dev",
+		},
+		"image": {
+			"black-forest-labs/flux-dev",
+			"black-forest-labs/flux-fill-pro",
+			"black-forest-labs/flux-dev-lora",
+			"black-forest-labs/flux-krea-dev",
+		},
+	}
+
+	// Two images so we also verify single-field models truncate to the first while the
+	// array field preserves all.
+	images := []string{"https://example.com/a.png", "https://example.com/b.png"}
+
+	t.Run("MappedModels", func(t *testing.T) {
+		for expectedField, models := range byField {
+			for _, model := range models {
+				t.Run(model, func(t *testing.T) {
+					req := &schemas.BifrostImageGenerationRequest{
+						Model: model,
+						Input: &schemas.ImageGenerationInput{Prompt: prompt},
+						Params: &schemas.ImageGenerationParameters{
+							InputImages: images,
+						},
+					}
+					result, err := replicate.ToReplicateImageGenerationInput(req)
+					require.NoError(t, err)
+					require.NotNil(t, result)
+					require.NotNil(t, result.Input)
+
+					field, single, _ := imageFieldOf(t, result.Input)
+					assert.Equal(t, expectedField, field, "model %s should map input_images to %s", model, expectedField)
+					assert.Equal(t, images[0], single, "single-image field should use the first input image")
+				})
+			}
+		}
+	})
+
+	t.Run("DefaultModelUsesInputImagesArray", func(t *testing.T) {
+		req := &schemas.BifrostImageGenerationRequest{
+			Model: "some-owner/some-model",
+			Input: &schemas.ImageGenerationInput{Prompt: prompt},
+			Params: &schemas.ImageGenerationParameters{
+				InputImages: images,
+			},
+		}
+		result, err := replicate.ToReplicateImageGenerationInput(req)
+		require.NoError(t, err)
+		field, _, array := imageFieldOf(t, result.Input)
+		assert.Equal(t, "input_images", field)
+		assert.Equal(t, images, array, "array field should preserve all input images")
+	})
+
+	t.Run("VersionSuffixStillMaps", func(t *testing.T) {
+		req := &schemas.BifrostImageGenerationRequest{
+			Model: "black-forest-labs/flux-kontext-pro:1234567890abcdef",
+			Input: &schemas.ImageGenerationInput{Prompt: prompt},
+			Params: &schemas.ImageGenerationParameters{
+				InputImages: images,
+			},
+		}
+		result, err := replicate.ToReplicateImageGenerationInput(req)
+		require.NoError(t, err)
+		field, single, _ := imageFieldOf(t, result.Input)
+		assert.Equal(t, "input_image", field)
+		assert.Equal(t, images[0], single)
+	})
+
+	t.Run("ModelNameIsCaseInsensitive", func(t *testing.T) {
+		req := &schemas.BifrostImageGenerationRequest{
+			Model: "Black-Forest-Labs/FLUX-DEV",
+			Input: &schemas.ImageGenerationInput{Prompt: prompt},
+			Params: &schemas.ImageGenerationParameters{
+				InputImages: images,
+			},
+		}
+		result, err := replicate.ToReplicateImageGenerationInput(req)
+		require.NoError(t, err)
+		field, single, _ := imageFieldOf(t, result.Input)
+		assert.Equal(t, "image", field)
+		assert.Equal(t, images[0], single)
+	})
+
+	t.Run("RawBase64NormalizedToDataURL", func(t *testing.T) {
+		req := &schemas.BifrostImageGenerationRequest{
+			Model: "some-owner/some-model",
+			Input: &schemas.ImageGenerationInput{Prompt: prompt},
+			Params: &schemas.ImageGenerationParameters{
+				InputImages: []string{"iVBORw0KGgoAAAANSUhEUg", "https://example.com/b.png"},
+			},
+		}
+		result, err := replicate.ToReplicateImageGenerationInput(req)
+		require.NoError(t, err)
+		require.Len(t, result.Input.InputImages, 2)
+		assert.Equal(t, "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg", result.Input.InputImages[0])
+		assert.Equal(t, "https://example.com/b.png", result.Input.InputImages[1])
+	})
+
+	t.Run("InvalidURLReturnsError", func(t *testing.T) {
+		req := &schemas.BifrostImageGenerationRequest{
+			Model: "black-forest-labs/flux-dev",
+			Input: &schemas.ImageGenerationInput{Prompt: prompt},
+			Params: &schemas.ImageGenerationParameters{
+				InputImages: []string{"file:///etc/passwd"},
+			},
+		}
+		result, err := replicate.ToReplicateImageGenerationInput(req)
+		assert.Error(t, err)
+		assert.Nil(t, result)
+	})
+
+	t.Run("NoInputImagesLeavesAllFieldsUnset", func(t *testing.T) {
+		req := &schemas.BifrostImageGenerationRequest{
+			Model:  "black-forest-labs/flux-kontext-pro",
+			Input:  &schemas.ImageGenerationInput{Prompt: prompt},
+			Params: &schemas.ImageGenerationParameters{},
+		}
+		result, err := replicate.ToReplicateImageGenerationInput(req)
+		require.NoError(t, err)
+		field, _, _ := imageFieldOf(t, result.Input)
+		assert.Empty(t, field, "no image field should be set when input_images is absent")
+	})
 }
 
 // TestBifrostToReplicateResponsesRequestConversion tests the conversion from Bifrost responses request to Replicate format
@@ -1439,3 +1608,70 @@ func TestReplicateToBifrostResponsesResponse(t *testing.T) {
 	}
 }
 
+
+// TestReplicateSystemPromptReadsDatasheet covers the datasheet side of the
+// system_prompt gate. The hardcoded model list is covered by the
+// Deepseek_Model_NoSystemPrompt / Meta_Llama_NoSystemPrompt cases above; these
+// pin that a supports_system_messages row overrides it in both directions.
+func TestReplicateSystemPromptReadsDatasheet(t *testing.T) {
+	install := func(t *testing.T, model string, supported bool) {
+		t.Helper()
+		schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+			if m != model {
+				return nil
+			}
+			return &schemas.ModelCapabilities{SupportsSystemMessages: &supported}
+		})
+		t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	}
+
+	build := func(t *testing.T, model string) *replicate.ReplicatePredictionRequest {
+		t.Helper()
+		result, err := replicate.ToReplicateChatRequest(&schemas.BifrostChatRequest{
+			Model: model,
+			Input: []schemas.ChatMessage{
+				{
+					Role:    schemas.ChatMessageRoleSystem,
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("You are a helpful assistant.")},
+				},
+				{
+					Role:    schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello!")},
+				},
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.NotNil(t, result.Input)
+		return result
+	}
+
+	t.Run("row_opts_a_listed_model_back_in", func(t *testing.T) {
+		// deepseek is hardcoded as unsupported; an explicit true must win.
+		const model = "deepseek-ai/deepseek-r1"
+		install(t, model, true)
+
+		result := build(t, model)
+		require.NotNil(t, result.Input.SystemPrompt)
+		assert.Equal(t, "You are a helpful assistant.", *result.Input.SystemPrompt)
+		assert.NotContains(t, *result.Input.Prompt, "You are a helpful assistant.")
+	})
+
+	t.Run("row_opts_an_unlisted_model_out", func(t *testing.T) {
+		const model = "meta/llama-3.1-70b-instruct"
+		install(t, model, false)
+
+		result := build(t, model)
+		assert.Nil(t, result.Input.SystemPrompt)
+		require.NotNil(t, result.Input.Prompt)
+		assert.Contains(t, *result.Input.Prompt, "You are a helpful assistant.")
+		assert.Contains(t, *result.Input.Prompt, "Hello!")
+	})
+
+	t.Run("version_suffix_still_resolves", func(t *testing.T) {
+		install(t, "deepseek-ai/deepseek-r1", true)
+
+		result := build(t, "deepseek-ai/deepseek-r1:abc123")
+		require.NotNil(t, result.Input.SystemPrompt, "the version suffix must be stripped before lookup")
+	})
+}

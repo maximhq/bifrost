@@ -371,7 +371,7 @@ services:
     restart: unless-stopped
 
   postgres:
-    image: postgres:15-alpine
+    image: postgres:16-alpine
     container_name: bifrost-postgres
     environment:
       - POSTGRES_USER=bifrost

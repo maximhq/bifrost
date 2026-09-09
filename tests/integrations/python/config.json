@@ -1,17 +1,11 @@
 {
   "$schema": "https://www.getbifrost.ai/schema",
-  "env_label":"Development",
   "mcp": {
     "client_configs": [
       {
         "name": "sse_mcp",
         "connection_type": "sse",
-        "connection_string": "env.MCP_SSE_URL",
-        "auth_type": "headers",
-        "headers": {
-          "Authorization": "env.MCP_SSE_AUTHORIZATION",
-          "ENV_EXA_API_KEY": "env.MCP_SSE_API_KEY"
-        },
+        "connection_string": "http://localhost:3012/sse",
         "tools_to_execute": ["*"],
         "tools_to_auto_execute": ["*"]
       }
@@ -86,6 +80,9 @@
       ],
       "network_config": {
         "default_request_timeout_in_seconds": 300
+      },
+      "prompt_cache": {
+        "auto_inject": false
       }
     },
     "gemini": {
@@ -113,7 +110,13 @@
           },
           "weight": 1,
           "models": ["*"],
-          "blacklisted_models": ["claude-sonnet-4-6", "claude-opus-4-8", "moonshotai/kimi-k2-thinking-maas", "minimaxai/minimax-m2-maas"]
+          "use_for_batch_api": true,
+          "blacklisted_models": [
+            "claude-sonnet-4-6",
+            "claude-opus-4-8",
+            "moonshotai/kimi-k2-thinking-maas",
+            "minimaxai/minimax-m2-maas"
+          ]
         },
         {
           "name": "Vertex Global (Claude)",
@@ -123,11 +126,20 @@
             "auth_credentials": "env.VERTEX_CREDENTIALS"
           },
           "weight": 1,
-          "models": ["claude-sonnet-4-6", "claude-opus-4-8", "moonshotai/kimi-k2-thinking-maas", "minimaxai/minimax-m2-maas"]
+          "models": [
+            "claude-sonnet-4-6",
+            "claude-opus-4-8",
+            "moonshotai/kimi-k2-thinking-maas",
+            "minimaxai/minimax-m2-maas"
+          ]
         }
       ],
       "network_config": {
         "default_request_timeout_in_seconds": 300
+      },
+      "prompt_cache": {
+        "auto_inject": false,
+        "ttl": "1h"
       }
     },
     "mistral": {
@@ -219,6 +231,10 @@
       ],
       "network_config": {
         "default_request_timeout_in_seconds": 300
+      },
+      "prompt_cache": {
+        "auto_inject": false,
+        "ttl": "1h"
       }
     },
     "azure": {
@@ -236,15 +252,29 @@
               "gpt-4o-batch": "gpt-4o-batch",
               "whisper": "whisper",
               "text-embedding-3-small": "text-embedding-3-small",
-              "gpt-image-1": "gpt-image-1"
+              "gpt-image-1": "gpt-image-1",
+              "gpt-5.6-sol": "gpt-5.6-sol",
+              "gpt-5.6-terra": "gpt-5.6-terra",
+              "gpt-5.6-luna": "gpt-5.6-luna",
+              "gpt-5.5": "gpt-5.5",
+              "gpt-5.4": "gpt-5.4",
+              "claude-opus-5": "claude-opus-5",
+              "claude-sonnet-5": "claude-sonnet-5",
+              "claude-opus-4-8": "claude-opus-4-8",
+              "claude-haiku-4-5": "claude-haiku-4-5"
             }
           },
           "weight": 1,
-          "models": ["*"]
+          "models": ["*"],
+          "use_for_batch_api": true
         }
       ],
       "network_config": {
         "default_request_timeout_in_seconds": 300
+      },
+      "prompt_cache": {
+        "auto_inject": false,
+        "ttl": "1h"
       }
     },
     "bedrock": {
@@ -265,11 +295,41 @@
         "default_request_timeout_in_seconds": 300
       }
     },
+    "bedrock_mantle": {
+      "keys": [
+        {
+          "name": "Bedrock Mantle API Key",
+          "bedrock_mantle_key_config": {
+            "access_key": "env.AWS_ACCESS_KEY_ID",
+            "secret_key": "env.AWS_SECRET_ACCESS_KEY",
+            "region": "env.AWS_REGION"
+          },
+          "weight": 1,
+          "models": ["*"],
+          "use_for_batch_api": true
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
     "replicate": {
       "keys": [
         {
           "name": "Replicate API Key",
           "value": "env.REPLICATE_API_KEY",
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "runware": {
+      "keys": [
+        {
+          "name": "Runware API Key",
+          "value": "env.RUNWARE_API_KEY",
           "weight": 1
         }
       ],
@@ -300,23 +360,345 @@
       "network_config": {
         "default_request_timeout_in_seconds": 300
       }
+    },
+    "deepseek": {
+      "keys": [
+        {
+          "name": "DeepSeek API Key",
+          "value": "env.DEEPSEEK_API_KEY",
+          "weight": 1,
+          "models": ["*"],
+          "use_for_batch_api": false
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "anthropic_pc_auto": {
+      "keys": [
+        {
+          "name": "Anthropic API Key",
+          "value": "env.ANTHROPIC_API_KEY",
+          "weight": 1,
+          "models": [
+            "*"
+          ]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "anthropic",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "prompt_cache": {
+        "auto_inject": true,
+        "ttl": "1h"
+      }
+    },
+    "gemini_pc_auto": {
+      "keys": [
+        {
+          "name": "Gemini API Key",
+          "value": "env.GEMINI_API_KEY",
+          "weight": 1,
+          "models": [
+            "*"
+          ]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "gemini",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "prompt_cache": {
+        "auto_inject": true,
+        "ttl": "1h"
+      }
+    },
+    "anthropic_pc_points": {
+      "keys": [
+        {
+          "name": "Anthropic API Key",
+          "value": "env.ANTHROPIC_API_KEY",
+          "weight": 1,
+          "models": [
+            "*"
+          ]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "anthropic",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "prompt_cache": {
+        "auto_inject": false,
+        "ttl": "1h",
+        "cache_control_injection_points": [
+          {
+            "location": "message",
+            "role": "system"
+          },
+          {
+            "location": "message",
+            "index": 2
+          }
+        ]
+      }
+    },
+    "bedrock_pc_auto": {
+      "keys": [
+        {
+          "name": "Bedrock API Key",
+          "bedrock_key_config": {
+            "access_key": "env.AWS_ACCESS_KEY_ID",
+            "secret_key": "env.AWS_SECRET_ACCESS_KEY",
+            "region": "env.AWS_REGION"
+          },
+          "weight": 1,
+          "models": [
+            "*"
+          ]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "bedrock",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "prompt_cache": {
+        "auto_inject": true,
+        "ttl": "1h"
+      }
+    },
+    "bedrock_pc_points": {
+      "keys": [
+        {
+          "name": "Bedrock API Key",
+          "bedrock_key_config": {
+            "access_key": "env.AWS_ACCESS_KEY_ID",
+            "secret_key": "env.AWS_SECRET_ACCESS_KEY",
+            "region": "env.AWS_REGION"
+          },
+          "weight": 1,
+          "models": [
+            "*"
+          ]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "bedrock",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "prompt_cache": {
+        "auto_inject": false,
+        "ttl": "1h",
+        "cache_control_injection_points": [
+          {
+            "location": "message",
+            "role": "system"
+          },
+          {
+            "location": "message",
+            "index": 2
+          }
+        ]
+      }
+    },
+    "openai_pc_auto": {
+      "keys": [
+        {
+          "name": "OpenAI API Key",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "models": [
+            "*"
+          ]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "prompt_cache": {
+        "auto_inject": true,
+        "ttl": "1h"
+      }
+    },
+    "openai_pc_points": {
+      "keys": [
+        {
+          "name": "OpenAI API Key",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "models": [
+            "*"
+          ]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "prompt_cache": {
+        "auto_inject": false,
+        "ttl": "1h",
+        "cache_control_injection_points": [
+          {
+            "location": "message",
+            "role": "system"
+          },
+          {
+            "location": "message",
+            "index": 2
+          }
+        ]
+      }
+    },
+    "anthropic_pc_edge": {
+      "keys": [
+        {
+          "name": "Anthropic API Key",
+          "value": "env.ANTHROPIC_API_KEY",
+          "weight": 1,
+          "models": [
+            "*"
+          ]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "anthropic",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "prompt_cache": {
+        "auto_inject": false,
+        "ttl": "1h",
+        "cache_control_injection_points": [
+          {
+            "location": "message",
+            "index": -1
+          },
+          {
+            "location": "message",
+            "role": "user",
+            "index": 1
+          },
+          {
+            "location": "message",
+            "index": 99
+          },
+          {
+            "location": "message"
+          }
+        ]
+      }
+    },
+    "anthropic_pc_overflow": {
+      "keys": [
+        {
+          "name": "Anthropic API Key",
+          "value": "env.ANTHROPIC_API_KEY",
+          "weight": 1,
+          "models": [
+            "*"
+          ]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "anthropic",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "prompt_cache": {
+        "auto_inject": false,
+        "ttl": "1h",
+        "cache_control_injection_points": [
+          {
+            "location": "message",
+            "index": 0
+          },
+          {
+            "location": "message",
+            "index": 1
+          },
+          {
+            "location": "message",
+            "index": 2
+          },
+          {
+            "location": "message",
+            "index": 3
+          },
+          {
+            "location": "message",
+            "index": 4
+          },
+          {
+            "location": "message",
+            "index": 5
+          }
+        ]
+      }
+    },
+    "anthropic_pc_absent": {
+      "keys": [
+        {
+          "name": "Anthropic API Key",
+          "value": "env.ANTHROPIC_API_KEY",
+          "weight": 1,
+          "models": [
+            "*"
+          ]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "anthropic",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
     }
   },
   "config_store": {
     "enabled": true,
     "type": "sqlite",
     "config": {
-      "path": "../../tests/integrations/python/config.db"
+      "path": "tests/integrations/python/config.db"
     }
   },
   "logs_store": {
     "enabled": true,
     "type": "sqlite",
     "config": {
-      "path": "../../tests/integrations/python/logs.db"
+      "path": "tests/integrations/python/logs.db"
     },
     "writer": {
-      "max_batch_size":  100,
+      "max_batch_size": 100,
       "batch_interval": "1s",
       "max_batch_bytes": 10485760,
       "write_queue_capacity": 1000,
@@ -331,22 +713,114 @@
         "value": "sk-bf-test-key",
         "is_active": true,
         "provider_configs": [
-          { "provider": "openai", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-          { "provider": "elevenlabs", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-          { "provider": "xai", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-          { "provider": "huggingface", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-          { "provider": "anthropic", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-          { "provider": "gemini", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-          { "provider": "vertex", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-          { "provider": "mistral", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-          { "provider": "cohere", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-          { "provider": "parasail", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-          { "provider": "groq", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-          { "provider": "perplexity", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-          { "provider": "cerebras", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-          { "provider": "openrouter", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-          { "provider": "azure", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-          { "provider": "bedrock", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 }
+          {
+            "provider": "openai",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "elevenlabs",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "xai",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "huggingface",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "anthropic",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "gemini",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "vertex",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "mistral",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "cohere",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "parasail",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "groq",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "perplexity",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "cerebras",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "openrouter",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "azure",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "bedrock",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "bedrock_mantle",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "deepseek",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          }
         ]
       }
     ]
@@ -355,6 +829,7 @@
     "read_buffer_size": 65536
   },
   "client": {
+    "allow_per_request_raw_override": true,
     "drop_excess_requests": false,
     "initial_pool_size": 300,
     "allowed_origins": ["*"],

@@ -344,6 +344,67 @@ func multipartFieldValue(t *testing.T, contentType string, body []byte, name str
 	return ""
 }
 
+// TestTranscriptionRequest_PreservesFilenameEndToEnd covers issue #5670: the
+// ingress conversion must carry the client's filename into the Bifrost request
+// so the outbound multipart form labels the audio with its real container.
+// M4A/MP4/webm bytes are not magic-byte sniffable, so a dropped filename hits
+// the audio.mp3 fallback and OpenAI rejects the mislabelled upload.
+func TestTranscriptionRequest_PreservesFilenameEndToEnd(t *testing.T) {
+	ingress := &OpenAITranscriptionRequest{
+		Model:    "whisper-1",
+		File:     []byte("\x00\x00\x00\x20ftypM4A fake-m4a-bytes"),
+		Filename: "recording.m4a",
+	}
+
+	bifrostReq := ingress.ToBifrostTranscriptionRequest(nil)
+	if bifrostReq.Input.Filename != "recording.m4a" {
+		t.Fatalf("ingress conversion dropped filename: %q", bifrostReq.Input.Filename)
+	}
+
+	egress := ToOpenAITranscriptionRequest(bifrostReq)
+	if egress == nil {
+		t.Fatal("egress request is nil")
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if bifrostErr := ParseTranscriptionFormDataBodyFromRequest(writer, egress, schemas.OpenAI); bifrostErr != nil {
+		t.Fatalf("unexpected bifrost error: %v", bifrostErr.Error.Message)
+	}
+
+	if got := multipartFilePartName(t, writer.FormDataContentType(), body.Bytes()); got != "recording.m4a" {
+		t.Errorf("wire multipart file part named %q, want %q (sniffing fallback engaged)", got, "recording.m4a")
+	}
+}
+
+// multipartFilePartName returns the filename of the first "file" part in the
+// multipart body, or "" if absent.
+func multipartFilePartName(t *testing.T, contentType string, body []byte) string {
+	t.Helper()
+	_, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		t.Fatalf("ParseMediaType(%q): %v", contentType, err)
+	}
+	reader := multipart.NewReader(bytes.NewReader(body), params["boundary"])
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("NextPart(): %v", err)
+		}
+		name := part.FormName()
+		filename := part.FileName()
+		_, _ = io.Copy(io.Discard, part)
+		_ = part.Close()
+		if name == "file" {
+			return filename
+		}
+	}
+	return ""
+}
+
 func TestParseTranscriptionFormDataBodyFromRequest_ChunkingStrategyString(t *testing.T) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)

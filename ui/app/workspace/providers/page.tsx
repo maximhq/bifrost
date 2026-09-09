@@ -1,11 +1,14 @@
 import ModelProviderConfig from "@/app/workspace/providers/views/modelProviderConfig";
 import FullPageLoader from "@/components/fullPageLoader";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { TruncatedLabel } from "@/components/ui/truncatedLabel";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { DefaultNetworkConfig, DefaultPerformanceConfig } from "@/lib/constants/config";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
-import { ProviderLabels, ProviderNames } from "@/lib/constants/logs";
+import { HiddenProviders, ProviderLabels, ProviderNames, VisibleProviderNames } from "@/lib/constants/logs";
+import { useDismissedProviderCollisions } from "@/lib/hooks/useDismissedProviderCollisions";
 import {
 	getErrorMessage,
 	setSelectedProvider,
@@ -15,21 +18,26 @@ import {
 	useGetProvidersQuery,
 	useLazyGetProviderQuery,
 } from "@/lib/store";
-import { KnownProvider, ModelProviderName, ProviderStatus } from "@/lib/types/config";
+import { KnownProvider, ModelProvider, ModelProviderName, ProviderStatus } from "@/lib/types/config";
 import { cn } from "@/lib/utils";
+import { DATABRICKS_PROVIDER, isCustomDatabricksProvider } from "@/lib/utils/databricksMigration";
+import { findCustomProviderCollisions, normalizeProviderName } from "@/lib/utils/providerCollision";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useNavigate } from "@tanstack/react-router";
-import { AlertCircle } from "lucide-react";
+import { AlertCircle, ArrowLeft, Server } from "lucide-react";
 import { useQueryState } from "nuqs";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import AddCustomProviderSheet from "./dialogs/addNewCustomProviderSheet";
 import ConfirmDeleteProviderDialog from "./dialogs/confirmDeleteProviderDialog";
 import ConfirmRedirectionDialog from "./dialogs/confirmRedirection";
+import DatabricksMigrationDialog from "./dialogs/databricksMigrationDialog";
+import FirstPartyProviderAvailableDialog from "./dialogs/firstPartyProviderAvailableDialog";
 import { AddProviderDropdown } from "./views/addProviderDropdown";
 import { ProvidersEmptyState } from "./views/providersEmptyState";
 
 export default function Providers() {
+	const isMobile = useIsMobile();
 	const dispatch = useAppDispatch();
 	const navigate = useNavigate();
 	const hasProvidersAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
@@ -50,7 +58,15 @@ export default function Providers() {
 	const [showDeleteProviderDialog, setShowDeleteProviderDialog] = useState(false);
 	const [pendingRedirection, setPendingRedirection] = useState<string | undefined>(undefined);
 	const [showCustomProviderSheet, setShowCustomProviderSheet] = useState(false);
+	const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
 	const [provider, setProvider] = useQueryState("provider");
+	const { dismissed: dismissedCollisions, dismiss: dismissCollision, hydrated: collisionsHydrated } = useDismissedProviderCollisions();
+	const [handledCollisions, setHandledCollisions] = useState<Set<string>>(() => new Set());
+	// Custom Databricks provider the user chose not to migrate for now; cleared on every re-selection.
+	const [migrationDeferredFor, setMigrationDeferredFor] = useState<string | undefined>(undefined);
+	// The migration dialog is pinned to the provider it opened for: the source disappears from the
+	// list mid-migration, and the dialog must survive that.
+	const [migrationSession, setMigrationSession] = useState<{ provider: ModelProvider } | undefined>(undefined);
 
 	const { data: savedProviders, isLoading: isLoadingProviders } = useGetProvidersQuery();
 	const [getProvider, { isLoading: isLoadingProvider }] = useLazyGetProviderQuery();
@@ -61,7 +77,34 @@ export default function Providers() {
 	const configuredProviderNamesKey = JSON.stringify(configuredProviderNamesArr);
 	const existingInSidebarNames = new Set(configuredProviders.map((p) => p.name));
 
-	const knownProviders = ProviderNames.map((name) => ({ name }));
+	const knownProviders = VisibleProviderNames.map((name) => ({ name }));
+
+	// Custom providers whose name matches a provider that is now supported natively.
+	// Databricks is excluded: it gets the guided migration dialog below instead of the advisory one.
+	// Hidden (unreleased) providers are excluded too, since the user cannot add them yet.
+	const activeCollision = collisionsHydrated
+		? findCustomProviderCollisions(configuredProviders).find((c) => {
+			const key = normalizeProviderName(c.customName);
+			return (
+				c.knownProvider !== DATABRICKS_PROVIDER &&
+				!HiddenProviders.has(c.knownProvider) &&
+				!dismissedCollisions.has(key) &&
+				!handledCollisions.has(key)
+			);
+		})
+		: undefined;
+
+	// Open the migration dialog when the selected provider is a custom provider named exactly
+	// "databricks", unless the user deferred it for this selection.
+	useEffect(() => {
+		if (migrationSession || !selectedProvider || provider !== selectedProvider.name || isLoadingProvider) return;
+		if (migrationDeferredFor === selectedProvider.name) return;
+		if (isCustomDatabricksProvider(selectedProvider)) setMigrationSession({ provider: selectedProvider });
+	}, [migrationSession, selectedProvider, provider, isLoadingProvider, migrationDeferredFor]);
+
+	useEffect(() => {
+		setMigrationDeferredFor(undefined);
+	}, [provider]);
 
 	useEffect(() => {
 		if (!provider) return;
@@ -103,15 +146,23 @@ export default function Providers() {
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [selectedProvider, configuredProviderNamesKey]);
 
-	// When current provider is no longer configured (e.g. all keys deleted), switch to another configured provider
+	// A provider in the URL is a direct link to its detail view on small screens.
 	useEffect(() => {
-		if (!provider || configuredProviderNamesArr.length === 0) return;
+		if (isMobile && provider) {
+			setMobileDetailOpen(true);
+		}
+	}, [isMobile, provider]);
+
+	// When current provider is no longer configured (e.g. all keys deleted), switch to another configured provider.
+	// Held off while a Databricks migration is in progress: it removes the current provider on purpose.
+	useEffect(() => {
+		if (!provider || configuredProviderNamesArr.length === 0 || migrationSession) return;
 		const isCurrentConfigured = configuredProviderNamesArr.includes(provider as ModelProviderName);
 		if (!isCurrentConfigured) {
 			setProvider(configuredProviderNamesArr[0]);
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [provider, configuredProviderNamesKey]);
+	}, [provider, configuredProviderNamesKey, migrationSession]);
 
 	if (!hasProvidersAccess && hasSettingsOnly) {
 		return <FullPageLoader />;
@@ -133,6 +184,18 @@ export default function Providers() {
 				description: getErrorMessage(err),
 			});
 		}
+	};
+
+	const handleCollisionProceed = () => {
+		if (!activeCollision) return;
+		setHandledCollisions((prev) => new Set(prev).add(normalizeProviderName(activeCollision.customName)));
+		if (providerFormIsDirty) {
+			setPendingRedirection(activeCollision.customName);
+			setShowRedirectionDialog(true);
+			return;
+		}
+		setProvider(activeCollision.customName);
+		if (isMobile) setMobileDetailOpen(true);
 	};
 
 	if (configuredProviders.length === 0) {
@@ -163,7 +226,7 @@ export default function Providers() {
 	}
 
 	return (
-		<div className="flex h-full w-full flex-row gap-4">
+		<div className="flex h-full w-full min-w-0 flex-col gap-4 p-4 md:flex-row md:p-0">
 			<ConfirmDeleteProviderDialog
 				provider={selectedProvider!}
 				show={showDeleteProviderDialog}
@@ -174,6 +237,31 @@ export default function Providers() {
 					setShowDeleteProviderDialog(false);
 				}}
 			/>
+			{migrationSession && (
+				<DatabricksMigrationDialog
+					show
+					provider={migrationSession.provider}
+					onDeferred={() => {
+						setMigrationDeferredFor(migrationSession.provider.name);
+						setMigrationSession(undefined);
+					}}
+					onMigrated={() => {
+						setMigrationDeferredFor(undefined);
+						setMigrationSession(undefined);
+						setProvider(DATABRICKS_PROVIDER);
+						if (isMobile) setMobileDetailOpen(true);
+					}}
+				/>
+			)}
+			{activeCollision && !migrationSession && (
+				<FirstPartyProviderAvailableDialog
+					show
+					customProviderName={activeCollision.customName}
+					knownProvider={activeCollision.knownProvider}
+					onDismiss={() => dismissCollision(activeCollision.customName)}
+					onProceed={handleCollisionProceed}
+				/>
+			)}
 			<ConfirmRedirectionDialog
 				show={showRedirectionDialog}
 				onCancel={() => setShowRedirectionDialog(false)}
@@ -191,58 +279,74 @@ export default function Providers() {
 					setShowCustomProviderSheet(false);
 				}}
 			/>
-			<div className="flex flex-col" style={{ maxHeight: "calc(100vh - 70px)", width: "300px" }}>
+			<div
+				className={cn(
+					"w-full flex-col md:flex md:h-[calc(var(--app-content-viewport)_-_55px)] md:w-[300px]",
+					mobileDetailOpen ? "hidden" : "flex",
+				)}
+			>
 				<TooltipProvider>
-					<div className="custom-scrollbar flex-1 overflow-y-auto">
-						<div className="rounded-md bg-zinc-50/50 p-4 dark:bg-zinc-800/20">
-							{/* Configured Providers (standard with keys + custom) */}
-							{configuredProviders.length > 0 && (
-								<div className="mb-4">
-									<div className="text-muted-foreground mb-2 text-xs font-medium">Configured Providers</div>
-									{configuredProviders.map((p) => {
-										const isCustom = !ProviderNames.includes(p.name as KnownProvider);
-										const label = isCustom ? p.name : ProviderLabels[p.name as keyof typeof ProviderLabels];
-										return (
-											<div
-												key={p.name}
-												data-testid={`provider-item-${p.name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}`}
-												className={cn(
-													"mb-1 flex h-8 w-full min-w-0 cursor-pointer items-center gap-2 rounded-sm border px-3 text-sm",
-													selectedProvider?.name === p.name
-														? "bg-secondary opacity-100 hover:opacity-100"
-														: "hover:bg-secondary cursor-pointer border-transparent opacity-100 hover:border",
-												)}
-												onClick={(e) => {
-													e.preventDefault();
-													e.stopPropagation();
-													if (providerFormIsDirty) {
-														setPendingRedirection(p.name);
-														setShowRedirectionDialog(true);
-														return;
-													}
-													setProvider(p.name);
-												}}
-											>
-												<RenderProviderIcon
-													provider={(isCustom ? p.custom_provider_config?.base_provider_type : p.name) as ProviderIconType}
-													size="sm"
-													className="h-4 w-4 shrink-0"
-												/>
-												<TruncatedLabel className="flex-1 text-sm">{label}</TruncatedLabel>
-												<KeyDiscoveryFailedBadge provider={p} />
-												<ProviderStatusBadge status={p.provider_status} />
-												{isCustom && (
-													<Badge variant="secondary" className="text-muted-foreground ml-auto shrink-0 px-1.5 py-0.5 text-[10px] font-bold">
-														CUSTOM
-													</Badge>
-												)}
-											</div>
-										);
-									})}
+					<div className="flex min-h-0 flex-1 flex-col rounded-md bg-zinc-50/50 md:p-4 md:pb-0 dark:bg-zinc-800/20">
+						{/* Pinned lane title */}
+						<div className="text-muted-foreground mb-2 shrink-0 text-xs font-medium">Configured Providers</div>
+
+						{/* Configured providers (standard with keys + custom): the only scrolling region */}
+						<div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto">
+							{configuredProviders.length > 0 ? (
+								configuredProviders.map((p) => {
+									const isCustom = !!p.custom_provider_config || !ProviderNames.includes(p.name as KnownProvider);
+									const label = isCustom ? p.name : ProviderLabels[p.name as keyof typeof ProviderLabels];
+									return (
+										<div
+											key={p.name}
+											data-testid={`provider-item-${p.name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}`}
+											className={cn(
+												"mb-1 flex h-8 w-full min-w-0 cursor-pointer items-center gap-2 rounded-sm border px-3 text-sm",
+												selectedProvider?.name === p.name
+													? "bg-secondary opacity-100 hover:opacity-100"
+													: "hover:bg-secondary cursor-pointer border-transparent opacity-100 hover:border",
+											)}
+											onClick={(e) => {
+												e.preventDefault();
+												e.stopPropagation();
+												if (providerFormIsDirty) {
+													setPendingRedirection(p.name);
+													setShowRedirectionDialog(true);
+													return;
+												}
+												setProvider(p.name);
+												if (isMobile) setMobileDetailOpen(true);
+											}}
+										>
+											<RenderProviderIcon
+												provider={(isCustom ? p.custom_provider_config?.base_provider_type : p.name) as ProviderIconType}
+												size="sm"
+												className="h-4 w-4 shrink-0"
+											/>
+											<TruncatedLabel className="flex-1 text-sm">{label}</TruncatedLabel>
+											<KeyDiscoveryFailedBadge provider={p} />
+											<ProviderStatusBadge status={p.provider_status} />
+											{isCustom && (
+												<Badge variant="secondary" className="text-muted-foreground ml-auto shrink-0 px-1.5 py-0.5 text-[10px] font-bold">
+													CUSTOM
+												</Badge>
+											)}
+										</div>
+									);
+								})
+							) : (
+								<div
+									data-testid="providers-lane-empty"
+									className="flex flex-col items-center justify-center gap-2 px-4 py-8 text-center"
+								>
+									<Server className="text-muted-foreground h-8 w-8" strokeWidth={1} />
+									<div className="text-muted-foreground text-xs">No providers configured yet</div>
 								</div>
 							)}
+
+							{/* Add action: follows the last provider, sticks to the bottom once the list overflows */}
 							{hasProviderCreateAccess ? (
-								<div className="pb-4">
+								<div className="sticky bottom-0 bg-zinc-50/50 backdrop-blur-sm dark:bg-zinc-800/20">
 									<AddProviderDropdown
 										disabled={!hasProviderCreateAccess}
 										existingInSidebar={existingInSidebarNames}
@@ -256,19 +360,25 @@ export default function Providers() {
 					</div>
 				</TooltipProvider>
 			</div>
-			{isLoadingProvider && (
-				<div className="bg-muted/10 flex w-full items-center justify-center rounded-md" style={{ maxHeight: "calc(100vh - 300px)" }}>
-					<FullPageLoader />
-				</div>
-			)}
-			{!selectedProvider && (
-				<div className="bg-muted/10 flex w-full items-center justify-center rounded-md" style={{ maxHeight: "calc(100vh - 300px)" }}>
-					<div className="text-muted-foreground text-sm">Select a provider</div>
-				</div>
-			)}
-			{!isLoadingProvider && selectedProvider && (
-				<ModelProviderConfig provider={selectedProvider} onRequestDelete={() => setShowDeleteProviderDialog(true)} />
-			)}
+			<div className={cn("min-w-0 w-full", mobileDetailOpen ? "block" : "hidden md:block")}>
+				<Button variant="ghost" size="sm" className="mb-3 -ml-2 md:hidden" onClick={() => setMobileDetailOpen(false)}>
+					<ArrowLeft className="size-4" />
+					Providers
+				</Button>
+				{isLoadingProvider && (
+					<div className="bg-muted/10 flex w-full items-center justify-center rounded-md md:max-h-[calc(var(--app-content-viewport)_-_300px)]">
+						<FullPageLoader />
+					</div>
+				)}
+				{!selectedProvider && (
+					<div className="bg-muted/10 flex w-full items-center justify-center rounded-md md:max-h-[calc(var(--app-content-viewport)_-_300px)]">
+						<div className="text-muted-foreground text-sm">Select a provider</div>
+					</div>
+				)}
+				{!isLoadingProvider && selectedProvider && (
+					<ModelProviderConfig provider={selectedProvider} onRequestDelete={() => setShowDeleteProviderDialog(true)} />
+				)}
+			</div>
 		</div>
 	);
 }

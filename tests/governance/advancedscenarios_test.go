@@ -1684,3 +1684,142 @@ func TestCustomerDeletionSetsVKCustomerIDToNil(t *testing.T) {
 	t.Logf("VK customer_id is now nil ✓")
 	t.Logf("Customer deletion sets VK customer_id to nil verified ✓")
 }
+
+// ============================================================================
+// SCENARIO: allow_all_providers on a virtual key
+// ============================================================================
+
+// TestVKAllowAllProvidersOpensUnlistedProviders verifies that allow_all_providers grants
+// access to a provider the VK does not list in provider_configs, while a listed provider
+// keeps its own rules and still serves.
+func TestVKAllowAllProvidersOpensUnlistedProviders(t *testing.T) {
+	t.Parallel()
+	testData := NewGlobalTestData()
+	defer testData.Cleanup(t)
+
+	// Only openai is listed; anthropic is deliberately unlisted, so it is reachable
+	// only because allow_all_providers is on.
+	createVKResp := MakeRequest(t, APIRequest{
+		Method: "POST",
+		Path:   "/api/governance/virtual-keys",
+		Body: CreateVirtualKeyRequest{
+			Name:              "test-vk-allow-all-" + generateRandomID(),
+			AllowAllProviders: true,
+			ProviderConfigs: []ProviderConfigRequest{{
+				Provider:      "openai",
+				Weight:        float64Ptr(1.0),
+				AllowedModels: []string{"*"},
+				KeyIDs:        []string{"*"},
+			}},
+		},
+	})
+	if createVKResp.StatusCode != 200 {
+		t.Fatalf("Failed to create VK: status %d, body %v", createVKResp.StatusCode, createVKResp.Body)
+	}
+	testData.AddVirtualKey(ExtractIDFromResponse(t, createVKResp))
+	vkValue := createVKResp.Body["virtual_key"].(map[string]interface{})["value"].(string)
+
+	// Poll the listed provider until the VK config is live in the governance store,
+	// with a bounded timeout, instead of a fixed sleep — keeps the test deterministic.
+	var listedResp *APIResponse
+	for i := 0; i < 20; i++ {
+		listedResp = MakeRequest(t, APIRequest{
+			Method: "POST",
+			Path:   "/v1/chat/completions",
+			Body: ChatCompletionRequest{
+				Model:    "openai/gpt-4o",
+				Messages: []ChatMessage{{Role: "user", Content: "allow-all probe"}},
+			},
+			VKHeader: &vkValue,
+		})
+		if listedResp.StatusCode == 200 {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if listedResp.StatusCode != 200 {
+		t.Fatalf("listed provider (openai) should serve once the VK is live, got %d: %v", listedResp.StatusCode, listedResp.Body)
+	}
+
+	// The unlisted provider is reachable only because allow_all_providers is on.
+	unlistedResp := MakeRequest(t, APIRequest{
+		Method: "POST",
+		Path:   "/v1/chat/completions",
+		Body: ChatCompletionRequest{
+			Model:    "anthropic/claude-sonnet-4-5",
+			Messages: []ChatMessage{{Role: "user", Content: "allow-all probe"}},
+		},
+		VKHeader: &vkValue,
+	})
+	if unlistedResp.StatusCode != 200 {
+		t.Fatalf("allow_all_providers should permit the unlisted provider (anthropic), got %d: %v", unlistedResp.StatusCode, unlistedResp.Body)
+	}
+	t.Logf("allow_all_providers permitted the unlisted provider ✓")
+}
+
+// TestVKWithoutAllowAllProvidersDeniesUnlisted is the negative control: with the flag off
+// (the default), a provider not in provider_configs is denied while the listed one serves.
+func TestVKWithoutAllowAllProvidersDeniesUnlisted(t *testing.T) {
+	t.Parallel()
+	testData := NewGlobalTestData()
+	defer testData.Cleanup(t)
+
+	// allow_all_providers defaults to false, so only openai is permitted.
+	createVKResp := MakeRequest(t, APIRequest{
+		Method: "POST",
+		Path:   "/api/governance/virtual-keys",
+		Body: CreateVirtualKeyRequest{
+			Name: "test-vk-deny-unlisted-" + generateRandomID(),
+			ProviderConfigs: []ProviderConfigRequest{{
+				Provider:      "openai",
+				Weight:        float64Ptr(1.0),
+				AllowedModels: []string{"*"},
+				KeyIDs:        []string{"*"},
+			}},
+		},
+	})
+	if createVKResp.StatusCode != 200 {
+		t.Fatalf("Failed to create VK: status %d, body %v", createVKResp.StatusCode, createVKResp.Body)
+	}
+	testData.AddVirtualKey(ExtractIDFromResponse(t, createVKResp))
+	vkValue := createVKResp.Body["virtual_key"].(map[string]interface{})["value"].(string)
+
+	// Poll the listed provider until the VK config is live, with a bounded timeout,
+	// instead of a fixed sleep — keeps the test deterministic.
+	var listedResp *APIResponse
+	for i := 0; i < 20; i++ {
+		listedResp = MakeRequest(t, APIRequest{
+			Method: "POST",
+			Path:   "/v1/chat/completions",
+			Body: ChatCompletionRequest{
+				Model:    "openai/gpt-4o",
+				Messages: []ChatMessage{{Role: "user", Content: "deny probe"}},
+			},
+			VKHeader: &vkValue,
+		})
+		if listedResp.StatusCode == 200 {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if listedResp.StatusCode != 200 {
+		t.Fatalf("listed provider (openai) should serve once the VK is live, got %d: %v", listedResp.StatusCode, listedResp.Body)
+	}
+
+	// The unlisted provider is denied by deny-by-default.
+	unlistedResp := MakeRequest(t, APIRequest{
+		Method: "POST",
+		Path:   "/v1/chat/completions",
+		Body: ChatCompletionRequest{
+			Model:    "anthropic/claude-sonnet-4-5",
+			Messages: []ChatMessage{{Role: "user", Content: "deny probe"}},
+		},
+		VKHeader: &vkValue,
+	})
+	// Require a 4xx denial specifically; a 5xx would be a backend failure, not a
+	// governance denial, and must not pass this negative control.
+	if unlistedResp.StatusCode < 400 || unlistedResp.StatusCode >= 500 {
+		t.Fatalf("unlisted provider (anthropic) should be denied with a 4xx without allow_all_providers, got %d: %v", unlistedResp.StatusCode, unlistedResp.Body)
+	}
+	t.Logf("deny-by-default denied the unlisted provider ✓")
+}

@@ -1,0 +1,55 @@
+# Configuration: config store and logs store on SEPARATE PostgreSQL databases
+# The config store uses the shared `postgresql` connection (here, an external RDS),
+# while the logs store points at a different external PostgreSQL via
+# storage.logsStore.postgres. Useful when logs are high-volume and you want them on
+# a dedicated database/instance, isolated from config.
+# Usage: helm install bifrost ./bifrost -f values-examples/separate-logs-postgres.yaml
+
+storage:
+  mode: postgres
+  configStore:
+    enabled: true
+    type: postgres   # Config store -> shared postgresql block below
+  logsStore:
+    enabled: true
+    type: postgres   # Logs store -> separate postgres below
+    # Point logs at a different external PostgreSQL than the config store.
+    postgres:
+      enabled: true
+      host: "logs-db.example.com"
+      port: 5432
+      user: bifrost
+      database: bifrost_logs
+      sslMode: require
+      # Provide the password via an existing secret (recommended). existingSecret
+      # takes precedence: when set, the chart injects BIFROST_LOGS_POSTGRES_PASSWORD
+      # from this secret and ignores `password` below.
+      existingSecret: "bifrost-logs-postgres"
+      passwordKey: "password"
+      # ... or inline via an env var (avoid in production). To use this, REMOVE
+      # existingSecret above and supply LOGS_POSTGRES_PASSWORD yourself through the
+      # chart's top-level env / extraEnv / envFrom (the chart does not set it for you):
+      # password: "env.LOGS_POSTGRES_PASSWORD"
+
+# Shared PostgreSQL connection used by the config store (external instance here).
+postgresql:
+  enabled: false
+  external:
+    enabled: true
+    host: "config-db.example.com"
+    port: 5432
+    user: bifrost
+    database: bifrost
+    sslMode: require
+    existingSecret: "bifrost-config-postgres"
+    passwordKey: "password"
+
+# No vector store
+vectorStore:
+  enabled: false
+  type: none
+
+bifrost:
+  client:
+    enableLogging: true
+  providers: {}

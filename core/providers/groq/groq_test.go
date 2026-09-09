@@ -25,11 +25,11 @@ func TestGroq(t *testing.T) {
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:  schemas.Groq,
-		ChatModel: "llama-3.3-70b-versatile",
+		ChatModel: "qwen/qwen3.8-27b",
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Groq, Model: "openai/gpt-oss-120b"},
 		},
-		TextModel: "llama-3.3-70b-versatile",
+		TextModel: "qwen/qwen3.8-27b",
 		TextCompletionFallbacks: []schemas.Fallback{
 			{Provider: schemas.Groq, Model: "openai/gpt-oss-20b"},
 		},

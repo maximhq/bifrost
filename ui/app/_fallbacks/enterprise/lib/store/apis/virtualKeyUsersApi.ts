@@ -20,3 +20,20 @@ export const useGetVirtualKeyUsersQuery = (
 	isError: false,
 	error: null,
 });
+
+// Attach/detach exist so OSS callers (the virtual key sheet's assignment section)
+// type-check and link. The UI never reaches them: the "Assign to User" option is
+// gated on the user picker registry, which OSS leaves unregistered.
+const unavailable = () => {
+	throw new Error("Virtual key user assignment is an enterprise feature");
+};
+
+export const useAttachVirtualKeyUsersMutation = (): [
+	(_args: { vkId: string; data: { user_ids: string[]; preserve_usage?: boolean } }) => { unwrap: () => Promise<{ message: string }> },
+	{ isLoading: boolean },
+] => [() => ({ unwrap: unavailable }), { isLoading: false }];
+
+export const useDetachVirtualKeyUserMutation = (): [
+	(_args: { vkId: string; userId: string }) => { unwrap: () => Promise<{ message: string }> },
+	{ isLoading: boolean },
+] => [() => ({ unwrap: unavailable }), { isLoading: false }];

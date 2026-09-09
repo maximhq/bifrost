@@ -85,7 +85,7 @@ function getLangChainGoogle(): ChatGoogleGenerativeAI {
   const model = getProviderModel('gemini', 'chat')
 
   return new ChatGoogleGenerativeAI({
-    modelName: model,
+    model,
     apiKey,
     maxOutputTokens: 100,
     maxRetries: 3,
@@ -584,7 +584,14 @@ describe('LangChain.js Integration Tests', () => {
         expect(response).toBeDefined()
         // LangChain includes usage info in response_metadata
         if (response.response_metadata) {
-          const usage = response.response_metadata.usage || response.response_metadata.tokenUsage
+          const usage = (response.response_metadata.usage || response.response_metadata.tokenUsage) as
+            | {
+                prompt_tokens?: number
+                promptTokens?: number
+                completion_tokens?: number
+                completionTokens?: number
+              }
+            | undefined
           if (usage) {
             expect(usage.prompt_tokens || usage.promptTokens).toBeGreaterThan(0)
             expect(usage.completion_tokens || usage.completionTokens).toBeGreaterThan(0)
@@ -629,7 +636,9 @@ describe('LangChain.js Integration Tests', () => {
         expect(response).toBeDefined()
         // Google includes usage info in response_metadata
         if (response.response_metadata) {
-          const usage = response.response_metadata.usage
+          const usage = response.response_metadata.usage as
+            | { promptTokenCount?: number; prompt_tokens?: number }
+            | undefined
           if (usage) {
             expect(usage.promptTokenCount || usage.prompt_tokens).toBeGreaterThan(0)
           }
@@ -808,7 +817,7 @@ describe('LangChain.js Integration Tests', () => {
         const apiKey = hasApiKey('gemini') ? getApiKey('gemini') : 'dummy-key'
 
         const model = new ChatGoogleGenerativeAI({
-          modelName: thinkingModel,
+          model: thinkingModel,
           apiKey,
           maxOutputTokens: 2048,
         })

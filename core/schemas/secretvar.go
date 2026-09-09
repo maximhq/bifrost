@@ -258,6 +258,17 @@ func (e *SecretVar) Equals(other *SecretVar) bool {
 		e.SecretType == other.SecretType
 }
 
+// Clone returns a SecretVar holding the same value as e, backed by a
+// distinct pointer — so a caller mutating the clone's fields (e.g. in-place
+// encryption before a DB write) never touches e itself.
+func (e *SecretVar) Clone() *SecretVar {
+	if e == nil {
+		return nil
+	}
+	clone := *e
+	return &clone
+}
+
 // Redacted returns a new SecretVar with the value redacted.
 func (e *SecretVar) Redacted() *SecretVar {
 	if e == nil {

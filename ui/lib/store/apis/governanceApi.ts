@@ -1,5 +1,7 @@
 import {
 	Budget,
+	BudgetOverrideRequest,
+	BudgetOverrideResponse,
 	BulkRotateVirtualKeysRequest,
 	BulkRotateVirtualKeysResponse,
 	CreateCustomerRequest,
@@ -39,11 +41,12 @@ import {
 	UpdateVirtualKeyRequest,
 	VirtualKey,
 } from "@/lib/types/governance";
-import { AnalyzerConfig } from "@/lib/types/complexityRouter";
+import { AnalyzerConfig, SemanticStatusInfo } from "@/lib/types/complexityRouter";
 import { baseApi } from "./baseApi";
 
 type PricingOverrideQueryArgs = {
 	scopeKind?: string;
+	userID?: string;
 	virtualKeyID?: string;
 	providerID?: string;
 	providerKeyID?: string;
@@ -64,6 +67,7 @@ export const governanceApi = baseApi.injectEndpoints({
 					...(params?.search && { search: params.search }),
 					...(params?.customer_id && { customer_id: params.customer_id }),
 					...(params?.team_id && { team_id: params.team_id }),
+					...(params?.user_id && { user_id: params.user_id }),
 					...(params?.exclude_access_profile_managed_virtual === true && {
 						exclude_access_profile_managed_virtual: "true",
 					}),
@@ -81,7 +85,7 @@ export const governanceApi = baseApi.injectEndpoints({
 			providesTags: ["VirtualKeys"],
 		}),
 
-		getVirtualKey: builder.query<{ virtual_key: VirtualKey }, string>({
+		getVirtualKey: builder.query<{ virtual_key: VirtualKey; virtual_mcp_ids: number[] }, string>({
 			query: (vkId) => `/governance/virtual-keys/${vkId}`,
 			providesTags: (result, error, vkId) => [{ type: "VirtualKeys", id: vkId }],
 		}),
@@ -128,6 +132,23 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "DELETE",
 			}),
 			invalidatesTags: ["VirtualKeys", "ModelConfigs"],
+		}),
+
+		setVirtualKeyBudgetOverride: builder.mutation<BudgetOverrideResponse, { vkId: string; budgetId: string; data: BudgetOverrideRequest }>({
+			query: ({ vkId, budgetId, data }) => ({
+				url: `/governance/virtual-keys/${encodeURIComponent(vkId)}/budgets/${encodeURIComponent(budgetId)}/override`,
+				method: "PUT",
+				body: data,
+			}),
+			invalidatesTags: ["VirtualKeys", "Budgets", "ModelConfigs"],
+		}),
+
+		removeVirtualKeyBudgetOverride: builder.mutation<BudgetOverrideResponse, { vkId: string; budgetId: string }>({
+			query: ({ vkId, budgetId }) => ({
+				url: `/governance/virtual-keys/${encodeURIComponent(vkId)}/budgets/${encodeURIComponent(budgetId)}/override`,
+				method: "DELETE",
+			}),
+			invalidatesTags: ["VirtualKeys", "Budgets", "ModelConfigs"],
 		}),
 
 		// Teams
@@ -509,6 +530,7 @@ export const governanceApi = baseApi.injectEndpoints({
 					...(params?.offset !== undefined && { offset: params.offset }),
 					...(params?.search && { search: params.search }),
 					...(params?.scope && { scope: params.scope }),
+					...(params?.scope_id && { scope_id: params.scope_id }),
 					...(params?.provider && { provider: params.provider }),
 				},
 			}),
@@ -540,6 +562,7 @@ export const governanceApi = baseApi.injectEndpoints({
 						const args = entry.originalArgs as GetModelConfigsParams | undefined;
 						if (args?.search && !mc.model_name.toLowerCase().includes(args.search.toLowerCase())) continue;
 						if (args?.scope && mc.scope !== args.scope) continue;
+						if (args?.scope_id && mc.scope_id !== args.scope_id) continue;
 						if (args?.provider && mc.provider !== args.provider) continue;
 						dispatch(
 							governanceApi.util.updateQueryData("getModelConfigs", entry.originalArgs, (draft) => {
@@ -631,6 +654,7 @@ export const governanceApi = baseApi.injectEndpoints({
 				url: "/governance/pricing-overrides",
 				params: {
 					scope_kind: params?.scopeKind,
+					user_id: params?.userID,
 					virtual_key_id: params?.virtualKeyID,
 					provider_id: params?.providerID,
 					provider_key_id: params?.providerKeyID,
@@ -658,6 +682,7 @@ export const governanceApi = baseApi.injectEndpoints({
 						const args: PricingOverrideQueryArgs = entry.originalArgs ?? {};
 						const matchesQuery =
 							(!args.scopeKind || args.scopeKind === created.scope_kind) &&
+							(!args.userID || args.userID === created.user_id) &&
 							(!args.virtualKeyID || args.virtualKeyID === created.virtual_key_id) &&
 							(!args.providerID || args.providerID === created.provider_id) &&
 							(!args.providerKeyID || args.providerKeyID === created.provider_key_id) &&
@@ -701,6 +726,7 @@ export const governanceApi = baseApi.injectEndpoints({
 						const args: PricingOverrideQueryArgs = entry.originalArgs ?? {};
 						const matchesQuery =
 							(!args.scopeKind || args.scopeKind === updated.scope_kind) &&
+							(!args.userID || args.userID === updated.user_id) &&
 							(!args.virtualKeyID || args.virtualKeyID === updated.virtual_key_id) &&
 							(!args.providerID || args.providerID === updated.provider_id) &&
 							(!args.providerKeyID || args.providerKeyID === updated.provider_key_id);
@@ -830,7 +856,7 @@ export const governanceApi = baseApi.injectEndpoints({
 		// Complexity Analyzer Config
 		getComplexityAnalyzerConfig: builder.query<AnalyzerConfig, void>({
 			query: () => ({
-				url: "/governance/complexity-analyzer-config",
+				url: "/routing/complexity-analyzer-config",
 				method: "GET",
 			}),
 			providesTags: ["ComplexityAnalyzerConfig"],
@@ -838,16 +864,33 @@ export const governanceApi = baseApi.injectEndpoints({
 
 		updateComplexityAnalyzerConfig: builder.mutation<AnalyzerConfig, AnalyzerConfig>({
 			query: (data) => ({
-				url: "/governance/complexity-analyzer-config",
+				url: "/routing/complexity-analyzer-config",
 				method: "PUT",
 				body: data,
 			}),
 			invalidatesTags: ["ComplexityAnalyzerConfig"],
 		}),
 
+		getComplexitySemanticStatus: builder.query<SemanticStatusInfo, void>({
+			query: () => ({
+				url: "/routing/complexity-analyzer-status",
+				method: "GET",
+			}),
+			// Readiness is derived from the saved configuration — a save or a reset
+			// restarts warmup — so it has to be invalidated by the same tag, or the
+			// page keeps showing the state the classifier was in before the edit.
+			providesTags: ["ComplexityAnalyzerConfig"],
+		}),
+		retryComplexitySemanticWarmup: builder.mutation<SemanticStatusInfo, void>({
+			query: () => ({
+				url: "/routing/complexity-analyzer-status/retry",
+				method: "POST",
+			}),
+			invalidatesTags: ["ComplexityAnalyzerConfig"],
+		}),
 		resetComplexityAnalyzerConfig: builder.mutation<AnalyzerConfig, void>({
 			query: () => ({
-				url: "/governance/complexity-analyzer-config/reset",
+				url: "/routing/complexity-analyzer-config/reset",
 				method: "POST",
 			}),
 			invalidatesTags: ["ComplexityAnalyzerConfig"],
@@ -864,6 +907,8 @@ export const {
 	useRotateVirtualKeyMutation,
 	useBulkRotateVirtualKeysMutation,
 	useDeleteVirtualKeyMutation,
+	useSetVirtualKeyBudgetOverrideMutation,
+	useRemoveVirtualKeyBudgetOverrideMutation,
 
 	// Teams
 	useGetTeamsQuery,
@@ -919,6 +964,8 @@ export const {
 	useGetComplexityAnalyzerConfigQuery,
 	useUpdateComplexityAnalyzerConfigMutation,
 	useResetComplexityAnalyzerConfigMutation,
+	useGetComplexitySemanticStatusQuery,
+	useRetryComplexitySemanticWarmupMutation,
 
 	// Lazy queries
 	useLazyGetVirtualKeysQuery,

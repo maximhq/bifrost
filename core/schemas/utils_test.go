@@ -50,3 +50,114 @@ func TestSanitizeImageURLDataURLUnaffectedByAllowlist(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, dataURL, got)
 }
+
+func TestSupportsGrokReasoningEffort(t *testing.T) {
+	// Deny-listed: models confirmed to reject reasoning_effort.
+	denied := []string{
+		"grok-3",
+		"grok-4",
+		"grok-4-0709",   // dated alias must normalize to grok-4
+		"grok-4-latest", // channel alias must normalize to grok-4
+		"xai/grok-4",    // routing prefix must be stripped
+		"grok-4-fast-reasoning",
+		"grok-4-1-fast-reasoning",
+		"grok-code-fast-1",
+	}
+	for _, m := range denied {
+		assert.False(t, SupportsGrokReasoningEffort(m), "expected %q to be denied", m)
+	}
+
+	// Allowed: current generation, plus anything unrecognized (fail open).
+	allowed := []string{
+		"grok-3-mini",
+		"grok-4.3",
+		"grok-4.5",
+		"grok-4.6",
+		"grok-4.20-0309-reasoning",
+		"grok-4.20-multi-agent-0309",
+		"grok-5", // unknown future model must not be silently stripped
+	}
+	for _, m := range allowed {
+		assert.True(t, SupportsGrokReasoningEffort(m), "expected %q to be allowed", m)
+	}
+}
+func TestParseDataURL(t *testing.T) {
+	tests := []struct {
+		name              string
+		dataURL           string
+		expectedMediaType string
+		expectedBase64    bool
+		expectedPayload   string
+		expectedOK        bool
+	}{
+		{"Base64", "data:image/png;base64,iVBORw0KGgo=", "image/png", true, "iVBORw0KGgo=", true},
+		// Browsers and OpenAI-compatible clients routinely emit a charset parameter;
+		// dropping the whole URL on the floor shipped "data:..." as the payload.
+		{"MediaTypeParameter", "data:text/plain;charset=utf-8;base64,QUJD", "text/plain", true, "QUJD", true},
+		{"ParameterWithoutBase64", "data:text/plain;charset=utf-8,Hello%20World", "text/plain", false, "Hello%20World", true},
+		{"Uppercase", "data:IMAGE/PNG;BASE64,iVBORw0KGgo=", "image/png", true, "iVBORw0KGgo=", true},
+		{"OfficeDocument", "data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,UEsDBBQ", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", true, "UEsDBBQ", true},
+		{"PayloadWithNewlines", "data:image/png;base64,iVBOR\nw0KGgo=", "image/png", true, "iVBOR\nw0KGgo=", true},
+		{"MissingMediaType", "data:;base64,iVBORw0KGgo=", "", false, "", false},
+		{"MissingPayload", "data:image/png;base64,", "", false, "", false},
+		{"NotADataURL", "https://example.com/image.png", "", false, "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mediaType, isBase64, payload, ok := ParseDataURL(tt.dataURL)
+			assert.Equal(t, tt.expectedOK, ok)
+			assert.Equal(t, tt.expectedMediaType, mediaType)
+			assert.Equal(t, tt.expectedBase64, isBase64)
+			assert.Equal(t, tt.expectedPayload, payload)
+		})
+	}
+}
+
+func TestExtractURLTypeInfoDropsMediaTypeParameters(t *testing.T) {
+	info := ExtractURLTypeInfo("data:text/plain;charset=utf-8;base64,QUJD")
+	require.NotNil(t, info.MediaType)
+	assert.Equal(t, "text/plain", *info.MediaType)
+	assert.Equal(t, ImageContentTypeBase64, info.Type)
+	require.NotNil(t, info.DataURLWithoutPrefix)
+	assert.Equal(t, "QUJD", *info.DataURLWithoutPrefix)
+}
+
+func TestSanitizeImageURLAcceptsDataURLWithParameters(t *testing.T) {
+	dataURL := "data:image/png;charset=binary;base64,iVBORw0KGgo="
+	got, err := SanitizeImageURL(dataURL)
+	require.NoError(t, err)
+	assert.Equal(t, dataURL, got)
+
+	// A data URL with no media type stays invalid: providers reject "data:;base64,...".
+	_, err = SanitizeImageURL("data:;base64,iVBORw0KGgo=")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid data URL format")
+}
+
+// TestIsGPT56ModelRequiresRevisionBoundary pins both halves of the family check.
+// The substring form is deliberate - catalog ids carry region and vendor
+// namespaces, so a prefix test would miss them - but the needle has to end on a
+// revision boundary, or a later dot-revision such as gpt-5.60 is mistaken for a
+// member of the family and is handed a prompt_cache_breakpoint it never declared.
+func TestIsGPT56ModelRequiresRevisionBoundary(t *testing.T) {
+	for _, model := range []string{
+		"gpt-5.6",
+		"GPT-5.6",
+		"azure/eu/gpt-5.6",
+		"openai.gpt-5.6-terra",
+		"gpt-5.6-mini",
+	} {
+		assert.True(t, IsGPT56Model(model), "expected %q to resolve as gpt-5.6 family", model)
+	}
+
+	for _, model := range []string{
+		"gpt-5.60",
+		"gpt-5.61-preview",
+		"azure/eu/gpt-5.65",
+		"gpt-5.5",
+		"gpt-5",
+	} {
+		assert.False(t, IsGPT56Model(model), "expected %q NOT to resolve as gpt-5.6 family", model)
+	}
+}

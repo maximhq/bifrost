@@ -2,6 +2,7 @@ package bedrock_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"strings"
@@ -2543,6 +2544,41 @@ func TestGuardrailConfigRequestRoundTrip(t *testing.T) {
 	assert.Nil(t, result.ExtraParams, "ExtraParams should be nil after all keys are extracted")
 }
 
+// TestContentFilterMapsToIncomplete verifies that a Bedrock content-filter /
+// guardrail stop reason (which returns no output message and zero usage) is
+// surfaced as Responses status "incomplete" with incomplete_details.reason
+// "content_filter", instead of being normalized to a successful empty "completed"
+// result that downstream agents cannot distinguish from a genuine empty turn.
+func TestContentFilterMapsToIncomplete(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	cases := []struct {
+		name             string
+		bedrockStop      string
+		expectStopReason string
+	}{
+		{"content_filtered", "content_filtered", "content_filter"},
+		{"guardrail_intervened", "guardrail_intervened", "guardrail_intervened"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			original := &bedrock.BedrockConverseResponse{
+				StopReason: tc.bedrockStop,
+			}
+
+			bifrostResp, err := original.ToBifrostResponsesResponse(ctx)
+			require.NoError(t, err)
+			require.NotNil(t, bifrostResp.Status, "status must be set, not left to default to completed")
+			assert.Equal(t, schemas.ResponsesResponseStatusIncomplete, *bifrostResp.Status)
+			require.NotNil(t, bifrostResp.IncompleteDetails)
+			assert.Equal(t, schemas.ResponsesResponseIncompleteReasonContentFilter, bifrostResp.IncompleteDetails.Reason)
+			require.NotNil(t, bifrostResp.StopReason)
+			assert.Equal(t, tc.expectStopReason, *bifrostResp.StopReason)
+		})
+	}
+}
+
 // TestGuardrailTraceResponseRoundTrip verifies the full trace response round-trip:
 //
 //	BedrockConverseResponse.Trace
@@ -2640,7 +2676,7 @@ func TestGuardrailTraceResponseRoundTrip(t *testing.T) {
 }
 
 func TestToBedrockResponsesRequest_AnthropicTextFormatUsesOutputConfig(t *testing.T) {
-	schemaObj := any(schemas.NewOrderedMapFromPairs(
+	schemaObj := schemas.NewOrderedMapFromPairs(
 		schemas.KV("type", "object"),
 		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
 			schemas.KV("topic", schemas.NewOrderedMapFromPairs(
@@ -2648,7 +2684,7 @@ func TestToBedrockResponsesRequest_AnthropicTextFormatUsesOutputConfig(t *testin
 			)),
 		)),
 		schemas.KV("required", []string{"topic"}),
-	))
+	)
 
 	req := &schemas.BifrostResponsesRequest{
 		Model: "bedrock/anthropic.claude-3-sonnet-20240229-v1:0",
@@ -2658,7 +2694,7 @@ func TestToBedrockResponsesRequest_AnthropicTextFormatUsesOutputConfig(t *testin
 					Type: "json_schema",
 					Name: schemas.Ptr("classification"),
 					JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
-						Schema: &schemaObj,
+						Schema: &schemas.JSONSchemaOrBool{SchemaMap: schemaObj},
 					},
 				},
 			},
@@ -2686,7 +2722,7 @@ func TestToBedrockResponsesRequest_AnthropicTextFormatUsesOutputConfig(t *testin
 }
 
 func TestToBedrockResponsesRequest_NonAnthropicTextFormatStillUsesToolConversion(t *testing.T) {
-	schemaObj := any(schemas.NewOrderedMapFromPairs(
+	schemaObj := schemas.NewOrderedMapFromPairs(
 		schemas.KV("type", "object"),
 		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
 			schemas.KV("topic", schemas.NewOrderedMapFromPairs(
@@ -2694,7 +2730,7 @@ func TestToBedrockResponsesRequest_NonAnthropicTextFormatStillUsesToolConversion
 			)),
 		)),
 		schemas.KV("required", []string{"topic"}),
-	))
+	)
 
 	req := &schemas.BifrostResponsesRequest{
 		Model: "bedrock/amazon.nova-pro-v1:0",
@@ -2704,7 +2740,7 @@ func TestToBedrockResponsesRequest_NonAnthropicTextFormatStillUsesToolConversion
 					Type: "json_schema",
 					Name: schemas.Ptr("classification"),
 					JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
-						Schema: &schemaObj,
+						Schema: &schemas.JSONSchemaOrBool{SchemaMap: schemaObj},
 					},
 				},
 			},
@@ -2729,7 +2765,7 @@ func TestToBedrockResponsesRequest_NonAnthropicTextFormatStillUsesToolConversion
 }
 
 func TestToBedrockResponsesRequest_NonAnthropicTextFormatPreservedWithUserTools(t *testing.T) {
-	schemaObj := any(schemas.NewOrderedMapFromPairs(
+	schemaObj := schemas.NewOrderedMapFromPairs(
 		schemas.KV("type", "object"),
 		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
 			schemas.KV("topic", schemas.NewOrderedMapFromPairs(
@@ -2737,7 +2773,7 @@ func TestToBedrockResponsesRequest_NonAnthropicTextFormatPreservedWithUserTools(
 			)),
 		)),
 		schemas.KV("required", []string{"topic"}),
-	))
+	)
 
 	toolParams := schemas.ToolFunctionParameters{
 		Type: "object",
@@ -2756,7 +2792,7 @@ func TestToBedrockResponsesRequest_NonAnthropicTextFormatPreservedWithUserTools(
 					Type: "json_schema",
 					Name: schemas.Ptr("classification"),
 					JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
-						Schema: &schemaObj,
+						Schema: &schemas.JSONSchemaOrBool{SchemaMap: schemaObj},
 					},
 				},
 			},
@@ -2958,7 +2994,7 @@ func TestToolResultJSONParsingResponsesAPI(t *testing.T) {
 				},
 			}
 
-			messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, false)
+			messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, false)
 			require.NoError(t, err)
 			require.Len(t, messages, 1)
 
@@ -2993,6 +3029,7 @@ func TestConvertBifrostResponsesMessageContentBlocksToBedrockContentBlocks_Empty
 		name           string
 		input          *schemas.BifrostResponsesResponse
 		expectedBlocks int // Expected number of ContentBlocks in the output
+		expectError    bool
 		description    string
 	}{
 		{
@@ -3064,7 +3101,7 @@ func TestConvertBifrostResponsesMessageContentBlocksToBedrockContentBlocks_Empty
 			description:    "Reasoning block with nil Text should not create an empty ContentBlock",
 		},
 		{
-			name: "FileBlockWithNilFileData_ShouldNotCreateEmptyBlock",
+			name: "FileBlockWithNilFileData_ShouldReturnError",
 			input: &schemas.BifrostResponsesResponse{
 				CreatedAt: 1234567890,
 				Output: []schemas.ResponsesMessage{
@@ -3086,8 +3123,8 @@ func TestConvertBifrostResponsesMessageContentBlocksToBedrockContentBlocks_Empty
 					},
 				},
 			},
-			expectedBlocks: 0,
-			description:    "File block with nil FileData should not create an empty ContentBlock",
+			expectError: true,
+			description: "File block with neither FileData nor FileURL should return an error instead of silently dropping the document",
 		},
 		{
 			name: "FileBlockWithNilFileBlock_ShouldNotCreateEmptyBlock",
@@ -3178,11 +3215,17 @@ func TestConvertBifrostResponsesMessageContentBlocksToBedrockContentBlocks_Empty
 					},
 				},
 			},
-			expectedBlocks: 1,
-			description:    "Valid file block should create a ContentBlock",
+			// Converse rejects a message carrying a document block with no
+			// accompanying text block ("If you include a ContentBlock with a
+			// document field in the array, you must also include a ContentBlock
+			// with a text field" — API_runtime_Converse), so a document-only
+			// message gets a placeholder text block injected ahead of it. See
+			// bedrockDocumentPlaceholderText and document_placeholder_test.go.
+			expectedBlocks: 2,
+			description:    "Valid file block should create a document ContentBlock plus the required placeholder text block",
 		},
 		{
-			name: "MixedValidAndInvalidBlocks_ShouldOnlyCreateValidBlocks",
+			name: "MixedValidAndSourceLessFileBlocks_ShouldReturnError",
 			input: &schemas.BifrostResponsesResponse{
 				CreatedAt: 1234567890,
 				Output: []schemas.ResponsesMessage{
@@ -3214,8 +3257,8 @@ func TestConvertBifrostResponsesMessageContentBlocksToBedrockContentBlocks_Empty
 					},
 				},
 			},
-			expectedBlocks: 2, // Only valid text and reasoning blocks
-			description:    "Mixed valid and invalid blocks should only create valid ContentBlocks",
+			expectError: true,
+			description: "A source-less document should fail the message conversion instead of being removed from otherwise valid content",
 		},
 		{
 			name: "CacheControlBlock_ShouldCreateCachePointBlock",
@@ -3247,6 +3290,10 @@ func TestConvertBifrostResponsesMessageContentBlocksToBedrockContentBlocks_Empty
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			actual, err := bedrock.ToBedrockConverseResponse(tt.input)
+			if tt.expectError {
+				require.Error(t, err, tt.description)
+				return
+			}
 			require.NoError(t, err, "Conversion should not error")
 			require.NotNil(t, actual, "Response should not be nil")
 			require.NotNil(t, actual.Output, "Output should not be nil")
@@ -3849,7 +3896,7 @@ func TestBedrockAnthropicChatStructuredOutputUsesSyntheticTool(t *testing.T) {
 // (`client.messages.create`), routed via /v1/messages -> ToBifrostResponsesRequest
 // -> ToBedrockResponsesRequest with Params.Text.Format set.
 func TestToBedrockResponsesRequest_AnthropicStructuredOutputUsesSyntheticTool(t *testing.T) {
-	schemaObj := any(schemas.NewOrderedMapFromPairs(
+	schemaObj := schemas.NewOrderedMapFromPairs(
 		schemas.KV("type", "object"),
 		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
 			schemas.KV("isNewTopic", schemas.NewOrderedMapFromPairs(schemas.KV("type", "boolean"))),
@@ -3857,7 +3904,7 @@ func TestToBedrockResponsesRequest_AnthropicStructuredOutputUsesSyntheticTool(t 
 			schemas.KV("result", schemas.NewOrderedMapFromPairs(schemas.KV("type", "number"))),
 		)),
 		schemas.KV("required", []string{"isNewTopic", "title", "result"}),
-	))
+	)
 
 	req := &schemas.BifrostResponsesRequest{
 		Model: "anthropic.claude-opus-4-7-v1:0",
@@ -3867,7 +3914,7 @@ func TestToBedrockResponsesRequest_AnthropicStructuredOutputUsesSyntheticTool(t 
 					Type: "json_schema",
 					Name: schemas.Ptr("classification"),
 					JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
-						Schema: &schemaObj,
+						Schema: &schemas.JSONSchemaOrBool{SchemaMap: schemaObj},
 					},
 				},
 			},
@@ -4117,7 +4164,8 @@ func TestNovaReasoningEffortClamped(t *testing.T) {
 
 // TestReasoningSignatureEchoedOnlyWhenNonEmpty verifies that an empty reasoning
 // signature is dropped before sending to Bedrock (MiniMax emits ""), while a real
-// signature is preserved (Anthropic requires it). Keyed on the value, not the model.
+// signature is preserved. Runs on a Nova id: on Claude an unsigned block is not
+// sent at all (#6624), which TestUnsignedReasoningReplay_Chat pins.
 func TestReasoningSignatureEchoedOnlyWhenNonEmpty(t *testing.T) {
 	cases := map[string]struct {
 		in   *string
@@ -4130,7 +4178,7 @@ func TestReasoningSignatureEchoedOnlyWhenNonEmpty(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			bifrostReq := &schemas.BifrostChatRequest{
-				Model: "anthropic.claude-sonnet-4-5",
+				Model: "amazon.nova-pro-v1:0",
 				Input: []schemas.ChatMessage{
 					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
 					{
@@ -4533,12 +4581,303 @@ func TestDocumentFormatMapping(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, result)
 			require.Len(t, result.Messages, 1)
-			require.Len(t, result.Messages[0].Content, 1)
-			require.NotNil(t, result.Messages[0].Content[0].Document)
-			assert.Equal(t, tt.expectedFormat, result.Messages[0].Content[0].Document.Format,
+			// A document-only message gets a placeholder text block injected
+			// ahead of the document: Converse rejects a document ContentBlock
+			// that isn't accompanied by a text ContentBlock
+			// (API_runtime_Converse). See document_placeholder_test.go.
+			require.Len(t, result.Messages[0].Content, 2)
+			require.NotNil(t, result.Messages[0].Content[0].Text, "placeholder text block must lead")
+			require.NotNil(t, result.Messages[0].Content[1].Document)
+			assert.Equal(t, tt.expectedFormat, result.Messages[0].Content[1].Document.Format,
 				"File type %q should map to format %q", tt.fileType, tt.expectedFormat)
 		})
 	}
+}
+
+// chatFileBlockDocument converts a single OpenAI-style file content block and
+// returns the resulting Bedrock document.
+func chatFileBlockDocument(t *testing.T, file *schemas.ChatInputFile) *bedrock.BedrockDocumentSource {
+	t.Helper()
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    "anthropic.claude-sonnet-4-5-20250929-v1:0",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentBlocks: []schemas.ChatContentBlock{
+						{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("Summarize this document.")},
+						{Type: schemas.ChatContentBlockTypeFile, File: file},
+					},
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.Len(t, result.Messages, 1)
+	require.Len(t, result.Messages[0].Content, 2)
+	require.NotNil(t, result.Messages[0].Content[1].Document)
+
+	return result.Messages[0].Content[1].Document
+}
+
+// The standard OpenAI chat `type:"file"` part carries the document's MIME type only
+// inside the file_data data URL - file_type is a Bifrost extension normal clients
+// don't send. Without reading it, every non-PDF document was labeled format "pdf"
+// and Bedrock rejected it with "The PDF specified was not valid".
+func TestDocumentFormatFromDataURL(t *testing.T) {
+	t.Parallel()
+
+	const payload = "UEsDBBQABgAI"
+
+	tests := []struct {
+		name           string
+		mediaType      string
+		filename       string
+		expectedFormat string
+	}{
+		{"XLSX", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "sheet.xlsx", "xlsx"},
+		{"DOCX", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "report.docx", "docx"},
+		{"XLS", "application/vnd.ms-excel", "legacy.xls", "xls"},
+		{"DOC", "application/msword", "legacy.doc", "doc"},
+		{"CSV", "text/csv", "rows.csv", "csv"},
+		{"Markdown", "text/markdown", "notes.md", "md"},
+		{"PDF", "application/pdf", "paper.pdf", "pdf"},
+		{"MediaTypeWithParameter", "text/plain;charset=utf-8", "notes.txt", "txt"},
+		{"UppercaseMediaType", "APPLICATION/PDF", "paper.pdf", "pdf"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc := chatFileBlockDocument(t, &schemas.ChatInputFile{
+				Filename: schemas.Ptr(tt.filename),
+				FileData: schemas.Ptr("data:" + tt.mediaType + ";base64," + payload),
+			})
+
+			assert.Equal(t, tt.expectedFormat, doc.Format,
+				"data URL media type %q should map to format %q", tt.mediaType, tt.expectedFormat)
+			if strings.HasPrefix(strings.ToLower(tt.mediaType), "text/") {
+				decoded, err := base64.StdEncoding.DecodeString(payload)
+				require.NoError(t, err)
+				require.NotNil(t, doc.Source.Text)
+				assert.Equal(t, string(decoded), *doc.Source.Text)
+				assert.Nil(t, doc.Source.Bytes, "document source is a union")
+			} else {
+				require.NotNil(t, doc.Source.Bytes)
+				assert.Equal(t, payload, *doc.Source.Bytes, "data URL prefix must be stripped from source.bytes")
+				assert.Nil(t, doc.Source.Text, "document source is a union")
+			}
+		})
+	}
+}
+
+// Format resolution order: file_type, then the data URL media type, then the
+// filename extension, then the historical "pdf" default.
+func TestDocumentFormatResolutionPrecedence(t *testing.T) {
+	t.Parallel()
+
+	t.Run("FileTypeWinsOverDataURL", func(t *testing.T) {
+		doc := chatFileBlockDocument(t, &schemas.ChatInputFile{
+			Filename: schemas.Ptr("sheet.xlsx"),
+			FileType: schemas.Ptr("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+			FileData: schemas.Ptr("data:application/octet-stream;base64,UEsDBBQABgAI"),
+		})
+		assert.Equal(t, "xlsx", doc.Format)
+	})
+
+	t.Run("FilenameExtensionWhenMediaTypeIsOpaque", func(t *testing.T) {
+		doc := chatFileBlockDocument(t, &schemas.ChatInputFile{
+			Filename: schemas.Ptr("report.docx"),
+			FileData: schemas.Ptr("data:application/octet-stream;base64,UEsDBBQABgAI"),
+		})
+		assert.Equal(t, "docx", doc.Format)
+	})
+
+	t.Run("UnidentifiableDocumentKeepsPDFDefault", func(t *testing.T) {
+		doc := chatFileBlockDocument(t, &schemas.ChatInputFile{
+			Filename: schemas.Ptr("blob"),
+			FileData: schemas.Ptr("data:application/octet-stream;base64,UEsDBBQABgAI"),
+		})
+		assert.Equal(t, "pdf", doc.Format)
+	})
+}
+
+// A non-base64 data URL carries percent-encoded text, not base64 - sending it
+// verbatim as source.bytes shipped the whole "data:..." string to Bedrock.
+func TestDocumentInlineTextDataURL(t *testing.T) {
+	t.Parallel()
+
+	doc := chatFileBlockDocument(t, &schemas.ChatInputFile{
+		Filename: schemas.Ptr("notes.txt"),
+		FileData: schemas.Ptr("data:text/plain,Hello%20World"),
+	})
+
+	assert.Equal(t, "txt", doc.Format)
+	require.NotNil(t, doc.Source.Text)
+	assert.Equal(t, "Hello World", *doc.Source.Text)
+	assert.Nil(t, doc.Source.Bytes, "document source is a union and text documents must not also carry bytes")
+
+	// A binary format never gets source.text, matching the raw file_data path.
+	doc = chatFileBlockDocument(t, &schemas.ChatInputFile{
+		Filename: schemas.Ptr("paper.pdf"),
+		FileData: schemas.Ptr("data:application/pdf,%25PDF-1.4"),
+	})
+
+	assert.Equal(t, "pdf", doc.Format)
+	assert.Nil(t, doc.Source.Text, "binary documents must not carry source.text")
+	require.NotNil(t, doc.Source.Bytes)
+	assert.Equal(t, base64.StdEncoding.EncodeToString([]byte("%PDF-1.4")), *doc.Source.Bytes)
+}
+
+// A non-base64 data URL payload is percent-encoded by definition, so a malformed
+// escape is malformed input, not content. Swallowing the PathUnescape error sent
+// the literal "%ZZ" bytes to Bedrock as if the caller had asked for them.
+func TestDocumentInlineTextDataURLRejectsMalformedEscape(t *testing.T) {
+	t.Parallel()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	t.Run("Chat", func(t *testing.T) {
+		t.Parallel()
+
+		bifrostReq := &schemas.BifrostChatRequest{
+			Provider: schemas.Bedrock,
+			Model:    "anthropic.claude-sonnet-4-5-20250929-v1:0",
+			Input: []schemas.ChatMessage{
+				{
+					Role: schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{
+						ContentBlocks: []schemas.ChatContentBlock{
+							{
+								Type: schemas.ChatContentBlockTypeFile,
+								File: &schemas.ChatInputFile{
+									Filename: schemas.Ptr("notes.txt"),
+									FileData: schemas.Ptr("data:text/plain,%ZZ"),
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		_, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+		require.Error(t, err, "a malformed percent escape must not be forwarded verbatim")
+		assert.Contains(t, err.Error(), "percent-encoded")
+	})
+
+	t.Run("Responses", func(t *testing.T) {
+		t.Parallel()
+
+		bifrostReq := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Bedrock,
+			Model:    "anthropic.claude-sonnet-4-5-20250929-v1:0",
+			Input: []schemas.ResponsesMessage{
+				{
+					Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{
+						ContentBlocks: []schemas.ResponsesMessageContentBlock{
+							{
+								Type: schemas.ResponsesInputMessageContentBlockTypeFile,
+								ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{
+									Filename: schemas.Ptr("notes.txt"),
+									FileData: schemas.Ptr("data:text/plain,%ZZ"),
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		_, err := bedrock.ToBedrockResponsesRequest(ctx, bifrostReq)
+		require.Error(t, err, "a malformed percent escape must not be forwarded verbatim")
+		assert.Contains(t, err.Error(), "percent-encoded")
+	})
+}
+
+// The Responses path had its own copy of the format mapping with the same defect.
+func TestToBedrockResponsesRequest_DocumentFormatFromDataURL(t *testing.T) {
+	t.Parallel()
+
+	const payload = "UEsDBBQABgAI"
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "anthropic.claude-sonnet-4-5-20250929-v1:0",
+		Input: []schemas.ResponsesMessage{
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("Summarize this document.")},
+						{
+							Type: schemas.ResponsesInputMessageContentBlockTypeFile,
+							ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{
+								Filename: schemas.Ptr("sheet.xlsx"),
+								FileData: schemas.Ptr("data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64," + payload),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockResponsesRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.Len(t, result.Messages, 1)
+
+	var doc *bedrock.BedrockDocumentSource
+	for _, contentBlock := range result.Messages[0].Content {
+		if contentBlock.Document != nil {
+			doc = contentBlock.Document
+		}
+	}
+	require.NotNil(t, doc)
+	assert.Equal(t, "xlsx", doc.Format)
+	require.NotNil(t, doc.Source.Bytes)
+	assert.Equal(t, payload, *doc.Source.Bytes)
+}
+
+// The Responses path ignored file_url entirely, emitting a document block with an
+// empty source. It now inlines the bytes like the chat path does, so an unreachable
+// URL surfaces as an error instead of silently shipping an empty document.
+func TestToBedrockResponsesRequest_DocumentFileURLIsFetched(t *testing.T) {
+	t.Parallel()
+
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "anthropic.claude-sonnet-4-5-20250929-v1:0",
+		Input: []schemas.ResponsesMessage{
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("Summarize this document.")},
+						{
+							Type: schemas.ResponsesInputMessageContentBlockTypeFile,
+							ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{
+								Filename: schemas.Ptr("sheet.xlsx"),
+								FileURL:  schemas.Ptr("http://127.0.0.1:1/sheet.xlsx"),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, err := bedrock.ToBedrockResponsesRequest(ctx, bifrostReq)
+	require.Error(t, err, "file_url must be fetched, not silently dropped")
 }
 
 func TestBedrockStopReasonMapping(t *testing.T) {
@@ -4604,9 +4943,9 @@ func TestBedrockStopReasonMappingResponsesPath(t *testing.T) {
 		{"MaxTokens", "max_tokens", "length", "incomplete", "max_output_tokens"},
 		{"StopSequence", "stop_sequence", "stop", "completed", ""},
 		{"ToolUse", "tool_use", "tool_calls", "completed", ""},
-		{"ContentFiltered", "content_filtered", "content_filter", "", ""},               // no clean mapping — passes through, no Status
-		{"GuardrailIntervened", "guardrail_intervened", "guardrail_intervened", "", ""}, // no clean mapping — passes through, no Status
-		{"UnknownReason", "some_unknown_reason", "some_unknown_reason", "", ""},         // no clean mapping — passes through, no Status
+		{"ContentFiltered", "content_filtered", "content_filter", "incomplete", "content_filter"},               // filtered → incomplete + content_filter
+		{"GuardrailIntervened", "guardrail_intervened", "guardrail_intervened", "incomplete", "content_filter"}, // guardrail block → incomplete + content_filter
+		{"UnknownReason", "some_unknown_reason", "some_unknown_reason", "", ""},                                 // no clean mapping — passes through, no Status
 	}
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -4695,12 +5034,12 @@ func TestFinalizeBedrockStream_CleanCompletionUnaffected(t *testing.T) {
 }
 
 // TestFinalizeBedrockStream_UnmappedReasonLeavesStatusUnset keeps the streaming
-// path aligned with the non-streaming mapping: an unmapped stop reason (e.g.
-// content_filter) ends the stream as response.completed but must leave Status
-// unset rather than asserting "completed".
+// path aligned with the non-streaming mapping: an unmapped stop reason ends the
+// stream as response.completed but must leave Status unset rather than asserting
+// "completed".
 func TestFinalizeBedrockStream_UnmappedReasonLeavesStatusUnset(t *testing.T) {
 	state := bedrock.NewBedrockResponsesStreamState()
-	state.StopReason = schemas.Ptr("content_filter")
+	state.StopReason = schemas.Ptr("some_unknown_reason")
 	usage := &schemas.ResponsesResponseUsage{InputTokens: 5, OutputTokens: 10, TotalTokens: 15}
 
 	finalResponses := bedrock.FinalizeBedrockStream(state, 0, usage, nil)
@@ -4711,6 +5050,33 @@ func TestFinalizeBedrockStream_UnmappedReasonLeavesStatusUnset(t *testing.T) {
 	require.NotNil(t, terminal.Response)
 	assert.Nil(t, terminal.Response.Status, "unmapped stop reasons must leave Status unset, matching the non-streaming path")
 	assert.Nil(t, terminal.Response.IncompleteDetails)
+}
+
+// TestFinalizeBedrockStream_ContentFilterIncomplete guards the streaming
+// counterpart of the content-filter fix: when Bedrock's stopReason maps to
+// content_filter / guardrail_intervened, the terminal SSE event must be
+// response.incomplete carrying Status="incomplete" + IncompleteDetails.Reason
+// "content_filter", so streaming consumers can detect the filtered turn instead
+// of seeing a successful-looking response.completed.
+func TestFinalizeBedrockStream_ContentFilterIncomplete(t *testing.T) {
+	for _, stopReason := range []string{"content_filter", "guardrail_intervened"} {
+		t.Run(stopReason, func(t *testing.T) {
+			state := bedrock.NewBedrockResponsesStreamState()
+			state.StopReason = schemas.Ptr(stopReason)
+			usage := &schemas.ResponsesResponseUsage{InputTokens: 5, OutputTokens: 0, TotalTokens: 5}
+
+			finalResponses := bedrock.FinalizeBedrockStream(state, 0, usage, nil)
+			require.NotEmpty(t, finalResponses)
+
+			terminal := finalResponses[len(finalResponses)-1]
+			assert.Equal(t, schemas.ResponsesStreamResponseTypeIncomplete, terminal.Type)
+			require.NotNil(t, terminal.Response)
+			require.NotNil(t, terminal.Response.Status)
+			assert.Equal(t, schemas.ResponsesResponseStatusIncomplete, *terminal.Response.Status)
+			require.NotNil(t, terminal.Response.IncompleteDetails)
+			assert.Equal(t, schemas.ResponsesResponseIncompleteReasonContentFilter, terminal.Response.IncompleteDetails.Reason)
+		})
+	}
 }
 
 // TestBifrostToBedrockStopReasonReverseMapping tests the reverse conversion
@@ -5043,7 +5409,7 @@ func TestDocumentFormatResponsesPathRoundTrip(t *testing.T) {
 			require.NotEmpty(t, bifrostMessages, "expected at least one Bifrost message")
 
 			// Outbound: Bifrost responses messages -> Bedrock
-			roundTripped, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(ctx, bifrostMessages, false)
+			roundTripped, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(ctx, anthropicModel, bifrostMessages, false)
 			require.NoError(t, err)
 			require.NotEmpty(t, roundTripped, "expected at least one Bedrock message after round-trip")
 
@@ -5241,7 +5607,7 @@ func TestToolResultImageContentResponsesAPI(t *testing.T) {
 			},
 		}
 
-		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, false)
+		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, false)
 		require.NoError(t, err)
 		require.Len(t, messages, 1)
 
@@ -5285,7 +5651,7 @@ func TestToolResultImageContentResponsesAPI(t *testing.T) {
 			},
 		}
 
-		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, false)
+		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, false)
 		require.NoError(t, err)
 		require.Len(t, messages, 1)
 
@@ -5318,7 +5684,7 @@ func TestToolResultImageContentResponsesAPI(t *testing.T) {
 			},
 		}
 
-		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, false)
+		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, false)
 		require.NoError(t, err)
 		require.Len(t, messages, 1)
 
@@ -5446,13 +5812,13 @@ func TestBedrockNonLlamaChatStructuredOutputForcesToolChoice(t *testing.T) {
 // rather than Params.ResponseFormat, but lands at the same Bedrock Converse
 // constraint: toolChoice.tool is rejected on Llama.
 func TestToBedrockResponsesRequest_LlamaStructuredOutputOmitsForcedToolChoice(t *testing.T) {
-	schemaObj := any(schemas.NewOrderedMapFromPairs(
+	schemaObj := schemas.NewOrderedMapFromPairs(
 		schemas.KV("type", "object"),
 		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
 			schemas.KV("intent", schemas.NewOrderedMapFromPairs(schemas.KV("type", "string"))),
 		)),
 		schemas.KV("required", []string{"intent"}),
-	))
+	)
 
 	req := &schemas.BifrostResponsesRequest{
 		Model: "us.meta.llama4-maverick-17b-instruct-v1:0",
@@ -5462,7 +5828,7 @@ func TestToBedrockResponsesRequest_LlamaStructuredOutputOmitsForcedToolChoice(t 
 					Type: "json_schema",
 					Name: schemas.Ptr("PlannerOutput"),
 					JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
-						Schema: &schemaObj,
+						Schema: &schemas.JSONSchemaOrBool{SchemaMap: schemaObj},
 					},
 				},
 			},
@@ -6372,7 +6738,7 @@ func TestMidConversationSystemReminderStaysInline(t *testing.T) {
 		userReminderTextMsg("second user turn"),
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	// Only the leading system prompt should be hoisted into the system block.
@@ -6409,7 +6775,7 @@ func TestMidConversationSystemReminderHoistedForNonAnthropic(t *testing.T) {
 		userReminderTextMsg("second user turn"),
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, false)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, false)
 	require.NoError(t, err)
 
 	// Both system messages are hoisted (historical behavior), not just the leading one.
@@ -6437,7 +6803,7 @@ func TestMultipleLeadingSystemMessagesAllHoisted(t *testing.T) {
 		systemReminderTextMsg("Injected reminder."),
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	require.Len(t, systemMessages, 2, "both leading system messages belong in the system block")
@@ -6473,7 +6839,7 @@ func TestSystemReminderAfterToolResultPreservesPairing(t *testing.T) {
 		systemReminderTextMsg("The task tools haven't been used recently."), // reminder right after tool result
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 	require.Len(t, systemMessages, 1)
 
@@ -6541,7 +6907,7 @@ func TestMidConversationDeveloperReminderStaysInline(t *testing.T) {
 		userReminderTextMsg("second user turn"),
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	// Only the leading system prompt is hoisted; the developer reminder is NOT.
@@ -6579,7 +6945,7 @@ func TestMidConversationReminderContentStrInlined(t *testing.T) {
 		},
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 	require.Len(t, systemMessages, 1, "only the leading prompt is hoisted")
 
@@ -6608,7 +6974,7 @@ func TestMidConversationReminderEmptyContentDropped(t *testing.T) {
 		},
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 	require.Len(t, systemMessages, 1)
 
@@ -6646,7 +7012,7 @@ func TestSystemReminderBetweenToolCallAndResult(t *testing.T) {
 		},
 	}
 
-	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	// Locate the assistant message carrying the tool_use.
@@ -6679,11 +7045,20 @@ func TestSystemReminderBetweenToolCallAndResult(t *testing.T) {
 	assert.True(t, hasResult, "user message after tool_use must contain the matching tool_result")
 }
 
-// TestSystemReminderDoesNotCarryCachePoint pins the deliberate omission flagged in review: an
-// inlined mid-conversation reminder must NOT emit a CachePoint, even if its block carries
-// CacheControl. A breakpoint at the moving conversation tail would shift every turn and defeat
-// the prefix caching this whole change exists to preserve.
-func TestSystemReminderDoesNotCarryCachePoint(t *testing.T) {
+// TestSystemReminderCarriesCachePoint pins the corrected contract, replacing a test that
+// asserted the opposite.
+//
+// The original reasoning was that a breakpoint at the moving conversation tail would shift every
+// turn and defeat prefix caching, so the inlined reminder deliberately dropped its CacheControl.
+// The premise is right and the conclusion inverted: Bedrock matches the longest cached prefix at
+// or before each breakpoint, so a marker that advances one turn at a time EXTENDS the cached
+// prefix for one write — that is how incremental conversation caching is meant to work. Dropping
+// it does not fall back to a safe state; it removes the only conversation-level anchor, leaving
+// the surviving markers in `system` and re-reading the whole conversation body uncached.
+//
+// Measured across the provider harness, the old behavior cost half the prompt on a warm ~19K
+// conversation (49.8% hit rate vs 99.9% with the anchor preserved).
+func TestSystemReminderCarriesCachePoint(t *testing.T) {
 	reminder := systemReminderTextMsg("Reminder that happens to carry a breakpoint.")
 	reminder.Content.ContentBlocks[0].CacheControl = &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral}
 
@@ -6693,12 +7068,43 @@ func TestSystemReminderDoesNotCarryCachePoint(t *testing.T) {
 		reminder,
 	}
 
-	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
+	require.NoError(t, err)
+
+	// The marker must follow the wrapped reminder text: per Converse semantics a cachePoint
+	// element terminates the cacheable prefix rather than opening one.
+	var found bool
+	for _, m := range messages {
+		for i, b := range m.Content {
+			if b.Text == nil || !strings.Contains(*b.Text, "<system-reminder>") {
+				continue
+			}
+			require.Greater(t, len(m.Content), i+1, "reminder text must be followed by its cachePoint")
+			assert.NotNil(t, m.Content[i+1].CachePoint,
+				"the inlined reminder carries the conversation-level cache anchor; dropping it pins "+
+					"the cacheable prefix at the system floor")
+			found = true
+		}
+	}
+	assert.True(t, found, "expected the inlined <system-reminder> block in the converted messages")
+}
+
+// TestSystemReminderWithoutCacheControlAddsNoCachePoint is the guard against the opposite error:
+// a reminder whose block carries no CacheControl must not grow a marker, which would burn one of
+// the four checkpoints Bedrock allows on a breakpoint the caller never requested.
+func TestSystemReminderWithoutCacheControlAddsNoCachePoint(t *testing.T) {
+	input := []schemas.ResponsesMessage{
+		systemReminderTextMsg("You are Claude Code."),
+		userReminderTextMsg("hello"),
+		systemReminderTextMsg("Reminder with no breakpoint."),
+	}
+
+	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	for _, m := range messages {
 		for _, b := range m.Content {
-			assert.Nil(t, b.CachePoint, "inlined reminder must not introduce a CachePoint block")
+			assert.Nil(t, b.CachePoint, "no cache_control on the reminder means no CachePoint may be invented")
 		}
 	}
 }
@@ -6734,7 +7140,7 @@ func TestToolCacheControlBecomesCachePointWithTTL(t *testing.T) {
 	}
 
 	assertTTLPreserved := func(t *testing.T, input []schemas.ResponsesMessage) {
-		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 		require.NoError(t, err)
 
 		var afterToolUse, afterToolResult bool
@@ -6785,7 +7191,7 @@ func TestLoneSystemMessageReturnsUserMessage(t *testing.T) {
 	for role, msg := range roles {
 		for _, inline := range []bool{true, false} {
 			input := []schemas.ResponsesMessage{msg}
-			messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, inline)
+			messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, inline)
 			require.NoError(t, err)
 			assert.Empty(t, systemMessages, "lone %s message must not populate the system block (inline=%v)", role, inline)
 			require.Len(t, messages, 1, "lone %s message must yield exactly one message (inline=%v)", role, inline)
@@ -6804,7 +7210,7 @@ func TestNoLeadingSystemBlockReminderInlined(t *testing.T) {
 		userReminderTextMsg("continue"),
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	assert.Empty(t, systemMessages, "no leading system block means nothing should be hoisted")
@@ -6869,4 +7275,323 @@ func TestReasoningConfigSurvivesHTTPUnmarshal(t *testing.T) {
 		require.NotNil(t, out.Params.Reasoning.Effort)
 		assert.Equal(t, "high", *out.Params.Reasoning.Effort)
 	})
+}
+
+// TestReasoningConfigNoDoubleEmissionOnEgress guards against issue #5108's
+// follow-on regression: a reasoning key consumed into Params.Reasoning on ingress
+// must not also be forwarded verbatim via additionalModelRequestFieldPaths, or the
+// Bedrock egress carries two copies and Converse rejects the collision
+// ("The additional field thinking/type conflicts with an existing field").
+func TestReasoningConfigNoDoubleEmissionOnEgress(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	cases := []struct {
+		name        string
+		model       string
+		inputField  string
+		inputConfig string
+		wantKey     string // the single reasoning key expected on egress
+	}{
+		{"anthropic_reasoning_config", "us.anthropic.claude-haiku-4-5-20251001-v1:0", "reasoning_config", `{"type": "enabled", "budget_tokens": 1500}`, "thinking"},
+		{"anthropic_thinking", "us.anthropic.claude-haiku-4-5-20251001-v1:0", "thinking", `{"type": "enabled", "budget_tokens": 1500}`, "thinking"},
+		{"nova_reasoningConfig", "amazon.nova-premier-v1:0", "reasoningConfig", `{"type": "enabled", "maxReasoningEffort": "high"}`, "reasoningConfig"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{
+				"messages": [{"role": "user", "content": [{"text": "What's my best offer?"}]}],
+				"inferenceConfig": {"maxTokens": 4096},
+				"additionalModelRequestFields": {"` + tc.inputField + `": ` + tc.inputConfig + `}
+			}`)
+
+			var req bedrock.BedrockConverseRequest
+			require.NoError(t, json.Unmarshal(body, &req))
+			req.ModelID = tc.model
+
+			// Ingress: Bedrock Converse -> Bifrost
+			mid, err := req.ToBifrostResponsesRequest(ctx)
+			require.NoError(t, err)
+			require.NotNil(t, mid.Params, "Params is nil")
+			require.NotNil(t, mid.Params.Reasoning, "reasoning was not consumed on ingress")
+
+			// Egress: Bifrost -> Bedrock Converse
+			out, err := bedrock.ToBedrockResponsesRequest(ctx, mid)
+			require.NoError(t, err)
+			require.NotNil(t, out.AdditionalModelRequestFields)
+
+			// Exactly one reasoning key on the wire, and never both spellings.
+			_, hasThinking := out.AdditionalModelRequestFields.Get("thinking")
+			_, hasReasoningConfig := out.AdditionalModelRequestFields.Get("reasoning_config")
+			_, hasNova := out.AdditionalModelRequestFields.Get("reasoningConfig")
+
+			assert.False(t, hasThinking && hasReasoningConfig,
+				"both thinking and reasoning_config emitted — Bedrock would reject the collision")
+
+			switch tc.wantKey {
+			case "thinking":
+				assert.True(t, hasThinking, "expected thinking on egress")
+				assert.False(t, hasReasoningConfig, "reasoning_config must not be forwarded verbatim once consumed")
+			case "reasoningConfig":
+				assert.True(t, hasNova, "expected Nova reasoningConfig on egress")
+			}
+		})
+	}
+}
+
+// TestBedrockDocumentS3URIUsesS3Location pins that an s3:// document reference travels
+// to Converse as the s3Location union member rather than being downloaded by Bifrost.
+// DocumentSource is documented as bytes | content | s3Location | text, so the object
+// reference is a first-class source - inlining it would burn a round trip and put the
+// payload under the 25 MiB inline cap for nothing.
+//
+// Nova, because forwarding the reference is only correct for a model whose Converse
+// backend resolves it: see schemas.BedrockModelSupportsS3Location, and
+// TestS3LocationRefusedForModelsThatCannotReadIt for the other side of that gate.
+func TestBedrockDocumentS3URIUsesS3Location(t *testing.T) {
+	t.Parallel()
+
+	const s3URI = "s3://my-bucket/reports/q4.pdf"
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	fileURL := s3URI
+	fileType := "application/pdf"
+
+	got, err := bedrock.ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Model: novaModel,
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentBlocks: []schemas.ChatContentBlock{
+						{
+							Type: schemas.ChatContentBlockTypeFile,
+							File: &schemas.ChatInputFile{FileURL: &fileURL, FileType: &fileType},
+						},
+					},
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Len(t, got.Messages, 1)
+
+	// Converse pairs a document with a companion text block, so scan rather than index.
+	var doc *bedrock.BedrockDocumentSource
+	for _, block := range got.Messages[0].Content {
+		if block.Document != nil {
+			doc = block.Document
+			break
+		}
+	}
+	require.NotNil(t, doc, "expected a document block")
+	assert.Equal(t, "pdf", doc.Format)
+	require.NotNil(t, doc.Source)
+	require.NotNil(t, doc.Source.S3Location, "expected s3Location to carry the object reference")
+	assert.Equal(t, s3URI, doc.Source.S3Location.URI)
+	assert.Nil(t, doc.Source.Bytes, "expected union member bytes to be nil when s3Location is set")
+	assert.Nil(t, doc.Source.Text, "expected union member text to be nil when s3Location is set")
+}
+
+// TestBedrockDocumentS3URIResolvesFormatFromObjectExtension pins the promise the
+// error message already makes.
+//
+// A bare s3:// object reference is never downloaded, so there is no Content-Type to
+// read a format from and no bytes to sniff. That leaves the object key itself as the
+// only remaining signal -- and the refusal text says so out loud: "set file_type or
+// give the object a file extension". Naming the object correctly did nothing, so a
+// caller who followed the instruction got the same error back.
+//
+// bedrockImageFormatFromPath already resolves the image twin from the URL for exactly
+// this reason; documents had no equivalent.
+func TestBedrockDocumentS3URIResolvesFormatFromObjectExtension(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		uri    string
+		format string
+	}{
+		{"pdf", "s3://my-bucket/reports/q4.pdf", "pdf"},
+		{"uppercase extension", "s3://my-bucket/reports/Q4.PDF", "pdf"},
+		{"csv", "s3://my-bucket/data/rows.csv", "csv"},
+		{"docx", "s3://my-bucket/docs/spec.docx", "docx"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			fileURL := tc.uri
+
+			got, err := bedrock.ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+				Model: novaModel,
+				Input: []schemas.ChatMessage{
+					{
+						Role: schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{
+							ContentBlocks: []schemas.ChatContentBlock{
+								{
+									Type: schemas.ChatContentBlockTypeFile,
+									// No FileType and no Filename: the object key is the only signal.
+									File: &schemas.ChatInputFile{FileURL: &fileURL},
+								},
+							},
+						},
+					},
+				},
+			})
+			require.NoError(t, err, "the object extension is the documented fallback")
+			require.NotNil(t, got)
+			require.Len(t, got.Messages, 1)
+
+			var doc *bedrock.BedrockDocumentSource
+			for _, block := range got.Messages[0].Content {
+				if block.Document != nil {
+					doc = block.Document
+					break
+				}
+			}
+			require.NotNil(t, doc, "expected a document block")
+			assert.Equal(t, tc.format, doc.Format)
+			require.NotNil(t, doc.Source)
+			require.NotNil(t, doc.Source.S3Location)
+			assert.Equal(t, tc.uri, doc.Source.S3Location.URI)
+		})
+	}
+
+	// The Responses path keeps its own copy of the s3 branch, so the fallback has to
+	// exist in both. A fix applied to only one leaves the same misleading refusal on
+	// whichever route the caller happens to use.
+	t.Run("responses path resolves it too", func(t *testing.T) {
+		t.Parallel()
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		fileURL := "s3://my-bucket/reports/q4.pdf"
+
+		got, err := bedrock.ToBedrockResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+			Model: novaModel,
+			Input: []schemas.ResponsesMessage{
+				{
+					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{
+						ContentBlocks: []schemas.ResponsesMessageContentBlock{
+							{
+								Type: schemas.ResponsesInputMessageContentBlockTypeFile,
+								ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{
+									FileURL: &fileURL,
+								},
+							},
+						},
+					},
+				},
+			},
+		})
+		require.NoError(t, err, "the object extension is the documented fallback on this path too")
+		require.NotNil(t, got)
+		require.NotEmpty(t, got.Messages)
+
+		var doc *bedrock.BedrockDocumentSource
+		for _, block := range got.Messages[0].Content {
+			if block.Document != nil {
+				doc = block.Document
+				break
+			}
+		}
+		require.NotNil(t, doc, "expected a document block")
+		assert.Equal(t, "pdf", doc.Format)
+		require.NotNil(t, doc.Source)
+		require.NotNil(t, doc.Source.S3Location)
+	})
+
+	// An object with no extension at all still has nothing to go on, so the refusal
+	// stands -- and its wording is now truthful rather than misleading.
+	t.Run("no extension still refuses", func(t *testing.T) {
+		t.Parallel()
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		fileURL := "s3://my-bucket/reports/q4"
+
+		_, err := bedrock.ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+			Model: novaModel,
+			Input: []schemas.ChatMessage{
+				{
+					Role: schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{
+						ContentBlocks: []schemas.ChatContentBlock{
+							{
+								Type: schemas.ChatContentBlockTypeFile,
+								File: &schemas.ChatInputFile{FileURL: &fileURL},
+							},
+						},
+					},
+				},
+			},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "cannot determine document format")
+	})
+}
+
+// TestBedrockImageS3URIUsesS3Location is the ImageSource twin. Note the format has to be
+// derived from the object's extension: nothing is fetched, so there is no Content-Type,
+// and Converse requires a format on every image block. Nova for the same reason as its
+// document twin above.
+func TestBedrockImageS3URIUsesS3Location(t *testing.T) {
+	t.Parallel()
+
+	const s3URI = "s3://my-bucket/screens/shot.png"
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	got, err := bedrock.ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Model: novaModel,
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentBlocks: []schemas.ChatContentBlock{
+						{
+							Type:           schemas.ChatContentBlockTypeImage,
+							ImageURLStruct: &schemas.ChatInputImage{URL: s3URI},
+						},
+					},
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Len(t, got.Messages, 1)
+	require.Len(t, got.Messages[0].Content, 1)
+
+	img := got.Messages[0].Content[0].Image
+	require.NotNil(t, img, "expected an image block")
+	assert.Equal(t, "png", img.Format)
+	require.NotNil(t, img.Source.S3Location, "expected s3Location to carry the object reference")
+	assert.Equal(t, s3URI, img.Source.S3Location.URI)
+	assert.Nil(t, img.Source.Bytes, "expected union member bytes to be nil when s3Location is set")
+}
+
+// TestBedrockImageS3URIWithoutExtensionErrors: an extension-less s3:// object gives
+// Converse no way to know the image format, and Bifrost has no Content-Type to fall back
+// on. Failing here beats sending a format-less block and getting an opaque 400.
+func TestBedrockImageS3URIWithoutExtensionErrors(t *testing.T) {
+	t.Parallel()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	_, err := bedrock.ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Model: novaModel,
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentBlocks: []schemas.ChatContentBlock{
+						{
+							Type:           schemas.ChatContentBlockTypeImage,
+							ImageURLStruct: &schemas.ChatInputImage{URL: "s3://my-bucket/screens/shot"},
+						},
+					},
+				},
+			},
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot determine image format")
 }

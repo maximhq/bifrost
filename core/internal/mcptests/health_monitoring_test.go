@@ -35,7 +35,7 @@ func TestHealthCheckSTDIOServerDropAndRecoverIn20Seconds(t *testing.T) {
 	require.Len(t, clients, 1, "should have one STDIO client")
 
 	// 2. Verify connected state
-	assert.Equal(t, schemas.MCPConnectionStateConnected, clients[0].State, "client should be connected initially")
+	assert.Equal(t, schemas.MCPConnectionStateHealthy, clients[0].State, "client should be connected initially")
 	t.Logf("✅ STDIO client connected: %s", clients[0].ExecutionConfig.ID)
 
 	// 3. Kill STDIO process (remove and re-add to simulate server drop)
@@ -64,7 +64,7 @@ func TestHealthCheckSTDIOServerDropAndRecoverIn20Seconds(t *testing.T) {
 	for time.Now().Before(deadline) {
 		time.Sleep(checkInterval)
 		clients = manager.GetClients()
-		if len(clients) > 0 && clients[0].State == schemas.MCPConnectionStateConnected {
+		if len(clients) > 0 && clients[0].State == schemas.MCPConnectionStateHealthy {
 			recovered = true
 			t.Logf("✅ Health monitor detected recovery after %v", time.Since(deadline.Add(-maxWaitTime)))
 			break
@@ -76,7 +76,7 @@ func TestHealthCheckSTDIOServerDropAndRecoverIn20Seconds(t *testing.T) {
 	require.True(t, recovered, "client should recover within 20 seconds")
 	clients = manager.GetClients()
 	require.Len(t, clients, 1, "should have client after recovery")
-	assert.Equal(t, schemas.MCPConnectionStateConnected, clients[0].State, "client should be connected after recovery")
+	assert.Equal(t, schemas.MCPConnectionStateHealthy, clients[0].State, "client should be connected after recovery")
 	t.Logf("✅ STDIO server drop and recovery test completed successfully")
 }
 
@@ -111,7 +111,7 @@ func TestHealthCheckSSEReconnect(t *testing.T) {
 
 	// Verify client is still connected
 	clients = manager.GetClients()
-	AssertClientState(t, clients, clientID, schemas.MCPConnectionStateConnected)
+	AssertClientState(t, clients, clientID, schemas.MCPConnectionStateHealthy)
 }
 
 func TestHealthCheckSSELongRunning(t *testing.T) {
@@ -142,7 +142,7 @@ func TestHealthCheckSSELongRunning(t *testing.T) {
 		if len(clients) > 0 {
 			t.Logf("Health check iteration %d: state=%s", i+1, clients[0].State)
 			// Connection should remain stable
-			assert.Equal(t, schemas.MCPConnectionStateConnected, clients[0].State,
+			assert.Equal(t, schemas.MCPConnectionStateHealthy, clients[0].State,
 				"connection should remain stable at iteration %d", i+1)
 		}
 	}
@@ -170,7 +170,7 @@ func TestHealthCheckStateTransitions(t *testing.T) {
 	require.Len(t, clients, 1, "should have one client")
 
 	// Initial state: connected
-	assert.Equal(t, schemas.MCPConnectionStateConnected, clients[0].State)
+	assert.Equal(t, schemas.MCPConnectionStateHealthy, clients[0].State)
 
 	// Remove client (simulates disconnection)
 	clientID := clients[0].ExecutionConfig.ID
@@ -188,7 +188,7 @@ func TestHealthCheckStateTransitions(t *testing.T) {
 	// Verify client is connected again
 	clients = manager.GetClients()
 	require.Len(t, clients, 1, "should have one client again")
-	assert.Equal(t, schemas.MCPConnectionStateConnected, clients[0].State)
+	assert.Equal(t, schemas.MCPConnectionStateHealthy, clients[0].State)
 }
 
 func TestHealthCheckStateTransitionsInvalidClient(t *testing.T) {
@@ -204,7 +204,7 @@ func TestHealthCheckStateTransitionsInvalidClient(t *testing.T) {
 	clients := manager.GetClients()
 	if len(clients) > 0 {
 		// Client should not be in connected state
-		assert.NotEqual(t, schemas.MCPConnectionStateConnected, clients[0].State,
+		assert.NotEqual(t, schemas.MCPConnectionStateHealthy, clients[0].State,
 			"invalid client should not be connected")
 	}
 }
@@ -252,7 +252,7 @@ func TestHealthCheckMultipleClients(t *testing.T) {
 	assert.GreaterOrEqual(t, len(clients), len(clientConfigs), "should have all clients")
 
 	for _, client := range clients {
-		assert.Equal(t, schemas.MCPConnectionStateConnected, client.State,
+		assert.Equal(t, schemas.MCPConnectionStateHealthy, client.State,
 			"client %s should be connected", client.ExecutionConfig.ID)
 	}
 }
@@ -288,7 +288,7 @@ func TestHealthCheckMultipleClientsMixedStates(t *testing.T) {
 	// Verify valid client is connected
 	for _, client := range clients {
 		if client.ExecutionConfig.ID == validConfig.ID {
-			assert.Equal(t, schemas.MCPConnectionStateConnected, client.State,
+			assert.Equal(t, schemas.MCPConnectionStateHealthy, client.State,
 				"valid client should be connected")
 		}
 	}
@@ -319,7 +319,7 @@ func TestHealthCheckConcurrentFailures(t *testing.T) {
 	// All clients should be in non-connected state or removed
 	clients := manager.GetClients()
 	for _, client := range clients {
-		if client.State == schemas.MCPConnectionStateConnected {
+		if client.State == schemas.MCPConnectionStateHealthy {
 			t.Errorf("client %s should not be connected to invalid URL", client.ExecutionConfig.ID)
 		}
 	}
@@ -404,5 +404,5 @@ func TestHealthCheckReconnectAfterFailure(t *testing.T) {
 	// Client should be connected and healthy
 	clients = manager.GetClients()
 	require.Len(t, clients, 1, "should have client back")
-	assert.Equal(t, schemas.MCPConnectionStateConnected, clients[0].State)
+	assert.Equal(t, schemas.MCPConnectionStateHealthy, clients[0].State)
 }

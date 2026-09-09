@@ -1,4 +1,5 @@
 // Chart utility functions for the dashboard
+import { formatCompactNumber } from "@/lib/utils/numbers";
 
 // Format timestamp based on bucket size
 export function formatTimestamp(timestamp: string, bucketSizeSeconds: number): string {
@@ -96,6 +97,25 @@ export function pickTopSeries<T>(
 	return [...seriesLabels].sort((a, b) => (totals.get(b) ?? 0) - (totals.get(a) ?? 0)).slice(0, limit);
 }
 
+// The ordered series list as a chart draws it: top-N by total value with
+// OTHER_SERIES_KEY appended when the long tail was rolled up (unless the chart
+// opts out of the rollup, e.g. latency/throughput where averaging the tail
+// would mislead). Legends color entries by index into this list, so they must
+// consume the exact same list as the chart — deriving legend colors from the
+// API's (alphabetical) label order desyncs once the series count exceeds
+// TOP_SERIES_LIMIT and this list gets re-sorted by volume.
+export function computeDisplaySeries<T>(
+	buckets: T[] | undefined,
+	seriesLabels: string[] | undefined,
+	getValue: (bucket: T, label: string) => number,
+	includeOther: boolean = true,
+): string[] {
+	if (!buckets || !seriesLabels || seriesLabels.length === 0) return [];
+	const top = pickTopSeries(buckets, seriesLabels, getValue);
+	if (includeOther && top.length < seriesLabels.length) return [...top, OTHER_SERIES_KEY];
+	return top;
+}
+
 // Format latency values
 export function formatLatency(ms: number): string {
 	if (ms >= 1000) return `${(ms / 1000).toFixed(2)}s`;
@@ -109,6 +129,16 @@ export const LATENCY_COLORS = {
 	p95: "#f59e0b", // amber-500
 	p99: "#ef4444", // red-500
 };
+
+// Format token-generation throughput (tokens/sec) with compact units (1k, 5k, 1M).
+// Uses a non-breaking space so the value and unit never wrap onto two lines.
+export function formatTokensPerSecond(tps: number): string {
+	if (!Number.isFinite(tps) || tps <= 0) return "0 tok/s";
+	return `${formatCompactNumber(tps, 1)} tok/s`;
+}
+
+// Throughput chart color
+export const THROUGHPUT_COLOR = "#10b981"; // emerald-500
 
 // Shared CSS class constants for chart card headers
 export const CHART_HEADER_ACTIONS_CLASS = "flex min-w-0 w-full flex-col-reverse gap-2";

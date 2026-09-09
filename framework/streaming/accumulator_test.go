@@ -94,6 +94,36 @@ func TestChatStreamingFinalChunkNoDeadlock(t *testing.T) {
 	}
 }
 
+func TestAccumulatedChatStreamPreservesServiceTierBeforeUsageOnlyChunk(t *testing.T) {
+	accumulator := NewAccumulator(nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	t.Cleanup(accumulator.Cleanup)
+
+	requestID := "chat-service-tier"
+	priority := schemas.BifrostServiceTierPriority
+	requireNoError := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	requireNoError(accumulator.addChatStreamChunk(requestID, StreamTypeChat, &ChatStreamChunk{
+		ChunkIndex:  1,
+		Timestamp:   time.Now(),
+		ServiceTier: &priority,
+	}, false))
+	requireNoError(accumulator.addChatStreamChunk(requestID, StreamTypeChat, &ChatStreamChunk{
+		ChunkIndex: 2,
+		Timestamp:  time.Now(),
+		TokenUsage: &schemas.BifrostLLMUsage{TotalTokens: 1},
+	}, true))
+
+	data, err := accumulator.processAccumulatedChatStreamingChunks(requestID, nil, true)
+	requireNoError(err)
+	if data.ServiceTier == nil || *data.ServiceTier != schemas.BifrostServiceTierPriority {
+		t.Fatalf("expected priority service tier, got %v", data.ServiceTier)
+	}
+}
+
 // TestResponsesStreamingFinalChunkNoDeadlock tests Responses streaming doesn't deadlock
 func TestResponsesStreamingFinalChunkNoDeadlock(t *testing.T) {
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)

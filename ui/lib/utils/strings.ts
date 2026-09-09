@@ -2,6 +2,33 @@ export function capitalize(name: string) {
 	return name.charAt(0).toUpperCase() + name.slice(1);
 }
 
+// titleCaseFromSnakeCase turns a snake_case identifier (e.g. an enum-style
+// state value like "pending_verification") into a title-cased display string
+// (e.g. "Pending Verification"), for rendering in badges, labels, and the like.
+export function titleCaseFromSnakeCase(value: string): string {
+	return value
+		.split("_")
+		.filter(Boolean)
+		.map((word) => capitalize(word.toLowerCase()))
+		.join(" ");
+}
+
+export type TrimmableKeys<T> = { [K in keyof T]: T[K] extends string | string[] | undefined ? K : never }[keyof T];
+
+// trimFields trims whitespace from the named string (or string[]) fields of obj, in place.
+// Undefined fields are left untouched.
+export function trimFields<T extends object>(obj: T, ...keys: TrimmableKeys<T>[]): T {
+	for (const key of keys) {
+		const value = obj[key];
+		if (typeof value === "string") {
+			obj[key] = value.trim() as T[typeof key];
+		} else if (Array.isArray(value)) {
+			obj[key] = value.map((item) => (typeof item === "string" ? item.trim() : item)) as T[typeof key];
+		}
+	}
+	return obj;
+}
+
 // Cleans raw input into a valid numeric string:
 // - Single non-alphabetic separator between digits (commas, spaces, underscores) → stripped
 // - Alphabetic characters → stop processing

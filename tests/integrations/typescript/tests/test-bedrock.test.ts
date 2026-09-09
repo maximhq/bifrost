@@ -27,6 +27,7 @@ import {
   type ToolResultContentBlock,
   type ToolUseBlock,
 } from '@aws-sdk/client-bedrock-runtime'
+import { NodeHttpHandler } from '@smithy/node-http-handler'
 import { describe, expect, it } from 'vitest'
 
 import {
@@ -73,9 +74,9 @@ function getBedrockRuntimeClient(): BedrockRuntimeClient {
       accessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
       secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
     },
-    requestHandler: {
+    requestHandler: new NodeHttpHandler({
       requestTimeout: 300000, // 5 minutes
-    } as never,
+    }),
   })
 }
 
@@ -92,7 +93,7 @@ function convertToBedrockMessages(messages: ChatMessage[]): Message[] {
     if (Array.isArray(msg.content)) {
       for (const item of msg.content) {
         if (item.type === 'text') {
-          content.push({ text: item.text })
+          content.push({ text: item.text ?? '' })
         } else if (item.type === 'image_url' && item.image_url) {
           const url = item.image_url.url
           if (url.startsWith('data:image')) {

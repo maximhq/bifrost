@@ -22,7 +22,7 @@ Bifrost converts the request/response format of the provider API to the Bifrost 
 import openai
 
 client = openai.OpenAI(
-    api_key="your-openai-key"
+    api_key="<YOUR-OPENAI-API-KEY>"
 )
 ```
 
@@ -33,7 +33,7 @@ import openai
 
 client = openai.OpenAI(
     base_url="http://localhost:8080/openai",  # Point to Bifrost
-    api_key="dummy-key" # Keys are handled in Bifrost now
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>"  # Replace with your actual Bifrost virtual key.
 )
 ```
 
@@ -64,7 +64,7 @@ import openai
 # Single client, multiple providers
 client = openai.OpenAI(
     base_url="http://localhost:8080/openai",
-    api_key="dummy"  # API keys configured in Bifrost
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>"  # Replace with your actual Bifrost virtual key.
 )
 
 # OpenAI models
@@ -191,7 +191,7 @@ import openai
 
 client = openai.OpenAI(
     base_url="http://localhost:8080/openai",
-    api_key="dummy-key"
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>"  # Replace with your actual Bifrost virtual key.
 )
 
 # List models from all providers (default behavior)
@@ -219,7 +219,7 @@ import OpenAI from "openai";
 
 const openai = new OpenAI({
   baseURL: "http://localhost:8080/openai",
-  apiKey: "dummy-key",
+  apiKey: "<YOUR-BIFROST-VIRTUAL-KEY>", // Replace with your actual Bifrost virtual key.
 });
 
 // List models from all providers (default behavior)

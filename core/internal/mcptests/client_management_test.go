@@ -371,7 +371,7 @@ func TestReconnectClient(t *testing.T) {
 	// Verify client is still connected
 	time.Sleep(time.Second)
 	clients = manager.GetClients()
-	AssertClientState(t, clients, clientID, schemas.MCPConnectionStateConnected)
+	AssertClientState(t, clients, clientID, schemas.MCPConnectionStateHealthy)
 }
 
 func TestReconnectClientInvalidID(t *testing.T) {

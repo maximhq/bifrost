@@ -1,6 +1,8 @@
 package logstore
 
 import (
+	"database/sql/driver"
+	"errors"
 	"strings"
 	"time"
 
@@ -44,33 +46,60 @@ const (
 
 // SearchFilters represents the available filters for log searches
 type SearchFilters struct {
-	Providers         []string          `json:"providers,omitempty"`
-	Models            []string          `json:"models,omitempty"`
-	Aliases           []string          `json:"aliases,omitempty"`
-	Status            []string          `json:"status,omitempty"`
-	StopReasons       []string          `json:"stop_reasons,omitempty"` // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
-	Objects           []string          `json:"objects,omitempty"`      // For filtering by request type (chat.completion, text.completion, embedding)
-	ParentRequestID   string            `json:"parent_request_id,omitempty"`
-	SelectedKeyIDs    []string          `json:"selected_key_ids,omitempty"`
-	VirtualKeyIDs     []string          `json:"virtual_key_ids,omitempty"`
-	RoutingRuleIDs    []string          `json:"routing_rule_ids,omitempty"`
-	TeamIDs           []string          `json:"team_ids,omitempty"`
-	CustomerIDs       []string          `json:"customer_ids,omitempty"`
-	UserIDs           []string          `json:"user_ids,omitempty"`
-	BusinessUnitIDs   []string          `json:"business_unit_ids,omitempty"`
-	RoutingEngineUsed []string          `json:"routing_engine_used,omitempty"` // For filtering by routing engine (routing-rule, governance, loadbalancing)
-	StartTime         *time.Time        `json:"start_time,omitempty"`
-	EndTime           *time.Time        `json:"end_time,omitempty"`
-	MinLatency        *float64          `json:"min_latency,omitempty"`
-	MaxLatency        *float64          `json:"max_latency,omitempty"`
-	MinTokens         *int              `json:"min_tokens,omitempty"`
-	MaxTokens         *int              `json:"max_tokens,omitempty"`
-	MinCost           *float64          `json:"min_cost,omitempty"`
-	MaxCost           *float64          `json:"max_cost,omitempty"`
-	MissingCostOnly   bool              `json:"missing_cost_only,omitempty"`
-	CacheHitTypes     []string          `json:"cache_hit_types,omitempty"` // For filtering by local-cache hit type ("direct", "semantic")
-	ContentSearch     string            `json:"content_search,omitempty"`
-	MetadataFilters   map[string]string `json:"metadata_filters,omitempty"` // key=metadataKey, value=metadataValue for filtering by metadata
+	Providers            []string          `json:"providers,omitempty"`
+	Models               []string          `json:"models,omitempty"`
+	Aliases              []string          `json:"aliases,omitempty"`
+	Status               []string          `json:"status,omitempty"`
+	StopReasons          []string          `json:"stop_reasons,omitempty"`    // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
+	ToolCallNames        []string          `json:"tool_call_names,omitempty"` // Requests whose response called ANY of these function names (matched against the tool_call_names column)
+	Objects              []string          `json:"objects,omitempty"`         // For filtering by request type (chat.completion, text.completion, embedding)
+	ParentRequestID      string            `json:"parent_request_id,omitempty"`
+	RequestID            string            `json:"request_id,omitempty"` // Exact match on the log primary key, which is the request ID. Time-range filters are skipped for it so a unique ID is never hidden by the selected window.
+	RootsOnly            bool              `json:"roots_only,omitempty"` // Hide rows whose parent_request_id points at another row matching these same filters, so each chain lists as its root request only. Ignored when ParentRequestID is set.
+	SelectedKeyIDs       []string          `json:"selected_key_ids,omitempty"`
+	VirtualKeyIDs        []string          `json:"virtual_key_ids,omitempty"`
+	RoutingRuleIDs       []string          `json:"routing_rule_ids,omitempty"`
+	ComplexityTiers      []string          `json:"complexity_tiers,omitempty"`      // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
+	ComplexityMechanisms []string          `json:"complexity_mechanisms,omitempty"` // For filtering by complexity decision mechanism (semantic, llm, session, skipped)
+	SessionID            string            `json:"session_id,omitempty"`            // Exact Bifrost session ID used for key stickiness and request correlation
+	TeamIDs              []string          `json:"team_ids,omitempty"`
+	CustomerIDs          []string          `json:"customer_ids,omitempty"`
+	UserIDs              []string          `json:"user_ids,omitempty"`
+	BusinessUnitIDs      []string          `json:"business_unit_ids,omitempty"`
+	ProjectIDs           []string          `json:"project_ids,omitempty"`
+	RoutingEngineUsed    []string          `json:"routing_engine_used,omitempty"` // For filtering by routing engine (routing-rule, governance, loadbalancing)
+	Apps                 []string          `json:"apps,omitempty"`                // Backend-detected client apps
+	UserAgents           []string          `json:"user_agents,omitempty"`         // Raw User-Agent strings; kept for compatibility/debug filtering
+	StartTime            *time.Time        `json:"start_time,omitempty"`
+	EndTime              *time.Time        `json:"end_time,omitempty"`
+	MinLatency           *float64          `json:"min_latency,omitempty"`
+	MaxLatency           *float64          `json:"max_latency,omitempty"`
+	MinTokens            *int              `json:"min_tokens,omitempty"`
+	MaxTokens            *int              `json:"max_tokens,omitempty"`
+	MinCost              *float64          `json:"min_cost,omitempty"`
+	MaxCost              *float64          `json:"max_cost,omitempty"`
+	MissingCostOnly      bool              `json:"missing_cost_only,omitempty"`
+	CacheHitTypes        []string          `json:"cache_hit_types,omitempty"` // For filtering by local-cache hit type ("direct", "semantic")
+	ContentSearch        string            `json:"content_search,omitempty"`
+	MetadataFilters      map[string]string `json:"metadata_filters,omitempty"` // key=metadataKey, value=metadataValue for filtering by metadata
+	// RankingLimit caps the number of rows returned by the ranking queries
+	// (GetModelRankings / GetUserRankings / GetDimensionRankings). nil means
+	// "use the store default" (defaultMaxRankingsLimit); a value <= 0 means
+	// "return every ranked entity", which is what the dashboard export uses.
+	RankingLimit *int `json:"ranking_limit,omitempty"`
+}
+
+// EffectiveRankingLimit resolves the ranking row cap: the store default when
+// the caller did not specify one, 0 when the caller explicitly asked for an
+// uncapped result.
+func (f SearchFilters) EffectiveRankingLimit(defaultLimit int) int {
+	if f.RankingLimit == nil {
+		return defaultLimit
+	}
+	if *f.RankingLimit <= 0 {
+		return 0
+	}
+	return *f.RankingLimit
 }
 
 // PaginationOptions represents pagination parameters
@@ -116,10 +145,46 @@ type SearchStats struct {
 	UserFacingTotalRequests   int64   `json:"user_facing_total_requests"`              // Count of root requests (fallback_index = 0) used as denominator for UserFacingSuccessRate
 	AverageLatency            float64 `json:"average_latency"`                         // Average latency in milliseconds
 	TotalTokens               int64   `json:"total_tokens"`                            // Total tokens used
+	PromptTokens              int64   `json:"prompt_tokens"`                           // Input tokens used
+	CompletionTokens          int64   `json:"completion_tokens"`                       // Output tokens used
 	TotalCost                 float64 `json:"total_cost"`                              // Total cost in dollars
 	CacheHitRateTotalRequests *int64  `json:"cache_hit_rate_total_requests,omitempty"` // Completed requests used as local-cache hit-rate denominator
 	DirectCacheHits           *int64  `json:"direct_cache_hits,omitempty"`             // Number of direct (exact) semantic cache hits
 	SemanticCacheHits         *int64  `json:"semantic_cache_hits,omitempty"`           // Number of semantic (fuzzy) cache hits
+}
+
+// UserAgentMapping stores a custom rule for mapping User-Agent values to app labels.
+type UserAgentMapping struct {
+	ID        string    `gorm:"primaryKey;type:varchar(36)" json:"id"`
+	Pattern   string    `gorm:"type:varchar(512);not null" json:"pattern"`
+	MatchType string    `gorm:"type:varchar(32);not null;index" json:"match_type"`
+	App       string    `gorm:"type:varchar(128);not null;index" json:"app"`
+	Logo      []byte    `gorm:"type:bytea" json:"logo,omitempty"`
+	LogoMime  *string   `gorm:"type:varchar(128)" json:"logo_mime,omitempty"`
+	IsActive  bool      `gorm:"index" json:"is_active"`
+	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
+	UpdatedAt time.Time `gorm:"not null" json:"updated_at"`
+}
+
+// BeforeCreate enforces a non-empty primary key before insert, guarding against
+// callers that bypass the plugin layer's UUID assignment.
+func (u *UserAgentMapping) BeforeCreate(tx *gorm.DB) error {
+	if strings.TrimSpace(u.ID) == "" {
+		return errors.New("id is required")
+	}
+	return nil
+}
+
+// OverheadBucket is one slice of the Bifrost overhead, attributed to a span (or
+// group of spans) by self-time: the span's own wall duration minus the wall
+// duration of its direct children. Self-times across the whole span tree are
+// non-overlapping and sum to the root duration, so summing the overhead-side
+// buckets gives an independent measure of overhead that does not rely on the
+// upstream socket accumulator. DurationUs is microseconds (overhead runs small).
+type OverheadBucket struct {
+	Name       string  `json:"name"` // e.g. "key.selection", "plugin.governance", "mcp", "core"
+	Kind       string  `json:"kind"` // originating span kind, for grouping/coloring
+	DurationUs float64 `json:"duration_us"`
 }
 
 // Log represents a complete log entry for a request/response cycle
@@ -135,6 +200,8 @@ type Log struct {
 	Alias                   *string   `gorm:"type:varchar(255);index" json:"alias,omitempty"`          // Set when model was resolved via alias mapping; the original name the caller used
 	CanonicalModelName      *string   `gorm:"type:varchar(255)" json:"canonical_model_name,omitempty"` // Canonical model name configured on the resolved alias, when set
 	AliasModelFamily        *string   `gorm:"type:varchar(255)" json:"alias_model_family,omitempty"`   // Model family configured on the resolved alias, when set
+	ServerSideFallbackModel *string   `gorm:"type:varchar(255)" json:"server_side_fallback_model,omitempty"`
+	ServedModel             *string   `gorm:"type:varchar(255)" json:"served_model,omitempty"` // Model the provider named on the response body when it differs from Model
 	NumberOfRetries         int       `gorm:"default:0" json:"number_of_retries"`
 	FallbackIndex           int       `gorm:"default:0" json:"fallback_index"`
 	SelectedKeyID           string    `gorm:"type:varchar(255);index:idx_logs_selected_key_id" json:"selected_key_id"`
@@ -143,8 +210,13 @@ type Log struct {
 	VirtualKeyID            *string   `gorm:"type:varchar(255);index:idx_logs_virtual_key_id" json:"virtual_key_id"`
 	VirtualKeyName          *string   `gorm:"type:varchar(255)" json:"virtual_key_name"`
 	RoutingEnginesUsedStr   *string   `gorm:"type:varchar(255);column:routing_engines_used" json:"-"` // Comma-separated routing engines
+	ToolCallNamesStr        *string   `gorm:"type:text;column:tool_call_names" json:"-"`              // Comma-separated distinct function names the response called. Not a payload field, so it stays on the row in hybrid mode and is filterable. Names are recorded regardless of content logging; arguments live in tool_calls and follow content policy.
 	RoutingRuleID           *string   `gorm:"type:varchar(255);index:idx_logs_routing_rule_id" json:"routing_rule_id"`
 	RoutingRuleName         *string   `gorm:"type:varchar(255)" json:"routing_rule_name"`
+	ComplexityTier          *string   `gorm:"type:varchar(50);index:idx_logs_complexity_tier,where:complexity_tier IS NOT NULL" json:"complexity_tier,omitempty"`                // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); NULL when no routing rule demanded complexity. Partial index, matching its performanceIndexes entry
+	ComplexityMechanism     *string   `gorm:"type:varchar(50);index:idx_logs_complexity_mechanism,where:complexity_mechanism IS NOT NULL" json:"complexity_mechanism,omitempty"` // How the complexity tier was classified ("semantic", "llm", "session", "skipped"). NULL means no routing rule referenced complexity_tier, so classification never ran. Partial index, matching its performanceIndexes entry
+	ComplexityScore         *float64  `gorm:"column:complexity_score" json:"complexity_score,omitempty"`                                                                         // Raw complexity score behind the tier; unindexed (detail-view only)
+	SessionID               *string   `gorm:"type:varchar(255);index:idx_logs_session_id,where:session_id IS NOT NULL" json:"session_id,omitempty"`                              // Raw opaque session identity resolved at ingress for key stickiness and log correlation
 	SelectedPromptName      *string   `gorm:"type:varchar(255)" json:"selected_prompt_name"`
 	SelectedPromptVersion   *string   `gorm:"type:varchar(64)" json:"selected_prompt_version"`
 	SelectedPromptID        *string   `gorm:"type:varchar(36)" json:"selected_prompt_id"`
@@ -156,57 +228,86 @@ type Log struct {
 	CustomerName            *string   `gorm:"type:varchar(255)" json:"customer_name"`
 	BusinessUnitID          *string   `gorm:"type:varchar(255);index:idx_logs_business_unit_id" json:"business_unit_id"`
 	BusinessUnitName        *string   `gorm:"type:varchar(255)" json:"business_unit_name"`
+	ProjectID               *string   `gorm:"type:varchar(255);index:idx_logs_project_id" json:"project_id"`
+	ProjectName             *string   `gorm:"type:varchar(255)" json:"project_name"`
 	TeamIDs                 *string   `gorm:"type:text" json:"-"`
 	TeamNames               *string   `gorm:"type:text" json:"-"`
 	CustomerIDs             *string   `gorm:"type:text" json:"-"`
 	CustomerNames           *string   `gorm:"type:text" json:"-"`
 	BusinessUnitIDs         *string   `gorm:"type:text" json:"-"`
 	BusinessUnitNames       *string   `gorm:"type:text" json:"-"`
-	InputHistory            string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ChatMessage
-	ResponsesInputHistory   string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ResponsesMessage
-	OutputMessage           string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ChatMessage
-	ResponsesOutput         string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ResponsesMessage
-	EmbeddingOutput         string    `gorm:"type:text" json:"-"` // JSON serialized [][]float32
-	RerankOutput            string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.RerankResult
-	OCROutput               string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostOCRResponse
-	Params                  string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ModelParameters
-	Tools                   string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.Tool
-	ToolCalls               string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ToolCall (For backward compatibility, tool calls are now in the content)
-	SpeechInput             string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.SpeechInput
-	TranscriptionInput      string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.TranscriptionInput
-	OCRInput                string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.OCRDocument
-	ImageGenerationInput    string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ImageGenerationInput
-	ImageEditInput          string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ImageEditInput
-	ImageVariationInput     string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ImageVariationInput
-	VideoGenerationInput    string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.VideoGenerationInput
-	SpeechOutput            string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostSpeech
-	TranscriptionOutput     string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostTranscribe
-	ImageGenerationOutput   string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostImageGenerationResponse
-	ListModelsOutput        string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.Model
-	VideoGenerationOutput   string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoGenerationResponse
-	VideoRetrieveOutput     string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoRetrieveResponse
-	VideoDownloadOutput     string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoDownloadResponse
-	VideoListOutput         string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoListResponse
-	VideoDeleteOutput       string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoDeleteResponse
-	CacheDebug              string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostCacheDebug
-	Latency                 *float64  `gorm:"index:idx_logs_latency" json:"latency,omitempty"`
-	TokenUsage              string    `gorm:"type:text" json:"-"`                                                                         // JSON serialized *schemas.LLMUsage
-	Cost                    *float64  `gorm:"index" json:"cost,omitempty"`                                                                // Cost in dollars (total cost of the request - includes cache lookup cost)
-	Status                  string    `gorm:"type:varchar(50);index;index:idx_logs_ts_provider_status,priority:3;not null" json:"status"` // "processing", "success", or "error"
-	StopReason              *string   `gorm:"type:varchar(50);index:idx_logs_stop_reason" json:"stop_reason,omitempty"`                   // Why the model stopped: "stop", "length", "content_filter", "tool_calls", etc.
-	ErrorDetails            string    `gorm:"type:text" json:"-"`                                                                         // JSON serialized *schemas.BifrostError
-	Stream                  bool      `gorm:"default:false" json:"stream"`                                                                // true if this was a streaming response
-	ContentSummary          string    `gorm:"type:text" json:"content_summary,omitempty"`                                                 // Last user message preview; UI log-list display fallback when payload fields are offloaded to object storage
-	RawRequest              string    `gorm:"type:text" json:"raw_request"`                                                               // Populated when `send-back-raw-request` is on
-	RawResponse             string    `gorm:"type:text" json:"raw_response"`                                                              // Populated when `send-back-raw-response` is on
-	PassthroughRequestBody  string    `gorm:"type:text" json:"passthrough_request_body,omitempty"`                                        // Raw body for passthrough requests (UTF-8)
-	PassthroughResponseBody string    `gorm:"type:text" json:"passthrough_response_body,omitempty"`                                       // Raw body for passthrough responses (UTF-8)
-	RoutingEngineLogs       string    `gorm:"type:text" json:"routing_engine_logs,omitempty"`                                             // Formatted routing engine decision logs
-	PluginLogs              string    `gorm:"type:text" json:"plugin_logs,omitempty"`                                                     // JSON serialized plugin log entries grouped by plugin name
-	Metadata                *string   `gorm:"type:text" json:"-"`                                                                         // JSON serialized map[string]interface{}
-	IsLargePayloadRequest   bool      `gorm:"default:false" json:"is_large_payload_request"`
-	IsLargePayloadResponse  bool      `gorm:"default:false" json:"is_large_payload_response"`
-	HasObject               bool      `gorm:"default:false" json:"-"` // True when payload is stored in object storage
+	UserAgent               *string   `gorm:"type:varchar(512);index:idx_logs_user_agent" json:"user_agent,omitempty"` // Raw HTTP User-Agent of the calling client
+	App                     *string   `gorm:"type:varchar(128);index:idx_logs_app" json:"app,omitempty"`               // Backend-detected client app derived from user_agent
+	InputHistory            string    `gorm:"type:text" json:"-"`                                                      // JSON serialized []schemas.ChatMessage
+	ResponsesInputHistory   string    `gorm:"type:text" json:"-"`                                                      // JSON serialized []schemas.ResponsesMessage
+	OutputMessage           string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.ChatMessage
+	ResponsesOutput         string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.ResponsesMessage
+	EmbeddingOutput         string    `gorm:"type:text" json:"-"`                                                      // JSON serialized [][]float32
+	RerankOutput            string    `gorm:"type:text" json:"-"`                                                      // JSON serialized []schemas.RerankResult
+	OCROutput               string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostOCRResponse
+	Params                  string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.ModelParameters
+	Tools                   string    `gorm:"type:text" json:"-"`                                                      // JSON serialized []schemas.Tool
+	ToolCalls               string    `gorm:"type:text" json:"-"`                                                      // JSON serialized []schemas.ToolCall (For backward compatibility, tool calls are now in the content)
+	SpeechInput             string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.SpeechInput
+	TranscriptionInput      string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.TranscriptionInput
+	OCRInput                string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.OCRDocument
+	ImageGenerationInput    string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.ImageGenerationInput
+	ImageEditInput          string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.ImageEditInput
+	ImageVariationInput     string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.ImageVariationInput
+	VideoGenerationInput    string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.VideoGenerationInput
+	VideoEditInput          string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.VideoEditInput
+	SpeechOutput            string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostSpeech
+	TranscriptionOutput     string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostTranscribe
+	ImageGenerationOutput   string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostImageGenerationResponse
+	ListModelsOutput        string    `gorm:"type:text" json:"-"`                                                      // JSON serialized []schemas.Model
+	VideoGenerationOutput   string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostVideoGenerationResponse
+	VideoRetrieveOutput     string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostVideoRetrieveResponse
+	VideoDownloadOutput     string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostVideoDownloadResponse
+	VideoListOutput         string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostVideoListResponse
+	VideoDeleteOutput       string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostVideoDeleteResponse
+	// Debug spelling is retained for the persisted cache and guardrail columns.
+	CacheDebug        string   `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostCacheMetadata
+	GuardrailDebug    string   `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostGuardrailMetadata
+	RoutingMetadata   string   `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostRoutingMetadata
+	Latency           *float64 `gorm:"index:idx_logs_latency" json:"latency,omitempty"`
+	UpstreamLatency   *float64 `gorm:"index:idx_logs_upstream_latency" json:"upstream_latency,omitempty"` // Provider socket time across all attempts, ms; nil = unmeasured
+	OverheadLatency   *float64 `gorm:"index:idx_logs_overhead_latency" json:"overhead_latency,omitempty"` // Bifrost overhead (total minus upstream), ms; nil = unmeasured
+	OverheadBreakdown string   `gorm:"type:text" json:"-"`                                                // JSON serialized []OverheadBucket: per-span self-time decomposition of overhead
+	TokenUsage        string   `gorm:"type:text" json:"-"`                                                // JSON serialized *schemas.LLMUsage
+	// Denormalized cost split for per-category quota aggregation. input + output +
+	// additional reconcile to the cost column. Additional holds internal sidecar
+	// costs with no input/output token category (guardrail, MCP).
+	InputCost      float64  `gorm:"default:0" json:"-"`
+	OutputCost     float64  `gorm:"default:0" json:"-"`
+	AdditionalCost float64  `gorm:"default:0" json:"-"`
+	Cost           *float64 `gorm:"index" json:"cost,omitempty"` // Cost in dollars (total cost of the request - includes cache lookup cost)
+	// Virtual: one cost breakdown the UI reads across every row type. Assembled in
+	// DeserializeFields from token_usage.cost when present (full detail), else from
+	// the denormalized columns. Never stored.
+	CostBreakdown           *schemas.BifrostCost `gorm:"-" json:"cost_breakdown,omitempty"`
+	Status                  string               `gorm:"type:varchar(50);index;index:idx_logs_ts_provider_status,priority:3;not null" json:"status"` // "processing", "success", or "error"
+	StopReason              *string              `gorm:"type:varchar(50);index:idx_logs_stop_reason" json:"stop_reason,omitempty"`                   // Why the model stopped: "stop", "length", "content_filter", "tool_calls", etc.
+	ErrorDetails            string               `gorm:"type:text" json:"-"`                                                                         // JSON serialized *schemas.BifrostError
+	Stream                  bool                 `gorm:"default:false" json:"stream"`                                                                // true if this was a streaming response
+	ContentSummary          string               `gorm:"type:text" json:"content_summary,omitempty"`                                                 // Last user message preview; UI log-list display fallback when payload fields are offloaded to object storage
+	RawRequest              string               `gorm:"type:text" json:"raw_request"`                                                               // Populated when `send-back-raw-request` is on
+	RawResponse             string               `gorm:"type:text" json:"raw_response"`                                                              // Populated when `send-back-raw-response` is on
+	PassthroughRequestBody  string               `gorm:"type:text" json:"passthrough_request_body,omitempty"`                                        // Raw body for passthrough requests (UTF-8)
+	PassthroughResponseBody string               `gorm:"type:text" json:"passthrough_response_body,omitempty"`                                       // Raw body for passthrough responses (UTF-8)
+	RoutingEngineLogs       string               `gorm:"type:text" json:"routing_engine_logs,omitempty"`                                             // Formatted routing engine decision logs
+	PluginLogs              string               `gorm:"type:text" json:"plugin_logs,omitempty"`                                                     // JSON serialized plugin log entries grouped by plugin name
+	Metadata                *string              `gorm:"type:text" json:"-"`                                                                         // JSON serialized map[string]interface{}
+	IsLargePayloadRequest   bool                 `gorm:"default:false" json:"is_large_payload_request"`
+	IsLargePayloadResponse  bool                 `gorm:"default:false" json:"is_large_payload_response"`
+	HasObject               bool                 `gorm:"default:false" json:"-"`              // True when payload is stored in object storage
+	ContentHidden           bool                 `gorm:"default:false" json:"content_hidden"` // True when content logging was disabled for the request, so the payload must never be served back through the API/UI (whether it was retained in object storage or dropped entirely)
+
+	// Aggregates over this log's child rows (rows whose parent_request_id equals
+	// this log's ID, i.e. fallback attempts). Populated only on roots_only list
+	// queries so the UI can render an expandable chain row; never stored.
+	ChildCount     int64   `gorm:"-" json:"child_count,omitempty"`
+	ChildrenCost   float64 `gorm:"-" json:"children_cost,omitempty"`
+	ChildrenTokens int64   `gorm:"-" json:"children_tokens,omitempty"`
 
 	RedactionData          *schemas.RedactionData        `gorm:"-" json:"-"`                           // Transient guardrail redaction data consumed by enterprise logstore wrappers
 	RedactionMapping       string                        `gorm:"type:text" json:"-"`                   // Reversible redaction mapping (encrypted when an encryption key is set), written by enterprise logstore wrappers; deleted with the row
@@ -218,16 +319,46 @@ type Log struct {
 	BudgetIDs     *string `gorm:"type:text" json:"-"` // JSON serialized []string of budget IDs applicable to this request
 	RateLimitIDs  *string `gorm:"type:text" json:"-"` // JSON serialized []string of rate limit IDs applicable to this request
 
-	// Denormalized token fields for easier querying
+	// Denormalized token fields for easier querying. cached_read_tokens earns its
+	// place because the matviews and token histograms SUM it (see matviews.go and
+	// GetTokenHistogram). There is deliberately no cache-write counterpart: nothing
+	// aggregates cache writes, and pricing reads the cache breakdown out of
+	// token_usage rather than from a column, so it would have had no consumer.
 	PromptTokens     int `gorm:"default:0" json:"-"`
 	CompletionTokens int `gorm:"default:0" json:"-"`
 	TotalTokens      int `gorm:"index:idx_logs_total_tokens;default:0" json:"-"`
 	CachedReadTokens int `gorm:"default:0" json:"-"`
 
+	// Served billing tier, denormalized so cost recomputation can reprice a row
+	// at the rates it was actually served at. These are deliberately NOT payload
+	// fields (see payload.go): they must survive hybrid object-storage offload
+	// and content-hidden rows, both of which blank the token_usage column.
+	//
+	// token_usage cannot carry them — BifrostLLMUsage tags Speed and InferenceGeo
+	// `json:"-"`, so they never appear in any serialized usage payload. Without
+	// these columns tierFromResponse sees nothing and reprices flex traffic at
+	// standard rates.
+	// Batch detail for batch_create / batch_retrieve rows and for the aggregate
+	// cost row. Like the served-tier fields below, this is deliberately NOT a
+	// payload field (see payload.go): request counts and per-model pricing are
+	// operational records rather than request content, so they must survive
+	// object-storage offload and content-hidden rows.
+	BatchDebug string `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostBatchDebug
+	// VideoDebug carries the video job id and lifecycle status, and on the aggregate
+	// cost row the pricing detail that distinguishes it from the submission it
+	// settles. Operational, like BatchDebug — it must survive object-storage offload
+	// and content-hidden rows.
+	VideoDebug string `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoDebug
+
+	ServiceTier  *string `gorm:"type:varchar(32)" json:"service_tier,omitempty"`  // OpenAI served tier, e.g. "priority", "flex", "ultrafast", or "default"
+	Speed        *string `gorm:"type:varchar(32)" json:"speed,omitempty"`         // Anthropic served speed: "fast" / "standard"
+	InferenceGeo *string `gorm:"type:varchar(32)" json:"inference_geo,omitempty"` // Anthropic data residency, e.g. "us"
+
 	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
 
 	// Virtual fields for JSON output - these will be populated when needed
 	RoutingEnginesUsed          []string                                `gorm:"-" json:"routing_engines_used,omitempty"` // Virtual field deserialized from JSON
+	ToolCallNames               []string                                `gorm:"-" json:"tool_call_names,omitempty"`      // Virtual field split from ToolCallNamesStr
 	InputHistoryParsed          []schemas.ChatMessage                   `gorm:"-" json:"input_history,omitempty"`
 	ResponsesInputHistoryParsed []schemas.ResponsesMessage              `gorm:"-" json:"responses_input_history,omitempty"`
 	OutputMessageParsed         *schemas.ChatMessage                    `gorm:"-" json:"output_message,omitempty"`
@@ -249,16 +380,23 @@ type Log struct {
 	SpeechOutputParsed          *schemas.BifrostSpeechResponse          `gorm:"-" json:"speech_output,omitempty"`
 	TranscriptionOutputParsed   *schemas.BifrostTranscriptionResponse   `gorm:"-" json:"transcription_output,omitempty"`
 	ImageGenerationOutputParsed *schemas.BifrostImageGenerationResponse `gorm:"-" json:"image_generation_output,omitempty"`
-	CacheDebugParsed            *schemas.BifrostCacheDebug              `gorm:"-" json:"cache_debug,omitempty"`
+	// Debug spelling is retained for the established cache and guardrail Go/JSON contracts.
+	CacheDebugParsed            *schemas.BifrostCacheMetadata           `gorm:"-" json:"cache_debug,omitempty"`
+	BatchDebugParsed            *schemas.BifrostBatchDebug              `gorm:"-" json:"batch_debug,omitempty"`
+	VideoDebugParsed            *schemas.BifrostVideoDebug              `gorm:"-" json:"video_debug,omitempty"`
+	GuardrailDebugParsed        *schemas.BifrostGuardrailMetadata       `gorm:"-" json:"guardrail_debug,omitempty"`
+	RoutingMetadataParsed       *schemas.BifrostRoutingMetadata         `gorm:"-" json:"routing_metadata,omitempty"`
 	ListModelsOutputParsed      []schemas.Model                         `gorm:"-" json:"list_models_output,omitempty"`
 	MetadataParsed              map[string]interface{}                  `gorm:"-" json:"metadata,omitempty"`
 	VideoGenerationInputParsed  *schemas.VideoGenerationInput           `gorm:"-" json:"video_generation_input,omitempty"`
+	VideoEditInputParsed        *schemas.VideoEditInput                 `gorm:"-" json:"video_edit_input,omitempty"`
 	VideoGenerationOutputParsed *schemas.BifrostVideoGenerationResponse `gorm:"-" json:"video_generation_output,omitempty"`
 	VideoRetrieveOutputParsed   *schemas.BifrostVideoGenerationResponse `gorm:"-" json:"video_retrieve_output,omitempty"`
 	VideoDownloadOutputParsed   *schemas.BifrostVideoDownloadResponse   `gorm:"-" json:"video_download_output,omitempty"`
 	VideoListOutputParsed       *schemas.BifrostVideoListResponse       `gorm:"-" json:"video_list_output,omitempty"`
 	VideoDeleteOutputParsed     *schemas.BifrostVideoDeleteResponse     `gorm:"-" json:"video_delete_output,omitempty"`
 	AttemptTrailParsed          []schemas.KeyAttemptRecord              `gorm:"-" json:"attempt_trail,omitempty"`
+	OverheadBreakdownParsed     []OverheadBucket                        `gorm:"-" json:"overhead_breakdown,omitempty"`
 	BudgetIDsParsed             []string                                `gorm:"-" json:"budget_ids,omitempty"`
 	RateLimitIDsParsed          []string                                `gorm:"-" json:"rate_limit_ids,omitempty"`
 	TeamIDsParsed               []string                                `gorm:"-" json:"team_ids,omitempty"`
@@ -272,6 +410,32 @@ type Log struct {
 	VirtualKey  *tables.TableVirtualKey  `gorm:"-" json:"virtual_key,omitempty"`  // redacted
 	SelectedKey *schemas.Key             `gorm:"-" json:"selected_key,omitempty"` // redacted
 	RoutingRule *tables.TableRoutingRule `gorm:"-" json:"routing_rule,omitempty"` // redacted
+
+	// usageRebuiltFromColumns records that TokenUsageParsed came from the lossy
+	// denormalized-column rebuild in DeserializeFields rather than from a real
+	// token_usage payload. Unexported so it is invisible to GORM and to JSON: it
+	// is provenance for the current read, not row state. Read via IsUsageDegraded.
+	usageRebuiltFromColumns bool
+
+	// billingPayloadsHydrated records that this row's offloaded payload has already
+	// been fetched for billing. Needed because "absent" and "was never written" look
+	// identical in a column: a row with no cache_debug still has an empty cache_debug
+	// after a successful fetch, and without this flag the gate would fetch it again
+	// every time. Same provenance-not-state reasoning as above.
+	billingPayloadsHydrated bool
+}
+
+// IsUsageDegraded reports whether TokenUsageParsed is the lossy stub rebuilt
+// from denormalized columns instead of the real token_usage payload.
+//
+// It exists for billing. The stub carries only prompt/completion/total plus the
+// cached read/write totals, and PromptTokens is inclusive of the cache buckets —
+// so pricing a stub charges every cached token at the full input rate and can
+// inflate a cache-heavy request several fold. Callers that compute money must
+// skip these rows rather than price them; callers that render tokens (the log
+// list, the UI) are free to use the stub, which is what it was built for.
+func (l *Log) IsUsageDegraded() bool {
+	return l != nil && l.usageRebuiltFromColumns
 }
 
 // NewLogEntryFromMap creates a new Log from a map[string]interface{}
@@ -306,6 +470,43 @@ func (l *Log) AfterFind(tx *gorm.DB) error {
 	return l.DeserializeFields()
 }
 
+// maxToolCallNamesBytes caps the serialized tool_call_names column. Whole names
+// past the cap are dropped; a name is never split.
+const maxToolCallNamesBytes = 2048
+
+// joinToolCallNames joins distinct, non-empty names with commas, keeping
+// first-seen order and stopping before the joined string would exceed
+// maxToolCallNamesBytes.
+func joinToolCallNames(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	seen := make(map[string]struct{}, len(names))
+	var b strings.Builder
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" || strings.Contains(name, ",") {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		extra := len(name)
+		if b.Len() > 0 {
+			extra++
+		}
+		if b.Len()+extra > maxToolCallNamesBytes {
+			break
+		}
+		seen[name] = struct{}{}
+		if b.Len() > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(name)
+	}
+	return b.String()
+}
+
 // SerializeFields converts Go structs to JSON strings for storage
 func (l *Log) SerializeFields() error {
 	// Serialize routing engines to comma-separated string
@@ -314,6 +515,14 @@ func (l *Log) SerializeFields() error {
 		l.RoutingEnginesUsedStr = &engineStr
 	} else {
 		l.RoutingEnginesUsedStr = nil
+	}
+
+	// Serialize tool call names to a comma-separated string, capped so an
+	// agentic response with hundreds of distinct tools cannot bloat the row.
+	if joined := joinToolCallNames(l.ToolCallNames); joined != "" {
+		l.ToolCallNamesStr = &joined
+	} else {
+		l.ToolCallNamesStr = nil
 	}
 
 	if l.InputHistoryParsed != nil {
@@ -428,6 +637,14 @@ func (l *Log) SerializeFields() error {
 		}
 	}
 
+	if l.VideoEditInputParsed != nil {
+		if data, err := sonic.Marshal(l.VideoEditInputParsed); err != nil {
+			return err
+		} else {
+			l.VideoEditInput = string(data)
+		}
+	}
+
 	if l.SpeechOutputParsed != nil {
 		if data, err := sonic.Marshal(l.SpeechOutputParsed); err != nil {
 			return err
@@ -537,6 +754,20 @@ func (l *Log) SerializeFields() error {
 		if l.TokenUsageParsed.PromptTokensDetails != nil {
 			l.CachedReadTokens = l.TokenUsageParsed.PromptTokensDetails.CachedReadTokens
 		}
+		// Denormalize the input/output/additional cost split so it can be summed in SQL.
+		if l.TokenUsageParsed.Cost != nil {
+			l.InputCost = l.TokenUsageParsed.Cost.InputCost
+			l.OutputCost = l.TokenUsageParsed.Cost.OutputCost
+			l.AdditionalCost = l.TokenUsageParsed.Cost.AdditionalCost
+		}
+	}
+
+	// Some providers report only an opaque total (e.g. xAI usd-ticks, Runware),
+	// leaving the per-category split empty. Attribute the total to the input side
+	// so the denormalized columns still reconcile to the cost column
+	// (input + output + additional == total) instead of summing short.
+	if l.InputCost == 0 && l.OutputCost == 0 && l.AdditionalCost == 0 && l.Cost != nil && *l.Cost > 0 {
+		l.InputCost = *l.Cost
 	}
 
 	if l.ErrorDetailsParsed != nil {
@@ -555,6 +786,38 @@ func (l *Log) SerializeFields() error {
 		}
 	}
 
+	if !l.BatchDebugParsed.IsZero() {
+		if data, err := sonic.Marshal(l.BatchDebugParsed); err != nil {
+			return err
+		} else {
+			l.BatchDebug = string(data)
+		}
+	}
+
+	if !l.VideoDebugParsed.IsZero() {
+		if data, err := sonic.Marshal(l.VideoDebugParsed); err != nil {
+			return err
+		} else {
+			l.VideoDebug = string(data)
+		}
+	}
+
+	if l.GuardrailDebugParsed != nil {
+		if data, err := sonic.Marshal(l.GuardrailDebugParsed); err != nil {
+			return err
+		} else {
+			l.GuardrailDebug = string(data)
+		}
+	}
+
+	if l.RoutingMetadataParsed != nil {
+		if data, err := sonic.Marshal(l.RoutingMetadataParsed); err != nil {
+			return err
+		} else {
+			l.RoutingMetadata = string(data)
+		}
+	}
+
 	if len(l.AttemptTrailParsed) > 0 {
 		if data, err := sonic.Marshal(l.AttemptTrailParsed); err != nil {
 			return err
@@ -563,6 +826,16 @@ func (l *Log) SerializeFields() error {
 		}
 	} else {
 		l.AttemptTrail = ""
+	}
+
+	if len(l.OverheadBreakdownParsed) > 0 {
+		if data, err := sonic.Marshal(l.OverheadBreakdownParsed); err != nil {
+			return err
+		} else {
+			l.OverheadBreakdown = string(data)
+		}
+	} else {
+		l.OverheadBreakdown = ""
 	}
 
 	if l.MetadataParsed != nil {
@@ -726,9 +999,21 @@ func (l *Log) DeserializeFields() error {
 	}
 
 	if l.TokenUsage != "" {
+		// Reset before parsing so the result reflects only what the payload says.
+		// DeserializeFields runs twice on the hybrid hydration path, and unmarshalling
+		// over a retained stub would let a zero-valued (omitempty-elided) field in the
+		// payload inherit the stub's number instead of zero.
+		l.TokenUsageParsed = nil
 		if err := sonic.Unmarshal([]byte(l.TokenUsage), &l.TokenUsageParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.TokenUsageParsed = nil
+		} else {
+			// A real payload supersedes any earlier column rebuild. This matters on
+			// the hybrid hydration path: AfterFind builds the stub while token_usage
+			// is still blank, then hydration fills the column and re-deserializes.
+			// Without clearing the flag the row would stay marked degraded and
+			// billing would skip a row it can now price correctly.
+			l.usageRebuiltFromColumns = false
 		}
 	}
 
@@ -778,6 +1063,12 @@ func (l *Log) DeserializeFields() error {
 		if err := sonic.Unmarshal([]byte(l.VideoGenerationInput), &l.VideoGenerationInputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.VideoGenerationInputParsed = nil
+		}
+	}
+
+	if l.VideoEditInput != "" {
+		if err := sonic.Unmarshal([]byte(l.VideoEditInput), &l.VideoEditInputParsed); err != nil {
+			l.VideoEditInputParsed = nil
 		}
 	}
 
@@ -856,9 +1147,42 @@ func (l *Log) DeserializeFields() error {
 		}
 	}
 
+	if l.BatchDebug != "" {
+		if err := sonic.Unmarshal([]byte(l.BatchDebug), &l.BatchDebugParsed); err != nil {
+			// Log error but don't fail the operation - initialize as nil
+			l.BatchDebugParsed = nil
+		}
+	}
+
+	if l.VideoDebug != "" {
+		if err := sonic.Unmarshal([]byte(l.VideoDebug), &l.VideoDebugParsed); err != nil {
+			l.VideoDebugParsed = nil
+		}
+	}
+
+	if l.GuardrailDebug != "" {
+		if err := sonic.Unmarshal([]byte(l.GuardrailDebug), &l.GuardrailDebugParsed); err != nil {
+			// Log error but don't fail the operation - initialize as nil
+			l.GuardrailDebugParsed = nil
+		}
+	}
+
+	if l.RoutingMetadata != "" {
+		if err := sonic.Unmarshal([]byte(l.RoutingMetadata), &l.RoutingMetadataParsed); err != nil {
+			// Log error but don't fail the operation - initialize as nil
+			l.RoutingMetadataParsed = nil
+		}
+	}
+
 	if l.AttemptTrail != "" {
 		if err := sonic.Unmarshal([]byte(l.AttemptTrail), &l.AttemptTrailParsed); err != nil {
 			l.AttemptTrailParsed = nil
+		}
+	}
+
+	if l.OverheadBreakdown != "" {
+		if err := sonic.Unmarshal([]byte(l.OverheadBreakdown), &l.OverheadBreakdownParsed); err != nil {
+			l.OverheadBreakdownParsed = nil
 		}
 	}
 
@@ -918,12 +1242,25 @@ func (l *Log) DeserializeFields() error {
 		l.RoutingEnginesUsed = []string{}
 	}
 
+	if l.ToolCallNamesStr != nil && *l.ToolCallNamesStr != "" {
+		l.ToolCallNames = strings.Split(*l.ToolCallNamesStr, ",")
+	} else {
+		l.ToolCallNames = nil
+	}
+
 	// Hybrid log store offloads token_usage to object storage but keeps denormalized
 	// prompt/completion/total/cached columns in the DB for analytics. Rebuild the virtual
 	// field so list APIs and the UI can render tokens without hydrating from S3 —
-	// same role content_summary plays for message previews. Only the cached-read detail
-	// is denormalized; richer details (e.g. completion_tokens_details) live solely in the
-	// offloaded payload and are restored on detail reads that hydrate from object storage.
+	// same role content_summary plays for message previews. Only the cached-read total
+	// is denormalized; the cache-write total, the 5m/1h split, and richer details such
+	// as completion_tokens_details live solely in the offloaded payload and are restored
+	// on detail reads that hydrate from object storage.
+	//
+	// This rebuild is LOSSY and must never be used for billing. PromptTokens is
+	// inclusive of the cache buckets, so a consumer that prices this stub without
+	// the details reprices every cached token at the full input rate. Billing reads
+	// go through SearchLogsForBilling, which hydrates the real payload; see
+	// IsUsageDegraded for the check that keeps the recalc job from pricing a stub.
 	if l.TokenUsage == "" && l.TokenUsageParsed == nil && (l.PromptTokens != 0 || l.CompletionTokens != 0 || l.TotalTokens != 0) {
 		usage := &schemas.BifrostLLMUsage{
 			PromptTokens:     l.PromptTokens,
@@ -936,9 +1273,82 @@ func (l *Log) DeserializeFields() error {
 			}
 		}
 		l.TokenUsageParsed = usage
+		l.usageRebuiltFromColumns = true
 	}
 
+	l.assembleCostBreakdown()
+
 	return nil
+}
+
+// assembleCostBreakdown builds the cost_breakdown the UI reads. The top-level
+// input/output/additional/total split comes from the denormalized columns: they
+// are the authoritative source (a reprice via BulkUpdateCost updates the columns
+// and the cost column but NOT the token_usage blob, so token_usage.cost goes
+// stale on recompute) and they survive OCR, offloaded, content-hidden, and
+// rebuilt-stub rows where token_usage.cost is gone. The finer per-category detail
+// objects live only in token_usage.cost, so graft them in, but only per category
+// where the payload still reconciles with the columns, so stale detail from an
+// old reprice never contradicts the fresh split. Presence tracks the scalar Cost
+// field, so cost and cost_breakdown appear together.
+func (l *Log) assembleCostBreakdown() {
+	hasColumns := l.Cost != nil || l.InputCost != 0 || l.OutputCost != 0 || l.AdditionalCost != 0
+	if !hasColumns {
+		// No columns (e.g. a projection that selected token_usage but not the cost
+		// columns): fall back to whatever the payload carries.
+		if l.TokenUsageParsed != nil && l.TokenUsageParsed.Cost != nil {
+			l.CostBreakdown = l.TokenUsageParsed.Cost
+		}
+		return
+	}
+
+	total := l.InputCost + l.OutputCost + l.AdditionalCost
+	if l.Cost != nil {
+		total = *l.Cost
+	}
+	inputCost := l.InputCost
+	// Legacy rows written before the split columns existed carry only the total.
+	// Attribute it to input so the breakdown reconciles, mirroring SerializeFields
+	// and CostUpdateFromBreakdown's handling of opaque provider totals.
+	if l.InputCost == 0 && l.OutputCost == 0 && l.AdditionalCost == 0 && total > 0 {
+		inputCost = total
+	}
+	cb := &schemas.BifrostCost{
+		InputCost:      inputCost,
+		OutputCost:     l.OutputCost,
+		AdditionalCost: l.AdditionalCost,
+		TotalCost:      total,
+	}
+	if l.TokenUsageParsed != nil && l.TokenUsageParsed.Cost != nil {
+		d := l.TokenUsageParsed.Cost
+		if costsReconcile(d.InputCost, l.InputCost) {
+			cb.InputCostDetails = d.InputCostDetails
+		}
+		if costsReconcile(d.OutputCost, l.OutputCost) {
+			cb.OutputCostDetails = d.OutputCostDetails
+		}
+		if costsReconcile(d.AdditionalCost, l.AdditionalCost) {
+			cb.AdditionalCostDetails = d.AdditionalCostDetails
+		}
+	}
+	l.CostBreakdown = cb
+}
+
+// costsReconcile reports whether two cost figures match within float noise, used
+// to gate grafting token_usage detail onto the authoritative column split.
+func costsReconcile(a, b float64) bool {
+	diff := a - b
+	if diff < 0 {
+		diff = -diff
+	}
+	scale := a
+	if b > scale {
+		scale = b
+	}
+	if scale < 0 {
+		scale = -scale
+	}
+	return diff <= 1e-9*(1+scale)
 }
 
 // MCPToolLog represents a log entry for MCP tool executions
@@ -956,15 +1366,33 @@ type MCPToolLog struct {
 	TeamID         *string   `gorm:"type:varchar(255);index:idx_mcp_logs_team_id" json:"team_id"`
 	CustomerID     *string   `gorm:"type:varchar(255);index:idx_mcp_logs_customer_id" json:"customer_id"`
 	BusinessUnitID *string   `gorm:"type:varchar(255);index:idx_mcp_logs_business_unit_id" json:"business_unit_id"`
-	Arguments      string    `gorm:"type:text" json:"-"`                                                // JSON serialized tool arguments
-	Result         string    `gorm:"type:text" json:"-"`                                                // JSON serialized tool result
-	ErrorDetails   string    `gorm:"type:text" json:"-"`                                                // JSON serialized *schemas.BifrostError
-	Latency        *float64  `gorm:"index:idx_mcp_logs_latency" json:"latency,omitempty"`               // Execution time in milliseconds
-	Cost           *float64  `gorm:"index:idx_mcp_logs_cost" json:"cost,omitempty"`                     // Cost in dollars (per execution cost)
-	Status         string    `gorm:"type:varchar(50);index:idx_mcp_logs_status;not null" json:"status"` // "processing", "success", or "error"
-	Metadata       string    `gorm:"type:text" json:"-"`                                                // JSON serialized map[string]interface{}
-	HasObject      bool      `gorm:"default:false" json:"-"`                                            // True when payload is stored in object storage
+	ProjectID      *string   `gorm:"type:varchar(255);index:idx_mcp_logs_project_id" json:"project_id"`
+	ProjectName    *string   `gorm:"type:varchar(255)" json:"project_name"`
+	UserAgent      *string   `gorm:"type:varchar(512);index:idx_mcp_logs_user_agent" json:"user_agent,omitempty"` // Raw HTTP User-Agent of the calling client
+	App            *string   `gorm:"type:varchar(128);index:idx_mcp_logs_app" json:"app,omitempty"`               // Backend-detected client app derived from user_agent
+	Arguments      string    `gorm:"type:text" json:"-"`                                                          // JSON serialized tool arguments
+	Result         string    `gorm:"type:text" json:"-"`                                                          // JSON serialized tool result
+	ErrorDetails   string    `gorm:"type:text" json:"-"`                                                          // JSON serialized *schemas.BifrostError
+	Latency        *float64  `gorm:"index:idx_mcp_logs_latency" json:"latency,omitempty"`                         // Execution time in milliseconds
+	Cost           *float64  `gorm:"index:idx_mcp_logs_cost" json:"cost,omitempty"`                               // Cost in dollars (per execution cost)
+	Status         string    `gorm:"type:varchar(50);index:idx_mcp_logs_status;not null" json:"status"`           // "processing", "success", or "error"
+	Metadata       string    `gorm:"type:text" json:"-"`                                                          // JSON serialized map[string]interface{}
+	PluginLogs     string    `gorm:"type:text" json:"plugin_logs,omitempty"`                                      // JSON serialized plugin logs grouped by plugin name
+	HasObject      bool      `gorm:"default:false" json:"-"`                                                      // True when payload is stored in object storage
 	CreatedAt      time.Time `gorm:"index;not null" json:"created_at"`
+
+	RedactionData          *schemas.RedactionData        `gorm:"-" json:"-"`                           // Transient guardrail redaction data consumed by enterprise logstore wrappers
+	RedactionMapping       string                        `gorm:"type:text" json:"-"`                   // Reversible redaction mapping written by enterprise logstore wrappers; deleted with the row
+	RevealRedactionMapping *schemas.RedactionMapsByPhase `gorm:"-" json:"redaction_mapping,omitempty"` // Virtual field populated only on permitted MCP log-detail reads
+
+	// Endpoint-agent context. These are populated for tool calls observed on a
+	// developer machine by the Bifrost Edge agent (rather than proxied by the
+	// gateway). Source distinguishes the origin: empty/null for gateway-proxied
+	// calls, "endpoint" for agent-observed calls.
+	DeviceID *string `gorm:"type:varchar(255);index:idx_mcp_logs_device_id" json:"device_id,omitempty"`
+	AppKey   *string `gorm:"type:varchar(64)" json:"app_key,omitempty"` // Canonical policy key of the detected client app (schemas.AppKeyFromName), e.g. "claude-code"; a slug like App, not a secret or credential
+	Decision *string `gorm:"type:varchar(16)" json:"decision,omitempty"`
+	Source   *string `gorm:"type:varchar(16);index:idx_mcp_logs_source" json:"source,omitempty"`
 
 	// Virtual fields for JSON output - populated when needed
 	ArgumentsParsed    interface{}             `gorm:"-" json:"arguments,omitempty"`
@@ -1070,15 +1498,19 @@ func (l *MCPToolLog) DeserializeFields() error {
 type AsyncJob struct {
 	ID           string                 `gorm:"primaryKey;type:varchar(255)" json:"id"`
 	Status       schemas.AsyncJobStatus `gorm:"type:varchar(50);index:idx_async_jobs_status;not null" json:"status"`
+	RequestID    string                 `gorm:"type:varchar(255)" json:"request_id,omitempty"`
 	RequestType  schemas.RequestType    `gorm:"type:varchar(50);index:idx_async_jobs_request_type;not null" json:"request_type"`
 	Response     string                 `gorm:"type:text" json:"response"`
 	StatusCode   int                    `gorm:"default:0" json:"status_code,omitempty"`
 	Error        string                 `gorm:"type:text" json:"error,omitempty"`
 	VirtualKeyID *string                `gorm:"type:varchar(255);index:idx_async_jobs_vk_id" json:"virtual_key_id,omitempty"`
-	ResultTTL    int                    `gorm:"default:3600" json:"-"` // TTL in seconds, used to calculate ExpiresAt on completion
-	ExpiresAt    *time.Time             `gorm:"index:idx_async_jobs_expires_at" json:"expires_at,omitempty"`
-	CreatedAt    time.Time              `gorm:"index;not null" json:"created_at"`
-	CompletedAt  *time.Time             `json:"completed_at,omitempty"`
+	// WebhookEndpointID references the webhook endpoint to notify when this
+	// job reaches a terminal state, when one was requested at submit time.
+	WebhookEndpointID *string    `gorm:"type:varchar(36)" json:"webhook_endpoint_id,omitempty"`
+	ResultTTL         int        `gorm:"default:3600" json:"-"` // TTL in seconds, used to calculate ExpiresAt on completion
+	ExpiresAt         *time.Time `gorm:"index:idx_async_jobs_expires_at" json:"expires_at,omitempty"`
+	CreatedAt         time.Time  `gorm:"index;not null" json:"created_at"`
+	CompletedAt       *time.Time `json:"completed_at,omitempty"`
 }
 
 // TableName sets the table name for GORM
@@ -1090,6 +1522,7 @@ func (AsyncJob) TableName() string {
 func (j *AsyncJob) ToResponse() *schemas.AsyncJobResponse {
 	resp := &schemas.AsyncJobResponse{
 		ID:          j.ID,
+		RequestID:   j.RequestID,
 		Status:      j.Status,
 		ExpiresAt:   j.ExpiresAt,
 		CreatedAt:   j.CreatedAt,
@@ -1174,6 +1607,91 @@ func (j *AsyncJob) ToResponse() *schemas.AsyncJobResponse {
 	return resp
 }
 
+// WebhookDeliveryOutcome classifies the result of one webhook delivery attempt.
+type WebhookDeliveryOutcome string
+
+const (
+	// WebhookDeliveryOutcomeDelivered means the receiver acknowledged with a 2xx.
+	WebhookDeliveryOutcomeDelivered WebhookDeliveryOutcome = "delivered"
+	// WebhookDeliveryOutcomeRetryableFailure means the attempt failed but the
+	// delivery has retries left.
+	WebhookDeliveryOutcomeRetryableFailure WebhookDeliveryOutcome = "retryable_failure"
+	// WebhookDeliveryOutcomePermanentFailure means the receiver rejected the
+	// delivery with a non-retryable status; no further attempts are made.
+	WebhookDeliveryOutcomePermanentFailure WebhookDeliveryOutcome = "permanent_failure"
+	// WebhookDeliveryOutcomeExhausted means the final allowed attempt failed.
+	WebhookDeliveryOutcomeExhausted WebhookDeliveryOutcome = "exhausted"
+)
+
+// Value implements driver.Valuer so database drivers that append typed column
+// values (e.g. clickhouse-go batch inserts) can serialize the type.
+func (o WebhookDeliveryOutcome) Value() (driver.Value, error) {
+	return string(o), nil
+}
+
+// WebhookDelivery records one webhook delivery attempt. Rows are insert-only
+// — every attempt appends a new record and existing rows are never updated —
+// and carry delivery metadata only, never event payloads or receiver
+// response bodies. WebhookID is the delivery's `webhook-id` wire header,
+// shared by every attempt of the same delivery.
+type WebhookDelivery struct {
+	ID         string `gorm:"primaryKey;type:varchar(36)" json:"id"`
+	WebhookID  string `gorm:"type:varchar(36);index:idx_webhook_deliveries_webhook_id;not null" json:"webhook_id"`
+	EndpointID string `gorm:"type:varchar(36);index:idx_webhook_deliveries_endpoint_id;index:idx_webhook_deliveries_endpoint_created,priority:1;not null" json:"endpoint_id"`
+	AsyncJobID string `gorm:"type:varchar(255);not null" json:"async_job_id"`
+	// RequestID is the async job's inference request id — the same id the
+	// LLM logs record — copied here at attempt time. Empty when the job row
+	// expired before the attempt.
+	RequestID  string                 `gorm:"type:varchar(255);index:idx_webhook_deliveries_request_id" json:"request_id,omitempty"`
+	Event      tables.WebhookEvent    `gorm:"type:varchar(255);index:idx_webhook_deliveries_event;not null" json:"event"`
+	AttemptNo  int                    `gorm:"not null;default:0" json:"attempt_no"`
+	Outcome    WebhookDeliveryOutcome `gorm:"type:varchar(50);index:idx_webhook_deliveries_outcome;not null" json:"outcome"`
+	StatusCode int                    `gorm:"default:0" json:"status_code,omitempty"`
+	Error      string                 `gorm:"type:text" json:"error,omitempty"`
+	CreatedAt  time.Time              `gorm:"index:idx_webhook_deliveries_created_at;index:idx_webhook_deliveries_endpoint_created,priority:2,sort:desc;not null" json:"created_at"`
+	ExpiresAt  *time.Time             `gorm:"index:idx_webhook_deliveries_expires_at" json:"expires_at,omitempty"`
+}
+
+// TableName sets the table name for GORM
+func (WebhookDelivery) TableName() string {
+	return "webhook_deliveries"
+}
+
+// WebhookDeliverySearchResult represents one page of webhook delivery history.
+type WebhookDeliverySearchResult struct {
+	Deliveries []WebhookDelivery `json:"deliveries"`
+	Pagination PaginationOptions `json:"pagination"`
+}
+
+// Webhook delivery status classes, used to filter by response band without the
+// caller having to enumerate individual status codes. StatusClassNone matches
+// attempts where no response arrived at all (a zero status code).
+const (
+	WebhookDeliveryStatusClass2xx  = "2xx"
+	WebhookDeliveryStatusClass4xx  = "4xx"
+	WebhookDeliveryStatusClass5xx  = "5xx"
+	WebhookDeliveryStatusClassNone = "none"
+)
+
+// WebhookDeliverySearchFilters represents the available filters for webhook
+// delivery history searches. Every field is optional; a zero-valued struct
+// matches all history. Slice fields are OR-ed within themselves and AND-ed
+// against each other.
+//
+// Note the naming: DeliveryID is WebhookDelivery.WebhookID, the delivery-run id
+// shared by every attempt of one delivery. EndpointIDs are the webhook
+// endpoints those deliveries were addressed to.
+type WebhookDeliverySearchFilters struct {
+	EndpointIDs []string   `json:"endpoint_ids,omitempty"`
+	Events      []string   `json:"events,omitempty"`
+	Outcomes    []string   `json:"outcomes,omitempty"`
+	StatusClass []string   `json:"status_class,omitempty"`
+	RequestID   string     `json:"request_id,omitempty"`
+	DeliveryID  string     `json:"delivery_id,omitempty"`
+	StartTime   *time.Time `json:"start_time,omitempty"`
+	EndTime     *time.Time `json:"end_time,omitempty"`
+}
+
 // MCPToolLogSearchFilters represents the available filters for MCP tool log searches
 type MCPToolLogSearchFilters struct {
 	ToolNames     []string   `json:"tool_names,omitempty"`
@@ -1181,6 +1699,8 @@ type MCPToolLogSearchFilters struct {
 	Status        []string   `json:"status,omitempty"`
 	VirtualKeyIDs []string   `json:"virtual_key_ids,omitempty"`
 	LLMRequestIDs []string   `json:"llm_request_ids,omitempty"`
+	Apps          []string   `json:"apps,omitempty"`        // Backend-detected client apps
+	UserAgents    []string   `json:"user_agents,omitempty"` // Raw User-Agent strings; kept for compatibility/debug filtering
 	StartTime     *time.Time `json:"start_time,omitempty"`
 	EndTime       *time.Time `json:"end_time,omitempty"`
 	MinLatency    *float64   `json:"min_latency,omitempty"`
@@ -1333,6 +1853,11 @@ func (l *Log) BuildContentSummary() string {
 		parts = append(parts, l.VideoGenerationInputParsed.Prompt)
 	}
 
+	// Add video edit input prompt
+	if l.VideoEditInputParsed != nil && l.VideoEditInputParsed.Prompt != "" {
+		parts = append(parts, l.VideoEditInputParsed.Prompt)
+	}
+
 	// Add error details
 	if l.ErrorDetailsParsed != nil && l.ErrorDetailsParsed.Error != nil && l.ErrorDetailsParsed.Error.Message != "" {
 		parts = append(parts, l.ErrorDetailsParsed.Error.Message)
@@ -1419,6 +1944,10 @@ type LatencyHistogramBucket struct {
 	P90Latency    float64   `json:"p90_latency"`
 	P95Latency    float64   `json:"p95_latency"`
 	P99Latency    float64   `json:"p99_latency"`
+	AvgOverhead   float64   `json:"avg_overhead"`
+	P90Overhead   float64   `json:"p90_overhead"`
+	P95Overhead   float64   `json:"p95_overhead"`
+	P99Overhead   float64   `json:"p99_overhead"`
 	TotalRequests int64     `json:"total_requests"`
 }
 
@@ -1486,6 +2015,48 @@ type ProviderLatencyHistogramResult struct {
 	Providers         []string                         `json:"providers"`
 }
 
+// Throughput (tokens/sec) histogram types
+//
+// TokensPerSecond is an aggregate rate for the bucket: total completion tokens
+// divided by total generation latency in seconds (SUM(completion_tokens) /
+// (SUM(latency_ms)/1000)), computed over terminal rows with latency > 0. It is
+// the "overall" throughput definition (not a mean of per-request rates), which
+// keeps it uniformly computable across streaming and non-streaming requests.
+
+// ThroughputHistogramBucket represents a single time bucket for token-generation throughput
+type ThroughputHistogramBucket struct {
+	Timestamp             time.Time `json:"timestamp"`
+	TokensPerSecond       float64   `json:"tokens_per_second"`
+	TotalCompletionTokens int64     `json:"total_completion_tokens"`
+	TotalRequests         int64     `json:"total_requests"`
+}
+
+// ThroughputHistogramResult represents the throughput histogram query result
+type ThroughputHistogramResult struct {
+	Buckets           []ThroughputHistogramBucket `json:"buckets"`
+	BucketSizeSeconds int64                       `json:"bucket_size_seconds"`
+}
+
+// ProviderThroughputStats represents throughput statistics for a single provider
+type ProviderThroughputStats struct {
+	TokensPerSecond       float64 `json:"tokens_per_second"`
+	TotalCompletionTokens int64   `json:"total_completion_tokens"`
+	TotalRequests         int64   `json:"total_requests"`
+}
+
+// ProviderThroughputHistogramBucket represents a single time bucket for provider throughput data
+type ProviderThroughputHistogramBucket struct {
+	Timestamp  time.Time                          `json:"timestamp"`
+	ByProvider map[string]ProviderThroughputStats `json:"by_provider"`
+}
+
+// ProviderThroughputHistogramResult represents the provider throughput histogram query result
+type ProviderThroughputHistogramResult struct {
+	Buckets           []ProviderThroughputHistogramBucket `json:"buckets"`
+	BucketSizeSeconds int64                               `json:"bucket_size_seconds"`
+	Providers         []string                            `json:"providers"`
+}
+
 // HistogramDimension represents a column that can be used as a grouping dimension in histograms
 type HistogramDimension string
 
@@ -1495,6 +2066,9 @@ const (
 	DimensionCustomer     HistogramDimension = "customer_id"
 	DimensionUser         HistogramDimension = "user_id"
 	DimensionBusinessUnit HistogramDimension = "business_unit_id"
+	DimensionProject      HistogramDimension = "project_id"
+	DimensionApp          HistogramDimension = "app"
+	DimensionUserAgent    HistogramDimension = "user_agent"
 )
 
 // ValidHistogramDimensions is the set of allowed dimension values
@@ -1504,6 +2078,31 @@ var ValidHistogramDimensions = map[HistogramDimension]bool{
 	DimensionCustomer:     true,
 	DimensionUser:         true,
 	DimensionBusinessUnit: true,
+	DimensionProject:      true,
+	DimensionApp:          true,
+	DimensionUserAgent:    true,
+}
+
+// histogramDimensionColumn maps a validated dimension to its SQL column name.
+// Query builders must use the returned literal, never string(dimension): the
+// dimension value originates from a request query parameter, and returning a
+// compile-time constant here is what keeps user input out of SQL text.
+func histogramDimensionColumn(dimension HistogramDimension) (string, bool) {
+	switch dimension {
+	case DimensionProvider:
+		return "provider", true
+	case DimensionTeam:
+		return "team_id", true
+	case DimensionCustomer:
+		return "customer_id", true
+	case DimensionUser:
+		return "user_id", true
+	case DimensionBusinessUnit:
+		return "business_unit_id", true
+	case DimensionProject:
+		return "project_id", true
+	}
+	return "", false
 }
 
 // Dimension-level histogram types (generic version of Provider histograms)
@@ -1615,7 +2214,16 @@ type ModelRankingEntry struct {
 	SuccessRate        float64 `json:"success_rate"`
 	TotalTokens        int64   `json:"total_tokens"`
 	TotalCost          float64 `json:"total_cost"`
-	AvgLatency         float64 `json:"avg_latency"`
+	// Per-category cost split; sums to TotalCost. AdditionalCost holds internal
+	// sidecar costs with no input/output token category (guardrail, MCP).
+	InputCost      float64 `json:"input_cost"`
+	OutputCost     float64 `json:"output_cost"`
+	AdditionalCost float64 `json:"additional_cost"`
+	AvgLatency     float64 `json:"avg_latency"`
+	// Throughput is aggregate token-generation rate (tokens/sec) for this model:
+	// SUM(completion_tokens) / (SUM(latency_ms)/1000) over successful rows with
+	// latency > 0 — the same definition as the throughput histogram.
+	Throughput float64 `json:"throughput"`
 }
 
 // ModelRankingTrend represents the percentage change compared to the previous period.
@@ -1625,6 +2233,7 @@ type ModelRankingTrend struct {
 	TokensTrend       float64 `json:"tokens_trend"`
 	CostTrend         float64 `json:"cost_trend"`
 	LatencyTrend      float64 `json:"latency_trend"`
+	ThroughputTrend   float64 `json:"throughput_trend"`
 }
 
 // ModelRankingWithTrend combines ranking entry with trend data.
@@ -1672,16 +2281,22 @@ const (
 	RankingDimensionTeam         RankingDimension = "team"
 	RankingDimensionCustomer     RankingDimension = "customer"
 	RankingDimensionBusinessUnit RankingDimension = "business_unit"
+	RankingDimensionProject      RankingDimension = "project"
 	RankingDimensionUser         RankingDimension = "user"
 	RankingDimensionVirtualKey   RankingDimension = "virtual_key"
+	RankingDimensionApp          RankingDimension = "app"
+	RankingDimensionUserAgent    RankingDimension = "user_agent"
 )
 
 var ValidRankingDimensions = map[RankingDimension]bool{
 	RankingDimensionTeam:         true,
 	RankingDimensionCustomer:     true,
 	RankingDimensionBusinessUnit: true,
+	RankingDimensionProject:      true,
 	RankingDimensionUser:         true,
 	RankingDimensionVirtualKey:   true,
+	RankingDimensionApp:          true,
+	RankingDimensionUserAgent:    true,
 }
 
 type dimensionColumnDef struct {
@@ -1693,8 +2308,11 @@ var dimensionColumns = map[RankingDimension]dimensionColumnDef{
 	RankingDimensionTeam:         {IDCol: "team_id", NameCol: "team_name"},
 	RankingDimensionCustomer:     {IDCol: "customer_id", NameCol: "customer_name"},
 	RankingDimensionBusinessUnit: {IDCol: "business_unit_id", NameCol: "business_unit_name"},
+	RankingDimensionProject:      {IDCol: "project_id", NameCol: "project_name"},
 	RankingDimensionUser:         {IDCol: "user_id", NameCol: "user_name"},
 	RankingDimensionVirtualKey:   {IDCol: "virtual_key_id", NameCol: "virtual_key_name"},
+	RankingDimensionApp:          {IDCol: "app", NameCol: "app"},
+	RankingDimensionUserAgent:    {IDCol: "user_agent", NameCol: "user_agent"},
 }
 
 func DimensionColumnDef(d RankingDimension) (idCol, nameCol string, ok bool) {
@@ -1725,11 +2343,17 @@ type DimensionRankingWithTrend struct {
 type DimensionRankingResult struct {
 	Rankings  []DimensionRankingWithTrend `json:"rankings"`
 	Dimension RankingDimension            `json:"dimension"`
-	// TotalActualRequests / TotalAttributedRequests are only set for fan-out
-	// dimensions (team / business unit / customer) on Postgres. Attributed
-	// counts credit a request to every dimension value it touches, so their
-	// sum can exceed the real request count; actual is COUNT(DISTINCT id)
-	// over the same attributed population. Zero/omitted when not computed.
+	// TotalActualRequests / TotalAttributedRequests are set for every rollup
+	// dimension (team / business unit / customer / user / virtual key), and both
+	// include the "Unassigned" bucket that owner-less traffic falls into.
+	//
+	// TotalActualRequests is the real number of requests in the window.
+	// TotalAttributedRequests is the sum of every ranking row. For team /
+	// customer / business unit a request is credited to every entity it carries
+	// (the enterprise user/AP path records the full hierarchy), so attributed
+	// can exceed actual and the rankings are NOT an additive split of org
+	// traffic. User and virtual key have a single owner per request, so for them
+	// the two counts are equal.
 	TotalActualRequests     int64 `json:"total_actual_requests,omitempty"`
 	TotalAttributedRequests int64 `json:"total_attributed_requests,omitempty"`
 }
@@ -1759,6 +2383,8 @@ type DashboardOverview struct {
 	Cost     *CostHistogramResult    `json:"cost"`     // Cost over time, broken down by model
 	Models   *ModelHistogramResult   `json:"models"`   // Per-model usage over time
 	Latency  *LatencyHistogramResult `json:"latency"`  // Latency percentiles over time
+	// Throughput holds tokens/sec over time (aggregate rate per bucket).
+	Throughput *ThroughputHistogramResult `json:"throughput"`
 }
 
 // DashboardProviderUsage holds the Provider Usage tab metrics.
@@ -1766,6 +2392,8 @@ type DashboardProviderUsage struct {
 	Cost    *ProviderCostHistogramResult    `json:"cost"`
 	Tokens  *ProviderTokenHistogramResult   `json:"tokens"`
 	Latency *ProviderLatencyHistogramResult `json:"latency"`
+	// Throughput holds per-provider tokens/sec over time.
+	Throughput *ProviderThroughputHistogramResult `json:"throughput"`
 }
 
 // DashboardModelRankings holds the Model Rankings tab data.

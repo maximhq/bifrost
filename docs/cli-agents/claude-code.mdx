@@ -10,11 +10,22 @@ icon: "star-of-life"
 
 | Version | Released   |
 | ------- | ---------- |
+| 2.1.212 | 2026-07-17 |
 | 2.1.143 | 2026-05-15 |
 | 2.1.132 | 2026-05-06 |
 | 2.1.131 | 2026-05-06 |
 | 2.1.129 | 2026-05-05 |
 | 2.1.128 | 2026-05-04 |
+
+<Warning>
+    Since version 2.1.212, Anthropic has enforced the anthropic-version header along with some others.
+
+    Go to **Settings > Client Settings** and add them as a comma-separated list:
+  
+    ```
+    anthropic-dangerous-direct-browser-access, anthropic-version, content-type, user-agent, x-api-key, x-stainless-arch, x-stainless-helper-method, x-stainless-lang, x-stainless-os, x-stainless-package-version, x-stainless-retry-count, x-stainless-runtime, x-stainless-runtime-version, x-stainless-timeout
+    ```
+</Warning>
 
 <Note>
 	If your Allowed Headers are already set to `*`, you can skip this note. If not and you face issues integrating Bifrost with Claude Code,
@@ -261,7 +272,7 @@ If a tool call isn't executing as expected, the fastest sanity check is to swap 
 
 ## Using Bifrost as an MCP Gateway
 
-Bifrost can also act as an [MCP server](/mcp/gateway), aggregating every MCP tool you've connected (filesystem, GitHub, web search, databases, etc.) behind a single `/mcp` endpoint. Pointing Claude Code at it means one config entry instead of N, plus per-VK tool filtering, centralized governance, and observability for every tool call.
+Bifrost can also act as an [MCP server](/mcp/overview#bifrost-as-an-mcp-gateway), aggregating every MCP tool you've connected (filesystem, GitHub, web search, databases, etc.) behind a single `/mcp` endpoint. Pointing Claude Code at it means one config entry instead of N, plus per-VK tool filtering, centralized governance, and observability for every tool call.
 
 ### Adding Bifrost as an MCP server
 
@@ -329,7 +340,7 @@ You can attach a VK even when you don't strictly need per-user auth — it's how
 
 When the same Claude Code instance routes inference through Bifrost's LLM gateway **and** connects to `/mcp`, the same tool can reach the model twice — once because the LLM gateway auto-injects every configured MCP tool, and once because Claude Code's own MCP client discovers it via `/mcp`. Bifrost auto-dedupes tools for Claude Code specifically, but turning the inject toggle off is still recommended — it cleanly separates the two paths and matches what other MCP-host clients expect.
 
-See [Recommended: disable auto tool injection](/mcp/gateway#recommended-disable-auto-tool-injection) for the toggle.
+See [Recommended: disable auto tool injection](/mcp/overview#recommended-disable-auto-tool-injection) for the toggle.
 
 ### Verifying
 

@@ -46,6 +46,10 @@ Functions returning data use a packed `u64` format:
 
 All complex data is exchanged as JSON strings. The host allocates memory using `malloc`, writes JSON data, and passes pointers to the plugin functions.
 
+<Note>
+The WASM contract is one-way: the host calls into your exports and passes JSON, and your plugin returns JSON. There are no host functions to call back into, so the request context accessors available to Go plugins - such as `ctx.GetModelInfo` and `ctx.CalculateCost` - are not reachable from WASM. A WASM plugin sees only what arrives in its hook input payload. If you need model pricing or capability lookups inside the plugin, write a [Go plugin](./writing-go-plugin) instead.
+</Note>
+
 ## Getting Started
 
 Choose your preferred language:

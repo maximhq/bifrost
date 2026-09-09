@@ -2,6 +2,7 @@ package profiling
 
 import (
 	"crypto/subtle"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -43,8 +44,12 @@ func Start() *http.Server {
 
 	// heap, goroutine, allocs, block, mutex, threadcreate
 	mux.HandleFunc("/debug/pprof/", func(w http.ResponseWriter, r *http.Request) {
+		// Always disable content sniffing; the payload below is a gzipped
+		// protobuf and must not be reinterpreted by the client/proxy.
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		name := strings.TrimPrefix(r.URL.Path, "/debug/pprof/")
 		if name == "" {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			_, _ = w.Write([]byte("profiles: heap goroutine allocs block mutex threadcreate; also /profile /trace\n"))
 			return
 		}
@@ -54,6 +59,17 @@ func Start() *http.Server {
 			return
 		}
 		debug, _ := strconv.Atoi(r.URL.Query().Get("debug"))
+		// pprof profiles are gzip-compressed protobuf. Set an explicit
+		// Content-Type before the first write so net/http doesn't sniff the
+		// gzip magic bytes and label the response application/x-gzip — pprof
+		// scrapers (Grafana Alloy / Pyroscope) require application/octet-stream
+		// and reject anything else. debug!=0 emits a human-readable text form.
+		if debug != 0 {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		} else {
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, name))
+		}
 		err := p.WriteTo(w, debug)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -69,6 +85,13 @@ func Start() *http.Server {
 		if sec > 60 {
 			sec = 60 // cap to bound how long the connection/goroutine is held
 		}
+		// StartCPUProfile begins streaming immediately on success, so set the
+		// Content-Type first. Without it net/http sniffs the gzip payload as
+		// application/x-gzip, which pprof scrapers reject. On failure http.Error
+		// overwrites these headers (nothing has been written yet).
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Disposition", `attachment; filename="profile"`)
 		if err := pprof.StartCPUProfile(w); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -93,6 +116,11 @@ func Start() *http.Server {
 		if sec > 30 {
 			sec = 30 // cap to bound how long the connection/goroutine is held
 		}
+		// trace.Start begins streaming immediately on success, so set the
+		// Content-Type first (same sniffing concern as the CPU profile above).
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Disposition", `attachment; filename="trace"`)
 		if err := trace.Start(w); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

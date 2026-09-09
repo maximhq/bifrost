@@ -35,6 +35,239 @@ func (resp *OpenAIResponsesRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 	}
 }
 
+// ResponsesFeatureSupport describes which OpenAI Responses wire extensions an
+// OpenAI-compatible backend accepts. Providers absent from ProviderFeatures keep
+// everything (safe default for custom providers), matching the Anthropic matrix.
+type ResponsesFeatureSupport struct {
+	// AdditionalToolsItem reports whether the backend accepts codex
+	// `additional_tools` input items; when false their tools are hoisted into
+	// the top-level tools param instead.
+	AdditionalToolsItem bool
+	// ContextManagement reports whether the backend accepts the context_management
+	// Responses body field.
+	ContextManagement bool
+}
+
+// ProviderFeatures maps each OpenAI-compatible provider to its supported
+// Responses wire extensions. Only providers with a known deviation are listed.
+var ProviderFeatures = map[schemas.ModelProvider]ResponsesFeatureSupport{
+	schemas.OpenAI: {AdditionalToolsItem: true, ContextManagement: true},
+	// Bedrock Mantle validates `input` against the standard union and rejects
+	// additional_tools with "Invalid 'input': value did not match any expected
+	// variant", but accepts the same tools at the top level. It also rejects
+	// context_management outright as an unknown parameter.
+	schemas.Bedrock:       {AdditionalToolsItem: false, ContextManagement: false},
+	schemas.BedrockMantle: {AdditionalToolsItem: false, ContextManagement: false},
+}
+
+// supportsAdditionalToolsItem reports whether provider accepts codex
+// additional_tools input items. Unlisted providers are assumed to.
+func supportsAdditionalToolsItem(provider schemas.ModelProvider) bool {
+	features, ok := ProviderFeatures[provider]
+	if !ok {
+		return true
+	}
+	return features.AdditionalToolsItem
+}
+
+// hoistAdditionalTools decodes the tools carried by a codex additional_tools item.
+// The entries are ResponsesTool-shaped but live in the item's preserved raw bytes,
+// so they are decoded here rather than read off the typed message.
+func hoistAdditionalTools(message schemas.ResponsesMessage) []schemas.ResponsesTool {
+	if len(message.AdditionalTools) == 0 {
+		return nil
+	}
+	var tools []schemas.ResponsesTool
+	if err := schemas.Unmarshal(message.AdditionalTools, &tools); err != nil {
+		return nil
+	}
+	return tools
+}
+
+// PromptCacheBreakpointModeExplicit is the only mode a prompt_cache_breakpoint
+// accepts. OpenAI defined the field for gpt-5.6+; OpenRouter reuses it as the
+// Responses-shaped spelling of an Anthropic cache breakpoint.
+const PromptCacheBreakpointModeExplicit = "explicit"
+
+// maxResponsesCacheBreakpoints mirrors the ceiling the Anthropic Messages API
+// enforces on blocks carrying cache_control. Exceeding it is a hard rejection
+// rather than a degradation ("A maximum of 4 blocks with cache_control may be
+// provided. Found 5."), and it binds here because OpenRouter converts every
+// prompt_cache_breakpoint it receives back into an Anthropic breakpoint before
+// dispatching to Claude. Kept local rather than imported from the anthropic
+// provider so this package takes on no provider-to-provider dependency; see
+// AnthropicMaxCacheBreakpoints in core/providers/anthropic/utils.go for the
+// live verification behind the number.
+const maxResponsesCacheBreakpoints = 4
+
+// responsesUsesPromptCacheBreakpoints reports whether this provider and model take
+// caching intent as prompt_cache_breakpoint on a content block rather than as
+// Anthropic-style per-block cache_control.
+//
+// Two unrelated families landed on the same field. OpenRouter does not expose
+// per-block cache_control through /v1/responses and converts a breakpoint back into
+// an Anthropic one (#6290). OpenAI defined the field for gpt-5.6, where it pairs with
+// request-level prompt_cache_options; Azure and Bedrock Mantle serve the same models
+// through the same wire format, so they inherit it (#6180).
+//
+// Everything else either accepts cache_control directly or caches implicitly, and for
+// those the serializer's existing strip is the correct behaviour.
+func responsesUsesPromptCacheBreakpoints(provider schemas.ModelProvider, model string) bool {
+	switch provider {
+	case schemas.OpenRouter:
+		return true
+	case schemas.OpenAI, schemas.Azure, schemas.BedrockMantle:
+		return schemas.IsGPT56Model(model)
+	default:
+		return false
+	}
+}
+
+// responsesHasPromptCacheBreakpoint reports whether any content block carries a
+// breakpoint. Used to decide whether explicit cache mode is warranted: switching a
+// request to explicit mode with no breakpoint anywhere opts it out of caching
+// entirely, which is strictly worse than the implicit default it replaced.
+func responsesHasPromptCacheBreakpoint(messages []schemas.ResponsesMessage) bool {
+	for i := range messages {
+		if messages[i].Content == nil {
+			continue
+		}
+		for j := range messages[i].Content.ContentBlocks {
+			if messages[i].Content.ContentBlocks[j].PromptCacheBreakpoint != nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// responsesUsesPromptCacheOptions reports whether the target also needs request-level
+// prompt_cache_options to honour an explicit breakpoint.
+//
+// This is the gpt-5.6 half only. Those models default to IMPLICIT caching, which puts
+// the breakpoint on the latest message - so an agent loop rewrites the whole growing
+// prompt every turn at the cache-write rate. The block marker alone does not switch
+// that off; mode=explicit does. OpenRouter has no equivalent field and needs none.
+func responsesUsesPromptCacheOptions(provider schemas.ModelProvider, model string) bool {
+	switch provider {
+	case schemas.OpenAI, schemas.Azure, schemas.BedrockMantle:
+		return schemas.IsGPT56Model(model)
+	default:
+		return false
+	}
+}
+
+// applyResponsesCacheBreakpoints rewrites Anthropic-style per-block cache_control
+// markers into the prompt_cache_breakpoint representation the target actually accepts.
+//
+// OpenRouter does not expose per-block cache_control through /v1/responses. The
+// documented equivalent is prompt_cache_breakpoint on an individual input_text
+// block, which OpenRouter converts back into a default Anthropic breakpoint when
+// the request routes to Claude:
+// https://openrouter.ai/docs/features/prompt-caching#anthropic-claude
+//
+// The gpt-5.6 family reaches the same field from the other direction: OpenAI defined
+// prompt_cache_breakpoint natively, and callers arriving through an Anthropic-shaped
+// surface (or through breakpoint injection, which writes the neutral marker) express
+// the same intent as cache_control. Translating here means one implementation serves
+// both, and callers do not have to know which dialect their target speaks.
+//
+// Without this, OpenAIResponsesRequestInput.MarshalJSON deletes the marker and
+// puts nothing in its place, so Claude prompt caching never activates on the
+// Responses path (#6290). The Chat path needs no equivalent: OpenRouter accepts
+// cache_control verbatim there, so OpenAIChatRequest.MarshalJSON simply keeps it
+// behind its keepCacheControl branch (#4203).
+//
+// Two deliberate limits, both forced by the wire format rather than chosen:
+//
+//   - Only input_text blocks are marked. The OpenRouter doc places the
+//     breakpoint on a text content block and names input_text as its Responses
+//     spelling. Marking output_text would be an unverified capability claim, and
+//     a rejected field costs more than the miss it would fix.
+//   - Tool definitions and function_call_output blocks are not marked.
+//     schemas.ResponsesTool has no PromptCacheBreakpoint field and OpenRouter
+//     documents no tool-level Responses breakpoint, while a text-only
+//     function_call_output block array is collapsed into a single string by
+//     isFunctionCallOutputBlocksFlattenable before it reaches the wire, which
+//     would discard any breakpoint set on it.
+//
+// A marker's TTL is not carried across, and there is nowhere to carry it to. The
+// only request-level field on this path is prompt_cache_options.ttl, whose "only
+// supported value, 30m, is also the default"
+// (https://developers.openai.com/api/docs/guides/prompt-caching) - so writing it
+// changes nothing, while the values cache_control actually carries (absent for 5m,
+// or "1h": https://platform.claude.com/docs/en/build-with-claude/prompt-caching) are
+// rejected there outright. OpenRouter, the one target where a "1h" marker would mean
+// something, exposes no equivalent field at all, so its Claude requests fall back to
+// the default breakpoint lifetime. Another limit forced by the wire format.
+//
+// messages is this function's own slice, but each element's Content pointer and
+// the block array beneath it still alias bifrostReq.Input, which plugins and the
+// fallback chain reuse. Both are copied before a marker is written.
+func applyResponsesCacheBreakpoints(messages []schemas.ResponsesMessage) {
+	// Locate every markable block in render order, and count the breakpoints the
+	// caller already set, before anything is copied.
+	type blockRef struct{ msg, block int }
+	var refs []blockRef
+	existing := 0
+	for i := range messages {
+		if messages[i].Content == nil {
+			continue
+		}
+		for j, block := range messages[i].Content.ContentBlocks {
+			if block.PromptCacheBreakpoint != nil {
+				existing++
+				continue
+			}
+			// "ephemeral" is the only cache type Anthropic defines, and nothing
+			// upstream of here validates it. Converting an empty or unknown type
+			// would manufacture a valid breakpoint out of a malformed marker and
+			// spend clamp budget on it, so require the documented value.
+			if block.CacheControl == nil ||
+				block.CacheControl.Type != schemas.CacheControlTypeEphemeral ||
+				block.Text == nil ||
+				block.Type != schemas.ResponsesInputMessageContentBlockTypeText {
+				continue
+			}
+			refs = append(refs, blockRef{msg: i, block: j})
+		}
+	}
+	if len(refs) == 0 {
+		return
+	}
+
+	// Spend only the budget the caller's own breakpoints leave behind. A caller
+	// who sets more than the ceiling by hand owns that request and its upstream
+	// error; Bifrost declines to manufacture one on top.
+	budget := maxResponsesCacheBreakpoints - existing
+	if budget <= 0 {
+		return
+	}
+	// Caching is cumulative up to each breakpoint, so a marker later in render
+	// order anchors a strictly longer prefix. When over budget, drop the
+	// EARLIEST markers and keep the longest cached prefix, matching the
+	// trade-off clampAnthropicCacheBreakpoints makes for the direct path.
+	if len(refs) > budget {
+		refs = refs[len(refs)-budget:]
+	}
+
+	copiedContent := make(map[int]bool, len(refs))
+	for _, ref := range refs {
+		if !copiedContent[ref.msg] {
+			contentCopy := *messages[ref.msg].Content
+			contentCopy.ContentBlocks = append(
+				make([]schemas.ResponsesMessageContentBlock, 0, len(messages[ref.msg].Content.ContentBlocks)),
+				messages[ref.msg].Content.ContentBlocks...,
+			)
+			messages[ref.msg].Content = &contentCopy
+			copiedContent[ref.msg] = true
+		}
+		messages[ref.msg].Content.ContentBlocks[ref.block].PromptCacheBreakpoint = &schemas.PromptCacheBreakpoint{
+			Mode: schemas.Ptr(PromptCacheBreakpointModeExplicit),
+		}
+	}
+}
+
 // ToOpenAIResponsesRequest converts a Bifrost responses request to OpenAI format
 func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostResponsesRequest) *OpenAIResponsesRequest {
 	if bifrostReq == nil || bifrostReq.Input == nil {
@@ -43,29 +276,41 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 	// Canonical model for capability gating only; wire model is untouched.
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
+	caps := schemas.ResolveModelCaps(bifrostReq.Provider, capModel)
 
 	var messages []schemas.ResponsesMessage
 	// OpenAI models (except for gpt-oss) do not support reasoning content blocks, so we need to convert them to summaries, if there are any
-	// OpenAI also doesn't support compaction content blocks, so we need to convert them to text blocks
+	// OpenAI also doesn't support compaction content blocks, so we need to convert them to text blocks,
+	// nor Anthropic's server-side fallback boundary markers, which are dropped outright.
 	messages = make([]schemas.ResponsesMessage, 0, len(bifrostReq.Input))
+	// Tools lifted out of codex additional_tools items for providers that reject them.
+	var hoistedTools []schemas.ResponsesTool
+	keepAdditionalTools := supportsAdditionalToolsItem(bifrostReq.Provider)
 	for _, message := range bifrostReq.Input {
-		// First, check if message has compaction content blocks and convert them to text
+		if !keepAdditionalTools && message.Type != nil &&
+			*message.Type == schemas.ResponsesMessageTypeAdditionalTools {
+			hoistedTools = append(hoistedTools, hoistAdditionalTools(message)...)
+			continue
+		}
+		// First, check if message has compaction/fallback content blocks and rewrite them
 		if message.Content != nil && len(message.Content.ContentBlocks) > 0 {
-			hasCompaction := false
+			needsRewrite := false
 			for _, block := range message.Content.ContentBlocks {
-				if block.Type == schemas.ResponsesOutputMessageContentTypeCompaction {
-					hasCompaction = true
+				if block.Type == schemas.ResponsesOutputMessageContentTypeCompaction ||
+					block.Type == schemas.ResponsesOutputMessageContentTypeFallback {
+					needsRewrite = true
 					break
 				}
 			}
 
-			if hasCompaction {
+			if needsRewrite {
 				// Create a new message with converted content blocks
 				newMessage := message
 				newContentBlocks := make([]schemas.ResponsesMessageContentBlock, 0, len(message.Content.ContentBlocks))
 
 				for _, block := range message.Content.ContentBlocks {
-					if block.Type == schemas.ResponsesOutputMessageContentTypeCompaction {
+					switch block.Type {
+					case schemas.ResponsesOutputMessageContentTypeCompaction:
 						// Convert compaction block to text block
 						if block.ResponsesOutputMessageContentCompaction != nil && block.ResponsesOutputMessageContentCompaction.Summary != "" {
 							newContentBlocks = append(newContentBlocks, schemas.ResponsesMessageContentBlock{
@@ -74,8 +319,12 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 							})
 						}
 						// If summary is empty, skip the block entirely
-					} else {
-						// Keep non-compaction blocks as-is
+					case schemas.ResponsesOutputMessageContentTypeFallback:
+						// Anthropic-only server-side fallback boundary marker. Unlike
+						// compaction it carries no user content (only from/to model
+						// names), so drop it rather than rendering it as text.
+					default:
+						// Keep every other block as-is
 						newContentBlocks = append(newContentBlocks, block)
 					}
 				}
@@ -87,11 +336,17 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 					}
 					message = newMessage
 				} else {
-					// If all blocks were compaction with empty summaries, skip message
+					// Nothing survived (empty-summary compaction and/or fallback markers)
 					continue
 				}
 			}
 		}
+
+		// OpenAI's Responses schema requires "detail" on input_image items, and strict
+		// downstream validators (e.g. vLLM importing the official OpenAI types) reject
+		// requests without it. Blocks converted from non-OpenAI surfaces (Anthropic,
+		// Gemini, Cohere, chat bridge) never carry one, so default missing values to "auto".
+		message = defaultImageDetail(message)
 
 		// Strip provider reasoning signatures (e.g. Gemini thoughtSignatures smuggled into
 		// call_id as "<baseID>_ts_<sig>") from tool call IDs, but only when the id exceeds
@@ -114,23 +369,24 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		}
 
 		if message.ResponsesReasoning != nil {
-			isGptOss := strings.Contains(capModel, "gpt-oss")
-			isReasoning := isOpenAIReasoningModel(capModel)
+			usesContentBlocks := caps.SupportsReasoningContentBlocks(defaultSupportsReasoningContentBlocks(capModel))
+			isReasoning := caps.SupportsReasoning(IsOpenAIReasoningModel(capModel))
 
-			// For non-gpt-oss models, skip reasoning-only messages that have content blocks but no summaries.
+			// Models that read reasoning from summary[] have nothing to gain from a
+			// reasoning-only message carrying content blocks alone, so skip it.
 			// For non-reasoning models (e.g., gpt-4o), also skip when EncryptedContent is present since
 			// these models don't produce encrypted reasoning — any encrypted content is cross-provider
 			// (e.g., Gemini ThoughtSignatures) and cannot be decrypted by OpenAI.
 			if len(message.ResponsesReasoning.Summary) == 0 &&
 				message.Content != nil &&
 				len(message.Content.ContentBlocks) > 0 &&
-				!isGptOss &&
+				!usesContentBlocks &&
 				(message.ResponsesReasoning.EncryptedContent == nil || !isReasoning) {
 				continue
 			}
 
-			// If the message has summaries but no content blocks and the model is gpt-oss, then convert the summaries to content blocks
-			if len(message.ResponsesReasoning.Summary) > 0 && isGptOss &&
+			// Models that read reasoning from content blocks need the summaries rewritten as blocks
+			if len(message.ResponsesReasoning.Summary) > 0 && usesContentBlocks &&
 				(message.Content == nil || len(message.Content.ContentBlocks) == 0) {
 				var newMessage schemas.ResponsesMessage
 				newMessage.ID = message.ID
@@ -161,14 +417,24 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				if !isReasoning && !isCompactionMessage {
 					message.ResponsesReasoning.EncryptedContent = nil
 				}
-				// OpenAI types reasoning.content as an array of reasoning_text blocks, so a
-				// string value is rejected ("expected an array ... got a string"). Replayed
-				// reasoning items can arrive with content as a string (e.g. an empty "" round-tripped
-				// through the response path). message is a value copy, so reassign its Content pointer
-				// without mutating the caller's input: drop empty strings, promote non-empty ones to a block.
+				// Only gpt-oss carries its reasoning in reasoning_text content blocks. Every
+				// other OpenAI/Azure reasoning model keeps its retained state in summary +
+				// encrypted_content and caps reasoning.content at zero entries, rejecting a
+				// populated array with "Invalid 'input[N].content': array too long. Expected
+				// an array with maximum length 0". Replayed items reach us with content anyway:
+				// Anthropic thinking blocks translate into reasoning_text blocks (with Anthropic
+				// signatures attached), and the response path can round-trip content as a string.
+				// message is a value copy, so reassign its Content pointer without mutating the
+				// caller's input.
 				if message.Content != nil {
 					switch {
+					case !usesContentBlocks:
+						// Summary and encrypted_content already carry everything OpenAI will accept.
+						message.Content = nil
 					case message.Content.ContentStr != nil:
+						// OpenAI types reasoning.content as an array of reasoning_text blocks, so a
+						// string value is rejected ("expected an array ... got a string"): drop empty
+						// strings, promote non-empty ones to a block.
 						if text := *message.Content.ContentStr; text == "" {
 							message.Content = nil
 						} else {
@@ -211,6 +477,23 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			messages = append(messages, message)
 		}
 	}
+	// Targets that speak prompt_cache_breakpoint need the caching intent translated
+	// out of cache_control, which their serializer would otherwise strip.
+	// Match on the BASE provider, not the key the request arrived under. A custom
+	// provider reports its own name ("my-openai"), which no case in either predicate
+	// knows, so gating on the unresolved key sends every such request down the default
+	// branch: the caller's cache_control is stripped by the serializer with nothing put
+	// in its place, and the request silently falls back to implicit caching - the exact
+	// billing profile #6180 exists to escape. The injector resolves the same way in
+	// core/bifrost.go, and providers/utils does too; this call site was the odd one out.
+	cachePromptProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
+	needsExplicitPromptCacheMode := false
+	if responsesUsesPromptCacheBreakpoints(cachePromptProvider, capModel) {
+		applyResponsesCacheBreakpoints(messages)
+		needsExplicitPromptCacheMode = responsesUsesPromptCacheOptions(cachePromptProvider, capModel) &&
+			responsesHasPromptCacheBreakpoint(messages)
+	}
+
 	// Updating params
 	params := bifrostReq.Params
 	// Create the responses request with properly mapped parameters
@@ -224,11 +507,30 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 	if params != nil {
 		req.ResponsesParameters = *params
+		req.ServiceTier = serviceTierForModel(caps, req.ServiceTier)
 		if req.ResponsesParameters.MaxOutputTokens != nil && *req.ResponsesParameters.MaxOutputTokens < MinMaxCompletionTokens {
 			req.ResponsesParameters.MaxOutputTokens = schemas.Ptr(MinMaxCompletionTokens)
 		}
 		// Drop user field if it exceeds OpenAI's 64 character limit
 		req.ResponsesParameters.User = SanitizeUserField(req.ResponsesParameters.User)
+		// Fable 5.1+ rejects forced tool use outright. Drop the choice so the model
+		// answers under the default "auto" rather than the provider returning a 400.
+		if req.ResponsesParameters.ToolChoice.IsForced() &&
+			!caps.SupportsForcedToolChoice(schemas.DefaultSupportsForcedToolChoice(capModel)) {
+			req.ResponsesParameters.ToolChoice = nil
+		}
+		// The Anthropic integration emits the provider-generic forced tool choice "any".
+		// OpenAI accepts only "none", "auto" and "required" as string tool choices and
+		// rejects "any" with HTTP 400, so map it to "required" on a copy of the choice
+		// without mutating the caller's parameters. Destinations that accept "any"
+		// natively keep it.
+		if tc := req.ResponsesParameters.ToolChoice; tc != nil && tc.ResponsesToolChoiceStr != nil &&
+			*tc.ResponsesToolChoiceStr == string(schemas.ResponsesToolChoiceTypeAny) &&
+			!caps.ToolChoiceAnySupported(toolChoiceAnySupported(bifrostReq.Provider, capModel)) {
+			req.ResponsesParameters.ToolChoice = &schemas.ResponsesToolChoice{
+				ResponsesToolChoiceStr: schemas.Ptr(string(schemas.ResponsesToolChoiceTypeRequired)),
+			}
+		}
 
 		// Handle reasoning parameter: OpenAI uses effort-based reasoning
 		// Priority: effort (native) > max_tokens (estimated)
@@ -239,13 +541,13 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			if req.ResponsesParameters.Reasoning.Effort != nil {
 				// Native field is provided, use it (and clear max_tokens)
 				effort := *req.ResponsesParameters.Reasoning.Effort
-				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(normalizeOpenAIReasoningEffort(capModel, effort))
+				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(caps.NormalizeReasoningEffort(effort, defaultEffortControl(capModel)))
 				// Clear max_tokens since OpenAI doesn't use it
 				req.ResponsesParameters.Reasoning.MaxTokens = nil
 			} else if req.ResponsesParameters.Reasoning.MaxTokens != nil {
 				// Estimate effort from max_tokens
 				maxTokens := *req.ResponsesParameters.Reasoning.MaxTokens
-				maxOutputTokens := utils.GetMaxOutputTokensOrDefault(req.Model, DefaultCompletionMaxTokens)
+				maxOutputTokens := utils.GetMaxOutputTokensOrDefault(req.Provider, capModel, DefaultCompletionMaxTokens)
 				if req.ResponsesParameters.MaxOutputTokens != nil {
 					maxOutputTokens = *req.ResponsesParameters.MaxOutputTokens
 				}
@@ -261,75 +563,165 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			}
 
 			// Handle xAI-specific parameter filtering
-			// Only grok-3-mini supports reasoning_effort
+			// Strip reasoning_effort only for the models known to reject it; current-generation
+			// models (grok-4.5, grok-4.6, grok-4.20-*) accept it.
 			if bifrostReq.Provider == schemas.XAI &&
-				schemas.IsGrokReasoningModel(capModel) &&
-				!strings.Contains(capModel, "grok-3-mini") {
-				// Clear reasoning_effort for non-grok-3-mini xAI reasoning models
+				caps.FieldUnsupported(schemas.FieldReasoningEffort,
+					schemas.IsGrokReasoningModel(capModel) && !schemas.SupportsGrokReasoningEffort(capModel)) {
 				req.ResponsesParameters.Reasoning.Effort = nil
 			}
 
 			// Handle OpenAI-specific parameter filtering
 			// Only o1/o3 series models support reasoning.effort
 			// Regular models like gpt-4o, gpt-4, gpt-3.5-turbo don't support it
-			if bifrostReq.Provider == schemas.OpenAI && !isOpenAIReasoningModel(capModel) {
+			if (bifrostReq.Provider == schemas.OpenAI || bifrostReq.Provider == schemas.Azure) && !caps.SupportsReasoning(IsOpenAIReasoningModel(capModel)) {
 				// Clear reasoning for non-reasoning OpenAI models to avoid API errors
 				req.ResponsesParameters.Reasoning = nil
 			}
 		}
 
-		// Strip top_p for OpenAI reasoning models (o1/o3 series) which reject it
-		// GPT-5.x accept top_p when reasoning.effort is "none" (defaults to "none" when omitted)
-		if isOpenAIReasoningModel(capModel) {
-			stripTopP := true
-			_, parsedModel := schemas.ParseModelString(capModel, schemas.OpenAI)
-			modelLower := strings.ToLower(parsedModel)
-			effort := ""
-			if req.ResponsesParameters.Reasoning != nil &&
-				req.ResponsesParameters.Reasoning.Effort != nil {
-				effort = *req.ResponsesParameters.Reasoning.Effort
-			}
-			// GPT-5.x: reasoning defaults to "none" when omitted, and top_p is allowed in that case
-			// Exception: -pro and -codex variants always reason (no "none" mode), so top_p must be stripped
-			if strings.HasPrefix(modelLower, "gpt-5.") &&
-				(effort == "" || effort == "none") &&
-				!strings.Contains(modelLower, "-pro") &&
-				!strings.Contains(modelLower, "-codex") {
-				stripTopP = false
-			}
-			if stripTopP {
-				req.ResponsesParameters.TopP = nil
-			}
+		effort := ""
+		if req.ResponsesParameters.Reasoning != nil &&
+			req.ResponsesParameters.Reasoning.Effort != nil {
+			effort = *req.ResponsesParameters.Reasoning.Effort
 		}
-
-		// Normalize function tool parameters for deterministic JSON serialization.
-		// We must copy the Tools slice since it shares the backing array with bifrostReq.Params.Tools.
-		if len(req.Tools) > 0 {
-			normalizedTools := make([]schemas.ResponsesTool, len(req.Tools))
-			copy(normalizedTools, req.Tools)
-			for i, tool := range normalizedTools {
-				if tool.Type == schemas.ResponsesToolTypeFunction &&
-					tool.ResponsesToolFunction != nil &&
-					tool.ResponsesToolFunction.Parameters != nil {
-					funcCopy := *tool.ResponsesToolFunction
-					funcCopy.Parameters = tool.ResponsesToolFunction.Parameters.Normalized()
-					normalizedTools[i].ResponsesToolFunction = &funcCopy
-				}
-			}
-			req.Tools = normalizedTools
+		if topPUnsupported(caps, capModel, effort) {
+			req.ResponsesParameters.TopP = nil
 		}
-
-		// Filter out tools that OpenAI doesn't support
-		req.filterUnsupportedTools()
 	}
+
+	// gpt-5.6 defaults to IMPLICIT caching, which anchors the breakpoint on the latest
+	// message - so an agent loop rewrites the whole growing prompt every turn at the
+	// cache-write rate and reads almost nothing back (#6180). A block marker alone does
+	// not switch that off; mode=explicit does. Runs after the params assignment above so
+	// a caller that set prompt_cache_options themselves is visible, and wins.
+	if needsExplicitPromptCacheMode && req.ResponsesParameters.PromptCacheOptions == nil {
+		req.ResponsesParameters.PromptCacheOptions = &schemas.PromptCacheOptions{
+			Mode: schemas.Ptr(PromptCacheBreakpointModeExplicit),
+		}
+	}
+
+	// Append tools hoisted out of additional_tools items. Runs after the params
+	// assignment above, which would otherwise clobber Tools, and before the
+	// normalization below so hoisted function tools get the same treatment.
+	if len(hoistedTools) > 0 {
+		req.Tools = append(append(make([]schemas.ResponsesTool, 0, len(req.Tools)+len(hoistedTools)), req.Tools...), hoistedTools...)
+	}
+
+	// Normalize function tool parameters for deterministic JSON serialization, and
+	// default a nil strict to false — OpenAI resolves null to false anyway, while
+	// strict-pydantic upstreams (e.g. sglang) reject the explicit null outright.
+	// We must copy the Tools slice since it shares the backing array with bifrostReq.Params.Tools.
+	if len(req.Tools) > 0 {
+		normalizedTools := make([]schemas.ResponsesTool, len(req.Tools))
+		copy(normalizedTools, req.Tools)
+		for i, tool := range normalizedTools {
+			if tool.Type == schemas.ResponsesToolTypeFunction &&
+				tool.ResponsesToolFunction != nil {
+				funcCopy := *tool.ResponsesToolFunction
+				if funcCopy.Parameters != nil {
+					funcCopy.Parameters = funcCopy.Parameters.Normalized()
+				}
+				if funcCopy.Strict == nil {
+					funcCopy.Strict = new(false)
+				}
+				normalizedTools[i].ResponsesToolFunction = &funcCopy
+			}
+		}
+		req.Tools = normalizedTools
+	}
+
+	// Filter out tools that OpenAI doesn't support
+	req.filterUnsupportedTools()
 
 	if bifrostReq.Params != nil {
 		req.ExtraParams = bifrostReq.Params.ExtraParams
 	}
+
+	if features, ok := ProviderFeatures[bifrostReq.Provider]; ok && !features.ContextManagement {
+		req.ContextManagement = nil
+		delete(req.ExtraParams, "context_management")
+	}
+
 	return req
 }
 
+// topPUnsupported reports whether the model rejects top_p. The datasheet can mark
+// it unsupported outright, or conditionally via "when_effort_none" — accepted only
+// while reasoning is off. The fallback is name detection: OpenAI reasoning models
+// (o1/o3 series) reject it, except GPT-5.x while effort is "none", which is the
+// default when omitted. The -pro and -codex variants always reason, so they always
+// strip. Gated on the OpenAI-family name rather than caps.SupportsReasoning: this
+// asks whether the API rejects top_p, which is not the same question for xAI/Groq.
+func topPUnsupported(caps schemas.ModelCaps, model, effort string) bool {
+	effortIsNone := effort == "" || effort == schemas.ReasoningEffortNone
+	// An outright unsupported_fields entry outranks the conditional label: the
+	// row rejects the field whatever the effort. Probed with a false fallback so
+	// only an explicit true short-circuits.
+	if caps.FieldUnsupported(schemas.FieldTopP, false) {
+		return true
+	}
+	if caps.FieldCondition(schemas.FieldTopP) == schemas.ConditionWhenEffortNone {
+		return !effortIsNone
+	}
+
+	fallback := true
+	if !IsOpenAIReasoningModel(model) {
+		fallback = false
+	} else {
+		_, parsedModel := schemas.ParseModelString(model, schemas.OpenAI)
+		modelLower := strings.ToLower(parsedModel)
+		if strings.Contains(modelLower, "gpt-5.") && effortIsNone &&
+			!strings.Contains(modelLower, "-pro") &&
+			!strings.Contains(modelLower, "-codex") {
+			fallback = false
+		}
+	}
+	return caps.FieldUnsupported(schemas.FieldTopP, fallback)
+}
+
 // filterUnsupportedTools removes tool types that OpenAI doesn't support
+// defaultImageDetail fills "auto" into any input_image content block missing the
+// detail field. Clones content on write — the Content pointer and the image block
+// pointers inside it are shared with the caller's input.
+func defaultImageDetail(message schemas.ResponsesMessage) schemas.ResponsesMessage {
+	if message.Content == nil || len(message.Content.ContentBlocks) == 0 {
+		return message
+	}
+
+	needsDetail := func(block schemas.ResponsesMessageContentBlock) bool {
+		return block.Type == schemas.ResponsesInputMessageContentBlockTypeImage &&
+			block.ResponsesInputMessageContentBlockImage != nil &&
+			block.ResponsesInputMessageContentBlockImage.Detail == nil
+	}
+
+	fixNeeded := false
+	for _, block := range message.Content.ContentBlocks {
+		if needsDetail(block) {
+			fixNeeded = true
+			break
+		}
+	}
+	if !fixNeeded {
+		return message
+	}
+
+	newBlocks := make([]schemas.ResponsesMessageContentBlock, len(message.Content.ContentBlocks))
+	copy(newBlocks, message.Content.ContentBlocks)
+	for i, block := range newBlocks {
+		if needsDetail(block) {
+			imageCopy := *block.ResponsesInputMessageContentBlockImage
+			imageCopy.Detail = schemas.Ptr("auto")
+			newBlocks[i].ResponsesInputMessageContentBlockImage = &imageCopy
+		}
+	}
+
+	contentCopy := *message.Content
+	contentCopy.ContentBlocks = newBlocks
+	message.Content = &contentCopy
+	return message
+}
+
 func (resp *OpenAIResponsesRequest) filterUnsupportedTools() {
 	if len(resp.Tools) == 0 {
 		return

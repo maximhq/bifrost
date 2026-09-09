@@ -30,7 +30,7 @@ If running Open WebUI in Docker and Bifrost is on the host machine, use `http://
 | Field | Value |
 |-------|-------|
 | **URL** | `http://localhost:8080/v1` (or your Bifrost host, e.g. `https://bifrost.yourcompany.com/v1`) |
-| **API Key** | Your Bifrost virtual key if authentication is enabled; otherwise leave empty or use `dummy` |
+| **API Key** | Replace the example value with your actual Bifrost virtual key. Leave it empty only when your deployment does not require authentication. |
 
 5. Click **Save**
 
@@ -144,7 +144,7 @@ You can also configure Bifrost via environment variables when running Open WebUI
 ```bash
 # Single connection
 OPENAI_API_BASE_URLS="http://localhost:8080/v1"
-OPENAI_API_KEYS="your-bifrost-virtual-key"
+OPENAI_API_KEYS="<YOUR-BIFROST-VIRTUAL-KEY>"
 
 # Multiple connections (semicolon-separated)
 OPENAI_API_BASE_URLS="http://localhost:8080/v1;https://other-gateway.com/v1"

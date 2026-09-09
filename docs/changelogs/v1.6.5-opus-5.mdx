@@ -1,0 +1,86 @@
+---
+title: "v1.6.5-opus-5"
+description: "v1.6.5-opus-5 changelog - 2026-07-24"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.6.5-opus-5
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.6.5-opus-5
+    docker run -p 8080:8080 maximhq/bifrost:v1.6.5-opus-5
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.6.5-opus-5">
+## ✨ Features
+
+- **Anthropic Default Fallback Routing** — Added support for Anthropic's `fallbacks: "default"` preset, preserving it through the Bifrost round-trip and injecting the `server-side-fallback-2026-07-01` beta header for default-routing requests.
+- **Mid-Conversation Tool Changes** — Added support for the `mid-conversation-tool-changes-2026-07-01` beta header, enabled for Anthropic and Bedrock Mantle.
+
+## 🐞 Fixed
+
+- **Opus 5 Compatibility** — Added Opus 5 detection to the Anthropic provider so it inherits Opus 4.8's request surface: `budget_tokens`, `temperature`, `top_p`, and `top_k` are stripped, and native `effort`, fast mode, and mid-conversation system messages are enabled.
+
+</Update>
+<Update label="Core" description="1.7.4">
+- feat: added support for Anthropic's `fallbacks: "default"` preset via the new `AnthropicFallbacks` wrapper type, preserving it through request round-trips and injecting the `server-side-fallback-2026-07-01` beta header for default routing
+    <Warning>
+    `AnthropicMessageRequest.Fallbacks` changed from `[]AnthropicFallbackEntry` to `*AnthropicFallbacks`. Code constructing this struct directly must wrap entries as `&AnthropicFallbacks{Entries: ...}`.
+    </Warning>
+- feat: added the `mid-conversation-tool-changes-2026-07-01` beta header and `MidConvToolChanges` feature flag for Anthropic and Bedrock Mantle
+- fix: added Opus 5 support to the Anthropic provider via `IsOpus5Plus`, inheriting the Opus 4.8 request surface for unsupported sampling params, native effort, fast mode, and mid-conversation system messages
+
+</Update>
+<Update label="Framework" description="1.5.4">
+- chore: upgraded core to v1.7.4
+
+</Update>
+<Update label="compat" description="0.1.30">
+- chore: upgraded core to v1.7.4 and framework to v1.5.4
+
+</Update>
+<Update label="governance" description="1.6.8">
+- chore: upgraded core to v1.7.4 and framework to v1.5.4
+
+</Update>
+<Update label="jsonparser" description="1.5.31">
+- chore: upgraded core to v1.7.4 and framework to v1.5.4
+
+</Update>
+<Update label="logging" description="1.6.4">
+- chore: upgraded core to v1.7.4 and framework to v1.5.4
+
+</Update>
+<Update label="maxim" description="1.6.31">
+- chore: upgraded core to v1.7.4 and framework to v1.5.4
+
+</Update>
+<Update label="mocker" description="1.5.31">
+- chore: upgraded core to v1.7.4 and framework to v1.5.4
+
+</Update>
+<Update label="modelcatalogresolver" description="1.0.12">
+- chore: upgraded core to v1.7.4 and framework to v1.5.4
+
+</Update>
+<Update label="otel" description="1.4.3">
+- chore: upgraded core to v1.7.4 and framework to v1.5.4
+
+</Update>
+<Update label="prompts" description="1.0.31">
+- chore: upgraded core to v1.7.4 and framework to v1.5.4
+
+</Update>
+<Update label="semanticcache" description="1.5.31">
+- chore: upgraded core to v1.7.4 and framework to v1.5.4
+
+</Update>
+<Update label="telemetry" description="1.5.31">
+- chore: upgraded core to v1.7.4 and framework to v1.5.4
+
+</Update>

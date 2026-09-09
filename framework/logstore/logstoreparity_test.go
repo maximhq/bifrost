@@ -4,19 +4,22 @@ package logstore
 // Postgres (raw path, no matviews), and ClickHouse, runs every LogStore
 // interface method on all three, and asserts that the non-reference backends
 // return results equal to Postgres (the reference). This is the executable
-// form of "every backend is 100% compatible": all 60 interface methods are
-// exercised - reads, writes, mutations, async jobs, and deletes - including
+// form of "every backend is 100% compatible": every interface method is
+// exercised - reads, writes, mutations, async jobs, webhook deliveries, and
+// deletes - including
 // every dialect branch in rdb.go (metadata JSON, cache-hit extraction,
 // histogram bucket math, routing-engine matching, distinct queries) and the
 // DAC queryscope path.
 //
 // The Postgres store is built bare (no ensureMatViews), so matViewsReady stays
 // false and Postgres deterministically takes the same raw-table path the
-// matviews approximate. Known, deliberate divergences are NOT asserted here:
-// multi-value team_ids array matching and team/BU dimension fan-out
-// (postgres-only features; fixtures carry scalar ids only - the fan-out's
-// attributed-totals metadata is excluded from the contract), ILIKE
-// case-insensitivity (fixtures use exact case), FTS-vs-LIKE content search
+// matviews approximate. Team / customer / business-unit dimension fan-out IS
+// part of the contract (the fixtures carry array-only and scalar-only hierarchy
+// rows for all three, and every backend has its own fan-out SQL, so a
+// column-mapping or dialect-SQL defect in any one of them fails here). Known,
+// deliberate divergences are NOT
+// asserted here: multi-value team_ids array *filtering* (postgres-only; the
+// other backends match the scalar column), FTS-vs-LIKE content search
 // semantics (the fixture term matches under all three), and inc_number
 // (Postgres-assigned; NULL elsewhere - excluded from projections).
 //
@@ -32,10 +35,12 @@ import (
 	"math"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -62,6 +67,7 @@ func parityBackends(t *testing.T) map[string]LogStore {
 	dropAllManagedMatViews(db)
 	require.NoError(t, db.Exec("DROP TABLE IF EXISTS mcp_tool_logs CASCADE").Error)
 	require.NoError(t, db.Exec("DROP TABLE IF EXISTS async_jobs CASCADE").Error)
+	require.NoError(t, db.Exec("DROP TABLE IF EXISTS webhook_deliveries CASCADE").Error)
 	require.NoError(t, db.Exec("DROP TABLE IF EXISTS logs CASCADE").Error)
 	require.NoError(t, db.Exec("CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)").Error)
 	require.NoError(t, db.Exec("DELETE FROM migrations").Error)
@@ -99,18 +105,37 @@ type parityLogSpec struct {
 	customerID   *string
 	buID         *string
 	userID       *string
-	cost         *float64
-	latency      *float64
-	tokens       [3]int // prompt, completion, total
-	stopReason   *string
-	routing      *string
-	metadata     *string
-	cacheDebug   string
-	content      string
-	parentID     *string
-	nodeID       *string
-	budgetIDs    *string
-	rateLimitIDs *string
+	// JSON-array hierarchy columns (enterprise user/AP path). Set without the
+	// scalar ids to exercise the dimension fan-out on every backend.
+	teamIDs, teamNames         *string
+	customerIDs, customerNames *string
+	buIDs, buNames             *string
+	cost                       *float64
+	latency                    *float64
+	tokens                     [3]int // prompt, completion, total
+	stopReason                 *string
+	routing                    *string
+	tier                       *string
+	mechanism                  *string
+	tierScore                  *float64
+	sessionID                  *string
+	metadata                   *string
+	cacheMetadata              string
+	content                    string
+	parentID                   *string
+	nodeID                     *string
+	budgetIDs                  *string
+	rateLimitIDs               *string
+	toolCallNames              *string
+}
+
+// splitCSVPtr mirrors the BeforeSave hook, which rebuilds tool_call_names from
+// the virtual slice and would otherwise drop the fixture's column value.
+func splitCSVPtr(p *string) []string {
+	if p == nil || *p == "" {
+		return nil
+	}
+	return strings.Split(*p, ",")
 }
 
 func (s parityLogSpec) toLog(base time.Time) *Log {
@@ -131,6 +156,12 @@ func (s parityLogSpec) toLog(base time.Time) *Log {
 		CustomerID:            s.customerID,
 		BusinessUnitID:        s.buID,
 		UserID:                s.userID,
+		TeamIDs:               s.teamIDs,
+		TeamNames:             s.teamNames,
+		CustomerIDs:           s.customerIDs,
+		CustomerNames:         s.customerNames,
+		BusinessUnitIDs:       s.buIDs,
+		BusinessUnitNames:     s.buNames,
 		Cost:                  s.cost,
 		Latency:               s.latency,
 		PromptTokens:          s.tokens[0],
@@ -138,8 +169,14 @@ func (s parityLogSpec) toLog(base time.Time) *Log {
 		TotalTokens:           s.tokens[2],
 		StopReason:            s.stopReason,
 		RoutingEnginesUsedStr: s.routing,
+		ToolCallNamesStr:      s.toolCallNames,
+		ToolCallNames:         splitCSVPtr(s.toolCallNames),
+		ComplexityTier:        s.tier,
+		ComplexityMechanism:   s.mechanism,
+		ComplexityScore:       s.tierScore,
+		SessionID:             s.sessionID,
 		Metadata:              s.metadata,
-		CacheDebug:            s.cacheDebug,
+		CacheDebug:            s.cacheMetadata,
 		ContentSummary:        s.content,
 		ParentRequestID:       s.parentID,
 		ClusterNodeID:         s.nodeID,
@@ -155,20 +192,23 @@ func paritySpecs() []parityLogSpec {
 			alias: strPtrP("a1"), canonical: strPtrP("gpt-4o-2024-11-20"), selectedKey: "sk1", vkID: strPtrP("vk1"), vkName: strPtrP("VK One"),
 			teamID: strPtrP("t1"), customerID: strPtrP("c1"), buID: strPtrP("b1"), userID: strPtrP("u1"),
 			cost: f64PtrP(0.5), latency: f64PtrP(100), tokens: [3]int{100, 50, 150}, stopReason: strPtrP("stop"),
-			routing: strPtrP("governance,loadbalancing"), metadata: strPtrP(`{"env":"prod"}`),
-			cacheDebug: `{"hit_type":"direct"}`, content: "alpha bravo hello", parentID: strPtrP("sess1")},
+			routing: strPtrP("governance,loadbalancing"), metadata: strPtrP(`{"env":"prod"}`), toolCallNames: strPtrP("search"),
+			tier: strPtrP("COMPLEX"), mechanism: strPtrP("lexical"), tierScore: f64PtrP(0.55), sessionID: strPtrP("session-1"),
+			cacheMetadata: `{"hit_type":"direct"}`, content: "alpha bravo hello", parentID: strPtrP("sess1")},
 		{id: "p2", offsetSec: 90, object: "chat.completion", provider: "openai", model: "gpt-4o", status: "success",
 			vkID: strPtrP("vk1"), vkName: strPtrP("VK One"), teamID: strPtrP("t1"), userID: strPtrP("u2"),
 			cost: f64PtrP(1.25), latency: f64PtrP(250), tokens: [3]int{200, 100, 300}, stopReason: strPtrP("length"),
 			routing: strPtrP("governance"), metadata: strPtrP(`{"env":"dev"}`),
-			cacheDebug: `{"hit_type":"semantic"}`, content: "charlie delta", parentID: strPtrP("sess1")},
+			tier: strPtrP("SIMPLE"), mechanism: strPtrP("lexical"), tierScore: f64PtrP(0.08), sessionID: strPtrP("session-1"),
+			cacheMetadata: `{"hit_type":"semantic"}`, content: "charlie delta", parentID: strPtrP("sess1")},
 		{id: "p3", offsetSec: 80, object: "chat.completion", provider: "openai", model: "gpt-4o-mini", status: "error",
 			vkID: strPtrP("vk2"), vkName: strPtrP("VK Two"), teamID: strPtrP("t2"), userID: strPtrP("u2"),
-			latency: f64PtrP(50), content: "echo error", parentID: strPtrP("sess1")},
+			latency: f64PtrP(50), content: "echo error", parentID: strPtrP("sess1"),
+			mechanism: strPtrP("skipped")},
 		{id: "p4", offsetSec: 70, object: "chat.completion", provider: "anthropic", model: "claude-3", status: "success",
 			vkID: strPtrP("vk2"), vkName: strPtrP("VK Two"), teamID: strPtrP("t2"), userID: strPtrP("u3"),
 			cost: f64PtrP(2.5), latency: f64PtrP(400), tokens: [3]int{400, 100, 500}, stopReason: strPtrP("tool_calls"),
-			metadata: strPtrP(`{"env":"prod","region":"us"}`), content: "echo foxtrot"},
+			metadata: strPtrP(`{"env":"prod","region":"us"}`), content: "echo foxtrot", toolCallNames: strPtrP("get_weather,search")},
 		{id: "p5", offsetSec: 60, object: "chat.completion", provider: "anthropic", model: "claude-3", status: "processing",
 			vkID: strPtrP("vk1"), vkName: strPtrP("VK One"), teamID: strPtrP("t1"), userID: strPtrP("u1")},
 		{id: "p6", offsetSec: 50, object: "embedding", provider: "openai", model: "gpt-4o", status: "success",
@@ -180,7 +220,8 @@ func paritySpecs() []parityLogSpec {
 		{id: "p8", offsetSec: 30, object: "chat.completion", provider: "openai", model: "gpt-4o", status: "success",
 			vkID: strPtrP("vk3"), vkName: strPtrP("VK Three"), teamID: strPtrP("t3"), userID: strPtrP("u1"),
 			cost: f64PtrP(0.75), latency: f64PtrP(120), tokens: [3]int{50, 25, 75}, stopReason: strPtrP("content_filter"),
-			routing: strPtrP("routing-rule"), metadata: strPtrP(`{"env":"prod"}`), content: "india juliet"},
+			routing: strPtrP("routing-rule"), metadata: strPtrP(`{"env":"prod"}`), content: "india juliet",
+			tier: strPtrP("MEDIUM"), mechanism: strPtrP("lexical"), tierScore: f64PtrP(0.31)},
 		// Cluster-governance rows for GetNodeUsageAfter parity.
 		{id: "p9", offsetSec: 20, object: "chat.completion", provider: "openai", model: "gpt-4o", status: "success",
 			cost: f64PtrP(1.0), latency: f64PtrP(90), tokens: [3]int{40, 20, 60},
@@ -188,6 +229,24 @@ func paritySpecs() []parityLogSpec {
 		{id: "p10", offsetSec: 10, object: "chat.completion", provider: "openai", model: "gpt-4o", status: "success",
 			cost: f64PtrP(2.0), latency: f64PtrP(110), tokens: [3]int{80, 40, 120},
 			nodeID: strPtrP("pnode"), budgetIDs: strPtrP(`["bud1","bud2"]`), rateLimitIDs: strPtrP(`["rl1"]`)},
+		// Enterprise user/AP path: the hierarchy lives in the JSON arrays and the
+		// scalar ids stay NULL, so the dimension readers must fan out. p11 spans
+		// two teams / two customers, p12 a single one, and p13 carries a scalar
+		// id with no array (the fan-out's fallback branch). Every dialect's
+		// fan-out SQL is exercised here.
+		{id: "p11", offsetSec: 15, object: "chat.completion", provider: "openai", model: "gpt-4o", status: "success",
+			userID: strPtrP("u5"), cost: f64PtrP(4.0), latency: f64PtrP(140), tokens: [3]int{60, 30, 90},
+			teamIDs: strPtrP(`["t4","t5"]`), teamNames: strPtrP(`["Team Four","Team Five"]`),
+			customerIDs: strPtrP(`["c3","c4"]`), customerNames: strPtrP(`["Cust Three","Cust Four"]`),
+			buIDs: strPtrP(`["b3","b4"]`), buNames: strPtrP(`["BU Three","BU Four"]`)},
+		{id: "p12", offsetSec: 14, object: "chat.completion", provider: "anthropic", model: "claude-3", status: "success",
+			userID: strPtrP("u5"), cost: f64PtrP(0.25), latency: f64PtrP(160), tokens: [3]int{20, 10, 30},
+			teamIDs: strPtrP(`["t4"]`), teamNames: strPtrP(`["Team Four"]`),
+			customerIDs: strPtrP(`["c3"]`), customerNames: strPtrP(`["Cust Three"]`),
+			buIDs: strPtrP(`["b3"]`), buNames: strPtrP(`["BU Three"]`)},
+		{id: "p13", offsetSec: 13, object: "chat.completion", provider: "openai", model: "gpt-4o-mini", status: "success",
+			teamID: strPtrP("t4"), customerID: strPtrP("c3"), buID: strPtrP("b3"), userID: strPtrP("u6"),
+			cost: f64PtrP(0.1), latency: f64PtrP(35), tokens: [3]int{5, 5, 10}},
 	}
 }
 
@@ -249,11 +308,13 @@ func canonicalizeOrder(key string, v any) any {
 			tv[i] = canonicalizeOrder("", tv[i])
 		}
 		if key == "rankings" {
-			keys := make([]string, len(tv))
-			for i, e := range tv {
-				keys[i] = canonicalEntryKey(e)
-			}
-			sort.SliceStable(tv, func(i, j int) bool { return keys[i] < keys[j] })
+			// Compute the key from the live element: a precomputed key slice
+			// would not be permuted alongside tv by SliceStable's swapper, so
+			// after the first swap the comparator would read stale keys and
+			// the final order would depend on the raw SQL row order.
+			sort.SliceStable(tv, func(i, j int) bool {
+				return canonicalEntryKey(tv[i]) < canonicalEntryKey(tv[j])
+			})
 		}
 		return tv
 	default:
@@ -399,6 +460,8 @@ func logProjection(l *Log) map[string]any {
 		"user_id": l.UserID, "cost": l.Cost, "latency": l.Latency,
 		"prompt_tokens": l.PromptTokens, "completion_tokens": l.CompletionTokens,
 		"total_tokens": l.TotalTokens, "stop_reason": l.StopReason,
+		"complexity_tier": l.ComplexityTier, "complexity_mechanism": l.ComplexityMechanism,
+		"complexity_score": l.ComplexityScore, "session_id": l.SessionID,
 		"content_summary": l.ContentSummary,
 	}
 }
@@ -425,6 +488,27 @@ func asyncJobProjection(j *AsyncJob) map[string]any {
 		out["expires_ms"] = j.ExpiresAt.UnixMilli()
 	}
 	return out
+}
+
+func webhookDeliveryProjection(d *WebhookDelivery) map[string]any {
+	out := map[string]any{
+		"id": d.ID, "webhook_id": d.WebhookID, "endpoint_id": d.EndpointID,
+		"async_job_id": d.AsyncJobID, "event": d.Event, "attempt_no": d.AttemptNo,
+		"outcome": d.Outcome, "status_code": d.StatusCode, "error": d.Error,
+		"created_ms": d.CreatedAt.UnixMilli(),
+	}
+	if d.ExpiresAt != nil {
+		out["expires_ms"] = d.ExpiresAt.UnixMilli()
+	}
+	return out
+}
+
+func webhookDeliverySearchProjection(r *WebhookDeliverySearchResult) any {
+	deliveries := make([]map[string]any, 0, len(r.Deliveries))
+	for _, d := range r.Deliveries {
+		deliveries = append(deliveries, webhookDeliveryProjection(&d))
+	}
+	return map[string]any{"total": r.Pagination.TotalCount, "deliveries": deliveries}
 }
 
 // remainingLogIDs lists surviving log ids - the post-state assertion used
@@ -498,30 +582,41 @@ func TestLogStoreParity(t *testing.T) {
 	// --- Phase: reads ---
 
 	searchCases := map[string]SearchFilters{
-		"all":             window,
-		"providers":       {Providers: []string{"openai"}},
-		"models":          {Models: []string{"gpt-4o", "claude-3"}},
-		"status":          {Status: []string{"success"}},
-		"stop_reasons":    {StopReasons: []string{"stop"}},
-		"objects":         {Objects: []string{"embedding"}},
-		"aliases":         {Aliases: []string{"a1"}},
-		"selected_keys":   {SelectedKeyIDs: []string{"sk1"}},
-		"virtual_keys":    {VirtualKeyIDs: []string{"vk1"}},
-		"teams":           {TeamIDs: []string{"t1", "t3"}},
-		"customers":       {CustomerIDs: []string{"c1"}},
-		"users":           {UserIDs: []string{"u1"}},
-		"business_units":  {BusinessUnitIDs: []string{"b1"}},
-		"routing_engines": {RoutingEngineUsed: []string{"loadbalancing", "routing-rule"}},
-		"time_range":      {StartTime: timePtrP(base.Add(-75 * time.Second)), EndTime: timePtrP(base.Add(-25 * time.Second))},
-		"latency_range":   {MinLatency: f64PtrP(80), MaxLatency: f64PtrP(260)},
-		"token_range":     {MinTokens: intPtrP(100), MaxTokens: intPtrP(600)},
-		"cost_range":      {MinCost: f64PtrP(1.0), MaxCost: f64PtrP(2.6)},
-		"missing_cost":    {MissingCostOnly: true},
-		"cache_direct":    {CacheHitTypes: []string{"direct"}},
-		"cache_semantic":  {CacheHitTypes: []string{"semantic"}},
-		"metadata":        {MetadataFilters: map[string]string{"env": "prod"}},
-		"content_search":  {ContentSearch: "charlie"},
-		"parent_request":  {ParentRequestID: "sess1"},
+		"all":                   window,
+		"providers":             {Providers: []string{"openai"}},
+		"models":                {Models: []string{"gpt-4o", "claude-3"}},
+		"status":                {Status: []string{"success"}},
+		"stop_reasons":          {StopReasons: []string{"stop"}},
+		"complexity_tiers":      {ComplexityTiers: []string{"COMPLEX", "MEDIUM"}},
+		"complexity_mechanisms": {ComplexityMechanisms: []string{"lexical"}},
+		"mechanism_skipped":     {ComplexityMechanisms: []string{"skipped"}},
+		"session":               {SessionID: "session-1"},
+		"objects":               {Objects: []string{"embedding"}},
+		"aliases":               {Aliases: []string{"a1"}},
+		"selected_keys":         {SelectedKeyIDs: []string{"sk1"}},
+		"virtual_keys":          {VirtualKeyIDs: []string{"vk1"}},
+		"teams":                 {TeamIDs: []string{"t1", "t3"}},
+		"customers":             {CustomerIDs: []string{"c1"}},
+		"users":                 {UserIDs: []string{"u1"}},
+		"business_units":        {BusinessUnitIDs: []string{"b1"}},
+		"routing_engines":       {RoutingEngineUsed: []string{"loadbalancing", "routing-rule"}},
+		"tool_call_names":       {ToolCallNames: []string{"get_weather"}},
+		"tool_call_names_any":   {ToolCallNames: []string{"get_weather", "search"}},
+		"time_range":            {StartTime: timePtrP(base.Add(-75 * time.Second)), EndTime: timePtrP(base.Add(-25 * time.Second))},
+		"latency_range":         {MinLatency: f64PtrP(80), MaxLatency: f64PtrP(260)},
+		"token_range":           {MinTokens: intPtrP(100), MaxTokens: intPtrP(600)},
+		"cost_range":            {MinCost: f64PtrP(1.0), MaxCost: f64PtrP(2.6)},
+		"missing_cost":          {MissingCostOnly: true},
+		"cache_direct":          {CacheHitTypes: []string{"direct"}},
+		"cache_semantic":        {CacheHitTypes: []string{"semantic"}},
+		"metadata":              {MetadataFilters: map[string]string{"env": "prod"}},
+		"content_search":        {ContentSearch: "charlie"},
+		"parent_request":        {ParentRequestID: "sess1"},
+		"request_id":            {RequestID: "p4"},
+		// An ID lookup is an exact PK match that deliberately ignores the window,
+		// so p4 must come back even though the range excludes its timestamp.
+		"request_id_outside_window": {RequestID: "p4", StartTime: timePtrP(base.Add(-10 * time.Second)), EndTime: timePtrP(base)},
+		"request_id_unknown":        {RequestID: "no-such-id"},
 	}
 	for name, filters := range searchCases {
 		t.Run("SearchLogs/"+name, func(t *testing.T) {
@@ -574,6 +669,12 @@ func TestLogStoreParity(t *testing.T) {
 		"provider_latency": func(ctx context.Context, s LogStore) (any, error) {
 			return s.GetProviderLatencyHistogram(ctx, window, 60)
 		},
+		"throughput": func(ctx context.Context, s LogStore) (any, error) {
+			return s.GetThroughputHistogram(ctx, window, 60)
+		},
+		"provider_throughput": func(ctx context.Context, s LogStore) (any, error) {
+			return s.GetProviderThroughputHistogram(ctx, window, 60)
+		},
 		"dimension_cost": func(ctx context.Context, s LogStore) (any, error) {
 			return s.GetDimensionCostHistogram(ctx, window, 60, DimensionProvider)
 		},
@@ -582,6 +683,21 @@ func TestLogStoreParity(t *testing.T) {
 		},
 		"dimension_latency": func(ctx context.Context, s LogStore) (any, error) {
 			return s.GetDimensionLatencyHistogram(ctx, window, 60, DimensionProvider)
+		},
+		// The fan-out dimensions: the fixtures carry both array-only and
+		// scalar-only hierarchy rows, so each backend's fan-out SQL and its
+		// scalar fallback must agree.
+		"dimension_cost_team": func(ctx context.Context, s LogStore) (any, error) {
+			return s.GetDimensionCostHistogram(ctx, window, 60, DimensionTeam)
+		},
+		"dimension_tokens_customer": func(ctx context.Context, s LogStore) (any, error) {
+			return s.GetDimensionTokenHistogram(ctx, window, 60, DimensionCustomer)
+		},
+		"dimension_latency_team": func(ctx context.Context, s LogStore) (any, error) {
+			return s.GetDimensionLatencyHistogram(ctx, window, 60, DimensionTeam)
+		},
+		"dimension_cost_business_unit": func(ctx context.Context, s LogStore) (any, error) {
+			return s.GetDimensionCostHistogram(ctx, window, 60, DimensionBusinessUnit)
 		},
 		// Filter on the same column the SELECT aliases (SUM(cost) AS cost):
 		// without prefer_column_name_to_alias=1 ClickHouse resolves the WHERE
@@ -617,19 +733,20 @@ func TestLogStoreParity(t *testing.T) {
 			return s.GetDimensionRankings(ctx, window, RankingDimensionVirtualKey)
 		})
 	})
-	t.Run("Rankings/dimension_team", func(t *testing.T) {
-		// Fixtures carry scalar team_id only, so the Postgres fan-out's scalar
-		// fallback and the other backends' plain group-by must agree on the
-		// rankings. TotalActual/AttributedRequests are documented as
-		// fan-out-only (Postgres) metadata and excluded from the contract.
-		assertParity(t, stores, 1e-6, func(ctx context.Context, s LogStore) (any, error) {
-			r, err := s.GetDimensionRankings(ctx, window, RankingDimensionTeam)
-			if err != nil {
-				return nil, err
-			}
-			return map[string]any{"rankings": r.Rankings, "dimension": r.Dimension}, nil
+	// The fixtures carry both scalar-only and array-only hierarchy rows, so these
+	// exercise each backend's fan-out SQL and its scalar fallback — including the
+	// attributed-vs-actual totals, which every dialect must now agree on.
+	for name, dim := range map[string]RankingDimension{
+		"dimension_team":          RankingDimensionTeam,
+		"dimension_customer":      RankingDimensionCustomer,
+		"dimension_business_unit": RankingDimensionBusinessUnit,
+	} {
+		t.Run("Rankings/"+name, func(t *testing.T) {
+			assertParity(t, stores, 1e-6, func(ctx context.Context, s LogStore) (any, error) {
+				return s.GetDimensionRankings(ctx, window, dim)
+			})
 		})
-	})
+	}
 
 	t.Run("Distinct", func(t *testing.T) {
 		sorted := func(v []string, err error) (any, error) {
@@ -647,6 +764,9 @@ func TestLogStoreParity(t *testing.T) {
 			},
 			"stop_reasons": func(ctx context.Context, s LogStore) (any, error) {
 				return sorted(s.GetDistinctStopReasons(ctx, 50, ""))
+			},
+			"tool_call_names": func(ctx context.Context, s LogStore) (any, error) {
+				return sorted(s.GetDistinctToolCallNames(ctx, 50, ""))
 			},
 			"key_pairs": func(ctx context.Context, s LogStore) (any, error) {
 				pairs, err := s.GetDistinctKeyPairs(ctx, "virtual_key_id", "virtual_key_name", 50, "")
@@ -669,6 +789,53 @@ func TestLogStoreParity(t *testing.T) {
 		}
 		for name, call := range calls {
 			t.Run(name, func(t *testing.T) { assertParity(t, stores, 1e-6, call) })
+		}
+
+		// Filterdata search must be case-insensitive on every backend. The
+		// needles are deliberately cased against the fixtures ("gpt-4o",
+		// "VK One", "search") so a bare LIKE on ClickHouse or non-ASCII SQLite
+		// would return nothing and break parity with Postgres ILIKE.
+		caseCalls := map[string]struct {
+			call func(context.Context, LogStore) (any, error)
+			want any
+		}{
+			"models_upper": {
+				call: func(ctx context.Context, s LogStore) (any, error) {
+					return sorted(s.GetDistinctModels(ctx, 50, "GPT-4O"))
+				},
+				want: []string{"gpt-4o", "gpt-4o-mini"},
+			},
+			"tool_call_names_upper": {
+				call: func(ctx context.Context, s LogStore) (any, error) {
+					return sorted(s.GetDistinctToolCallNames(ctx, 50, "SEARCH"))
+				},
+				want: []string{"search"},
+			},
+			"key_pairs_lower": {
+				call: func(ctx context.Context, s LogStore) (any, error) {
+					pairs, err := s.GetDistinctKeyPairs(ctx, "virtual_key_id", "virtual_key_name", 50, "vk one")
+					if err != nil {
+						return nil, err
+					}
+					names := make([]string, 0, len(pairs))
+					for _, p := range pairs {
+						names = append(names, p.Name)
+					}
+					sort.Strings(names)
+					return names, nil
+				},
+				want: []string{"VK One"},
+			},
+		}
+		for name, tc := range caseCalls {
+			t.Run(name, func(t *testing.T) {
+				assertParity(t, stores, 1e-6, tc.call)
+				for backend, store := range stores {
+					got, err := tc.call(context.Background(), store)
+					require.NoError(t, err, backend)
+					assert.Equal(t, tc.want, got, backend)
+				}
+			})
 		}
 	})
 
@@ -936,7 +1103,7 @@ func TestLogStoreParity(t *testing.T) {
 		})
 		t.Run("bulk_update_cost", func(t *testing.T) {
 			runOnAll(t, stores, func(ctx context.Context, s LogStore) error {
-				return s.BulkUpdateCost(ctx, map[string]float64{"p1": 0.9, "p4": 2.9})
+				return s.BulkUpdateCost(ctx, map[string]CostUpdate{"p1": {Total: 0.9, Input: 0.9}, "p4": {Total: 2.9, Input: 2.9}})
 			})
 			assertParity(t, stores, 1e-6, func(ctx context.Context, s LogStore) (any, error) {
 				var costs []map[string]any
@@ -1033,6 +1200,70 @@ func TestLogStoreParity(t *testing.T) {
 		})
 	})
 
+	// --- Phase: webhook deliveries ---
+
+	t.Run("WebhookDeliveries", func(t *testing.T) {
+		mkDelivery := func(id, webhookID, endpointID string, attemptNo int, outcome WebhookDeliveryOutcome, statusCode int, errMsg string, createdOffset time.Duration, expires *time.Time) *WebhookDelivery {
+			return &WebhookDelivery{
+				ID: id, WebhookID: webhookID, EndpointID: endpointID, AsyncJobID: "j1",
+				Event: tables.WebhookEventAsyncJobCompleted, AttemptNo: attemptNo,
+				Outcome: outcome, StatusCode: statusCode, Error: errMsg,
+				CreatedAt: base.Add(createdOffset), ExpiresAt: expires,
+			}
+		}
+		runOnAll(t, stores, func(ctx context.Context, s LogStore) error {
+			// wd1/wd2 are two attempts of the same delivery on one endpoint;
+			// wd3 belongs to another endpoint and expired ten minutes ago.
+			if err := s.CreateWebhookDelivery(ctx, mkDelivery("wd1", "wh1", "wh-ep-1", 1, WebhookDeliveryOutcomeRetryableFailure, 503, "upstream unavailable", -2*time.Minute, nil)); err != nil {
+				return err
+			}
+			if err := s.CreateWebhookDelivery(ctx, mkDelivery("wd2", "wh1", "wh-ep-1", 2, WebhookDeliveryOutcomeDelivered, 200, "", -time.Minute, nil)); err != nil {
+				return err
+			}
+			return s.CreateWebhookDelivery(ctx, mkDelivery("wd3", "wh2", "wh-ep-2", 1, WebhookDeliveryOutcomeExhausted, 500, "gave up", -time.Hour, timePtrP(base.Add(-10*time.Minute))))
+		})
+
+		assertParity(t, stores, 1e-6, func(ctx context.Context, s LogStore) (any, error) {
+			d, err := s.FindWebhookDeliveryByID(ctx, "wd1")
+			if err != nil {
+				return nil, err
+			}
+			return webhookDeliveryProjection(d), nil
+		})
+		for name, s := range stores {
+			_, err := s.FindWebhookDeliveryByID(ctx, "missing-delivery")
+			assert.ErrorIs(t, err, ErrNotFound, name)
+		}
+
+		// Endpoint-scoped history pages newest-first on every backend.
+		assertParity(t, stores, 1e-6, func(ctx context.Context, s LogStore) (any, error) {
+			res, err := s.SearchWebhookDeliveries(ctx, &WebhookDeliverySearchFilters{EndpointIDs: []string{"wh-ep-1"}}, PaginationOptions{Limit: 10})
+			if err != nil {
+				return nil, err
+			}
+			return webhookDeliverySearchProjection(res), nil
+		})
+		assertParity(t, stores, 1e-6, func(ctx context.Context, s LogStore) (any, error) {
+			res, err := s.SearchWebhookDeliveries(ctx, &WebhookDeliverySearchFilters{EndpointIDs: []string{"wh-ep-1"}}, PaginationOptions{Limit: 1, Offset: 1})
+			if err != nil {
+				return nil, err
+			}
+			return webhookDeliverySearchProjection(res), nil
+		})
+
+		// Expired cleanup removes wd3 with the same count everywhere.
+		assertParity(t, stores, 1e-6, func(ctx context.Context, s LogStore) (any, error) {
+			return s.DeleteExpiredWebhookDeliveries(ctx)
+		})
+		assertParity(t, stores, 1e-6, func(ctx context.Context, s LogStore) (any, error) {
+			res, err := s.SearchWebhookDeliveries(ctx, &WebhookDeliverySearchFilters{EndpointIDs: []string{"wh-ep-2"}}, PaginationOptions{Limit: 10})
+			if err != nil {
+				return nil, err
+			}
+			return webhookDeliverySearchProjection(res), nil
+		})
+	})
+
 	// --- Phase: deletes (destructive; order matters) ---
 
 	t.Run("Deletes", func(t *testing.T) {
@@ -1094,4 +1325,52 @@ func TestLogStoreParity(t *testing.T) {
 			return s.Close(ctx)
 		})
 	})
+}
+
+// video_debug must survive the serialize/deserialize round trip like batch_debug
+// does. It is operational detail, not request content, so it also has to outlive an
+// object-storage offload — a row whose payload was offloaded still needs to say
+// which video it settled.
+func TestLogVideoDebugRoundTrip(t *testing.T) {
+	seconds := 8
+	entry := &Log{
+		ID: "req-video-roundtrip",
+		VideoDebugParsed: &schemas.BifrostVideoDebug{
+			VideoID: "vid_rt",
+			Status:  schemas.VideoStatusCompleted,
+			Accounting: &schemas.VideoAccountingDebug{
+				Seconds:     &seconds,
+				Size:        "1920x1080",
+				OutputCount: 2,
+			},
+		},
+	}
+
+	require.NoError(t, entry.SerializeFields())
+	require.NotEmpty(t, entry.VideoDebug, "the parsed blob must reach the column")
+
+	decoded := &Log{ID: entry.ID, VideoDebug: entry.VideoDebug}
+	require.NoError(t, decoded.DeserializeFields())
+	require.NotNil(t, decoded.VideoDebugParsed)
+	assert.Equal(t, "vid_rt", decoded.VideoDebugParsed.VideoID)
+	assert.Equal(t, schemas.VideoStatusCompleted, decoded.VideoDebugParsed.Status)
+	require.NotNil(t, decoded.VideoDebugParsed.Accounting)
+	require.NotNil(t, decoded.VideoDebugParsed.Accounting.Seconds)
+	assert.Equal(t, 8, *decoded.VideoDebugParsed.Accounting.Seconds)
+	assert.Equal(t, 2, decoded.VideoDebugParsed.Accounting.OutputCount)
+}
+
+// A submission row carries the video id but no accounting block; that absence is
+// what the UI keys on to tell it from the settlement.
+func TestLogVideoDebugSubmissionRowHasNoAccounting(t *testing.T) {
+	entry := &Log{
+		ID:               "req-video-submission",
+		VideoDebugParsed: &schemas.BifrostVideoDebug{VideoID: "vid_sub", Status: schemas.VideoStatusQueued},
+	}
+	require.NoError(t, entry.SerializeFields())
+
+	decoded := &Log{VideoDebug: entry.VideoDebug}
+	require.NoError(t, decoded.DeserializeFields())
+	require.NotNil(t, decoded.VideoDebugParsed)
+	assert.Nil(t, decoded.VideoDebugParsed.Accounting)
 }

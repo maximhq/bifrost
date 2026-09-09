@@ -44,7 +44,6 @@ batches:
               $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -82,7 +81,6 @@ batches-by-id:
               $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
   post:
@@ -123,7 +121,6 @@ batches-by-id:
               $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
   delete:
@@ -159,6 +156,5 @@ batches-by-id:
               $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []

@@ -80,6 +80,70 @@ func TestToOpenAIChatRequest_ToolNormalization(t *testing.T) {
 	}
 }
 
+// TestToOpenAIChatRequest_InvalidatesStaleSerializedCache guards the fix for a
+// shared MCP tool carrying a precomputed serialized cache. Those tools are
+// injected into the request by value, so the cache rides along with the copy.
+// ToOpenAIChatRequest replaces Function.Parameters with the normalized form; if
+// it left the stale cache in place, ChatTool.MarshalJSON would return the
+// pre-normalized bytes and silently defeat the normalization for exactly the
+// tools it is meant to help.
+func TestToOpenAIChatRequest_InvalidatesStaleSerializedCache(t *testing.T) {
+	// Items is a structural schema field Normalized() canonicalizes (unlike
+	// Properties, whose order is preserved). Its keys are inserted out of the
+	// canonical order (type, description, then alphabetical) so Normalized()
+	// reorders them, making the cached (un-normalized) bytes differ from the
+	// normalized output.
+	params := &schemas.ToolFunctionParameters{
+		Type: "array",
+		Items: schemas.NewOrderedMapFromPairs(
+			schemas.KV("enum", []interface{}{"celsius", "fahrenheit"}),
+			schemas.KV("description", "A unit"),
+			schemas.KV("type", "string"),
+		),
+	}
+
+	tool := schemas.ChatTool{
+		Type:     "function",
+		Function: &schemas.ChatToolFunction{Name: "get_weather", Parameters: params},
+	}
+	// Simulate the MCP source caching the pre-normalized bytes.
+	require.NoError(t, tool.EnsureSerialized())
+	staleJSON, err := schemas.Marshal(tool)
+	require.NoError(t, err)
+
+	// Expected wire form: the same tool normalized, with no cache.
+	expTool := schemas.ChatTool{
+		Type:     "function",
+		Function: &schemas.ChatToolFunction{Name: "get_weather", Parameters: params.Normalized()},
+	}
+	expJSON, err := schemas.Marshal(expTool)
+	require.NoError(t, err)
+
+	// Setup guard: the case is only meaningful if normalization changes the bytes.
+	require.NotEqual(t, string(staleJSON), string(expJSON),
+		"test setup: normalized form must differ from the cached form")
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser}},
+		Params:   &schemas.ChatParameters{Tools: []schemas.ChatTool{tool}},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+	result := ToOpenAIChatRequest(ctx, bifrostReq)
+	require.NotNil(t, result)
+
+	gotJSON, err := schemas.Marshal(result.ChatParameters.Tools[0])
+	require.NoError(t, err)
+
+	require.Equal(t, string(expJSON), string(gotJSON),
+		"converted tool must marshal from normalized params, not the stale serialized cache")
+	require.NotEqual(t, string(staleJSON), string(gotJSON),
+		"converted tool must not emit the pre-normalized cached bytes")
+}
+
 func TestToOpenAIChatRequest_PreservesN(t *testing.T) {
 	req := &schemas.BifrostChatRequest{
 		Provider: schemas.OpenAI,
@@ -159,8 +223,62 @@ func TestToOpenAIChatRequest_NormalizesReasoningEffort(t *testing.T) {
 			expected: "high",
 		},
 		{
-			name:     "maps minimal to low",
+			name:     "maps minimal to low for gpt-5.4",
 			model:    "gpt-5.4",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			name:     "preserves minimal for gpt-5",
+			model:    "gpt-5",
+			effort:   "minimal",
+			expected: "minimal",
+		},
+		{
+			name:     "preserves minimal for gpt-5-mini",
+			model:    "gpt-5-mini",
+			effort:   "minimal",
+			expected: "minimal",
+		},
+		{
+			name:     "preserves minimal for gpt-5-nano",
+			model:    "gpt-5-nano",
+			effort:   "minimal",
+			expected: "minimal",
+		},
+		{
+			name:     "maps minimal to low for gpt-5.2",
+			model:    "gpt-5.2",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			name:     "maps minimal to low for gpt-5.6",
+			model:    "gpt-5.6",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			name:     "maps minimal to low for o3",
+			model:    "o3",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			name:     "maps minimal to low for o1",
+			model:    "o1",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			name:     "maps minimal to low for o4",
+			model:    "o4",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			name:     "maps minimal to low for gpt-oss",
+			model:    "gpt-oss",
 			effort:   "minimal",
 			expected: "low",
 		},
@@ -378,8 +496,62 @@ func TestOpenAIChatRequest_FilterOpenAISpecificParameters_NormalizesReasoningEff
 			expected: "high",
 		},
 		{
-			name:     "maps minimal to low",
+			name:     "maps minimal to low for gpt-5.4",
 			model:    "gpt-5.4",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			name:     "preserves minimal for gpt-5",
+			model:    "gpt-5",
+			effort:   "minimal",
+			expected: "minimal",
+		},
+		{
+			name:     "preserves minimal for gpt-5-mini",
+			model:    "gpt-5-mini",
+			effort:   "minimal",
+			expected: "minimal",
+		},
+		{
+			name:     "preserves minimal for gpt-5-nano",
+			model:    "gpt-5-nano",
+			effort:   "minimal",
+			expected: "minimal",
+		},
+		{
+			name:     "maps minimal to low for gpt-5.2",
+			model:    "gpt-5.2",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			name:     "maps minimal to low for gpt-5.6",
+			model:    "gpt-5.6",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			name:     "maps minimal to low for o3",
+			model:    "o3",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			name:     "maps minimal to low for o1",
+			model:    "o1",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			name:     "maps minimal to low for o4",
+			model:    "o4",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			name:     "maps minimal to low for gpt-oss",
+			model:    "gpt-oss",
 			effort:   "minimal",
 			expected: "low",
 		},
@@ -439,7 +611,7 @@ func TestOpenAIChatRequest_FilterOpenAISpecificParameters_NormalizesReasoningEff
 				},
 			}
 
-			req.filterOpenAISpecificParameters(req.Model)
+			req.filterOpenAISpecificParameters(schemas.ResolveModelCaps(schemas.OpenAI, req.Model))
 
 			if req.Reasoning == nil || req.Reasoning.Effort == nil {
 				t.Fatal("expected reasoning effort to be set")
@@ -725,7 +897,6 @@ func TestToOpenAIChatRequest_StripsAssistantReasoningContentForCompatibleProvide
 		provider schemas.ModelProvider
 		model    string
 	}{
-		{name: "cerebras", provider: schemas.Cerebras, model: "gpt-oss-120b"},
 		{name: "deepseek", provider: schemas.DeepSeek, model: "deepseek-v4-pro"},
 	}
 
@@ -796,6 +967,96 @@ func TestToOpenAIChatRequest_StripsAssistantReasoningContentForCompatibleProvide
 				t.Fatalf("expected reasoning_content to be absent from %s assistant payload, got %#v", tt.provider, assistantMessage["reasoning_content"])
 			}
 		})
+	}
+}
+
+// Groq rejects reasoning_content on assistant messages ("property 'reasoning_content'
+// is unsupported") but accepts the OpenRouter-style "reasoning" spelling, so replayed
+// reasoning has to move to that key rather than be dropped.
+func TestToOpenAIChatRequest_MovesAssistantReasoningToAliasForGroq(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+	}{
+		{name: "groq", provider: schemas.Groq, model: "qwen/qwen3.8-27b"},
+		{name: "cerebras", provider: schemas.Cerebras, model: "gpt-oss-120b"},
+	} {
+		t.Run(tt.name, func(t *testing.T) { assertMovesAssistantReasoningToAlias(t, tt.provider, tt.model) })
+	}
+}
+
+func assertMovesAssistantReasoningToAlias(t *testing.T, provider schemas.ModelProvider, model string) {
+	t.Helper()
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+
+	reasoning := "step by step"
+	assistantContent := "The weather in Paris is mild today."
+	userContent := "What is the weather in Paris?"
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: provider,
+		Model:    model,
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: &userContent},
+			},
+			{
+				Role:    schemas.ChatMessageRoleAssistant,
+				Content: &schemas.ChatMessageContent{ContentStr: &assistantContent},
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					Reasoning: &reasoning,
+				},
+			},
+		},
+	}
+
+	result := ToOpenAIChatRequest(ctx, bifrostReq)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if len(result.Messages) != 2 || result.Messages[1].OpenAIChatAssistantMessage == nil {
+		t.Fatalf("expected assistant message with OpenAI assistant payload, got %#v", result.Messages)
+	}
+	assistant := result.Messages[1].OpenAIChatAssistantMessage
+	if assistant.Reasoning != nil {
+		t.Fatalf("expected reasoning_content to be cleared, got %#v", assistant.Reasoning)
+	}
+	if assistant.ReasoningAlias == nil || *assistant.ReasoningAlias != reasoning {
+		t.Fatalf("expected reasoning alias %q, got %#v", reasoning, assistant.ReasoningAlias)
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	wireBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		bifrostReq,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToOpenAIChatRequest(ctx, bifrostReq), nil
+		},
+	)
+	if bifrostErr != nil {
+		t.Fatalf("failed to build request body: %v", bifrostErr.Error.Message)
+	}
+
+	var jsonMap map[string]any
+	if err := sonic.Unmarshal(wireBody, &jsonMap); err != nil {
+		t.Fatalf("failed to parse marshaled request body: %v", err)
+	}
+	messages, ok := jsonMap["messages"].([]any)
+	if !ok || len(messages) != 2 {
+		t.Fatalf("expected 2 messages in wire payload, got %#v", jsonMap["messages"])
+	}
+	assistantMessage, ok := messages[1].(map[string]any)
+	if !ok {
+		t.Fatalf("expected assistant message object, got %#v", messages[1])
+	}
+	if _, ok := assistantMessage["reasoning_content"]; ok {
+		t.Fatalf("expected reasoning_content to be absent from %s assistant payload, got %#v", provider, assistantMessage["reasoning_content"])
+	}
+	if got, ok := assistantMessage["reasoning"].(string); !ok || got != reasoning {
+		t.Fatalf("expected reasoning %q in %s assistant payload, got %#v", reasoning, provider, assistantMessage["reasoning"])
 	}
 }
 
@@ -1135,6 +1396,111 @@ func TestApplyXAICompatibility(t *testing.T) {
 			},
 		},
 		{
+			name:  "grok-4.6: preserves reasoning_effort xhigh",
+			model: "grok-4.6",
+			request: &OpenAIChatRequest{
+				Model:    "grok-4.6",
+				Messages: []OpenAIMessage{},
+				ChatParameters: schemas.ChatParameters{
+					Reasoning: &schemas.ChatReasoning{
+						Effort: schemas.Ptr("xhigh"),
+					},
+				},
+			},
+			validate: func(t *testing.T, req *OpenAIChatRequest) {
+				if req.Reasoning == nil || req.Reasoning.Effort == nil {
+					t.Fatal("Expected Reasoning.Effort to be preserved for grok-4.6")
+				}
+				if *req.Reasoning.Effort != "xhigh" {
+					t.Errorf("Expected Reasoning.Effort 'xhigh', got %v", *req.Reasoning.Effort)
+				}
+			},
+		},
+		{
+			name:  "grok-4.5: preserves reasoning_effort",
+			model: "grok-4.5",
+			request: &OpenAIChatRequest{
+				Model:    "grok-4.5",
+				Messages: []OpenAIMessage{},
+				ChatParameters: schemas.ChatParameters{
+					Reasoning: &schemas.ChatReasoning{
+						Effort: schemas.Ptr("low"),
+					},
+				},
+			},
+			validate: func(t *testing.T, req *OpenAIChatRequest) {
+				if req.Reasoning == nil || req.Reasoning.Effort == nil {
+					t.Fatal("Expected Reasoning.Effort to be preserved for grok-4.5")
+				}
+				if *req.Reasoning.Effort != "low" {
+					t.Errorf("Expected Reasoning.Effort 'low', got %v", *req.Reasoning.Effort)
+				}
+			},
+		},
+		{
+			name:  "grok-4.3: preserves reasoning_effort",
+			model: "grok-4.3",
+			request: &OpenAIChatRequest{
+				Model:    "grok-4.3",
+				Messages: []OpenAIMessage{},
+				ChatParameters: schemas.ChatParameters{
+					Reasoning: &schemas.ChatReasoning{
+						Effort: schemas.Ptr("medium"),
+					},
+				},
+			},
+			validate: func(t *testing.T, req *OpenAIChatRequest) {
+				if req.Reasoning == nil || req.Reasoning.Effort == nil {
+					t.Fatal("Expected Reasoning.Effort to be preserved for grok-4.3")
+				}
+				if *req.Reasoning.Effort != "medium" {
+					t.Errorf("Expected Reasoning.Effort 'medium', got %v", *req.Reasoning.Effort)
+				}
+			},
+		},
+		{
+			name:  "grok-4.20-multi-agent-0309: preserves reasoning_effort (agent count)",
+			model: "grok-4.20-multi-agent-0309",
+			request: &OpenAIChatRequest{
+				Model:    "grok-4.20-multi-agent-0309",
+				Messages: []OpenAIMessage{},
+				ChatParameters: schemas.ChatParameters{
+					Reasoning: &schemas.ChatReasoning{
+						Effort: schemas.Ptr("high"),
+					},
+				},
+			},
+			validate: func(t *testing.T, req *OpenAIChatRequest) {
+				if req.Reasoning == nil || req.Reasoning.Effort == nil {
+					t.Fatal("Expected Reasoning.Effort to be preserved for grok-4.20-multi-agent")
+				}
+				if *req.Reasoning.Effort != "high" {
+					t.Errorf("Expected Reasoning.Effort 'high', got %v", *req.Reasoning.Effort)
+				}
+			},
+		},
+		{
+			name:  "grok-4-0709: dated grok-4 alias still clears reasoning_effort",
+			model: "grok-4-0709",
+			request: &OpenAIChatRequest{
+				Model:    "grok-4-0709",
+				Messages: []OpenAIMessage{},
+				ChatParameters: schemas.ChatParameters{
+					Reasoning: &schemas.ChatReasoning{
+						Effort: schemas.Ptr("high"),
+					},
+				},
+			},
+			validate: func(t *testing.T, req *OpenAIChatRequest) {
+				if req.Reasoning == nil {
+					t.Fatal("Expected Reasoning to remain non-nil")
+				}
+				if req.Reasoning.Effort != nil {
+					t.Errorf("Expected Reasoning.Effort cleared for grok-4-0709, got %v", *req.Reasoning.Effort)
+				}
+			},
+		},
+		{
 			name:  "grok-3: preserves other parameters like temperature",
 			model: "grok-3",
 			request: &OpenAIChatRequest{
@@ -1163,7 +1529,7 @@ func TestApplyXAICompatibility(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Apply the compatibility function
-			tt.request.applyXAICompatibility(tt.model)
+			tt.request.applyXAICompatibility(schemas.ResolveModelCaps(schemas.XAI, tt.model))
 
 			// Validate the results
 			tt.validate(t, tt.request)
@@ -1294,6 +1660,49 @@ func TestOpenAIInbound_MaxCompletionTokensTakesPriorityOverMaxTokens(t *testing.
 	}
 	if *bifReq.Params.MaxCompletionTokens != 200 {
 		t.Fatalf("max_completion_tokens should take priority over max_tokens, got %d", *bifReq.Params.MaxCompletionTokens)
+	}
+}
+
+func TestToOpenAIChatRequest_OpencodeUsesLegacyMaxTokensOnWire(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider schemas.ModelProvider
+	}{
+		{name: "Go", provider: schemas.OpencodeGo},
+		{name: "Zen", provider: schemas.OpencodeZen},
+		{name: "Ollama", provider: schemas.Ollama},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostChatRequest{
+				Provider: tt.provider,
+				Model:    "glm-5.3",
+				Input: []schemas.ChatMessage{{
+					Role: schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{
+						ContentStr: schemas.Ptr("hello"),
+					},
+				}},
+				Params: &schemas.ChatParameters{
+					MaxCompletionTokens: schemas.Ptr(512),
+				},
+			}
+
+			converted := ToOpenAIChatRequest(schemas.NewBifrostContext(nil, schemas.NoDeadline), bifrostReq)
+			require.NotNil(t, converted)
+
+			wireJSON, err := json.Marshal(converted)
+			require.NoError(t, err)
+
+			var wire map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(wireJSON, &wire))
+			require.Contains(t, wire, "max_tokens")
+			var maxTokens int
+			require.NoError(t, json.Unmarshal(wire["max_tokens"], &maxTokens))
+			require.Equal(t, 512, maxTokens)
+			require.NotContains(t, wire, "max_completion_tokens")
+		})
 	}
 }
 
@@ -1470,4 +1879,253 @@ func TestOpenAIChatRequest_StripsWebSearchOptionsFilters(t *testing.T) {
 
 	// Original request must not be mutated
 	require.NotNil(t, req.ChatParameters.WebSearchOptions.Filters)
+}
+
+// TestToOpenAIChatRequest_PreservesDeepSeekToolCallReasoningContent covers the outbound
+// half of issue #5887. DeepSeek requires reasoning_content to be replayed on assistant
+// tool_call turns (400 without it) while rejecting it on ordinary assistant turns, so the
+// strip must be selective rather than unconditional.
+func TestToOpenAIChatRequest_PreservesDeepSeekToolCallReasoningContent(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+
+	toolCallReasoning := "the user wants the time, call the tool"
+	plainReasoning := "no tool needed here"
+	plainAnswer := "It is 12:00 UTC."
+	toolCallID := "call_1"
+	toolName := "get_current_time"
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.DeepSeek,
+		Model:    "deepseek-v4-flash",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleAssistant,
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					Reasoning: &toolCallReasoning,
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+						ID:       &toolCallID,
+						Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolName, Arguments: `{}`},
+					}},
+				},
+			},
+			{
+				Role:    schemas.ChatMessageRoleAssistant,
+				Content: &schemas.ChatMessageContent{ContentStr: &plainAnswer},
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					Reasoning: &plainReasoning,
+				},
+			},
+		},
+	}
+
+	result := ToOpenAIChatRequest(ctx, bifrostReq)
+	require.NotNil(t, result)
+	require.Len(t, result.Messages, 2)
+
+	require.NotNil(t, result.Messages[0].OpenAIChatAssistantMessage)
+	require.NotNil(t, result.Messages[0].OpenAIChatAssistantMessage.Reasoning,
+		"reasoning_content must be preserved on a DeepSeek assistant tool_call turn")
+	require.Equal(t, toolCallReasoning, *result.Messages[0].OpenAIChatAssistantMessage.Reasoning)
+
+	require.NotNil(t, result.Messages[1].OpenAIChatAssistantMessage)
+	require.Nil(t, result.Messages[1].OpenAIChatAssistantMessage.Reasoning,
+		"reasoning_content must still be stripped from a DeepSeek assistant turn without tool calls")
+}
+
+// TestConvertOpenAIMessagesToBifrostMessages_NormalizesReasoningSpellings covers the inbound
+// half of issue #5887: callers replay assistant reasoning as reasoning_content, reasoning,
+// or reasoning_details, and all three must reach the Bifrost schema so provider logic that
+// gates on replayed reasoning behaves the same either way.
+func TestConvertOpenAIMessagesToBifrostMessages_NormalizesReasoningSpellings(t *testing.T) {
+	reasoning := "step by step"
+
+	tests := []struct {
+		name    string
+		payload string
+	}{
+		{name: "reasoning_content", payload: `{"role":"assistant","reasoning_content":"step by step"}`},
+		{name: "reasoning", payload: `{"role":"assistant","reasoning":"step by step"}`},
+		{name: "reasoning_details", payload: `{"role":"assistant","reasoning_details":[{"index":0,"type":"reasoning.text","text":"step by step"}]}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var msg OpenAIMessage
+			require.NoError(t, sonic.Unmarshal([]byte(tt.payload), &msg))
+
+			converted := ConvertOpenAIMessagesToBifrostMessages([]OpenAIMessage{msg})
+			require.Len(t, converted, 1)
+			require.NotNil(t, converted[0].ChatAssistantMessage)
+			require.NotNil(t, converted[0].ChatAssistantMessage.Reasoning,
+				"replayed reasoning must reach the Bifrost schema regardless of spelling")
+			require.Equal(t, reasoning, *converted[0].ChatAssistantMessage.Reasoning)
+		})
+	}
+}
+
+// TestToOpenAIChatRequest_DoesNotEmitInboundReasoningAliases pins the inbound-only contract
+// on OpenAIChatAssistantMessage: the "reasoning" and "reasoning_details" aliases exist to
+// parse requests and must never appear on the outbound wire for any provider.
+func TestToOpenAIChatRequest_DoesNotEmitInboundReasoningAliases(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+
+	reasoning := "step by step"
+	answer := "It is 12:00 UTC."
+
+	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.DeepSeek, schemas.XAI} {
+		t.Run(string(provider), func(t *testing.T) {
+			bifrostReq := &schemas.BifrostChatRequest{
+				Provider: provider,
+				Model:    "some-model",
+				Input: []schemas.ChatMessage{{
+					Role:    schemas.ChatMessageRoleAssistant,
+					Content: &schemas.ChatMessageContent{ContentStr: &answer},
+					ChatAssistantMessage: &schemas.ChatAssistantMessage{
+						Reasoning: &reasoning,
+						ReasoningDetails: []schemas.ChatReasoningDetails{{
+							Index: 0,
+							Type:  schemas.BifrostReasoningDetailsTypeText,
+							Text:  &reasoning,
+						}},
+					},
+				}},
+			}
+
+			wireBody, err := sonic.Marshal(ToOpenAIChatRequest(ctx, bifrostReq))
+			require.NoError(t, err)
+
+			var jsonMap map[string]any
+			require.NoError(t, sonic.Unmarshal(wireBody, &jsonMap))
+			messages, ok := jsonMap["messages"].([]any)
+			require.True(t, ok)
+			require.Len(t, messages, 1)
+			assistantMessage, ok := messages[0].(map[string]any)
+			require.True(t, ok)
+
+			require.NotContains(t, assistantMessage, "reasoning",
+				"the inbound-only reasoning alias must never be marshalled outbound")
+			require.NotContains(t, assistantMessage, "reasoning_details",
+				"the inbound-only reasoning_details alias must never be marshalled outbound")
+		})
+	}
+}
+
+// TestXAIReasoningEffortEndToEnd pins reasoning_effort through the FULL conversion
+// pipeline, not just applyXAICompatibility. filterOpenAISpecificParameters runs
+// normalizeReasoningEffort BEFORE the xAI compat pass, so a value can be rewritten
+// upstream of the deny-list check - which is exactly how "xhigh" was silently
+// downgraded to "high" for grok-4.6 even after the deny-list was fixed.
+func TestXAIReasoningEffortEndToEnd(t *testing.T) {
+	tests := []struct {
+		name     string
+		model    string
+		effort   string
+		expected *string // nil => expect the field stripped
+	}{
+		{"grok-4.6 keeps xhigh", "grok-4.6", "xhigh", schemas.Ptr("xhigh")},
+		{"grok-4.6 maps max to xhigh", "grok-4.6", "max", schemas.Ptr("xhigh")},
+		{"grok-4.6 keeps low", "grok-4.6", "low", schemas.Ptr("low")},
+		{"grok-4.5 downgrades xhigh to high", "grok-4.5", "xhigh", schemas.Ptr("high")},
+		{"grok-4.5 keeps medium", "grok-4.5", "medium", schemas.Ptr("medium")},
+		{"grok-4.20-multi-agent keeps xhigh", "grok-4.20-multi-agent-0309", "xhigh", schemas.Ptr("xhigh")},
+		{"grok-4 strips effort", "grok-4-0709", "high", nil},
+		{"grok-code-fast-1 strips effort", "grok-code-fast-1", "high", nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostChatRequest{
+				Provider: schemas.XAI,
+				Model:    tt.model,
+				Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+				},
+				Params: &schemas.ChatParameters{
+					Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr(tt.effort)},
+				},
+			}
+
+			ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+			defer cancel()
+
+			result := ToOpenAIChatRequest(ctx, bifrostReq)
+			require.NotNil(t, result)
+
+			if tt.expected == nil {
+				if result.Reasoning != nil && result.Reasoning.Effort != nil {
+					t.Fatalf("expected effort stripped for %s, got %q", tt.model, *result.Reasoning.Effort)
+				}
+				return
+			}
+			require.NotNil(t, result.Reasoning, "reasoning missing for %s", tt.model)
+			require.NotNil(t, result.Reasoning.Effort, "effort stripped for %s", tt.model)
+			if *result.Reasoning.Effort != *tt.expected {
+				t.Errorf("model %s effort %q: expected %q, got %q",
+					tt.model, tt.effort, *tt.expected, *result.Reasoning.Effort)
+			}
+		})
+	}
+}
+
+// installCapabilityRecord points the capability resolver at a single model for
+// the duration of the test, so a gate can be driven from the datasheet side.
+func installCapabilityRecord(t *testing.T, model string, record *schemas.ModelCapabilities) {
+	t.Helper()
+	schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if m != model {
+			return nil
+		}
+		return record
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+}
+
+// TestOpenAICompatFiltersReadDatasheet covers the datasheet side of the
+// openai-compat parameter filters. The name-based fallbacks are covered by
+// TestApplyXAICompatibility; these pin that an unsupported_fields entry
+// overrides them, and that unlisted fields keep the fallback.
+func TestOpenAICompatFiltersReadDatasheet(t *testing.T) {
+	t.Run("compat_filter_strips_when_datasheet_is_silent", func(t *testing.T) {
+		req := &OpenAIChatRequest{ChatParameters: schemas.ChatParameters{
+			Prediction: &schemas.ChatPrediction{Type: "content"},
+			Store:      new(true),
+			Verbosity:  schemas.Ptr("low"),
+		}}
+		req.filterOpenAISpecificParameters(schemas.ResolveModelCaps(schemas.Cerebras, "some-compat-model"))
+		require.Nil(t, req.Prediction)
+		require.Nil(t, req.Store)
+		require.Nil(t, req.Verbosity)
+	})
+
+	t.Run("compat_filter_honours_explicit_opt_in", func(t *testing.T) {
+		const model = "fireworks-predictive"
+		installCapabilityRecord(t, model, &schemas.ModelCapabilities{
+			UnsupportedFields: map[string]bool{schemas.FieldPrediction: false},
+		})
+
+		req := &OpenAIChatRequest{ChatParameters: schemas.ChatParameters{
+			Prediction: &schemas.ChatPrediction{Type: "content"},
+			Store:      new(true),
+		}}
+		req.filterOpenAISpecificParameters(schemas.ResolveModelCaps(schemas.Fireworks, model))
+		require.NotNil(t, req.Prediction, "an explicit false must survive the compat filter")
+		require.Nil(t, req.Store, "fields the row omits keep the default strip")
+	})
+
+	t.Run("xai_gate_honours_explicit_opt_in", func(t *testing.T) {
+		const model = "grok-4"
+		installCapabilityRecord(t, model, &schemas.ModelCapabilities{
+			UnsupportedFields: map[string]bool{schemas.FieldPresencePenalty: false},
+		})
+
+		req := &OpenAIChatRequest{ChatParameters: schemas.ChatParameters{
+			PresencePenalty:  schemas.Ptr(0.5),
+			FrequencyPenalty: schemas.Ptr(0.5),
+		}}
+		req.applyXAICompatibility(schemas.ResolveModelCaps(schemas.XAI, model))
+		require.NotNil(t, req.PresencePenalty, "an explicit false must beat the grok name check")
+		require.Nil(t, req.FrequencyPenalty, "fields the row omits keep the grok name-based default")
+	})
 }

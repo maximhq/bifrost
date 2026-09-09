@@ -3,8 +3,8 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { ChevronDown, Plus, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import type { FieldErrors, PricingFieldKey } from "./pricingOverrideSheet";
-import { PRICING_FIELDS } from "./pricingOverrideSheet";
+import type { FieldErrors, PricingFieldKey } from "./pricingFields";
+import { PRICING_FIELDS } from "./pricingFields";
 
 type GroupKey = "chat" | "embedding" | "rerank" | "audio" | "image" | "video" | "ocr";
 

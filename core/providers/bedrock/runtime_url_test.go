@@ -20,7 +20,7 @@ func TestRuntimeModelURLUsesNetworkConfigBaseURL(t *testing.T) {
 		networkConfig: schemas.NetworkConfig{BaseURL: "https://bedrock-runtime.internal.example"},
 	}
 
-	got := provider.runtimeModelURL("us-east-1", "example-model/converse")
+	got := provider.runtimeModelURL("us-east-1", "example-model/converse", nil)
 	want := "https://bedrock-runtime.internal.example/model/example-model/converse"
 	if got != want {
 		t.Fatalf("runtimeModelURL() = %q, want %q", got, want)
@@ -34,7 +34,7 @@ func TestRuntimeModelURLUsesPublicDefault(t *testing.T) {
 	clearBedrockEndpointEnv(t)
 	provider := &BedrockProvider{}
 
-	got := provider.runtimeModelURL("eu-west-1", "example-model/converse")
+	got := provider.runtimeModelURL("eu-west-1", "example-model/converse", nil)
 	want := "https://bedrock-runtime.eu-west-1.amazonaws.com/model/example-model/converse"
 	if got != want {
 		t.Fatalf("runtimeModelURL() = %q, want %q", got, want)
@@ -47,7 +47,7 @@ func TestRuntimeModelURLTrimsBaseURLTrailingSlash(t *testing.T) {
 		networkConfig: schemas.NetworkConfig{BaseURL: "https://bedrock-runtime.internal.example/"},
 	}
 
-	got := provider.runtimeModelURL("us-east-1", "example-model/converse")
+	got := provider.runtimeModelURL("us-east-1", "example-model/converse", nil)
 	want := "https://bedrock-runtime.internal.example/model/example-model/converse"
 	if got != want {
 		t.Fatalf("runtimeModelURL() = %q, want %q", got, want)
@@ -59,7 +59,7 @@ func TestRuntimeModelURLUsesBedrockRuntimeEnvironmentEndpoint(t *testing.T) {
 	t.Setenv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", "https://bedrock-runtime.env.example/")
 	provider := &BedrockProvider{}
 
-	got := provider.runtimeModelURL("us-east-1", "example-model/converse")
+	got := provider.runtimeModelURL("us-east-1", "example-model/converse", nil)
 	want := "https://bedrock-runtime.env.example/model/example-model/converse"
 	if got != want {
 		t.Fatalf("runtimeModelURL() = %q, want %q", got, want)
@@ -73,8 +73,35 @@ func TestRuntimeModelURLNetworkConfigBaseURLWinsOverEnvironment(t *testing.T) {
 		networkConfig: schemas.NetworkConfig{BaseURL: "https://bedrock-runtime.config.example"},
 	}
 
-	got := provider.runtimeModelURL("us-east-1", "example-model/converse")
+	got := provider.runtimeModelURL("us-east-1", "example-model/converse", nil)
 	want := "https://bedrock-runtime.config.example/model/example-model/converse"
+	if got != want {
+		t.Fatalf("runtimeModelURL() = %q, want %q", got, want)
+	}
+}
+
+func TestRuntimeModelURLIgnoresControlPlaneEnvironmentEndpoint(t *testing.T) {
+	clearBedrockEndpointEnv(t)
+	t.Setenv("AWS_ENDPOINT_URL_BEDROCK", "https://bedrock.control-plane.example")
+	provider := &BedrockProvider{}
+
+	got := provider.runtimeModelURL("us-east-1", "example-model/converse", nil)
+	want := "https://bedrock-runtime.us-east-1.amazonaws.com/model/example-model/converse"
+	if got != want {
+		t.Fatalf("runtimeModelURL() = %q, want %q", got, want)
+	}
+}
+
+func TestRuntimeModelURLUsesKeyRuntimeEndpoint(t *testing.T) {
+	clearBedrockEndpointEnv(t)
+	provider := &BedrockProvider{}
+	endpoints := &schemas.BedrockEndpoints{
+		Runtime: schemas.NewSecretVar("vpce-runtime.eu-west-2.vpce.amazonaws.com"),
+		ControlPlane: schemas.NewSecretVar("vpce-control.eu-west-2.vpce.amazonaws.com"),
+	}
+
+	got := provider.runtimeModelURL("eu-west-2", "example-model/converse", endpoints)
+	want := "https://vpce-runtime.eu-west-2.vpce.amazonaws.com/model/example-model/converse"
 	if got != want {
 		t.Fatalf("runtimeModelURL() = %q, want %q", got, want)
 	}

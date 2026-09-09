@@ -7,3 +7,5 @@ tests/scripts/ @maximhq/bifrost-admin
 *.sh @maximhq/bifrost-admin
 helm-charts/ @maximhq/bifrost-admin
 terraform/ @maximhq/bifrost-admin
+ui/package.json @maximhq/bifrost-admin
+tests/e2e/package.json @maximhq/bifrost-admin

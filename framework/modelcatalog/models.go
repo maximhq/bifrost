@@ -7,6 +7,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/gencache"
 )
 
 // providersWithPartialListModels enumerates providers whose /v1/models response
@@ -18,13 +19,22 @@ import (
 var providersWithPartialListModels = map[schemas.ModelProvider]bool{
 	schemas.Perplexity: true,
 	schemas.Vertex:     true,
+	schemas.Runware:    true,
 }
 
 // GetModelsForProvider returns the effective allowed model set for the
 // provider. Filtered live entries are authoritative when present (they were
 // pre-gated by ListModelsPipeline against the key's allow/block/aliases);
 // otherwise the datasheet view is filtered by the keyconfig aggregates.
+//
+// Memoized; returns a fresh clone the caller may mutate.
 func (mc *ModelCatalog) GetModelsForProvider(provider schemas.ModelProvider) []string {
+	return mc.modelsForProvider.GetOrCompute(string(provider), func() []string {
+		return mc.computeModelsForProvider(provider)
+	})
+}
+
+func (mc *ModelCatalog) computeModelsForProvider(provider schemas.ModelProvider) []string {
 	blacklisted := mc.keyconf.BlacklistedFor(provider)
 	allowed := mc.keyconf.AllowedFor(provider)
 
@@ -150,11 +160,55 @@ func (mc *ModelCatalog) GetDistinctBaseModelNames() []string {
 	return mc.datasheet.DistinctBaseModelNames()
 }
 
+// catalogMemoMaxEntries bounds each catalog memo: model/provider keys are
+// client-controlled, so an unbounded map is a memory-growth vector.
+const catalogMemoMaxEntries = 4096
+
+// catalogGeneration sums the three stores' write counters. Each write bumps one
+// counter by one, so the sum strictly increases: no two catalog states collide.
+func (mc *ModelCatalog) catalogGeneration() uint64 {
+	return mc.datasheet.WriteGen() + mc.keyconf.WriteGen() + mc.live.WriteGen()
+}
+
+// initCaches builds the memos. Every constructor must call it before use: the
+// cached getters deref the caches with no nil guard.
+func (mc *ModelCatalog) initCaches() {
+	mc.providersForModel = newProvidersForModelCache(mc)
+	mc.modelsForProvider = newModelsForProviderCache(mc)
+}
+
+// Clone-on-return: the resolver sorts the result in place.
+func newProvidersForModelCache(mc *ModelCatalog) *gencache.Cache[[]schemas.ModelProvider] {
+	return gencache.New(
+		mc.catalogGeneration,
+		catalogMemoMaxEntries,
+		gencache.WithClone(func(v []schemas.ModelProvider) []schemas.ModelProvider { return slices.Clone(v) }),
+		gencache.WithSkipStore(func(v []schemas.ModelProvider) bool { return len(v) == 0 }),
+	)
+}
+
+// catalogGeneration is a valid stamp here too: the list derives from the same
+// three stores. Clone-on-return: callers sort the result in place.
+func newModelsForProviderCache(mc *ModelCatalog) *gencache.Cache[[]string] {
+	return gencache.New(
+		mc.catalogGeneration,
+		catalogMemoMaxEntries,
+		gencache.WithClone(func(v []string) []string { return slices.Clone(v) }),
+		gencache.WithSkipStore(func(v []string) bool { return len(v) == 0 }),
+	)
+}
+
 // GetProvidersForModel returns every provider that can serve the model.
-// Composes across stores and applies the cross-provider special cases
-// (openrouter / vertex / groq-gpt / bedrock-claude) preserved verbatim from
-// the pre-refactor implementation.
+// Memoized; returns a fresh clone the caller may mutate.
 func (mc *ModelCatalog) GetProvidersForModel(model string) []schemas.ModelProvider {
+	return mc.providersForModel.GetOrCompute(model, func() []schemas.ModelProvider {
+		return mc.computeProvidersForModel(model)
+	})
+}
+
+// computeProvidersForModel composes the uncached answer across stores,
+// including the openrouter / vertex / groq-gpt / bedrock-claude special cases.
+func (mc *ModelCatalog) computeProvidersForModel(model string) []schemas.ModelProvider {
 	baseModel := mc.datasheet.BaseModelName(model)
 
 	providers := make([]schemas.ModelProvider, 0)
@@ -243,7 +297,8 @@ func (mc *ModelCatalog) GetProvidersForModel(model string) []schemas.ModelProvid
 // checks, not by the static keyconfig allow set).
 //
 //   - allowedModels=["*"]: defer to GetProvidersForModel (with custom-provider
-//     fast path when list-models is disabled).
+//     fast path when list-models is disabled), falling back to allow for a
+//     provider the datasheet describes but list-models cannot enumerate.
 //   - allowedModels=[]: deny-by-default.
 //   - explicit allowedModels: direct or provider-prefixed match against the
 //     provider's catalog.
@@ -259,23 +314,46 @@ func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider
 		if isCustomProvider && hasListModelsEndpointDisabled {
 			return true
 		}
-		return slices.Contains(mc.GetProvidersForModel(model), provider)
+		if slices.Contains(mc.GetProvidersForModel(model), provider) {
+			return true
+		}
+		// A provider the datasheet describes but list-models cannot enumerate is
+		// known only through the pricing sheet, which lags new releases by weeks.
+		// Refusing on that list makes ["*"] narrower than the provider itself, so
+		// a wildcard denies every model released since the last sync (issue
+		// #6657). Defer to the provider instead: it 404s a model it does not
+		// have, and it is the authority on its own catalog.
+		//
+		// Both other cases are already right and stay untouched. A provider with
+		// no datasheet rows either is handled by computeProvidersForModel's
+		// keyconfig fallback, and a provider whose live list-models did answer is
+		// enumerable, so its catalog is authoritative and still narrows.
+		return len(mc.live.UnfilteredModelsForProvider(provider)) == 0 &&
+			len(mc.datasheet.DatasheetModelsForProvider(provider)) > 0
 	}
 	if allowedModels.IsEmpty() {
 		return false
 	}
 
+	// Bare-name match needs no catalog access and covers most allowlists.
+	if slices.Contains(allowedModels, model) {
+		return true
+	}
+
+	// Only provider-prefixed entries ("openai/gpt-4o") need the provider
+	// catalog; build it once, and only when one exists.
+	if !slices.ContainsFunc(allowedModels, func(m string) bool { return strings.Contains(m, "/") }) {
+		return false
+	}
 	providerCatalogModels := mc.GetModelsForProvider(provider)
 	for _, allowedModel := range allowedModels {
-		if allowedModel == model {
-			return true
+		if !strings.Contains(allowedModel, "/") {
+			continue
 		}
-		if strings.Contains(allowedModel, "/") {
-			if slices.Contains(providerCatalogModels, allowedModel) {
-				_, modelPart := schemas.ParseModelString(allowedModel, "")
-				if modelPart == model {
-					return true
-				}
+		if slices.Contains(providerCatalogModels, allowedModel) {
+			_, modelPart := schemas.ParseModelString(allowedModel, "")
+			if modelPart == model {
+				return true
 			}
 		}
 	}
@@ -290,23 +368,59 @@ func (mc *ModelCatalog) IsSameModel(model1, model2 string) bool {
 	return mc.datasheet.IsSameModel(model1, model2)
 }
 
-// RefineModelForProvider refines a model identifier for providers that need
-// a leading "provider/" segment (Groq, Replicate). Returns the original
+// RefineModelForProvider refines a model identifier for providers whose
+// catalog names carry a leading "provider/" segment (Groq, Replicate,
+// Perplexity, OpenRouter), resolving a bare request like "gpt-oss-120b" to
+// the provider's catalog slug ("openai/gpt-oss-120b"). Returns the original
 // model unchanged when no refinement applies, or an error when multiple
 // catalog candidates match ambiguously.
+//
+// Idempotent: a model that already carries a known provider prefix is the
+// refined form itself — routing plugins may refine the same request more
+// than once, so it is returned unchanged without a catalog scan. The one
+// exception is a model carrying the TARGET provider's own prefix (e.g. a
+// fallback entry built from another provider's refined form, or a
+// double-prefixed input): the prefix is stripped and the bare remainder
+// re-refined, so canonical own-prefixed names ("perplexity/sonar",
+// "openrouter/auto") round-trip through the catalog scan unchanged.
 func (mc *ModelCatalog) RefineModelForProvider(provider schemas.ModelProvider, model string) (string, error) {
-	switch provider {
-	case schemas.Groq:
-		if strings.Contains(model, "gpt-") {
-			return "openai/" + model, nil
+	if prefixProvider, modelPart := schemas.ParseModelString(model, ""); prefixProvider != "" {
+		if prefixProvider == provider {
+			return mc.RefineModelForProvider(provider, modelPart)
 		}
+		return model, nil
+	}
+	switch provider {
+	case schemas.Groq, schemas.Replicate, schemas.Perplexity, schemas.OpenRouter:
 		return mc.refineNestedProviderModel(provider, model)
-	case schemas.Replicate:
-		return mc.refineNestedProviderModel(provider, model)
-	case schemas.Perplexity:
-		return mc.refineNestedProviderModel(provider, model)
+	case schemas.Databricks:
+		return refineDatabricksModel(model), nil
 	}
 	return model, nil
+}
+
+// Mirrors Databricks model refinement:
+// - Catalog-qualified names (2+ dots) and `databricks-*` endpoints pass through.
+// - Other names get the `system.ai.` prefix.
+// - A single dot is treated as a version separator (e.g. `gpt-5.5`).
+//
+// Aliases and explicit `api_format` are handled by the provider and are not visible here.
+func refineDatabricksModel(model string) string {
+	const (
+		// defaultCatalogPrefix is the Unity Catalog prefix under which Databricks publishes
+		// its ready-to-use AI Gateway models.
+		defaultCatalogPrefix = "system.ai."
+		// modelServingEndpointPrefix is the naming convention for Databricks pay-per-token
+		// Foundation Model endpoints, which live on Model Serving and take a bare name.
+		modelServingEndpointPrefix = "databricks-"
+	)
+	if model == "" || strings.Count(model, ".") >= 2 {
+		return model
+	}
+	if strings.HasPrefix(strings.ToLower(model), modelServingEndpointPrefix) {
+		return model
+	}
+	return defaultCatalogPrefix + model
 }
 
 // refineNestedProviderModel resolves provider-native model slugs such as

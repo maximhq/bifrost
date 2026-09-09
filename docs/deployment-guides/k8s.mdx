@@ -29,6 +29,14 @@ If you are using Postgres/MySQL for config and log store, you can skip the Volum
 If you use PostgreSQL for `config_store` or `logs_store`, ensure the target database is UTF8 encoded. See [PostgreSQL UTF8 Requirement](../quickstart/gateway/setting-up#postgresql-utf8-requirement).
 </Note>
 
+<Note>
+These examples assume that the appropriate cloud and Kubernetes providers are configured and that the referenced input variables are declared in your Terraform project.
+</Note>
+
+<Warning>
+Values written to `kubernetes_secret` resources are stored in Terraform state. Protect the state with encrypted remote storage and restricted access, or use an external secrets manager.
+</Warning>
+
 <Tabs>
 <Tab title="AWS">
 
@@ -36,9 +44,19 @@ If you use PostgreSQL for `config_store` or `logs_store`, ensure the target data
 
 Create an EBS volume, persistent volume, and persistent volume claim for Bifrost data storage.
 
+<Note>
+This static persistent volume example is intended for standard EKS clusters using the Amazon EBS CSI driver (`ebs.csi.aws.com`). Install the EKS add-on before applying it. It does not apply to EKS Auto Mode, which uses a different provisioner and requires separate storage configuration and migration steps. Changing only the storage class is not sufficient.
+</Note>
+
 ```terraform
 locals {
   service_name = "bifrost-service"
+}
+
+resource "kubernetes_namespace" "bifrost_namespace" {
+  metadata {
+    name = var.namespace
+  }
 }
 
 resource "aws_ebs_volume" "bifrost_disk" {
@@ -68,9 +86,21 @@ resource "kubernetes_persistent_volume" "bifrost_volume" {
     persistent_volume_reclaim_policy = "Retain"
     storage_class_name               = "gp3"
     persistent_volume_source {
-      aws_elastic_block_store {
-        volume_id = aws_ebs_volume.bifrost_disk.id
-        fs_type   = "ext4"
+      csi {
+        driver        = "ebs.csi.aws.com"
+        volume_handle = aws_ebs_volume.bifrost_disk.id
+        fs_type       = "ext4"
+      }
+    }
+    node_affinity {
+      required {
+        node_selector_term {
+          match_expressions {
+            key      = "topology.kubernetes.io/zone"
+            operator = "In"
+            values   = [aws_ebs_volume.bifrost_disk.availability_zone]
+          }
+        }
       }
     }
   }
@@ -84,7 +114,7 @@ resource "kubernetes_persistent_volume" "bifrost_volume" {
 resource "kubernetes_persistent_volume_claim" "bifrost_volume_claim" {
   metadata {
     name      = "bifrost-volume-claim"
-    namespace = var.namespace
+    namespace = kubernetes_namespace.bifrost_namespace.metadata[0].name
   }
   spec {
     access_modes = ["ReadWriteOnce"]
@@ -321,13 +351,19 @@ resource "kubernetes_service" "bifrost_service" {
 }
 ```
 
-## Complete Configuration
+## Combined Resource Configuration
 
-Here's the complete Terraform configuration combining all components:
+Here's the Terraform resource configuration combining all components. Provider configuration and variable declarations remain in your Terraform project.
 
 ```terraform
 locals {
   service_name = "bifrost-service"
+}
+
+resource "kubernetes_namespace" "bifrost_namespace" {
+  metadata {
+    name = var.namespace
+  }
 }
 
 # Volume Configuration
@@ -358,9 +394,21 @@ resource "kubernetes_persistent_volume" "bifrost_volume" {
     persistent_volume_reclaim_policy = "Retain"
     storage_class_name               = "gp3"
     persistent_volume_source {
-      aws_elastic_block_store {
-        volume_id = aws_ebs_volume.bifrost_disk.id
-        fs_type   = "ext4"
+      csi {
+        driver        = "ebs.csi.aws.com"
+        volume_handle = aws_ebs_volume.bifrost_disk.id
+        fs_type       = "ext4"
+      }
+    }
+    node_affinity {
+      required {
+        node_selector_term {
+          match_expressions {
+            key      = "topology.kubernetes.io/zone"
+            operator = "In"
+            values   = [aws_ebs_volume.bifrost_disk.availability_zone]
+          }
+        }
       }
     }
   }
@@ -374,7 +422,7 @@ resource "kubernetes_persistent_volume" "bifrost_volume" {
 resource "kubernetes_persistent_volume_claim" "bifrost_volume_claim" {
   metadata {
     name      = "bifrost-volume-claim"
-    namespace = var.namespace
+    namespace = kubernetes_namespace.bifrost_namespace.metadata[0].name
   }
   spec {
     access_modes = ["ReadWriteOnce"]
@@ -593,9 +641,19 @@ resource "kubernetes_service" "bifrost_service" {
 
 Create an Azure managed disk, persistent volume, and persistent volume claim for Bifrost data storage.
 
+<Note>
+This example uses the Azure Disks CSI driver (`disk.csi.azure.com`), which must be enabled on the AKS cluster.
+</Note>
+
 ```terraform
 locals {
   service_name = "bifrost-service"
+}
+
+resource "kubernetes_namespace" "bifrost_namespace" {
+  metadata {
+    name = var.namespace
+  }
 }
 
 resource "azurerm_managed_disk" "bifrost_disk" {
@@ -621,12 +679,12 @@ resource "kubernetes_persistent_volume" "bifrost_volume" {
     }
     access_modes                     = ["ReadWriteOnce"]
     persistent_volume_reclaim_policy = "Retain"
-    storage_class_name               = "managed-premium"
+    storage_class_name               = "managed-csi-premium"
     persistent_volume_source {
-      azure_disk {
-        disk_name     = azurerm_managed_disk.bifrost_disk.name
-        data_disk_uri = azurerm_managed_disk.bifrost_disk.id
-        kind          = "Managed"
+      csi {
+        driver        = "disk.csi.azure.com"
+        volume_handle = azurerm_managed_disk.bifrost_disk.id
+        fs_type       = "ext4"
       }
     }
   }
@@ -640,7 +698,7 @@ resource "kubernetes_persistent_volume" "bifrost_volume" {
 resource "kubernetes_persistent_volume_claim" "bifrost_volume_claim" {
   metadata {
     name      = "bifrost-volume-claim"
-    namespace = var.namespace
+    namespace = kubernetes_namespace.bifrost_namespace.metadata[0].name
   }
   spec {
     access_modes = ["ReadWriteOnce"]
@@ -649,7 +707,7 @@ resource "kubernetes_persistent_volume_claim" "bifrost_volume_claim" {
         storage = "${var.volume_size_gb}Gi"
       }
     }
-    storage_class_name = "managed-premium"
+    storage_class_name = "managed-csi-premium"
     volume_name        = "bifrost-volume"
   }
   depends_on = [kubernetes_persistent_volume.bifrost_volume]
@@ -877,13 +935,19 @@ resource "kubernetes_service" "bifrost_service" {
 }
 ```
 
-## Complete Configuration
+## Combined Resource Configuration
 
-Here's the complete Terraform configuration combining all components:
+Here's the Terraform resource configuration combining all components. Provider configuration and variable declarations remain in your Terraform project.
 
 ```terraform
 locals {
   service_name = "bifrost-service"
+}
+
+resource "kubernetes_namespace" "bifrost_namespace" {
+  metadata {
+    name = var.namespace
+  }
 }
 
 # Volume Configuration
@@ -910,12 +974,12 @@ resource "kubernetes_persistent_volume" "bifrost_volume" {
     }
     access_modes                     = ["ReadWriteOnce"]
     persistent_volume_reclaim_policy = "Retain"
-    storage_class_name               = "managed-premium"
+    storage_class_name               = "managed-csi-premium"
     persistent_volume_source {
-      azure_disk {
-        disk_name     = azurerm_managed_disk.bifrost_disk.name
-        data_disk_uri = azurerm_managed_disk.bifrost_disk.id
-        kind          = "Managed"
+      csi {
+        driver        = "disk.csi.azure.com"
+        volume_handle = azurerm_managed_disk.bifrost_disk.id
+        fs_type       = "ext4"
       }
     }
   }
@@ -929,7 +993,7 @@ resource "kubernetes_persistent_volume" "bifrost_volume" {
 resource "kubernetes_persistent_volume_claim" "bifrost_volume_claim" {
   metadata {
     name      = "bifrost-volume-claim"
-    namespace = var.namespace
+    namespace = kubernetes_namespace.bifrost_namespace.metadata[0].name
   }
   spec {
     access_modes = ["ReadWriteOnce"]
@@ -938,7 +1002,7 @@ resource "kubernetes_persistent_volume_claim" "bifrost_volume_claim" {
         storage = "${var.volume_size_gb}Gi"
       }
     }
-    storage_class_name = "managed-premium"
+    storage_class_name = "managed-csi-premium"
     volume_name        = "bifrost-volume"
   }
   depends_on = [kubernetes_persistent_volume.bifrost_volume]
@@ -1148,9 +1212,19 @@ resource "kubernetes_service" "bifrost_service" {
 
 Create a GCP persistent disk, persistent volume, and persistent volume claim for Bifrost data storage.
 
+<Note>
+This example uses the Compute Engine persistent disk CSI driver (`pd.csi.storage.gke.io`), which must be enabled on the GKE cluster.
+</Note>
+
 ```terraform
 locals {
   service_name = "bifrost-service"
+}
+
+resource "kubernetes_namespace" "bifrost_namespace" {
+  metadata {
+    name = var.namespace
+  }
 }
 
 resource "google_compute_disk" "bifrost_disk" {
@@ -1176,8 +1250,21 @@ resource "kubernetes_persistent_volume" "bifrost_volume" {
     persistent_volume_reclaim_policy = "Retain"
     storage_class_name               = "premium-rwo"
     persistent_volume_source {
-      gce_persistent_disk {
-        pd_name = "bifrost-disk"
+      csi {
+        driver        = "pd.csi.storage.gke.io"
+        volume_handle = google_compute_disk.bifrost_disk.id
+        fs_type       = "ext4"
+      }
+    }
+    node_affinity {
+      required {
+        node_selector_term {
+          match_expressions {
+            key      = "topology.kubernetes.io/zone"
+            operator = "In"
+            values   = [google_compute_disk.bifrost_disk.zone]
+          }
+        }
       }
     }
   }
@@ -1191,7 +1278,7 @@ resource "kubernetes_persistent_volume" "bifrost_volume" {
 resource "kubernetes_persistent_volume_claim" "bifrost_volume_claim" {
   metadata {
     name      = "bifrost-volume-claim"
-    namespace = var.namespace
+    namespace = kubernetes_namespace.bifrost_namespace.metadata[0].name
   }
   spec {
     access_modes = ["ReadWriteOnce"]
@@ -1428,13 +1515,19 @@ resource "kubernetes_service" "bifrost_service" {
 }
 ```
 
-## Complete Configuration
+## Combined Resource Configuration
 
-Here's the complete Terraform configuration combining all components:
+Here's the Terraform resource configuration combining all components. Provider configuration and variable declarations remain in your Terraform project.
 
 ```terraform
 locals {
   service_name = "bifrost-service"
+}
+
+resource "kubernetes_namespace" "bifrost_namespace" {
+  metadata {
+    name = var.namespace
+  }
 }
 
 # Volume Configuration
@@ -1461,8 +1554,21 @@ resource "kubernetes_persistent_volume" "bifrost_volume" {
     persistent_volume_reclaim_policy = "Retain"
     storage_class_name               = "premium-rwo"
     persistent_volume_source {
-      gce_persistent_disk {
-        pd_name = "bifrost-disk"
+      csi {
+        driver        = "pd.csi.storage.gke.io"
+        volume_handle = google_compute_disk.bifrost_disk.id
+        fs_type       = "ext4"
+      }
+    }
+    node_affinity {
+      required {
+        node_selector_term {
+          match_expressions {
+            key      = "topology.kubernetes.io/zone"
+            operator = "In"
+            values   = [google_compute_disk.bifrost_disk.zone]
+          }
+        }
       }
     }
   }
@@ -1476,7 +1582,7 @@ resource "kubernetes_persistent_volume" "bifrost_volume" {
 resource "kubernetes_persistent_volume_claim" "bifrost_volume_claim" {
   metadata {
     name      = "bifrost-volume-claim"
-    namespace = var.namespace
+    namespace = kubernetes_namespace.bifrost_namespace.metadata[0].name
   }
   spec {
     access_modes = ["ReadWriteOnce"]

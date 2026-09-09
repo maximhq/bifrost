@@ -85,8 +85,12 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				ca_cert_pem: toSecretVarFormValue(provider.network_config?.ca_cert_pem as SecretVar | string | undefined),
 				stream_idle_timeout_in_seconds:
 					provider.network_config?.stream_idle_timeout_in_seconds ?? DefaultNetworkConfig.stream_idle_timeout_in_seconds,
+				keep_alive_timeout_in_seconds:
+					provider.network_config?.keep_alive_timeout_in_seconds ?? DefaultNetworkConfig.keep_alive_timeout_in_seconds,
 				max_conns_per_host: provider.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
 				enforce_http2: provider.network_config?.enforce_http2 ?? DefaultNetworkConfig.enforce_http2,
+				http2_ping_interval_in_seconds:
+					provider.network_config?.http2_ping_interval_in_seconds ?? DefaultNetworkConfig.http2_ping_interval_in_seconds,
 				allow_private_network: provider.network_config?.allow_private_network ?? DefaultNetworkConfig.allow_private_network,
 			},
 		},
@@ -121,8 +125,12 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				ca_cert_pem: toOptionalSecretVarPayload(data.network_config?.ca_cert_pem),
 				stream_idle_timeout_in_seconds:
 					data.network_config?.stream_idle_timeout_in_seconds ?? DefaultNetworkConfig.stream_idle_timeout_in_seconds,
+				keep_alive_timeout_in_seconds:
+					data.network_config?.keep_alive_timeout_in_seconds ?? DefaultNetworkConfig.keep_alive_timeout_in_seconds,
 				max_conns_per_host: data.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
 				enforce_http2: data.network_config?.enforce_http2 ?? DefaultNetworkConfig.enforce_http2,
+				http2_ping_interval_in_seconds:
+					data.network_config?.http2_ping_interval_in_seconds ?? DefaultNetworkConfig.http2_ping_interval_in_seconds,
 				allow_private_network: data.network_config?.allow_private_network ?? DefaultNetworkConfig.allow_private_network,
 			},
 		});
@@ -154,12 +162,19 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				ca_cert_pem: toSecretVarFormValue(provider.network_config?.ca_cert_pem as SecretVar | string | undefined),
 				stream_idle_timeout_in_seconds:
 					provider.network_config?.stream_idle_timeout_in_seconds ?? DefaultNetworkConfig.stream_idle_timeout_in_seconds,
+				keep_alive_timeout_in_seconds:
+					provider.network_config?.keep_alive_timeout_in_seconds ?? DefaultNetworkConfig.keep_alive_timeout_in_seconds,
 				max_conns_per_host: provider.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
 				enforce_http2: provider.network_config?.enforce_http2 ?? DefaultNetworkConfig.enforce_http2,
+				http2_ping_interval_in_seconds:
+					provider.network_config?.http2_ping_interval_in_seconds ?? DefaultNetworkConfig.http2_ping_interval_in_seconds,
 				allow_private_network: provider.network_config?.allow_private_network ?? DefaultNetworkConfig.allow_private_network,
 			},
 		});
 	}, [form, provider.name, provider.network_config]);
+
+	// HTTP/2 PING keepalives only apply when HTTP/2 is enforced
+	const enforceHTTP2 = form.watch("network_config.enforce_http2");
 
 	const baseURLRequired = isCustomProvider;
 	const hideBaseURL = provider.name === "vllm" || provider.name === "ollama" || provider.name === "sgl";
@@ -168,7 +183,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 		<Form {...form}>
 			<form onSubmit={form.handleSubmit(onSubmit)}>
 				{/* Network Configuration */}
-				<div className="space-y-4 px-6 pb-6">
+				<div className="space-y-4 px-4 pb-6 md:px-6">
 					<div className="grid grid-cols-1 gap-4">
 						{!hideBaseURL && (
 							<FormField
@@ -386,6 +401,41 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 									</FormItem>
 								)}
 							/>
+							<FormField
+								control={form.control}
+								name="network_config.keep_alive_timeout_in_seconds"
+								render={({ field }) => (
+									<FormItem className="flex-1">
+										<FormLabel>Keep-Alive Timeout (seconds)</FormLabel>
+										<FormControl>
+											<Input
+												data-testid="network-config-keep-alive-timeout-input"
+												placeholder="30"
+												{...field}
+												value={field.value === undefined || Number.isNaN(field.value) ? "" : field.value}
+												disabled={!hasUpdateProviderAccess}
+												onChange={(e) => {
+													const value = e.target.value;
+													if (value === "") {
+														field.onChange(undefined);
+														return;
+													}
+													const parsed = Number(value);
+													if (!Number.isNaN(parsed)) {
+														field.onChange(parsed);
+													}
+													form.trigger("network_config");
+												}}
+											/>
+										</FormControl>
+										<FormDescription>
+											{field.value ? secondsToHumanReadable(field.value) : ""} Idle keep-alive for pooled connections. Set below the
+											upstream server&apos;s keep-alive to avoid reusing connections it has already closed.
+										</FormDescription>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
 						</div>
 						<FormField
 							control={form.control}
@@ -407,6 +457,41 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 											data-testid="network-config-enforce-http2"
 										/>
 									</FormControl>
+								</FormItem>
+							)}
+						/>
+						<FormField
+							control={form.control}
+							name="network_config.http2_ping_interval_in_seconds"
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>HTTP/2 Ping Interval (seconds)</FormLabel>
+									<FormControl>
+										<Input
+											data-testid="network-config-http2-ping-interval-input"
+											placeholder="0"
+											{...field}
+											value={field.value === undefined || Number.isNaN(field.value) ? "" : field.value}
+											disabled={!hasUpdateProviderAccess || !enforceHTTP2}
+											onChange={(e) => {
+												const value = e.target.value;
+												if (value === "") {
+													field.onChange(undefined);
+													return;
+												}
+												const parsed = Number(value);
+												if (!Number.isNaN(parsed)) {
+													field.onChange(parsed);
+												}
+												form.trigger("network_config");
+											}}
+										/>
+									</FormControl>
+									<FormDescription>
+										{field.value ? secondsToHumanReadable(field.value) : ""} Idle seconds before a client-initiated HTTP/2 keepalive PING.
+										Prevents intermediaries from cutting quiet streams and long generations. 0 disables; requires Enforce HTTP/2.
+									</FormDescription>
+									<FormMessage />
 								</FormItem>
 							)}
 						/>
@@ -518,7 +603,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				</div>
 
 				{/* Form Actions */}
-				<div className="bg-card sticky bottom-0 flex justify-end space-x-2 rounded-b-sm border-t px-6 py-4">
+				<div className="bg-card sticky bottom-0 flex justify-end space-x-2 rounded-b-sm border-t px-4 py-4 md:px-6">
 					{!hideBaseURL && (
 						<Button
 							type="button"

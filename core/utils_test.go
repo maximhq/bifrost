@@ -1,11 +1,18 @@
 package bifrost
 
 import (
+	"context"
+	"errors"
 	"net"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/maximhq/bifrost/core/network"
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestValidateExternalURL(t *testing.T) {
@@ -201,6 +208,101 @@ func TestValidateExternalURL(t *testing.T) {
 	}
 }
 
+// TestPrepareContextForInternalEmbeddingRequestDisablesRawCapture ensures plugin-owned embeddings never inherit provider raw capture.
+func TestPrepareContextForInternalEmbeddingRequestDisablesRawCapture(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	PrepareContextForInternalEmbeddingRequest(ctx)
+
+	applyRawCaptureSignals(ctx, &schemas.ProviderConfig{
+		SendBackRawRequest:      true,
+		SendBackRawResponse:     true,
+		StoreRawRequestResponse: true,
+	})
+
+	for key, name := range map[schemas.BifrostContextKey]string{
+		schemas.BifrostContextKeyCaptureRawRequest:    "capture raw request",
+		schemas.BifrostContextKeyCaptureRawResponse:   "capture raw response",
+		schemas.BifrostContextKeyShouldStoreRawInLogs: "store raw request/response",
+	} {
+		if enabled, _ := ctx.Value(key).(bool); enabled {
+			t.Errorf("%s = true, want false", name)
+		}
+	}
+}
+
+// TestValidateExternalURLBoundsDNSLookup guards against regressing to the package-level
+// net.LookupIP (which has no context/deadline of its own, and previously let a stalled
+// resolver block the caller indefinitely -- see externalURLDNSLookupTimeout's doc). A
+// hostname under the .invalid TLD (reserved by RFC 2606 to never resolve) still exercises
+// the real resolution path; the assertion is on wall-clock bound, not on the specific
+// error, since what matters is that resolution can never run unbounded.
+func TestValidateExternalURLBoundsDNSLookup(t *testing.T) {
+	start := time.Now()
+	err := ValidateExternalURL("https://this-host-does-not-exist-12345.invalid", false)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected an error resolving a .invalid hostname, got nil")
+	}
+	// Generous margin above externalURLDNSLookupTimeout (5s): proves resolution is bounded
+	// by that timeout rather than by an unrelated, much longer OS/runtime resolver ceiling.
+	if elapsed > 8*time.Second {
+		t.Errorf("ValidateExternalURL took %v to fail on an unresolvable host, want well under externalURLDNSLookupTimeout + margin", elapsed)
+	}
+}
+
+// TestValidateExternalURLBoundsInFlightDNSLookup complements
+// TestValidateExternalURLBoundsDNSLookup: a .invalid hostname NXDOMAINs almost immediately,
+// so it never proves the timeout can cut off a lookup that's actually in flight -- the exact
+// scenario externalURLDNSLookupTimeout exists to guard against (a hung/blackholed resolver).
+// This substitutes a resolver that blocks until its context is canceled, so the only way
+// ValidateExternalURL returns is via externalURLDNSLookupTimeout firing. Runs inside a
+// synctest bubble -- context.WithTimeout is explicitly supported there (see the
+// testing/synctest package docs' Context.WithTimeout example) -- so the 5s timeout resolves
+// against a deterministic fake clock instead of a real 5-second wait.
+func TestValidateExternalURLBoundsInFlightDNSLookup(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		original := lookupIPAddr
+		defer func() { lookupIPAddr = original }()
+
+		lookupIPAddr = func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+
+		err := ValidateExternalURL("https://api.openai.com", false)
+		if err == nil {
+			t.Fatal("expected an error when the resolver blocks past the timeout, got nil")
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("expected error to wrap context.DeadlineExceeded (proving externalURLDNSLookupTimeout fired), got %v", err)
+		}
+	})
+}
+
+// TestResolverLookupIPAddrRespectsContextDeadline pins down the stdlib behavior
+// ValidateExternalURL's fix relies on: unlike the package-level net.LookupIP (which
+// always uses context.Background() internally and ignores any external deadline),
+// net.Resolver.LookupIPAddr honors a context deadline and returns promptly once it
+// elapses, even against a real hostname that would otherwise resolve.
+func TestResolverLookupIPAddrRespectsContextDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	// Let the deadline definitely elapse before the lookup starts.
+	time.Sleep(time.Millisecond)
+
+	start := time.Now()
+	_, err := (&net.Resolver{}).LookupIPAddr(ctx, "api.openai.com")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected LookupIPAddr to fail against an already-expired context, got nil error")
+	}
+	if elapsed > time.Second {
+		t.Errorf("LookupIPAddr took %v to return after an already-expired deadline, want near-instant", elapsed)
+	}
+}
+
 func TestIsLocalhost(t *testing.T) {
 	tests := []struct {
 		hostname string
@@ -255,9 +357,9 @@ func TestIsPrivateIP(t *testing.T) {
 		// Public IPv6
 		{"2606:4700::1", false},
 		// Unspecified addresses (fail-closed)
-		{"0.0.0.0", true},                   // IPv4 unspecified
-		{"0:0:0:0:0:0:0:0", true},           // IPv6 unspecified long form
-		{"::", true},                         // IPv6 unspecified short form
+		{"0.0.0.0", true},         // IPv4 unspecified
+		{"0:0:0:0:0:0:0:0", true}, // IPv6 unspecified long form
+		{"::", true},              // IPv6 unspecified short form
 	}
 
 	for _, tt := range tests {
@@ -273,3 +375,124 @@ func TestIsPrivateIP(t *testing.T) {
 	}
 }
 
+// Failing over starts a fresh attempt, so the state the previous attempt resolved for itself must not
+// survive into it. What the request may reach is not among it: that is a fact about the caller, not
+// the attempt, and the presented credential and the caller's identity survive with it so the limits
+// of the next attempt can be resolved against the same access.
+func TestClearCtxForFallback(t *testing.T) {
+	cleared := []schemas.BifrostContextKey{
+		schemas.BifrostContextKeyAPIKeyID,
+		schemas.BifrostContextKeyAPIKeyName,
+		schemas.BifrostContextKeyGovernanceIncludeOnlyKeys,
+		schemas.BifrostContextKeyChangeRequestType,
+		schemas.BifrostContextKeyAttemptTrail,
+		schemas.BifrostContextKeyStreamEndIndicator,
+		schemas.BifrostContextKeyConnectionClosed,
+		schemas.BifrostContextKeyStreamBodyExhausted,
+		schemas.BifrostContextKeyStreamParkedAfterFinish,
+		schemas.BifrostContextKeySupportsAssistantPrefill,
+	}
+	// The next attempt resolves its own limits, which needs the same credential and caller.
+	preserved := []schemas.BifrostContextKey{
+		schemas.BifrostContextKeyVirtualKey,
+		schemas.BifrostContextKeyUserID,
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for _, key := range append(append([]schemas.BifrostContextKey{}, cleared...), preserved...) {
+		ctx.SetValue(key, "set")
+	}
+
+	clearCtxForFallback(ctx)
+
+	for _, key := range cleared {
+		if ctx.Value(key) != nil {
+			t.Errorf("%v survived into the next attempt", key)
+		}
+	}
+	for _, key := range preserved {
+		if ctx.Value(key) == nil {
+			t.Errorf("%v was cleared, leaving the next attempt unable to resolve its own limits", key)
+		}
+	}
+}
+
+// TestValidateKeyGithubCopilot pins that validateKey rejects the same credentials the
+// provider would reject at request time. Accepting a whitespace-only field here defers the
+// failure to the first inference call, where it reads like a runtime fault rather than a
+// setup mistake.
+func TestValidateKeyGithubCopilot(t *testing.T) {
+	fullAppConfig := func() *schemas.GithubCopilotKeyConfig {
+		return &schemas.GithubCopilotKeyConfig{
+			AppID:          *schemas.NewSecretVar("123456"),
+			InstallationID: *schemas.NewSecretVar("87654321"),
+			RepositoryID:   *schemas.NewSecretVar("999000111"),
+			PrivateKey:     *schemas.NewSecretVar("pem"),
+		}
+	}
+	blank := func(mutate func(*schemas.GithubCopilotKeyConfig)) *schemas.GithubCopilotKeyConfig {
+		c := fullAppConfig()
+		mutate(c)
+		return c
+	}
+
+	tests := []struct {
+		name      string
+		key       schemas.Key
+		wantError string
+	}{
+		{
+			name: "a direct token is sufficient",
+			key:  schemas.Key{Value: *schemas.NewSecretVar("tid=abc")},
+		},
+		{
+			name: "the full app config is sufficient",
+			key:  schemas.Key{GithubCopilotKeyConfig: fullAppConfig()},
+		},
+		{
+			name:      "a whitespace-only token is not a credential",
+			key:       schemas.Key{Value: *schemas.NewSecretVar("   ")},
+			wantError: "github_copilot_key_config is required",
+		},
+		{
+			name:      "no credential at all",
+			key:       schemas.Key{},
+			wantError: "github_copilot_key_config is required",
+		},
+		{
+			name:      "whitespace-only app_id",
+			key:       schemas.Key{GithubCopilotKeyConfig: blank(func(c *schemas.GithubCopilotKeyConfig) { c.AppID = *schemas.NewSecretVar("  ") })},
+			wantError: "github_copilot_key_config.app_id is required",
+		},
+		{
+			name:      "whitespace-only installation_id",
+			key:       schemas.Key{GithubCopilotKeyConfig: blank(func(c *schemas.GithubCopilotKeyConfig) { c.InstallationID = *schemas.NewSecretVar("\t") })},
+			wantError: "github_copilot_key_config.installation_id is required",
+		},
+		{
+			name:      "whitespace-only repository_id",
+			key:       schemas.Key{GithubCopilotKeyConfig: blank(func(c *schemas.GithubCopilotKeyConfig) { c.RepositoryID = *schemas.NewSecretVar(" ") })},
+			wantError: "github_copilot_key_config.repository_id is required",
+		},
+		{
+			name:      "whitespace-only private_key",
+			key:       schemas.Key{GithubCopilotKeyConfig: blank(func(c *schemas.GithubCopilotKeyConfig) { c.PrivateKey = *schemas.NewSecretVar("\n") })},
+			wantError: "github_copilot_key_config.private_key is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key := tt.key
+			err := validateKey(schemas.GithubCopilot, &key)
+
+			if tt.wantError == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantError)
+		})
+
+	}
+}

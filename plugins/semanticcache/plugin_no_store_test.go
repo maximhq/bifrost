@@ -81,7 +81,6 @@ func TestCacheNoStoreBasicFunctionality(t *testing.T) {
 // TestCacheNoStoreWithDifferentRequestTypes tests NoStore with various request types
 func TestCacheNoStoreWithDifferentRequestTypes(t *testing.T) {
 	t.Parallel()
-	t.Skip("Skipping Embedding Tests")
 
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()

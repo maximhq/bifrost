@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
-	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 )
@@ -28,6 +27,13 @@ const (
 	EnvKeyTypeConnection    EnvKeyType = "connection_string"
 	EnvKeyTypeMCPHeader     EnvKeyType = "mcp_header"
 )
+
+// MaxVKRotationCooldown is the hard ceiling on the virtual key rotation grace
+// period. Anything longer keeps a retired credential authenticating for over a
+// month, which defeats the point of rotating it. Enforced at every config
+// entry point (PUT /api/config and the config.json load path), mirroring
+// MaxAuthCodeTTL, and matching the maximum published in config.schema.json.
+const MaxVKRotationCooldown = 30 * 24 * time.Hour
 
 // EnvKeyInfo stores information about a key sourced from environment
 type EnvKeyInfo struct {
@@ -44,6 +50,7 @@ type CompatConfig struct {
 	ConvertChatToResponses bool `json:"convert_chat_to_responses"`
 	ShouldDropParams       bool `json:"should_drop_params"`
 	ShouldConvertParams    bool `json:"should_convert_params"`
+	AzureDeepseek          bool `json:"azure_deepseek"`
 }
 
 // UnmarshalJSON defaults all bool fields to true when absent from JSON.
@@ -53,6 +60,7 @@ func (c *CompatConfig) UnmarshalJSON(data []byte) error {
 		ConvertChatToResponses *bool `json:"convert_chat_to_responses"`
 		ShouldDropParams       *bool `json:"should_drop_params"`
 		ShouldConvertParams    *bool `json:"should_convert_params"`
+		AzureDeepseek          *bool `json:"azure_deepseek"`
 	}
 	var s compatConfig
 	if err := sonic.Unmarshal(data, &s); err != nil {
@@ -62,47 +70,53 @@ func (c *CompatConfig) UnmarshalJSON(data []byte) error {
 	c.ConvertChatToResponses = s.ConvertChatToResponses == nil || *s.ConvertChatToResponses
 	c.ShouldDropParams = s.ShouldDropParams == nil || *s.ShouldDropParams
 	c.ShouldConvertParams = s.ShouldConvertParams == nil || *s.ShouldConvertParams
+	c.AzureDeepseek = s.AzureDeepseek == nil || *s.AzureDeepseek
 	return nil
 }
 
 // ClientConfig represents the core configuration for Bifrost HTTP transport and the Bifrost Client.
 // It includes settings for excess request handling, Prometheus metrics, and initial pool size.
 type ClientConfig struct {
-	DropExcessRequests                    bool                             `json:"drop_excess_requests"`                       // Drop excess requests if the provider queue is full
-	InitialPoolSize                       int                              `json:"initial_pool_size"`                          // The initial pool size for the bifrost client
-	PrometheusLabels                      []string                         `json:"prometheus_labels"`                          // The labels to be used for prometheus metrics
-	EnableLogging                         *bool                            `json:"enable_logging"`                             // Enable logging of requests and responses
-	DisableContentLogging                 bool                             `json:"disable_content_logging"`                    // Disable logging of content
-	AllowPerRequestContentStorageOverride bool                             `json:"allow_per_request_content_storage_override"` // Allow per-request override of content storage via x-bf-disable-content-logging header/context
-	AllowPerRequestRawOverride            bool                             `json:"allow_per_request_raw_override"`             // Allow per-request override of raw request/response visibility via x-bf-send-back-raw-request and x-bf-send-back-raw-response headers
-	AllowDirectKeys                       bool                             `json:"allow_direct_keys"`                          // Allow callers to bypass the registered key pool via x-bf-direct-key: true header
-	DisableDBPingsInHealth                bool                             `json:"disable_db_pings_in_health"`
-	LogRetentionDays                      int                              `json:"log_retention_days" validate:"min=1"`  // Number of days to retain logs (minimum 1 day)
-	EnforceAuthOnInference                bool                             `json:"enforce_auth_on_inference"`            // Require auth (VK, API key, or user token) on inference endpoints
-	EnforceGovernanceHeader               bool                             `json:"enforce_governance_header,omitempty"`  // Deprecated: use EnforceAuthOnInference
-	EnforceSCIMAuth                       bool                             `json:"enforce_scim_auth,omitempty"`          // Deprecated: use EnforceAuthOnInference
-	AllowedOrigins                        []string                         `json:"allowed_origins,omitempty"`            // Additional allowed origins for CORS and WebSocket (localhost is always allowed)
-	AllowedHeaders                        []string                         `json:"allowed_headers,omitempty"`            // Additional allowed headers for CORS and WebSocket
-	MaxRequestBodySizeMB                  int                              `json:"max_request_body_size_mb"`             // The maximum request body size in MB
-	Compat                                CompatConfig                     `json:"compat"`                               // Compat plugin configuration
-	MCPAgentDepth                         int                              `json:"mcp_agent_depth"`                      // The maximum depth for MCP agent mode tool execution
-	MCPToolExecutionTimeout               int                              `json:"mcp_tool_execution_timeout"`           // The timeout for individual tool execution in seconds
-	MCPCodeModeBindingLevel               string                           `json:"mcp_code_mode_binding_level"`          // Code mode binding level: "server" or "tool"
-	MCPToolSyncInterval                   int                              `json:"mcp_tool_sync_interval"`               // Global tool sync interval in minutes (default: 10, 0 = disabled)
-	MCPDisableAutoToolInject              bool                             `json:"mcp_disable_auto_tool_inject"`         // When true, MCP tools are not injected into requests by default
-	MCPEnableTempTokenAuth                bool                             `json:"mcp_enable_temp_token_auth"`           // When true, scoped temp tokens can authorize MCP per-user OAuth and per-user-headers auth pages. User-mode flows never mint regardless.
-	HeaderFilterConfig                    *tables.GlobalHeaderFilterConfig `json:"header_filter_config,omitempty"`       // Global header filtering configuration for x-bf-eh-* headers
-	AsyncJobResultTTL                     int                              `json:"async_job_result_ttl"`                 // Default TTL for async job results in seconds (default: 3600 = 1 hour)
-	RequiredHeaders                       []string                         `json:"required_headers,omitempty"`           // Headers that must be present on every request (case-insensitive)
-	LoggingHeaders                        []string                         `json:"logging_headers,omitempty"`            // Headers to capture in log metadata
-	WhitelistedRoutes                     []string                         `json:"whitelisted_routes,omitempty"`         // Routes that bypass auth middleware
-	HideDeletedVirtualKeysInFilters       bool                             `json:"hide_deleted_virtual_keys_in_filters"` // Hide deleted virtual keys from logs/MCP filter data
-	RoutingChainMaxDepth                  int                              `json:"routing_chain_max_depth"`              // Maximum depth for routing rule chain evaluation (default: 10)
-	MCPExternalClientURL                  *schemas.SecretVar               `json:"mcp_external_client_url,omitempty"`    // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")
-	MCPServerAuthMode                     tables.MCPServerAuthMode         `json:"mcp_server_auth_mode,omitempty"`       // How /mcp authenticates inbound clients: headers (default), both, or oauth.
-	OAuth2ServerConfig                    *tables.OAuth2ServerConfig       `json:"oauth2_server_config,omitempty"`       // OAuth2 AS-specific settings (IssuerURL, token TTLs). Only relevant when MCPServerAuthMode is both or oauth.
-	ConfigHash                            string                           `json:"-"`                                    // Config hash for reconciliation (not serialized)
-	DumpErrorsInConsoleLogs               bool                             `json:"dump_errors_in_console_logs"`          // Dump error details in console logs
+	DropExcessRequests                    bool                                  `json:"drop_excess_requests"`                       // Drop excess requests if the provider queue is full
+	InitialPoolSize                       int                                   `json:"initial_pool_size"`                          // The initial pool size for the bifrost client
+	PrometheusLabels                      []string                              `json:"prometheus_labels"`                          // The labels to be used for prometheus metrics
+	EnableLogging                         *bool                                 `json:"enable_logging"`                             // Enable logging of requests and responses
+	DisableContentLogging                 bool                                  `json:"disable_content_logging"`                    // Disable logging of content
+	RetainContentInObjectStorage          bool                                  `json:"retain_content_in_object_storage"`           // When content logging is disabled (config or header), still offload content to object storage as hidden instead of dropping it
+	AllowPerRequestContentStorageOverride bool                                  `json:"allow_per_request_content_storage_override"` // Allow per-request override of content storage via x-bf-disable-content-logging header/context
+	AllowPerRequestRawOverride            bool                                  `json:"allow_per_request_raw_override"`             // Allow per-request override of raw request/response visibility via x-bf-send-back-raw-request and x-bf-send-back-raw-response headers
+	AllowDirectKeys                       bool                                  `json:"allow_direct_keys"`                          // Allow callers to bypass the registered key pool via x-bf-direct-key: true header
+	VKRotationCooldown                    schemas.Duration                      `json:"vk_rotation_cooldown,omitempty"`             // Grace period during which a rotated virtual key's previous value still authenticates (e.g. "5m"); 0 = old value stops working immediately
+	DisableDBPingsInHealth                bool                                  `json:"disable_db_pings_in_health"`
+	LogRetentionDays                      int                                   `json:"log_retention_days" validate:"min=1"`         // Number of days to retain logs (minimum 1 day)
+	EnforceAuthOnInference                bool                                  `json:"enforce_auth_on_inference"`                   // Require auth (VK, API key, or user token) on inference endpoints
+	DualCredentialConflictBehavior        tables.DualCredentialConflictBehavior `json:"dual_credential_conflict_behavior,omitempty"` // Behavior when both an IDP token and a VK are present on an inference request
+	EnforceGovernanceHeader               bool                                  `json:"enforce_governance_header,omitempty"`         // Deprecated: use EnforceAuthOnInference
+	EnforceSCIMAuth                       bool                                  `json:"enforce_scim_auth,omitempty"`                 // Deprecated: use EnforceAuthOnInference
+	AllowedOrigins                        []string                              `json:"allowed_origins,omitempty"`                   // Additional allowed origins for CORS and WebSocket (localhost is always allowed)
+	AllowedHeaders                        []string                              `json:"allowed_headers,omitempty"`                   // Additional allowed headers for CORS and WebSocket
+	MaxRequestBodySizeMB                  int                                   `json:"max_request_body_size_mb"`                    // The maximum request body size in MB
+	Compat                                CompatConfig                          `json:"compat"`                                      // Compat plugin configuration
+	MCPAgentDepth                         int                                   `json:"mcp_agent_depth"`                             // The maximum depth for MCP agent mode tool execution
+	MCPToolExecutionTimeout               int                                   `json:"mcp_tool_execution_timeout"`                  // The timeout for individual tool execution in seconds
+	MCPCodeModeBindingLevel               string                                `json:"mcp_code_mode_binding_level"`                 // Code mode binding level: "server" or "tool"
+	MCPToolSyncInterval                   int                                   `json:"mcp_tool_sync_interval"`                      // Global tool sync interval in minutes (default: 10, 0 = built-in default)
+	MCPDisableAutoToolInject              bool                                  `json:"mcp_disable_auto_tool_inject"`                // When true, MCP tools are not injected into requests by default
+	MCPEnableTempTokenAuth                bool                                  `json:"mcp_enable_temp_token_auth"`                  // When true, scoped temp tokens can authorize MCP per-user OAuth and per-user-headers auth pages. User-mode flows never mint regardless.
+	HeaderFilterConfig                    *tables.GlobalHeaderFilterConfig      `json:"header_filter_config,omitempty"`              // Global header filtering configuration for x-bf-eh-* headers
+	AsyncJobResultTTL                     int                                   `json:"async_job_result_ttl"`                        // Default TTL for async job results in seconds (default: 3600 = 1 hour)
+	RequiredHeaders                       []string                              `json:"required_headers,omitempty"`                  // Headers that must be present on every request (case-insensitive)
+	LoggingHeaders                        []string                              `json:"logging_headers,omitempty"`                   // Headers to capture in log metadata
+	WhitelistedRoutes                     []string                              `json:"whitelisted_routes,omitempty"`                // Routes that bypass auth middleware
+	HideDeletedVirtualKeysInFilters       bool                                  `json:"hide_deleted_virtual_keys_in_filters"`        // Hide deleted virtual keys from logs/MCP filter data
+	HiddenRequestTypes                    []string                              `json:"hidden_request_types,omitempty"`              // Request types excluded from dashboard and log API reads; logs are still written
+	RoutingChainMaxDepth                  int                                   `json:"routing_chain_max_depth"`                     // Maximum depth for routing rule chain evaluation (default: 10)
+	MCPExternalClientURL                  *schemas.SecretVar                    `json:"mcp_external_client_url,omitempty"`           // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")
+	MCPServerAuthMode                     tables.MCPServerAuthMode              `json:"mcp_server_auth_mode,omitempty"`              // How /mcp authenticates inbound clients: headers (default), both, or oauth.
+	OAuth2ServerConfig                    *tables.OAuth2ServerConfig            `json:"oauth2_server_config,omitempty"`              // OAuth2 AS-specific settings (IssuerURL, token TTLs). Only relevant when MCPServerAuthMode is both or oauth.
+	ConfigHash                            string                                `json:"-"`                                           // Config hash for reconciliation (not serialized)
+	DumpErrorsInConsoleLogs               bool                                  `json:"dump_errors_in_console_logs"`                 // Dump error details in console logs
+	WebhookConfig                         *tables.WebhookConfig                 `json:"webhook_config,omitempty"`                    // Global webhook delivery settings; nil means all defaults
 }
 
 // IsMCPOAuthDiscoveryEnabled reports whether the well-known OAuth discovery
@@ -121,6 +135,7 @@ func (c *ClientConfig) UnmarshalJSON(data []byte) error {
 			ConvertChatToResponses: true,
 			ShouldDropParams:       true,
 			ShouldConvertParams:    true,
+			AzureDeepseek:          true,
 		},
 	}
 	if err := sonic.Unmarshal(data, &alias); err != nil {
@@ -165,6 +180,10 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write([]byte("enforceAuthOnInference:true"))
 	} else {
 		hash.Write([]byte("enforceAuthOnInference:false"))
+	}
+
+	if c.DualCredentialConflictBehavior != "" && c.DualCredentialConflictBehavior != tables.DualCredentialConflictBehaviorPreferIDP {
+		hash.Write([]byte("dualCredentialConflictBehavior:" + string(c.DualCredentialConflictBehavior)))
 	}
 
 	if c.Compat.ConvertTextToChat {
@@ -232,6 +251,11 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write([]byte("allowPerRequestContentStorageOverride:true"))
 	}
 
+	// Only hash non-default value to avoid legacy config hash churn on upgrade.
+	if c.RetainContentInObjectStorage {
+		hash.Write([]byte("retainContentInObjectStorage:true"))
+	}
+
 	if c.AllowPerRequestRawOverride {
 		hash.Write([]byte("allowPerRequestRawOverride:true"))
 	}
@@ -239,6 +263,11 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	// Only hash non-default value to avoid legacy config hash churn on upgrade.
 	if c.AllowDirectKeys {
 		hash.Write([]byte("allowDirectKeys:true"))
+	}
+
+	// Only hash non-default value to avoid legacy config hash churn on upgrade.
+	if c.VKRotationCooldown > 0 {
+		hash.Write([]byte("vkRotationCooldown:" + strconv.FormatInt(int64(c.VKRotationCooldown), 10)))
 	}
 
 	if c.AsyncJobResultTTL > 0 {
@@ -250,6 +279,16 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	// Only hash non-default value to avoid legacy config hash churn on upgrade.
 	if c.DumpErrorsInConsoleLogs {
 		hash.Write([]byte("dumpErrorsInConsoleLogs:true"))
+	}
+
+	// Only hash when present to avoid legacy config hash churn on upgrade.
+	if c.WebhookConfig != nil {
+		data, err := sonic.Marshal(c.WebhookConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("webhookConfig:"))
+		hash.Write(data)
 	}
 
 	// Hash integer fields
@@ -317,6 +356,20 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 			return "", err
 		}
 		hash.Write([]byte("loggingHeaders:"))
+		hash.Write(data)
+	}
+
+	// Hash HiddenRequestTypes (sorted for deterministic hashing). Only hashed when
+	// set so existing config hashes do not churn on upgrade.
+	if len(c.HiddenRequestTypes) > 0 {
+		sortedHidden := make([]string, len(c.HiddenRequestTypes))
+		copy(sortedHidden, c.HiddenRequestTypes)
+		sort.Strings(sortedHidden)
+		data, err := sonic.Marshal(sortedHidden)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("hiddenRequestTypes:"))
 		hash.Write(data)
 	}
 
@@ -447,6 +500,7 @@ type ProviderConfig struct {
 	StoreRawRequestResponse  bool                              `json:"store_raw_request_response"`            // Capture raw request/response for internal logging only; strip from API responses returned to clients
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`               // OpenAI-specific configuration
+	PromptCache              *schemas.PromptCacheConfig        `json:"prompt_cache,omitempty"`                // Prompt-cache breakpoint injection
 	ConfigHash               string                            `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
 	Status                   string                            `json:"status,omitempty"`                      // Model discovery status for keyless providers
 	Description              string                            `json:"description,omitempty"`                 // Model discovery error message for keyless providers
@@ -467,6 +521,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		StoreRawRequestResponse:  p.StoreRawRequestResponse,
 		CustomProviderConfig:     p.CustomProviderConfig,
 		OpenAIConfig:             p.OpenAIConfig,
+		PromptCache:              p.PromptCache,
 		ConfigHash:               p.ConfigHash,
 		Status:                   p.Status,
 		Description:              p.Description,
@@ -507,7 +562,13 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		if key.UseForBatchAPI != nil {
 			redactedConfig.Keys[i].UseForBatchAPI = key.UseForBatchAPI
 		} else {
-			redactedConfig.Keys[i].UseForBatchAPI = bifrost.Ptr(false)
+			redactedConfig.Keys[i].UseForBatchAPI = new(false)
+		}
+		// Add back use anthropic endpoints
+		if key.UseAnthropicEndpoints != nil {
+			redactedConfig.Keys[i].UseAnthropicEndpoints = key.UseAnthropicEndpoints
+		} else {
+			redactedConfig.Keys[i].UseAnthropicEndpoints = new(false)
 		}
 
 		// Add model discovery status and error
@@ -571,6 +632,9 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			if key.BedrockKeyConfig.RoleSessionName != nil {
 				bedrockConfig.RoleSessionName = key.BedrockKeyConfig.RoleSessionName.Redacted()
 			}
+			if key.BedrockKeyConfig.BatchRoleARN != nil {
+				bedrockConfig.BatchRoleARN = key.BedrockKeyConfig.BatchRoleARN.Redacted()
+			}
 			// Mantle project ID is an identifier, not a credential — surface it in plaintext.
 			if key.BedrockKeyConfig.ProjectID != nil {
 				bedrockConfig.ProjectID = key.BedrockKeyConfig.ProjectID
@@ -578,6 +642,10 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			// Add back s3 config
 			if key.BedrockKeyConfig.BatchS3Config != nil {
 				bedrockConfig.BatchS3Config = key.BedrockKeyConfig.BatchS3Config
+			}
+			// VPC endpoint hosts are network addresses, not credentials — surface them in plaintext.
+			if key.BedrockKeyConfig.Endpoints != nil {
+				bedrockConfig.Endpoints = key.BedrockKeyConfig.Endpoints
 			}
 			redactedConfig.Keys[i].BedrockKeyConfig = bedrockConfig
 		}
@@ -605,6 +673,10 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			// Project ID is an identifier, not a credential — surface it in plaintext.
 			if key.BedrockMantleKeyConfig.ProjectID != nil {
 				mantleConfig.ProjectID = key.BedrockMantleKeyConfig.ProjectID
+			}
+			// VPC endpoint hosts are network addresses, not credentials — surface them in plaintext.
+			if key.BedrockMantleKeyConfig.Endpoints != nil {
+				mantleConfig.Endpoints = key.BedrockMantleKeyConfig.Endpoints
 			}
 			redactedConfig.Keys[i].BedrockMantleKeyConfig = mantleConfig
 		}
@@ -634,6 +706,40 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			sglConfig := &schemas.SGLKeyConfig{}
 			sglConfig.URL = *key.SGLKeyConfig.URL.Redacted()
 			redactedConfig.Keys[i].SGLKeyConfig = sglConfig
+		}
+
+		// Redact Databricks key config if present
+		if key.DatabricksKeyConfig != nil {
+			databricksConfig := &schemas.DatabricksKeyConfig{
+				APIFormat:          key.DatabricksKeyConfig.APIFormat,
+				ForwardGatewayTags: key.DatabricksKeyConfig.ForwardGatewayTags,
+			}
+			// The workspace URL is a hostname, not a credential — surface it in
+			// plaintext so the UI can round-trip it, mirroring the Azure endpoint.
+			if key.DatabricksKeyConfig.WorkspaceURL.IsFromSecret() {
+				databricksConfig.WorkspaceURL = *key.DatabricksKeyConfig.WorkspaceURL.Redacted()
+			} else {
+				databricksConfig.WorkspaceURL = key.DatabricksKeyConfig.WorkspaceURL
+			}
+			if key.DatabricksKeyConfig.ClientID != nil {
+				databricksConfig.ClientID = key.DatabricksKeyConfig.ClientID.Redacted()
+			}
+			if key.DatabricksKeyConfig.ClientSecret != nil {
+				databricksConfig.ClientSecret = key.DatabricksKeyConfig.ClientSecret.Redacted()
+			}
+			redactedConfig.Keys[i].DatabricksKeyConfig = databricksConfig
+		}
+
+		if key.GithubCopilotKeyConfig != nil {
+			// The private key is the whole credential, so it is redacted like any other
+			// secret rather than surfaced in a config read.
+			redactedConfig.Keys[i].GithubCopilotKeyConfig = &schemas.GithubCopilotKeyConfig{
+				AppID:          *key.GithubCopilotKeyConfig.AppID.Redacted(),
+				InstallationID: *key.GithubCopilotKeyConfig.InstallationID.Redacted(),
+				RepositoryID:   *key.GithubCopilotKeyConfig.RepositoryID.Redacted(),
+				PrivateKey:     *key.GithubCopilotKeyConfig.PrivateKey.Redacted(),
+				GithubDomain:   *key.GithubCopilotKeyConfig.GithubDomain.Redacted(),
+			}
 		}
 	}
 	return &redactedConfig
@@ -687,6 +793,15 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 	// Hash OpenAIConfig
 	if p.OpenAIConfig != nil {
 		data, err := sonic.Marshal(p.OpenAIConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
+	// Hash PromptCache
+	if p.PromptCache != nil {
+		data, err := sonic.Marshal(p.PromptCache)
 		if err != nil {
 			return "", err
 		}
@@ -825,6 +940,22 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 		}
 		hash.Write(data)
 	}
+	// Hash DatabricksKeyConfig
+	if key.DatabricksKeyConfig != nil {
+		data, err := sonic.Marshal(key.DatabricksKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+	// Hash GithubCopilotKeyConfig
+	if key.GithubCopilotKeyConfig != nil {
+		data, err := sonic.Marshal(key.GithubCopilotKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
 	// Hash Enabled (nil = false, only true produces different hash)
 	if key.Enabled != nil && *key.Enabled {
 		hash.Write([]byte("enabled:true"))
@@ -836,6 +967,14 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	}
 	if useForBatchAPI {
 		hash.Write([]byte("useForBatchAPI:true"))
+	}
+	// Hash UseAnthropicEndpoints (nil = default false for new keys)
+	useAnthropicEndpoints := false
+	if key.UseAnthropicEndpoints != nil {
+		useAnthropicEndpoints = *key.UseAnthropicEndpoints
+	}
+	if useAnthropicEndpoints {
+		hash.Write([]byte("useAnthropicEndpoints:true"))
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
@@ -889,6 +1028,12 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 		hash.Write([]byte("isActive:true"))
 	} else {
 		hash.Write([]byte("isActive:false"))
+	}
+	// Hash AllowAllProviders so a config.json flip triggers re-sync
+	if vk.AllowAllProviders {
+		hash.Write([]byte("allowAllProviders:true"))
+	} else {
+		hash.Write([]byte("allowAllProviders:false"))
 	}
 	// Hash ExpiresAt only when set, so rows created before expiry existed keep their hash
 	if vk.ExpiresAt != nil {
@@ -1017,6 +1162,19 @@ func GenerateBudgetHash(b tables.TableBudget) (string, error) {
 
 	// Hash ResetDuration
 	hash.Write([]byte(b.ResetDuration))
+
+	// Hash the quarter definition, without which a quarter-start edit in
+	// config.json is invisible to change detection and never reaches the database.
+	//
+	// Read the effective month rather than ResetConfigJSON: this function compares
+	// a budget parsed from config.json against one read from the database, and only
+	// the latter has the blob populated, since BeforeSave has not run on the former.
+	// Hashing the blob would make the two disagree on every comparison and resync
+	// forever. Gating on the duration keeps every non-quarterly budget's digest
+	// byte-identical, so upgrading does not look like a config change.
+	if tables.IsQuarterlyDuration(b.ResetDuration) {
+		hash.Write([]byte(strconv.Itoa(int(b.QuarterStartMonth()))))
+	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
@@ -1222,30 +1380,64 @@ func GenerateComplexityAnalyzerConfigHashes(config *ComplexityAnalyzerConfig) (C
 	if err != nil {
 		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash tier boundaries: %w", err)
 	}
-	codeHash, err := hashComplexityValue(normalized.Keywords.CodeKeywords)
-	if err != nil {
-		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash code keywords: %w", err)
-	}
-	reasoningHash, err := hashComplexityValue(normalized.Keywords.ReasoningKeywords)
-	if err != nil {
-		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash reasoning keywords: %w", err)
-	}
-	technicalHash, err := hashComplexityValue(normalized.Keywords.TechnicalKeywords)
-	if err != nil {
-		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash technical keywords: %w", err)
-	}
 	simpleHash, err := hashComplexityValue(normalized.Keywords.SimpleKeywords)
 	if err != nil {
 		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash simple keywords: %w", err)
 	}
+	mediumHash, err := hashComplexityValue(normalized.Keywords.MediumKeywords)
+	if err != nil {
+		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash medium keywords: %w", err)
+	}
+	complexHash, err := hashComplexityValue(normalized.Keywords.ComplexKeywords)
+	if err != nil {
+		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash complex keywords: %w", err)
+	}
 
-	return ComplexityAnalyzerConfigHashes{
-		TierBoundaries:    tierHash,
+	hashes := ComplexityAnalyzerConfigHashes{
+		TierBoundaries:  tierHash,
+		SimpleKeywords:  simpleHash,
+		MediumKeywords:  mediumHash,
+		ComplexKeywords: complexHash,
+	}
+
+	if normalized.Semantic != nil {
+		settingsHash, err := hashComplexityValue(normalized.Semantic)
+		if err != nil {
+			return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash semantic settings: %w", err)
+		}
+		hashes.SemanticSettings = settingsHash
+	}
+
+	if normalized.LLM != nil {
+		settingsHash, err := hashComplexityValue(normalized.LLM)
+		if err != nil {
+			return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash llm settings: %w", err)
+		}
+		hashes.LLMSettings = settingsHash
+	}
+
+	if normalized.Session != nil {
+		settingsHash, err := hashComplexityValue(normalized.Session)
+		if err != nil {
+			return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash session settings: %w", err)
+		}
+		hashes.SessionSettings = settingsHash
+	}
+
+	return hashes, nil
+}
+
+func legacyMediumKeywordsHashFromSectionHashes(codeHash, technicalHash string) (string, error) {
+	if codeHash == "" && technicalHash == "" {
+		return "", nil
+	}
+	return hashComplexityValue(struct {
+		CodeKeywords      string `json:"code_keywords"`
+		TechnicalKeywords string `json:"technical_keywords"`
+	}{
 		CodeKeywords:      codeHash,
-		ReasoningKeywords: reasoningHash,
 		TechnicalKeywords: technicalHash,
-		SimpleKeywords:    simpleHash,
-	}, nil
+	})
 }
 
 func hashComplexityValue(value any) (string, error) {
@@ -1391,6 +1583,7 @@ func GeneratePricingOverrideHash(p tables.TablePricingOverride) (string, error) 
 	hash.Write([]byte(p.ID))
 	hash.Write([]byte(p.Name))
 	hash.Write([]byte(p.ScopeKind))
+	hash.Write([]byte(derefStr(p.UserID)))
 	hash.Write([]byte(derefStr(p.VirtualKeyID)))
 	hash.Write([]byte(derefStr(p.ProviderID)))
 	hash.Write([]byte(derefStr(p.ProviderKeyID)))
@@ -1469,8 +1662,146 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 		}
 	}
 
+	// Hash AuthType so switching a client's auth scheme in config.json
+	// drifts the hash and triggers reconciliation. Normalize the empty
+	// value to the column default so a row hashed before save matches the
+	// same row hashed after load.
+	authType := m.AuthType
+	if authType == "" {
+		authType = string(schemas.MCPAuthTypeHeaders)
+	}
+	hash.Write([]byte("auth_type:" + authType))
+
+	// Hash NeedsSessionStickiness so toggling it in config.json drifts the
+	// hash and triggers reconciliation — without this, editing only this
+	// field would leave the row's migration-backfilled (or nil-defaulted)
+	// value in place indefinitely, since nothing else about the row changed.
+	//
+	// nil contributes nothing — identical to how this field hashed before it
+	// existed in the formula at all. That's deliberate: a config.json entry
+	// that still omits the field must keep coincidentally matching a stale
+	// (pre-migration) stored hash, so the migration's true-backfill for
+	// existing shared clients isn't clobbered by a forced file-wins resync
+	// on the next restart just because config.json never mentions the field.
+	// true and false each get their own distinct marker: only an *explicit*
+	// value in config.json represents a real opinion worth detecting as a
+	// change. Collapsing false into nil's zero-contribution (as this used to
+	// do) meant an admin's explicit `needs_session_stickiness: false` edit
+	// could coincidentally hash-match a stale stored hash and silently never
+	// take effect.
+	if m.NeedsSessionStickiness != nil {
+		if *m.NeedsSessionStickiness {
+			hash.Write([]byte("needs_session_stickiness:true"))
+		} else {
+			hash.Write([]byte("needs_session_stickiness:false"))
+		}
+	}
+
+	// Hash PerUserHeaderKeys (sorted for deterministic hashing) so edits to
+	// the declared header-name schema in config.json drift the hash.
+	if len(m.PerUserHeaderKeys) > 0 {
+		sortedKeys := make([]string, len(m.PerUserHeaderKeys))
+		copy(sortedKeys, m.PerUserHeaderKeys)
+		sort.Strings(sortedKeys)
+		data, err := sonic.Marshal(sortedKeys)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
+	// Hash PendingOAuthConfig so edits to the inline `oauth_config` block
+	// in config.json drift the hash and trigger reconciliation. Rows built
+	// from config.json carry only the runtime struct (the JSON column is
+	// populated later, by BeforeSave), so fall back to marshaling it with
+	// encoding/json — the same encoder BeforeSave uses to write the column
+	// — keeping both forms byte-identical.
+	if m.PendingOAuthConfigJSON != nil && *m.PendingOAuthConfigJSON != "" {
+		hash.Write([]byte(*m.PendingOAuthConfigJSON))
+	} else if m.PendingOAuthConfig != nil {
+		data, err := json.Marshal(m.PendingOAuthConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
+	// Hash the token_exchange scoping block so edits to it in config.json
+	// drift the hash and trigger reconciliation. Same JSON-column-first
+	// fallback shape as PendingOAuthConfig above, for the same reason.
+	if m.TokenExchangeJSON != nil && *m.TokenExchangeJSON != "" {
+		hash.Write([]byte(*m.TokenExchangeJSON))
+	} else if m.TokenExchange != nil {
+		data, err := json.Marshal(m.TokenExchange)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
 	// will enable it in the future with a migration
 	// hash.Write([]byte("disabled:" + strconv.FormatBool(m.Disabled)))
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// GenerateWebhookEndpointHash generates a SHA256 hash of a webhook endpoint's
+// declared fields. This is used to detect changes between config.json and
+// database config. Operational fields (failure counters, timestamps) and the
+// generated ID are excluded on purpose.
+func GenerateWebhookEndpointHash(endpoint *tables.TableWebhookEndpoint) (string, error) {
+	hash := sha256.New()
+
+	hash.Write([]byte("name:" + endpoint.Name))
+	hash.Write([]byte("url:" + endpoint.URL))
+
+	// The signing secret is deliberately excluded: it is set once at creation
+	// and rotates only through RotateWebhookEndpointSecret, so config-file
+	// sync must not treat a changed webhooks[].secret as a mutation — doing so
+	// would store the new hash while UpdateWebhookEndpoint leaves the credential
+	// untouched, silently diverging the two.
+
+	// Hash Events (sorted for deterministic hashing)
+	if len(endpoint.Events) > 0 {
+		sortedEvents := make([]string, 0, len(endpoint.Events))
+		for _, event := range endpoint.Events {
+			sortedEvents = append(sortedEvents, string(event))
+		}
+		sort.Strings(sortedEvents)
+		data, err := sonic.Marshal(sortedEvents)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
+	hash.Write([]byte("includeResponse:" + strconv.FormatBool(endpoint.IncludeResponse)))
+	hash.Write([]byte("allowPrivateNetwork:" + strconv.FormatBool(endpoint.AllowPrivateNetwork)))
+	hash.Write([]byte("disabled:" + strconv.FormatBool(endpoint.Disabled)))
+
+	hash.Write([]byte("maxRetries:" + strconv.Itoa(endpoint.MaxRetries)))
+	hash.Write([]byte("retryBackoffInitialSeconds:" + strconv.Itoa(endpoint.RetryBackoffInitialSeconds)))
+	hash.Write([]byte("retryBackoffMaxSeconds:" + strconv.Itoa(endpoint.RetryBackoffMaxSeconds)))
+	hash.Write([]byte("attemptTimeoutSeconds:" + strconv.Itoa(endpoint.AttemptTimeoutSeconds)))
+	hash.Write([]byte("maxResponsePayloadKBs:" + strconv.Itoa(endpoint.MaxResponsePayloadKBs)))
+	hash.Write([]byte("maxConcurrentDeliveries:" + strconv.Itoa(endpoint.MaxConcurrentDeliveries)))
+
+	// Hash Headers (sorted for deterministic hashing)
+	if len(endpoint.Headers) > 0 {
+		keys := make([]string, 0, len(endpoint.Headers))
+		for k := range endpoint.Headers {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			val := endpoint.Headers[k]
+			if val.IsFromSecret() {
+				hash.Write([]byte(k + ":ref:" + val.GetRawRef()))
+			} else {
+				hash.Write([]byte(k + ":val:" + val.Val))
+			}
+		}
+	}
+
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
@@ -1512,21 +1843,39 @@ func GeneratePluginHash(p tables.TablePlugin) (string, error) {
 		}
 	}
 
-	// Hash Version
-	data, err := sonic.Marshal(p.Version)
-	if err != nil {
-		return "", err
+	// Hash Version when set, so hashes already persisted by the config_hash migration stay valid.
+	if p.Version != 0 {
+		data, err := sonic.Marshal(p.Version)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
 	}
-	hash.Write(data)
+
+	// Hash Placement and Order when set. config.json owns whichever of the two it declares,
+	// so changing one has to read as a file edit; declaring neither contributes nothing and
+	// leaves the stored ordering untouched.
+	if p.Placement != nil {
+		hash.Write([]byte("placement:" + string(*p.Placement)))
+	}
+	if p.Order != nil {
+		hash.Write([]byte("order:" + strconv.Itoa(*p.Order)))
+	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 // frameworkConfigHashPayload holds the config.json-sourced fields used for hashing.
+//
+// LiveModelsSyncInterval carries omitempty deliberately: a nil pointer must
+// marshal to exactly the bytes this struct produced before the field existed,
+// so hashes already persisted in framework_configs stay valid and no upgraded
+// deployment sees a spurious "file changed" override on first boot.
 type frameworkConfigHashPayload struct {
-	PricingURL          *string `json:"pricing_url"`
-	ModelParametersURL  *string `json:"model_parameters_url"`
-	PricingSyncInterval *int64  `json:"pricing_sync_interval"`
+	PricingURL             *string `json:"pricing_url"`
+	ModelParametersURL     *string `json:"model_parameters_url"`
+	PricingSyncInterval    *int64  `json:"pricing_sync_interval"`
+	LiveModelsSyncInterval *int64  `json:"live_models_sync_interval,omitempty"`
 }
 
 type frameworkConfigHashPayloadWithMCP struct {
@@ -1535,6 +1884,7 @@ type frameworkConfigHashPayloadWithMCP struct {
 	PricingSyncInterval    *int64  `json:"pricing_sync_interval"`
 	MCPLibraryURL          *string `json:"mcp_library_url"`
 	MCPLibrarySyncInterval *int64  `json:"mcp_library_sync_interval"`
+	LiveModelsSyncInterval *int64  `json:"live_models_sync_interval,omitempty"`
 }
 
 // FrameworkConfigHashOptions adds optional framework config fields to the
@@ -1543,6 +1893,7 @@ type frameworkConfigHashPayloadWithMCP struct {
 type FrameworkConfigHashOptions struct {
 	MCPLibraryURL          *string
 	MCPLibrarySyncInterval *int64
+	LiveModelsSyncInterval *int64
 }
 
 // GenerateFrameworkConfigHash generates a SHA256 hash for a framework config.
@@ -1551,13 +1902,26 @@ func GenerateFrameworkConfigHash(pricingURL *string, modelParametersURL *string,
 	var data []byte
 	var err error
 	if len(opts) > 0 {
-		data, err = sonic.Marshal(frameworkConfigHashPayloadWithMCP{
-			PricingURL:             pricingURL,
-			ModelParametersURL:     modelParametersURL,
-			PricingSyncInterval:    pricingSyncInterval,
-			MCPLibraryURL:          opts[0].MCPLibraryURL,
-			MCPLibrarySyncInterval: opts[0].MCPLibrarySyncInterval,
-		})
+		if opts[0].MCPLibraryURL == nil && opts[0].MCPLibrarySyncInterval == nil {
+			// Only live-models config was supplied. Staying on the pricing-only
+			// payload keeps the digest identical to a pre-MCP deployment's when
+			// the live interval is also nil.
+			data, err = sonic.Marshal(frameworkConfigHashPayload{
+				PricingURL:             pricingURL,
+				ModelParametersURL:     modelParametersURL,
+				PricingSyncInterval:    pricingSyncInterval,
+				LiveModelsSyncInterval: opts[0].LiveModelsSyncInterval,
+			})
+		} else {
+			data, err = sonic.Marshal(frameworkConfigHashPayloadWithMCP{
+				PricingURL:             pricingURL,
+				ModelParametersURL:     modelParametersURL,
+				PricingSyncInterval:    pricingSyncInterval,
+				MCPLibraryURL:          opts[0].MCPLibraryURL,
+				MCPLibrarySyncInterval: opts[0].MCPLibrarySyncInterval,
+				LiveModelsSyncInterval: opts[0].LiveModelsSyncInterval,
+			})
+		}
 	} else {
 		data, err = sonic.Marshal(frameworkConfigHashPayload{
 			PricingURL:          pricingURL,

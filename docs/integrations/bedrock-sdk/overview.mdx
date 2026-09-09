@@ -103,7 +103,7 @@ import boto3
 
 def add_bifrost_headers(request, **kwargs):
     """Add custom Bifrost headers to the request before signing."""
-    request.headers.add_header("x-bf-vk", "vk_12345")  # Virtual key for governance
+    request.headers.add_header("x-bf-vk", "<YOUR-BIFROST-VIRTUAL-KEY>")  # Replace with your actual Bifrost virtual key.
     request.headers.add_header("x-bf-env", "production")  # Environment tag
 
 client = boto3.client(
@@ -230,4 +230,3 @@ The Bedrock integration currently supports:
 - **[What is an integration?](../what-is-an-integration)** - Core integration concepts  
 - **[Configuration](../../quickstart/gateway/provider-configuration)** - Bedrock provider setup and API key management  
 - **[Core Features](../../features/)** - Governance, semantic caching, and more
-

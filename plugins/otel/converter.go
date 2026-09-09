@@ -97,7 +97,7 @@ func hexToBytes(hexStr string, length int) []byte {
 // profile service name. Span filtering and instance attributes are shared across profiles;
 // only the resource service name differs per profile.
 func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schemas.Trace, requestHeaders []string, disableContentLogging bool, groupTracesBySession bool, disableRootSpanContent bool) *ResourceSpan {
-	reparent := p.pluginSpanFilter.BuildReparentMap(trace.Spans)
+	reparent := p.pluginSpanFilter.BuildReparentMapWithOverhead(trace.Spans, p.exportOverheadSpans)
 	filteredHeaders := schemas.FilterHeaders(trace.RequestHeaders, requestHeaders)
 
 	// The x-bf-session-id header is a trace-level attribute, so it is not emitted as a span
@@ -120,7 +120,7 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 
 	otelSpans := make([]*Span, 0, len(trace.Spans))
 	for _, span := range trace.Spans {
-		if !p.pluginSpanFilter.ShouldExportSpan(span) {
+		if !p.pluginSpanFilter.ShouldExportSpanWithOverhead(span, p.exportOverheadSpans) {
 			continue
 		}
 		// disableRootSpanContent drops content from the root span only (the framework duplicates
@@ -146,7 +146,6 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 			}
 			if requestID := trace.GetRequestID(); requestID != "" {
 				otelSpan.Attributes = append(otelSpan.Attributes,
-					kvStr(schemas.AttrRequestID, requestID), // legacy: gen_ai.* placement of bifrost-internal attr; replaced by bifrost.request.id
 					kvStr(schemas.AttrBifrostRequestID, requestID),
 				)
 			}
@@ -222,7 +221,7 @@ func convertAttributesToKeyValues(attrs map[string]any, disableContentLogging bo
 	}
 	kvs := make([]*KeyValue, 0, len(attrs))
 	for k, v := range attrs {
-		if disableContentLogging && isContentAttribute(k) {
+		if disableContentLogging && schemas.IsContentAttribute(k) {
 			continue
 		}
 		kv := anyToKeyValue(k, v)
@@ -231,26 +230,6 @@ func convertAttributesToKeyValues(attrs map[string]any, disableContentLogging bo
 		}
 	}
 	return kvs
-}
-
-// isContentAttribute returns true if the attribute key contains message/input/output content
-// or tool definitions/arguments/results that should be filtered when content logging is disabled.
-func isContentAttribute(key string) bool {
-	switch key {
-	case schemas.AttrInputMessages, schemas.AttrOutputMessages,
-		schemas.AttrInputText, schemas.AttrInputSpeech,
-		schemas.AttrInputEmbedding:
-		return true
-	case schemas.AttrTools, schemas.AttrRespTools,
-		schemas.AttrToolName, schemas.AttrToolCallID,
-		schemas.AttrToolCallArguments, schemas.AttrToolCallResult,
-		schemas.AttrToolType,
-		schemas.AttrToolChoiceType, schemas.AttrToolChoiceName,
-		schemas.AttrRespToolChoiceType, schemas.AttrRespToolChoiceName:
-		return true
-	default:
-		return false
-	}
 }
 
 // anyToKeyValue converts any Go value to OTEL KeyValue

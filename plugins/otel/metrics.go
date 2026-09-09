@@ -55,9 +55,15 @@ type MetricsExporter struct {
 
 	// Bifrost metrics - histograms
 	upstreamLatencySeconds         *syncFloat64Histogram
+	overheadLatencyMicros          *syncFloat64Histogram
+	overheadComponentMicros        *syncFloat64Histogram
 	streamFirstTokenLatencySeconds *syncFloat64Histogram
 	streamInterTokenLatencySeconds *syncFloat64Histogram
 	requestRetries                 *syncFloat64Histogram
+
+	// OTel MCP semconv duration histogram. _count gives call volume and error.type gives
+	// the error rate, so no separate MCP counters are needed.
+	mcpClientOperationDuration *syncFloat64Histogram
 
 	// HTTP metrics
 	httpRequestsTotal     *syncInt64Counter
@@ -129,6 +135,17 @@ var (
 		10, 15, 30, 45, 60, 90, 120, 180, 300, 600, 900,
 	}
 
+	// overheadLatencyBuckets: Bifrost's own processing cost, i.e. total minus time
+	// blocked on upstream sockets, in microseconds. A different scale entirely from
+	// upstream latency: healthy values run from sub-millisecond to low tens of ms,
+	// dominated by request and response marshalling. Microseconds keep the fast,
+	// sub-millisecond common case as clean integers instead of tiny fractions. The
+	// tail up to 30_000_000us catches queue saturation and pathological payloads.
+	overheadLatencyBuckets = []float64{
+		100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000, 100000,
+		250000, 500000, 1000000, 2500000, 5000000, 10000000, 30000000,
+	}
+
 	// firstTokenLatencyBuckets: TTFT. Bimodal - sub-second for fast streaming
 	// providers, tens to hundreds of seconds for reasoning models. Purely additive
 	// over the prior SDK-default fallback so historical queries remain valid.
@@ -150,6 +167,11 @@ var (
 	// payload over 10KB into +Inf.
 	httpBodySizeBuckets = []float64{
 		100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000, 100_000_000, 1_000_000_000,
+	}
+
+	// mcpOperationDurationBuckets: boundaries recommended by the MCP semconv.
+	mcpOperationDurationBuckets = []float64{
+		0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60, 120, 300,
 	}
 )
 
@@ -189,18 +211,12 @@ func (h *syncFloat64Histogram) Record(ctx context.Context, value float64, opts .
 
 // NewMetricsExporter creates a new OTEL metrics exporter
 func NewMetricsExporter(ctx context.Context, config *MetricsConfig) (*MetricsExporter, error) {
-	// Generate a unique instance ID for this node
-	instanceID, err := os.Hostname()
-	if err != nil {
-		instanceID = fmt.Sprintf("bifrost-%d", time.Now().UnixNano())
-	}
-
-	// Create resource with service info
+	// Resource attrs; serviceInstanceID is also emitted as a datapoint label.
 	res, err := resource.Merge(
 		resource.Default(),
 		resource.NewSchemaless(
 			semconv.ServiceName(config.ServiceName),
-			semconv.ServiceInstanceID(instanceID),
+			semconv.ServiceInstanceID(serviceInstanceID),
 		),
 	)
 	if err != nil {
@@ -383,6 +399,22 @@ func (m *MetricsExporter) initMetrics() {
 		boundaries: upstreamLatencyBuckets,
 	}
 
+	m.overheadLatencyMicros = &syncFloat64Histogram{
+		name:       "bifrost_overhead_latency_microseconds",
+		desc:       "Latency added by Bifrost itself, in microseconds: total request time minus time blocked on upstream providers",
+		unit:       "us",
+		meter:      m.meter,
+		boundaries: overheadLatencyBuckets,
+	}
+
+	m.overheadComponentMicros = &syncFloat64Histogram{
+		name:       "bifrost_overhead_component_microseconds",
+		desc:       "Bifrost overhead latency broken down by internal component (overhead_component attribute), in microseconds. Off by default; enable with overhead_breakdown_enabled. Requires tracing to be active",
+		unit:       "us",
+		meter:      m.meter,
+		boundaries: overheadLatencyBuckets,
+	}
+
 	m.streamFirstTokenLatencySeconds = &syncFloat64Histogram{
 		name:       "bifrost_stream_first_token_latency_seconds",
 		desc:       "Latency of the first token of a stream response",
@@ -405,6 +437,15 @@ func (m *MetricsExporter) initMetrics() {
 		unit:       "{retry}",
 		meter:      m.meter,
 		boundaries: []float64{0, 1, 2, 3, 5, 10},
+	}
+
+	// Dotted name is intentional: the exact semconv metric name, not a bifrost_* metric.
+	m.mcpClientOperationDuration = &syncFloat64Histogram{
+		name:       "mcp.client.operation.duration",
+		desc:       "Duration of an MCP request as observed by the client (Bifrost) from send until the response is received",
+		unit:       "s",
+		meter:      m.meter,
+		boundaries: mcpOperationDurationBuckets,
 	}
 
 	// HTTP metrics
@@ -508,6 +549,19 @@ func (m *MetricsExporter) RecordUpstreamLatency(ctx context.Context, latencySeco
 	m.upstreamLatencySeconds.Record(ctx, latencySeconds, metric.WithAttributes(attrs...))
 }
 
+// RecordOverheadLatency records the latency Bifrost itself added to a request, in
+// microseconds. Recorded once per trace (off the root span), not once per attempt:
+// the underlying accumulator already spans every retry and fallback.
+func (m *MetricsExporter) RecordOverheadLatency(ctx context.Context, overheadMicros float64, attrs ...attribute.KeyValue) {
+	m.overheadLatencyMicros.Record(ctx, overheadMicros, metric.WithAttributes(attrs...))
+}
+
+// RecordOverheadComponent records one component's share of overhead (µs). Caller passes
+// overhead_component plus the same base attrs as RecordOverheadLatency.
+func (m *MetricsExporter) RecordOverheadComponent(ctx context.Context, overheadMicros float64, attrs ...attribute.KeyValue) {
+	m.overheadComponentMicros.Record(ctx, overheadMicros, metric.WithAttributes(attrs...))
+}
+
 // RecordStreamFirstTokenLatency records first token latency metric
 func (m *MetricsExporter) RecordStreamFirstTokenLatency(ctx context.Context, latencySeconds float64, attrs ...attribute.KeyValue) {
 	m.streamFirstTokenLatencySeconds.Record(ctx, latencySeconds, metric.WithAttributes(attrs...))
@@ -522,6 +576,11 @@ func (m *MetricsExporter) RecordStreamInterTokenLatency(ctx context.Context, lat
 // Recorded once per request (off the final span), not once per attempt.
 func (m *MetricsExporter) RecordRequestRetries(ctx context.Context, retries float64, attrs ...attribute.KeyValue) {
 	m.requestRetries.Record(ctx, retries, metric.WithAttributes(attrs...))
+}
+
+// RecordMCPOperationDuration records the mcp.client.operation.duration metric for one op.
+func (m *MetricsExporter) RecordMCPOperationDuration(ctx context.Context, durationSeconds float64, attrs ...attribute.KeyValue) {
+	m.mcpClientOperationDuration.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
 }
 
 // RecordHTTPRequest records an HTTP request metric
@@ -548,7 +607,22 @@ func (m *MetricsExporter) RecordHTTPResponseSize(ctx context.Context, sizeBytes 
 // Retry depth is intentionally NOT included here; it is reported via the dedicated
 // bifrost_request_retries histogram (recorded once per request) rather than as a label
 // on every per-attempt counter.
-func BuildBifrostAttributes(provider, model, method, virtualKeyID, virtualKeyName, selectedKeyID, selectedKeyName string, fallbackIndex int, teamID, teamName, customerID, customerName string) []attribute.KeyValue {
+// serviceInstanceID is this replica's id (hostname, timestamped fallback). Emitted
+// as both a resource attribute and a datapoint label so per-replica breakdown works
+// even when the collector drops resource attributes.
+var serviceInstanceID = resolveServiceInstanceID()
+
+func resolveServiceInstanceID() string {
+	if h, err := os.Hostname(); err == nil && h != "" {
+		return h
+	}
+	return fmt.Sprintf("bifrost-%d", time.Now().UnixNano())
+}
+
+// team/customer/businessUnit args are canonical comma-joined sets; label names stay
+// singular (team_id, ...) for dashboard compatibility. A request is scoped to at most
+// one project, so projectID/projectName are plain scalars.
+func BuildBifrostAttributes(provider, model, method, virtualKeyID, virtualKeyName, selectedKeyID, selectedKeyName string, fallbackIndex int, teamIDs, teamNames, customerIDs, customerNames, businessUnitIDs, businessUnitNames, projectID, projectName string) []attribute.KeyValue {
 	return []attribute.KeyValue{
 		attribute.String("provider", provider),
 		attribute.String("model", model),
@@ -558,10 +632,15 @@ func BuildBifrostAttributes(provider, model, method, virtualKeyID, virtualKeyNam
 		attribute.String("selected_key_id", selectedKeyID),
 		attribute.String("selected_key_name", selectedKeyName),
 		attribute.Int("fallback_index", fallbackIndex),
-		attribute.String("team_id", teamID),
-		attribute.String("team_name", teamName),
-		attribute.String("customer_id", customerID),
-		attribute.String("customer_name", customerName),
+		attribute.String("team_id", teamIDs),
+		attribute.String("team_name", teamNames),
+		attribute.String("customer_id", customerIDs),
+		attribute.String("customer_name", customerNames),
+		attribute.String("business_unit_id", businessUnitIDs),
+		attribute.String("business_unit_name", businessUnitNames),
+		attribute.String("project_id", projectID),
+		attribute.String("project_name", projectName),
+		attribute.String("service_instance_id", serviceInstanceID),
 	}
 }
 

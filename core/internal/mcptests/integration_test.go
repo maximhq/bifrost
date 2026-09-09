@@ -68,7 +68,7 @@ func TestIntegration_FullChatWorkflow(t *testing.T) {
 	// All connected clients should be in connected state
 	for _, client := range clients {
 		if client.State != "" { // Only check if state is set
-			assert.Equal(t, schemas.MCPConnectionStateConnected, client.State,
+			assert.Equal(t, schemas.MCPConnectionStateHealthy, client.State,
 				"client %s should be connected", client.ExecutionConfig.ID)
 		}
 	}
@@ -514,7 +514,7 @@ func TestIntegration_ErrorRecovery(t *testing.T) {
 	for _, client := range clients {
 		// Only check state if it's set (InProcess clients may not have state)
 		if client.State != "" {
-			assert.Equal(t, schemas.MCPConnectionStateConnected, client.State,
+			assert.Equal(t, schemas.MCPConnectionStateHealthy, client.State,
 				"client should still be connected after error")
 		}
 	}
@@ -661,7 +661,7 @@ func TestIntegration_HighLoadScenario(t *testing.T) {
 	for _, client := range clients {
 		// Only check state if it's set (InProcess clients may not have state)
 		if client.State != "" {
-			assert.Equal(t, schemas.MCPConnectionStateConnected, client.State,
+			assert.Equal(t, schemas.MCPConnectionStateHealthy, client.State,
 				"client should remain connected after high load")
 		}
 	}

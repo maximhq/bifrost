@@ -9,7 +9,7 @@ icon: "table"
 
 <Info>The MCP Sessions UI is available in **Bifrost v1.5.0-prerelease2 and above** (initial release), with per-user-headers support added in **v1.5.4**.</Info>
 
-The **MCP Sessions** page is scoped to **per-user MCP authentications** — both **per-user OAuth tokens** and **per-user submitted headers**. Server-level [`headers`](./auth/headers) and [`oauth`](./auth/oauth) clients don't surface here; their credentials live on the MCP client config itself, not as per-caller rows.
+The **MCP Sessions** page is scoped to **per-user MCP authentications** — both **per-user OAuth tokens** and **per-user submitted headers**. Server-level [`headers`](./auth/headers) and [`oauth`](./auth/oauth) clients don't surface here; their credentials live on the MCP client config itself, not as per-caller rows. Per-user clients also hold one client-level **admin discovery credential** (used only to refresh the server's tool list) that deliberately never appears on this page; it is surfaced and repaired from the client sheet instead (see [Per-User OAuth](./auth/per-user-oauth#admin-discovery-credential) and [Per-User Headers](./auth/per-user-headers#admin-discovery-credential)).
 
 Each row represents one of:
 
@@ -155,7 +155,7 @@ When a credential and a pending flow exist for the same `(identity, MCP)` bindin
 
 Check the row status on the Sessions page:
 
-- **Active** but tool still failing → look at the access-token expiry. If it's past, Bifrost will refresh on the next call automatically; if the refresh itself is failing, the row flips to `needs_reauth` after a couple of retries.
+- **Active** but tool still failing → look at the access-token expiry. If it's past, Bifrost will refresh on the next call automatically (and, when the upstream cleanly rejects a call, force-refreshes and retries that call once inline). Transient refresh failures keep retrying silently; the row flips to `needs_reauth` only when the provider permanently rejects the refresh.
 - **Orphaned** → the caller's identity has lost access to this MCP client. Restore the VK assignment / toggle `AllowOnAllVirtualKeys` back on / fix the access profile; the row reactivates on next reconcile.
 - **Needs re-auth** → click **Re-authenticate** and complete the upstream flow.
 - **Needs update** (header rows) → click **Edit values** and resubmit on the form.

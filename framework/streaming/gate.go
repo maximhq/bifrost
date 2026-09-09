@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -43,6 +44,18 @@ func (a *Accumulator) ResumeStream(traceID string) {
 	sa.Resume()
 }
 
+// ResumeStreamWithReplayInterval arms a paced resume that starts after the next chunk joins the paused buffer.
+func (a *Accumulator) ResumeStreamWithReplayInterval(traceID string, eventInterval time.Duration) bool {
+	if traceID == "" || eventInterval <= 0 {
+		return false
+	}
+	v, ok := a.streamAccumulators.Load(traceID)
+	if !ok {
+		return false
+	}
+	return v.(*StreamAccumulator).ResumeWithReplayInterval(eventInterval)
+}
+
 // ClearPausedStreamBuffer drops chunks buffered while a stream is paused.
 func (a *Accumulator) ClearPausedStreamBuffer(traceID string) error {
 	if traceID == "" {
@@ -53,6 +66,18 @@ func (a *Accumulator) ClearPausedStreamBuffer(traceID string) error {
 		return fmt.Errorf("stream accumulator not found")
 	}
 	return v.(*StreamAccumulator).ClearPausedBuffer()
+}
+
+// TransformPausedStreamBuffer atomically rewrites chunks captured by the latest pause epoch.
+func (a *Accumulator) TransformPausedStreamBuffer(traceID string, transform schemas.PausedStreamBufferTransform) error {
+	if traceID == "" {
+		return fmt.Errorf("trace ID is empty")
+	}
+	v, ok := a.streamAccumulators.Load(traceID)
+	if !ok {
+		return fmt.Errorf("stream accumulator not found")
+	}
+	return v.(*StreamAccumulator).TransformPausedBuffer(transform)
 }
 
 // EndStream is the Tracer-level entry point for terminating a stream.
@@ -209,15 +234,22 @@ func (a *Accumulator) GateSend(traceID string, chunk *schemas.BifrostStreamChunk
 	return sa.GateSend(chunk, isFinal, isHardErr, ch, ctx)
 }
 
-// Pause transitions the gate from Active to Paused. Idempotent.
+// Pause transitions the gate from Active to Paused and revokes buffered replay permission. Idempotent.
 func (sa *StreamAccumulator) Pause() {
 	sa.mu.Lock()
 	defer sa.mu.Unlock()
 	if sa.gateState != StreamStateActive {
 		return
 	}
+	// A new pause must not inherit pacing from an earlier replay.
+	sa.gateReplayEventInterval = 0
 	sa.gateState = StreamStatePaused
 	sa.gatePausedAt = sa.gateSeq
+	sa.gatePauseEpoch++
+	// Keep an older replay backlog outside the new transform scope, but do not
+	// let it cross the new pause until a transform commits or Resume is called.
+	sa.gateTransformStart = len(sa.gateReplayBuf)
+	sa.gateApprovedPrefix = 0
 }
 
 // Resume transitions the gate from Paused back to Active and wakes the flusher
@@ -228,10 +260,60 @@ func (sa *StreamAccumulator) Resume() {
 	if sa.gateState != StreamStatePaused {
 		return
 	}
+	// Plain resume drains immediately, so discard any armed replay interval.
+	sa.gateReplayEventInterval = 0
 	sa.gateState = StreamStateActive
 	if sa.gateCond != nil {
 		sa.gateCond.Broadcast()
 	}
+}
+
+// ResumeWithReplayInterval records a paced-resume request without waking the flusher;
+// the next GateSend activates it after buffering the in-flight chunk.
+func (sa *StreamAccumulator) ResumeWithReplayInterval(eventInterval time.Duration) bool {
+	sa.mu.Lock()
+	defer sa.mu.Unlock()
+	if sa.gateState != StreamStatePaused || eventInterval <= 0 {
+		return false
+	}
+	sa.gateReplayEventInterval = eventInterval
+	return true
+}
+
+// waitForReplayIntervalLocked waits between consecutive buffered event deliveries.
+// It unlocks while waiting so other stream lifecycle operations can proceed,
+// then restores the lock before reporting whether replay should continue.
+func (sa *StreamAccumulator) waitForReplayIntervalLocked() bool {
+	// Snapshot the value while locked so this wait uses one stable interval.
+	interval := sa.gateReplayEventInterval
+	if interval <= 0 {
+		return true
+	}
+	ctx := sa.gateFlusherCtx
+	timer := time.NewTimer(interval)
+	// Do not hold the stream state lock during the configured delay.
+	sa.mu.Unlock()
+	canceled := false
+	if ctx == nil {
+		<-timer.C
+	} else {
+		// Continue when the delay elapses, or stop early if the request is canceled.
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			canceled = true
+		}
+	}
+	// Stop and drain the timer before restoring the caller's locking invariant.
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	// Callers enter and leave this helper with sa.mu held.
+	sa.mu.Lock()
+	return !canceled
 }
 
 // ClearPausedBuffer removes replay chunks captured while the gate is paused.
@@ -245,11 +327,86 @@ func (sa *StreamAccumulator) ClearPausedBuffer() error {
 	}
 	sa.gateReplayBuf = nil
 	sa.gateReplayBufBytes = 0
+	sa.gateTransformStart = 0
+	sa.gateApprovedPrefix = 0
+	// Dropping the buffer also discards the pacing armed for that buffer.
+	sa.gateReplayEventInterval = 0
 	// A terminal chunk buffered while paused no longer exists; keeping the
 	// pending-terminal marker would make the flusher end the gate on resume
 	// and silently drop the caller's replacement terminal chunk.
 	sa.gatePendingTerminal = false
 	if sa.gateCond != nil {
+		sa.gateCond.Broadcast()
+	}
+	return nil
+}
+
+// TransformPausedBuffer transactionally replaces the current pause epoch's chunk pointers.
+// The callback runs without the gate mutex, and the result is installed only when the
+// paused epoch and its buffered suffix are unchanged. Callbacks must use copy-on-write.
+func (sa *StreamAccumulator) TransformPausedBuffer(transform schemas.PausedStreamBufferTransform) error {
+	if transform == nil {
+		return fmt.Errorf("paused stream buffer transform is nil")
+	}
+
+	sa.mu.Lock()
+	if sa.gateState != StreamStatePaused {
+		sa.mu.Unlock()
+		return fmt.Errorf("stream gate is not paused")
+	}
+	epoch := sa.gatePauseEpoch
+	start := sa.gateTransformStart
+	if start < 0 || start > len(sa.gateReplayBuf) || sa.gateApprovedPrefix > start {
+		sa.mu.Unlock()
+		return fmt.Errorf("paused stream buffer transform scope is invalid")
+	}
+	original := append([]*schemas.BifrostStreamChunk(nil), sa.gateReplayBuf[start:]...)
+	sa.mu.Unlock()
+
+	result, err := transform(original)
+	if err != nil {
+		return err
+	}
+	if len(result.Chunks) != len(original) {
+		return fmt.Errorf("paused stream buffer transform changed chunk count from %d to %d", len(original), len(result.Chunks))
+	}
+	if result.ReleaseCount < 0 || result.ReleaseCount > len(original) {
+		return fmt.Errorf("paused stream buffer transform release count %d is outside [0,%d]", result.ReleaseCount, len(original))
+	}
+
+	var originalBytes, transformedBytes int64
+	for i := range original {
+		originalBytes += chunkBytes(original[i])
+		transformedBytes += chunkBytes(result.Chunks[i])
+	}
+
+	sa.mu.Lock()
+	defer sa.mu.Unlock()
+	if sa.gateState != StreamStatePaused || sa.gatePauseEpoch != epoch {
+		return fmt.Errorf("paused stream buffer changed during transformation")
+	}
+	currentStart := sa.gateTransformStart
+	if currentStart < 0 || currentStart > start || sa.gateApprovedPrefix > currentStart || len(sa.gateReplayBuf) != currentStart+len(original) {
+		return fmt.Errorf("paused stream buffer changed during transformation")
+	}
+	for i := range original {
+		if sa.gateReplayBuf[currentStart+i] != original[i] {
+			return fmt.Errorf("paused stream buffer changed during transformation")
+		}
+	}
+	nextBytes := sa.gateReplayBufBytes - originalBytes + transformedBytes
+	if nextBytes < 0 {
+		nextBytes = 0
+	}
+	if nextBytes > gateReplayBufMaxBytes {
+		return fmt.Errorf("transformed paused stream buffer exceeds %d bytes", gateReplayBufMaxBytes)
+	}
+	copy(sa.gateReplayBuf[currentStart:], result.Chunks)
+	sa.gateReplayBufBytes = nextBytes
+	nextBoundary := currentStart + result.ReleaseCount
+	sa.gateTransformStart = nextBoundary
+	sa.gateApprovedPrefix = nextBoundary
+	if sa.gateApprovedPrefix > 0 && sa.gateCond != nil {
 		sa.gateCond.Broadcast()
 	}
 	return nil
@@ -270,6 +427,10 @@ func (sa *StreamAccumulator) End(err *schemas.BifrostError) {
 	defer sa.mu.Unlock()
 	if sa.gateState == StreamStateEnded {
 		return
+	}
+	if sa.gateState == StreamStatePaused {
+		// Ending before paced replay starts falls back to an immediate terminal drain.
+		sa.gateReplayEventInterval = 0
 	}
 	sa.gateState = StreamStateEnded
 	if err != nil {
@@ -324,6 +485,8 @@ func (sa *StreamAccumulator) GateSend(chunk *schemas.BifrostStreamChunk, isFinal
 			// consumer is notified and memory is released. Drops this chunk
 			// and any further chunks for this stream.
 			sa.gateState = StreamStateEnded
+			// Replay cannot continue after overflow forces the gate to end.
+			sa.gateReplayEventInterval = 0
 			sa.gateEndError = &schemas.BifrostError{
 				IsBifrostError: true,
 				Error: &schemas.ErrorField{
@@ -351,6 +514,12 @@ func (sa *StreamAccumulator) GateSend(chunk *schemas.BifrostStreamChunk, isFinal
 			sa.gateFlusherOn = true
 			sa.gateFlusherDone = make(chan struct{})
 			go sa.gateFlusher()
+		}
+		if sa.gateReplayEventInterval > 0 {
+			sa.gateState = StreamStateActive
+			if sa.gateCond != nil {
+				sa.gateCond.Broadcast()
+			}
 		}
 		sa.mu.Unlock()
 		return true
@@ -391,11 +560,18 @@ func (sa *StreamAccumulator) GateSend(chunk *schemas.BifrostStreamChunk, isFinal
 
 // drainBufferLocked drains gateReplayBuf to gateFlusherCh in order. MUST be
 // called with sa.mu held. Releases sa.mu while sending; reacquires before
-// returning. Stops draining if state transitions to Paused or ctx is done.
+// returning. While paused, it drains only the approved prefix and leaves the
+// current unevaluated suffix held. It also stops when ctx is done.
 func (sa *StreamAccumulator) drainBufferLocked() {
-	for sa.gateState != StreamStatePaused && len(sa.gateReplayBuf) > 0 {
+	for len(sa.gateReplayBuf) > 0 && (sa.gateState != StreamStatePaused || sa.gateApprovedPrefix > 0) {
 		chunk := sa.gateReplayBuf[0]
 		sa.gateReplayBuf = sa.gateReplayBuf[1:]
+		if sa.gateTransformStart > 0 {
+			sa.gateTransformStart--
+		}
+		if sa.gateApprovedPrefix > 0 {
+			sa.gateApprovedPrefix--
+		}
 		// Decrement bytes per-chunk so the counter stays accurate even if
 		// the loop exits mid-drain (Pause). Clamp at zero to absorb any
 		// rounding drift between MarshalJSON sizes captured on append vs.
@@ -409,10 +585,17 @@ func (sa *StreamAccumulator) drainBufferLocked() {
 		sa.mu.Unlock()
 		ok := sendOrCancel(ctx, ch, chunk)
 		sa.mu.Lock()
+		if ok && len(sa.gateReplayBuf) > 0 {
+			ok = sa.waitForReplayIntervalLocked()
+		}
 		if !ok {
-			// ctx done; abandon remaining buffer and end the gate.
+			// Delivery or pacing was canceled; abandon the remaining buffer.
 			sa.gateReplayBuf = nil
 			sa.gateReplayBufBytes = 0
+			sa.gateTransformStart = 0
+			sa.gateApprovedPrefix = 0
+			// Canceled replay is terminal, so its interval is no longer applicable.
+			sa.gateReplayEventInterval = 0
 			sa.gateState = StreamStateEnded
 			return
 		}
@@ -420,6 +603,10 @@ func (sa *StreamAccumulator) drainBufferLocked() {
 	if len(sa.gateReplayBuf) == 0 {
 		sa.gateReplayBuf = nil // release backing array
 		sa.gateReplayBufBytes = 0
+		sa.gateTransformStart = 0
+		sa.gateApprovedPrefix = 0
+		// Pacing belongs to this buffer and must not survive a completed replay.
+		sa.gateReplayEventInterval = 0
 	}
 }
 
@@ -447,7 +634,7 @@ func (sa *StreamAccumulator) gateFlusher() {
 	for {
 		// Wait while paused (chunks may continue to arrive), or while active
 		// with empty buffer (no work). Wake on Ended or buffered-while-active.
-		for sa.gateState != StreamStateEnded && (sa.gateState == StreamStatePaused || len(sa.gateReplayBuf) == 0) {
+		for sa.gateState != StreamStateEnded && (len(sa.gateReplayBuf) == 0 || (sa.gateState == StreamStatePaused && sa.gateApprovedPrefix == 0)) {
 			sa.gateCond.Wait()
 		}
 		// Drain whatever is buffered (state is Active or Ended here).

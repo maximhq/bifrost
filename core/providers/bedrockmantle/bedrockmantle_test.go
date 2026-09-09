@@ -14,7 +14,11 @@ import (
 // It is gated on AWS credentials (the SigV4 path needs them). The Claude scenarios exercise the
 // native-Anthropic Messages surface; gpt-oss exercises the OpenAI-compatible surface. Only the
 // operations the provider actually implements are enabled — everything else (embeddings, rerank,
-// batch, files, image edit/variation, count tokens, text completion) is an unsupported stub.
+// batch, files, image edit/variation, text completion) is an unsupported stub.
+//
+// CountTokens runs against ChatModel, which is a Claude id: the count_tokens path lives on the
+// native-Anthropic surface only, so pointing this scenario at a gpt-oss/Gemma model would
+// (correctly) return an unsupported-operation error.
 //
 // The model ids live in the harness account (GetKeysForProvider, case BedrockMantle); if a model
 // is reported as not found, tune the aliases there to whatever the mantle endpoints accept.
@@ -61,6 +65,7 @@ func TestBedrockMantle(t *testing.T) {
 			EagerInputStreaming:        true,
 			StructuredOutputs:          true,
 			PromptCaching:              true,
+			CountTokens:                true, // native-Anthropic /anthropic/v1/messages/count_tokens
 
 			// Unsupported by the mantle provider (unsupported-operation stubs).
 			TextCompletion: false,
@@ -81,7 +86,6 @@ func TestBedrockMantle(t *testing.T) {
 			FileDelete:     false,
 			FileContent:    false,
 			FileBatchInput: false,
-			CountTokens:    false,
 			ImageEdit:      false,
 			ImageVariation: false,
 		},

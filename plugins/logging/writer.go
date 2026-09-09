@@ -1,6 +1,7 @@
 package logging
 
 import (
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -372,6 +373,7 @@ func estimateLogEntrySize(log *logstore.Log) int {
 		len(log.ImageGenerationInput) +
 		len(log.ImageGenerationOutput) +
 		len(log.VideoGenerationInput) +
+		len(log.VideoEditInput) +
 		len(log.VideoGenerationOutput) +
 		len(log.VideoRetrieveOutput) +
 		len(log.VideoDownloadOutput) +
@@ -386,6 +388,8 @@ func estimateLogEntrySize(log *logstore.Log) int {
 		len(log.PassthroughResponseBody) +
 		len(log.ContentSummary) +
 		len(log.CacheDebug) +
+		len(log.GuardrailDebug) +
+		len(log.RoutingMetadata) +
 		len(log.RoutingEngineLogs)
 	// Baseline for fixed-width columns and struct overhead
 	return n + 512
@@ -397,7 +401,7 @@ func estimateMCPToolLogEntrySize(log *logstore.MCPToolLog) int {
 	if log == nil {
 		return 0
 	}
-	return len(log.Arguments) + len(log.Result) + len(log.ErrorDetails) + len(log.Metadata) + 512
+	return len(log.Arguments) + len(log.Result) + len(log.ErrorDetails) + len(log.Metadata) + len(log.PluginLogs) + 512
 }
 
 // buildStaleMCPToolLogEntry converts a pending MCP processing row into a
@@ -443,6 +447,8 @@ func buildInitialLogEntry(pending *PendingLogData) *logstore.Log {
 	if len(pending.RoutingEnginesUsed) > 0 {
 		entry.RoutingEnginesUsed = pending.RoutingEnginesUsed
 	}
+	applyUserAgent(entry, pending.InitialData.UserAgent)
+	applyApp(entry, pending.InitialData.App)
 	return entry
 }
 
@@ -470,6 +476,7 @@ func buildCompleteLogEntryFromPending(pending *PendingLogData) *logstore.Log {
 		ImageEditInputParsed:        pending.InitialData.ImageEditInput,
 		ImageVariationInputParsed:   pending.InitialData.ImageVariationInput,
 		VideoGenerationInputParsed:  pending.InitialData.VideoGenerationInput,
+		VideoEditInputParsed:        pending.InitialData.VideoEditInput,
 		PassthroughRequestBody:      pending.InitialData.PassthroughRequestBody,
 	}
 	if pending.ParentRequestID != "" {
@@ -478,7 +485,49 @@ func buildCompleteLogEntryFromPending(pending *PendingLogData) *logstore.Log {
 	if len(pending.RoutingEnginesUsed) > 0 {
 		entry.RoutingEnginesUsed = pending.RoutingEnginesUsed
 	}
+	applyUserAgent(entry, pending.InitialData.UserAgent)
+	applyApp(entry, pending.InitialData.App)
 	return entry
+}
+
+// User-Agent and App map to fixed-width DB columns (varchar(512) / varchar(128)).
+// User-Agent is an untrusted, unbounded client header, so clamp both before
+// persisting to avoid an insert that fails (and silently drops the log) when a
+// client sends an oversized header.
+const (
+	maxPersistedUserAgentLen = 512
+	maxPersistedAppLen       = 128
+)
+
+// clampString truncates s to at most max bytes. The columns are sized in
+// characters but ASCII User-Agent headers make bytes a safe lower bound. A raw
+// byte-slice truncation can split a multi-byte UTF-8 rune, so ToValidUTF8
+// strips the dangling partial rune to keep the result valid UTF-8 for the
+// varchar insert.
+func clampString(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return strings.ToValidUTF8(s[:max], "")
+}
+
+func applyUserAgent(entry *logstore.Log, userAgent string) {
+	if userAgent == "" {
+		return
+	}
+	entry.UserAgent = new(clampString(userAgent, maxPersistedUserAgentLen))
+	if entry.App == nil {
+		if app := schemas.DetectAppFromUserAgent(userAgent); app != "" {
+			entry.App = new(clampString(app, maxPersistedAppLen))
+		}
+	}
+}
+
+func applyApp(entry *logstore.Log, app string) {
+	if app == "" {
+		return
+	}
+	entry.App = new(clampString(app, maxPersistedAppLen))
 }
 
 // applyModelAlias sets entry.Model to resolvedModel (falling back to requestedModel if empty)
@@ -515,6 +564,19 @@ func applyResolvedAliasInfo(entry *logstore.Log, resolvedAlias *schemas.Resolved
 	}
 }
 
+// applyServedModel records the model the provider named on the response body when
+// it differs from the one the caller addressed.
+func applyServedModel(entry *logstore.Log, result *schemas.BifrostResponse) {
+	if entry == nil {
+		return
+	}
+	served := result.ServedModel()
+	if served == "" || served == entry.Model {
+		return
+	}
+	entry.ServedModel = &served
+}
+
 // applyOutputFieldsToEntry sets common output fields on a log entry.
 func applyOutputFieldsToEntry(
 	entry *logstore.Log,
@@ -526,8 +588,10 @@ func applyOutputFieldsToEntry(
 	customerID, customerName string,
 	userID, userName string,
 	businessUnitID, businessUnitName string,
+	projectID, projectName string,
 	numberOfRetries int,
 	latency int64,
+	upstreamLatency, overheadLatency *int64,
 	attemptTrail []schemas.KeyAttemptRecord,
 ) {
 	entry.SelectedKeyID = selectedKeyID
@@ -577,6 +641,12 @@ func applyOutputFieldsToEntry(
 	if businessUnitName != "" {
 		entry.BusinessUnitName = &businessUnitName
 	}
+	if projectID != "" {
+		entry.ProjectID = &projectID
+	}
+	if projectName != "" {
+		entry.ProjectName = &projectName
+	}
 	if numberOfRetries != 0 {
 		entry.NumberOfRetries = numberOfRetries
 	}
@@ -584,7 +654,30 @@ func applyOutputFieldsToEntry(
 		latF := float64(latency)
 		entry.Latency = &latF
 	}
+	setUpstreamOverheadLatency(entry, upstreamLatency, overheadLatency)
 	if len(attemptTrail) > 0 {
 		entry.AttemptTrailParsed = attemptTrail
 	}
+}
+
+// setUpstreamOverheadLatency copies upstream/overhead onto the entry. nil stays nil,
+// so an absent measurement is never persisted as zero.
+func setUpstreamOverheadLatency(entry *logstore.Log, upstreamLatency, overheadLatency *int64) {
+	if upstreamLatency != nil {
+		upF := float64(*upstreamLatency)
+		entry.UpstreamLatency = &upF
+	}
+	if overheadLatency != nil {
+		ovF := float64(*overheadLatency)
+		entry.OverheadLatency = &ovF
+	}
+}
+
+// applyUpstreamOverheadToEntry copies upstream/overhead from a response's ExtraFields
+// onto the entry. Used by the streaming path.
+func applyUpstreamOverheadToEntry(entry *logstore.Log, ef *schemas.BifrostResponseExtraFields) {
+	if ef == nil {
+		return
+	}
+	setUpstreamOverheadLatency(entry, ef.UpstreamLatency, ef.OverheadLatency)
 }

@@ -1,7 +1,7 @@
 import { configureStore } from "@reduxjs/toolkit";
 import { baseApi } from "./apis/baseApi";
 import { appReducer, pluginReducer, providerReducer } from "./slices";
-import { reducers as enterpriseReducers, type EnterpriseState } from "@enterprise/lib/store/slices";
+import { middleware as enterpriseMiddleware, reducers as enterpriseReducers, type EnterpriseState } from "@enterprise/lib/store/slices";
 // Importing enterprise APIs triggers their self-injection into baseApi
 import "@enterprise/lib/store/apis";
 
@@ -37,7 +37,7 @@ export const store = configureStore({
 				// Ignore these paths in the state
 				ignoredPaths: ["api.queries", "api.mutations"],
 			},
-		}).concat(baseApi.middleware),
+		}).concat(baseApi.middleware, ...enterpriseMiddleware),
 	devTools: process.env.NODE_ENV !== "production",
 });
 

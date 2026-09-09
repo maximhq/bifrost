@@ -17,7 +17,8 @@ func (request *OpenAITranscriptionRequest) ToBifrostTranscriptionRequest(ctx *sc
 		Provider: provider,
 		Model:    model,
 		Input: &schemas.TranscriptionInput{
-			File: request.File,
+			File:     request.File,
+			Filename: request.Filename,
 		},
 		Params:    &request.TranscriptionParameters,
 		Fallbacks: schemas.ParseFallbacks(request.Fallbacks),

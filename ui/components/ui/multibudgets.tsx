@@ -1,7 +1,8 @@
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
-import { resetDurationOptions } from "@/lib/constants/governance";
+import QuarterStartSelect from "@/components/ui/quarterStartSelect";
+import { budgetResetDurationOptions } from "@/lib/constants/governance";
 import { Plus, RotateCcw, Trash2 } from "lucide-react";
 import { useMemo } from "react";
 
@@ -9,7 +10,11 @@ export interface BudgetLineEntry {
 	id?: string;
 	max_limit?: number;
 	reset_duration: string;
+	reset_config?: { quarter_start_month?: number };
 }
+
+// Quarterly is the only period with settings beyond the duration itself.
+const isQuarterly = (duration: string) => duration.endsWith("Q");
 
 interface MultiBudgetLinesProps {
 	"data-testid"?: string;
@@ -26,7 +31,7 @@ export default function MultiBudgetLines({
 	label = "Budget Configuration",
 	lines,
 	onChange,
-	options = resetDurationOptions,
+	options = budgetResetDurationOptions,
 	onReset,
 	showReset,
 }: MultiBudgetLinesProps) {
@@ -64,7 +69,17 @@ export default function MultiBudgetLines({
 
 	function updateResetDuration(index: number, value: string) {
 		const updated = [...lines];
-		updated[index] = { ...updated[index], reset_duration: value };
+		// Drop the quarter definition when leaving a quarterly window. The API
+		// rejects reset_config on any other duration, and keeping it would silently
+		// resurrect a start month the operator never re-chose on switching back.
+		const { reset_config, ...rest } = updated[index];
+		updated[index] = isQuarterly(value) ? { ...rest, reset_config, reset_duration: value } : { ...rest, reset_duration: value };
+		onChange(updated);
+	}
+
+	function updateQuarterStartMonth(index: number, quarterStartMonth: number) {
+		const updated = [...lines];
+		updated[index] = { ...updated[index], reset_config: { quarter_start_month: quarterStartMonth } };
 		onChange(updated);
 	}
 
@@ -114,14 +129,25 @@ export default function MultiBudgetLines({
 								variant="ghost"
 								size="icon"
 								type="button"
-								className="text-destructive mb-0.5 h-8 w-8 shrink-0"
+								className="text-muted-foreground mb-0.5 h-8 w-8 shrink-0 hover:text-red-400"
 								onClick={() => removeLine(index)}
 							>
 								<Trash2 className="h-4 w-4" />
 							</Button>
 						</div>
+						{isQuarterly(line.reset_duration) && (
+							// mr-10 (40px) = the remove button (w-8) + its gap-2, so the fiscal-year
+							// row shares its right edge with the Reset Period select above it.
+							<div className="mr-10">
+								<QuarterStartSelect
+									data-testid={`${testId}-quarter-config-${index}`}
+									value={line.reset_config?.quarter_start_month}
+									onChange={(month) => updateQuarterStartMonth(index, month)}
+								/>
+							</div>
+						)}
 						{isDuplicate && (
-							<p className="text-destructive pl-0.5 text-xs">Duplicate reset period — each budget line must use a different interval.</p>
+							<p className="text-destructive pl-0.5 text-xs">Duplicate reset period; each budget line must use a different interval.</p>
 						)}
 					</div>
 				);

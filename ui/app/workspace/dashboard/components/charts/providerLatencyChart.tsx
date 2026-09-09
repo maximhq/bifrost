@@ -1,7 +1,14 @@
 import type { ProviderLatencyHistogramResponse } from "@/lib/types/logs";
 import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { formatFullTimestamp, formatLatency, formatTimestamp, getModelColor, LATENCY_COLORS, pickTopSeries } from "../../utils/chartUtils";
+import {
+	formatFullTimestamp,
+	formatLatency,
+	formatTimestamp,
+	computeDisplaySeries,
+	getModelColor,
+	LATENCY_COLORS,
+} from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 
@@ -99,7 +106,7 @@ function ProviderLatencyChartImpl({ data, chartType, startTime, endTime, selecte
 		// No "Other" bucket — averaging latencies across the long tail would mislead.
 		const providers = isSingleProvider
 			? [selectedProvider]
-			: pickTopSeries(data.buckets, data.providers, (b, p) => b.by_provider?.[p]?.total_requests ?? 0);
+			: computeDisplaySeries(data.buckets, data.providers, (b, p) => b.by_provider?.[p]?.total_requests ?? 0, false);
 
 		const processed = data.buckets.map((bucket, index) => {
 			const item: any = {

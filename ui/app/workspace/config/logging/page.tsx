@@ -2,7 +2,7 @@ import LoggingView from "../views/loggingView";
 
 export default function LoggingPage() {
 	return (
-		<div className="mx-auto flex w-full max-w-7xl">
+		<div className="no-padding-parent mx-auto flex w-full">
 			<LoggingView />
 		</div>
 	);

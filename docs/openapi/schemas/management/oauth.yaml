@@ -2,7 +2,7 @@
 
 MCPAuthType:
   type: string
-  enum: [none, headers, oauth, per_user_oauth, per_user_headers]
+  enum: [none, headers, oauth, per_user_oauth, per_user_headers, token_exchange]
   description: |
     Authentication type for MCP connections:
     - none: No authentication
@@ -10,20 +10,30 @@ MCPAuthType:
     - oauth: OAuth 2.0 authentication (server-level, admin authenticates once)
     - per_user_oauth: Per-user OAuth 2.0 authentication (each user authenticates individually)
     - per_user_headers: Per-user headers (each user submits their own header values; admin declares the schema)
+    - token_exchange: Delegated token exchange (each caller's own identity-provider token is
+      exchanged for a short-lived token scoped to this server on every call; nothing is
+      stored per caller). Requires an enabled identity-provider integration (enterprise).
 
 OAuthConfigRequest:
   type: object
-  description: OAuth configuration for MCP client creation
+  description: |
+    OAuth configuration for an MCP client. Used both when creating a client
+    (initiates the OAuth flow) and when updating one (rotates the stored
+    OAuth config in place; see MCPClientUpdateRequest.oauth_config).
   properties:
     client_id:
-      type: string
+      allOf:
+        - $ref: '../../schemas/management/common.yaml#/EnvVar'
       description: |
         OAuth client ID. Optional if client supports dynamic client registration (RFC 7591).
         If not provided, the server_url must be set for OAuth discovery and dynamic registration.
+        Supports env./vault. references.
     client_secret:
-      type: string
+      allOf:
+        - $ref: '../../schemas/management/common.yaml#/EnvVar'
       description: |
         OAuth client secret. Optional for public clients using PKCE or clients obtained via dynamic registration.
+        Supports env./vault. references.
     authorize_url:
       type: string
       description: |
@@ -43,6 +53,12 @@ OAuthConfigRequest:
       description: |
         OAuth scopes requested. Optional - can be discovered from server_url if not provided.
         Example: ["read", "write"]
+    resource:
+      type: string
+      description: |
+        Resource indicator (RFC 8707) sent on authorization and token requests.
+        Optional - identifies the protected MCP resource the token is intended
+        for, when the upstream provider supports resource indicators.
 
 OAuthFlowInitiation:
   type: object
@@ -66,6 +82,23 @@ OAuthFlowInitiation:
     mcp_client_id:
       type: string
       description: The MCP client ID that initiated this OAuth flow
+    complete_url:
+      type: string
+      description: |
+        Relative URL to POST once the flow is authorized
+        (/api/mcp/client/{oauth_config_id}/complete-oauth). Note the path
+        parameter is the oauth_config_id, not the MCP client ID.
+    status_url:
+      type: string
+      description: |
+        Relative URL to poll for the flow status
+        (/api/oauth/config/{oauth_config_id}/status). Wait for
+        status "authorized" before calling complete_url.
+    next_steps:
+      type: array
+      items:
+        type: string
+      description: Human-readable steps to complete the flow (authorize, poll, complete)
 
 OAuthConfigStatus:
   type: object
@@ -86,10 +119,6 @@ OAuthConfigStatus:
       type: string
       format: date-time
       description: When this OAuth config was created
-    expires_at:
-      type: string
-      format: date-time
-      description: When this OAuth config expires (becomes invalid if not completed)
     token_id:
       type: string
       description: ID of the associated OAuth token (only present if status is authorized)

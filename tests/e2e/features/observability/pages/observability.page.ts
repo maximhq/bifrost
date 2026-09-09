@@ -179,6 +179,11 @@ export class ObservabilityPage extends BasePage {
    */
   async enableMetricsExport(): Promise<void> {
     await this.selectConnector('otel')
+    // The metrics-export toggle lives in the profile's Metrics tab, which is not the
+    // default active tab, so select it before interacting with the toggle.
+    const metricsTab = this.page.getByTestId('otel-profile-0-tab-metrics')
+    await metricsTab.waitFor({ state: 'visible', timeout: 5000 })
+    await metricsTab.click()
     const switch_ = this.page.getByTestId('otel-metrics-export-toggle')
     await switch_.waitFor({ state: 'visible', timeout: 5000 })
     const checked = await switch_.getAttribute('data-state') === 'checked'
@@ -290,6 +295,12 @@ export class ObservabilityPage extends BasePage {
    * so we also treat the "Enable Metrics Export" section as OTel content.
    */
   async isMetricsEndpointVisible(): Promise<boolean> {
+    // The metrics subsection lives in the profile's Metrics tab, which is not active by
+    // default; select it first so its content is mounted before checking visibility.
+    const metricsTab = this.page.getByTestId('otel-profile-0-tab-metrics')
+    await metricsTab.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {})
+    await metricsTab.click().catch(() => {})
+
     // Metrics endpoint input (only visible when Enable Metrics Export is on)
     const metricsInputByValue = this.page.locator('input[value*="/metrics"]')
     const valueVisible = await metricsInputByValue.isVisible().catch(() => false)

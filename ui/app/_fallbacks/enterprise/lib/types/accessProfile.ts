@@ -5,6 +5,9 @@ export interface AccessProfileBudgetLine {
 	reset_duration: string;
 	current_usage: number;
 	last_reset: string;
+	override_amount?: number;
+	override_mode?: "cycles" | "forever";
+	override_cycles_remaining?: number;
 	alert_thresholds?: number[];
 }
 
@@ -38,4 +41,9 @@ export interface UserAccessProfile {
 
 export interface GetUserAccessProfilesResponse {
 	access_profiles: UserAccessProfile[];
+}
+
+export interface VKCreationPolicyResponse {
+	has_access_profile: boolean;
+	profile_name?: string;
 }

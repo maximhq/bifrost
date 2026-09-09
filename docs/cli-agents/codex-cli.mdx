@@ -96,3 +96,110 @@ Bifrost supports the following providers with the `provider/model-name` format:
 <Warning>
 Non-OpenAI models **must support tool use** for Codex CLI to work properly. Codex CLI relies on tool calling for file operations, terminal commands, and code editing. Models without tool use support will fail on most operations.
 </Warning>
+
+## Listing Non-OpenAI Models in the Model Picker
+
+You can always start or switch to a non-OpenAI model by passing it explicitly (`codex --model bedrock/...` or `/model bedrock/...`). However, these models do not appear in the `/models` picker by default, and selecting them logs a warning like:
+
+```
+⚠ Model metadata for `bedrock/anthropic.claude-haiku-4-5` not found.
+  Defaulting to fallback metadata; this can degrade performance and cause issues.
+```
+
+This happens because Codex CLI builds its model picker from its own catalogue i.e. a list bundled into the Codex binary plus a refresh tied to your OpenAI account. Bifrost sits on the inference path, not Codex's model-discovery path, so Codex never learns about your non-OpenAI models. The fallback metadata also assigns a conservative context window, which can trigger premature history compaction.
+
+To make non-OpenAI models show up in `/models` and carry correct metadata, create a local model catalog file and reference it from `config.toml`.
+
+### 1. Create a model catalog file
+
+You don't need to create a model entry from scratch. First choose a complete, compatible entry from `~/.codex/models_cache.json`, then copy it into `~/.codex/bifrost_catalog.json` while overriding only `slug`, `display_name`, and `context_window`.
+
+The following example shows the complete entry shape. The two `<COPY-...>` values represent long, version-specific strings; copy their full values from the same source entry without modifying them.
+
+```json
+{
+  "models": [
+    {
+      "slug": "bedrock/anthropic.claude-haiku-4-5",
+      "display_name": "Claude Haiku 4.5 (Bifrost)",
+      "description": "Small, fast, and cost-efficient model for simpler coding tasks.",
+      "default_reasoning_level": "medium",
+      "supported_reasoning_levels": [
+        {
+          "effort": "low",
+          "description": "Fast responses with lighter reasoning"
+        },
+        {
+          "effort": "medium",
+          "description": "Balances speed and reasoning depth for everyday tasks"
+        },
+        {
+          "effort": "high",
+          "description": "Greater reasoning depth for complex problems"
+        },
+        {
+          "effort": "xhigh",
+          "description": "Extra high reasoning depth for complex problems"
+        }
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 23,
+      "additional_speed_tiers": [],
+      "service_tiers": [],
+      "availability_nux": null,
+      "upgrade": null,
+      "base_instructions": "<COPY-FULL-BASE-INSTRUCTIONS-FROM-SOURCE-ENTRY>",
+      "model_messages": {
+        "instructions_template": "<COPY-FULL-INSTRUCTIONS-TEMPLATE-FROM-SOURCE-ENTRY>",
+        "instructions_variables": {},
+        "approvals": null,
+        "auto_review": null,
+        "permissions": null
+      },
+      "include_skills_usage_instructions": true,
+      "default_reasoning_summary": "none",
+      "support_verbosity": true,
+      "default_verbosity": "medium",
+      "apply_patch_tool_type": "freeform",
+      "web_search_tool_type": "text_and_image",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 10000
+      },
+      "supports_parallel_tool_calls": true,
+      "supports_image_detail_original": true,
+      "context_window": 200000,
+      "max_context_window": 272000,
+      "comp_hash": "2911",
+      "effective_context_window_percent": 95,
+      "experimental_supported_tools": [],
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "supports_search_tool": true,
+      "use_responses_lite": false
+    }
+  ]
+}
+```
+
+<Note>
+The catalog JSON schema is internal to Codex and can change between versions. Select a source entry whose API behavior and capabilities are closest to the target model. Preserve every other field from that entry, including compatibility, response parsing, priority, visibility, truncation, reasoning, and tooling metadata. Do not trim the copied object into a minimal entry or remove fields that appear optional.
+</Note>
+
+### 2. Reference it from config.toml
+
+Add the `model_catalog_json` key to your `~/.codex/config.toml`, pointing at the file:
+
+```toml
+model_catalog_json = "/Users/<you>/.codex/bifrost_catalog.json"
+```
+
+Restart Codex and run `/models` — your Bifrost models now appear in the picker, and the metadata warning is gone.
+
+<Warning>
+This makes non-OpenAI models appear in the **Codex CLI** picker only. The Codex desktop app's model dropdown is populated from your OpenAI account's catalogue and does **not** merge the local `model_catalog_json` file. Non-OpenAI models won't appear there. In the app, select them with the in-session `/model bedrock/...` command instead.
+</Warning>

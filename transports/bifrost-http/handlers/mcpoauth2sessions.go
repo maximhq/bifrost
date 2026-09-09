@@ -50,10 +50,12 @@ type oauth2SessionsListResponse struct {
 // substring matched against the client name/id and the bound identity.
 // Limit/Offset paginate the filtered result.
 type oauth2SessionsListQuery struct {
-	Search string
-	Modes  []string
-	Limit  int
-	Offset int
+	Search        string
+	Modes         []string
+	VirtualKeyIDs []string
+	UserIDs       []string
+	Limit         int
+	Offset        int
 }
 
 // parseOAuth2SessionsListQuery extracts pagination + filter params from the
@@ -75,6 +77,8 @@ func parseOAuth2SessionsListQuery(ctx *fasthttp.RequestCtx) (oauth2SessionsListQ
 			return q, false
 		}
 	}
+	q.VirtualKeyIDs = parseCommaSeparated(string(args.Peek("virtual_key_id")))
+	q.UserIDs = parseCommaSeparated(string(args.Peek("user_id")))
 	if s := string(args.Peek("limit")); s != "" {
 		n, err := strconv.Atoi(s)
 		if err != nil {
@@ -120,10 +124,12 @@ func (h *OAuth2SessionsHandler) listSessions(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	sessions, totalCount, err := h.store.ConfigStore.ListOAuth2Sessions(ctx, configstore.OAuth2SessionsQueryParams{
-		Search: q.Search,
-		Modes:  q.Modes,
-		Limit:  q.Limit,
-		Offset: q.Offset,
+		Search:        q.Search,
+		Modes:         q.Modes,
+		VirtualKeyIDs: q.VirtualKeyIDs,
+		UserIDs:       q.UserIDs,
+		Limit:         q.Limit,
+		Offset:        q.Offset,
 	})
 	if err != nil {
 		logger.Error("oauth2 sessions: failed to list sessions: %v", err)

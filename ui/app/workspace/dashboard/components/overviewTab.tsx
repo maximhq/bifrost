@@ -5,17 +5,30 @@ import type {
 	LogStats,
 	LogsHistogramResponse,
 	ModelHistogramResponse,
+	ThroughputHistogramResponse,
 	TokenHistogramResponse,
 } from "@/lib/types/logs";
 import { COMPACT_NUMBER_FORMAT } from "@/lib/utils/numbers";
 import NumberFlow from "@number-flow/react";
 import { memo, useMemo } from "react";
-import { CHART_COLORS, CHART_HEADER_LEGEND_CLASS, LATENCY_COLORS, getModelColor } from "../utils/chartUtils";
+import {
+	CHART_COLORS,
+	CHART_HEADER_LEGEND_CLASS,
+	LATENCY_COLORS,
+	OTHER_SERIES_COLOR,
+	OTHER_SERIES_KEY,
+	OTHER_SERIES_LABEL,
+	THROUGHPUT_COLOR,
+	formatTokensPerSecond,
+	getModelColor,
+} from "../utils/chartUtils";
 import { ChartCard } from "./charts/chartCard";
 import { type ChartType, ChartTypeToggle } from "./charts/chartTypeToggle";
 import { CostChart } from "./charts/costChart";
 import ExternalCacheTokenMeterChart from "./charts/externalCacheTokenMeterChart";
 import { LatencyChart } from "./charts/latencyChart";
+import { OverheadChart } from "./charts/overheadChart";
+import { ThroughputChart } from "./charts/throughputChart";
 import LocalCacheTokenMeterChart from "./charts/localCacheTokenMeterChart";
 import { LogVolumeChart } from "./charts/logVolumeChart";
 import { ModelFilterSelect } from "./charts/modelFilterSelect";
@@ -29,6 +42,7 @@ export interface OverviewTabProps {
 	costData: CostHistogramResponse | null;
 	modelData: ModelHistogramResponse | null;
 	latencyData: LatencyHistogramResponse | null;
+	throughputData: ThroughputHistogramResponse | null;
 	logsStats: LogStats | null;
 
 	// Loading states
@@ -37,6 +51,7 @@ export interface OverviewTabProps {
 	loadingCost: boolean;
 	loadingModels: boolean;
 	loadingLatency: boolean;
+	loadingThroughput: boolean;
 	loadingStats: boolean;
 
 	// Time range
@@ -49,6 +64,8 @@ export interface OverviewTabProps {
 	costChartType: ChartType;
 	modelChartType: ChartType;
 	latencyChartType: ChartType;
+	overheadChartType: ChartType;
+	throughputChartType: ChartType;
 
 	// Model selections
 	costModel: string;
@@ -65,6 +82,8 @@ export interface OverviewTabProps {
 	onCostChartToggle: (type: ChartType) => void;
 	onModelChartToggle: (type: ChartType) => void;
 	onLatencyChartToggle: (type: ChartType) => void;
+	onOverheadChartToggle: (type: ChartType) => void;
+	onThroughputChartToggle: (type: ChartType) => void;
 
 	// Filter callbacks
 	onCostModelChange: (model: string) => void;
@@ -77,12 +96,14 @@ function OverviewTabImpl({
 	costData,
 	modelData,
 	latencyData,
+	throughputData,
 	logsStats,
 	loadingHistogram,
 	loadingTokens,
 	loadingCost,
 	loadingModels,
 	loadingLatency,
+	loadingThroughput,
 	loadingStats,
 	startTime,
 	endTime,
@@ -91,6 +112,8 @@ function OverviewTabImpl({
 	costChartType,
 	modelChartType,
 	latencyChartType,
+	overheadChartType,
+	throughputChartType,
 	costModel,
 	usageModel,
 	costModels,
@@ -101,6 +124,8 @@ function OverviewTabImpl({
 	onCostChartToggle,
 	onModelChartToggle,
 	onLatencyChartToggle,
+	onOverheadChartToggle,
+	onThroughputChartToggle,
 	onCostModelChange,
 	onUsageModelChange,
 }: OverviewTabProps) {
@@ -147,6 +172,35 @@ function OverviewTabImpl({
 		}
 		return count > 0 ? weighted / count : null;
 	}, [latencyData]);
+
+	// Request-weighted average Bifrost overhead across buckets, mirroring latencyAvg.
+	const overheadAvg = useMemo(() => {
+		if (!latencyData?.buckets || latencyData.buckets.length === 0) return null;
+		let weighted = 0;
+		let count = 0;
+		for (const b of latencyData.buckets) {
+			const reqs = b.total_requests ?? 0;
+			if (reqs === 0) continue;
+			weighted += (b.avg_overhead ?? 0) * reqs;
+			count += reqs;
+		}
+		return count > 0 ? weighted / count : null;
+	}, [latencyData]);
+
+	// Weighted-average throughput across buckets (weighted by request count) so
+	// the header figure matches how the aggregate rate is computed per bucket.
+	const throughputAvg = useMemo(() => {
+		if (!throughputData?.buckets || throughputData.buckets.length === 0) return null;
+		let weighted = 0;
+		let count = 0;
+		for (const b of throughputData.buckets) {
+			const reqs = b.total_requests ?? 0;
+			if (reqs === 0) continue;
+			weighted += (b.tokens_per_second ?? 0) * reqs;
+			count += reqs;
+		}
+		return count > 0 ? weighted / count : null;
+	}, [throughputData]);
 
 	return (
 		<>
@@ -266,10 +320,10 @@ function OverviewTabImpl({
 																<span
 																	className="h-2 w-2 shrink-0 rounded-full"
 																	style={{
-																		backgroundColor: getModelColor(idx + 1),
+																		backgroundColor: model === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx + 1),
 																	}}
 																/>
-																{model}
+																{model === OTHER_SERIES_KEY ? OTHER_SERIES_LABEL : model}
 															</span>
 														))}
 													</div>
@@ -342,10 +396,10 @@ function OverviewTabImpl({
 																<span
 																	className="h-2 w-2 shrink-0 rounded-full"
 																	style={{
-																		backgroundColor: getModelColor(idx + 1),
+																		backgroundColor: model === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx + 1),
 																	}}
 																/>
-																{model}
+																{model === OTHER_SERIES_KEY ? OTHER_SERIES_LABEL : model}
 															</span>
 														))}
 													</div>
@@ -424,6 +478,76 @@ function OverviewTabImpl({
 					}
 				>
 					<LatencyChart data={latencyData} chartType={latencyChartType} startTime={startTime} endTime={endTime} />
+				</ChartCard>
+
+				{/* Bifrost Overhead Chart */}
+				<ChartCard
+					title="Bifrost Overhead"
+					loading={loadingLatency}
+					testId="chart-overhead"
+					totalLabel="Avg"
+					total={
+						overheadAvg !== null ? (
+							<NumberFlow value={overheadAvg} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="ms" />
+						) : undefined
+					}
+					totalTooltip={overheadAvg !== null ? `${overheadAvg.toLocaleString("en-US", { maximumFractionDigits: 6 })}ms` : undefined}
+					legend={
+						<div className={CHART_HEADER_LEGEND_CLASS}>
+							<span className="flex items-center gap-1">
+								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.avg }} />
+								<span className="text-muted-foreground">Avg</span>
+							</span>
+							<span className="flex items-center gap-1">
+								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.p90 }} />
+								<span className="text-muted-foreground">P90</span>
+							</span>
+							<span className="flex items-center gap-1">
+								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.p95 }} />
+								<span className="text-muted-foreground">P95</span>
+							</span>
+							<span className="flex items-center gap-1">
+								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.p99 }} />
+								<span className="text-muted-foreground">P99</span>
+							</span>
+						</div>
+					}
+					controls={
+						<ChartTypeToggle chartType={overheadChartType} onToggle={onOverheadChartToggle} data-testid="dashboard-overhead-chart-toggle" />
+					}
+				>
+					<OverheadChart data={latencyData} chartType={overheadChartType} startTime={startTime} endTime={endTime} />
+				</ChartCard>
+
+				{/* Throughput (tokens/sec) Chart */}
+				<ChartCard
+					title="Throughput"
+					loading={loadingThroughput}
+					testId="chart-throughput"
+					totalLabel="Avg"
+					total={
+						throughputAvg !== null ? <span className="truncate whitespace-nowrap">{formatTokensPerSecond(throughputAvg)}</span> : undefined
+					}
+					totalTooltip={
+						throughputAvg !== null ? `${throughputAvg.toLocaleString("en-US", { maximumFractionDigits: 2 })} tokens/sec` : undefined
+					}
+					legend={
+						<div className={CHART_HEADER_LEGEND_CLASS}>
+							<span className="flex items-center gap-1">
+								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: THROUGHPUT_COLOR }} />
+								<span className="text-muted-foreground">Tokens/sec</span>
+							</span>
+						</div>
+					}
+					controls={
+						<ChartTypeToggle
+							chartType={throughputChartType}
+							onToggle={onThroughputChartToggle}
+							data-testid="dashboard-throughput-chart-toggle"
+						/>
+					}
+				>
+					<ThroughputChart data={throughputData} chartType={throughputChartType} startTime={startTime} endTime={endTime} />
 				</ChartCard>
 			</div>
 		</>

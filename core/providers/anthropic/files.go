@@ -9,12 +9,13 @@ import (
 // ToAnthropicFileUploadResponse converts a Bifrost file upload response to Anthropic format.
 func ToAnthropicFileUploadResponse(resp *schemas.BifrostFileUploadResponse) *AnthropicFileResponse {
 	return &AnthropicFileResponse{
-		ID:        resp.ID,
-		Type:      resp.Object,
-		Filename:  resp.Filename,
-		MimeType:  "",
-		SizeBytes: resp.Bytes,
-		CreatedAt: formatAnthropicFileTimestamp(resp.CreatedAt),
+		ID:           resp.ID,
+		Type:         resp.Object,
+		Filename:     resp.Filename,
+		MimeType:     resp.ContentType,
+		SizeBytes:    resp.Bytes,
+		CreatedAt:    formatAnthropicFileTimestamp(resp.CreatedAt),
+		Downloadable: resp.Downloadable,
 	}
 }
 
@@ -23,12 +24,13 @@ func ToAnthropicFileListResponse(resp *schemas.BifrostFileListResponse) *Anthrop
 	data := make([]AnthropicFileResponse, len(resp.Data))
 	for i, file := range resp.Data {
 		data[i] = AnthropicFileResponse{
-			ID:        file.ID,
-			Type:      file.Object,
-			Filename:  file.Filename,
-			MimeType:  "",
-			SizeBytes: file.Bytes,
-			CreatedAt: formatAnthropicFileTimestamp(file.CreatedAt),
+			ID:           file.ID,
+			Type:         file.Object,
+			Filename:     file.Filename,
+			MimeType:     file.ContentType,
+			SizeBytes:    file.Bytes,
+			CreatedAt:    formatAnthropicFileTimestamp(file.CreatedAt),
+			Downloadable: file.Downloadable,
 		}
 	}
 
@@ -41,12 +43,13 @@ func ToAnthropicFileListResponse(resp *schemas.BifrostFileListResponse) *Anthrop
 // ToAnthropicFileRetrieveResponse converts a Bifrost file retrieve response to Anthropic format.
 func ToAnthropicFileRetrieveResponse(resp *schemas.BifrostFileRetrieveResponse) *AnthropicFileResponse {
 	return &AnthropicFileResponse{
-		ID:        resp.ID,
-		Type:      resp.Object,
-		Filename:  resp.Filename,
-		MimeType:  "", // Not supported in Bifrost responses
-		SizeBytes: resp.Bytes,
-		CreatedAt: formatAnthropicFileTimestamp(resp.CreatedAt),
+		ID:           resp.ID,
+		Type:         resp.Object,
+		Filename:     resp.Filename,
+		MimeType:     resp.ContentType,
+		SizeBytes:    resp.Bytes,
+		CreatedAt:    formatAnthropicFileTimestamp(resp.CreatedAt),
+		Downloadable: resp.Downloadable,
 	}
 }
 

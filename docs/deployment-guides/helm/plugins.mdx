@@ -168,7 +168,6 @@ Two modes:
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `bifrost.plugins.semanticCache.enabled` | Enable semantic caching | `false` |
-| `bifrost.plugins.semanticCache.version` | Plugin config version for DB-backed update tracking (`1` to `32767`) | `1` |
 | `bifrost.plugins.semanticCache.config.provider` | Embedding provider | `"openai"` |
 | `bifrost.plugins.semanticCache.config.embedding_model` | Embedding model name | `"text-embedding-3-small"` |
 | `bifrost.plugins.semanticCache.config.dimension` | Embedding dimension (`1` = direct/hash mode) | `1536` |
@@ -256,15 +255,17 @@ Sends distributed traces and push-based metrics to any OTLP-compatible collector
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `bifrost.plugins.otel.enabled` | Enable OTel tracing | `false` |
-| `bifrost.plugins.otel.version` | Plugin config version for DB-backed update tracking (`1` to `32767`) | `1` |
 | `bifrost.plugins.otel.config.service_name` | Service name in traces | `"bifrost"` |
-| `bifrost.plugins.otel.config.collector_url` | OTLP collector endpoint | `""` |
-| `bifrost.plugins.otel.config.trace_type` | Trace type (`genai_extension`, `vercel`, or `open_inference`) | `"genai_extension"` |
-| `bifrost.plugins.otel.config.protocol` | Transport protocol (`grpc` or `http`) | `"grpc"` |
+| `bifrost.plugins.otel.config.traces_enabled` | Export traces (set `false` for a metrics-only profile; `collector_url` then not required) | `true` |
+| `bifrost.plugins.otel.config.collector_url` | OTLP collector endpoint (required when traces enabled) | `""` |
+| `bifrost.plugins.otel.config.trace_type` | Trace type (`genai_extension`, `vercel`, or `open_inference`); required when traces enabled | `"genai_extension"` |
+| `bifrost.plugins.otel.config.protocol` | Transport protocol (`grpc` or `http`), shared by traces and metrics; required when traces or metrics enabled | `"grpc"` |
 | `bifrost.plugins.otel.config.metrics_enabled` | Enable OTLP push-based metrics | `false` |
-| `bifrost.plugins.otel.config.metrics_endpoint` | OTLP metrics endpoint | `""` |
+| `bifrost.plugins.otel.config.metrics_endpoint` | OTLP metrics endpoint; required when `metrics_enabled` | `""` |
 | `bifrost.plugins.otel.config.metrics_push_interval` | Push interval in seconds | `15` |
-| `bifrost.plugins.otel.config.headers` | Custom headers for the collector | `{}` |
+| `bifrost.plugins.otel.config.headers` | Custom headers sent to both the trace and metrics endpoints | `{}` |
+| `bifrost.plugins.otel.config.trace_headers` | Extra headers sent only to the trace endpoint, overlaid on `headers` | `{}` |
+| `bifrost.plugins.otel.config.metrics_headers` | Extra headers sent only to the metrics endpoint, overlaid on `headers` | `{}` |
 | `bifrost.plugins.otel.config.insecure` | Skip TLS verification | `false` |
 | `bifrost.plugins.otel.config.tls_ca_cert` | Path to CA cert for TLS | `""` |
 
@@ -330,7 +331,6 @@ Sends traces to a Datadog Agent running in the cluster.
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `bifrost.plugins.datadog.enabled` | Enable Datadog tracing | `false` |
-| `bifrost.plugins.datadog.version` | Plugin config version for DB-backed update tracking (`1` to `32767`) | `1` |
 | `bifrost.plugins.datadog.config.service_name` | Service name | `"bifrost"` |
 | `bifrost.plugins.datadog.config.agent_addr` | Datadog Agent address as combined `host:port`. Overridden by `agent_host` | `"localhost:8126"` |
 | `bifrost.plugins.datadog.config.agent_host` | Datadog Agent host, set separately from the port. Supports `env.VAR_NAME`. Takes precedence over `agent_addr` | `""` |
@@ -395,7 +395,6 @@ Sends LLM request/response data to [Maxim](https://getmaxim.ai) for tracing, eva
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `bifrost.plugins.maxim.enabled` | Enable Maxim plugin | `false` |
-| `bifrost.plugins.maxim.version` | Plugin config version for DB-backed update tracking (`1` to `32767`) | `1` |
 | `bifrost.plugins.maxim.config.api_key` | Maxim API key (plain text, prefer secret) | `""` |
 | `bifrost.plugins.maxim.config.log_repo_id` | Maxim log repository ID | `""` |
 | `bifrost.plugins.maxim.secretRef.name` | Kubernetes Secret name for API key | `""` |
@@ -439,7 +438,6 @@ Load a custom Go plugin (compiled `.so` file) at runtime.
 | `bifrost.plugins.custom[].name` | Unique plugin name | `""` |
 | `bifrost.plugins.custom[].enabled` | Enable custom plugin | `false` |
 | `bifrost.plugins.custom[].path` | Path to compiled `.so` file in the container | `""` |
-| `bifrost.plugins.custom[].version` | Plugin config version (`1` to `32767`) | `1` |
 | `bifrost.plugins.custom[].config` | Arbitrary plugin-specific configuration | `{}` |
 
 ```yaml
@@ -449,7 +447,6 @@ bifrost:
       - name: "my-custom-plugin"
         enabled: true
         path: "/plugins/my-plugin.so"
-        version: 1
         config:
           api_endpoint: "https://my-service.example.com"
           timeout: 5000

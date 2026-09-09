@@ -50,6 +50,12 @@ resource "google_cloud_run_v2_service" "bifrost" {
     containers {
       image = var.image
 
+      command = ["/bin/sh"]
+      args = [
+        "-c",
+        "cp /var/run/bifrost-config/config.json /app/data/config.json && exec /app/docker-entrypoint.sh /app/main",
+      ]
+
       ports {
         container_port = var.container_port
       }
@@ -61,10 +67,11 @@ resource "google_cloud_run_v2_service" "bifrost" {
         }
       }
 
-      # Mount config.json from Secret Manager
+      # Mount config.json outside APP_DIR because Cloud Run secret volumes are read-only.
+      # The startup command copies it into the writable application directory.
       volume_mounts {
         name       = "config-volume"
-        mount_path = "/app/data"
+        mount_path = "/var/run/bifrost-config"
       }
 
       # Startup probe – allows time for the container to initialize

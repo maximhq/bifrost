@@ -221,3 +221,20 @@ func TestParseTranscriptionMultipartRequest_TypedFieldsNotShadowedByExtraParams(
 		t.Errorf("timestamp_granularities[] leaked into ExtraParams: %#v", req.ExtraParams["timestamp_granularities[]"])
 	}
 }
+
+// TestParseTranscriptionMultipartRequest_PreservesFilename covers issue #5670:
+// the multipart part's filename must reach the parsed request, otherwise the
+// provider re-derives it from magic bytes and mislabels non-sniffable
+// containers (m4a/mp4/webm) as audio.mp3, which OpenAI rejects.
+func TestParseTranscriptionMultipartRequest_PreservesFilename(t *testing.T) {
+	ctx := buildTranscriptionMultipartCtx(t, nil)
+
+	req := &openai.OpenAITranscriptionRequest{}
+	if err := parseTranscriptionMultipartRequest(ctx, req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if req.Filename != "sample.mp3" {
+		t.Errorf("Filename = %q, want %q (multipart part filename dropped)", req.Filename, "sample.mp3")
+	}
+}

@@ -31,11 +31,19 @@ func HasAnthropicPassthroughUsage(event []byte) bool {
 		providerUtils.GetJSONField(event, "message.usage").Exists()
 }
 
+// ExtractAnthropicMessagesUsage parses usage from a non-streaming Messages response body.
+// Exported for callers whose path does not carry the /messages suffix ExtractAnthropicPassthroughUsage
+// dispatches on — e.g. Vertex's :rawPredict.
+func ExtractAnthropicMessagesUsage(body []byte) *schemas.BifrostPassthroughUsage {
+	return extractAnthropicMessagesUsage(body)
+}
+
 // buildAnthropicPassthroughUsage converts AnthropicUsage directly into BifrostPassthroughUsage.
 func buildAnthropicPassthroughUsage(au *AnthropicUsage) *schemas.BifrostPassthroughUsage {
 	if au == nil {
 		return nil
 	}
+	au = billableAnthropicUsage(au)
 	totalInput := au.InputTokens + au.CacheReadInputTokens + au.CacheCreationInputTokens
 	total := totalInput + au.OutputTokens
 	if total == 0 {
@@ -67,6 +75,15 @@ func buildAnthropicPassthroughUsage(au *AnthropicUsage) *schemas.BifrostPassthro
 		usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
 			NumSearchQueries: &n,
 		}
+	}
+
+	// Extended-thinking tokens are already inside au.OutputTokens, so CompletionTokens
+	// and TotalTokens above stay as-is.
+	if au.OutputTokensDetails != nil && au.OutputTokensDetails.ThinkingTokens > 0 {
+		if usage.CompletionTokensDetails == nil {
+			usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+		}
+		usage.CompletionTokensDetails.ReasoningTokens = au.OutputTokensDetails.ThinkingTokens
 	}
 
 	u := &schemas.BifrostPassthroughUsage{LLMUsage: usage}
@@ -111,6 +128,8 @@ func (a *AnthropicPassthroughStreamUsage) ObserveEvent(event []byte) *schemas.Bi
 		return a.usage()
 	}
 
+	u = billableAnthropicUsage(u)
+
 	a.seen = true
 	c := &a.combined
 	if u.InputTokens > c.InputTokens {
@@ -137,6 +156,14 @@ func (a *AnthropicPassthroughStreamUsage) ObserveEvent(event []byte) *schemas.Bi
 		}
 		if u.ServerToolUse.WebSearchRequests > c.ServerToolUse.WebSearchRequests {
 			c.ServerToolUse.WebSearchRequests = u.ServerToolUse.WebSearchRequests
+		}
+	}
+	if u.OutputTokensDetails != nil {
+		if c.OutputTokensDetails == nil {
+			c.OutputTokensDetails = &AnthropicOutputTokensDetails{}
+		}
+		if u.OutputTokensDetails.ThinkingTokens > c.OutputTokensDetails.ThinkingTokens {
+			c.OutputTokensDetails.ThinkingTokens = u.OutputTokensDetails.ThinkingTokens
 		}
 	}
 	if u.ServiceTier != nil {

@@ -20,6 +20,7 @@ Virtual Keys are the primary governance entity in Bifrost. Users and application
 **Key Features:**
 - **Access Control** - Model and provider filtering
 - **Cost Management** - Independent budgets (checked along with team/customer budgets if attached)
+- **Budget Overrides** - Temporarily add spending capacity without changing the base budget
 - **Rate Limiting** - Token and request-based throttling (VK-level only)
 - **Key Restrictions** - Limit VK to specific provider API keys (if configured, VK can only use those keys)
 - **Exclusive Attachment** - Belongs to either one team OR one customer OR neither (mutually exclusive)
@@ -37,8 +38,8 @@ Virtual Keys are the primary governance entity in Bifrost. Users and application
 
 **Budget Settings:**
 - **Max Limit**: Dollar amount (e.g., `10.50`)
-- **Reset Duration**: `1m`, `1h`, `1d`, `1w`, `1M`, `1Y`
-- **Calendar aligned** (optional): When enabled, the budget resets at calendar boundaries in UTC (day/week/month/year) instead of on a rolling window. Only applies to day/week/month/year periods. See [Budget and Limits](./budget-and-limits#calendar-aligned-budgets).
+- **Reset Duration**: `1m`, `1h`, `1d`, `1w`, `1M`, `1Q`, `1Y`
+- **Calendar aligned** (optional): When enabled, the budget resets at calendar boundaries in UTC (day/week/month/quarter/year) instead of on a rolling window. Only applies to day/week/month/quarter/year periods. See [Budget and Limits](./budget-and-limits#calendar-aligned-budgets).
 
 **Rate Limits:**
 - **Token Limit**: Max tokens per period
@@ -241,6 +242,75 @@ curl -X DELETE http://localhost:8080/api/governance/virtual-keys/{vk_id}
 </Tab>
 </Tabs>
 
+### Provider access
+
+By default a virtual key is **deny-by-default** for providers: it can only use providers listed in `provider_configs`. An empty `provider_configs` blocks every provider.
+
+Set **`allow_all_providers`** to `true` to grant the key access to **every configured provider, including providers added later**, without listing each one.
+
+<Tabs group="config-method">
+<Tab title="Web UI">
+
+In the **Provider Configurations** section of the virtual key form, turn on the **Allow all providers** toggle. Every configured provider is listed as a row, so you can optionally set per-provider budgets, rate limits, or model/key restrictions on any of them. When the toggle is off, provider access is deny-by-default: only providers listed in `provider_configs` are allowed, and providers added later are denied.
+
+</Tab>
+<Tab title="API">
+
+```bash
+curl -X POST http://localhost:8080/api/governance/virtual-keys \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "All Providers Key",
+    "allow_all_providers": true,
+    "team_id": "team-eng-001",
+    "is_active": true
+  }'
+```
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "governance": {
+    "virtual_keys": [
+      {
+        "id": "vk-all",
+        "name": "All Providers Key",
+        "value": "sk-bf-*",
+        "is_active": true,
+        "allow_all_providers": true
+      }
+    ]
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+`allow_all_providers` **coexists** with `provider_configs`. When it is on, a provider that also has a `provider_configs` entry still has that entry's model allow/blacklist, budgets, rate limits, and key selection applied; providers without an entry get all models, all keys, and no per-provider limits. This lets you allow everything while still capping or restricting specific providers.
+
+#### How access is resolved
+
+Access depends on the `allow_all_providers` value and whether the provider has a `provider_configs` entry:
+
+| Flag value | Listed in `provider_configs` | Not listed |
+| --- | --- | --- |
+| `false` (default) | Allowed, subject to that entry's models, keys, budgets, and rate limits | **Denied** |
+| `true` | Allowed, subject to that entry's models, keys, budgets, and rate limits | Allowed with all models, all keys, and no per-provider limits |
+
+When `allow_all_providers` is `true`:
+
+- A listed provider's `allowed_models` and `blacklisted_models` still apply. Allow-all never widens an allowlist: a model outside a listed provider's `allowed_models` stays denied, and a model in its `blacklisted_models` stays denied.
+- A listed provider's budgets, rate limits, and `key_ids` selection still apply. Allow-all does not lift per-provider limits on providers you have configured.
+- Only providers with no `provider_configs` entry get the open treatment (all models, all keys, no limits).
+- Providers added to Bifrost after the key was created are treated as unlisted, so they are allowed automatically without editing the key.
+
+<Note>
+`allow_all_providers` defaults to `false`. When it is `false`, provider access stays deny-by-default via `provider_configs`.
+</Note>
+
 ## User Groups
 
 ### Teams
@@ -281,10 +351,12 @@ curl -X POST http://localhost:8080/api/governance/teams \
   -d '{
     "name": "Engineering Team",
     "customer_id": "customer-acme-corp",
-    "budget": {
-      "max_limit": 500.00,
-      "reset_duration": "1M"
-    }
+    "budgets": [
+      {
+        "max_limit": 500.00,
+        "reset_duration": "1M"
+      }
+    ]
   }'
 ```
 
@@ -294,10 +366,12 @@ curl -X PUT http://localhost:8080/api/governance/teams/{team_id} \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Updated Engineering Team",
-    "budget": {
-      "max_limit": 750.00,
-      "reset_duration": "1M"
-    }
+    "budgets": [
+      {
+        "max_limit": 750.00,
+        "reset_duration": "1M"
+      }
+    ]
   }'
 ```
 
@@ -325,14 +399,12 @@ curl -X DELETE http://localhost:8080/api/governance/teams/{team_id}
       {
         "id": "team-eng-001",
         "name": "Engineering Team",
-        "customer_id": "customer-acme-corp",
-        "budget_id": "budget-team-eng"
+        "customer_id": "customer-acme-corp"
       },
       {
         "id": "team-sales-001", 
         "name": "Sales Team",
-        "customer_id": "customer-acme-corp",
-        "budget_id": "budget-team-sales"
+        "customer_id": "customer-acme-corp"
       }
     ],
     "budgets": [
@@ -341,19 +413,23 @@ curl -X DELETE http://localhost:8080/api/governance/teams/{team_id}
         "max_limit": 500.00,
         "reset_duration": "1M",
         "current_usage": 0.0,
-        "last_reset": "2025-01-01T00:00:00Z"
+        "last_reset": "2025-01-01T00:00:00Z",
+        "team_id": "team-eng-001"
       },
       {
         "id": "budget-team-sales",
         "max_limit": 250.00,
         "reset_duration": "1M", 
         "current_usage": 0.0,
-        "last_reset": "2025-01-01T00:00:00Z"
+        "last_reset": "2025-01-01T00:00:00Z",
+        "team_id": "team-sales-001"
       }
     ]
   }
 }
 ```
+
+Team budgets are owned from the budget side: set `team_id` on each entry in `governance.budgets`. Do not add `budget_id` to a team. A team can own multiple budgets as long as their reset durations are unique.
 
 </Tab>
 </Tabs>
@@ -484,6 +560,94 @@ curl -X DELETE http://localhost:8080/api/governance/customers/{customer_id}
 
 ## Usage
 
+### Budget Overrides
+
+Budget overrides add temporary spending capacity to an existing virtual-key budget without changing its base limit, current usage, or reset schedule. While an override is active, Bifrost calculates the effective limit as:
+
+```text
+Effective limit = Base budget + Override amount
+```
+
+For example, adding a `$100` override to a `$1,000` budget raises its effective limit to `$1,100`.
+
+1. Go to **Virtual Keys**, open a virtual key, and scroll to **Budget Information**.
+2. Click **Add override** on the budget you want to increase.
+
+![Add a virtual-key budget override](../../media/vk-budget-override-add-override.png)
+
+3. Enter the **Additional budget**, then choose a duration:
+   - **For a number of reset cycles**: Enter one or more cycles. The current cycle counts as the first cycle, and the dialog shows the date and time until which the override is expected to remain valid.
+   - **Until removed**: Keep the override active across resets until it is removed manually.
+
+![Configure the budget override amount and duration](../../media/vk-budget-override-add-override-dialog.png)
+
+4. Click **Add override**. The budget card displays the effective limit, its base and override amounts, and either the remaining reset cycles or **until removed**.
+
+![Virtual-key budget with an active override](../../media/vk-override-budget-overriden-budget-view.png)
+
+To change or remove an active override, click **Edit override** on the budget card.
+
+<Note>
+Overrides are available after a budget has been created. Budgets inherited from an enterprise [access profile](/enterprise/access-profiles) must be overridden from that access profile instead of from the virtual key.
+</Note>
+
+#### Managing overrides via API
+
+Two endpoints manage the override on a single virtual-key budget. Both take the virtual key ID and the ID of a budget that key owns, and both return the persisted budget alongside its `effective_max_limit`.
+
+Grant extra spend for a fixed number of reset cycles:
+
+```bash
+curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id}/budgets/{budget_id}/override \
+  -H "Content-Type: application/json" \
+  -d '{
+    "amount": 100.0,
+    "mode": "cycles",
+    "cycles": 2
+  }'
+```
+
+The current cycle counts as the first, so `"cycles": 2` covers the rest of this window plus the next one. Use `"mode": "forever"` (with no `cycles`) to keep the override active until it is removed:
+
+```bash
+curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id}/budgets/{budget_id}/override \
+  -H "Content-Type: application/json" \
+  -d '{
+    "amount": 100.0,
+    "mode": "forever"
+  }'
+```
+
+```json Response
+{
+  "budget": {
+    "id": "budget-vk-alpha",
+    "max_limit": 1000.0,
+    "reset_duration": "1M",
+    "current_usage": 240.5,
+    "override_amount": 100.0,
+    "override_mode": "forever",
+    "last_reset": "2025-01-01T00:00:00Z"
+  },
+  "effective_max_limit": 1100.0
+}
+```
+
+A PUT always replaces the existing override rather than adding to it, so re-sending an override with a new amount or mode is the way to change one. Remove it with a DELETE, which restores enforcement against the base `max_limit`:
+
+```bash
+curl -X DELETE http://localhost:8080/api/governance/virtual-keys/{vk_id}/budgets/{budget_id}/override
+```
+
+Notes on behavior:
+
+- The override never changes `max_limit`, `current_usage`, or the reset schedule — only the limit that usage is enforced against.
+- `amount` must be greater than 0. In `cycles` mode, `cycles` must be greater than 0; in `forever` mode it must be omitted.
+- A finite grant is anchored to the budget's current reset window, so remaining cycles are derived from that grant on every reset. Each node in a cluster computes the same count, and a config reload cannot hand back a cycle that was already spent.
+- A cycles override clears itself once every granted window has closed; `DELETE` clears one at any time and cannot be undone.
+
+For the full request and response schema, see [Set virtual key budget override](/api-reference/governance/set-virtual-key-budget-override) and [Remove virtual key budget override](/api-reference/governance/remove-virtual-key-budget-override) in the API Reference.
+
 ### Making Virtual Keys Mandatory
 
 All governance-enabled requests must include the virtual key header:
@@ -503,11 +667,11 @@ By default governance is optional, meaning that if the virtual key header is not
 <Tabs group="enforce-governance-header">
 <Tab title="Web UI">
 
-1. Go to **Config** → **Security**
+1. Go to **Settings** → **Security**.
+2. Turn on **Enable Auth on Inference**. In OSS, this toggle is labeled **Enforce Virtual Keys on Inference**.
+3. Click **Save Changes**.
 
-2. Check the **Enforce Virtual Keys** checkbox
-
-![Enforce Virtual Keys](../../media/ui-enforce-virtual-keys.png)
+![Enable Auth on Inference](../../media/ui-enable-auth-on-inference.png)
 
 </Tab>
 <Tab title="API">
@@ -535,7 +699,7 @@ curl -X PUT http://localhost:8080/api/config \
 </Tab>
 </Tabs>
 
-When the governance header is enforced, the request will be rejected if the `x-bf-vk` header is not present.
+In OSS, enabling this setting makes a valid virtual key mandatory for every inference request. Requests without one are rejected.
 
 ### Key Expiry
 
@@ -595,10 +759,10 @@ Timestamps must be RFC3339 and in the future; otherwise the API returns `400`. O
 **Expired key rejection:**
 ```json
 {
-  "type": "virtual_key_blocked",
+  "type": "access_blocked",
   "status_code": 403,
   "error": {
-    "message": "Virtual key has expired"
+    "message": "virtual key has expired"
   }
 }
 ```
@@ -666,7 +830,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ### Listing models with a virtual key
 
-When you call `GET /v1/models` with a virtual key, Bifrost **only lists (and only queries) providers that are allowed by that virtual key**. This avoids unnecessary “provider not allowed” errors in logs and keeps error-rate metrics meaningful.
+When you call `GET /v1/models` with a virtual key, Bifrost **only lists (and only queries) providers that are allowed by that virtual key**. This avoids unnecessary “provider not allowed” errors in logs and keeps error-rate metrics meaningful. A key with `allow_all_providers` enabled lists and queries every configured provider.
 
 ```bash
 # Lists models across providers allowed by the virtual key
@@ -734,52 +898,42 @@ curl -X PUT http://localhost:8080/api/config \
 
 ### Error Responses
 
-- Virtual Key Not Found (400)
+`type` is a **top-level** field, beside `status_code`, and `error` carries only the
+message. A client branching on the refusal reads `type`, not `error.type`.
+
+- Authentication Required (401), when no credential was presented and virtual keys are mandatory
 ```json
 {
+  "type": "virtual_key_required",
+  "status_code": 401,
   "error": {
-    "type": "virtual_key_required",
-    "message": "virtual key is missing in headers"
+    "message": "virtual key is required. Provide a virtual key via the x-bf-vk header."
   }
 }
 ```
 
-- Virtual Key Blocked (403)
+- Inactive or Expired (403), when the credential is real but may not be used
 ```json
 {
+  "type": "access_blocked",
+  "status_code": 403,
   "error": {
-    "type": "virtual_key_blocked", 
-    "message": "Virtual key is inactive"
+    "message": "virtual key is inactive"
   }
 }
 ```
 
-- Rate Limit Exceeded (429)
-```json
-{
-  "error": {
-    "type": "rate_limited",
-    "message": "Rate limits exceeded: [token limit exceeded (1500/1000, resets every 1h)]"
-  }
-}
-```
+  A key that is both inactive and expired reports `is inactive`: the check runs in that
+  order and answers on the first that matches. The same type and shape covers an expired
+  key (`virtual key has expired`) and an access profile that is inactive or expired.
 
-- Token Limit Exceeded (429)
+- Rate Limit Exceeded (429): `rate_limited`, or `token_limited` / `request_limited` for the dimension that ran out
 ```json
 {
+  "type": "token_limited",
+  "status_code": 429,
   "error": {
-    "type": "token_limited",
-    "message": "Rate limits exceeded: [token limit exceeded (1500/1000, resets every 1h)]"
-  }
-}
-```
-
-- Request Limit Exceeded (429)
-```json
-{
-  "error": {
-    "type": "request_limited", 
-    "message": "Rate limits exceeded: [request limit exceeded (101/100, resets every 1m)]"
+    "message": "Rate limit exceeded: rate limit violated for vk_model_config * : [token limit exceeded (1500/1000, resets every 1h)]"
   }
 }
 ```
@@ -787,19 +941,24 @@ curl -X PUT http://localhost:8080/api/config \
 - Budget Exceeded (402)
 ```json
 {
+  "type": "budget_exceeded",
+  "status_code": 402,
   "error": {
-    "type": "budget_exceeded",
-    "message": "Budget exceeded: VK budget exceeded: 105.50 > 100.00 dollars"
+    "message": "Budget exceeded: vk_model_config * budget exceeded: 105.5000 >= 100.0000 dollars"
   }
 }
 ```
 
+  The name after the holder kind is what ran out, so a refusal says which tier stopped the
+  request rather than only that something did.
+
 - Model Not Allowed (403)
 ```json
 {
+  "type": "model_blocked",
+  "status_code": 403,
   "error": {
-    "type": "model_blocked",
-    "message": "Model 'gpt-4o' is not allowed for this virtual key"
+    "message": "Model 'gpt-4o' is not allowed for virtual key 'my-key'"
   }
 }
 ```
@@ -807,9 +966,21 @@ curl -X PUT http://localhost:8080/api/config \
 - Provider Not Allowed (403)
 ```json
 {
+  "type": "provider_blocked",
+  "status_code": 403,
   "error": {
-    "type": "provider_blocked",
-    "message": "Provider 'anthropic' is not allowed for this virtual key"
+    "message": "Provider 'anthropic' is not allowed for virtual key 'my-key'"
+  }
+}
+```
+
+- MCP Tool Not Allowed (403)
+```json
+{
+  "type": "mcp_tool_blocked",
+  "status_code": 403,
+  "error": {
+    "message": "MCP tool 'filesystem-write_file' is not allowed for virtual key 'my-key'"
   }
 }
 ```

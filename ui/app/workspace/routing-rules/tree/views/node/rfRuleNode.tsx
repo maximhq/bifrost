@@ -105,7 +105,7 @@ export function RFRuleNode({ data }: { data: any }) {
 							<div className="mb-1 flex items-start gap-2 border-b px-3 pb-1.5">
 								<Link2 className="mt-0.5 h-3 w-3 shrink-0" style={{ color: scopeColor }} />
 								<p className="text-muted-foreground text-[10px] leading-snug">
-									Chain rule — resolved provider/model feeds back as the new input and the full scope chain re-evaluates.
+									Chain rule: resolved provider/model feeds back as the new input and the full scope chain re-evaluates.
 								</p>
 							</div>
 						)}

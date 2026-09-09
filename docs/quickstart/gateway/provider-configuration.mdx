@@ -347,7 +347,7 @@ Override the default API endpoint for a provider. This is useful for connecting 
 </Frame>
 
 1. Navigate to **"Model Providers"** → **"Configurations"** → **"OpenAI"** → **"Provider level configuration"** → **"Network config"**
-2. Set **Base URL**: `http://localhost:8000/v1`
+2. Set **Base URL**: `http://localhost:8000`
 3. Save configuration
 
 </Tab>
@@ -368,7 +368,7 @@ curl --location 'http://localhost:8080/api/providers' \
         }
     ],
     "network_config": {
-        "base_url": "http://localhost:8000/v1"
+        "base_url": "http://localhost:8000"
     }
 }'
 ```
@@ -390,7 +390,7 @@ curl --location 'http://localhost:8080/api/providers' \
         }
       ],
       "network_config": {
-        "base_url": "http://localhost:8000/v1"
+        "base_url": "http://localhost:8000"
       }
     }
   }

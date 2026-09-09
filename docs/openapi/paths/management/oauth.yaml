@@ -73,6 +73,7 @@ oauth-config-status:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: OAuth config status retrieved successfully
@@ -96,6 +97,9 @@ oauth-config-by-id:
     description: |
       Revokes a server-level OAuth configuration and its associated access token.
       After revocation, the MCP client will no longer be able to use this OAuth token.
+      Revocation is not terminal for the client: an admin can restore access by
+      redoing consent via POST /api/mcp/client/{id}/reauthorize, which runs
+      against the credentials currently stored on the client's OAuth config.
     tags:
       - OAuth
     parameters:
@@ -107,6 +111,7 @@ oauth-config-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: OAuth token revoked successfully
@@ -147,6 +152,7 @@ per-user-oauth-flow-detail:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Flow detail
@@ -186,6 +192,7 @@ per-user-oauth-flow-start:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Authorize URL
@@ -217,8 +224,9 @@ per-user-oauth-flow-start:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
-# ─── Removed: OAuth-server endpoints (RFC 7591/8414 surface) ────────────────
-# Bifrost is not an OAuth Authorization Server. Upstream OAuth happens via
-# the per-user-oauth-flow-* endpoints above.
-
-# Legacy block intentionally removed:
+# The endpoints in this file cover upstream MCP OAuth only, Bifrost acting
+# as an OAuth *client* against external MCP servers (via the
+# per-user-oauth-flow-* endpoints above and the /api/mcp/client/* flows).
+# The inbound surface where Bifrost acts as an OAuth Authorization Server
+# for /mcp callers (/.well-known/*, /oauth2/*) is a separate feature and is
+# not documented in this file.

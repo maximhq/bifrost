@@ -28,6 +28,7 @@ import {
   Content,
   Part,
   FunctionDeclaration,
+  Schema,
   Tool,
   SchemaType,
 } from '@google/generative-ai'
@@ -141,7 +142,7 @@ function convertToGoogleTools(tools: ToolDefinition[]): Tool[] {
             type: TYPE_MAP[value.type] || SchemaType.STRING,
             description: value.description,
             ...(value.enum ? { enum: value.enum } : {}),
-          },
+          } as Schema,
         ])
       ),
       required: tool.parameters.required || [],

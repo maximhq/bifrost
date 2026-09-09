@@ -44,7 +44,7 @@ func newTestHybrid(t *testing.T) (*HybridLogStore, LogStore, *objectstore.InMemo
 
 func waitForUploads(t *testing.T, done func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if done() {
 			return
@@ -52,6 +52,31 @@ func waitForUploads(t *testing.T, done func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("timed out waiting for upload state")
+}
+
+// waitForOffload waits until the offload is fully complete for id: the payload is in
+// object storage AND the row's has_object flag has been committed.
+//
+// processUpload does the Put first and only then updates has_object (with retries), so
+// waiting on the object store alone returns while the DB flag is still false. Any test
+// that reads has_object — or exercises a code path that branches on it, such as billing
+// hydration — must wait for the flag, not just the object.
+func waitForOffload(t *testing.T, inner LogStore, id string) {
+	t.Helper()
+	waitForUploads(t, func() bool {
+		row, err := inner.FindByID(context.Background(), id)
+		return err == nil && row.HasObject
+	})
+}
+
+// waitForMCPOffload is waitForOffload for MCP tool logs: it waits for the row's
+// has_object flag, which processUpload commits only after the object Put.
+func waitForMCPOffload(t *testing.T, inner LogStore, id string) {
+	t.Helper()
+	waitForUploads(t, func() bool {
+		row, err := inner.FindMCPToolLog(context.Background(), id)
+		return err == nil && row.HasObject
+	})
 }
 
 func TestHybridScopedDBDelegatesToInnerRDBStore(t *testing.T) {
@@ -76,7 +101,7 @@ func TestHybridScopedDBDelegatesToInnerRDBStore(t *testing.T) {
 }
 
 func TestHybrid_CreateAndFindByID(t *testing.T) {
-	hybrid, _, objStore := newTestHybrid(t)
+	hybrid, inner, objStore := newTestHybrid(t)
 	defer hybrid.Close(context.Background())
 	ctx := context.Background()
 
@@ -102,7 +127,7 @@ func TestHybrid_CreateAndFindByID(t *testing.T) {
 	err := hybrid.CreateIfNotExists(ctx, entry)
 	require.NoError(t, err)
 
-	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+	waitForOffload(t, inner, "log-1")
 
 	// Verify object was uploaded.
 	assert.Equal(t, 1, objStore.Len(), "expected 1 object in store")
@@ -197,7 +222,7 @@ func TestHybrid_FindByID_NoObject(t *testing.T) {
 }
 
 func TestHybrid_FindByID_GracefulDegradation(t *testing.T) {
-	hybrid, _, objStore := newTestHybrid(t)
+	hybrid, inner, objStore := newTestHybrid(t)
 	defer hybrid.Close(context.Background())
 	ctx := context.Background()
 
@@ -215,7 +240,7 @@ func TestHybrid_FindByID_GracefulDegradation(t *testing.T) {
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+	waitForOffload(t, inner, "degrade-1")
 
 	// Simulate S3 failure.
 	objStore.GetErr = assert.AnError
@@ -252,6 +277,7 @@ func TestHybrid_CreateAndFindMCPToolLog(t *testing.T) {
 		ResultParsed: map[string]any{
 			"ok": true,
 		},
+		RedactionMapping: `plain:{"input":{"EMAIL-1":"private@example.com"}}`,
 	}
 
 	require.NoError(t, hybrid.CreateMCPToolLog(ctx, entry))
@@ -262,6 +288,7 @@ func TestHybrid_CreateAndFindMCPToolLog(t *testing.T) {
 	assert.True(t, dbOnly.HasObject)
 	assert.Empty(t, dbOnly.Result)
 	assert.Nil(t, dbOnly.ResultParsed)
+	assert.Equal(t, entry.RedactionMapping, dbOnly.RedactionMapping)
 	preview, ok := dbOnly.ArgumentsParsed.(string)
 	require.True(t, ok)
 	assert.Len(t, []rune(preview), 200)
@@ -271,10 +298,11 @@ func TestHybrid_CreateAndFindMCPToolLog(t *testing.T) {
 	assert.True(t, found.HasObject)
 	assert.Equal(t, longInput, found.ArgumentsParsed.(map[string]interface{})["input"])
 	assert.Equal(t, true, found.ResultParsed.(map[string]interface{})["ok"])
+	assert.Equal(t, entry.RedactionMapping, found.RedactionMapping)
 }
 
 func TestHybrid_BatchCreateMCPToolLogsIfNotExists(t *testing.T) {
-	hybrid, inner, objStore := newTestHybrid(t)
+	hybrid, inner, _ := newTestHybrid(t)
 	defer hybrid.Close(context.Background())
 	ctx := context.Background()
 
@@ -317,7 +345,8 @@ func TestHybrid_BatchCreateMCPToolLogsIfNotExists(t *testing.T) {
 	}
 
 	require.NoError(t, hybrid.BatchCreateMCPToolLogsIfNotExists(ctx, entries))
-	waitForUploads(t, func() bool { return objStore.Len() == 2 })
+	waitForMCPOffload(t, inner, "mcp-batch-1")
+	waitForMCPOffload(t, inner, "mcp-batch-2")
 
 	dbOnly, err := inner.FindMCPToolLog(ctx, "mcp-batch-1")
 	require.NoError(t, err)
@@ -345,7 +374,7 @@ func TestHybrid_BatchCreateMCPToolLogsIfNotExists(t *testing.T) {
 }
 
 func TestHybrid_UpdateMCPToolLogOffloadsFullLog(t *testing.T) {
-	hybrid, inner, objStore := newTestHybrid(t)
+	hybrid, inner, _ := newTestHybrid(t)
 	defer hybrid.Close(context.Background())
 	ctx := context.Background()
 
@@ -361,10 +390,11 @@ func TestHybrid_UpdateMCPToolLogOffloadsFullLog(t *testing.T) {
 		},
 	}
 	require.NoError(t, hybrid.CreateMCPToolLog(ctx, entry))
-	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+	waitForMCPOffload(t, inner, entry.ID)
 
 	require.NoError(t, hybrid.UpdateMCPToolLog(ctx, entry.ID, MCPToolLog{
-		Status: "success",
+		Status:           "success",
+		RedactionMapping: `plain:{"output":{"EMAIL-2":"result@example.com"}}`,
 		ResultParsed: map[string]any{
 			"answer": "done",
 		},
@@ -385,11 +415,13 @@ func TestHybrid_UpdateMCPToolLogOffloadsFullLog(t *testing.T) {
 	assert.Equal(t, "success", dbOnly.Status)
 	assert.Empty(t, dbOnly.Result)
 	assert.Nil(t, dbOnly.ResultParsed)
+	assert.Contains(t, dbOnly.RedactionMapping, "result@example.com")
 
 	found, err := hybrid.FindMCPToolLog(ctx, entry.ID)
 	require.NoError(t, err)
 	assert.Equal(t, "find this", found.ArgumentsParsed.(map[string]interface{})["query"])
 	assert.Equal(t, "done", found.ResultParsed.(map[string]interface{})["answer"])
+	assert.Equal(t, dbOnly.RedactionMapping, found.RedactionMapping)
 }
 
 func TestHybrid_UpdateMCPToolLogRequiresObjectHydration(t *testing.T) {
@@ -412,7 +444,7 @@ func TestHybrid_UpdateMCPToolLogRequiresObjectHydration(t *testing.T) {
 		},
 	}
 	require.NoError(t, hybrid.CreateMCPToolLog(ctx, entry))
-	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+	waitForMCPOffload(t, inner, entry.ID)
 
 	objStore.GetErr = assert.AnError
 	err := hybrid.UpdateMCPToolLog(ctx, entry.ID, MCPToolLog{
@@ -499,7 +531,7 @@ func TestHybrid_ProcessMCPUploadSkipsMissingRowsWithEmptyStatus(t *testing.T) {
 }
 
 func TestHybrid_DeleteMCPToolLogsDeletesObjects(t *testing.T) {
-	hybrid, _, objStore := newTestHybrid(t)
+	hybrid, inner, objStore := newTestHybrid(t)
 	defer hybrid.Close(context.Background())
 	ctx := context.Background()
 
@@ -515,7 +547,7 @@ func TestHybrid_DeleteMCPToolLogsDeletesObjects(t *testing.T) {
 		},
 	}
 	require.NoError(t, hybrid.CreateMCPToolLog(ctx, entry))
-	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+	waitForMCPOffload(t, inner, entry.ID)
 
 	require.NoError(t, hybrid.DeleteMCPToolLogs(ctx, []string{entry.ID}))
 	assert.Equal(t, 0, objStore.Len())
@@ -556,7 +588,7 @@ func TestHybrid_PutFailureDropsUpload(t *testing.T) {
 }
 
 func TestHybrid_DeleteLog(t *testing.T) {
-	hybrid, _, objStore := newTestHybrid(t)
+	hybrid, inner, objStore := newTestHybrid(t)
 	defer hybrid.Close(context.Background())
 	ctx := context.Background()
 
@@ -571,7 +603,7 @@ func TestHybrid_DeleteLog(t *testing.T) {
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+	waitForOffload(t, inner, entry.ID)
 	assert.Equal(t, 1, objStore.Len())
 
 	err := hybrid.DeleteLog(ctx, "del-1")
@@ -723,7 +755,7 @@ func TestHybrid_ResponsesInputHistoryPreservesLastUserMessage(t *testing.T) {
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+	waitForOffload(t, inner, "resp-1")
 
 	// DB row keeps only the last user message as a preview — not the system message.
 	dbLog, err := inner.FindByID(ctx, "resp-1")
@@ -744,11 +776,123 @@ func TestHybrid_ResponsesInputHistoryPreservesLastUserMessage(t *testing.T) {
 	require.Len(t, found.ResponsesInputHistoryParsed, 2, "full responses history should be hydrated from S3")
 }
 
+func TestHybrid_AttachmentsStrippedFromChatPreview(t *testing.T) {
+	// The last-user-message preview kept in the input_history DB column must not
+	// carry attachment payloads (base64 images/files/audio) — they are replaced
+	// with a placeholder. The full message, base64 included, lives only in
+	// object storage and is hydrated back on FindByID.
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+
+	imageData := "data:image/png;base64,FAKEB64IMAGEDATA"
+	pdfData := "FAKEB64PDFDATA"
+	entry := &Log{
+		ID:        "chat-attach-1",
+		Timestamp: time.Now().UTC(),
+		Provider:  "anthropic",
+		Model:     "claude-3",
+		Status:    "success",
+		Object:    "chat.completion",
+		InputHistoryParsed: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("summarize this pdf")},
+				{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: imageData}},
+				{Type: schemas.ChatContentBlockTypeFile, File: &schemas.ChatInputFile{FileData: schemas.Ptr(pdfData), Filename: schemas.Ptr("report.pdf")}},
+			}}},
+		},
+	}
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
+	waitForOffload(t, inner, "chat-attach-1")
+
+	// DB preview keeps the text and block structure but not the payloads.
+	dbLog, err := inner.FindByID(ctx, "chat-attach-1")
+	require.NoError(t, err)
+	assert.Contains(t, dbLog.InputHistory, "summarize this pdf")
+	assert.Contains(t, dbLog.InputHistory, attachmentStrippedPlaceholder)
+	assert.Contains(t, dbLog.InputHistory, "report.pdf", "filename should survive stripping")
+	assert.NotContains(t, dbLog.InputHistory, "FAKEB64IMAGEDATA", "base64 image must not reach the DB row")
+	assert.NotContains(t, dbLog.InputHistory, pdfData, "base64 file data must not reach the DB row")
+	assert.Contains(t, dbLog.ContentSummary, "summarize this pdf")
+
+	// Full payload, base64 included, is offloaded to object storage.
+	key := ObjectKey("test", entry.Timestamp, "chat-attach-1")
+	rawPayload, err := objStore.Get(ctx, key)
+	require.NoError(t, err)
+	assert.Contains(t, string(rawPayload), "FAKEB64IMAGEDATA")
+	assert.Contains(t, string(rawPayload), pdfData)
+
+	// Copy-on-write: the caller's parsed structs must be untouched.
+	blocks := entry.InputHistoryParsed[0].Content.ContentBlocks
+	assert.Equal(t, imageData, blocks[1].ImageURLStruct.URL)
+	assert.Equal(t, pdfData, *blocks[2].File.FileData)
+
+	// FindByID hydrates the full message back from object storage.
+	found, err := hybrid.FindByID(ctx, "chat-attach-1")
+	require.NoError(t, err)
+	require.Len(t, found.InputHistoryParsed, 1)
+	assert.Equal(t, imageData, found.InputHistoryParsed[0].Content.ContentBlocks[1].ImageURLStruct.URL)
+}
+
+func TestHybrid_AttachmentsStrippedFromResponsesPreview(t *testing.T) {
+	// Mirrors TestHybrid_AttachmentsStrippedFromChatPreview for the Responses
+	// API preview stored in responses_input_history.
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+
+	imageData := "data:image/jpeg;base64,FAKEB64RESPIMAGE"
+	pdfData := "FAKEB64RESPPDF"
+	entry := &Log{
+		ID:        "resp-attach-1",
+		Timestamp: time.Now().UTC(),
+		Provider:  "openai",
+		Model:     "gpt-5.5",
+		Status:    "success",
+		Object:    "responses",
+		ResponsesInputHistoryParsed: []schemas.ResponsesMessage{
+			{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("what is in this file")},
+				{Type: schemas.ResponsesInputMessageContentBlockTypeImage, ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{ImageURL: schemas.Ptr(imageData)}},
+				{Type: schemas.ResponsesInputMessageContentBlockTypeFile, ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{FileData: schemas.Ptr(pdfData), Filename: schemas.Ptr("doc.pdf")}},
+			}}},
+		},
+	}
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
+	waitForOffload(t, inner, "resp-attach-1")
+
+	dbLog, err := inner.FindByID(ctx, "resp-attach-1")
+	require.NoError(t, err)
+	assert.Contains(t, dbLog.ResponsesInputHistory, "what is in this file")
+	assert.Contains(t, dbLog.ResponsesInputHistory, attachmentStrippedPlaceholder)
+	assert.Contains(t, dbLog.ResponsesInputHistory, "doc.pdf", "filename should survive stripping")
+	assert.NotContains(t, dbLog.ResponsesInputHistory, "FAKEB64RESPIMAGE", "base64 image must not reach the DB row")
+	assert.NotContains(t, dbLog.ResponsesInputHistory, pdfData, "base64 file data must not reach the DB row")
+	assert.Contains(t, dbLog.ContentSummary, "what is in this file")
+
+	key := ObjectKey("test", entry.Timestamp, "resp-attach-1")
+	rawPayload, err := objStore.Get(ctx, key)
+	require.NoError(t, err)
+	assert.Contains(t, string(rawPayload), "FAKEB64RESPIMAGE")
+	assert.Contains(t, string(rawPayload), pdfData)
+
+	// Copy-on-write: the caller's parsed structs must be untouched.
+	blocks := entry.ResponsesInputHistoryParsed[0].Content.ContentBlocks
+	assert.Equal(t, imageData, *blocks[1].ImageURL)
+	assert.Equal(t, pdfData, *blocks[2].FileData)
+
+	found, err := hybrid.FindByID(ctx, "resp-attach-1")
+	require.NoError(t, err)
+	require.Len(t, found.ResponsesInputHistoryParsed, 1)
+	assert.Equal(t, imageData, *found.ResponsesInputHistoryParsed[0].Content.ContentBlocks[1].ImageURL)
+}
+
 func TestHybrid_TokenUsageSummaryForListPreview(t *testing.T) {
-	// token_usage is offloaded to object storage and cleared from the DB row. The
-	// denormalized prompt/completion/total columns must remain so list queries can
-	// rebuild token_usage for the UI without hydrating from S3 (same pattern as
-	// content_summary for message previews).
+	// Pricing metadata stays in the DB even when content is offloaded. List queries
+	// may still use their lightweight projection and rebuild a usage summary from
+	// denormalized counters.
 	hybrid, inner, objStore := newTestHybrid(t)
 	defer hybrid.Close(context.Background())
 	ctx := context.Background()
@@ -765,6 +909,7 @@ func TestHybrid_TokenUsageSummaryForListPreview(t *testing.T) {
 			CompletionTokens: 45,
 			TotalTokens:      165,
 		},
+		CacheDebugParsed: &schemas.BifrostCacheMetadata{CacheHit: true},
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
@@ -772,7 +917,8 @@ func TestHybrid_TokenUsageSummaryForListPreview(t *testing.T) {
 
 	dbLog, err := inner.FindByID(ctx, "chat-tokens-1")
 	require.NoError(t, err)
-	assert.Empty(t, dbLog.TokenUsage, "token_usage should be offloaded to object storage")
+	assert.NotEmpty(t, dbLog.TokenUsage, "pricing metadata must stay in log_store")
+	assert.NotEmpty(t, dbLog.CacheDebug, "cache pricing metadata must stay in log_store")
 	assert.Equal(t, 120, dbLog.PromptTokens)
 	assert.Equal(t, 45, dbLog.CompletionTokens)
 	assert.Equal(t, 165, dbLog.TotalTokens)
@@ -788,7 +934,7 @@ func TestHybrid_TokenUsageSummaryForListPreview(t *testing.T) {
 
 	found, err := hybrid.FindByID(ctx, "chat-tokens-1")
 	require.NoError(t, err)
-	require.NotNil(t, found.TokenUsageParsed, "detail view should hydrate full token_usage from S3")
+	require.NotNil(t, found.TokenUsageParsed, "detail view should retain full token_usage")
 	assert.Equal(t, 165, found.TokenUsageParsed.TotalTokens)
 }
 
@@ -798,7 +944,7 @@ func TestHybrid_SpeechInputSummaryForListPreview(t *testing.T) {
 	// retain a content_summary so the log list renders the text instead of "-"
 	// (the UI uses content_summary as its display fallback once payload fields
 	// are offloaded). Same gap exists for responses/image/video inputs.
-	hybrid, inner, objStore := newTestHybrid(t)
+	hybrid, inner, _ := newTestHybrid(t)
 	defer hybrid.Close(context.Background())
 	ctx := context.Background()
 
@@ -814,7 +960,7 @@ func TestHybrid_SpeechInputSummaryForListPreview(t *testing.T) {
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+	waitForOffload(t, inner, "speech-1")
 
 	// speech_input is offloaded to S3 and cleared from the DB row, but the
 	// content_summary fallback retains the text for the list preview.

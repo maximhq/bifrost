@@ -171,16 +171,16 @@ From the repository root:
 
 ```bash
 # Run TypeScript integration tests
-make test-integrations LANG=ts
+make test-integrations-ts
 
 # Run specific SDK tests
-make test-integrations LANG=ts INTEGRATION=openai
+make test-integrations-ts INTEGRATION=openai
 
 # Run with pattern
-make test-integrations LANG=ts PATTERN="tool"
+make test-integrations-ts PATTERN="tool"
 
 # Verbose output
-make test-integrations LANG=ts VERBOSE=1
+make test-integrations-ts VERBOSE=1
 ```
 
 ## Cross-Provider Testing

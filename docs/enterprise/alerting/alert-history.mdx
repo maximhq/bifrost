@@ -1,0 +1,148 @@
+---
+title: "Alert History"
+description: "Review delivered alert notifications, skipped alerts, and failed delivery attempts in Bifrost Enterprise."
+icon: "clock-rotate-left"
+keywords: ["alert history", "alert delivery", "notifications", "skipped alerts"]
+---
+
+## Overview
+
+Bifrost records every alert evaluation outcome in **alert history**. Each record captures the rule that was evaluated, the scope and target, the metric values at evaluation time, the delivery channel (if applicable), and the outcome status.
+
+Alert history is stored in the configured logs store. PostgreSQL and ClickHouse logs stores both support history writes, filtering, and recovery of alert state. With ClickHouse, Bifrost creates an `enterprise_alert_history` table with the configured `history_retention_days` TTL.
+
+Bifrost uses its shared key-value store for live rule cooldown, channel cooldown, and reset-cycle checks. After startup or a leadership change, the alerting engine bulk-loads only the latest relevant `sent` timestamps and reset-cycle identities from history before it can dispatch alerts. Normal evaluation sweeps do not query alert history for each rule or channel.
+
+With ClickHouse, a cold recovery performs an immediate read and a delayed second read before dispatch starts. This allows replicated ClickHouse tables time to converge and reduces duplicate notifications after failover.
+
+---
+
+## Alert history records
+
+Open **Alerting** in the Bifrost dashboard and select the **History** tab to review past alert activity.
+
+<Frame>
+  <img src="/media/alerting/alerting-history-list.png" alt="Alert History table showing time, rule, channel, scope, and status columns with status and scope filters" />
+</Frame>
+
+Each history record contains:
+
+| Field | Description |
+| --- | --- |
+| **Time** | When the evaluation was recorded. |
+| **Rule** | The rule that was evaluated. |
+| **Channel** | The channel that was notified, or empty for cooldown skips. |
+| **Scope** | The scope type and ID the rule applied to. |
+| **Target** | The budget target (`target_type` and `target_id`), if the rule targets one. |
+| **Status** | Delivery outcome: `sent`, `failed`, or `skipped`. |
+
+You can filter history by status, scope type, and channel type.
+
+---
+
+## Statuses
+
+Each history record has one of three statuses:
+
+| Status | Meaning |
+| --- | --- |
+| `sent` | The alert was successfully delivered to the channel. |
+| `failed` | Delivery was attempted but failed (for example, network error or unsupported channel type). |
+| `skipped` | The rule matched but delivery was suppressed by a cooldown. |
+
+For skipped records, the `status_detail` field indicates the reason:
+
+- `"skipped due to rule cooldown"` - the rule-level cooldown was active.
+- `"skipped due to channel cooldown"` - the channel-level cooldown was active.
+
+For failed records, the `status_detail` field contains the error (for example, `"delivery failed"` or `"unsupported alert channel type: ..."`).
+
+---
+
+## Evaluation input
+
+Each history record stores the metric values that were evaluated. For a matched rule, this includes the specific values that caused the expression to evaluate to `true`. Example for a budget alert:
+
+```json
+{
+  "budget_usage_percent": 91.2,
+  "budget_spent": 456.0,
+  "budget_limit": 500.0,
+  "request_usage": 0,
+  "request_limit": 0,
+  "token_usage": 0,
+  "token_limit": 0,
+  "scope_type": "virtual_key",
+  "scope_id": "vk-abc",
+  "target_type": "budget",
+  "target_id": "budget-a"
+}
+```
+
+---
+
+## API
+
+The alert history API is available at `/api/alerting/history`.
+
+| Method | Endpoint | Description |
+| --- | --- | --- |
+| `GET` | `/history` | Paginated history with filters. |
+
+**Query parameters:**
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `limit` | integer | Maximum records to return. Default `25`. |
+| `offset` | integer | Records to skip for pagination. Default `0`. |
+| `status` | string (comma-separated) | Filter by status: `sent`, `failed`, `skipped`. |
+| `scope_type` | string (comma-separated) | Filter by scope: `virtual_key`, `team`, `customer`. |
+| `channel_type` | string (comma-separated) | Filter by channel: `slack`, `microsoft_teams`, `pagerduty`, `webhook`. |
+
+```bash
+curl "https://your-bifrost-gateway/api/alerting/history?status=sent,failed&scope_type=virtual_key&limit=10" \
+  -H "Authorization: Bearer $API_KEY"
+```
+
+**Response:**
+
+The `id` is numeric with PostgreSQL and a UUID string with ClickHouse.
+
+```json
+{
+  "history": [
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440000",
+      "rule_id": "budget-80-percent",
+      "rule_name": "Budget at 80%",
+      "channel_id": "slack-prod",
+      "channel_name": "Production Slack",
+      "channel_type": "slack",
+      "scope_type": "virtual_key",
+      "scope_id": "vk-abc",
+      "target_type": "budget",
+      "target_id": "budget-a",
+      "cel_expression": "budget_usage_percent >= 80.0",
+      "status": "sent",
+      "status_detail": "",
+      "created_at": "2026-06-11T12:00:00Z"
+    }
+  ],
+  "total": 42,
+  "limit": 10,
+  "offset": 0
+}
+```
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Alert Rules" icon="gavel" href="/enterprise/alerting/alert-rules">
+    Tune conditions, scopes, and cooldowns based on what you see in history.
+  </Card>
+  <Card title="Alert Channels" icon="megaphone" href="/enterprise/alerting/alert-channels">
+    Reconfigure channels if you see delivery failures.
+  </Card>
+</CardGroup>

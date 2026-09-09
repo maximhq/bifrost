@@ -151,6 +151,15 @@ export const batchS3ConfigSchema = z.object({
 	buckets: z.array(s3BucketConfigSchema).optional(),
 });
 
+// Interface VPC endpoint hosts, one per AWS endpoint service Bifrost dials for Bedrock.
+export const bedrockEndpointsSchema = z.object({
+	runtime: secretVarSchema.optional(),
+	control_plane: secretVarSchema.optional(),
+	mantle: secretVarSchema.optional(),
+	agent_runtime: secretVarSchema.optional(),
+	s3: secretVarSchema.optional(),
+});
+
 // Bedrock key config schema
 export const bedrockKeyConfigSchema = z
 	.object({
@@ -162,9 +171,11 @@ export const bedrockKeyConfigSchema = z
 		role_arn: secretVarSchema.optional(),
 		external_id: secretVarSchema.optional(),
 		session_name: secretVarSchema.optional(),
+		batch_role_arn: secretVarSchema.optional(),
 		arn: secretVarSchema.optional(),
 		project_id: secretVarSchema.optional(),
 		batch_s3_config: batchS3ConfigSchema.optional(),
+		endpoints: bedrockEndpointsSchema.optional(),
 	})
 	.refine(
 		(data) => {
@@ -206,6 +217,7 @@ export const bedrockMantleKeyConfigSchema = z
 		external_id: secretVarSchema.optional(),
 		session_name: secretVarSchema.optional(),
 		project_id: secretVarSchema.optional(),
+		endpoints: bedrockEndpointsSchema.optional(),
 	})
 	.refine((data) => isSecretVarSet(data.region), {
 		message: "Region is required",
@@ -242,8 +254,87 @@ export const vllmKeyConfigSchema = z
 	});
 
 export const replicateKeyConfigSchema = z.object({
-	use_deployments_endpoint: z.boolean(),
+	use_deployments_endpoint: z.boolean().optional(),
 });
+
+// A secret that resolves elsewhere cannot have its shape judged here, so format checks apply
+// only to literals.
+//
+// Only a non-empty `ref` counts as indirect. The `type` tag alone is not enough: a payload
+// like { value: "not-numeric", ref: "", type: "env" } still carries its value inline, and
+// trusting the tag would let any malformed literal skip every check below.
+const isSecretVarRef = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => !!v?.ref?.trim();
+
+const isLiteralDigits = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
+	if (!isSecretVarSet(v)) return true; // presence is checked separately
+	if (isSecretVarRef(v)) return true;
+	return /^\d+$/.test((v?.value ?? "").trim());
+};
+
+// GitHub issues App keys as PKCS#1 ("RSA PRIVATE KEY"); openssl can convert them to PKCS#8
+// ("PRIVATE KEY"). Nothing else signs an RS256 App JWT, so an EC or passphrase-encrypted key
+// is rejected here rather than at the first inference call.
+//
+// This checks the envelope only: the browser cannot parse DER. The server does the real
+// parse in validateProviderKeyURL, so this is a fast typo check, not the security boundary.
+// Literal backslash-n is tolerated because that is how a PEM most often arrives when it has
+// been round-tripped through JSON or an environment variable.
+const PEM_PRIVATE_KEY = /^-----BEGIN (RSA PRIVATE KEY|PRIVATE KEY)-----\s*\n([\s\S]*?)\n\s*-----END \1-----$/;
+
+const isLiteralPEM = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
+	if (!isSecretVarSet(v)) return true;
+	if (isSecretVarRef(v)) return true;
+	const body = (v?.value ?? "").replace(/\\n/g, "\n").trim();
+	const match = PEM_PRIVATE_KEY.exec(body);
+	// The back-reference makes BEGIN and END agree; the body must also carry something.
+	return !!match && match[2].trim().length > 0;
+};
+
+// githubCopilotKeyConfigComplete reports whether all four App credentials are present. It is
+// the check the outer key schema uses to decide whether this block is a real credential.
+export const githubCopilotKeyConfigComplete = (
+	data: { app_id?: unknown; installation_id?: unknown; repository_id?: unknown; private_key?: unknown } | undefined,
+): boolean => {
+	if (!data) return false;
+	const d = data as Record<string, { value?: string; ref?: string } | undefined>;
+	return isSecretVarSet(d.app_id) && isSecretVarSet(d.installation_id) && isSecretVarSet(d.repository_id) && isSecretVarSet(d.private_key);
+};
+
+// GitHub Copilot key config schema. Every field is optional because the whole block is
+// optional: a Copilot API token in `value` is the other valid auth mode. Once the operator
+// starts filling this block in, all four become required together and literals are checked
+// for shape, so a typo is caught in the form rather than at the first inference call.
+export const githubCopilotKeyConfigSchema = z
+	.object({
+		app_id: secretVarSchema.optional(),
+		installation_id: secretVarSchema.optional(),
+		repository_id: secretVarSchema.optional(),
+		private_key: secretVarSchema.optional(),
+		github_domain: secretVarSchema.optional(),
+	})
+	.superRefine((data, ctx) => {
+		const started =
+			isSecretVarSet(data.app_id) ||
+			isSecretVarSet(data.installation_id) ||
+			isSecretVarSet(data.repository_id) ||
+			isSecretVarSet(data.private_key);
+		if (!started) return;
+
+		for (const field of ["app_id", "installation_id", "repository_id", "private_key"] as const) {
+			if (!isSecretVarSet(data[field])) {
+				ctx.addIssue({ code: "custom", path: [field], message: "Required when using GitHub App credentials" });
+			}
+		}
+		if (!isLiteralDigits(data.installation_id)) {
+			ctx.addIssue({ code: "custom", path: ["installation_id"], message: "Installation ID must be numeric" });
+		}
+		if (!isLiteralDigits(data.repository_id)) {
+			ctx.addIssue({ code: "custom", path: ["repository_id"], message: "Repository ID must be numeric" });
+		}
+		if (!isLiteralPEM(data.private_key)) {
+			ctx.addIssue({ code: "custom", path: ["private_key"], message: "Private key must be a PKCS#1 or PKCS#8 PEM block" });
+		}
+	});
 
 // Ollama key config schema
 export const ollamaKeyConfigSchema = z
@@ -263,6 +354,33 @@ export const sglKeyConfigSchema = z
 	.refine((data) => isSecretVarSet(data.url), {
 		message: "Server URL is required",
 		path: ["url"],
+	});
+
+// Databricks key config schema
+export const databricksKeyConfigSchema = z
+	.object({
+		workspace_url: secretVarSchema.optional(),
+		api_format: z.enum(["auto", "model_serving", "ai_gateway"]).optional(),
+		client_id: secretVarSchema.optional(),
+		client_secret: secretVarSchema.optional(),
+		forward_gateway_tags: z.boolean().optional(),
+		// UI-only discriminator, mirroring the azure/vertex/bedrock key forms.
+		_auth_type: z.enum(["pat", "oauth_m2m"]).optional(),
+	})
+	.refine((data) => isSecretVarSet(data.workspace_url), {
+		message: "Workspace URL is required",
+		path: ["workspace_url"],
+	})
+	// The OAuth M2M tab hides the token field, so a key saved from it needs the whole service
+	// principal or it has no credentials at all. Mirrors the Azure Entra ID rule.
+	.refine((data) => data._auth_type !== "oauth_m2m" || (isSecretVarSet(data.client_id) && isSecretVarSet(data.client_secret)), {
+		message: "Client ID and Client Secret are both required for OAuth M2M authentication",
+		path: ["client_id"],
+	})
+	// A service principal only authenticates as a pair; half of one is always a misconfiguration.
+	.refine((data) => isSecretVarSet(data.client_id) === isSecretVarSet(data.client_secret), {
+		message: "Client ID and Client Secret must be set together",
+		path: ["client_secret"],
 	});
 
 // Model family enum schema — must mirror schemas.ModelFamily in Go.
@@ -302,6 +420,7 @@ const aliasConfigObjectSchema = z.object({
 	inference_profile_arn: secretVarSchema.optional(),
 	// Replicate overrides
 	use_deployments_endpoint: z.boolean().optional(),
+	use_anthropic_endpoints: z.boolean().optional(),
 });
 
 // The Go server emits the legacy string wire shape (`{"my-alias": "model-id"}`)
@@ -347,13 +466,40 @@ export const modelProviderKeySchema = z
 		replicate_key_config: replicateKeyConfigSchema.optional(),
 		ollama_key_config: ollamaKeyConfigSchema.optional(),
 		sgl_key_config: sglKeyConfigSchema.optional(),
+		databricks_key_config: databricksKeyConfigSchema.optional(),
+		github_copilot_key_config: githubCopilotKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),
+		use_anthropic_endpoints: z.boolean().optional(),
 		enabled: z.boolean().optional(),
 	})
 	.refine(
 		(data) => {
-			// Providers with dedicated config that never need a top-level API key
-			if (data.vllm_key_config || data.replicate_key_config || data.ollama_key_config || data.sgl_key_config) {
+			if (data.vllm_key_config || data.ollama_key_config || data.sgl_key_config) {
+				return true;
+			}
+			// Databricks authenticates with a personal access token (the key value) or with an
+			// OAuth M2M service principal; only require a key value on the token path.
+			// Decided from the credentials themselves rather than from _auth_type: the form
+			// re-seeds that discriminator only on mount, so a reset (which the key form does
+			// when the key resolves asynchronously) leaves it undefined on an M2M key that is
+			// perfectly valid.
+			if (data.databricks_key_config) {
+				const databricks = data.databricks_key_config;
+				if (databricks._auth_type === "oauth_m2m") {
+					return true;
+				}
+				// Only infer the M2M path from the credentials when the discriminator is absent;
+				// an explicit token method must still carry a token.
+				if (databricks._auth_type === undefined && (isSecretVarSet(databricks.client_id) || isSecretVarSet(databricks.client_secret))) {
+					return true;
+				}
+				return isSecretVarSet(data.value);
+			}
+			// GitHub Copilot authenticates from its own key config when no API token is given.
+			// An empty block, or one carrying only github_domain, is not a credential: the
+			// nested schema permits it so token auth stays valid, so this is the only place
+			// that catches a key with no usable authentication at all.
+			if (githubCopilotKeyConfigComplete(data.github_copilot_key_config)) {
 				return true;
 			}
 			// Bedrock Mantle authenticates via SigV4 (its key config) or a Bearer key — only require
@@ -414,6 +560,12 @@ export const networkConfigSchema = z
 			.min(5, "Stream idle timeout must be at least 5 seconds")
 			.max(3600, "Stream idle timeout must be at most 3600 seconds i.e. 60 minutes")
 			.optional(),
+		keep_alive_timeout_in_seconds: z
+			.number()
+			.int("Keep-alive timeout must be a whole number of seconds")
+			.min(1, "Keep-alive timeout must be at least 1 second")
+			.max(3600, "Keep-alive timeout must be at most 3600 seconds i.e. 60 minutes")
+			.optional(),
 		max_conns_per_host: z
 			.number()
 			.int("Max connections must be a whole number")
@@ -421,6 +573,12 @@ export const networkConfigSchema = z
 			.max(10000, "Max connections must be at most 10000")
 			.optional(),
 		enforce_http2: z.boolean().optional(),
+		http2_ping_interval_in_seconds: z
+			.number()
+			.int("HTTP/2 ping interval must be a whole number of seconds")
+			.min(0, "HTTP/2 ping interval must be at least 0 seconds")
+			.max(3600, "HTTP/2 ping interval must be at most 3600 seconds i.e. 60 minutes")
+			.optional(),
 		allow_private_network: z.boolean().optional(),
 	})
 	.refine((d) => d.retry_backoff_initial <= d.retry_backoff_max, {
@@ -467,6 +625,12 @@ export const networkFormConfigSchema = z
 			.min(5, "Stream idle timeout must be at least 5 seconds")
 			.max(3600, "Stream idle timeout must be at most 3600 seconds i.e. 60 minutes")
 			.optional(),
+		keep_alive_timeout_in_seconds: z.coerce
+			.number("Keep-alive timeout must be a number")
+			.int("Keep-alive timeout must be a whole number of seconds")
+			.min(1, "Keep-alive timeout must be at least 1 second")
+			.max(3600, "Keep-alive timeout must be at most 3600 seconds i.e. 60 minutes")
+			.optional(),
 		max_conns_per_host: z.coerce
 			.number("Max connections must be a number")
 			.int("Max connections must be a whole number")
@@ -474,6 +638,12 @@ export const networkFormConfigSchema = z
 			.max(10000, "Max connections must be at most 10000")
 			.optional(),
 		enforce_http2: z.boolean().optional(),
+		http2_ping_interval_in_seconds: z.coerce
+			.number("HTTP/2 ping interval must be a number")
+			.int("HTTP/2 ping interval must be a whole number of seconds")
+			.min(0, "HTTP/2 ping interval must be at least 0 seconds")
+			.max(3600, "HTTP/2 ping interval must be at most 3600 seconds i.e. 60 minutes")
+			.optional(),
 		allow_private_network: z.boolean().optional(),
 	})
 	.refine((d) => d.retry_backoff_initial <= d.retry_backoff_max, {
@@ -588,6 +758,25 @@ export const openaiConfigFormSchema = z.object({
 
 export type OpenAIConfigFormSchema = z.infer<typeof openaiConfigFormSchema>;
 
+// Prompt cache tab
+export const cacheControlInjectionPointSchema = z
+	.object({
+		location: z.literal("message"),
+		role: z.enum(["system", "developer", "user", "assistant"]).optional(),
+		index: z.number().int().optional(),
+	})
+	.refine((p) => p.role !== undefined || p.index !== undefined, {
+		message: "Set a role, an index, or both - a point with neither matches nothing",
+	});
+
+export const promptCacheFormSchema = z.object({
+	auto_inject: z.boolean(),
+	ttl: z.string().optional(),
+	cache_control_injection_points: z.array(cacheControlInjectionPointSchema).optional(),
+});
+
+export type PromptCacheFormSchema = z.infer<typeof promptCacheFormSchema>;
+
 // Allowed requests schema
 export const allowedRequestsSchema = z.object({
 	text_completion: z.boolean(),
@@ -614,6 +803,7 @@ export const allowedRequestsSchema = z.object({
 	ocr_stream: z.boolean().optional(),
 	rerank: z.boolean(),
 	video_generation: z.boolean(),
+	video_edit: z.boolean(),
 	video_retrieve: z.boolean(),
 	video_download: z.boolean(),
 	video_delete: z.boolean(),
@@ -630,6 +820,7 @@ export const customProviderConfigSchema = z
 	.object({
 		base_provider_type: knownProviderSchema,
 		is_key_less: z.boolean().optional(),
+		does_not_send_done_marker: z.boolean().optional(),
 		allowed_requests: allowedRequestsSchema.optional(),
 		request_path_overrides: z.record(z.string(), z.string().optional()).optional(),
 	})
@@ -651,6 +842,7 @@ export const formCustomProviderConfigSchema = z
 	.object({
 		base_provider_type: z.string().min(1, "Base provider type is required"),
 		is_key_less: z.boolean().optional(),
+		does_not_send_done_marker: z.boolean().optional(),
 		allowed_requests: allowedRequestsSchema.optional(),
 		request_path_overrides: z.record(z.string(), z.string().optional()).optional(),
 	})
@@ -713,6 +905,7 @@ export const addProviderRequestSchema = z.object({
 	store_raw_request_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 	openai_config: openaiConfigFormSchema.optional(),
+	prompt_cache: promptCacheFormSchema.optional(),
 });
 
 // Update provider request schema
@@ -726,6 +919,7 @@ export const updateProviderRequestSchema = z.object({
 	store_raw_request_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 	openai_config: openaiConfigFormSchema.optional(),
+	prompt_cache: promptCacheFormSchema.optional(),
 });
 
 // Cache config schema
@@ -769,6 +963,7 @@ export const coreConfigSchema = z.object({
 	disable_content_logging: z.boolean().default(false),
 	enforce_auth_on_inference: z.boolean().default(false),
 	hide_deleted_virtual_keys_in_filters: z.boolean().default(false),
+	hidden_request_types: z.array(z.string()).default([]),
 	allowed_origins: z.array(z.string()).default(["*"]),
 	max_request_body_size_mb: z.number().min(1).default(100),
 	mcp_agent_depth: z.number().min(1).default(10),
@@ -843,6 +1038,8 @@ export const otelConfigSchema = z
 	.object({
 		// Per-profile enable toggle. A disabled profile exports nothing and is not validated.
 		enabled: z.boolean().default(true),
+		// Trace export toggle. When false the profile is metrics-only; collector_url isn't required.
+		traces_enabled: z.boolean().default(true),
 		service_name: z.string().optional(),
 		collector_url: secretVarSchema.default({ value: "" }),
 		trace_type: z
@@ -850,7 +1047,10 @@ export const otelConfigSchema = z
 				message: "Please select a trace type",
 			})
 			.default("genai_extension"),
+		// Common headers go to both endpoints; per-signal headers override on collision.
 		headers: z.record(z.string(), secretVarSchema).optional(),
+		trace_headers: z.record(z.string(), secretVarSchema).optional(),
+		metrics_headers: z.record(z.string(), secretVarSchema).optional(),
 		protocol: z
 			.enum(["http", "grpc"], {
 				message: "Please select a protocol",
@@ -859,8 +1059,14 @@ export const otelConfigSchema = z
 		// TLS configuration
 		tls_ca_cert: z.string().optional(),
 		insecure: z.boolean().default(true),
+		// Bounds a single trace export. gRPC exports have no other timeout, so an
+		// endpoint that accepts the connection but never replies would otherwise block
+		// an export goroutine indefinitely.
+		export_timeout: z.number().int().min(1).max(60).default(5),
 		// Metrics push configuration
 		metrics_enabled: z.boolean().default(false),
+		// Export per-component Bifrost overhead latency as a histogram.
+		overhead_breakdown_enabled: z.boolean().default(false),
 		metrics_endpoint: secretVarSchema.optional(),
 		metrics_push_interval: z.number().int().min(1).max(300).default(15),
 		request_headers: z.array(z.string()).default([]),
@@ -921,21 +1127,23 @@ export const otelConfigSchema = z
 			return true;
 		};
 
-		// Collector address is required for an enabled profile.
-		if (!isSecretVarSet(data.collector_url)) {
-			ctx.addIssue({
-				code: "custom",
-				path: ["collector_url"],
-				message: "Collector address is required",
-			});
-		}
+		// collector_url is required and validated only when traces are enabled.
+		if (data.traces_enabled) {
+			if (!isSecretVarSet(data.collector_url)) {
+				ctx.addIssue({
+					code: "custom",
+					path: ["collector_url"],
+					message: "Collector address is required",
+				});
+			}
 
-		// Validate collector_url format — skip format check for env var references
-		const collectorUrl = (data.collector_url?.value || "").trim();
-		if (collectorUrl && (data.collector_url?.type === "plain_text" || !data.collector_url?.type) && protocol === "http") {
-			validateHttpUrl(collectorUrl, ["collector_url"]);
-		} else if (collectorUrl && (data.collector_url?.type === "plain_text" || !data.collector_url?.type) && protocol === "grpc") {
-			validateHostPort(collectorUrl, ["collector_url"], "otel-collector:4317");
+			// Validate collector_url format — skip format check for env var references
+			const collectorUrl = (data.collector_url?.value || "").trim();
+			if (collectorUrl && (data.collector_url?.type === "plain_text" || !data.collector_url?.type) && protocol === "http") {
+				validateHttpUrl(collectorUrl, ["collector_url"]);
+			} else if (collectorUrl && (data.collector_url?.type === "plain_text" || !data.collector_url?.type) && protocol === "grpc") {
+				validateHostPort(collectorUrl, ["collector_url"], "otel-collector:4317");
+			}
 		}
 
 		// Validate metrics_endpoint when metrics_enabled is true
@@ -1049,6 +1257,7 @@ export const prometheusConfigSchema = z
 export const prometheusFormSchema = z
 	.object({
 		metrics_enabled: z.boolean().default(true),
+		overhead_breakdown_enabled: z.boolean().default(false),
 		push_gateway_enabled: z.boolean().default(false),
 		prometheus_config: prometheusConfigSchema,
 	})
@@ -1066,98 +1275,141 @@ export const prometheusFormSchema = z
 	});
 
 // MCP Client update schema
-export const mcpClientUpdateSchema = z.object({
-	is_code_mode_client: z.boolean().optional(),
-	is_ping_available: z.boolean().optional(),
-	allow_on_all_virtual_keys: z.boolean().optional(),
-	disabled: z.boolean().optional(),
-	name: z
-		.string()
-		.min(1, "Name is required")
-		.refine((val) => !val.includes("-"), {
-			message: "Client name cannot contain hyphens",
-		})
-		.refine((val) => !val.includes(" "), {
-			message: "Client name cannot contain spaces",
-		})
-		.refine((val) => !/^[0-9]/.test(val), {
-			message: "Client name cannot start with a number",
-		}),
-	headers: z.record(z.string(), secretVarSchema).optional().nullable(),
-	per_user_header_keys: z
-		.array(z.string().trim().min(1, "Header name cannot be empty"))
-		.optional()
-		.refine(
-			(headers) => {
-				if (!headers) return true;
-				const normalized = headers.map((h) => h.trim().toLowerCase());
-				return normalized.length === new Set(normalized).size;
-			},
-			{ message: "Duplicate header names are not allowed" },
-		),
-	tools_to_execute: z
-		.array(z.string())
-		.optional()
-		.refine(
-			(tools) => {
-				if (!tools || tools.length === 0) return true;
-				const hasWildcard = tools.includes("*");
-				return !hasWildcard || tools.length === 1;
-			},
-			{ message: "Wildcard '*' cannot be combined with other tool names" },
-		)
-		.refine(
-			(tools) => {
-				if (!tools) return true;
-				return tools.length === new Set(tools).size;
-			},
-			{ message: "Duplicate tool names are not allowed" },
-		),
-	tools_to_auto_execute: z
-		.array(z.string())
-		.optional()
-		.refine(
-			(tools) => {
-				if (!tools || tools.length === 0) return true;
-				const hasWildcard = tools.includes("*");
-				return !hasWildcard || tools.length === 1;
-			},
-			{ message: "Wildcard '*' cannot be combined with other tool names" },
-		)
-		.refine(
-			(tools) => {
-				if (!tools) return true;
-				return tools.length === new Set(tools).size;
-			},
-			{ message: "Duplicate tool names are not allowed" },
-		),
-	tool_pricing: z.record(z.string(), z.number().min(0, "Cost must be non-negative")).optional(),
-	tool_sync_interval: z.number().optional(), // -1 = disabled, 0 = use global, >0 = custom interval in minutes
-	tool_execution_timeout: z.number().int().min(0).optional(), // 0 = use global, >0 = per-server timeout in seconds
-	allowed_extra_headers: z
-		.array(z.string())
-		.optional()
-		.refine(
-			(headers) => {
-				if (!headers || headers.length === 0) return true;
-				const hasWildcard = headers.includes("*");
-				return !hasWildcard || headers.length === 1;
-			},
-			{ message: "Wildcard '*' cannot be combined with specific header names" },
-		),
-	oauth_config: z
-		.object({
-			client_id: secretVarSchema.optional(),
-			client_secret: secretVarSchema.optional(),
-		})
-		.optional(),
-	tls_config: z
-		.object({
-			insecure_skip_verify: z.boolean().optional(),
-			ca_cert_pem: secretVarSchema.optional(),
-		})
-		.optional(),
-});
+export const mcpClientUpdateSchema = z
+	.object({
+		is_code_mode_client: z.boolean().optional(),
+		is_ping_available: z.boolean().optional(),
+		needs_session_stickiness: z.boolean().optional(),
+		allow_by_default: z.boolean().optional(),
+		disabled: z.boolean().optional(),
+		name: z
+			.string()
+			.min(1, "Name is required")
+			.refine((val) => !val.includes("-"), {
+				message: "Client name cannot contain hyphens",
+			})
+			.refine((val) => !val.includes(" "), {
+				message: "Client name cannot contain spaces",
+			})
+			.refine((val) => !/^[0-9]/.test(val), {
+				message: "Client name cannot start with a number",
+			}),
+		headers: z.record(z.string(), secretVarSchema).optional().nullable(),
+		per_user_header_keys: z
+			.array(z.string().trim().min(1, "Header name cannot be empty"))
+			.optional()
+			.refine(
+				(headers) => {
+					if (!headers) return true;
+					const normalized = headers.map((h) => h.trim().toLowerCase());
+					return normalized.length === new Set(normalized).size;
+				},
+				{ message: "Duplicate header names are not allowed" },
+			),
+		tools_to_execute: z
+			.array(z.string())
+			.optional()
+			.refine(
+				(tools) => {
+					if (!tools || tools.length === 0) return true;
+					const hasWildcard = tools.includes("*");
+					return !hasWildcard || tools.length === 1;
+				},
+				{ message: "Wildcard '*' cannot be combined with other tool names" },
+			)
+			.refine(
+				(tools) => {
+					if (!tools) return true;
+					return tools.length === new Set(tools).size;
+				},
+				{ message: "Duplicate tool names are not allowed" },
+			),
+		tools_to_auto_execute: z
+			.array(z.string())
+			.optional()
+			.refine(
+				(tools) => {
+					if (!tools || tools.length === 0) return true;
+					const hasWildcard = tools.includes("*");
+					return !hasWildcard || tools.length === 1;
+				},
+				{ message: "Wildcard '*' cannot be combined with other tool names" },
+			)
+			.refine(
+				(tools) => {
+					if (!tools) return true;
+					return tools.length === new Set(tools).size;
+				},
+				{ message: "Duplicate tool names are not allowed" },
+			),
+		tool_pricing: z.record(z.string(), z.number().min(0, "Cost must be non-negative")).optional(),
+		tool_sync_interval: z.number().min(0, "Tool sync interval must be 0 or a positive number of minutes").optional(), // 0 = use global, >0 = custom interval in minutes
+		tool_execution_timeout: z.number().int().min(0).optional(), // 0 = use global, >0 = per-server timeout in seconds
+		allowed_extra_headers: z
+			.array(z.string())
+			.optional()
+			.refine(
+				(headers) => {
+					if (!headers || headers.length === 0) return true;
+					const hasWildcard = headers.includes("*");
+					return !hasWildcard || headers.length === 1;
+				},
+				{ message: "Wildcard '*' cannot be combined with specific header names" },
+			),
+		oauth_config: z
+			.object({
+				client_id: secretVarSchema.optional(),
+				client_secret: secretVarSchema.optional(),
+				authorize_url: z
+					.string()
+					.optional()
+					.refine((val) => !val || /^https?:\/\/.+$/.test(val), { message: "Authorize URL must start with http:// or https://" }),
+				token_url: z
+					.string()
+					.optional()
+					.refine((val) => !val || /^https?:\/\/.+$/.test(val), { message: "Token URL must start with http:// or https://" }),
+				registration_url: z
+					.string()
+					.optional()
+					.refine((val) => !val || /^https?:\/\/.+$/.test(val), { message: "Registration URL must start with http:// or https://" }),
+				scopes: z.array(z.string()).optional(),
+				resource: z.string().optional(),
+			})
+			.optional(),
+		token_exchange: z
+			.object({
+				audience: z.string().trim().min(1, "Audience is required"),
+				use_idp_credentials: z.boolean().optional(),
+				client_id: secretVarSchema.optional(),
+				client_secret: secretVarSchema.optional(),
+				authorization_server_url: z
+					.string()
+					.optional()
+					.refine((val) => !val || /^https?:\/\/.+$/.test(val), {
+						message: "Authorization Server URL must start with http:// or https://",
+					}),
+				scopes: z.array(z.string()).optional(),
+			})
+			.optional(),
+		tls_config: z
+			.object({
+				insecure_skip_verify: z.boolean().optional(),
+				ca_cert_pem: secretVarSchema.optional(),
+			})
+			.optional(),
+	})
+	.superRefine((data, ctx) => {
+		// per_user_header_keys is only ever set on the form for per_user_headers
+		// auth clients (undefined otherwise), so an empty array here means the
+		// admin cleared every entry, not that the field doesn't apply.
+		if (data.per_user_header_keys !== undefined && data.per_user_header_keys.length === 0) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["per_user_header_keys"],
+				message: "Declare at least one header name users must supply.",
+			});
+		}
+	});
 
 // Global proxy type schema
 export const globalProxyTypeSchema = z.enum(["http", "socks5", "tcp"]);
@@ -1247,6 +1499,18 @@ export const routingRuleSchema = z
 		path: ["scope_id"],
 	});
 
+// Budget override form schema (BudgetOverrideDialog)
+export const budgetOverrideFormSchema = z
+	.object({
+		amount: z.number("Additional budget must be greater than 0.").positive("Additional budget must be greater than 0."),
+		mode: z.enum(["cycles", "forever"]),
+		cycles: z.number().optional(),
+	})
+	.refine((data) => data.mode !== "cycles" || (data.cycles !== undefined && Number.isSafeInteger(data.cycles) && data.cycles > 0), {
+		message: "Reset cycles must be a positive whole number.",
+		path: ["cycles"],
+	});
+
 // Export type inference helpers
 export type SecretVar = z.infer<typeof secretVarSchema>;
 export type MCPClientUpdateSchema = z.infer<typeof mcpClientUpdateSchema>;
@@ -1270,3 +1534,4 @@ export type GlobalProxyFormSchema = z.infer<typeof globalProxyFormSchema>;
 export type GlobalHeaderFilterConfigSchema = z.infer<typeof globalHeaderFilterConfigSchema>;
 export type GlobalHeaderFilterFormSchema = z.infer<typeof globalHeaderFilterFormSchema>;
 export type RoutingRuleSchema = z.infer<typeof routingRuleSchema>;
+export type BudgetOverrideFormSchema = z.infer<typeof budgetOverrideFormSchema>;

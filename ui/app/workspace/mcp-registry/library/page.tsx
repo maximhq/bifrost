@@ -1,3 +1,4 @@
+import PageTitle from "@/components/pageTitle";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scrollArea";
@@ -154,25 +155,74 @@ export default function MCPLibraryPage() {
 	const isCatalogEmpty = !isFetching && totalCount === 0 && !debouncedSearch && !hasActiveFilters;
 
 	return (
-		<div className="dark:bg-card no-padding-parent no-border-parent h-[calc(100dvh_-_16px)]">
-			<div className="bg-background flex h-full w-full grow gap-3">
+		<div className="dark:bg-card no-padding-parent no-border-parent min-h-full md:h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))]">
+			<div className="bg-background flex min-h-full w-full grow gap-3 md:h-full">
 				{/* Sidebar Filters */}
 				<MCPLibraryFilterSidebar filters={filters} onFiltersChange={setFilters} />
 
 				{/* Main Content */}
-				<div className="bg-card h-full w-full rounded-l-md">
-					<div className="flex h-full flex-col gap-4 p-4 pb-2">
-						{/* Header */}
-						<div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-							<div className="space-y-1">
-								<h2 className="text-lg font-semibold tracking-tight">MCP Server Library</h2>
-								<p className="text-muted-foreground max-w-2xl text-sm">Browse and install MCP servers from the synced catalog.</p>
-							</div>
-							<div className="flex items-center gap-2">
+				<div className="bg-card min-h-full w-full rounded-md border md:h-full">
+					<div className="flex min-h-full flex-col gap-4 p-4 pb-2 md:h-full">
+						{/* Search + Actions */}
+						<div className="-mx-2 flex flex-col gap-3 px-2 py-2 sm:flex-row sm:items-center">
+							<PageTitle title="MCP Server Library">Browse and install MCP servers from the synced catalog.</PageTitle>
+							{!isCatalogEmpty && (
+								<>
+									<div className="relative max-w-md flex-1">
+										<Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
+										<Input
+											value={urlState.search}
+											onChange={(e) => setUrlState({ search: e.target.value, offset: 0 })}
+											placeholder="Search servers..."
+											className="h-9 pl-9"
+											data-testid="mcp-library-search-input"
+										/>
+									</div>
+									<div className="border-border flex w-fit overflow-hidden rounded-sm border p-0.5" aria-label="Library view mode">
+										<Button
+											type="button"
+											variant="ghost"
+											size="sm"
+											className={cn(
+												"h-8 rounded-xs border border-transparent px-2.5 shadow-none",
+												viewMode === "table" &&
+													"border-primary bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground",
+											)}
+											onClick={() => handleViewModeChange("table")}
+											aria-pressed={viewMode === "table"}
+											// The "Table" label is hidden below sm, leaving a bare icon.
+											aria-label="Table view"
+											data-testid="mcp-library-table-view-toggle"
+										>
+											<List className="h-4 w-4" />
+											<span className="hidden sm:inline">Table</span>
+										</Button>
+										<Button
+											type="button"
+											variant="ghost"
+											size="sm"
+											className={cn(
+												"h-8 rounded-xs border border-transparent px-2.5 shadow-none",
+												viewMode === "grid" &&
+													"border-primary bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground",
+											)}
+											onClick={() => handleViewModeChange("grid")}
+											aria-pressed={viewMode === "grid"}
+											// The "Grid" label is hidden below sm, leaving a bare icon.
+											aria-label="Grid view"
+											data-testid="mcp-library-grid-view-toggle"
+										>
+											<LayoutGrid className="h-4 w-4" />
+											<span className="hidden sm:inline">Grid</span>
+										</Button>
+									</div>
+								</>
+							)}
+							<div className="flex items-center gap-2 sm:ml-auto">
 								{hasCreateMCPClientAccess && (
 									<Button variant="outline" size="sm" onClick={() => setAddServerOpen(true)} data-testid="mcp-library-add-server-btn">
 										<Plus className="h-4 w-4" />
-										Add Server
+										Add to Library
 									</Button>
 								)}
 								{hasSettingsAccess && (
@@ -184,60 +234,14 @@ export default function MCPLibraryPage() {
 							</div>
 						</div>
 
-						{/* Search */}
-						{!isCatalogEmpty && (
-							<div className="-mx-2 flex flex-col gap-3 px-2 py-2 sm:flex-row sm:items-center sm:justify-between">
-								<div className="relative max-w-md flex-1">
-									<Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
-									<Input
-										value={urlState.search}
-										onChange={(e) => setUrlState({ search: e.target.value, offset: 0 })}
-										placeholder="Search servers..."
-										className="h-9 pl-9"
-										data-testid="mcp-library-search-input"
-									/>
-								</div>
-								<div className="border-border flex w-fit overflow-hidden rounded-sm border p-0.5" aria-label="Library view mode">
-									<Button
-										type="button"
-										variant="ghost"
-										size="sm"
-										className={cn(
-											"h-8 rounded-xs border border-transparent px-2.5 shadow-none",
-											viewMode === "table" &&
-												"border-primary bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground",
-										)}
-										onClick={() => handleViewModeChange("table")}
-										aria-pressed={viewMode === "table"}
-										data-testid="mcp-library-table-view-toggle"
-									>
-										<List className="h-4 w-4" />
-										<span className="hidden sm:inline">Table</span>
-									</Button>
-									<Button
-										type="button"
-										variant="ghost"
-										size="sm"
-										className={cn(
-											"h-8 rounded-xs border border-transparent px-2.5 shadow-none",
-											viewMode === "grid" &&
-												"border-primary bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground",
-										)}
-										onClick={() => handleViewModeChange("grid")}
-										aria-pressed={viewMode === "grid"}
-										data-testid="mcp-library-grid-view-toggle"
-									>
-										<LayoutGrid className="h-4 w-4" />
-										<span className="hidden sm:inline">Grid</span>
-									</Button>
-								</div>
-							</div>
-						)}
-						<div className="flex grow flex-col overflow-hidden">
+						<div className="flex flex-col md:min-h-0 md:grow md:overflow-hidden">
 							{/* Loading skeletons */}
 							{isFetching && servers.length === 0 ? (
 								viewMode === "grid" ? (
-									<ScrollArea className="mb-2 overflow-y-auto">
+									<ScrollArea
+										className="mb-2 overflow-visible md:min-h-0 md:overflow-y-auto"
+										viewportClassName="!h-auto !overflow-visible md:!h-full md:!overflow-x-hidden md:!overflow-y-scroll"
+									>
 										<div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3" data-testid="mcp-library-grid-skeleton">
 											{Array.from({ length: 6 }).map((_, i) => (
 												// biome-ignore lint/suspicious/noArrayIndexKey: static skeleton placeholders have no stable id
@@ -260,7 +264,7 @@ export default function MCPLibraryPage() {
 										<h1 className="text-muted-foreground text-xl font-medium">
 											{isCatalogEmpty ? "No synced servers yet" : "No servers found"}
 										</h1>
-										<div className="text-muted-foreground mx-auto mt-2 max-w-[600px] text-sm font-normal">
+										<div className="text-muted-foreground mx-auto mt-2 w-full max-w-[600px] text-sm font-normal">
 											{isCatalogEmpty
 												? "Configure the library sync source in Settings to populate this catalog."
 												: "Try adjusting your search or filters."}
@@ -278,7 +282,10 @@ export default function MCPLibraryPage() {
 							) : (
 								<>
 									{viewMode === "grid" ? (
-										<ScrollArea className="mb-2 overflow-y-auto">
+										<ScrollArea
+											className="mb-2 overflow-visible md:min-h-0 md:overflow-y-auto"
+											viewportClassName="!h-auto !overflow-visible md:!h-full md:!overflow-x-hidden md:!overflow-y-scroll"
+										>
 											<div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3" data-testid="mcp-library-grid-view">
 												{servers.map((server) => {
 													const isInstalled = installedServerSlugs.has(server.slug);

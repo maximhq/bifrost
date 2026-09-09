@@ -1,8 +1,12 @@
+import PageTitle from "@/components/pageTitle";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { SecretVarInput } from "@/components/ui/secretVarInput";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { SecretVarInput } from "@/components/ui/secretVarInput";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
@@ -10,25 +14,16 @@ import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } f
 import { AuthConfig, CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
 import { SecretVar } from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
-import { validateOrigins } from "@/lib/utils/validation";
+import { formatCooldown } from "@/lib/utils/duration";
+import { getPasswordPolicyFailures, validateOrigins } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetAuthTypeQuery } from "@enterprise/lib/store/apis/scimApi";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
-const PASSWORD_REQUIREMENTS = [
-	{ label: "at least 12 characters", test: (password: string) => password.length >= 12 },
-	{ label: "one uppercase letter", test: (password: string) => /[A-Z]/.test(password) },
-	{ label: "one lowercase letter", test: (password: string) => /[a-z]/.test(password) },
-	{ label: "one number", test: (password: string) => /\d/.test(password) },
-	{ label: "one special character", test: (password: string) => /[^A-Za-z0-9]/.test(password) },
-];
-
-const getPasswordPolicyFailures = (password?: string) => {
-	if (!password) return [];
-	return PASSWORD_REQUIREMENTS.filter((requirement) => !requirement.test(password)).map((requirement) => requirement.label);
-};
+// Go duration string: one or more <number><unit> segments, e.g. "5m", "1h30m".
+const COOLDOWN_PATTERN = /^(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/;
 
 export default function SecurityView() {
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
@@ -39,17 +34,20 @@ export default function SecurityView() {
 	const [localConfig, setLocalConfig] = useState<CoreConfig>(DefaultCoreConfig);
 	const showPasswordSection = !IS_ENTERPRISE || (!authTypeLoading && !authTypeError && authType?.type !== "sso");
 	const passwordInputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
+	const passwordUnchangedRef = useRef(true);
 
 	const [localValues, setLocalValues] = useState<{
 		allowed_origins: string;
 		allowed_headers: string;
 		required_headers: string;
 		whitelisted_routes: string;
+		vk_rotation_cooldown: string;
 	}>({
 		allowed_origins: "",
 		allowed_headers: "",
 		required_headers: "",
 		whitelisted_routes: "",
+		vk_rotation_cooldown: "",
 	});
 
 	const [authConfig, setAuthConfig] = useState<AuthConfig>({
@@ -58,6 +56,13 @@ export default function SecurityView() {
 		is_enabled: false,
 	});
 	const [passwordError, setPasswordError] = useState("");
+	const [setupToken, setSetupToken] = useState("");
+	const [setupTokenErrorMessage, setSetupTokenErrorMessage] = useState<string | null>(null);
+	// No admin account has ever been created on this instance yet. The very first
+	// PUT /api/config that creates one must include the setup token the operator
+	// configured via setup_token in config.json (or BIFROST_SETUP_TOKEN), so this
+	// field only needs to show up that once.
+	const isFirstTimeSetup = !bifrostConfig?.auth_config;
 
 	useEffect(() => {
 		if (bifrostConfig && config) {
@@ -67,9 +72,11 @@ export default function SecurityView() {
 				allowed_headers: config?.allowed_headers?.join(", ") || "",
 				required_headers: config?.required_headers?.join(", ") || "",
 				whitelisted_routes: config?.whitelisted_routes?.join(", ") || "",
+				vk_rotation_cooldown: formatCooldown(config?.vk_rotation_cooldown),
 			});
 		}
 		if (bifrostConfig?.auth_config) {
+			passwordUnchangedRef.current = true;
 			setAuthConfig(bifrostConfig.auth_config);
 		}
 	}, [config, bifrostConfig]);
@@ -106,6 +113,9 @@ export default function SecurityView() {
 
 		const enforceAuthOnInferenceChanged = localConfig.enforce_auth_on_inference !== config.enforce_auth_on_inference;
 		const allowDirectKeysChanged = localConfig.allow_direct_keys !== config.allow_direct_keys;
+		const dualCredentialConflictBehaviorChanged =
+			(localConfig.dual_credential_conflict_behavior || "prefer_idp") !== (config.dual_credential_conflict_behavior || "prefer_idp");
+		const vkRotationCooldownChanged = formatCooldown(localConfig.vk_rotation_cooldown) !== formatCooldown(config.vk_rotation_cooldown);
 
 		return (
 			originsChanged ||
@@ -114,7 +124,9 @@ export default function SecurityView() {
 			whitelistedRoutesChanged ||
 			authChanged ||
 			enforceAuthOnInferenceChanged ||
-			allowDirectKeysChanged
+			allowDirectKeysChanged ||
+			dualCredentialConflictBehaviorChanged ||
+			vkRotationCooldownChanged
 		);
 	}, [config, localConfig, authConfig, bifrostConfig, showPasswordSection]);
 
@@ -158,13 +170,20 @@ export default function SecurityView() {
 		setLocalConfig((prev) => ({ ...prev, [field]: value }));
 	}, []);
 
+	const handleVkRotationCooldownChange = useCallback((value: string) => {
+		setLocalValues((prev) => ({ ...prev, vk_rotation_cooldown: value }));
+		// The backend accepts Go duration strings; empty input means 0 (disabled).
+		setLocalConfig((prev) => ({ ...prev, vk_rotation_cooldown: value.trim() === "" ? 0 : value.trim() }));
+	}, []);
+
 	const handleAuthToggle = useCallback((checked: boolean) => {
 		setAuthConfig((prev) => ({ ...prev, is_enabled: checked }));
 	}, []);
 
 	const handleAuthFieldChange = useCallback((field: "admin_username" | "admin_password", value: SecretVar) => {
 		if (field === "admin_password") {
-			const passwordPolicyFailures = !value.ref && value.value ? getPasswordPolicyFailures(value.value) : [];
+			passwordUnchangedRef.current = false;
+			const passwordPolicyFailures = !value.ref && value.value ? getPasswordPolicyFailures(value.value, false) : [];
 			setPasswordError(passwordPolicyFailures.length > 0 ? `Password must include ${passwordPolicyFailures.join(", ")}.` : "");
 		}
 		setAuthConfig((prev) => ({ ...prev, [field]: value }));
@@ -180,17 +199,28 @@ export default function SecurityView() {
 				);
 				return;
 			}
+			const cooldownInput = localValues.vk_rotation_cooldown.trim();
+			if (cooldownInput !== "" && cooldownInput !== "0" && !COOLDOWN_PATTERN.test(cooldownInput)) {
+				toast.error('Rotation cooldown must be a duration like "30s", "5m", or "1h30m" (leave empty to disable).');
+				return;
+			}
 			const hasUsername = authConfig.admin_username?.value || authConfig.admin_username?.ref;
 			const hasPassword = authConfig.admin_password?.value || authConfig.admin_password?.ref;
 			const passwordPolicyFailures =
 				showPasswordSection && authConfig.is_enabled && !authConfig.admin_password?.ref && authConfig.admin_password?.value
-					? getPasswordPolicyFailures(authConfig.admin_password.value)
+					? getPasswordPolicyFailures(authConfig.admin_password.value, passwordUnchangedRef.current)
 					: [];
 
 			if (passwordPolicyFailures.length > 0) {
 				setPasswordError(`Password must include ${passwordPolicyFailures.join(", ")}.`);
 				passwordInputRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
 				passwordInputRef.current?.focus({ preventScroll: true });
+				return;
+			}
+			if (isFirstTimeSetup && authConfig.is_enabled && !setupToken.trim()) {
+				setSetupTokenErrorMessage(
+					"Enter the setup token configured by your operator to create the first admin account. It's set via setup_token in config.json or the BIFROST_SETUP_TOKEN environment variable.",
+				);
 				return;
 			}
 			setPasswordError("");
@@ -200,22 +230,28 @@ export default function SecurityView() {
 				client_config: localConfig,
 				...(showPasswordSection
 					? {
-							auth_config: authConfig.is_enabled && hasUsername && hasPassword ? authConfig : { ...authConfig, is_enabled: false },
+							auth_config: {
+								...(authConfig.is_enabled && hasUsername && hasPassword ? authConfig : { ...authConfig, is_enabled: false }),
+								...(isFirstTimeSetup ? { setup_token: setupToken.trim() } : {}),
+							},
 						}
 					: {}),
 			}).unwrap();
+			setSetupToken("");
 			toast.success("Security settings updated successfully.");
 		} catch (error) {
-			toast.error(getErrorMessage(error));
+			const message = getErrorMessage(error);
+			if (isFirstTimeSetup && message.toLowerCase().includes("setup token")) {
+				setSetupTokenErrorMessage(message);
+			} else {
+				toast.error(message);
+			}
 		}
-	}, [bifrostConfig, localConfig, authConfig, showPasswordSection, updateCoreConfig]);
+	}, [bifrostConfig, localConfig, localValues.vk_rotation_cooldown, authConfig, showPasswordSection, updateCoreConfig, isFirstTimeSetup, setupToken]);
 
 	return (
-		<div className="mx-auto h-[calc(100vh-50px)] w-full max-w-4xl space-y-4 overflow-y-auto">
-			<div>
-				<h2 className="text-lg font-semibold tracking-tight">Security Settings</h2>
-				<p className="text-muted-foreground text-sm">Configure security and access control settings.</p>
-			</div>
+		<div className="mx-auto w-full max-w-4xl space-y-4">
+			<PageTitle title="Security Settings">Configure security and access control settings.</PageTitle>
 
 			<div className="space-y-4">
 				{/* Password Protect the Dashboard */}
@@ -283,6 +319,25 @@ export default function SecurityView() {
 										</p>
 									) : null}
 								</div>
+								{isFirstTimeSetup && authConfig.is_enabled ? (
+									<div className="space-y-2">
+										<Label htmlFor="setup-token">Setup token</Label>
+										<Input
+											id="setup-token"
+											data-testid="security-setup-token-input"
+											type="password"
+											autoComplete="off"
+											placeholder="Paste the setup token configured by your operator"
+											value={setupToken}
+											onChange={(e) => setSetupToken(e.target.value)}
+										/>
+										<p className="text-muted-foreground text-xs">
+											No admin account exists yet, so this instance is reachable without a password. To finish setup, ask your operator for
+											the setup token configured via <code>setup_token</code> in <code>config.json</code> (or the{" "}
+											<code>BIFROST_SETUP_TOKEN</code> environment variable) and paste it here.
+										</p>
+									</div>
+								) : null}
 							</div>
 						</div>
 					</div>
@@ -317,6 +372,43 @@ export default function SecurityView() {
 						onCheckedChange={(checked) => handleConfigChange("enforce_auth_on_inference", checked)}
 					/>
 				</div>
+				{/* Dual Credential Conflict Behavior */}
+				{IS_ENTERPRISE && (
+					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+						<div className="space-y-0.5">
+							<label htmlFor="dual-credential-conflict-behavior" className="text-sm font-medium">
+								Dual Credential Conflict Behavior
+							</label>
+							<p className="text-muted-foreground text-sm">
+								How to handle inference requests that present both an identity provider access token (<b>Authorization: Bearer</b>) and a
+								virtual key (<b>x-bf-vk</b>). <b>Prefer IDP token</b> uses the user token for identity, <b>Prefer virtual key</b> drops the
+								IDP token and authenticates via the virtual key, and <b>Reject request</b> returns a 400 error.
+							</p>
+						</div>
+						<Select
+							value={localConfig.dual_credential_conflict_behavior || "prefer_idp"}
+							onValueChange={(value) =>
+								setLocalConfig((prev) => ({
+									...prev,
+									dual_credential_conflict_behavior: value as CoreConfig["dual_credential_conflict_behavior"],
+								}))
+							}
+						>
+							<SelectTrigger
+								id="dual-credential-conflict-behavior"
+								data-testid="dual-credential-conflict-behavior-select"
+								className="w-full sm:w-[180px]"
+							>
+								<SelectValue />
+							</SelectTrigger>
+							<SelectContent>
+								<SelectItem value="prefer_idp">Prefer IDP token</SelectItem>
+								<SelectItem value="prefer_vk">Prefer virtual key</SelectItem>
+								<SelectItem value="error">Reject request</SelectItem>
+							</SelectContent>
+						</Select>
+					</div>
+				)}
 				{/* Allow Direct API Keys */}
 				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
@@ -334,6 +426,27 @@ export default function SecurityView() {
 						data-testid="security-allow-direct-keys-switch"
 						checked={localConfig.allow_direct_keys}
 						onCheckedChange={(checked) => handleConfigChange("allow_direct_keys", checked)}
+					/>
+				</div>
+				{/* Cooldown After Virtual Key Rotation */}
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="vk-rotation-cooldown" className="text-sm font-medium">
+							Cooldown After Virtual Key Rotation
+						</label>
+						<p className="text-muted-foreground text-sm">
+							After rotating a virtual key, the previous value keeps authenticating for this long, giving callers time to switch to the new
+							key. Use a duration like <b>30s</b>, <b>5m</b>, or <b>1h</b>. Leave empty (or 0) to have the old value stop working
+							immediately. Maximum 30 days.
+						</p>
+					</div>
+					<Input
+						id="vk-rotation-cooldown"
+						data-testid="security-vk-rotation-cooldown-input"
+						className="w-[180px]"
+						placeholder="5m"
+						value={localValues.vk_rotation_cooldown}
+						onChange={(e) => handleVkRotationCooldownChange(e.target.value)}
 					/>
 				</div>
 				{/* Allowed Origins */}
@@ -423,11 +536,29 @@ export default function SecurityView() {
 					</div>
 				</div>
 			</div>
-			<div className="bg-card sticky bottom-0 flex justify-end pt-2">
+			<div className="bg-card sticky bottom-0 flex justify-end py-2">
 				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
 					{isLoading ? "Saving..." : "Save Changes"}
 				</Button>
 			</div>
+			<Dialog open={!!setupTokenErrorMessage} onOpenChange={(open) => !open && setSetupTokenErrorMessage(null)}>
+				<DialogContent data-testid="setup-token-error-dialog">
+					<DialogHeader>
+						<DialogTitle>Setup token required</DialogTitle>
+						<DialogDescription>{setupTokenErrorMessage}</DialogDescription>
+					</DialogHeader>
+					<DialogFooter>
+						<Button variant="outline" onClick={() => setSetupTokenErrorMessage(null)} data-testid="setup-token-error-close">
+							Close
+						</Button>
+						<Button asChild data-testid="setup-token-error-view-docs">
+							<a href="https://docs.getbifrost.ai/quickstart/gateway/setting-up-auth" target="_blank" rel="noopener noreferrer">
+								View docs
+							</a>
+						</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
 		</div>
 	);
 }

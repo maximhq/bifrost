@@ -341,6 +341,70 @@ test.describe('Routing Rules', () => {
       await routingRulesPage.cancelRule()
     })
 
+    test('should author conditions as raw CEL and round-trip through edit', async ({ routingRulesPage }) => {
+      const ruleName = `CEL Mode Test ${Date.now()}`
+      const celExpression = 'model == "claude-sonnet-4-6"'
+      createdRules.push(ruleName)
+
+      // Create a rule using raw-CEL mode instead of the visual builder
+      await routingRulesPage.createBtn.click()
+      await expect(routingRulesPage.sheet).toBeVisible()
+      await routingRulesPage.waitForSheetAnimation()
+      await routingRulesPage.waitForRuleBuilder()
+
+      await routingRulesPage.nameInput.fill(ruleName)
+      await routingRulesPage.switchToCelMode()
+      await routingRulesPage.fillCelExpression(celExpression)
+
+      await routingRulesPage.saveBtn.click()
+      await routingRulesPage.waitForSuccessToast()
+      await expect(routingRulesPage.sheet).not.toBeVisible({ timeout: 10000 })
+
+      const exists = await routingRulesPage.ruleExists(ruleName)
+      expect(exists).toBe(true)
+
+      // Reopen: a CEL-only rule (no visual query) must open in CEL mode with the
+      // expression intact, not an empty builder that would silently clear it.
+      await routingRulesPage.openEditSheet(ruleName)
+      expect(await routingRulesPage.isCelMode()).toBe(true)
+      expect(await routingRulesPage.getCelTextareaValue()).toBe(celExpression)
+
+      // Saving without touching anything must preserve the CEL expression.
+      await routingRulesPage.saveBtn.click()
+      await routingRulesPage.waitForSuccessToast()
+      await expect(routingRulesPage.sheet).not.toBeVisible({ timeout: 10000 })
+
+      await routingRulesPage.openEditSheet(ruleName)
+      expect(await routingRulesPage.getCelTextareaValue()).toBe(celExpression)
+      await routingRulesPage.cancelRule()
+    })
+
+    test('should reject a malformed CEL expression on save', async ({ routingRulesPage }) => {
+      const ruleName = `CEL Invalid Test ${Date.now()}`
+
+      await routingRulesPage.createBtn.click()
+      await expect(routingRulesPage.sheet).toBeVisible()
+      await routingRulesPage.waitForSheetAnimation()
+      await routingRulesPage.waitForRuleBuilder()
+
+      await routingRulesPage.nameInput.fill(ruleName)
+      await routingRulesPage.switchToCelMode()
+      // Unbalanced parenthesis — rejected by the backend CEL compiler with a 400.
+      await routingRulesPage.fillCelExpression('model == "gpt-4o" && (provider == "openai"')
+
+      await routingRulesPage.saveBtn.click()
+
+      // The sheet stays open on error; the rule must not be created.
+      await expect(routingRulesPage.sheet).toBeVisible()
+      // The compile error is surfaced inline beneath the CEL editor, not in a toast.
+      await expect(routingRulesPage.celError).toBeVisible()
+      await expect(routingRulesPage.celError).toContainText(/cel expression/i)
+      await routingRulesPage.cancelRule()
+
+      const exists = await routingRulesPage.ruleExists(ruleName)
+      expect(exists).toBe(false)
+    })
+
     test('should save rule with conditions successfully', async ({ routingRulesPage }) => {
       const ruleName = `CEL Save Test ${Date.now()}`
       createdRules.push(ruleName)

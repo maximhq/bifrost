@@ -22,20 +22,23 @@ const (
 
 // AccumulatedData contains the accumulated data for a stream
 type AccumulatedData struct {
-	RequestID             string
-	Model                 string
-	Status                string
-	Stream                bool
-	Latency               int64 // in milliseconds
-	TimeToFirstToken      int64 // Time to first token in milliseconds (streaming only)
-	StartTimestamp        time.Time
-	EndTimestamp          time.Time
-	OutputMessage         *schemas.ChatMessage
-	OutputMessages        []schemas.ResponsesMessage // For responses API
-	ToolCalls             []schemas.ChatAssistantMessageToolCall
-	ErrorDetails          *schemas.BifrostError
-	TokenUsage            *schemas.BifrostLLMUsage
-	CacheDebug            *schemas.BifrostCacheDebug
+	RequestID        string
+	Model            string
+	Status           string
+	Stream           bool
+	Latency          int64 // in milliseconds
+	TimeToFirstToken int64 // Time to first token in milliseconds (streaming only)
+	StartTimestamp   time.Time
+	EndTimestamp     time.Time
+	OutputMessage    *schemas.ChatMessage
+	OutputMessages   []schemas.ResponsesMessage // For responses API
+	ToolCalls        []schemas.ChatAssistantMessageToolCall
+	ErrorDetails     *schemas.BifrostError
+	TokenUsage       *schemas.BifrostLLMUsage
+	ServiceTier      *schemas.BifrostServiceTier
+	// Debug spelling is retained for the established Go contract.
+	CacheDebug            *schemas.BifrostCacheMetadata
+	GuardrailDebug        *schemas.BifrostGuardrailMetadata
 	Cost                  *float64
 	AudioOutput           *schemas.BifrostSpeechResponse
 	TranscriptionOutput   *schemas.BifrostTranscriptionResponse
@@ -52,7 +55,7 @@ type AudioStreamChunk struct {
 	Delta              *schemas.BifrostSpeechStreamResponse // The actual delta content
 	FinishReason       *string                              // If this is the final chunk
 	TokenUsage         *schemas.SpeechUsage                 // Token usage if available
-	SemanticCacheDebug *schemas.BifrostCacheDebug           // Semantic cache debug if available
+	SemanticCacheDebug *schemas.BifrostCacheMetadata        // Semantic cache metadata if available
 	Cost               *float64                             // Cost in dollars from pricing plugin
 	ErrorDetails       *schemas.BifrostError                // Error if any
 	ChunkIndex         int                                  // Index of the chunk in the stream
@@ -65,7 +68,7 @@ type TranscriptionStreamChunk struct {
 	Delta              *schemas.BifrostTranscriptionStreamResponse // The actual delta content
 	FinishReason       *string                                     // If this is the final chunk
 	TokenUsage         *schemas.TranscriptionUsage                 // Token usage if available
-	SemanticCacheDebug *schemas.BifrostCacheDebug                  // Semantic cache debug if available
+	SemanticCacheDebug *schemas.BifrostCacheMetadata               // Semantic cache metadata if available
 	Cost               *float64                                    // Cost in dollars from pricing plugin
 	ErrorDetails       *schemas.BifrostError                       // Error if any
 	ChunkIndex         int                                         // Index of the chunk in the stream
@@ -79,7 +82,9 @@ type ChatStreamChunk struct {
 	FinishReason       *string                                // If this is the final chunk
 	LogProbs           *schemas.BifrostLogProbs               // LogProbs if available
 	TokenUsage         *schemas.BifrostLLMUsage               // Token usage if available
-	SemanticCacheDebug *schemas.BifrostCacheDebug             // Semantic cache debug if available
+	ServiceTier        *schemas.BifrostServiceTier            // Served OpenAI tier if available
+	SemanticCacheDebug *schemas.BifrostCacheMetadata          // Semantic cache metadata if available
+	GuardrailDebug     *schemas.BifrostGuardrailMetadata      // Guardrail metadata if available
 	Cost               *float64                               // Cost in dollars from pricing plugin
 	ErrorDetails       *schemas.BifrostError                  // Error if any
 	ChunkIndex         int                                    // Index of the chunk in the stream
@@ -92,7 +97,9 @@ type ResponsesStreamChunk struct {
 	StreamResponse     *schemas.BifrostResponsesStreamResponse // The actual stream response
 	FinishReason       *string                                 // If this is the final chunk
 	TokenUsage         *schemas.BifrostLLMUsage                // Token usage if available
-	SemanticCacheDebug *schemas.BifrostCacheDebug              // Semantic cache debug if available
+	ServiceTier        *schemas.BifrostServiceTier             // Served OpenAI tier if available
+	SemanticCacheDebug *schemas.BifrostCacheMetadata           // Semantic cache metadata if available
+	GuardrailDebug     *schemas.BifrostGuardrailMetadata       // Guardrail metadata if available
 	Cost               *float64                                // Cost in dollars from pricing plugin
 	ErrorDetails       *schemas.BifrostError                   // Error if any
 	ChunkIndex         int                                     // Index of the chunk in the stream
@@ -108,7 +115,7 @@ type ImageStreamChunk struct {
 	ImageIndex         int                                           // Index of the image in the stream
 	ErrorDetails       *schemas.BifrostError                         // Error if any
 	Cost               *float64                                      // Cost in dollars from pricing plugin
-	SemanticCacheDebug *schemas.BifrostCacheDebug                    // Semantic cache debug if available
+	SemanticCacheDebug *schemas.BifrostCacheMetadata                 // Semantic cache metadata if available
 	TokenUsage         *schemas.ImageUsage                           // Token usage if available
 	RawResponse        *string                                       // Raw response if available
 }
@@ -161,19 +168,27 @@ type StreamAccumulator struct {
 	// (purely for diagnostics — the buffered chunks themselves drive replay).
 	gateState    StreamState
 	gatePausedAt int // -1 if never paused
+	// gatePauseEpoch changes on every Active -> Paused transition. gateTransformStart
+	// excludes an older replay backlog from the current transform scope without allowing
+	// that backlog to drain through the new pause. A successful transform advances both
+	// boundaries; draining decrements them as leading chunks leave the buffer.
+	gatePauseEpoch     uint64
+	gateTransformStart int
+	gateApprovedPrefix int // leading buffered chunks allowed to drain while paused
 	// gatePendingTerminal is set when an isFinal or isHardErr chunk arrived
 	// while Paused. The flusher consumes this flag after Resume drains the
 	// buffer and transitions the gate to Ended.
-	gatePendingTerminal bool
-	gateSeq             int                              // monotonic, bumped on every GateSend
-	gateReplayBuf       []*schemas.BifrostStreamChunk    // wire-format chunks captured while paused
-	gateReplayBufBytes  int64                            // sum of MarshalJSON sizes of chunks in gateReplayBuf; capped by gateReplayBufMaxBytes
-	gateCond            *sync.Cond                       // wakes flusher on Resume / End / append-while-active
-	gateEndError        *schemas.BifrostError            // delivered as terminal chunk if EndStream(err) was called with non-nil
-	gateFlusherCh       chan *schemas.BifrostStreamChunk // captured on first GateSend; reused by flusher
-	gateFlusherCtx      *schemas.BifrostContext          // captured on first GateSend
-	gateFlusherOn       bool                             // flusher goroutine running
-	gateFlusherDone     chan struct{}                    // closed when the most recent flusher exits; nil when no flusher has ever started
+	gatePendingTerminal     bool
+	gateSeq                 int                              // monotonic, bumped on every GateSend
+	gateReplayBuf           []*schemas.BifrostStreamChunk    // wire-format chunks captured while paused
+	gateReplayBufBytes      int64                            // sum of MarshalJSON sizes of chunks in gateReplayBuf; capped by gateReplayBufMaxBytes
+	gateReplayEventInterval time.Duration                    // delay between buffered events after paced resume is armed
+	gateCond                *sync.Cond                       // wakes flusher on Resume / End / append-while-active
+	gateEndError            *schemas.BifrostError            // delivered as terminal chunk if EndStream(err) was called with non-nil
+	gateFlusherCh           chan *schemas.BifrostStreamChunk // captured on first GateSend; reused by flusher
+	gateFlusherCtx          *schemas.BifrostContext          // captured on first GateSend
+	gateFlusherOn           bool                             // flusher goroutine running
+	gateFlusherDone         chan struct{}                    // closed when the most recent flusher exits; nil when no flusher has ever started
 	// gatePendingCleanup is set by cleanupStreamAccumulator when the caller
 	// requested teardown but the gate is still busy (flusher running or
 	// Paused). The flusher's exit defer checks this flag and re-runs cleanup
@@ -357,6 +372,9 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		if p.Data.CacheDebug != nil {
 			resp.TextCompletionResponse.ExtraFields.CacheDebug = p.Data.CacheDebug
 		}
+		if p.Data.GuardrailDebug != nil {
+			resp.TextCompletionResponse.ExtraFields.GuardrailDebug = p.Data.GuardrailDebug
+		}
 	case StreamTypeChat:
 		var message *schemas.ChatMessage
 		if p.Data.OutputMessage != nil {
@@ -409,6 +427,9 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		if p.Data.CacheDebug != nil {
 			resp.ChatResponse.ExtraFields.CacheDebug = p.Data.CacheDebug
 		}
+		if p.Data.GuardrailDebug != nil {
+			resp.ChatResponse.ExtraFields.GuardrailDebug = p.Data.GuardrailDebug
+		}
 	case StreamTypeResponses:
 		responsesResp := &schemas.BifrostResponsesResponse{}
 
@@ -434,6 +455,9 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		if p.Data.CacheDebug != nil {
 			responsesResp.ExtraFields.CacheDebug = p.Data.CacheDebug
 		}
+		if p.Data.GuardrailDebug != nil {
+			responsesResp.ExtraFields.GuardrailDebug = p.Data.GuardrailDebug
+		}
 		resp.ResponsesResponse = responsesResp
 	case StreamTypeAudio:
 		speechResp := p.Data.AudioOutput
@@ -457,6 +481,9 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		if p.Data.CacheDebug != nil {
 			resp.SpeechResponse.ExtraFields.CacheDebug = p.Data.CacheDebug
 		}
+		if p.Data.GuardrailDebug != nil {
+			resp.SpeechResponse.ExtraFields.GuardrailDebug = p.Data.GuardrailDebug
+		}
 	case StreamTypeTranscription:
 		transcriptionResp := p.Data.TranscriptionOutput
 		if transcriptionResp == nil {
@@ -478,6 +505,9 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		}
 		if p.Data.CacheDebug != nil {
 			resp.TranscriptionResponse.ExtraFields.CacheDebug = p.Data.CacheDebug
+		}
+		if p.Data.GuardrailDebug != nil {
+			resp.TranscriptionResponse.ExtraFields.GuardrailDebug = p.Data.GuardrailDebug
 		}
 	case StreamTypeImage:
 		imageResp := p.Data.ImageGenerationOutput
@@ -512,6 +542,9 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		}
 		if p.Data.CacheDebug != nil {
 			resp.ImageGenerationResponse.ExtraFields.CacheDebug = p.Data.CacheDebug
+		}
+		if p.Data.GuardrailDebug != nil {
+			resp.ImageGenerationResponse.ExtraFields.GuardrailDebug = p.Data.GuardrailDebug
 		}
 
 	}

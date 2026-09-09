@@ -1,0 +1,128 @@
+---
+title: "Railway"
+description: "Deploy the Bifrost container as a Railway service"
+icon: "train"
+---
+
+Railway can run the public Bifrost image as a long-running service. The deployment below uses PostgreSQL so configuration and logs survive service replacement.
+
+<Note>
+**Support level: Preview.** This guide is not continuously exercised against a live Railway project.
+</Note>
+
+## Compatibility summary
+
+| Model | Compatibility | Constraint |
+|---|---|---|
+| Disposable one-replica evaluation | **Compatible** | Local data is not durable. |
+| One OSS replica with Railway volume and SQLite | **Preview with permission check** | SQLite is OSS-only. Railway mounts volumes as root; verify write access for container UID `1000`. |
+| One replica with external PostgreSQL 16+ | **Preview** | Fits ephemeral replacement when configuration is supplied at startup. |
+| Multiple OSS DB-managed replicas | **Not supported** | OSS live configuration does not synchronize. |
+| Enterprise mesh | **Unqualified** | The guide does not verify required peer TCP+UDP addressing; use no compatibility claim. |
+
+Bifrost Enterprise requires PostgreSQL 16 or later for both stores and does not support the SQLite alternative on this page.
+
+## Deploy Bifrost
+
+### Step 1: Create and link a Railway project
+
+```bash
+railway login
+railway init --name bifrost
+```
+
+### Step 2: Create the Bifrost service
+
+```bash
+railway add \
+  --image docker.io/maximhq/bifrost:<BIFROST_VERSION> \
+  --variables 'APP_HOST=0.0.0.0' \
+  --variables 'APP_PORT=8080' \
+  --variables 'PORT=8080'
+```
+
+Create the file that Bifrost will load:
+
+```bash
+cat > config.json <<'JSON'
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "encryption_key": "env.BIFROST_ENCRYPTION_KEY",
+  "setup_token": "env.BIFROST_SETUP_TOKEN",
+  "client": {
+    "enforce_auth_on_inference": true
+  },
+  "config_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {"host": "env.PG_HOST", "port": "5432", "user": "env.PG_USER", "password": "env.PG_PASSWORD", "db_name": "env.PG_DATABASE", "ssl_mode": "require"}
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {"host": "env.PG_HOST", "port": "5432", "user": "env.PG_USER", "password": "env.PG_PASSWORD", "db_name": "env.PG_DATABASE", "ssl_mode": "require"}
+  }
+}
+JSON
+```
+
+### Step 3: Supply configuration and secrets
+
+```bash
+export BIFROST_CONFIG_B64="$(base64 < config.json | tr -d '\n')"
+read -r -s -p 'PostgreSQL password: ' PG_PASSWORD; echo
+read -r -s -p 'Bifrost encryption key: ' BIFROST_ENCRYPTION_KEY; echo
+read -r -s -p 'Bifrost setup token: ' BIFROST_SETUP_TOKEN; echo
+
+printf '%s' "$BIFROST_CONFIG_B64" | railway variable set BIFROST_CONFIG_B64 --stdin
+railway variable set 'PG_HOST=<POSTGRES_HOST>'
+railway variable set 'PG_USER=<POSTGRES_USER>'
+printf '%s' "$PG_PASSWORD" | railway variable set PG_PASSWORD --stdin
+railway variable set 'PG_DATABASE=<POSTGRES_DATABASE>'
+printf '%s' "$BIFROST_ENCRYPTION_KEY" | railway variable set BIFROST_ENCRYPTION_KEY --stdin
+printf '%s' "$BIFROST_SETUP_TOKEN" | railway variable set BIFROST_SETUP_TOKEN --stdin
+```
+
+In the service settings, set the start command to:
+
+```text
+/bin/sh -c 'printf "%s" "$BIFROST_CONFIG_B64" | base64 -d > /app/data/config.json && exec /app/docker-entrypoint.sh'
+```
+
+Set the health-check path to `/health` and deploy one replica. The configuration requires authentication on inference routes. If external access is needed, generate a public domain, use the configured setup token to [create the first admin account](/quickstart/gateway/setting-up-auth), and [create a virtual key](/features/governance/virtual-keys) before sending inference traffic or sharing the hostname with clients.
+
+### Step 4: Verify
+
+```bash
+railway logs
+curl --fail --show-error https://<RAILWAY_HOSTNAME>/health
+```
+
+### One-click status
+
+Railway supports **Deploy on Railway** buttons only after a project is created and published as a Railway template. Bifrost does not currently have a verified Maxim-owned template ID, so this page does not fabricate a deploy link. Image-backed Railway templates also require an explicit process for testing and publishing each new Bifrost image version.
+
+## SQLite storage alternative (OSS only)
+
+This alternative is available only for OSS Bifrost. For a single-instance SQLite deployment, create `config.json` from the [SQLite configuration](/deployment-guides/runtime-contract#sqlite), encode and inject it using Step 3, remove the PostgreSQL variables, and attach a Railway volume at `/app/data`.
+
+Before using the deployment, confirm that the mounted path is writable by container UID `1000`. Railway volumes can be root-owned; if the platform configuration cannot provide safe write access, use PostgreSQL instead. Keep one replica because SQLite files are not a replica-coordination mechanism.
+
+## Scaling and upgrades
+
+- OSS SQLite volume: one replica.
+- PostgreSQL-backed OSS configuration: one replica.
+- File-only OSS: multiple replicas only with identical immutable config and secrets.
+- Enterprise mesh: not qualified on this page; validate required peer networking or use release-qualified broker mode.
+
+Set `RAILWAY_DEPLOYMENT_DRAINING_SECONDS` to give Bifrost time after `SIGTERM`; the platform default is not a Bifrost guarantee. Pin versioned images and use Railway deployment history or the prior tag for rollback. Database migrations are not reversed automatically.
+
+## Troubleshooting
+
+- `service unavailable`: verify `PORT`, `APP_PORT`, target port, and `APP_HOST` are aligned.
+- Health timeout: inspect startup migration/database logs and adjust the deployment health timeout only after correcting connectivity.
+- `/app/data` permission error: the root-owned Railway volume is not writable by UID `1000`; use a safe ownership mechanism or PostgreSQL.
+- Configuration disappears: the deployment used ephemeral local storage.
+- Stream terminates during deploy: configure sufficient draining overlap and client retry behavior.
+
+See [Bifrost Deployment Requirements](/deployment-guides/runtime-contract), its [deployment verification checklist](/deployment-guides/runtime-contract#verify-the-deployment), and [Enterprise clustering](/enterprise/clustering) for the remaining operational guidance.

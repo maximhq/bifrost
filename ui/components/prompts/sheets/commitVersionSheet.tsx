@@ -145,7 +145,7 @@ export function CommitVersionSheet({ open, onOpenChange, session, onCommitted }:
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
 			<SheetContent
-				className="flex h-full flex-col p-8"
+				className="flex h-full flex-col p-4 md:p-8"
 				onOpenAutoFocus={(e) => {
 					e.preventDefault();
 					document.getElementById("commitMessage")?.focus();

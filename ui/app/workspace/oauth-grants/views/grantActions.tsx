@@ -4,12 +4,7 @@
 // is owned by the page via onRevoke.
 
 import { Button } from "@/components/ui/button";
-import {
-	DropdownMenu,
-	DropdownMenuContent,
-	DropdownMenuItem,
-	DropdownMenuTrigger,
-} from "@/components/ui/dropdownMenu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import type { OAuth2GrantRow } from "@/lib/store/apis/oauth2SessionsApi";
 import { Link } from "@tanstack/react-router";
 import { ExternalLink, Loader2, MoreHorizontal, Trash2 } from "lucide-react";
@@ -32,7 +27,14 @@ export default function GrantActions({ row, revoking, isPendingRow, onRevoke }: 
 	return (
 		<DropdownMenu>
 			<DropdownMenuTrigger asChild>
-				<Button data-testid="oauth-grants-actions-trigger" variant="ghost" size="icon" className="h-8 w-8" aria-label="Grant actions" disabled={busy}>
+				<Button
+					data-testid="oauth-grants-actions-trigger"
+					variant="ghost"
+					size="icon"
+					className="h-8 w-8"
+					aria-label="Grant actions"
+					disabled={busy}
+				>
 					{busy && isPendingRow ? <Loader2 className="h-4 w-4 animate-spin" /> : <MoreHorizontal className="h-4 w-4" />}
 				</Button>
 			</DropdownMenuTrigger>
@@ -50,7 +52,10 @@ export default function GrantActions({ row, revoking, isPendingRow, onRevoke }: 
 					variant="destructive"
 					className="cursor-pointer"
 					disabled={busy}
-					onSelect={(e) => { e.preventDefault(); onRevoke(); }}
+					onSelect={(e) => {
+						e.preventDefault();
+						onRevoke();
+					}}
 				>
 					<Trash2 className="h-4 w-4" />
 					Revoke
