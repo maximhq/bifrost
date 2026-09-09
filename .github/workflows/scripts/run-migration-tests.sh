@@ -823,6 +823,7 @@ append_dynamic_mcp_clients_insert() {
     generate_sidekiq_insert_postgres "$now" "$past" "$faker_sql"
     append_dynamic_columns_postgres "$now" "$past" "$faker_sql"
     append_v200_fixtures "$db_type" "$faker_sql" "$now" "$future"
+    append_v210_fixtures "$db_type" "$faker_sql" "$now"
   else
     now="datetime('now')"
     future="datetime('now', '+1 hour')"
@@ -846,6 +847,7 @@ append_dynamic_mcp_clients_insert() {
     generate_sidekiq_insert_sqlite "$now" "$past" "$faker_sql" "$config_db"
     append_dynamic_columns_sqlite "$now" "$past" "$faker_sql" "$config_db"
     append_v200_fixtures "$db_type" "$faker_sql" "$now" "$future" "$config_db" "$logs_db"
+    append_v210_fixtures "$db_type" "$faker_sql" "$now" "$config_db" "$logs_db"
   fi
 }
 
@@ -1023,6 +1025,79 @@ created_at|$now
 updated_at|$now
 V200_ROW
 
+}
+
+# v2.1.0 introduced these columns and the Virtual MCP tables. Same probing
+# scheme as append_v200_fixtures so the fixture set still runs against older
+# releases; reuses the v200_* helpers, which read these locals dynamically.
+append_v210_fixtures() {
+  local fixture_db_type="$1" fixture_output="$2" now="$3"
+  local fixture_config_db="${4:-}" fixture_logs_db="${5:-}"
+  local table column value predicate
+  while IFS='|' read -r table column value predicate; do
+    if v200_column_exists "$table" "$column"; then
+      echo "UPDATE $table SET $column = $value WHERE $predicate;" >> "$fixture_output"
+    fi
+  done <<'V210_COLUMNS'
+config_client|hidden_request_types_json|'[]'|id = 1
+config_client|vk_rotation_cooldown_ns|0|id = 1
+config_client|compat_azure_deepseek|false|id = 1
+config_keys|databricks_workspace_url|NULL|name = 'migration-test-key-anthropic'
+config_keys|databricks_client_id|NULL|name = 'migration-test-key-anthropic'
+config_keys|databricks_client_secret|NULL|name = 'migration-test-key-anthropic'
+config_keys|databricks_api_format|NULL|name = 'migration-test-key-anthropic'
+config_keys|databricks_forward_gateway_tags|NULL|name = 'migration-test-key-anthropic'
+config_keys|github_copilot_app_id|NULL|name = 'migration-test-key-anthropic'
+config_keys|github_copilot_installation_id|NULL|name = 'migration-test-key-anthropic'
+config_keys|github_copilot_repository_id|NULL|name = 'migration-test-key-anthropic'
+config_keys|github_copilot_private_key|NULL|name = 'migration-test-key-anthropic'
+config_keys|github_copilot_github_domain|NULL|name = 'migration-test-key-anthropic'
+config_mcp_clients|endpoint_slug|'migration-test-mcp-server'|client_id = 'mcp-migration-test-001'
+config_providers|prompt_cache_json|'{"auto_inject":true,"ttl":"1h"}'|name = 'anthropic'
+governance_model_pricing|output_cost_per_video_per_second_480p|NULL|id = 1
+governance_model_pricing|output_cost_per_video_per_second_720p|NULL|id = 1
+governance_model_pricing|output_cost_per_video_per_second_1024p|NULL|id = 1
+governance_model_pricing|output_cost_per_video_per_second_1080p|NULL|id = 1
+governance_model_pricing|output_cost_per_video_per_second_4k|NULL|id = 1
+governance_virtual_keys|allow_all_providers|false|id = 'vk-migration-test-1'
+governance_virtual_keys|previous_value|''|id = 'vk-migration-test-1'
+governance_virtual_keys|previous_value_hash|''|id = 'vk-migration-test-1'
+governance_virtual_keys|previous_value_expires_at|NULL|id = 'vk-migration-test-1'
+governance_virtual_keys|rotated_at|NULL|id = 'vk-migration-test-1'
+logs|served_model|'gpt-4-0613'|id = 'log-migration-test-001'
+logs|tool_call_names|'get_weather,search'|id = 'log-migration-test-001'
+logs|complexity_tier|'SIMPLE'|id = 'log-migration-test-001'
+logs|complexity_mechanism|'semantic'|id = 'log-migration-test-001'
+logs|complexity_score|0.25|id = 'log-migration-test-001'
+logs|session_id|'migration-session'|id = 'log-migration-test-001'
+logs|project_id|'project-migration-001'|id = 'log-migration-test-001'
+logs|project_name|'Migration Project'|id = 'log-migration-test-001'
+logs|routing_metadata|''|id = 'log-migration-test-001'
+logs|video_debug|''|id = 'log-migration-test-001'
+mcp_tool_logs|project_id|'project-migration-001'|id = 'mcp-log-migration-001'
+mcp_tool_logs|project_name|'Migration Project'|id = 'mcp-log-migration-001'
+V210_COLUMNS
+
+  # Virtual MCP (physical table kept from the enterprise tool-group era) and its
+  # VK assignment. Explicit ids so the join row can reference the group.
+  v200_insert enterprise_mcp_tool_groups <<V210_ROW
+id|1
+name|'migration-virtual-mcp'
+endpoint_slug|'migration-virtual-mcp'
+description|'Virtual MCP preserved across migration'
+enabled|true
+tools|'[{"mcp_client_id":"mcp-migration-test-001","tool_names":["tool1"]}]'
+config_hash|'vmcp-hash-001'
+created_by_user_id|NULL
+created_at|$now
+updated_at|$now
+V210_ROW
+
+  v200_insert enterprise_mcp_tool_group_virtual_keys <<V210_ROW
+id|1
+tool_group_id|1
+virtual_key_id|'vk-migration-test-1'
+V210_ROW
 }
 
 # Append dynamic column UPDATEs for columns that may not exist in older schemas (PostgreSQL)
