@@ -9,6 +9,7 @@
 
 - **Bedrock Tool Result Documents** - Document blocks inside tool results are preserved when converting to Bedrock Converse instead of being dropped. Document materialization is centralized, and explicitly unsupported formats or required documents with neither inline data nor a fetchable URL are rejected up front (thanks [@michaeldunn9](https://github.com/michaeldunn9)!) (#5663)
 - **MCP JWT Identity per Token Mode** - MCP JWTs no longer record every mode as an MCP token credential on the grant: vk-mode tokens settle as the virtual key they name so governance applies that key's permit, user-mode tokens attribute the request to the user, and session-mode tokens record nothing so they are refused when authentication is enforced (#7011)
+- **Streaming First-Chunk Peek Ignored Context** - The wait for a stream's first chunk now observes the request context, so a cancelled request returns 499 and an expired deadline returns 504 immediately instead of pinning the provider worker until `stream_idle_timeout_in_seconds` elapsed. An already-buffered provider chunk still wins over a simultaneous cancellation, and the source is drained in the background so the provider's send and close complete cleanly (#6993)
 
 ## 🔧 Maintenance
 
@@ -21,3 +22,4 @@
 ## 🐙 Closed GitHub Issues
 
 - [#5661](https://github.com/maximhq/bifrost/issues/5661) - Anthropic document blocks are dropped from Bedrock tool results
+- [#6974](https://github.com/maximhq/bifrost/issues/6974) - Streaming first-chunk peek and drain wait ignore context, pinning workers for up to stream_idle_timeout

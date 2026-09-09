@@ -2,6 +2,7 @@ package utils
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -153,15 +154,7 @@ func CheckStreamPreambleForError(
 	for {
 		select {
 		case <-ctx.Done():
-			err := NewBifrostOperationError(schemas.ErrRequestCancelled, ctx.Err())
-			err.StatusCode = schemas.Ptr(499)
-			err.Error.Type = schemas.Ptr(schemas.RequestCancelled)
-			if ctx.Err() == context.DeadlineExceeded {
-				err = NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, ctx.Err())
-			} else {
-				err.AllowFallbacks = schemas.Ptr(false)
-			}
-			return nil, drain(), err
+			return nil, drain(), newStreamContextError(ctx)
 
 		case chunk, ok := <-stream:
 			if !ok {
@@ -190,7 +183,40 @@ func CheckStreamPreambleForError(
 	}
 }
 
+// newStreamContextError maps a done request context onto the error shape the
+// retry loop already terminates on: RequestCancelled (499, fallbacks off) or
+// RequestTimedOut (504, default fallback eligibility).
+func newStreamContextError(ctx context.Context) *schemas.BifrostError {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, ctx.Err())
+	}
+	err := NewBifrostOperationError(schemas.ErrRequestCancelled, ctx.Err())
+	err.StatusCode = new(499)
+	err.Error.Type = new(schemas.RequestCancelled)
+	err.AllowFallbacks = new(false)
+	return err
+}
+
+// drainInBackground consumes stream until the producer closes it so a
+// provider goroutine blocked on send can exit. The returned channel closes
+// when the drain completes.
+func drainInBackground(stream chan *schemas.BifrostStreamChunk) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range stream {
+		}
+	}()
+	return done
+}
+
 // CheckFirstStreamChunkForError probes a stream before exposing its first chunk.
+//
+// If ctx ends before the first chunk arrives, it returns a RequestCancelled (499)
+// or RequestTimedOut (504) error immediately and drains the source in the
+// background, so the calling worker is released instead of waiting out the
+// provider's stream idle timeout (maximhq/bifrost#6974). A chunk the producer
+// already delivered takes precedence over ctx.
 //
 // If the first chunk is an error, it drains the source channel in the background
 // (so the provider goroutine can exit cleanly) and returns the error for synchronous
@@ -205,7 +231,9 @@ func CheckStreamPreambleForError(
 // drainDone closes when the wrapper finishes forwarding the source stream.
 //
 // If the source channel is closed immediately (empty stream), it returns a
-// nil channel with nil error. drainDone is already closed.
+// nil channel with nil error. drainDone is already closed. A nil source is
+// treated the same way, matching CheckStreamPreambleForError, so no goroutine
+// is ever parked on a channel that can never be ready or closed.
 //
 // The ctx argument cancels the background forwarding goroutine if the consumer
 // abandons the returned wrapped channel. On ctx.Done the goroutine drains the
@@ -215,7 +243,30 @@ func CheckFirstStreamChunkForError(
 	stream chan *schemas.BifrostStreamChunk,
 	guardConfig ...*schemas.StreamThroughputGuardConfig,
 ) (chan *schemas.BifrostStreamChunk, <-chan struct{}, *schemas.BifrostError) {
-	firstChunk, ok := <-stream
+	if stream == nil {
+		done := make(chan struct{})
+		close(done)
+		return nil, done, nil
+	}
+	var firstChunk *schemas.BifrostStreamChunk
+	var ok bool
+	select {
+	case firstChunk, ok = <-stream:
+		// A chunk the producer already delivered wins over ctx: a provider
+		// goroutine that saw the cancellation itself emits a richer
+		// RequestCancelled chunk (billed usage, raw request) through
+		// HandleStreamCancellation.
+	default:
+		select {
+		case firstChunk, ok = <-stream:
+		case <-ctx.Done():
+			// The producer accepted the request but has emitted nothing and
+			// the request is gone. Release the worker now instead of waiting
+			// out the provider's stream idle timeout. Drain in the background
+			// so the producer's eventual send and close still complete.
+			return nil, drainInBackground(stream), newStreamContextError(ctx)
+		}
+	}
 	if !ok {
 		// Channel closed immediately (empty stream) — return nil so callers
 		// can distinguish this from a live stream channel.
@@ -225,7 +276,7 @@ func CheckFirstStreamChunkForError(
 	}
 
 	if err := streamChunkError(firstChunk); err != nil {
-		return nil, drainStream(stream), err
+		return nil, drainInBackground(stream), err
 	}
 
 	if len(guardConfig) == 0 || guardConfig[0] == nil || guardConfig[0].MinimumOutputCharactersPerSecond <= 0 {
@@ -253,7 +304,7 @@ func CheckFirstStreamChunkForError(
 		return wrapStream(ctx, stream, buffered)
 	}
 	if len(buffered) >= maxStreamProbeChunks || bufferedBytes >= maxStreamProbeBytes {
-		return nil, drainStream(stream), newStreamProbeBufferError()
+		return nil, drainInBackground(stream), newStreamProbeBufferError()
 	}
 
 	timer := time.NewTimer(probeDuration)
@@ -265,7 +316,7 @@ func CheckFirstStreamChunkForError(
 				return closedBufferedStream(buffered)
 			}
 			if err := streamChunkError(chunk); err != nil {
-				return nil, drainStream(stream), err
+				return nil, drainInBackground(stream), err
 			}
 			buffered = append(buffered, chunk)
 			characters += streamChunkCharacters(chunk)
@@ -274,19 +325,12 @@ func CheckFirstStreamChunkForError(
 				return wrapStream(ctx, stream, buffered)
 			}
 			if len(buffered) >= maxStreamProbeChunks || bufferedBytes >= maxStreamProbeBytes {
-				return nil, drainStream(stream), newStreamProbeBufferError()
+				return nil, drainInBackground(stream), newStreamProbeBufferError()
 			}
 		case <-timer.C:
-			return nil, drainStream(stream), newStreamThroughputError(config)
+			return nil, drainInBackground(stream), newStreamThroughputError(config)
 		case <-ctx.Done():
-			return nil, drainStream(stream), &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   ctx.Err(),
-				},
-			}
+			return nil, drainInBackground(stream), newStreamContextError(ctx)
 		}
 	}
 }
@@ -324,16 +368,6 @@ func closedBufferedStream(buffered []*schemas.BifrostStreamChunk) (chan *schemas
 	close(wrapped)
 	close(done)
 	return wrapped, done, nil
-}
-
-func drainStream(stream chan *schemas.BifrostStreamChunk) <-chan struct{} {
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for range stream {
-		}
-	}()
-	return done
 }
 
 func streamChunkError(chunk *schemas.BifrostStreamChunk) *schemas.BifrostError {
