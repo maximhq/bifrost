@@ -38,3 +38,23 @@ func TestParseVertexError_NoStatusNoType(t *testing.T) {
 	require.NotNil(t, bifrostErr.Error)
 	assert.Nil(t, bifrostErr.Error.Type, "no status present, so none should be fabricated")
 }
+
+// TestParseVertexError_SurfacesBadRequestFieldViolations covers issue #6589's
+// observability ask: Vertex 400s often carry google.rpc.BadRequest fieldViolations
+// in error.details naming the rejected field, but Bifrost only forwarded
+// error.message ("Request contains an invalid argument."), leaving callers blind
+// to which field the upstream rejected.
+func TestParseVertexError_SurfacesBadRequestFieldViolations(t *testing.T) {
+	var resp fasthttp.Response
+	resp.SetStatusCode(fasthttp.StatusBadRequest)
+	resp.SetBodyString(`{"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT","details":[{"@type":"type.googleapis.com/google.rpc.BadRequest","fieldViolations":[{"field":"generation_config.response_json_schema","description":"Invalid JSON schema."}]}]}}`)
+
+	bifrostErr := parseVertexError(&resp)
+
+	require.NotNil(t, bifrostErr)
+	require.NotNil(t, bifrostErr.Error)
+	assert.Contains(t, bifrostErr.Error.Message, "generation_config.response_json_schema",
+		"the rejected field path from error.details must be surfaced")
+	assert.Contains(t, bifrostErr.Error.Message, "Invalid JSON schema.",
+		"the field violation description from error.details must be surfaced")
+}
