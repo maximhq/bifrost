@@ -206,14 +206,14 @@ user-vk-creation-policy:
         </Note>
     summary: Get the calling user's virtual-key creation policy
     description: |
-      Reports whether virtual keys the **calling** user creates will be adopted into one of their
-      access profiles, and if so which one. The create form uses this to lock the policy fields
-      up front rather than letting a user author a policy that is about to be overwritten.
+      Resolves the access profile that would govern a virtual key the **calling** user creates,
+      returning its name or none. Whether governance applies at all is decided separately from the
+      `VirtualKeys:CreateStandalone` permission (see `/api/governance/users/me/permissions`); this
+      endpoint only resolves the profile, and the create form combines the two.
 
       Self-scoped: it always describes the caller and takes no user ID. Returns
-      `{"governed": false}` when the caller has no per-user identity (local admin or password
-      auth) or when no profile they hold has **Govern virtual keys created by members** enabled.
-      When more than one of their profiles has it on, the first such profile governs.
+      `{"has_access_profile": false}` when the caller has no per-user identity (local admin) or holds
+      no active access profile. When several of their profiles qualify, the highest-ranked one governs.
     tags: [Users, Virtual Keys]
     security:
       - ManagementBearerAuth: []
@@ -224,14 +224,14 @@ user-vk-creation-policy:
           application/json:
             schema:
               type: object
-              required: [governed]
+              required: [has_access_profile]
               properties:
-                governed:
+                has_access_profile:
                   type: boolean
-                  description: Whether an access profile will adopt keys this user creates.
+                  description: Whether the caller holds an access profile that would govern keys they create.
                 profile_name:
                   type: string
-                  description: Name of the governing access profile. Present only when `governed` is true.
+                  description: Name of the governing access profile. Present only when `has_access_profile` is true.
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 

@@ -949,6 +949,7 @@ MCP client operations are exported as `mcp.client.operation.duration` (histogram
 | `metrics_endpoint` | `string \| EnvVar` | ✅ Yes (if enabled) | OTLP metrics endpoint URL — supports `env.VAR_NAME` |
 | `metrics_push_interval` | `integer` | ❌ No | Push interval in seconds (default: `15`, range: 1-300) |
 | `metrics_headers` | `object` | ❌ No | Extra headers sent only to the metrics endpoint, overlaid on `headers`. See [Per-signal headers](#per-signal-headers) |
+| `overhead_breakdown_enabled` | `boolean` | ❌ No | Export the per-component overhead histogram `bifrost_overhead_component_microseconds`. Requires `metrics_enabled: true` (no metric is exported otherwise). Default `false`. See [Overhead breakdown](#overhead-breakdown) |
 
 <Note>
 The collector is dialed lazily, so an unreachable metrics endpoint never blocks Bifrost startup or request handling. Metrics that fail to push are dropped and retried on the next interval.
@@ -1107,6 +1108,8 @@ These are the same **Prometheus-style metrics** from the telemetry plugin, pushe
 | `bifrost_cache_write_input_tokens_1h_total` | Counter | Cache-write input tokens with a 1-hour TTL (Anthropic only). Subset of `bifrost_cache_write_input_tokens_total` — do not sum with it |
 | `bifrost_cost_total` | Counter | Total cost in USD |
 | `bifrost_upstream_latency_seconds` | Histogram | Upstream request latency |
+| `bifrost_overhead_latency_microseconds` | Histogram | Total Bifrost overhead per request in microseconds (excludes upstream provider time) |
+| `bifrost_overhead_component_microseconds` | Histogram | That overhead split by internal component via the `overhead_component` attribute. Opt-in per profile via `overhead_breakdown_enabled`, and populated only when tracing is active — see [Overhead breakdown](#overhead-breakdown) |
 | `bifrost_stream_first_token_latency_seconds` | Histogram | Time to first token |
 | `bifrost_stream_inter_token_latency_seconds` | Histogram | Inter-token latency |
 | `bifrost_request_retries` | Histogram | Retries used per request (observed once per request) |
@@ -1117,6 +1120,55 @@ These are the same **Prometheus-style metrics** from the telemetry plugin, pushe
 | `http_response_size_bytes` | Histogram | HTTP response body size |
 
 > **Note:** Size metrics are only recorded when the `Content-Length` header is present. Requests or responses without it (e.g., chunked transfer encoding, streaming responses) do not produce data points in these histograms.
+
+### Overhead breakdown
+
+`bifrost_overhead_component_microseconds` decomposes the same overhead measured by `bifrost_overhead_latency_microseconds` into per-component histograms, sharing its bucket boundaries. It carries the same base attributes plus an `overhead_component` attribute naming the internal component, so summing every component for a given attribute set reconstructs the scalar total.
+
+`overhead_component` takes one of a fixed set of ten values, each rolling the individual pipeline spans up into a category. These match the categories the Bifrost UI's [log-detail overhead breakdown](/features/observability/latency-breakdown) groups into, so the metric and the UI agree:
+
+| Value | UI label | Component |
+|-------|----------|-----------|
+| `serialization` | Serialization | JSON parsing and encoding at the request edges (request/response unmarshal and marshal) |
+| `conversion` | Conversion | Translating between Bifrost's unified schema and the provider's native shape, including per-chunk stream conversion |
+| `plugins` | Plugins | All plugin hook spans combined, across every configured plugin |
+| `middleware` | Middleware | HTTP transport auth and access-control middleware |
+| `routing` | Key selection | Selecting which provider API key to use (key-pool lookup and key selection) |
+| `processing` | Processing | Internal pipeline glue: request setup, pre/post-hook loops, worker setup and handoff, queue wait, and attribute population |
+| `networking` | Networking | Handling between client, gateway, and provider: provider-side processing, request context, response headers, response finalize, request signing, and credential fetch |
+| `streaming` | Client delivery | Streaming egress: backpressure and writing chunks back to the client |
+| `miscellaneous` | Miscellaneous | Small glue work not worth its own span, plus the residual overhead not attributed to any phase span |
+| `other` | Other | Any unmapped bucket (its presence signals a new bucket needs a category) |
+
+The set is bounded, so the list above is exhaustive.
+
+The metric is **off by default**. Enable it per profile with `overhead_breakdown_enabled` (a sibling of `metrics_enabled`, under the profile's Metrics section), or toggle **Enable Overhead Breakdown** on the Metrics tab of the **Observability → OpenTelemetry** page in the UI.
+
+```json
+{
+  "plugins": [
+    {
+      "enabled": true,
+      "name": "otel",
+      "config": {
+        "profiles": [
+          {
+            "service_name": "bifrost",
+            "protocol": "http",
+            "metrics_enabled": true,
+            "metrics_endpoint": "http://otel-collector:4318/v1/metrics",
+            "overhead_breakdown_enabled": true
+          }
+        ]
+      }
+    }
+  ]
+}
+```
+
+<Note>
+The breakdown is computed from completed trace spans, so it only populates when tracing/observability is active for the request. With tracing off, `bifrost_overhead_component_microseconds` stays empty even when `overhead_breakdown_enabled` is on.
+</Note>
 
 ### OTEL Collector Configuration
 
