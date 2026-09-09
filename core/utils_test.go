@@ -417,6 +417,40 @@ func TestClearCtxForFallback(t *testing.T) {
 	}
 }
 
+// A same-provider streaming retry reuses the request context. Stream-lifecycle flags
+// claimed by the failed attempt must be wiped first; otherwise every chunk of the
+// retry looks terminal to per-chunk post-hooks (#7005).
+func TestClearCtxForStreamRetry(t *testing.T) {
+	cleared := []schemas.BifrostContextKey{
+		schemas.BifrostContextKeyConnectionClosed,
+		schemas.BifrostContextKeyStreamEndIndicator,
+		schemas.BifrostContextKeyStreamBodyExhausted,
+		schemas.BifrostContextKeyStreamParkedAfterFinish,
+	}
+	preserved := []schemas.BifrostContextKey{
+		schemas.BifrostContextKeyAPIKeyID,
+		schemas.BifrostContextKeyVirtualKey,
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for _, key := range append(append([]schemas.BifrostContextKey{}, cleared...), preserved...) {
+		ctx.SetValue(key, "set")
+	}
+
+	clearCtxForStreamRetry(ctx)
+
+	for _, key := range cleared {
+		if ctx.Value(key) != nil {
+			t.Errorf("%v survived into the streaming retry", key)
+		}
+	}
+	for _, key := range preserved {
+		if ctx.Value(key) == nil {
+			t.Errorf("%v was cleared, but stream retry must keep attempt-routing identity", key)
+		}
+	}
+}
+
 // TestValidateKeyGithubCopilot pins that validateKey rejects the same credentials the
 // provider would reject at request time. Accepting a whitespace-only field here defers the
 // failure to the first inference call, where it reads like a runtime fault rather than a

@@ -409,6 +409,19 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeySupportsAssistantPrefill)
 }
 
+// clearCtxForStreamRetry clears stream-lifecycle flags left on the shared request
+// context by a failed streaming attempt before the same-provider retry starts.
+// Without this, a sticky StreamEndIndicator makes every subsequent chunk look
+// terminal to per-chunk post-hooks (e.g. telemetry's ActiveRequests Dec).
+// Mirrors the stream-key subset of clearCtxForFallback; ConnectionClosed is
+// included because ReleaseStreamingResponse on the dead attempt claims it.
+func clearCtxForStreamRetry(ctx *schemas.BifrostContext) {
+	ctx.ClearValue(schemas.BifrostContextKeyConnectionClosed)
+	ctx.ClearValue(schemas.BifrostContextKeyStreamEndIndicator)
+	ctx.ClearValue(schemas.BifrostContextKeyStreamBodyExhausted)
+	ctx.ClearValue(schemas.BifrostContextKeyStreamParkedAfterFinish)
+}
+
 // ClearContextForInternalRequest clears context state that is specific to the
 // caller's original request, so a context derived from it can carry an
 // internal sub-request (e.g. a plugin generating an embedding for its own
