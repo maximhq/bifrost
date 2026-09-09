@@ -148162,6 +148162,124 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "83. Gemini Chat Completions Inline Image and Audio Silently Dropped (#7032)",
+      "description": "core/providers/gemini/chat.go had no case for part.InlineData in either ToBifrostChatResponse (unary) or ToBifrostChatCompletionStream (streaming), so a Gemini image-generation model's base64 output was silently dropped: HTTP 200, billed image tokens in usage.completion_tokens_details.image_tokens, and no image anywhere in the client response. Bifrost's own Responses converter and dedicated image converter already preserved this field; only Chat Completions dropped it. Each case only asserts the invariant when the model actually generated and billed an image that run, since Gemini image generation is nondeterministic and occasionally answers text only.",
+      "item": [
+        {
+          "name": "gemini/gemini-2.5-flash-image chat completions inline image preserved unary - #7032",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "var body = pm.response.json();",
+                  "var billedImageTokens = ((body.usage || {}).completion_tokens_details || {}).image_tokens || 0;",
+                  "if (billedImageTokens === 0) {",
+                  "  // Gemini image generation is nondeterministic and occasionally answers text-only;",
+                  "  // that is model behavior, not the gateway defect this case pins, so only assert",
+                  "  // the invariant when the model actually generated and billed an image this run.",
+                  "  return;",
+                  "}",
+                  "pm.test('generated image is preserved in message content, not silently dropped', function () {",
+                  "  var content = body.choices[0].message.content;",
+                  "  var hasImageBlock = Array.isArray(content) && content.some(function (b) {",
+                  "    return b.type === 'image_url' && /^data:image\\//.test((b.image_url || {}).url || '');",
+                  "  });",
+                  "  pm.expect(hasImageBlock, 'billed ' + billedImageTokens + ' image tokens but no image_url block in: ' + pm.response.text()).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-2.5-flash-image\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Generate an image of a small red apple on a white background.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-2.5-flash-image chat completions inline image preserved streaming - #7032",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "var lines = pm.response.text().split('\\n').filter(function (l) { return l.indexOf('data: ') === 0 && l.indexOf('[DONE]') === -1; });",
+                  "var chunks = lines.map(function (l) { try { return JSON.parse(l.slice(6)); } catch (e) { return null; } }).filter(Boolean);",
+                  "var billedImageTokens = 0;",
+                  "chunks.forEach(function (c) {",
+                  "  var t = ((c.usage || {}).completion_tokens_details || {}).image_tokens || 0;",
+                  "  if (t > billedImageTokens) billedImageTokens = t;",
+                  "});",
+                  "if (billedImageTokens === 0) {",
+                  "  // Same nondeterminism guard as the unary case: only assert when an image was",
+                  "  // actually generated and billed in this streamed run.",
+                  "  return;",
+                  "}",
+                  "pm.test('generated image is preserved in a streamed delta, not silently dropped', function () {",
+                  "  var hasImageDelta = chunks.some(function (c) {",
+                  "    var delta = ((c.choices || [])[0] || {}).delta || {};",
+                  "    return typeof delta.content === 'string' && /^data:image\\//.test(delta.content);",
+                  "  });",
+                  "  pm.expect(hasImageDelta, 'billed ' + billedImageTokens + ' image tokens but no delta carried a data:image/ url: ' + pm.response.text()).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-2.5-flash-image\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Generate an image of a small red apple on a white background.\"\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
