@@ -19,6 +19,37 @@ const (
 	LogStoreTypeClickHouse LogStoreType = "clickhouse"
 )
 
+// CostUpdate is the repriced cost for a single log row, applied in bulk by
+// BulkUpdateCost. It carries the per-category split alongside the total so a
+// reprice keeps the denormalized input/output/additional cost columns in sync
+// with the cost column (they otherwise go stale on recompute). Input + Output +
+// Additional == Total, mirroring schemas.BifrostCost.
+type CostUpdate struct {
+	Total      float64
+	Input      float64
+	Output     float64
+	Additional float64
+}
+
+// CostUpdateFromBreakdown builds a CostUpdate from a cost breakdown, falling back
+// to attributing an unsplit total to the input side (mirrors the SerializeFields
+// reconciliation for opaque provider totals).
+func CostUpdateFromBreakdown(bd *schemas.BifrostCost) CostUpdate {
+	if bd == nil {
+		return CostUpdate{}
+	}
+	u := CostUpdate{
+		Total:      bd.TotalCost,
+		Input:      bd.InputCost,
+		Output:     bd.OutputCost,
+		Additional: bd.AdditionalCost,
+	}
+	if u.Input == 0 && u.Output == 0 && u.Additional == 0 && u.Total > 0 {
+		u.Input = u.Total
+	}
+	return u
+}
+
 // LogStore is the interface for the log store.
 type LogStore interface {
 	Ping(ctx context.Context) error
@@ -32,6 +63,40 @@ type LogStore interface {
 	FindAllDistinct(ctx context.Context, query any, fields ...string) ([]*Log, error)
 	HasLogs(ctx context.Context) (bool, error)
 	SearchLogs(ctx context.Context, filters SearchFilters, pagination PaginationOptions) (*SearchResult, error)
+	// SearchLogsForBilling is SearchLogs projected for cost recomputation: exactly the
+	// columns pricing reads and nothing else, with each modality payload pulled only
+	// for the request types that bill on it.
+	//
+	// It does NOT hydrate offloaded payloads — that would put every row's payload in
+	// memory at once. Callers walk the result in BillingHydrationChunkSize slices,
+	// calling HydrateBillingChunk and then ReleaseBillingPayloads on each.
+	SearchLogsForBilling(ctx context.Context, filters SearchFilters, pagination PaginationOptions) (*SearchResult, error)
+	// HydrateBillingChunk restores offloaded pricing inputs for a small slice of rows.
+	// It skips rows that already carry everything pricing needs, so a store with
+	// nothing offloaded performs no I/O at all.
+	//
+	// BillingHydrationResult.Unpriceable carries the IDs whose inputs could not be
+	// recovered — for example, a missing object or unavailable object storage. Callers
+	// must skip those rather than price them: the
+	// denormalized fallback usage omits the cache breakdown, and pricing it charges
+	// every cached token at the full input rate. Hydrated carries the IDs actually
+	// fetched, which are the only rows worth passing to BulkBackfillBillingPayloads.
+	//
+	// Pass at most BillingHydrationChunkSize rows and release them before requesting
+	// more; the whole point is to bound how many payloads are resident at once.
+	HydrateBillingChunk(ctx context.Context, logs []*Log) (BillingHydrationResult, error)
+	// BulkBackfillBillingPayloads writes pricing inputs recovered from object storage
+	// back into their rows, so a later recompute reads them from the database instead
+	// of fetching the object again.
+	//
+	// This makes recompute self-healing: the first pass over a window pays the object
+	// fetches, and every pass after it is served entirely from the DB. It is
+	// opportunistic by design — only rows that were actually fetched get backfilled, so
+	// there is no table-wide migration and no scan.
+	//
+	// Callers should treat a failure as non-fatal: the cost update is the job's real
+	// output, and a missed backfill only means the next run fetches again.
+	BulkBackfillBillingPayloads(ctx context.Context, updates map[string]BillingPayloadBackfill) error
 	GetSessionLogs(ctx context.Context, sessionID string, pagination PaginationOptions) (*SessionDetailResult, error)
 	GetSessionSummary(ctx context.Context, sessionID string) (*SessionSummaryResult, error)
 	GetStats(ctx context.Context, filters SearchFilters) (*SearchStats, error)
@@ -43,6 +108,10 @@ type LogStore interface {
 	GetProviderCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderCostHistogramResult, error)
 	GetProviderTokenHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderTokenHistogramResult, error)
 	GetProviderLatencyHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderLatencyHistogramResult, error)
+	// GetThroughputHistogram returns time-bucketed token-generation throughput (tokens/sec).
+	GetThroughputHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ThroughputHistogramResult, error)
+	// GetProviderThroughputHistogram returns time-bucketed tokens/sec with provider breakdown.
+	GetProviderThroughputHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderThroughputHistogramResult, error)
 	GetModelRankings(ctx context.Context, filters SearchFilters) (*ModelRankingResult, error)
 	GetUserRankings(ctx context.Context, filters SearchFilters) (*UserRankingResult, error)
 	GetDimensionRankings(ctx context.Context, filters SearchFilters, dimension RankingDimension) (*DimensionRankingResult, error)
@@ -57,19 +126,30 @@ type LogStore interface {
 	// timestamp but greater log ID are included to avoid skipping same-timestamp rows.
 	GetNodeUsageAfter(ctx context.Context, nodeID string, cursor NodeUsageCursor) (*NodeUsageAggregate, error)
 	Update(ctx context.Context, id string, entry any) error
-	BulkUpdateCost(ctx context.Context, updates map[string]float64) error
+	BulkUpdateCost(ctx context.Context, updates map[string]CostUpdate) error
 	Flush(ctx context.Context, since time.Time) error
 	Close(ctx context.Context) error
 	DeleteLog(ctx context.Context, id string) error
 	DeleteLogs(ctx context.Context, ids []string) error
 	DeleteLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
 
+	CreateUserAgentMapping(ctx context.Context, mapping *UserAgentMapping) error
+	UpdateUserAgentMapping(ctx context.Context, id string, mapping *UserAgentMapping) error
+	DeleteUserAgentMapping(ctx context.Context, id string) error
+	ListUserAgentMappings(ctx context.Context, activeOnly bool) ([]UserAgentMapping, error)
+
 	// Distinct value methods for filter data
 	GetDistinctModels(ctx context.Context, limit int, query string) ([]string, error)
 	GetDistinctAliases(ctx context.Context, limit int, query string) ([]string, error)
 	GetDistinctKeyPairs(ctx context.Context, idCol, nameCol string, limit int, query string) ([]KeyPairResult, error)
 	GetDistinctRoutingEngines(ctx context.Context, limit int, query string) ([]string, error)
+	// GetDistinctToolCallNames returns distinct function names that responses called, for the "Tool calls" filter.
+	GetDistinctToolCallNames(ctx context.Context, limit int, query string) ([]string, error)
 	GetDistinctStopReasons(ctx context.Context, limit int, query string) ([]string, error)
+	// GetDistinctUserAgents returns distinct raw User-Agent strings from logs for the "App" filter.
+	GetDistinctUserAgents(ctx context.Context, limit int, query string) ([]string, error)
+	// GetDistinctApps returns distinct backend-detected app labels from logs.
+	GetDistinctApps(ctx context.Context, limit int, query string) ([]string, error)
 	GetDistinctMetadataKeys(ctx context.Context, limit int, query string) (map[string][]string, error)
 
 	// MCP Tool Log histogram methods
@@ -89,6 +169,10 @@ type LogStore interface {
 	FlushMCPToolLogs(ctx context.Context, since time.Time) error
 	GetAvailableToolNames(ctx context.Context, limit int, query string) ([]string, error)
 	GetAvailableServerLabels(ctx context.Context, limit int, query string) ([]string, error)
+	// GetAvailableMCPUserAgents returns distinct raw User-Agent strings from MCP tool logs for the "App" filter.
+	GetAvailableMCPUserAgents(ctx context.Context, limit int, query string) ([]string, error)
+	// GetAvailableMCPApps returns distinct backend-detected app labels from MCP tool logs.
+	GetAvailableMCPApps(ctx context.Context, limit int, query string) ([]string, error)
 	GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]MCPToolLog, error)
 
 	// Async Job methods
@@ -97,6 +181,12 @@ type LogStore interface {
 	UpdateAsyncJob(ctx context.Context, id string, updates map[string]interface{}) error
 	DeleteExpiredAsyncJobs(ctx context.Context) (int64, error)
 	DeleteStaleAsyncJobs(ctx context.Context, staleSince time.Time) (int64, error)
+
+	// Webhook Delivery methods
+	CreateWebhookDelivery(ctx context.Context, delivery *WebhookDelivery) error
+	FindWebhookDeliveryByID(ctx context.Context, id string) (*WebhookDelivery, error)
+	SearchWebhookDeliveries(ctx context.Context, filters *WebhookDeliverySearchFilters, pagination PaginationOptions) (*WebhookDeliverySearchResult, error)
+	DeleteExpiredWebhookDeliveries(ctx context.Context) (int64, error)
 }
 
 // NewLogStore creates a new log store based on the configuration.

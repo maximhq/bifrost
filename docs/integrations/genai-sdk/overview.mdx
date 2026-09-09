@@ -25,7 +25,7 @@ from google.genai.types import HttpOptions
 
 # Configure client to use Bifrost
 client = genai.Client(
-    api_key="dummy-key",  # Keys handled by Bifrost
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>",  # Replace with your actual Bifrost virtual key.
     http_options=HttpOptions(base_url="http://localhost:8080/genai")
 )
 
@@ -45,7 +45,8 @@ print(response.text)
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
 // Configure client to use Bifrost
-const genAI = new GoogleGenerativeAI("dummy-key", {
+// Replace with your actual Bifrost virtual key.
+const genAI = new GoogleGenerativeAI("<YOUR-BIFROST-VIRTUAL-KEY>", {
   baseUrl: "http://localhost:8080/genai", // Keys handled by Bifrost
 });
 
@@ -73,7 +74,7 @@ from google import genai
 from google.genai.types import HttpOptions
 
 client = genai.Client(
-    api_key="dummy-key",
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>",  # Replace with your actual Bifrost virtual key.
     http_options=HttpOptions(base_url="http://localhost:8080/genai")
 )
 
@@ -114,7 +115,8 @@ ollama_response = client.models.generate_content(
 ```javascript
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
-const genAI = new GoogleGenerativeAI("dummy-key", {
+// Replace with your actual Bifrost virtual key.
+const genAI = new GoogleGenerativeAI("<YOUR-BIFROST-VIRTUAL-KEY>", {
   baseUrl: "http://localhost:8080/genai",
 });
 
@@ -155,13 +157,14 @@ Pass custom headers required by Bifrost plugins (like governance, telemetry, etc
 from google import genai
 from google.genai.types import HttpOptions
 
+# Sending the virtual key through both fields requires dual_credential_conflict_behavior to be set to "prefer_vk".
 # Configure client with custom headers
 client = genai.Client(
-    api_key="dummy-key",
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>",  # Replace with your actual Bifrost virtual key.
     http_options=HttpOptions(
         base_url="http://localhost:8080/genai",
         headers={
-            "x-bf-vk": "vk_12345",  # Virtual key for governance
+            "x-bf-vk": "<YOUR-BIFROST-VIRTUAL-KEY>",  # Replace with your actual Bifrost virtual key for governance.
         }
     )
 )
@@ -178,11 +181,13 @@ response = client.models.generate_content(
 ```javascript
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
+// Sending the virtual key through both fields requires dual_credential_conflict_behavior to be set to "prefer_vk".
 // Configure client with custom headers
-const genAI = new GoogleGenerativeAI("dummy-key", {
+// Replace with your actual Bifrost virtual key.
+const genAI = new GoogleGenerativeAI("<YOUR-BIFROST-VIRTUAL-KEY>", {
   baseUrl: "http://localhost:8080/genai",
   customHeaders: {
-    "x-bf-vk": "vk_12345", // Virtual key for governance
+    "x-bf-vk": "<YOUR-BIFROST-VIRTUAL-KEY>", // Replace with your actual Bifrost virtual key for governance.
   },
 });
 
@@ -229,4 +234,3 @@ The Google GenAI integration supports all features that are available in both th
 - **[OpenAI SDK](../openai-sdk/overview)** - GPT integration patterns
 - **[Configuration](../../quickstart/gateway/provider-configuration)** - Bifrost setup and configuration
 - **[Core Features](../../features/)** - Advanced Bifrost capabilities
-

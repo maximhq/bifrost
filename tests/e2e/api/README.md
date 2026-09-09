@@ -2,6 +2,41 @@
 
 End-to-end API tests for the Bifrost API using Postman collections and [Newman](https://www.npmjs.com/package/newman) (CLI).
 
+## Azure streaming preamble fallback
+
+These two deterministic cases use a local SSE fixture and an isolated gateway.
+They make no live provider calls. Run the following commands from the repository root.
+
+Start the fixture in one terminal:
+
+```bash
+node tests/e2e/api/runners/azure-stream-preamble-fixture.mjs
+```
+
+Start a separate gateway in another terminal:
+
+```bash
+azure_fixture_dir=$(mktemp -d)
+cp tests/e2e/api/provider_config/azure-stream-preamble.config.json "$azure_fixture_dir/config.json"
+go run ./transports/bifrost-http -app-dir "$azure_fixture_dir" -host 127.0.0.1 -port 8790
+```
+
+Run the cases in a third terminal:
+
+```bash
+newman run tests/e2e/api/collections/provider-harness.json \
+  --folder "74. Azure streaming preamble fallback" \
+  --env-var baseUrl=http://127.0.0.1:8790 \
+  --env-var azureStreamPreambleFixture=1
+```
+
+The fixture emits metadata followed by an error for `preamble-error`, then returns
+`hello` for the configured fallback, `preamble-success`. Both Chat Completions and
+Responses must return only the successful attempt's events and a terminal result.
+The cases are skipped unless `azureStreamPreambleFixture=1`.
+
+Stop the fixture and isolated gateway with Ctrl+C after testing.
+
 ## Contents
 
 ### V1 Endpoint Tests
@@ -40,6 +75,7 @@ End-to-end API tests for the Bifrost API using Postman collections and [Newman](
 |------|-------------|
 | `provider_config/` | Per-provider Postman env `.json` files (`bifrost-v1-openai.postman_environment.json`, etc.). Reused across all collections. |
 | `provider-capabilities.json` | Provider capability matrix: per-provider map of booleans (e.g. `chat_completions: true`, `embedding: false`) for batch, file, container, embedding, speech, transcription, image. Derived from `core/providers/*/provider.go` NewUnsupportedOperationError. Used by integration collections to skip unsupported requests when run with all providers. |
+| `collections/smoke-manifest.json` | Curated ~100-request smoke selection for `make smoke-provider-harness-test` (see [Provider Harness Smoke Set](#provider-harness-smoke-set)). Hand-maintained; guarded offline by `runners/lib/smoke-manifest.test.mjs`. |
 | `fixtures/` | Sample files for multipart requests: `sample.mp3`, `sample.jsonl`, `sample.txt` |
 | `setup-plugin.sh` | Builds the hello-world plugin for API Management plugin tests. Run automatically by API Management and all-integration runners. |
 | `setup-mcp.sh` | Starts the test MCP server (`examples/mcps/http-no-ping-server`) on http://localhost:3001/ so Add/Update/Delete MCP Client tests can pass. Run automatically by API Management and all-integration runners. |
@@ -88,6 +124,55 @@ From this directory (`tests/e2e/api`):
 ./runners/run-newman-inference-tests.sh --html --verbose
 ```
 
+### Provider Harness Smoke Set
+
+The full provider harness runs ~1900 requests after augmentation. For a
+pre-release or pre-merge check, run the curated smoke set instead:
+
+```bash
+make smoke-provider-harness-test                       # ~100 requests, all 8 providers
+make run-provider-harness-test SMOKE=1                 # identical
+make run-provider-harness-test SMOKE=1 PROVIDER=bedrock  # smoke set, one fork
+make run-provider-harness-test SMOKE=path/to/other.json  # a different manifest
+```
+
+The selection lives in `collections/smoke-manifest.json`, grouped into five
+pillars, each with an `intent` saying what it buys:
+
+| Pillar | Picks | Covers |
+|---|---:|---|
+| `cache-parity` | 32 | Round 34 direct-vs-Bifrost cache anchor, Round 35 cross-provider matrix, content-block `cache_control` / `cachePoint`, OpenRouter pass-through |
+| `reasoning-tools-interleave` | 24 | Folder 46's three-turn reasoning × tool-call chains, plus chat→responses tool replay |
+| `reasoning` | 19 | Redacted thinking, encrypted reasoning item-id round-trips, thought-signature replay, fail-soft |
+| `cross-cut-baseline` | 16 | One cell per endpoint shape and modality, including the azure and passthrough forks |
+| `costing-guards` | 9 | Cost/usage recording (dbverify) and provider egress streaming/truncation guards |
+
+Three things about the manifest are load-bearing:
+
+- **Rows are matched by `(folder, name)` against the *augmented* collection**,
+  not against `provider-harness.json`. The cache-parity rows are generated at
+  augment time by `runners/lib/midconv-system-cache-parity.mjs` and
+  `crossprovider-cache-matrix.mjs`, so they exist nowhere in the source
+  collection and cannot be tagged in place the way `[PREVIEW]` / `[SKIP]` rows
+  are. The folder is required, not decorative: criss-cross rows are named after
+  their model, so a bare `gemini/gemini-2.5-flash` matches 25 requests.
+- **`SMOKE` forces the deferred cache-parity pass on.** That pass normally runs
+  only for a completely unfiltered sweep, and `SMOKE` is a filter — without the
+  override the cache rows would be carved out of the parallel pass and never
+  replayed. `RERUN_FAILED=1` still wins, because its selection comes from the
+  main pass's report.
+- **`make test-harness-runner-lib` guards the manifest offline.**
+  `runners/lib/smoke-manifest.test.mjs` runs the real augment step and resolves
+  every entry, so a renamed or moved request fails there instead of silently
+  shrinking the smoke set. It also asserts cache write/read pairs stay balanced,
+  every provider fork has something to run, and each three-turn interleave chain
+  keeps all three turns (turn 1 sets the collection variables; turns 2 and 3
+  replay them).
+
+Selecting a request pulls in its chained-variable producers automatically, and a
+row claimed by two provider partitions runs once per fork — both the same as in a
+full sweep, so the effective request count can exceed the manifest's 100.
+
 ### Routing Harness Ledger
 
 Harness days are journaled in `routing/ledger-YYYY-MM-DD.md` (gitignored, one
@@ -96,6 +181,42 @@ open-divergences snapshot, per-suite scenario tables (setup / expected /
 actual, with ✅ / ⚠️ recalibrated / 🐞 bug-found markers), the day's run
 results, and day notes. Append to the current day's file during a session;
 never rewrite past days.
+
+### Management API coverage
+
+`bifrost-api-management.postman_collection.json` is the OSS management surface:
+every `/api/*` route the OSS binary serves, plus `/health` and `/metrics`.
+Enterprise-only routes (RBAC, access profiles, audit logs, business units,
+circuit breaker, MCP tool groups, vault) are **not** here — they 404 on an OSS
+server and live in `bifrost-enterprise/tests/e2e/api/enterprise-management.postman_collection.json`,
+which the enterprise runner merges on top of this base.
+
+Two request styles coexist, and the difference is load-bearing:
+
+- **Lifecycle requests** create a resource, assert on it, and tear it down. The
+  collection-level script requires a 2xx, so these only belong to routes that
+  succeed deterministically against a local gateway.
+- **Requests suffixed `(Coverage Probe)`** pass on a 2xx or on any 4xx/5xx — but
+  not on a 3xx, and not on a response the gate rejects for other reasons. Use
+  that suffix only when the outcome depends on deployment shape rather than on
+  correctness — an unconfigured vault, a missing background job runner, a webhook
+  receiver that is deliberately not listening.
+
+The collection-level gate also whitelists a handful of named requests that carry
+no `(Coverage Probe)` suffix, because their non-2xx outcome is itself the
+expected result. Keep this list in sync when adding to it:
+
+- `Get … (Before Create)` requests may answer 404 — the resource does not exist yet.
+- `Add / Reconnect / Update / Delete MCP Client` may answer 404 when the client
+  was never added.
+- Plugin requests may answer 404 with a "plugin not found"/"failed to load"
+  message (the `.so` is not built), or 403 with "requires genuine admin
+  authentication" in the unauthenticated pass.
+- `Clear Cache by Cache ID / by Key (Coverage Probe)` may answer 405 — the routes
+  are not implemented yet.
+
+Resource names are stamped with `Date.now()` so the collection can run twice in
+one invocation (the runner replays it with dashboard auth enabled).
 
 ### API Management Extensions
 
@@ -384,3 +505,109 @@ The collection and supporting files are maintained under `docs/openapi/`. To ref
 - `runners/run-newman-inference-tests.sh` ← `docs/openapi/run-newman-inference-tests.sh`
 - `provider_config/*.postman_environment.json` and `provider_config/README.md` ← `docs/openapi/provider_config/` (if syncing from docs)
 - `fixtures/*` ← `docs/openapi/fixtures/`
+
+## Video costing checks
+
+Video is priced at **settlement**, not at submission. `POST /v1/videos` returns a queued job with no
+cost, and minutes later a settler writes a *second* log row carrying the real figure. Neither newman
+nor a Go unit test can verify that — one has no way to wait minutes for an out-of-band row, the other
+has no provider. `runners/run-video-costing.mjs` does the whole loop:
+
+```
+submit -> poll to terminal -> wait for the settlement row -> assert the billed cost
+```
+
+The expected figures in `fixtures/video-costing-cases.json` are the providers' **own published
+rates**, so a red case means Bifrost disagrees with a price list.
+
+| Path | Description |
+|------|-------------|
+| `fixtures/video-costing-cases.json` | One case per line of the video-costing checklist: request body, expected dimensions, expected rate. |
+| `runners/run-video-costing.mjs` | The runner: submit, poll, wait for settlement, assert, report. |
+| `runners/lib/video-costing.mjs` | Pure verdict logic — band resolution, expected cost, which row is the cost row. |
+| `runners/lib/video-costing.test.mjs` | Unit tests for the above. No network, no Bifrost, no credentials. Runs under `make test-harness-runner-lib`. |
+
+### Running
+
+```bash
+# What each case covers. No network.
+make list-video-costing-cases
+
+# Everything, against a local Bifrost.
+make run-video-costing-test
+
+# One provider group, against hosted Bifrost with a virtual key.
+make run-video-costing-test ARGS="--group Runware --base-url https://<host> --vk sk-bf-..."
+
+# Print what would run without spending money on generations.
+make run-video-costing-test ARGS="--dry-run"
+```
+
+Exit code is 1 if any case fails, so it drops into CI unchanged once the rates are filled in.
+
+### Flags
+
+| Flag | Meaning |
+|------|---------|
+| `--base-url` | Target Bifrost. Defaults to `http://localhost:8080`. |
+| `--vk` | Virtual key for the inference calls. Required against hosted. |
+| `--api-key` | Management API key, sent as `x-bf-api-key`, for reading `/api/logs`. |
+| `--header "X-Foo: bar"` | Extra headers on every call; comma-separate for several. |
+| `--group` / `--provider` / `--case` | Run a subset. |
+| `--concurrency` | Cases in flight at once (default 3). Every case is a real paid generation. |
+| `--seed-pricing` | Write each case's expected rate as a global pricing override before running. |
+| `--include-optional` | Also run cases marked `optional` (they depend on provoking a provider failure). |
+| `--config-db-url` | Postgres URL for the configstore, which unlocks the job-row checks. |
+| `--dry-run` / `--list` | Show what would run, and stop. |
+| `--out` | Report path. Defaults to `newman-reports/video-costing-report.json`. |
+
+### Why `--seed-pricing` exists
+
+The resolution-band pricing keys (`output_cost_per_video_per_second_{480p,720p,1024p,1080p,4k}`) are
+wired in Bifrost but **not yet published to the upstream datasheet feed**. Without a rate, every
+banded case settles *unpriceable* (cost `NULL`) and proves nothing. `--seed-pricing` writes each
+case's own expected rate as a global pricing override first, so the run measures Bifrost's band
+selection and arithmetic rather than the feed's contents. Drop the flag once the feed publishes them.
+
+### Cases marked `needs_rate`
+
+Runway and Replicate cases ship with `rate_per_second: null` and are reported as **skipped**, not
+passed. Their official rates have not been sourced from provider docs yet (Runway prices in credits,
+Replicate ids are version-pinned), and a made-up number in a billing test is worse than no test. Fill
+in `expect.cost.rate_per_second` and delete `needs_rate` to activate them.
+
+### Reading a failure
+
+Each case reports independent checks, so the report names the property that broke rather than one
+opaque boolean:
+
+```
+OpenAI
+  ✘ sora-2-pro at 1080p (3 of 3 rates) $2.4
+      cost: billed $2.4, wanted $5.6 (0.7/s x 8s x 1)
+```
+
+The checks, in the order they run: `submitted`, `terminal`, `expected-status`, `one-settlement-row`,
+`seconds`, `size`, `output-count`, `band`, `incomplete-flag`, `priced`, `cost`, plus
+`settlement-path-parity` and `job-params.*` where a case asks for them.
+
+Two are worth calling out:
+
+- **`one-settlement-row`** fails on 0 *or* 2+. Two rows means the deterministic-id idempotency key
+  broke, which would double-bill and double-report to governance — a different bug from a wrong rate.
+- **`seconds` / `size`** are asserted separately from `cost` so a bad dimension merge (provider
+  returned 5s for a requested 4s and we priced the request) fails on its own check instead of
+  silently moving the cost target.
+
+### Notes on specific cases
+
+- **`settle_via: "sweeper"`** deliberately does not poll. Calling retrieve settles the job inline, so
+  polling would make the sweeper path untestable. That case waits for the row to appear on its own,
+  and `compare_cost_with` cross-checks that both paths bill the identical figure.
+- **`runway-retrieve-404-stops-polling`** asserts on *latency*, not just the status code — an
+  internally retried 404 blows through the `expect_fast_ms` ceiling.
+- **`runway-seedance25-input-seconds`** is expected to fail on price even once its rate is filled in.
+  Runway bills seedance for input seconds *plus* output seconds and Bifrost has an output-only
+  per-second model, so video-to-video under-bills. Run it to measure the gap.
+- **`expect_job_params`** (the Gemini cases) needs `--config-db-url`; without it those checks report
+  as skipped rather than failing, so every other check still works against hosted Bifrost.

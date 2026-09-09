@@ -4,16 +4,19 @@ import {
 	useGetLogsLatencyHistogramQuery,
 	useGetLogsModelHistogramQuery,
 	useGetLogsStatsQuery,
+	useGetLogsThroughputHistogramQuery,
 	useGetLogsTokenHistogramQuery,
 	useLazyGetLogsCostHistogramQuery,
 	useLazyGetLogsHistogramQuery,
 	useLazyGetLogsLatencyHistogramQuery,
 	useLazyGetLogsModelHistogramQuery,
 	useLazyGetLogsStatsQuery,
+	useLazyGetLogsThroughputHistogramQuery,
 	useLazyGetLogsTokenHistogramQuery,
 } from "@/lib/store";
 import type { LogFilters } from "@/lib/types/logs";
 import { forwardRef, useCallback, useImperativeHandle, useMemo } from "react";
+import { computeDisplaySeries } from "../../utils/chartUtils";
 import type { DashboardData } from "../../utils/exportUtils";
 import type { ChartType } from "../charts/chartTypeToggle";
 import { OverviewTab } from "../overviewTab";
@@ -39,6 +42,8 @@ interface OverviewTabViewProps {
 	costChartType: ChartType;
 	modelChartType: ChartType;
 	latencyChartType: ChartType;
+	overheadChartType: ChartType;
+	throughputChartType: ChartType;
 	costModel: string;
 	usageModel: string;
 	onVolumeChartToggle: (type: ChartType) => void;
@@ -46,6 +51,8 @@ interface OverviewTabViewProps {
 	onCostChartToggle: (type: ChartType) => void;
 	onModelChartToggle: (type: ChartType) => void;
 	onLatencyChartToggle: (type: ChartType) => void;
+	onOverheadChartToggle: (type: ChartType) => void;
+	onThroughputChartToggle: (type: ChartType) => void;
 	onCostModelChange: (model: string) => void;
 	onUsageModelChange: (model: string) => void;
 }
@@ -61,6 +68,8 @@ export const OverviewTabView = forwardRef<OverviewTabViewHandle, OverviewTabView
 		costChartType,
 		modelChartType,
 		latencyChartType,
+		overheadChartType,
+		throughputChartType,
 		costModel,
 		usageModel,
 		onVolumeChartToggle,
@@ -68,6 +77,8 @@ export const OverviewTabView = forwardRef<OverviewTabViewHandle, OverviewTabView
 		onCostChartToggle,
 		onModelChartToggle,
 		onLatencyChartToggle,
+		onOverheadChartToggle,
+		onThroughputChartToggle,
 		onCostModelChange,
 		onUsageModelChange,
 	},
@@ -81,6 +92,7 @@ export const OverviewTabView = forwardRef<OverviewTabViewHandle, OverviewTabView
 	const { data: costData, isLoading: loadingCost } = useGetLogsCostHistogramQuery(fetchArg, skipOpts);
 	const { data: modelData, isLoading: loadingModels } = useGetLogsModelHistogramQuery(fetchArg, skipOpts);
 	const { data: latencyData, isLoading: loadingLatency } = useGetLogsLatencyHistogramQuery(fetchArg, skipOpts);
+	const { data: throughputData, isLoading: loadingThroughput } = useGetLogsThroughputHistogramQuery(fetchArg, skipOpts);
 	const { data: logsStats, isLoading: loadingStats } = useGetLogsStatsQuery(fetchArg, skipOpts);
 
 	const [triggerHistogram] = useLazyGetLogsHistogramQuery();
@@ -88,6 +100,7 @@ export const OverviewTabView = forwardRef<OverviewTabViewHandle, OverviewTabView
 	const [triggerCost] = useLazyGetLogsCostHistogramQuery();
 	const [triggerModels] = useLazyGetLogsModelHistogramQuery();
 	const [triggerLatency] = useLazyGetLogsLatencyHistogramQuery();
+	const [triggerThroughput] = useLazyGetLogsThroughputHistogramQuery();
 	const [triggerStats] = useLazyGetLogsStatsQuery();
 
 	const loadData = useCallback(async () => {
@@ -97,9 +110,10 @@ export const OverviewTabView = forwardRef<OverviewTabViewHandle, OverviewTabView
 			triggerCost(fetchArg, true),
 			triggerModels(fetchArg, true),
 			triggerLatency(fetchArg, true),
+			triggerThroughput(fetchArg, true),
 			triggerStats(fetchArg, true),
 		]);
-	}, [fetchArg, triggerHistogram, triggerTokens, triggerCost, triggerModels, triggerLatency, triggerStats]);
+	}, [fetchArg, triggerHistogram, triggerTokens, triggerCost, triggerModels, triggerLatency, triggerThroughput, triggerStats]);
 
 	useImperativeHandle(
 		ref,
@@ -116,8 +130,13 @@ export const OverviewTabView = forwardRef<OverviewTabViewHandle, OverviewTabView
 		[histogramData, tokenData, costData, modelData, latencyData, loadData],
 	);
 
-	const costModels = useMemo(() => sanitizeSeriesLabels(costData?.models), [costData?.models]);
-	const usageModels = useMemo(() => sanitizeSeriesLabels(modelData?.models), [modelData?.models]);
+	// Legend lists mirror the charts' display order (top-N by volume + "Other"),
+	// not the API's alphabetical order — index-based colors must match the bars.
+	const costModels = useMemo(() => computeDisplaySeries(costData?.buckets, costData?.models, (b, m) => b.by_model?.[m] ?? 0), [costData]);
+	const usageModels = useMemo(
+		() => computeDisplaySeries(modelData?.buckets, modelData?.models, (b, m) => b.by_model?.[m]?.total ?? 0),
+		[modelData],
+	);
 	const availableModels = useMemo(
 		() => sanitizeSeriesLabels([...(costData?.models ?? []), ...(modelData?.models ?? [])]),
 		[costData?.models, modelData?.models],
@@ -130,12 +149,14 @@ export const OverviewTabView = forwardRef<OverviewTabViewHandle, OverviewTabView
 			costData={costData ?? null}
 			modelData={modelData ?? null}
 			latencyData={latencyData ?? null}
+			throughputData={throughputData ?? null}
 			logsStats={logsStats ?? null}
 			loadingHistogram={loadingHistogram}
 			loadingTokens={loadingTokens}
 			loadingCost={loadingCost}
 			loadingModels={loadingModels}
 			loadingLatency={loadingLatency}
+			loadingThroughput={loadingThroughput}
 			loadingStats={loadingStats}
 			startTime={startTime}
 			endTime={endTime}
@@ -144,6 +165,8 @@ export const OverviewTabView = forwardRef<OverviewTabViewHandle, OverviewTabView
 			costChartType={costChartType}
 			modelChartType={modelChartType}
 			latencyChartType={latencyChartType}
+			overheadChartType={overheadChartType}
+			throughputChartType={throughputChartType}
 			costModel={costModel}
 			usageModel={usageModel}
 			costModels={costModels}
@@ -154,6 +177,8 @@ export const OverviewTabView = forwardRef<OverviewTabViewHandle, OverviewTabView
 			onCostChartToggle={onCostChartToggle}
 			onModelChartToggle={onModelChartToggle}
 			onLatencyChartToggle={onLatencyChartToggle}
+			onOverheadChartToggle={onOverheadChartToggle}
+			onThroughputChartToggle={onThroughputChartToggle}
 			onCostModelChange={onCostModelChange}
 			onUsageModelChange={onUsageModelChange}
 		/>

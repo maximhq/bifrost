@@ -3,6 +3,7 @@ package streaming
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -234,6 +235,11 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 	if original.Recipient != nil {
 		copy.Recipient = append(json.RawMessage(nil), original.Recipient...)
 	}
+	// The framework module still compiles against released core versions that
+	// do not expose every Responses API field, so newer fields are copied by name
+	// when a workspace build provides them.
+	copyRawMessageFieldByName(&copy, original, "ToolSearchOutputTools")
+	copyRawMessageFieldByName(&copy, original, "AdditionalTools")
 
 	// Deep copy ResponsesReasoning if present
 	if original.ResponsesReasoning != nil {
@@ -275,6 +281,13 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 			copyArguments := *original.ResponsesToolMessage.Arguments
 			copy.ResponsesToolMessage.Arguments = &copyArguments
 		}
+
+		if original.ResponsesToolMessage.Namespace != nil {
+			copyNamespace := *original.ResponsesToolMessage.Namespace
+			copy.ResponsesToolMessage.Namespace = &copyNamespace
+		}
+
+		copyOptionalStringFieldByName(copy.ResponsesToolMessage, original.ResponsesToolMessage, "Execution")
 
 		if original.ResponsesToolMessage.Error != nil {
 			copyError := *original.ResponsesToolMessage.Error
@@ -474,6 +487,33 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 	return copy
 }
 
+func copyRawMessageFieldByName(dst *schemas.ResponsesMessage, src schemas.ResponsesMessage, fieldName string) {
+	srcField := reflect.ValueOf(src).FieldByName(fieldName)
+	if !srcField.IsValid() || srcField.IsNil() {
+		return
+	}
+	raw, ok := srcField.Interface().(json.RawMessage)
+	if !ok {
+		return
+	}
+	dstField := reflect.ValueOf(dst).Elem().FieldByName(fieldName)
+	if dstField.IsValid() && dstField.CanSet() {
+		dstField.Set(reflect.ValueOf(append(json.RawMessage(nil), raw...)))
+	}
+}
+
+func copyOptionalStringFieldByName(dst *schemas.ResponsesToolMessage, src *schemas.ResponsesToolMessage, fieldName string) {
+	srcField := reflect.ValueOf(src).Elem().FieldByName(fieldName)
+	if !srcField.IsValid() || srcField.IsNil() {
+		return
+	}
+	copyValue := srcField.Elem().String()
+	dstField := reflect.ValueOf(dst).Elem().FieldByName(fieldName)
+	if dstField.IsValid() && dstField.CanSet() {
+		dstField.Set(reflect.ValueOf(&copyValue))
+	}
+}
+
 // deepCopyResponsesMessageContentBlock creates a deep copy of a ResponsesMessageContentBlock
 func deepCopyResponsesMessageContentBlock(original schemas.ResponsesMessageContentBlock) schemas.ResponsesMessageContentBlock {
 	copy := schemas.ResponsesMessageContentBlock{
@@ -627,6 +667,32 @@ func (a *Accumulator) buildCompleteMessageFromResponsesStreamChunks(chunks []*Re
 			// Deep copy to prevent shared pointer mutation when deltas are appended
 			if resp.Item != nil {
 				messages = append(messages, deepCopyResponsesMessage(*resp.Item))
+			}
+
+		case schemas.ResponsesStreamResponseTypeOutputItemDone:
+			// Server-side tool items (web_search_call, code_interpreter_call, image_generation_call)
+			// send their whole payload on this event; output_item.added is a bare shell for them, so
+			// without this the queries, code, and results never reach the accumulated response.
+			// Items whose content streamed as deltas are already complete and their builders own the
+			// message fields, so those take only the final status.
+			if resp.Item != nil && resp.Item.ID != nil {
+				matched := false
+				for i := len(messages) - 1; i >= 0; i-- {
+					if messages[i].ID == nil || *messages[i].ID != *resp.Item.ID {
+						continue
+					}
+					if accums[i] == nil {
+						messages[i] = deepCopyResponsesMessage(*resp.Item)
+					} else if resp.Item.Status != nil {
+						status := *resp.Item.Status
+						messages[i].Status = &status
+					}
+					matched = true
+					break
+				}
+				if !matched {
+					messages = append(messages, deepCopyResponsesMessage(*resp.Item))
+				}
 			}
 
 		case schemas.ResponsesStreamResponseTypeContentPartAdded:
@@ -944,10 +1010,22 @@ func (a *Accumulator) processAccumulatedResponsesStreamingChunks(requestID strin
 		if lastChunk.SemanticCacheDebug != nil {
 			data.CacheDebug = lastChunk.SemanticCacheDebug
 		}
+		if lastChunk.GuardrailDebug != nil {
+			data.GuardrailDebug = lastChunk.GuardrailDebug
+		}
 		if lastChunk.Cost != nil {
 			data.Cost = lastChunk.Cost
 		}
 		data.FinishReason = lastChunk.FinishReason
+	}
+	// The response envelope carrying service_tier can precede a later usage-only
+	// event, so retain the newest non-nil tier across the stream.
+	tierChunkIndex := -1
+	for _, streamChunk := range accumulator.ResponsesStreamChunks {
+		if streamChunk.ServiceTier != nil && streamChunk.ChunkIndex > tierChunkIndex {
+			data.ServiceTier = streamChunk.ServiceTier
+			tierChunkIndex = streamChunk.ChunkIndex
+		}
 	}
 
 	// Accumulate raw response using strings.Builder to avoid O(n^2) string concatenation
@@ -1014,6 +1092,10 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 			result.ResponsesStreamResponse.Response.Usage != nil {
 			chunk.TokenUsage = result.ResponsesStreamResponse.Response.Usage.ToBifrostLLMUsage()
 		}
+		if result.ResponsesStreamResponse.Response != nil &&
+			result.ResponsesStreamResponse.Response.ServiceTier != nil {
+			chunk.ServiceTier = new(schemas.BifrostServiceTier(*result.ResponsesStreamResponse.Response.ServiceTier))
+		}
 		chunk.ChunkIndex = result.ResponsesStreamResponse.ExtraFields.ChunkIndex
 		if isFinalChunk {
 			if a.pricingManager != nil {
@@ -1021,6 +1103,7 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 				chunk.Cost = bifrost.Ptr(cost)
 			}
 			chunk.SemanticCacheDebug = result.GetExtraFields().CacheDebug
+			chunk.GuardrailDebug = result.GetExtraFields().GuardrailDebug
 		}
 	}
 

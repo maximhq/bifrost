@@ -54,7 +54,12 @@ func ToAnthropicResponsesStreamError(bifrostErr *schemas.BifrostError) string {
 	return fmt.Sprintf("event: error\ndata: %s\n\n", jsonData)
 }
 
-func parseAnthropicError(resp *fasthttp.Response) *schemas.BifrostError {
+// ParseAnthropicError parses an error response that follows the Anthropic error envelope
+// ({"type":"error","error":{"type":...,"message":...}}) into a BifrostError. It is exported
+// because providers that front the Anthropic wire format without being Anthropic (for example
+// the Bedrock Mantle native-Anthropic surface, whose errors use this envelope rather than the
+// AWS JSON error shape bedrock-runtime returns) need the same parsing.
+func ParseAnthropicError(resp *fasthttp.Response) *schemas.BifrostError {
 	var errorResp AnthropicError
 	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
 	if errorResp.Error != nil {

@@ -126,6 +126,15 @@
     "provider": "anthropic",
     "base_model": "claude-sonnet-4"
   },
+  "openai.gpt-5.5": {
+    "cache_creation_input_token_cost": 0,
+    "cache_read_input_token_cost": 0,
+    "input_cost_per_token": 5.5e-06,
+    "mode": "responses",
+    "output_cost_per_token": 3.3e-05,
+    "provider": "bedrock",
+    "base_model": "openai.gpt-5.5"
+  },
   "text-embedding-3-small": {
     "input_cost_per_token": 2e-08,
     "input_cost_per_token_batches": 1e-08,
@@ -137,5 +146,12 @@
     "output_vector_size": 1536,
     "provider": "openai",
     "base_model": "text-embedding-3-small"
+  },
+  "sora-2-pro": {
+    "provider": "openai",
+    "mode": "video_generation",
+    "output_cost_per_video_per_second": 0.3,
+    "output_cost_per_video_per_second_720p": 0.3,
+    "output_cost_per_video_per_second_1024p": 0.5
   }
 }

@@ -9,6 +9,12 @@ function inferType(ref: string | undefined): SecretVar["type"] | undefined {
 
 export const emptySecretVar = (): SecretVar => ({ value: "", ref: "" });
 
+// trimSecretVar strips stray whitespace from a SecretVar form value's literal value and reference.
+export const trimSecretVar = <T extends { value?: string; ref?: string } | undefined>(field: T): T => {
+	if (!field) return field;
+	return { ...field, value: field.value?.trim(), ref: field.ref?.trim() };
+};
+
 export const toSecretVarFormValue = (field?: SecretVar | string): SecretVar => {
 	if (!field) return emptySecretVar();
 	if (typeof field === "string") {

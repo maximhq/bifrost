@@ -10,7 +10,7 @@ const projects: NonNullable<PlaywrightTestConfig['projects']> = [
     name: 'chromium',
     testDir: './features',
     use: { ...devices['Desktop Chrome'] },
-    testIgnore: ['**/config/**', '**/plugins/**', '**/virtual-keys/**', '**/mcp-registry/**', '**/model-limits/**', '**/providers/**'],
+    testIgnore: ['**/config/**', '**/mobile/**', '**/plugins/**', '**/virtual-keys/**', '**/mcp-registry/**', '**/model-limits/**', '**/providers/**'],
   },
   {
     name: 'chromium-serial',
@@ -25,6 +25,12 @@ const projects: NonNullable<PlaywrightTestConfig['projects']> = [
     use: { ...devices['Desktop Chrome'] },
     testMatch: ['**/config/**/*.spec.ts'],
     dependencies: ['chromium', 'chromium-serial'],
+  },
+  {
+    name: 'mobile-chrome',
+    testDir: './features',
+    use: { ...devices['Pixel 7'] },
+    testMatch: ['**/mobile/**/*.spec.ts'],
   },
 ]
 

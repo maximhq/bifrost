@@ -1,5 +1,6 @@
+import { clearAutoReloadGuard, getSkewMode, installVersionSkewListeners, subscribeSkew } from "@/lib/utils/versionSkew";
 import { RouterProvider, createRouter, parseSearchWith, stringifySearchWith } from "@tanstack/react-router";
-import { StrictMode } from "react";
+import { StrictMode, useEffect, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 
 // Tailwind + global styles (also declares @font-face for local Geist fonts).
@@ -7,7 +8,10 @@ import "@/app/globals.css";
 
 import { ErrorComponent } from "./__error";
 import { NotFoundComponent } from "./__notFound";
+import { UpdatingBanner, UpdatingScreen } from "./__updating";
 import { routeTree } from "./routeTree.gen";
+
+installVersionSkewListeners();
 
 // Only JSON.parse structured values (objects/arrays). Plain strings and numbers
 // stay as-is so large numeric IDs don't lose precision through Number coercion.
@@ -51,11 +55,39 @@ declare module "@tanstack/react-router" {
 	}
 }
 
+const HEALTHY_UPTIME_MS = 30_000;
+
+function Root() {
+	const skewMode = useSyncExternalStore(subscribeSkew, getSkewMode, getSkewMode);
+
+	useEffect(() => {
+		if (skewMode !== "none") return;
+		const timer = setTimeout(clearAutoReloadGuard, HEALTHY_UPTIME_MS);
+		return () => clearTimeout(timer);
+	}, [skewMode]);
+
+	if (skewMode === "hard") return <UpdatingScreen />;
+
+	return (
+		<>
+			<RouterProvider router={router} />
+			{skewMode === "soft" && <UpdatingBanner />}
+		</>
+	);
+}
+
+declare global {
+	interface Window {
+		__bifrostBooted?: boolean;
+	}
+}
+window.__bifrostBooted = true;
+
 const rootEl = document.getElementById("root");
 if (!rootEl) throw new Error("Root element #root not found");
 
 createRoot(rootEl).render(
 	<StrictMode>
-		<RouterProvider router={router} />
+		<Root />
 	</StrictMode>,
 );

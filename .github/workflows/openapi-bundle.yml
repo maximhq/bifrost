@@ -40,8 +40,12 @@ jobs:
           git config user.name "GitHub Actions Bot"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+      # Hash-pinned rather than a bare `pip install pyyaml`: this job holds
+      # contents: write and pushes a commit, so an unverified install here runs
+      # attacker-controlled code with push access. Shares the pin file with
+      # workflow-lint.yml.
       - name: Install dependencies
-        run: pip install pyyaml
+        run: pip install --require-hashes -r .github/workflows/requirements/pyyaml.txt
 
       - name: Bundle OpenAPI spec
         working-directory: ./docs/openapi

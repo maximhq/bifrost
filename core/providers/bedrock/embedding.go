@@ -37,7 +37,7 @@ func ToBedrockTitanEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest)
 	}
 
 	// Validate that only single text input is provided for Titan models
-	if bifrostReq.Input.Text == nil && len(bifrostReq.Input.Texts) == 0 {
+	if bifrostReq.Input == nil || (bifrostReq.Input.Text == nil && len(bifrostReq.Input.Texts) == 0) {
 		return nil, fmt.Errorf("no input text provided for embedding")
 	}
 
@@ -61,11 +61,20 @@ func ToBedrockTitanEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest)
 				titanReq.Normalize = &b
 			}
 		}
-		// Forward remaining extra params (excluding normalize which is now a first-class field)
+		embeddingTypesExtracted := false
+		if rawEmbeddingTypes, exists := bifrostReq.Params.ExtraParams["embeddingTypes"]; exists {
+			if embeddingTypes, ok := schemas.SafeExtractStringSlice(rawEmbeddingTypes); ok {
+				titanReq.EmbeddingTypes = embeddingTypes
+				embeddingTypesExtracted = true
+			}
+		}
+		// Forward remaining extra params. Keep an invalid embeddingTypes value in
+		// ExtraParams so passthrough mode preserves the caller's request and lets
+		// Bedrock return its native validation error instead of silently dropping it.
 		if len(bifrostReq.Params.ExtraParams) > 0 {
 			extra := make(map[string]interface{})
 			for k, v := range bifrostReq.Params.ExtraParams {
-				if k != "normalize" {
+				if k != "normalize" && !(k == "embeddingTypes" && embeddingTypesExtracted) {
 					extra[k] = v
 				}
 			}
@@ -86,19 +95,47 @@ func (response *BedrockTitanEmbeddingResponse) ToBifrostEmbeddingResponse() *sch
 
 	bifrostResponse := &schemas.BifrostEmbeddingResponse{
 		Object: "list",
-		Data: []schemas.EmbeddingData{
-			{
-				Index:  0,
-				Object: "embedding",
-				Embedding: schemas.EmbeddingStruct{
-					EmbeddingArray: response.Embedding,
-				},
-			},
-		},
 		Usage: &schemas.BifrostLLMUsage{
 			PromptTokens: response.InputTextTokenCount,
 			TotalTokens:  response.InputTextTokenCount,
 		},
+	}
+
+	// Titan V2 always returns embeddingsByType, carrying float alone for an ordinary
+	// request. Only a genuinely multi-representation response is labelled, so the
+	// common case keeps the exact shape it had before embeddingTypes was supported.
+	if response.EmbeddingsByType != nil && response.EmbeddingsByType.Binary != nil {
+		if response.EmbeddingsByType.Float != nil {
+			bifrostResponse.Data = append(bifrostResponse.Data, schemas.EmbeddingData{
+				Index:          0,
+				Object:         "embedding",
+				Embedding:      schemas.EmbeddingStruct{EmbeddingArray: response.EmbeddingsByType.Float},
+				EncodingFormat: schemas.EmbeddingEncodingFloat,
+			})
+		}
+		if response.EmbeddingsByType.Binary != nil {
+			bifrostResponse.Data = append(bifrostResponse.Data, schemas.EmbeddingData{
+				Index:          0,
+				Object:         "embedding",
+				Embedding:      schemas.EmbeddingStruct{EmbeddingInt8Array: response.EmbeddingsByType.Binary},
+				EncodingFormat: schemas.EmbeddingEncodingBinary,
+			})
+		}
+	}
+
+	// The ordinary single-vector response, left unlabelled so it serializes exactly
+	// as before. Titan G1 only sets the top-level field; V2 repeats it under
+	// embeddingsByType.float, which is the fallback when the top level is absent.
+	if len(bifrostResponse.Data) == 0 {
+		values := response.Embedding
+		if values == nil && response.EmbeddingsByType != nil {
+			values = response.EmbeddingsByType.Float
+		}
+		bifrostResponse.Data = []schemas.EmbeddingData{{
+			Index:     0,
+			Object:    "embedding",
+			Embedding: schemas.EmbeddingStruct{EmbeddingArray: values},
+		}}
 	}
 
 	return bifrostResponse
@@ -142,7 +179,7 @@ func ToBedrockCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest
 			}
 		}
 		if v, ok := extra["embedding_types"]; ok {
-			if ss, ok := v.([]string); ok {
+			if ss, ok := schemas.SafeExtractStringSlice(v); ok {
 				req.EmbeddingTypes = ss
 				delete(extra, "embedding_types")
 			}
@@ -178,6 +215,14 @@ func ToBedrockCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest
 		}
 	}
 
+	// AWS requires input_type and defines no default, so an absent value would be
+	// serialized as "" and rejected. SDKs that target Titan's single-field shape
+	// (LangChain's BedrockEmbeddings) never send it; both LangChain Python clients
+	// pick search_document client-side for exactly this case, so match them.
+	if req.InputType == "" {
+		req.InputType = BedrockCohereInputTypeSearchDocument
+	}
+
 	return req, nil
 }
 
@@ -211,66 +256,63 @@ func (r *BedrockCohereEmbeddingResponse) ToBifrostEmbeddingResponse() (*schemas.
 	switch r.ResponseType {
 	case "embeddings_by_type":
 		// Object form: {"float": [[...]], "int8": [[...]], "uint8": [[...]], "binary": [[...]], "ubinary": [[...]], "base64": [...]}
-		var typed struct {
-			Float   [][]float32 `json:"float"`
-			Base64  []string    `json:"base64"`
-			Int8    [][]int8    `json:"int8"`
-			Uint8   [][]int32   `json:"uint8"` // int32 avoids []byte→base64 JSON issue
-			Binary  [][]int8    `json:"binary"`
-			Ubinary [][]int32   `json:"ubinary"` // int32 avoids []byte→base64 JSON issue
-		}
+		// Each entry is labelled with the encoding it arrived as, since int8/binary and
+		// uint8/ubinary decode into the same EmbeddingStruct field.
+		var typed BedrockCohereEmbeddingsByType
 		if err := json.Unmarshal(r.Embeddings, &typed); err != nil {
 			return nil, fmt.Errorf("error parsing embeddings_by_type: %w", err)
 		}
-		if typed.Float != nil {
-			for i, emb := range typed.Float {
-				float64Emb := make([]float64, len(emb))
-				for j, v := range emb {
-					float64Emb[j] = float64(v)
-				}
-				bifrostResponse.Data = append(bifrostResponse.Data, schemas.EmbeddingData{
-					Object:    "embedding",
-					Index:     i,
-					Embedding: schemas.EmbeddingStruct{EmbeddingArray: float64Emb},
-				})
+		for i, emb := range typed.Float {
+			float64Emb := make([]float64, len(emb))
+			for j, v := range emb {
+				float64Emb[j] = float64(v)
 			}
+			bifrostResponse.Data = append(bifrostResponse.Data, schemas.EmbeddingData{
+				Object:         "embedding",
+				Index:          i,
+				Embedding:      schemas.EmbeddingStruct{EmbeddingArray: float64Emb},
+				EncodingFormat: schemas.EmbeddingEncodingFloat,
+			})
 		}
-		if typed.Base64 != nil {
-			for i, emb := range typed.Base64 {
-				e := emb
-				bifrostResponse.Data = append(bifrostResponse.Data, schemas.EmbeddingData{
-					Object:    "embedding",
-					Index:     i,
-					Embedding: schemas.EmbeddingStruct{EmbeddingStr: &e},
-				})
-			}
+		for i, emb := range typed.Base64 {
+			e := emb
+			bifrostResponse.Data = append(bifrostResponse.Data, schemas.EmbeddingData{
+				Object:         "embedding",
+				Index:          i,
+				Embedding:      schemas.EmbeddingStruct{EmbeddingStr: &e},
+				EncodingFormat: schemas.EmbeddingEncodingBase64,
+			})
 		}
 		for i, emb := range typed.Int8 {
 			bifrostResponse.Data = append(bifrostResponse.Data, schemas.EmbeddingData{
-				Object:    "embedding",
-				Index:     i,
-				Embedding: schemas.EmbeddingStruct{EmbeddingInt8Array: emb},
+				Object:         "embedding",
+				Index:          i,
+				Embedding:      schemas.EmbeddingStruct{EmbeddingInt8Array: emb},
+				EncodingFormat: schemas.EmbeddingEncodingInt8,
 			})
 		}
 		for i, emb := range typed.Binary {
 			bifrostResponse.Data = append(bifrostResponse.Data, schemas.EmbeddingData{
-				Object:    "embedding",
-				Index:     i,
-				Embedding: schemas.EmbeddingStruct{EmbeddingInt8Array: emb},
+				Object:         "embedding",
+				Index:          i,
+				Embedding:      schemas.EmbeddingStruct{EmbeddingInt8Array: emb},
+				EncodingFormat: schemas.EmbeddingEncodingBinary,
 			})
 		}
 		for i, emb := range typed.Uint8 {
 			bifrostResponse.Data = append(bifrostResponse.Data, schemas.EmbeddingData{
-				Object:    "embedding",
-				Index:     i,
-				Embedding: schemas.EmbeddingStruct{EmbeddingInt32Array: emb},
+				Object:         "embedding",
+				Index:          i,
+				Embedding:      schemas.EmbeddingStruct{EmbeddingInt32Array: emb},
+				EncodingFormat: schemas.EmbeddingEncodingUint8,
 			})
 		}
 		for i, emb := range typed.Ubinary {
 			bifrostResponse.Data = append(bifrostResponse.Data, schemas.EmbeddingData{
-				Object:    "embedding",
-				Index:     i,
-				Embedding: schemas.EmbeddingStruct{EmbeddingInt32Array: emb},
+				Object:         "embedding",
+				Index:          i,
+				Embedding:      schemas.EmbeddingStruct{EmbeddingInt32Array: emb},
+				EncodingFormat: schemas.EmbeddingEncodingUbinary,
 			})
 		}
 

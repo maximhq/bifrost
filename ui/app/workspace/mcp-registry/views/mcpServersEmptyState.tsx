@@ -17,7 +17,7 @@ export function MCPServersEmptyState({ onAddClick, canCreate = true }: MCPServer
 			</div>
 			<div className="flex flex-col gap-1">
 				<h1 className="text-muted-foreground text-xl font-medium">MCP servers connect tools and context to the gateway</h1>
-				<div className="text-muted-foreground mx-auto mt-2 max-w-[600px] text-sm font-normal">
+				<div className="text-muted-foreground mx-auto mt-2 w-full max-w-[600px] text-sm font-normal">
 					Add MCP servers to expose tools and resources to the MCP Tools endpoint. Configure connection type, auth, and which tools to
 					enable.
 				</div>

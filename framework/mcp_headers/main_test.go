@@ -28,13 +28,39 @@ type testConfigStore struct {
 	clientConfig *configstore.ClientConfig
 	headerFlows  map[string]*tables.TableMCPPerUserHeaderFlow
 	tempTokens   map[string]*tables.TempToken
+
+	// credentials backs GetMCPPerUserHeaderCredentialByMode, keyed by
+	// mcp_client_id alone (deliberately ignoring mode/identity matching) so
+	// GetCredentialByMode's own guard — not incidental store-side filtering —
+	// is what's under test. credentialLookupCalls counts invocations so a
+	// test can assert the guard short-circuited before ever reaching the
+	// store.
+	credentials           map[string]*tables.TableMCPPerUserHeaderCredential
+	credentialLookupCalls int
 }
 
 func newTestConfigStore() *testConfigStore {
 	return &testConfigStore{
 		headerFlows: make(map[string]*tables.TableMCPPerUserHeaderFlow),
 		tempTokens:  make(map[string]*tables.TempToken),
+		credentials: make(map[string]*tables.TableMCPPerUserHeaderCredential),
 	}
+}
+
+// GetMCPPerUserHeaderCredentialByMode is the test-double equivalent of the
+// real store's method of the same name. Unlike the real implementation, it
+// matches on mcp_client_id alone regardless of mode/identity — the point of
+// this double is to prove GetCredentialByMode's own identity guard (not
+// store-side row absence) decides whether a lookup is attempted at all.
+func (s *testConfigStore) GetMCPPerUserHeaderCredentialByMode(_ context.Context, _ schemas.MCPAuthMode, _, mcpClientID string) (*tables.TableMCPPerUserHeaderCredential, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.credentialLookupCalls++
+	row, ok := s.credentials[mcpClientID]
+	if !ok {
+		return nil, nil
+	}
+	return bifrost.Ptr(*row), nil
 }
 
 func (s *testConfigStore) GetClientConfig(_ context.Context) (*configstore.ClientConfig, error) {

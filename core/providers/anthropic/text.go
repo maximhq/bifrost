@@ -24,7 +24,7 @@ func ToAnthropicTextCompletionRequest(bifrostReq *schemas.BifrostTextCompletionR
 	anthropicReq := &AnthropicTextRequest{
 		Model:             bifrostReq.Model,
 		Prompt:            fmt.Sprintf("\n\nHuman: %s\n\nAssistant:", prompt),
-		MaxTokensToSample: providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Model, AnthropicDefaultMaxTokens),
+		MaxTokensToSample: providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Provider, bifrostReq.Model, AnthropicDefaultMaxTokens),
 	}
 
 	// Convert parameters

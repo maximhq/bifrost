@@ -1,6 +1,7 @@
 package schemas
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -124,10 +125,61 @@ type EmbeddingParameters struct {
 	ExtraParams map[string]interface{} `json:"-"`
 }
 
+// Encoding names for the representations a provider can return for one input.
+const (
+	EmbeddingEncodingFloat   = "float"
+	EmbeddingEncodingInt8    = "int8"
+	EmbeddingEncodingUint8   = "uint8"
+	EmbeddingEncodingBinary  = "binary"
+	EmbeddingEncodingUbinary = "ubinary"
+	EmbeddingEncodingBase64  = "base64"
+)
+
 type EmbeddingData struct {
 	Index     int             `json:"index"`
 	Object    string          `json:"object"`    // "embedding"
 	Embedding EmbeddingStruct `json:"embedding"` // can be string, []float64, [][]float64, []int8, or []int32
+	// EncodingFormat names the representation this vector was returned as when a
+	// provider emits several for one input; int8/binary and uint8/ubinary are
+	// otherwise indistinguishable once decoded into EmbeddingStruct.
+	EncodingFormat string `json:"encoding_format,omitempty"`
+}
+
+// UnmarshalJSON routes the vector by its declared encoding. EmbeddingStruct decodes a
+// JSON number array as []float64 on the first attempt, so without this an int8 or
+// int32 representation would come back as floats — losing the distinction on any
+// path that stores the response as JSON and reads it back, such as a cache hit.
+func (d *EmbeddingData) UnmarshalJSON(data []byte) error {
+	// alias suppresses this method to avoid infinite recursion; the outer
+	// Embedding (json.RawMessage) shadows alias.Embedding so the vector is held
+	// undecoded until the encoding is known.
+	type alias EmbeddingData
+	aux := &struct {
+		*alias
+		Embedding json.RawMessage `json:"embedding"`
+	}{alias: (*alias)(d)}
+	if err := Unmarshal(data, aux); err != nil {
+		return err
+	}
+	if len(aux.Embedding) == 0 {
+		return nil
+	}
+
+	switch d.EncodingFormat {
+	case EmbeddingEncodingInt8, EmbeddingEncodingBinary:
+		var values []int8
+		if err := Unmarshal(aux.Embedding, &values); err == nil {
+			d.Embedding = EmbeddingStruct{EmbeddingInt8Array: values}
+			return nil
+		}
+	case EmbeddingEncodingUint8, EmbeddingEncodingUbinary:
+		var values []int32
+		if err := Unmarshal(aux.Embedding, &values); err == nil {
+			d.Embedding = EmbeddingStruct{EmbeddingInt32Array: values}
+			return nil
+		}
+	}
+	return d.Embedding.UnmarshalJSON(aux.Embedding)
 }
 
 type EmbeddingStruct struct {

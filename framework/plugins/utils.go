@@ -2,78 +2,87 @@ package plugins
 
 import (
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"time"
 
-	"github.com/valyala/fasthttp"
+	"github.com/maximhq/bifrost/core/network"
 )
 
 var (
 	ErrPluginNotFound = fmt.Errorf("plugin not found")
 )
 
-// pluginDownloadClient is a fasthttp client with a larger read buffer to handle
-// responses with large headers.
-var pluginDownloadClient = &fasthttp.Client{
-	ReadBufferSize: 64 * 1024, // 64KB, matches the bifrost HTTP server setting
+// maxPluginDownloadBytes bounds how much a plugin download response body can be, so a
+// malicious or misbehaving server can't exhaust memory with an unbounded response. Sized
+// generously above typical -buildmode=plugin .so sizes (which bundle their dependencies).
+const maxPluginDownloadBytes int64 = 200 * 1024 * 1024
+
+// NewPluginDownloadClient builds the SSRF-hardened HTTP client used to download plugin
+// binaries, the same way as core/providers/utils.FetchAndEncodeURL: only http/https schemes
+// are accepted, and the dialer rejects connections to loopback, private, CGNAT, link-local,
+// and unspecified addresses (including IPv4 targets smuggled inside IPv6 transition
+// addresses). The IP check runs at dial time, not just at lookup time, so DNS rebinding does
+// not bypass it. Redirect targets get the same treatment.
+//
+// allow is an optional operator-configured allowlist of internal hosts/CIDRs permitted to
+// bypass the default private-network block (see ServerConfig.PluginDownloadPrivateAllowlist);
+// pass nil for the fully locked-down default.
+func NewPluginDownloadClient(allow *network.Allowlist) *http.Client {
+	return &http.Client{
+		Timeout: 120 * time.Second,
+		Transport: &http.Transport{
+			DialContext: network.SSRFSafeDialContextWithAllowlist(10*time.Second, allow),
+		},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
+				return fmt.Errorf("blocked redirect to unsupported scheme %q", req.URL.Scheme)
+			}
+			if len(via) >= 5 {
+				return fmt.Errorf("too many redirects downloading plugin")
+			}
+			return nil
+		},
+	}
 }
 
-// DownloadPlugin downloads a plugin from a URL and returns the local file path
-func DownloadPlugin(pluginURL string, extension string) (string, error) {
-	req := fasthttp.AcquireRequest()
-	defer fasthttp.ReleaseRequest(req)
-	response := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseResponse(response)
-
-	req.Header.SetMethod(fasthttp.MethodGet)
-	req.Header.Set("Accept", "application/octet-stream")
-	req.Header.Set("Accept-Encoding", "gzip")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-
-	const maxRedirects = 5
-	currentURL := pluginURL
-	for i := 0; i <= maxRedirects; i++ {
-		req.SetRequestURI(currentURL)
-		if i > 0 {
-			response.Reset()
-		}
-
-		if err := pluginDownloadClient.DoTimeout(req, response, 120*time.Second); err != nil {
-			return "", err
-		}
-
-		statusCode := response.StatusCode()
-		if statusCode == fasthttp.StatusOK {
-			break
-		}
-		if statusCode >= 300 && statusCode < 400 {
-			if i == maxRedirects {
-				return "", fmt.Errorf("too many redirects downloading plugin")
-			}
-			location := string(response.Header.Peek("Location"))
-			if location == "" {
-				return "", fmt.Errorf("redirect response missing Location header: HTTP %d", statusCode)
-			}
-			loc, err := url.Parse(location)
-			if err != nil {
-				return "", fmt.Errorf("invalid Location header %q: %w", location, err)
-			}
-			base, err := url.Parse(currentURL)
-			if err != nil {
-				return "", fmt.Errorf("invalid request URL %q: %w", currentURL, err)
-			}
-			currentURL = base.ResolveReference(loc).String()
-			continue
-		}
-		return "", fmt.Errorf("failed to download plugin: HTTP %d", statusCode)
+// DownloadPlugin downloads a plugin from a URL using client and returns the local file path
+func DownloadPlugin(pluginURL string, extension string, client *http.Client) (string, error) {
+	parsed, err := url.Parse(pluginURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid plugin URL %q: %w", pluginURL, err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", fmt.Errorf("unsupported plugin URL scheme %q (only http/https allowed)", parsed.Scheme)
 	}
 
-	// Decompress the response body if it was gzip/deflate compressed
-	// BodyUncompressed handles both gzip and deflate encodings based on Content-Encoding header
-	body, err := response.BodyUncompressed()
+	req, err := http.NewRequest(http.MethodGet, pluginURL, nil)
 	if err != nil {
-		return "", fmt.Errorf("failed to decompress response body: %w", err)
+		return "", fmt.Errorf("invalid plugin URL %q: %w", pluginURL, err)
+	}
+	req.Header.Set("Accept", "application/octet-stream")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to download plugin: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to download plugin: HTTP %d", resp.StatusCode)
+	}
+
+	// net/http's Transport negotiates and transparently decompresses gzip on our behalf
+	// here (no Accept-Encoding was set above), so body is already decompressed.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxPluginDownloadBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("failed to read plugin body: %w", err)
+	}
+	if int64(len(body)) > maxPluginDownloadBytes {
+		return "", fmt.Errorf("plugin at %q exceeds %d-byte limit", pluginURL, maxPluginDownloadBytes)
 	}
 
 	// Create a unique temporary file for the plugin

@@ -147,6 +147,10 @@ When `disable_content_logging` is `true`, the connector removes all input and ou
 
 This is useful when downstream subscribers should not have access to the actual prompt and completion text for compliance or access-control reasons.
 
+<Note>
+This flag is independent of the global `client.disable_content_logging`, which governs the Bifrost log store only. Set both if content must be suppressed everywhere.
+</Note>
+
 ### Capturing request headers
 
 By default, no request headers are embedded in the trace payload. Set `request_headers` to a list of header name patterns to include:

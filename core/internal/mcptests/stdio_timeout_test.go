@@ -61,7 +61,7 @@ func TestSTDIO_InitTimeout(t *testing.T) {
 	clients := manager.GetClients()
 	connectedClients := 0
 	for _, c := range clients {
-		if c.State != schemas.MCPConnectionStateDisconnected {
+		if c.State != schemas.MCPConnectionStateUnstable {
 			connectedClients++
 		}
 	}

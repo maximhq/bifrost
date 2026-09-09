@@ -7,12 +7,24 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
 	"github.com/valyala/fasthttp"
 )
+
+type testKVSyncDelegate struct {
+	destination *kvstore.Store
+	err         error
+}
+
+func (d *testKVSyncDelegate) OnSet(key string, valueJSON []byte, writtenAt int64, expiresAt int64) {
+	d.err = d.destination.SetRemote(key, valueJSON, writtenAt, expiresAt)
+}
+
+func (d *testKVSyncDelegate) OnDelete(string, int64) {}
 
 type testHandlerStore struct {
 	kv *kvstore.Store
@@ -108,6 +120,30 @@ func TestParseCallsWebRTCRequest_RawSDPKeepsGARoute(t *testing.T) {
 	}
 	if session != nil {
 		t.Fatalf("expected nil session for raw SDP /calls request, got %s", string(session))
+	}
+}
+
+// The relay is the request kept alive, so the turns derived from it must find the grant the
+// request was settled with; governance refuses a turn that carries none.
+func TestNewRealtimeRelayContextCarriesRequestGrant(t *testing.T) {
+	requestCtx, requestCancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer requestCancel()
+	lib.RecordCredential(requestCtx, grant.NewCredential(grant.CredentialVirtualKey, "sk-bf-relay"))
+
+	relayCtx, relayCancel := newRealtimeRelayContext(requestCtx)
+	defer relayCancel()
+
+	if relayCtx.Grant() != requestCtx.Grant() {
+		t.Fatal("relay context should carry the request's grant")
+	}
+	if got := relayCtx.Grant().Identity().Credential(); got.Value != "sk-bf-relay" {
+		t.Fatalf("credential = %+v, want the request's virtual key", got)
+	}
+
+	bare, bareCancel := newRealtimeRelayContext(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+	defer bareCancel()
+	if bare.Grant() != nil {
+		t.Fatal("relay of a request with no grant should carry none")
 	}
 }
 
@@ -211,6 +247,48 @@ func TestLookupRealtimeEphemeralKeyMappingKeepsEntryUntilTTLExpiry(t *testing.T)
 	}
 	if raw == nil {
 		t.Fatal("expected mapping to remain in KV store")
+	}
+}
+
+func TestCacheRealtimeEphemeralKeyMappingPreservesVirtualKeyAcrossKVReplication(t *testing.T) {
+	t.Parallel()
+
+	source, err := kvstore.New(kvstore.Config{})
+	if err != nil {
+		t.Fatalf("kvstore.New() source error = %v", err)
+	}
+	defer source.Close()
+
+	destination, err := kvstore.New(kvstore.Config{})
+	if err != nil {
+		t.Fatalf("kvstore.New() destination error = %v", err)
+	}
+	defer destination.Close()
+
+	delegate := &testKVSyncDelegate{destination: destination}
+	source.SetDelegate(delegate)
+
+	body, err := json.Marshal(map[string]any{
+		"value":      "ek_test_replicated",
+		"expires_at": time.Now().Add(time.Minute).Unix(),
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	cacheRealtimeEphemeralKeyMapping(source, body, "key_123", "sk-bf-test")
+	if delegate.err != nil {
+		t.Fatalf("replicating mapping error = %v", delegate.err)
+	}
+
+	mapping, ok := lookupRealtimeEphemeralKeyMapping(destination, "ek_test_replicated")
+	if !ok {
+		t.Fatal("expected replicated mapping")
+	}
+	if mapping.KeyID != "key_123" {
+		t.Fatalf("mapping.KeyID = %q, want %q", mapping.KeyID, "key_123")
+	}
+	if mapping.VirtualKey != "sk-bf-test" {
+		t.Fatalf("mapping.VirtualKey = %q, want %q", mapping.VirtualKey, "sk-bf-test")
 	}
 }
 

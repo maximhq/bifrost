@@ -240,7 +240,7 @@ func TestExtraHeadersHealthCheckPingReachWire(t *testing.T) {
 
 	// Drive fast health-check pings (the AddClient-owned monitor ticks far too
 	// slowly for a test).
-	monitor := mcp.NewClientHealthMonitor(manager, cfg.ID, 10*time.Millisecond, true, core.NewDefaultLogger(schemas.LogLevelError))
+	monitor := mcp.NewClientConnectionChecker(manager, cfg.ID, 10*time.Millisecond, true, core.NewDefaultLogger(schemas.LogLevelError))
 	monitor.Start()
 	defer monitor.Stop()
 
@@ -267,7 +267,7 @@ func TestExtraHeadersHealthCheckListToolsReachWire(t *testing.T) {
 	require.NoError(t, manager.AddClient(context.Background(), cfg))
 
 	// isPingAvailable=false → health check uses list_tools as the probe.
-	monitor := mcp.NewClientHealthMonitor(manager, cfg.ID, 10*time.Millisecond, false, core.NewDefaultLogger(schemas.LogLevelError))
+	monitor := mcp.NewClientConnectionChecker(manager, cfg.ID, 10*time.Millisecond, false, core.NewDefaultLogger(schemas.LogLevelError))
 	monitor.Start()
 	defer monitor.Stop()
 
@@ -319,7 +319,7 @@ func TestExtraHeadersSSEHealthCheckPingReachWire(t *testing.T) {
 	cfg := sseExtraHeaderConfig("sse_hc_ping", ts.URL)
 	require.NoError(t, manager.AddClient(context.Background(), cfg))
 
-	monitor := mcp.NewClientHealthMonitor(manager, cfg.ID, 10*time.Millisecond, true, core.NewDefaultLogger(schemas.LogLevelError))
+	monitor := mcp.NewClientConnectionChecker(manager, cfg.ID, 10*time.Millisecond, true, core.NewDefaultLogger(schemas.LogLevelError))
 	monitor.Start()
 	defer monitor.Stop()
 
@@ -345,7 +345,7 @@ func TestExtraHeadersSSEHealthCheckListToolsReachWire(t *testing.T) {
 	cfg := sseExtraHeaderConfig("sse_hc_list", ts.URL)
 	require.NoError(t, manager.AddClient(context.Background(), cfg))
 
-	monitor := mcp.NewClientHealthMonitor(manager, cfg.ID, 10*time.Millisecond, false, core.NewDefaultLogger(schemas.LogLevelError))
+	monitor := mcp.NewClientConnectionChecker(manager, cfg.ID, 10*time.Millisecond, false, core.NewDefaultLogger(schemas.LogLevelError))
 	monitor.Start()
 	defer monitor.Stop()
 

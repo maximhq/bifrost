@@ -207,7 +207,7 @@ func TestMultipleSameNameTools_ThreeClients(t *testing.T) {
 	clients := manager.GetClients()
 	activeClients := 0
 	for _, c := range clients {
-		if c.State != schemas.MCPConnectionStateDisconnected {
+		if c.State != schemas.MCPConnectionStateUnstable {
 			activeClients++
 		}
 	}
@@ -314,7 +314,7 @@ func TestToolConflict_OneClientDisconnected(t *testing.T) {
 	clients := manager.GetClients()
 	activeClients := 0
 	for _, c := range clients {
-		if c.State != schemas.MCPConnectionStateDisconnected {
+		if c.State != schemas.MCPConnectionStateUnstable {
 			activeClients++
 		}
 	}

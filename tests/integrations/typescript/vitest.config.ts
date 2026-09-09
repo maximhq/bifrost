@@ -17,11 +17,7 @@ export default defineConfig({
 
     // Run tests sequentially to avoid API rate limiting
     pool: 'forks',
-    poolOptions: {
-      forks: {
-        singleFork: true,
-      },
-    },
+    maxWorkers: 1,
 
     // Reporter configuration
     reporters: ['verbose'],

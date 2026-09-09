@@ -11,6 +11,7 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { useGetRoutingRulesQuery } from "@/lib/store/apis/routingRulesApi";
 import { useNavigate } from "@tanstack/react-router";
 import type { Node, NodeChange } from "@xyflow/react";
@@ -40,6 +41,7 @@ const edgeTypes = { rfChain: RfChainEdge };
 // ─── Main component ────────────────────────────────────────────────────────
 
 export function RoutingTreeView() {
+	const isMobile = useIsMobile();
 	const navigate = useNavigate();
 	const { data, isLoading, isError } = useGetRoutingRulesQuery({ limit: 500 });
 	const rules = data?.rules ?? [];
@@ -342,6 +344,24 @@ export function RoutingTreeView() {
 		});
 	}, [edges, activeHighlightIds, selectedNodeId, selectedEdgeId]);
 
+	if (isMobile) {
+		return (
+			<div className="flex h-full items-center justify-center p-4">
+				<div className="bg-card flex max-w-md flex-col items-center gap-3 rounded-md border p-6 text-center shadow-sm">
+					<GitBranch className="text-muted-foreground size-10" />
+					<div>
+						<h2 className="font-semibold">Routing tree needs a larger screen</h2>
+						<p className="text-muted-foreground mt-1 text-sm">Use the routing rules list to review and modify rules on mobile.</p>
+					</div>
+					<Button onClick={() => navigate({ to: "/workspace/routing-rules" })} data-testid="routing-tree-mobile-list-btn">
+						<ArrowLeft className="size-4" />
+						View routing rules
+					</Button>
+				</div>
+			</div>
+		);
+	}
+
 	if (isLoading) {
 		return (
 			<div className="flex h-full items-center justify-center">
@@ -489,7 +509,7 @@ export function RoutingTreeView() {
 									/>
 								</TooltipTrigger>
 								<TooltipContent side="top" className="max-w-[200px] text-center">
-									Re-entry point is fully proven by static analysis — every condition on the path evaluated to a known value.
+									Re-entry point is fully proven by static analysis; every condition on the path evaluated to a known value.
 								</TooltipContent>
 							</Tooltip>
 						</div>
@@ -524,7 +544,7 @@ export function RoutingTreeView() {
 									/>
 								</TooltipTrigger>
 								<TooltipContent side="top" className="max-w-[200px] text-center">
-									Re-entry point is a conditional — one or more conditions on the path are not fully evaluated at build time.
+									Re-entry point is a conditional; one or more conditions on the path are not fully evaluated at build time.
 								</TooltipContent>
 							</Tooltip>
 						</div>

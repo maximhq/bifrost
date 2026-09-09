@@ -39,7 +39,9 @@ func setupTestDB(t *testing.T) *gorm.DB {
 		&SessionsTable{},
 		&TableOauthConfig{},
 		&TableOauthToken{},
+		&TableMCPOauthFlow{},
 		&TableVectorStoreConfig{},
+		&TableWebhookEndpoint{},
 	)
 	require.NoError(t, err)
 	return db
@@ -167,6 +169,91 @@ func TestTableKey_VertexFieldsEncryptDecrypt(t *testing.T) {
 	assert.Equal(t, "123456789", found.VertexKeyConfig.ProjectNumber.GetValue())
 	assert.Equal(t, "us-central1", found.VertexKeyConfig.Region.GetValue())
 	assert.Equal(t, `{"type":"service_account"}`, found.VertexKeyConfig.AuthCredentials.GetValue())
+}
+
+func TestTableKey_GithubCopilotFieldsEncryptDecrypt(t *testing.T) {
+	db := setupTestDB(t)
+
+	const pemBody = "-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJB\n-----END RSA PRIVATE KEY-----"
+
+	key := &TableKey{
+		Name:       "copilot-key",
+		ProviderID: 1,
+		Provider:   "github-copilot",
+		KeyID:      "copilot-uuid-1",
+		GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{
+			AppID:          *schemas.NewSecretVar("123456"),
+			InstallationID: *schemas.NewSecretVar("87654321"),
+			RepositoryID:   *schemas.NewSecretVar("999000111"),
+			PrivateKey:     *schemas.NewSecretVar(pemBody),
+			GithubDomain:   *schemas.NewSecretVar("acme.ghe.com"),
+		},
+	}
+
+	require.NoError(t, db.Create(key).Error)
+
+	raw := rawRow(t, db, "config_keys", key.ID)
+	assert.Equal(t, "encrypted", raw["encryption_status"])
+	// The private key is the entire credential. It must never sit in the table as plaintext.
+	assert.NotEqual(t, pemBody, raw["github_copilot_private_key"])
+	assert.NotEqual(t, "123456", raw["github_copilot_app_id"])
+	assert.NotEqual(t, "87654321", raw["github_copilot_installation_id"])
+	assert.NotEqual(t, "999000111", raw["github_copilot_repository_id"])
+	assert.NotEqual(t, "acme.ghe.com", raw["github_copilot_github_domain"])
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+	require.NotNil(t, found.GithubCopilotKeyConfig)
+	assert.Equal(t, "123456", found.GithubCopilotKeyConfig.AppID.GetValue())
+	assert.Equal(t, "87654321", found.GithubCopilotKeyConfig.InstallationID.GetValue())
+	assert.Equal(t, "999000111", found.GithubCopilotKeyConfig.RepositoryID.GetValue())
+	assert.Equal(t, pemBody, found.GithubCopilotKeyConfig.PrivateKey.GetValue())
+	assert.Equal(t, "acme.ghe.com", found.GithubCopilotKeyConfig.GithubDomain.GetValue())
+}
+
+func TestTableKey_GithubCopilotOptionalDomainRoundTrips(t *testing.T) {
+	db := setupTestDB(t)
+
+	// github_domain is only set for GitHub Enterprise. The zero value must round-trip as
+	// unset rather than as an empty string that later reads as a configured domain.
+	key := &TableKey{
+		Name:       "copilot-dotcom",
+		ProviderID: 1,
+		Provider:   "github-copilot",
+		KeyID:      "copilot-uuid-2",
+		GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{
+			AppID:          *schemas.NewSecretVar("123456"),
+			InstallationID: *schemas.NewSecretVar("87654321"),
+			RepositoryID:   *schemas.NewSecretVar("999000111"),
+			PrivateKey:     *schemas.NewSecretVar("pem"),
+		},
+	}
+
+	require.NoError(t, db.Create(key).Error)
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+	require.NotNil(t, found.GithubCopilotKeyConfig)
+	assert.Empty(t, found.GithubCopilotKeyConfig.GithubDomain.GetValue())
+}
+
+func TestTableKey_NoGithubCopilotConfig_LeavesNil(t *testing.T) {
+	db := setupTestDB(t)
+
+	key := &TableKey{
+		Name:       "openai-key",
+		ProviderID: 1,
+		Provider:   "openai",
+		KeyID:      "openai-uuid-1",
+		Value:      *schemas.NewSecretVar("sk-test"),
+	}
+
+	require.NoError(t, db.Create(key).Error)
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+	assert.Nil(t, found.GithubCopilotKeyConfig,
+		"a key from another provider must not gain an empty copilot config on read")
 }
 
 func TestTableKey_BedrockFieldsEncryptDecrypt(t *testing.T) {
@@ -367,7 +454,6 @@ func TestTablePlugin_EncryptDecrypt(t *testing.T) {
 	plugin := &TablePlugin{
 		Name:    "test-plugin",
 		Enabled: true,
-		Version: 1,
 		Config:  map[string]any{"api_key": "secret-plugin-key", "endpoint": "https://plugin.example.com"},
 	}
 
@@ -392,7 +478,6 @@ func TestTablePlugin_EmptyConfig_NoEncryption(t *testing.T) {
 	plugin := &TablePlugin{
 		Name:    "empty-plugin",
 		Enabled: true,
-		Version: 1,
 		// nil Config will serialize to "{}"
 	}
 
@@ -502,9 +587,6 @@ func TestTableOauthConfig_EncryptDecrypt(t *testing.T) {
 		ClientID:     schemas.NewSecretVar("client-id-public"),
 		ClientSecret: schemas.NewSecretVar("super-secret-client-secret"),
 		RedirectURI:  "https://example.com/callback",
-		State:        "csrf-state-token",
-		CodeVerifier: "pkce-code-verifier-secret",
-		ExpiresAt:    time.Now().Add(15 * time.Minute),
 	}
 
 	require.NoError(t, db.Create(config).Error)
@@ -512,12 +594,10 @@ func TestTableOauthConfig_EncryptDecrypt(t *testing.T) {
 	raw := rawRow(t, db, "oauth_configs", "oauth-cfg-1")
 	assert.Equal(t, "encrypted", raw["encryption_status"])
 	assert.NotEqual(t, "super-secret-client-secret", raw["client_secret"])
-	assert.NotEqual(t, "pkce-code-verifier-secret", raw["code_verifier"])
 
 	var found TableOauthConfig
 	require.NoError(t, db.First(&found, "id = ?", "oauth-cfg-1").Error)
 	assert.Equal(t, "super-secret-client-secret", found.ClientSecret.GetValue())
-	assert.Equal(t, "pkce-code-verifier-secret", found.CodeVerifier)
 	// Non-sensitive fields should be unchanged
 	assert.Equal(t, "client-id-public", found.ClientID.GetValue())
 	assert.Equal(t, "https://example.com/callback", found.RedirectURI)
@@ -529,8 +609,6 @@ func TestTableOauthConfig_EmptySecret_NoError(t *testing.T) {
 	config := &TableOauthConfig{
 		ID:          "oauth-cfg-empty",
 		RedirectURI: "https://example.com/callback",
-		State:       "csrf-state-2",
-		ExpiresAt:   time.Now().Add(15 * time.Minute),
 	}
 
 	require.NoError(t, db.Create(config).Error)
@@ -538,6 +616,81 @@ func TestTableOauthConfig_EmptySecret_NoError(t *testing.T) {
 	var found TableOauthConfig
 	require.NoError(t, db.First(&found, "id = ?", "oauth-cfg-empty").Error)
 	assert.Equal(t, "", found.ClientSecret.GetValue())
+}
+
+// TestTableOauthConfig_SecretRef_StampsStatus covers a client_secret held as an
+// env/vault reference. There is nothing to cipher, but the row must still leave
+// plain_text: the startup backfill selects on that column, so a row left behind
+// is re-selected and re-written on every boot.
+func TestTableOauthConfig_SecretRef_StampsStatus(t *testing.T) {
+	for _, ref := range []string{"vault.oauth_configs/cfg/client_secret", "env.OAUTH_CLIENT_SECRET"} {
+		t.Run(ref, func(t *testing.T) {
+			db := setupTestDB(t)
+
+			config := &TableOauthConfig{
+				ID:           "oauth-cfg-ref",
+				ClientSecret: schemas.NewSecretVar(ref),
+				RedirectURI:  "https://example.com/callback",
+			}
+			require.NoError(t, db.Create(config).Error)
+
+			raw := rawRow(t, db, "oauth_configs", "oauth-cfg-ref")
+			assert.Equal(t, "encrypted", raw["encryption_status"])
+			assert.Equal(t, ref, raw["client_secret"], "the reference must be stored verbatim, not ciphered")
+
+			var found TableOauthConfig
+			require.NoError(t, db.First(&found, "id = ?", "oauth-cfg-ref").Error)
+			assert.Equal(t, ref, found.ClientSecret.GetRawRef())
+		})
+	}
+}
+
+// TestTableMCPOauthFlow_EncryptDecrypt covers the CodeVerifier encrypt/decrypt
+// round trip that TestTableOauthConfig_EncryptDecrypt used to exercise before
+// PKCE fields moved off TableOauthConfig onto TableMCPOauthFlow (see that
+// migration).
+func TestTableMCPOauthFlow_EncryptDecrypt(t *testing.T) {
+	db := setupTestDB(t)
+
+	flow := &TableMCPOauthFlow{
+		ID:            "flow-1",
+		MCPClientID:   "mcp-1",
+		OauthConfigID: "oauth-cfg-1",
+		State:         "csrf-state-token",
+		CodeVerifier:  "pkce-code-verifier-secret",
+		FlowMode:      "admin",
+		ExpiresAt:     time.Now().Add(15 * time.Minute),
+	}
+
+	require.NoError(t, db.Create(flow).Error)
+
+	raw := rawRow(t, db, "mcp_oauth_flows", "flow-1")
+	assert.Equal(t, "encrypted", raw["encryption_status"])
+	assert.NotEqual(t, "pkce-code-verifier-secret", raw["code_verifier"])
+
+	var found TableMCPOauthFlow
+	require.NoError(t, db.First(&found, "id = ?", "flow-1").Error)
+	assert.Equal(t, "pkce-code-verifier-secret", found.CodeVerifier)
+	// Non-sensitive fields should be unchanged
+	assert.Equal(t, "csrf-state-token", found.State)
+}
+
+func TestTableMCPOauthFlow_EmptyCodeVerifier_NoError(t *testing.T) {
+	db := setupTestDB(t)
+
+	flow := &TableMCPOauthFlow{
+		ID:            "flow-empty",
+		MCPClientID:   "mcp-1",
+		OauthConfigID: "oauth-cfg-1",
+		State:         "csrf-state-empty",
+		FlowMode:      "admin",
+		ExpiresAt:     time.Now().Add(15 * time.Minute),
+	}
+
+	require.NoError(t, db.Create(flow).Error)
+
+	var found TableMCPOauthFlow
+	require.NoError(t, db.First(&found, "id = ?", "flow-empty").Error)
 	assert.Equal(t, "", found.CodeVerifier)
 }
 
@@ -869,6 +1022,95 @@ func TestTableKey_BedrockMantleProjectID_RoundTrip(t *testing.T) {
 	assert.Equal(t, "us-east-1", found.BedrockMantleKeyConfig.Region.GetValue())
 }
 
+// TestTableKey_BedrockEndpoints_RoundTrip verifies the VPC endpoint hosts survive a save/find
+// cycle on both Bedrock configs. The columns are the only persistence path: BedrockKeyConfig is
+// a virtual field, so an endpoint without a column is silently dropped on write.
+func TestTableKey_BedrockEndpoints_RoundTrip(t *testing.T) {
+	db := setupTestDB(t)
+
+	const runtimeHost = "vpce-0abc123-x1y2z3.bedrock-runtime.eu-west-2.vpce.amazonaws.com"
+	const mantleHost = "vpce-0abc123-x1y2z3.bedrock-mantle.eu-west-2.vpce.amazonaws.com"
+
+	key := &TableKey{
+		Name:       "bedrock-vpce-key",
+		ProviderID: 1,
+		Provider:   "bedrock",
+		KeyID:      "bedrock-vpce-uuid",
+		Value:      *schemas.NewSecretVar(""),
+		BedrockKeyConfig: &schemas.BedrockKeyConfig{
+			AccessKey: *schemas.NewSecretVar("AKIA-VPCE"),
+			SecretKey: *schemas.NewSecretVar("wJalr-VPCE"),
+			Region:    schemas.NewSecretVar("eu-west-2"),
+			Endpoints: &schemas.BedrockEndpoints{
+				Runtime: schemas.NewSecretVar(runtimeHost),
+			},
+		},
+		BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
+			AccessKey: *schemas.NewSecretVar("AKIA-VPCE-MANTLE"),
+			SecretKey: *schemas.NewSecretVar("wJalr-VPCE-MANTLE"),
+			Region:    schemas.NewSecretVar("eu-west-2"),
+			Endpoints: &schemas.BedrockEndpoints{
+				Mantle: schemas.NewSecretVar(mantleHost),
+			},
+		},
+	}
+
+	require.NoError(t, db.Create(key).Error)
+
+	raw := rawRow(t, db, "config_keys", key.ID)
+	assert.Equal(t, "encrypted", raw["encryption_status"])
+	assert.NotContains(t, raw["bedrock_endpoints_json"], runtimeHost)
+	assert.NotContains(t, raw["bedrock_mantle_endpoints_json"], mantleHost)
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+
+	require.NotNil(t, found.BedrockKeyConfig)
+	require.NotNil(t, found.BedrockKeyConfig.Endpoints)
+	require.NotNil(t, found.BedrockKeyConfig.Endpoints.Runtime)
+	assert.Equal(t, runtimeHost, found.BedrockKeyConfig.Endpoints.Runtime.GetValue())
+	// Services the user left blank must stay unset so the public regional host is used.
+	assert.Nil(t, found.BedrockKeyConfig.Endpoints.ControlPlane)
+	assert.Nil(t, found.BedrockKeyConfig.Endpoints.S3)
+
+	require.NotNil(t, found.BedrockMantleKeyConfig)
+	require.NotNil(t, found.BedrockMantleKeyConfig.Endpoints)
+	require.NotNil(t, found.BedrockMantleKeyConfig.Endpoints.Mantle)
+	assert.Equal(t, mantleHost, found.BedrockMantleKeyConfig.Endpoints.Mantle.GetValue())
+}
+
+// TestTableKey_BedrockEndpointsCleared_RoundTrip verifies clearing the endpoints on an existing
+// key wipes the column, so a key edited back to the public endpoints stops dialling the VPCE.
+func TestTableKey_BedrockEndpointsCleared_RoundTrip(t *testing.T) {
+	db := setupTestDB(t)
+
+	key := &TableKey{
+		Name:       "bedrock-vpce-cleared-key",
+		ProviderID: 1,
+		Provider:   "bedrock",
+		KeyID:      "bedrock-vpce-cleared-uuid",
+		Value:      *schemas.NewSecretVar(""),
+		BedrockKeyConfig: &schemas.BedrockKeyConfig{
+			AccessKey: *schemas.NewSecretVar("AKIA-VPCE"),
+			SecretKey: *schemas.NewSecretVar("wJalr-VPCE"),
+			Region:    schemas.NewSecretVar("eu-west-2"),
+			Endpoints: &schemas.BedrockEndpoints{
+				Runtime: schemas.NewSecretVar("vpce-0abc123-x1y2z3.bedrock-runtime.eu-west-2.vpce.amazonaws.com"),
+			},
+		},
+	}
+	require.NoError(t, db.Create(key).Error)
+
+	key.BedrockKeyConfig.Endpoints = nil
+	require.NoError(t, db.Save(key).Error)
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+	require.NotNil(t, found.BedrockKeyConfig)
+	assert.Nil(t, found.BedrockKeyConfig.Endpoints)
+	assert.Equal(t, "eu-west-2", found.BedrockKeyConfig.Region.GetValue())
+}
+
 // ============================================================================
 // MCP — edge cases for connection string / headers combinations
 // ============================================================================
@@ -957,8 +1199,6 @@ func TestTableOauthConfig_UpdatePreservesDecryption(t *testing.T) {
 		ID:           "oauth-cfg-update",
 		ClientSecret: schemas.NewSecretVar("original-secret"),
 		RedirectURI:  "https://example.com/callback",
-		State:        "csrf-update",
-		ExpiresAt:    time.Now().Add(15 * time.Minute),
 	}
 	require.NoError(t, db.Create(config).Error)
 
@@ -1027,7 +1267,6 @@ func TestTablePlugin_UpdatePreservesDecryption(t *testing.T) {
 	plugin := &TablePlugin{
 		Name:    "update-plugin",
 		Enabled: true,
-		Version: 1,
 		Config:  map[string]any{"key": "original-secret"},
 	}
 	require.NoError(t, db.Create(plugin).Error)
@@ -1415,11 +1654,8 @@ func TestTableOauthConfig_EncryptionDisabled_StoresPlaintext(t *testing.T) {
 	cfg := &TableOauthConfig{
 		ID:           "cfg-dis-1",
 		ClientSecret: schemas.NewSecretVar("client-secret-plain"),
-		CodeVerifier: "verifier-plain",
 		RedirectURI:  "https://example.com/cb",
-		State:        "csrf-state",
 		Status:       "pending",
-		ExpiresAt:    time.Now().Add(time.Hour),
 	}
 
 	require.NoError(t, db.Create(cfg).Error)
@@ -1429,12 +1665,39 @@ func TestTableOauthConfig_EncryptionDisabled_StoresPlaintext(t *testing.T) {
 	db.Table("oauth_configs").Where("id = ?", "cfg-dis-1").Take(&raw)
 	assert.Equal(t, "plain_text", raw["encryption_status"])
 	assert.Equal(t, "client-secret-plain", raw["client_secret"])
-	assert.Equal(t, "verifier-plain", raw["code_verifier"])
 
 	// GORM read should return same plaintext
 	var found TableOauthConfig
 	require.NoError(t, db.Where("id = ?", "cfg-dis-1").First(&found).Error)
 	assert.Equal(t, "client-secret-plain", found.ClientSecret.GetValue())
+}
+
+func TestTableMCPOauthFlow_EncryptionDisabled_StoresPlaintext(t *testing.T) {
+	disableEncryption(t)
+	db := setupTestDB(t)
+
+	flow := &TableMCPOauthFlow{
+		ID:            "flow-dis-1",
+		MCPClientID:   "mcp-1",
+		OauthConfigID: "oauth-cfg-1",
+		State:         "csrf-state",
+		CodeVerifier:  "verifier-plain",
+		FlowMode:      "admin",
+		Status:        "pending",
+		ExpiresAt:     time.Now().Add(time.Hour),
+	}
+
+	require.NoError(t, db.Create(flow).Error)
+
+	// Raw DB should have plaintext
+	var raw map[string]any
+	db.Table("mcp_oauth_flows").Where("id = ?", "flow-dis-1").Take(&raw)
+	assert.Equal(t, "plain_text", raw["encryption_status"])
+	assert.Equal(t, "verifier-plain", raw["code_verifier"])
+
+	// GORM read should return same plaintext
+	var found TableMCPOauthFlow
+	require.NoError(t, db.Where("id = ?", "flow-dis-1").First(&found).Error)
 	assert.Equal(t, "verifier-plain", found.CodeVerifier)
 }
 
@@ -1499,7 +1762,6 @@ func TestTablePlugin_EncryptionDisabled_StoresPlaintext(t *testing.T) {
 	plugin := &TablePlugin{
 		Name:    "disabled-plugin",
 		Enabled: true,
-		Version: 1,
 		Config:  map[string]any{"api_key": "plugin-secret"},
 	}
 
@@ -1545,9 +1807,15 @@ func TestTableVectorStoreConfig_EncryptionDisabled_StoresPlaintext(t *testing.T)
 // Multi-backend helpers — run the same tests on SQLite and Postgres
 // ============================================================================
 
+// pgTestSchema is this package's dedicated Postgres schema. Test packages
+// (configstore, configstore/tables, logstore) run in parallel against the same
+// database, so each one works in its own schema to avoid clobbering the
+// others' tables and rows.
+const pgTestSchema = "configstore_tables_test"
+
 // postgresDSN matches the postgres service in tests/docker-compose.yml and
 // framework/docker-compose.yml.
-const postgresDSN = "host=localhost user=bifrost password=bifrost_password dbname=bifrost port=5432 sslmode=disable"
+const postgresDSN = "host=localhost user=bifrost password=bifrost_password dbname=bifrost port=5432 sslmode=disable search_path=" + pgTestSchema
 
 // namedDB pairs a backend name with its GORM connection for use in subtests.
 type namedDB struct {
@@ -1583,6 +1851,12 @@ func trySetupPostgresDB(t *testing.T) *gorm.DB {
 		return nil
 	}
 	if err := sqlDB.Ping(); err != nil {
+		return nil
+	}
+
+	// All objects live in this package's dedicated schema (via search_path in
+	// the DSN), isolated from other test packages sharing the same database.
+	if err := db.Exec("CREATE SCHEMA IF NOT EXISTS " + pgTestSchema).Error; err != nil {
 		return nil
 	}
 
@@ -1650,10 +1924,6 @@ func forEachDB(t *testing.T) []namedDB {
 // narrow to hold the base64-encoded ciphertext. All three columns are now
 // text type which has no length limit.
 // ============================================================================
-
-func TestEncryptedColumns_AzureAPIVersion_FitsAfterWidening(t *testing.T) {
-	t.Skip("azure_api_version column has been removed from AzureKeyConfig")
-}
 
 func TestEncryptedColumns_VertexRegion_FitsAfterWidening(t *testing.T) {
 	// "northamerica-northeast1" is 23 chars — encrypts to ~68 chars.

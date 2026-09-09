@@ -49,7 +49,7 @@ func trySetupClickHouseStore(t *testing.T) *ClickHouseLogStore {
 		t.Skipf("ClickHouse not available, skipping test: %v", err)
 	}
 	ch := store.(*ClickHouseLogStore)
-	for _, table := range []string{"logs", "mcp_tool_logs", "async_jobs"} {
+	for _, table := range []string{"logs", "mcp_tool_logs", "async_jobs", "webhook_deliveries"} {
 		require.NoError(t, ch.db.Exec("TRUNCATE TABLE "+table).Error)
 	}
 	t.Cleanup(func() { _ = ch.Close(context.Background()) })
@@ -66,6 +66,46 @@ func chTestLog(id string, ts time.Time) *Log {
 		Status:    "processing",
 		CreatedAt: ts,
 	}
+}
+
+type clickHouseExtensionTestRow struct {
+	ID        string
+	Value     string
+	CreatedAt time.Time
+}
+
+func (clickHouseExtensionTestRow) TableName() string { return "extension_test_events" }
+
+func TestClickHouseEnsureExtensionTable(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.db.Exec("DROP TABLE IF EXISTS extension_test_events").Error)
+	t.Cleanup(func() {
+		_ = store.db.Exec("DROP TABLE IF EXISTS extension_test_events").Error
+	})
+
+	table := "extension_test_events"
+	partitionBy := "toYYYYMM(created_at)"
+	orderBy := "(created_at, id)"
+	ttl := "toDateTime(created_at) + INTERVAL 30 DAY"
+	skipIndexes := []string{"INDEX idx_extension_value lower(value) TYPE bloom_filter(0.01) GRANULARITY 1"}
+	require.NoError(t, store.EnsureClickHouseTable(ctx, &clickHouseExtensionTestRow{}, table, partitionBy, orderBy, ttl, skipIndexes))
+	require.NoError(t, (&HybridLogStore{inner: store}).EnsureClickHouseTable(ctx, &clickHouseExtensionTestRow{}, table, partitionBy, orderBy, ttl, skipIndexes))
+
+	row := clickHouseExtensionTestRow{ID: "event-1", Value: "matched", CreatedAt: time.Now().UTC()}
+	require.NoError(t, store.db.WithContext(ctx).Create(&row).Error)
+
+	var count int64
+	require.NoError(t, store.db.WithContext(ctx).Model(&clickHouseExtensionTestRow{}).Where("value = ?", "matched").Count(&count).Error)
+	assert.Equal(t, int64(1), count)
+
+	var createQuery string
+	require.NoError(t, store.db.WithContext(ctx).
+		Raw("SELECT create_table_query FROM system.tables WHERE database = currentDatabase() AND name = ?", table).
+		Scan(&createQuery).Error)
+	assert.Contains(t, createQuery, "ReplacingMergeTree")
+	assert.Contains(t, createQuery, "TTL")
+	assert.Contains(t, createQuery, "idx_extension_value")
 }
 
 // chCountRows counts logical rows visible for an id; with the connection-level
@@ -399,24 +439,30 @@ func TestClickHouseBulkUpdateCost(t *testing.T) {
 	ctx := context.Background()
 	ts := time.Now().UTC().Truncate(time.Millisecond)
 
-	updates := map[string]float64{}
+	updates := map[string]CostUpdate{}
 	for i := 0; i < 5; i++ {
 		id := fmt.Sprintf("ch-cost-%d", i)
 		require.NoError(t, store.CreateIfNotExists(ctx, chTestLog(id, ts.Add(time.Duration(i)*time.Millisecond))))
-		updates[id] = float64(i) * 0.1
+		total := float64(i) * 0.1
+		updates[id] = CostUpdate{Total: total, Input: total * 0.6, Output: total * 0.3, Additional: total * 0.1}
 	}
 	// Unknown ids must be ignored, not error.
-	updates["ch-cost-missing"] = 9.9
+	updates["ch-cost-missing"] = CostUpdate{Total: 9.9, Input: 9.9}
 
 	require.NoError(t, store.BulkUpdateCost(ctx, updates))
 	require.NoError(t, store.BulkUpdateCost(ctx, nil)) // no-op
 
 	for i := 0; i < 5; i++ {
 		id := fmt.Sprintf("ch-cost-%d", i)
+		total := float64(i) * 0.1
 		found, err := store.FindByID(ctx, id)
 		require.NoError(t, err)
 		require.NotNil(t, found.Cost, "cost missing for %s", id)
-		assert.InDelta(t, float64(i)*0.1, *found.Cost, 1e-9)
+		assert.InDelta(t, total, *found.Cost, 1e-9)
+		// The per-category split is reprice too, reconciling to the total.
+		assert.InDelta(t, total*0.6, found.InputCost, 1e-9)
+		assert.InDelta(t, total*0.3, found.OutputCost, 1e-9)
+		assert.InDelta(t, total*0.1, found.AdditionalCost, 1e-9)
 		assert.Equal(t, int64(1), chCountRows(t, store.db, "logs", id))
 	}
 }
@@ -451,6 +497,11 @@ func TestClickHouseSearchAndStats(t *testing.T) {
 	models, err := store.GetDistinctModels(ctx, 10, "")
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{"gpt-4o", "claude-sonnet-4-5"}, models)
+
+	// ClickHouse LIKE is case-sensitive; the filterdata search must not be.
+	upper, err := store.GetDistinctModels(ctx, 10, "GPT")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"gpt-4o"}, upper)
 }
 
 func TestClickHouseDeleteLogs(t *testing.T) {
@@ -509,24 +560,28 @@ func TestClickHouseMCPToolLogs(t *testing.T) {
 		chTestMCPToolLog("ch-mcp-1", ts),
 		chTestMCPToolLog("ch-mcp-2", ts.Add(time.Millisecond)),
 	}
+	entries[0].RedactionMapping = `plain:{"input":{"EMAIL-1":"private@example.com"}}`
 	require.NoError(t, store.BatchCreateMCPToolLogsIfNotExists(ctx, entries))
 	require.NoError(t, store.BatchCreateMCPToolLogsIfNotExists(ctx, nil)) // no-op
 
 	found, err := store.FindMCPToolLog(ctx, "ch-mcp-1")
 	require.NoError(t, err)
 	assert.Equal(t, "search_web", found.ToolName)
+	assert.Equal(t, entries[0].RedactionMapping, found.RedactionMapping)
 
 	// Map update.
 	latency := 42.0
 	require.NoError(t, store.UpdateMCPToolLog(ctx, "ch-mcp-1", map[string]interface{}{
-		"status":  "success",
-		"latency": latency,
+		"status":            "success",
+		"latency":           latency,
+		"redaction_mapping": `plain:{"output":{"EMAIL-2":"result@example.com"}}`,
 	}))
 	found, err = store.FindMCPToolLog(ctx, "ch-mcp-1")
 	require.NoError(t, err)
 	assert.Equal(t, "success", found.Status)
 	require.NotNil(t, found.Latency)
 	assert.Equal(t, 42.0, *found.Latency)
+	assert.Contains(t, found.RedactionMapping, "result@example.com")
 	assert.Equal(t, int64(1), chCountRows(t, store.db, "mcp_tool_logs", "ch-mcp-1"))
 
 	// Struct update preserves untouched fields and the dedup key.

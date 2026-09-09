@@ -1,0 +1,6 @@
+{
+  "name": "newman-reporter-token-parity",
+  "version": "1.0.0",
+  "description": "Newman reporter that captures Direct-Provider vs Bifrost token parity report blobs emitted via console.log by the token-parity matrix (see tests/e2e/api/runners/lib/token-parity-matrix.mjs)",
+  "main": "index.js"
+}

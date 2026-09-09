@@ -3,12 +3,20 @@
 circuit-breaker-policies:
   get:
     operationId: listCircuitBreakerPolicies
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: List circuit breaker policies
     description: Returns all circuit breaker policies defined in this workspace.
     tags:
       - Circuit Breaker
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -21,6 +29,13 @@ circuit-breaker-policies:
 
   post:
     operationId: createCircuitBreakerPolicy
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Create circuit breaker policy
     description: |
       Creates a new circuit breaker policy and immediately activates it in the running gateway.
@@ -35,6 +50,7 @@ circuit-breaker-policies:
             $ref: '../../schemas/management/circuitbreaker.yaml#/CircuitBreakerPolicy'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '201':
         description: Policy created
@@ -52,6 +68,13 @@ circuit-breaker-policies:
 circuit-breaker-policy-by-name:
   put:
     operationId: updateCircuitBreakerPolicy
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Update circuit breaker policy
     description: |
       Replaces a circuit breaker policy by name. The `name` field in the request body must match the URL parameter or be omitted.
@@ -73,6 +96,7 @@ circuit-breaker-policy-by-name:
             $ref: '../../schemas/management/circuitbreaker.yaml#/CircuitBreakerPolicy'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Policy updated
@@ -89,6 +113,13 @@ circuit-breaker-policy-by-name:
 
   delete:
     operationId: deleteCircuitBreakerPolicy
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Delete circuit breaker policy
     description: |
       Deletes a circuit breaker policy by name and removes it from the running gateway.
@@ -104,6 +135,7 @@ circuit-breaker-policy-by-name:
         description: Name of the policy to delete.
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Policy deleted
@@ -119,6 +151,13 @@ circuit-breaker-policy-by-name:
 circuit-breaker-state:
   get:
     operationId: getCircuitBreakerState
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Get circuit breaker state
     description: |
       Returns a snapshot of all currently-open circuits.
@@ -128,6 +167,7 @@ circuit-breaker-state:
       - Circuit Breaker
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response

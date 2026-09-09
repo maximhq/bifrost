@@ -48,6 +48,11 @@ func (m *testClientManager) ReleasePluginPipeline(pipeline codemcp.PluginPipelin
 func (m *testClientManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schemas.MCPClientState) (*client.Client, func(), error) {
 	return nil, func() {}, nil
 }
+func (m *testClientManager) ReconnectClient(id string) error { return nil }
+
+func (m *testClientManager) AwaitReconnect(clientID string, budget time.Duration) (bool, error) {
+	return false, nil
+}
 func (m *testClientManager) RunWithPluginPipeline(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest, op codemcp.MCPOpFunc) (*schemas.BifrostMCPResponse, *schemas.BifrostError) {
 	resp, err := op(req)
 	if err != nil {

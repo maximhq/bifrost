@@ -428,9 +428,9 @@ func TestPingHook_FiresViaHealthMonitor(t *testing.T) {
 	cfg := inProcessClientConfig("ping_fires", buildInProcessServer(t))
 	require.NoError(t, manager.AddClient(context.Background(), cfg))
 
-	// AddClient starts its own health monitor at 10s interval — far too slow for
+	// AddClient starts its own connection checker at 10s interval — far too slow for
 	// tests. Spin up a dedicated monitor at 10ms instead.
-	monitor := mcp.NewClientHealthMonitor(manager, cfg.ID, 10*time.Millisecond, true, core.NewDefaultLogger(schemas.LogLevelError))
+	monitor := mcp.NewClientConnectionChecker(manager, cfg.ID, 10*time.Millisecond, true, core.NewDefaultLogger(schemas.LogLevelError))
 	monitor.Start()
 	defer monitor.Stop()
 
@@ -466,7 +466,7 @@ func TestPingHook_PreHookShortCircuitHealthy(t *testing.T) {
 	cfg := inProcessClientConfig("ping_healthy", buildInProcessServer(t))
 	require.NoError(t, manager.AddClient(context.Background(), cfg))
 
-	monitor := mcp.NewClientHealthMonitor(manager, cfg.ID, 10*time.Millisecond, true, core.NewDefaultLogger(schemas.LogLevelError))
+	monitor := mcp.NewClientConnectionChecker(manager, cfg.ID, 10*time.Millisecond, true, core.NewDefaultLogger(schemas.LogLevelError))
 	monitor.Start()
 	defer monitor.Stop()
 
@@ -487,7 +487,7 @@ func TestPingHook_PreHookShortCircuitHealthy(t *testing.T) {
 func TestPingHook_PreHookShortCircuitError_DoesNotPanic(t *testing.T) {
 	t.Parallel()
 
-	// Short-circuiting with error is treated by the health monitor as a normal
+	// Short-circuiting with error is treated by the connection checker as a normal
 	// ping failure. We verify the gate plumbing doesn't blow up and the plugin
 	// got invoked.
 	plugin := NewTestPingPlugin()
@@ -500,7 +500,7 @@ func TestPingHook_PreHookShortCircuitError_DoesNotPanic(t *testing.T) {
 	cfg := inProcessClientConfig("ping_err", buildInProcessServer(t))
 	require.NoError(t, manager.AddClient(context.Background(), cfg))
 
-	monitor := mcp.NewClientHealthMonitor(manager, cfg.ID, 10*time.Millisecond, true, core.NewDefaultLogger(schemas.LogLevelError))
+	monitor := mcp.NewClientConnectionChecker(manager, cfg.ID, 10*time.Millisecond, true, core.NewDefaultLogger(schemas.LogLevelError))
 	monitor.Start()
 	defer monitor.Stop()
 
@@ -520,7 +520,7 @@ func TestPingHook_PreHookShortCircuitError_DoesNotPanic(t *testing.T) {
 func TestPingHook_DoesNotFireWhenPingUnavailable(t *testing.T) {
 	t.Parallel()
 
-	// When isPingAvailable=false, health monitor falls back to list_tools as the
+	// When isPingAvailable=false, connection checker falls back to list_tools as the
 	// liveness probe. Ping hook should NEVER fire; list_tools hook fires instead.
 	pingPlugin := NewTestPingPlugin()
 	listPlugin := NewTestListToolsPlugin()
@@ -532,7 +532,7 @@ func TestPingHook_DoesNotFireWhenPingUnavailable(t *testing.T) {
 	// Reset the list-tools plugin so we ignore the AddClient-time invocation.
 	listPlugin.Reset()
 
-	monitor := mcp.NewClientHealthMonitor(manager, cfg.ID, 10*time.Millisecond, false, core.NewDefaultLogger(schemas.LogLevelError))
+	monitor := mcp.NewClientConnectionChecker(manager, cfg.ID, 10*time.Millisecond, false, core.NewDefaultLogger(schemas.LogLevelError))
 	monitor.Start()
 	defer monitor.Stop()
 

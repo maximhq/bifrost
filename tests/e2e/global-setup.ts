@@ -2,7 +2,7 @@
  * Single global setup for all E2E tests.
  * 1. Builds test plugin (plugins) and copies to /tmp.
  * 2. Builds and starts MCP test servers (HTTP/SSE on 3001, STDIO test-tools-server).
- * 3. Ensures TestClient001 MCP client exists and is connected (create or reconnect as needed).
+ * 3. Ensures TestClient001 MCP client exists and is healthy (create or reconnect as needed).
  * 4. Sends a POST /v1/responses request to validate the proxy with MCP.
  * Returns a teardown function that stops MCP servers.
  */
@@ -182,13 +182,24 @@ async function ensureTestClient001AndSendResponses(baseUrl: string): Promise<voi
     throw new Error(`MCP client "${TEST_MCP_CLIENT_NAME}" not found after create.`)
   }
   clientId = clientAfter.config.client_id
-  if (clientAfter.state !== 'connected') {
-    console.log(`MCP client "${TEST_MCP_CLIENT_NAME}" not connected; reloading via POST /api/mcp/client/${clientId}/reconnect...`)
+  // 'connected' was renamed to 'healthy' (core/schemas/mcp.go) to also cover
+  // per-call auth types that never hold a single shared connection.
+  if (clientAfter.state !== 'healthy') {
+    console.log(`MCP client "${TEST_MCP_CLIENT_NAME}" not healthy (state=${clientAfter.state}); reloading via POST /api/mcp/client/${clientId}/reconnect...`)
     const reconnectRes = await httpRequest(baseUrl, 'POST', `/api/mcp/client/${encodeURIComponent(clientId)}/reconnect`)
     if (reconnectRes.statusCode < 200 || reconnectRes.statusCode >= 300) {
-      throw new Error(
-        `POST /api/mcp/client/.../reconnect failed: ${reconnectRes.statusCode} ${reconnectRes.body}. Ensure MCP server is running and reload Bifrost if needed.`
-      )
+      // A plain "http" client with no needs_session_stickiness defaults to
+      // per-call connections, which have no persistent connection to
+      // reconnect and go straight to healthy at creation time instead — the
+      // reconnect call above was only ever needed for sticky clients that
+      // failed to connect. Only a genuine reconnect failure should fail setup.
+      const isPerCallNotApplicable = /per-call connections/.test(reconnectRes.body)
+      if (!isPerCallNotApplicable) {
+        throw new Error(
+          `POST /api/mcp/client/.../reconnect failed: ${reconnectRes.statusCode} ${reconnectRes.body}. Ensure MCP server is running and reload Bifrost if needed.`
+        )
+      }
+      console.log(`MCP client "${TEST_MCP_CLIENT_NAME}" uses per-call connections; reconnect not applicable, continuing.`)
     }
   }
 
@@ -199,12 +210,12 @@ async function ensureTestClient001AndSendResponses(baseUrl: string): Promise<voi
   const parsed2 = JSON.parse(listRes2.body) as { clients?: MCPClientItem[] } | MCPClientItem[]
   const list2 = (Array.isArray(parsed2) ? parsed2 : (parsed2.clients ?? [])).filter((c) => c.config?.name === TEST_MCP_CLIENT_NAME)
   const client = list2[0]
-  if (!client || client.state !== 'connected') {
+  if (!client || client.state !== 'healthy') {
     throw new Error(
-      `MCP client "${TEST_MCP_CLIENT_NAME}" is not connected after create/reconnect. Reload the MCP server and ensure it is running, then re-run global setup.`
+      `MCP client "${TEST_MCP_CLIENT_NAME}" is not healthy after create/reconnect (state=${client?.state}). Reload the MCP server and ensure it is running, then re-run global setup.`
     )
   }
-  console.log(`✓ MCP client "${TEST_MCP_CLIENT_NAME}" is connected`)  
+  console.log(`✓ MCP client "${TEST_MCP_CLIENT_NAME}" is healthy`)
 }
 
 async function runPluginSetup(): Promise<void> {

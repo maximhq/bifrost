@@ -259,7 +259,7 @@ const result = await chain.invoke({ input: "What is LangChain?" });`,
 				</div>
 
 				<Tabs defaultValue="curl" className="w-full rounded-lg border">
-					<TabsList className="grid h-10 w-full grid-cols-6 rounded-t-lg rounded-b-none">
+					<TabsList className="flex h-10 w-full justify-start rounded-t-lg rounded-b-none">
 						<TabsTrigger value="curl">cURL</TabsTrigger>
 						<TabsTrigger value="openai">OpenAI SDK</TabsTrigger>
 						<TabsTrigger value="anthropic">Anthropic SDK</TabsTrigger>

@@ -7,5 +7,6 @@ export { GovernanceFormFragment } from "./governanceFormFragment";
 export { OpenAIConfigFormFragment } from "./openaiConfigFormFragment";
 export { NetworkFormFragment } from "./networkFormFragment";
 export { PerformanceFormFragment } from "./performanceFormFragment";
+export { PromptCacheFormFragment } from "./promptCacheFormFragment";
 export { PerformanceFormFragment as PerformanceTab } from "./performanceFormFragment";
 export { ProxyFormFragment } from "./proxyFormFragment";

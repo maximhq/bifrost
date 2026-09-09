@@ -82,18 +82,45 @@ type HTTPClientFactory struct {
 	fasthttpClients map[ClientPurpose]*fasthttp.Client
 	httpClients     map[ClientPurpose]*http.Client
 
+	// Fasthttp read/write buffer sizes. Zero unless a caller opts in via
+	// WithFasthttpBufferSizes; when set, applied to the SCIM client only
+	// (see createFasthttpClient).
+	readBufferSize  int
+	writeBufferSize int
+
 	logger schemas.Logger
+}
+
+// FactoryOption customizes an HTTPClientFactory at construction time.
+type FactoryOption func(*HTTPClientFactory)
+
+// WithFasthttpBufferSizes overrides the fasthttp read/write buffer sizes used for
+// created clients. Non-positive values leave the corresponding field at zero, which
+// selects fasthttp's default buffer size.
+func WithFasthttpBufferSizes(read, write int) FactoryOption {
+	return func(f *HTTPClientFactory) {
+		if read > 0 {
+			f.readBufferSize = read
+		}
+		if write > 0 {
+			f.writeBufferSize = write
+		}
+	}
 }
 
 // NewHTTPClientFactory creates a new HTTP client factory with the given proxy configuration.
 // Pass nil for proxyConfig if proxy is not yet configured.
-func NewHTTPClientFactory(proxyConfig *GlobalProxyConfig, logger schemas.Logger) *HTTPClientFactory {
-	return &HTTPClientFactory{
+func NewHTTPClientFactory(proxyConfig *GlobalProxyConfig, logger schemas.Logger, opts ...FactoryOption) *HTTPClientFactory {
+	f := &HTTPClientFactory{
 		proxyConfig:     proxyConfig,
 		fasthttpClients: make(map[ClientPurpose]*fasthttp.Client, 3),
 		httpClients:     make(map[ClientPurpose]*http.Client, 3),
 		logger:          logger,
 	}
+	for _, opt := range opts {
+		opt(f)
+	}
+	return f
 }
 
 // UpdateProxyConfig updates the proxy configuration and recreates all cached clients.
@@ -222,6 +249,19 @@ func (f *HTTPClientFactory) createFasthttpClient(purpose ClientPurpose) *fasthtt
 		MaxConnWaitTimeout:  DefaultClientConfig.ReadTimeout,
 		ConnPoolStrategy:    fasthttp.FIFO,
 		RetryIfErr:          StaleConnectionRetryIfErr,
+	}
+
+	// Larger header buffers only for SCIM/OAuth, and only when a caller opted in via
+	// WithFasthttpBufferSizes: IdP token endpoints can return response headers
+	// exceeding fasthttp's 4KB default ("small read buffer"). Every other purpose,
+	// and any factory whose caller didn't set a size, keeps fasthttp's default.
+	if purpose == ClientPurposeSCIM {
+		if f.readBufferSize > 0 {
+			client.ReadBufferSize = f.readBufferSize
+		}
+		if f.writeBufferSize > 0 {
+			client.WriteBufferSize = f.writeBufferSize
+		}
 	}
 
 	// Configure proxy if enabled for this purpose

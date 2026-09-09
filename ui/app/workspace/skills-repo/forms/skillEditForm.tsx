@@ -12,6 +12,7 @@ import { ScrollArea, ScrollBar } from "@/components/ui/scrollArea";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
+import { useIsMobile } from "@/hooks/use-mobile";
 import type { SkillFileEntry } from "@/lib/types/skills";
 import { cn } from "@/lib/utils";
 import { validateSkillForm, validateVersionBump } from "@/lib/validators/skills";
@@ -45,6 +46,7 @@ export function SkillEditView({
 	isSaving: boolean;
 	mode?: "edit" | "create";
 }) {
+	const isMobile = useIsMobile();
 	const isCreate = mode === "create";
 	const [bodyTab, setBodyTab] = useState<"edit" | "preview">("edit");
 	const [showPreviewDialog, setShowPreviewDialog] = useState(false);
@@ -255,7 +257,7 @@ export function SkillEditView({
 
 			{/* Files + SKILL.md two-pane workspace */}
 			<div className="min-h-0 flex-1 px-4 pt-4">
-				<ResizablePanelGroup direction="horizontal" className="h-full min-h-0">
+				<ResizablePanelGroup direction={isMobile ? "vertical" : "horizontal"} className="h-full min-h-0">
 					{/* Left: files panel */}
 					<ResizablePanel defaultSize="28%" minSize="18%" maxSize="50%" className="bg-card flex min-h-0 flex-col gap-2">
 						<p className="text-muted-foreground/70 px-1 text-[10px] font-semibold tracking-wider uppercase">Details</p>
@@ -316,7 +318,7 @@ export function SkillEditView({
 						</div>
 					</ResizablePanel>
 
-					<ResizableHandle className="mx-1.5 bg-transparent" />
+					<ResizableHandle className="mx-1.5 hidden bg-transparent md:flex" />
 
 					{/* Right: editor for the selected item */}
 					<ResizablePanel defaultSize="72%" minSize="30%" className="flex min-h-0 flex-col overflow-auto">
@@ -385,7 +387,7 @@ export function SkillEditView({
 									>
 										Preview
 									</button>
-									<span className="text-muted-foreground ml-auto pr-1 text-xs">
+									<span className="text-muted-foreground ml-auto hidden pr-1 text-xs md:inline">
 										Use <code className="font-mono">@</code> to reference files
 									</span>
 								</div>
@@ -448,26 +450,40 @@ export function SkillEditView({
 				<div className="animate-in fade-in-0 fixed inset-0 z-50 bg-black/50" onClick={closeVersionPopover} aria-hidden />
 			)}
 
-			<div className="dark:bg-card/95 sticky bottom-0 z-20 mt-4 flex items-center justify-end gap-2 border-t bg-white/95 px-1 py-3 backdrop-blur">
+			<div className="dark:bg-card/95 sticky bottom-0 z-20 mt-4 flex items-center justify-end gap-1 overflow-x-auto border-t bg-white/95 px-1 py-3 backdrop-blur md:gap-2 md:overflow-visible">
 				<Button
 					variant="ghost"
 					size="sm"
 					data-testid="skill-cancel-btn"
 					onClick={onCancel}
 					className="text-muted-foreground hover:bg-transparent hover:text-red-600 dark:hover:text-red-400"
+					aria-label="Cancel"
 				>
-					Cancel
+					<span className="hidden md:inline">Cancel</span>
+					<X className="h-3.5 w-3.5 md:hidden" />
 				</Button>
-				<Button variant="outline" size="sm" data-testid="skill-preview-btn" onClick={() => setShowPreviewDialog(true)}>
+				<Button
+					variant="outline"
+					size="sm"
+					data-testid="skill-preview-btn"
+					onClick={() => setShowPreviewDialog(true)}
+					aria-label="Preview raw SKILL.md"
+				>
 					<Eye className="h-3.5 w-3.5" />
-					Preview Raw SKILL.md
+					<span className="hidden md:inline">Preview Raw SKILL.md</span>
 				</Button>
 				{isCreate ? (
 					<Popover open={versionPopover != null} onOpenChange={(open) => !open && closeVersionPopover()}>
 						<PopoverAnchor asChild>
-							<Button size="sm" data-testid="skill-create-save-btn" onClick={() => openVersionPopover(true)} disabled={isSaving}>
+							<Button
+								size="sm"
+								data-testid="skill-create-save-btn"
+								onClick={() => openVersionPopover(true)}
+								disabled={isSaving}
+								aria-label="Create skill"
+							>
 								{isSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
-								{isSaving ? "Creating..." : "Create Skill"}
+								<span className="hidden md:inline">{isSaving ? "Creating..." : "Create Skill"}</span>
 							</Button>
 						</PopoverAnchor>
 						<PopoverContent align="end" className="w-max">
@@ -495,9 +511,10 @@ export function SkillEditView({
 									data-testid="skill-save-btn"
 									onClick={() => openVersionPopover(false)}
 									disabled={isSaving}
+									aria-label="Save"
 								>
 									{isSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-									{isSaving ? "Saving..." : "Save"}
+									<span className="hidden md:inline">{isSaving ? "Saving..." : "Save"}</span>
 								</Button>
 							</PopoverAnchor>
 							<PopoverContent align="end" className="w-max">
@@ -517,9 +534,15 @@ export function SkillEditView({
 						</Popover>
 						<Popover open={versionPopover?.serve === true} onOpenChange={(open) => !open && closeVersionPopover()}>
 							<PopoverAnchor asChild>
-								<Button size="sm" data-testid="skill-save-serve-btn" onClick={() => openVersionPopover(true)} disabled={isSaving}>
+								<Button
+									size="sm"
+									data-testid="skill-save-serve-btn"
+									onClick={() => openVersionPopover(true)}
+									disabled={isSaving}
+									aria-label="Save and serve"
+								>
 									{isSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-									{isSaving ? "Saving..." : "Save & Serve"}
+									<span className="hidden md:inline">{isSaving ? "Saving..." : "Save & Serve"}</span>
 								</Button>
 							</PopoverAnchor>
 							<PopoverContent align="end" className="w-max">
@@ -652,7 +675,7 @@ function DetailsEditorPane({
 					</FormSection>
 
 					<FormSection title="Spec Fields">
-						<div className="grid grid-cols-3 gap-4">
+						<div className="grid grid-cols-1 gap-4 md:grid-cols-3">
 							<div className="flex flex-col gap-1">
 								<Label className="text-muted-foreground text-xs">License</Label>
 								<Input

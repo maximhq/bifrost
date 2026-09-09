@@ -53,12 +53,12 @@ func (response *HuggingFaceListModelsResponse) ToBifrostListModelsResponse(provi
 			newModel := schemas.Model{
 				// inferenceProvider stays in the compound ID; aliases rename only the model segment
 				ID:               fmt.Sprintf("%s/%s/%s", providerKey, inferenceProvider, result.ResolvedID),
-				Name:             schemas.Ptr(model.ModelID),
+				Name:             new(model.ModelID),
 				SupportedMethods: supported,
-				HuggingFaceID:    schemas.Ptr(model.ID),
+				HuggingFaceID:    new(model.ID),
 			}
 			if result.AliasValue != "" {
-				newModel.Alias = schemas.Ptr(result.AliasValue)
+				newModel.Alias = new(result.AliasValue)
 			}
 			bifrostResponse.Data = append(bifrostResponse.Data, newModel)
 			included[strings.ToLower(result.ResolvedID)] = true
@@ -67,14 +67,77 @@ func (response *HuggingFaceListModelsResponse) ToBifrostListModelsResponse(provi
 
 	// Backfill: use standard pipeline. Note that backfilled HF entries use a simplified
 	// compound ID since we don't know which inferenceProvider to assign them to.
-	for _, m := range pipeline.BackfillModels(included) {
-		// Re-wrap the backfill ID to include the inferenceProvider segment
+	backfilled := pipeline.BackfillModels(included)
+
+	var byModelID map[string]*HuggingFaceModel
+	if len(backfilled) > 0 {
+		byModelID = make(map[string]*HuggingFaceModel, len(response.Models))
+		for i := range response.Models {
+			byModelID[strings.ToLower(response.Models[i].ModelID)] = &response.Models[i]
+		}
+	}
+
+	for _, m := range backfilled {
 		rawID := strings.TrimPrefix(m.ID, string(providerKey)+"/")
-		m.ID = fmt.Sprintf("%s/%s/%s", providerKey, inferenceProvider, rawID)
+		// lookupID is the plain HF model ID (no provider/policy segment), used to
+		// find the matching entry in response.Models below.
+		lookupID := rawID
+		// Allowlist entries selected from a previous ListModels response already
+		// carry an inference-provider segment (e.g. "featherless-ai/org/model")
+		// or the "auto" policy. Prepending another segment here duplicates the
+		// provider in the compound ID and breaks request routing (#4215).
+		if first, modelName, found := strings.Cut(rawID, "/"); found && isKnownInferenceProviderOrPolicy(first) {
+			m.Name = &modelName
+			lookupID = modelName
+			switch {
+			case strings.EqualFold(first, string(auto)):
+				// "auto" is owned by no inference-provider pass: the model
+				// listing loop iterates INFERENCE_PROVIDERS, which excludes it.
+				// Emit the entry exactly once, during the canonical first pass,
+				// so a routable auto-policy allowlist entry still surfaces in
+				// the listing instead of being dropped from every pass. Every
+				// other pass skips it to avoid duplicating it once per provider.
+				if len(INFERENCE_PROVIDERS) == 0 || inferenceProvider != INFERENCE_PROVIDERS[0] {
+					continue
+				}
+				m.ID = fmt.Sprintf("%s/%s", providerKey, rawID)
+			case !strings.EqualFold(first, string(inferenceProvider)):
+				// The entry belongs to a different inference provider's listing;
+				// it is emitted in that provider's pass. Skip it here to avoid
+				// duplicating the entry once per inference provider.
+				continue
+			default:
+				m.ID = fmt.Sprintf("%s/%s", providerKey, rawID)
+			}
+		} else {
+			// Re-wrap the backfill ID to include the inferenceProvider segment
+			m.ID = fmt.Sprintf("%s/%s/%s", providerKey, inferenceProvider, rawID)
+		}
+
+		// BackfillModels only knows about ID/Name/Alias, so a backfilled entry
+		// is otherwise missing HuggingFaceID and SupportedMethods. When the
+		// model is actually present in this response (e.g. it was skipped
+		// upstream for an unrecognized pipeline tag), recover those fields
+		// via the lazily-built index above.
+		if hfModel := byModelID[strings.ToLower(lookupID)]; hfModel != nil {
+			m.HuggingFaceID = new(hfModel.ID)
+			if methods := deriveSupportedMethods(hfModel.PipelineTag, hfModel.Tags); len(methods) > 0 {
+				m.SupportedMethods = methods
+			}
+		}
+
 		bifrostResponse.Data = append(bifrostResponse.Data, m)
 	}
 
 	return bifrostResponse
+}
+
+// isKnownInferenceProviderOrPolicy reports whether segment names one of the
+// supported inference providers or the "auto" policy (case-insensitive).
+func isKnownInferenceProviderOrPolicy(segment string) bool {
+	return slices.ContainsFunc(PROVIDERS_OR_POLICIES, func(p inferenceProvider) bool {
+		return strings.EqualFold(segment, string(p))
+	})
 }
 
 func deriveSupportedMethods(pipeline string, tags []string) []string {

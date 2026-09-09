@@ -12,6 +12,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Tree, type BaseNodeData, type TreeNode } from "@/components/ui/treeView";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { SkillFileEntry } from "@/lib/types/skills";
 import { cn } from "@/lib/utils";
 import { getApiBaseUrl } from "@/lib/utils/port";
@@ -175,8 +176,13 @@ export function SkillHeader({
 
 	return (
 		<>
-			<div className={cn("flex w-full flex-row items-center gap-2 bg-card relative", sticky && "sticky top-0 z-30 py-4")}>
-				<div className="flex h-5 flex-row items-center gap-2 align-middle">
+			<div
+				className={cn(
+					"bg-card relative flex w-full flex-col items-stretch gap-3 md:flex-row md:items-center md:gap-2",
+					sticky && "sticky top-0 z-30 py-4",
+				)}
+			>
+				<div className="flex min-w-0 flex-row flex-wrap items-center gap-2 align-middle md:h-5 md:flex-nowrap">
 					{onBack ? (
 						<nav aria-label="Breadcrumb" className="min-w-0">
 							<ol className="text-muted-foreground flex items-center gap-1.5 text-sm">
@@ -215,10 +221,10 @@ export function SkillHeader({
 						</Button>
 					)}
 				</div>
-				<div className="absolute top-4 right-0 ml-auto flex flex-row items-center align-middle">
+				<div className="static flex min-w-0 flex-row items-center align-middle md:absolute md:top-4 md:right-0 md:ml-auto">
 					{decorators}
 					{(actions || downloadSkillName) && (
-						<div className="ml-auto flex shrink-0 items-center gap-1.5">
+						<div className="flex min-w-0 flex-1 items-center justify-end gap-1.5 md:ml-auto md:flex-none md:shrink-0">
 							{downloadSkillName && (
 								<Button variant="outline" size="sm" asChild>
 									<a href={`${getApiBaseUrl()}/skills/serve/${encodeURIComponent(downloadSkillName)}/download.zip`} download>
@@ -335,13 +341,13 @@ export function ReadOnlyMetadataTable({ value, className }: { value: Record<stri
 	return (
 		<FormSection title="Metadata" className={cn("flex flex-1 flex-col", className)}>
 			<div className="flex flex-1 flex-col rounded-sm border">
-				<div className="bg-muted/30 sticky top-0 z-10 grid grid-cols-2 border-b px-3 py-2 text-sm font-medium">
+				<div className="bg-muted/30 sticky top-0 z-10 grid grid-cols-1 border-b px-3 py-2 text-sm font-medium sm:grid-cols-2">
 					<span>Key</span>
 					<span>Value</span>
 				</div>
 				<div className="text-muted-foreground flex-1 divide-y overflow-y-auto">
 					{entries.map(([key, item]) => (
-						<div key={key} className="grid grid-cols-2 gap-3 px-3 py-2.5 text-sm">
+						<div key={key} className="grid grid-cols-1 gap-3 px-3 py-2.5 text-sm sm:grid-cols-2">
 							<p className="truncate font-mono text-xs">{key}</p>
 							<p className="font-mono text-xs leading-5 break-words">{String(item)}</p>
 						</div>
@@ -864,6 +870,7 @@ export function SkillReadOnlyContent({
 	composedSkillMd: string;
 	className?: string;
 }) {
+	const isMobile = useIsMobile();
 	const METADATA_KEY = "__metadata__";
 	const FRONTMATTER_KEY = "__extra_frontmatter__";
 
@@ -878,7 +885,7 @@ export function SkillReadOnlyContent({
 	const hasFrontmatter = extraFrontmatter && Object.keys(extraFrontmatter).length > 0;
 
 	return (
-		<ResizablePanelGroup direction="horizontal" className={cn("min-h-0 w-full", className)}>
+		<ResizablePanelGroup direction={isMobile ? "vertical" : "horizontal"} className={cn("min-h-0 w-full", className)}>
 			<ResizablePanel defaultSize="28%" minSize="18%" maxSize="50%" className="flex min-h-0 flex-col gap-2">
 				{/* Metadata & Frontmatter buttons */}
 				{(hasMetadata || hasFrontmatter) && (
@@ -924,7 +931,7 @@ export function SkillReadOnlyContent({
 				/>
 			</ResizablePanel>
 
-			<ResizableHandle className="mx-1.5 bg-transparent" />
+			<ResizableHandle className="mx-1.5 hidden bg-transparent md:flex" />
 
 			{/* Right: content pane */}
 			<ResizablePanel defaultSize="72%" minSize="30%" className="flex min-h-0 flex-col overflow-auto">

@@ -1,0 +1,526 @@
+virtual-key-users:
+  get:
+    operationId: listVirtualKeyUsers
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: List users attached to a virtual key
+    tags: [Virtual Keys, Users]
+    parameters:
+      - name: vk_id
+        in: path
+        required: true
+        schema: { type: string }
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Attached users
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [users, count]
+              properties:
+                users:
+                  type: array
+                  items:
+                    $ref: '../../schemas/management/users.yaml#/UserObject'
+                count: { type: integer }
+  post:
+    operationId: attachVirtualKeyUsers
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Attach users to a virtual key
+    tags: [Virtual Keys, Users]
+    parameters:
+      - name: vk_id
+        in: path
+        required: true
+        schema: { type: string }
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [user_ids]
+            properties:
+              user_ids:
+                type: array
+                items: { type: string }
+              preserve_usage: { type: boolean, default: false }
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Users attached
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+
+virtual-key-user:
+  delete:
+    operationId: detachVirtualKeyUser
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Detach a user from a virtual key
+    tags: [Virtual Keys, Users]
+    parameters:
+      - name: vk_id
+        in: path
+        required: true
+        schema: { type: string }
+      - name: user_id
+        in: path
+        required: true
+        schema: { type: string }
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: User detached
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+
+user-virtual-keys:
+  get:
+    operationId: listUserVirtualKeys
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: List virtual keys available to a user
+    description: |
+      Returns every virtual key assigned to the user, independent of access profiles, so
+      directly-assigned standalone keys are visible alongside profile-issued ones.
+    tags: [Users, Virtual Keys]
+    parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema: { type: string }
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: User virtual keys
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                virtual_keys:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      name: { type: string }
+                      value: { type: string }
+                      is_access_profile_managed:
+                        type: boolean
+                        description: >
+                          True when an access profile governs this key, in which case its policy
+                          is edit-locked and changed by editing and propagating the profile.
+  post:
+    operationId: addUserVirtualKey
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Mint an extra virtual key for a user
+    description: |
+      Issues an additional virtual key for the user.
+
+      Virtual keys are scoped to the **user**, not to any one access profile: what a request may
+      do with the key is read from whichever of the user's active profiles grants it, and each of
+      those profiles is a separate routing candidate the request may be served by. The user must
+      therefore hold at least one access profile — the request returns 404 otherwise — but the key
+      is not tied to the profile that happened to be current when it was minted, and it survives
+      that profile being detached as long as the user still holds another.
+    tags: [Users, Virtual Keys]
+    parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema: { type: string }
+    requestBody:
+      required: false
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/accessprofiles.yaml#/AddVirtualKeyRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Virtual key created.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/accessprofiles.yaml#/AddVirtualKeyResponse'
+      '404':
+        description: User has no access profiles
+      '409':
+        description: A virtual key with this name already exists
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+user-vk-creation-policy:
+  get:
+    operationId: getMyVirtualKeyCreationPolicy
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Get the calling user's virtual-key creation policy
+    description: |
+      Resolves the access profile that would govern a virtual key the **calling** user creates,
+      returning its name or none. Whether governance applies at all is decided separately from the
+      `VirtualKeys:CreateStandalone` permission (see `/api/governance/users/me/permissions`); this
+      endpoint only resolves the profile, and the create form combines the two.
+
+      Self-scoped: it always describes the caller and takes no user ID. Returns
+      `{"has_access_profile": false}` when the caller has no per-user identity (local admin) or holds
+      no active access profile. When several of their profiles qualify, the highest-ranked one governs.
+    tags: [Users, Virtual Keys]
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Virtual-key creation policy for the calling user
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [has_access_profile]
+              properties:
+                has_access_profile:
+                  type: boolean
+                  description: Whether the caller holds an access profile that would govern keys they create.
+                profile_name:
+                  type: string
+                  description: Name of the governing access profile. Present only when `has_access_profile` is true.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+team-customers:
+  get:
+    operationId: listTeamCustomers
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: List customers attached to a team
+    tags: [Teams, Customers]
+    parameters:
+      - name: team_id
+        in: path
+        required: true
+        schema: { type: string }
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Attached customers
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                customers:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      name: { type: string }
+  post:
+    operationId: attachTeamCustomer
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Attach a customer to a team
+    tags: [Teams, Customers]
+    parameters:
+      - name: team_id
+        in: path
+        required: true
+        schema: { type: string }
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [customer_id]
+            properties:
+              customer_id: { type: string }
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Customer attached
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+
+team-customer:
+  delete:
+    operationId: detachTeamCustomer
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Detach a customer from a team
+    tags: [Teams, Customers]
+    parameters:
+      - name: team_id
+        in: path
+        required: true
+        schema: { type: string }
+      - name: customer_id
+        in: path
+        required: true
+        schema: { type: string }
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Customer detached
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+
+customer-teams:
+  get:
+    operationId: listCustomerTeams
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: List teams attached to a customer
+    tags: [Customers, Teams]
+    parameters:
+      - name: customer_id
+        in: path
+        required: true
+        schema: { type: string }
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Attached teams
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                teams:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      name: { type: string }
+
+business-unit-customers:
+  get:
+    operationId: listBusinessUnitCustomers
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: List customers attached to a business unit
+    tags: [Business Units, Customers]
+    parameters:
+      - name: business_unit_id
+        in: path
+        required: true
+        schema: { type: string }
+      - name: limit
+        in: query
+        schema: { type: integer, minimum: 1, maximum: 100 }
+      - name: offset
+        in: query
+        schema: { type: integer, minimum: 0, default: 0 }
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Attached customers
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                customers:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      name: { type: string }
+                count: { type: integer }
+                total_count: { type: integer }
+                limit: { type: integer }
+                offset: { type: integer }
+  post:
+    operationId: attachBusinessUnitCustomer
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Attach customers to a business unit
+    tags: [Business Units, Customers]
+    parameters:
+      - name: business_unit_id
+        in: path
+        required: true
+        schema: { type: string }
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              customer_id: { type: string }
+              customer_ids:
+                type: array
+                items: { type: string }
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Customers attached
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+
+business-unit-customer:
+  delete:
+    operationId: detachBusinessUnitCustomer
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Detach a customer from a business unit
+    tags: [Business Units, Customers]
+    parameters:
+      - name: business_unit_id
+        in: path
+        required: true
+        schema: { type: string }
+      - name: customer_id
+        in: path
+        required: true
+        schema: { type: string }
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Customer detached
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+
+customer-business-units:
+  get:
+    operationId: listCustomerBusinessUnits
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: List business units attached to a customer
+    tags: [Customers, Business Units]
+    parameters:
+      - name: customer_id
+        in: path
+        required: true
+        schema: { type: string }
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Attached business units
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                business_units:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      name: { type: string }

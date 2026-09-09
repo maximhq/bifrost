@@ -22,7 +22,7 @@ Bifrost exposes Prometheus metrics via two methods:
 Bifrost automatically exposes a `/metrics` endpoint when the telemetry plugin is enabled (enabled by default). No additional configuration is needed.
 
 <Info>
-  When Bifrost's authentication is enabled (`auth_config.is_enabled = true`), the `/metrics` endpoint requires Basic auth credentials. You must include the same `admin_username` and `admin_password` from your `auth_config` in the Prometheus scrape configuration. Without this, Prometheus will receive `401 Unauthorized` responses and scraping will silently fail.
+  When Bifrost's authentication is enabled (`auth_config.is_enabled = true`), the `/metrics` endpoint requires credentials. You can authenticate the scraper with either the admin **Basic auth** credentials (`admin_username` / `admin_password` from your `auth_config`) or, on Enterprise, a **Bifrost API key** with the Metrics permission. Without valid credentials, Prometheus receives `401 Unauthorized` responses and scraping silently fails.
 </Info>
 
 ### Prometheus Configuration
@@ -49,6 +49,35 @@ scrape_configs:
       username: '<admin_username>'
       password: '<admin_password>'
 ```
+
+<Warning>
+  Prometheus scrapes over plain `http` by default, which sends the Basic auth credentials or API key in cleartext. When Bifrost is served over TLS, set `scheme: https` (and any required `tls_config`) in the scrape config so credentials are not exposed in transit.
+</Warning>
+
+#### Authenticating with an API Key <sup>Enterprise</sup>
+
+On Enterprise deployments, you can scrape `/metrics` with a Bifrost API key instead of the admin Basic auth credentials. Create an API key with the **Metrics** permission (included in all default roles) from **Settings → API Keys** (see [Creating API Keys](/api/procuring-api-keys)), then pass it as a bearer token in your scrape config:
+
+```yaml
+scrape_configs:
+  - job_name: 'bifrost'
+    static_configs:
+      - targets: ['bifrost-host:8080']
+    scrape_interval: 15s
+    authorization:
+      type: Bearer
+      credentials: '<bfst-your-api-key>'
+```
+
+Older Prometheus versions that lack the `authorization` block can use `bearer_token` instead:
+
+```yaml
+    bearer_token: '<bfst-your-api-key>'
+```
+
+<Note>
+  API-key auth for `/metrics` is an Enterprise feature. On the open-source build, the `/metrics` endpoint accepts only Basic auth (the `admin_username` / `admin_password` above).
+</Note>
 
 ### Endpoint
 
@@ -202,6 +231,8 @@ The `path` label contains the matched route template (e.g. `/genai/v1beta/models
 |--------|------|-------------|
 | `bifrost_upstream_requests_total` | Counter | Total requests to LLM providers |
 | `bifrost_upstream_latency_seconds` | Histogram | Provider request latency |
+| `bifrost_overhead_latency_microseconds` | Histogram | Total Bifrost overhead per request in microseconds (Bifrost's own work, excluding upstream provider time) |
+| `bifrost_overhead_component_microseconds` | Histogram | That same overhead broken down by internal component via the `overhead_component` label. Opt-in, and populated only when tracing is active — see [Overhead Breakdown](#overhead-breakdown) |
 | `bifrost_success_requests_total` | Counter | Successful provider requests |
 | `bifrost_error_requests_total` | Counter | Failed provider requests |
 | `bifrost_input_tokens_total` | Counter | Total input tokens processed |
@@ -214,6 +245,59 @@ The `path` label contains the matched route template (e.g. `/genai/v1beta/models
 | `bifrost_provider_key_up` | Gauge | Per-key health. `1` after a successful attempt, `0` after a failed attempt. Labels: `provider`, `key_id`, `key_name`. |
 | `bifrost_key_rotation_events_total` | Counter | Key rotations triggered by per-key failures — rate-limit (429), auth (401/403), or billing (402) — see below <sup>v1.5.0-prerelease4+</sup> |
 | `bifrost_request_retries` | Histogram | Number of retries used per request (observed once per request; buckets `0,1,2,3,5,10`). |
+| `bifrost_routing_embedding_requests_total` | Counter | Embedding calls made by semantic complexity routing. Labels: `provider`, `model` (the embedding provider/model, not the request's), `phase` (`request` classification vs `warmup` exemplar embedding). |
+| `bifrost_routing_embedding_cost_total` | Counter | Cost in USD of semantic routing embeddings (same labels as above). Recorded regardless of whether embedding usage counts toward budgets. |
+
+### Overhead Breakdown
+
+`bifrost_overhead_component_microseconds` decomposes the same overhead measured by `bifrost_overhead_latency_microseconds` into per-component histograms. It carries the same base labels as `bifrost_overhead_latency_microseconds` (see [Default Labels](#default-labels)) plus an `overhead_component` label naming the internal component, and shares the same bucket boundaries. Summing every component for a given label set reconstructs the scalar total.
+
+`overhead_component` takes one of a fixed set of ten values. Each rolls the individual pipeline spans up into a category, matching the categories the Bifrost UI's [log-detail overhead breakdown](/features/observability/latency-breakdown) groups into, so the metric and the UI agree:
+
+| Value | UI label | Component |
+|-------|----------|-----------|
+| `serialization` | Serialization | JSON parsing and encoding at the request edges (request/response unmarshal and marshal) |
+| `conversion` | Conversion | Translating between Bifrost's unified schema and the provider's native shape, including per-chunk stream conversion |
+| `plugins` | Plugins | All plugin hook spans combined, across every configured plugin |
+| `middleware` | Middleware | HTTP transport auth and access-control middleware |
+| `routing` | Key selection | Selecting which provider API key to use (key-pool lookup and key selection) |
+| `processing` | Processing | Internal pipeline glue: request setup, pre/post-hook loops, worker setup and handoff, queue wait, and attribute population |
+| `networking` | Networking | Handling between client, gateway, and provider: provider-side processing, request context, response headers, response finalize, request signing, and credential fetch |
+| `streaming` | Client delivery | Streaming egress: backpressure and writing chunks back to the client |
+| `miscellaneous` | Miscellaneous | Small glue work not worth its own span, plus the residual overhead not attributed to any phase span |
+| `other` | Other | Any unmapped bucket (its presence signals a new bucket needs a category) |
+
+The set is bounded, so the list above is exhaustive.
+
+This metric is **off by default**. Enable it with the telemetry plugin's `overhead_breakdown_enabled` config field (a sibling of `metrics_enabled`), or toggle **Enable Overhead Breakdown** on the pull-based tab of the **Observability → Prometheus** page in the UI.
+
+```json
+{
+  "plugins": [
+    {
+      "name": "telemetry",
+      "enabled": true,
+      "config": {
+        "overhead_breakdown_enabled": true
+      }
+    }
+  ]
+}
+```
+
+<Note>
+The breakdown is computed from completed trace spans, so it only populates when tracing/observability is active for the request. With tracing off, `bifrost_overhead_component_microseconds` stays empty even when `overhead_breakdown_enabled` is on.
+</Note>
+
+### Bifrost MCP Metrics
+
+Emitted for MCP (Model Context Protocol) tool calls executed through Bifrost:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `bifrost_mcp_client_operation_duration_seconds` | Histogram | Duration of an MCP tool call, observed by Bifrost (the MCP client). `_count` is call volume; a non-empty `error_type` marks failures. |
+
+Labels: `mcp_client` (server label), `mcp_tool_name`, `mcp_method` (`tools/call`), `error_type` (`auth_required` / `_OTHER` on failure, empty on success), plus the governance labels `virtual_key_id`/`virtual_key_name`, `team_id`/`team_name`, `customer_id`/`customer_name`, `business_unit_id`/`business_unit_name`, `project_id`/`project_name`, and any custom labels. Only tool executions are recorded (lifecycle `ping`/`list_tools` and codemode tools are skipped); provider/model and `network_transport` are not labels here.
 
 ### Default Labels
 
@@ -226,10 +310,13 @@ Most request-level Bifrost LLM metrics include these labels (the `bifrost_key_ro
 - `virtual_key_id` / `virtual_key_name` - Virtual key identifiers
 - `routing_engine_used` - Comma-separated list of routing engines that contributed to the decision (e.g. `governance`, `routing-rule`, `loadbalancing`, `model-catalog`, `core`). `core` is emitted when the Bifrost orchestrator itself makes a routing decision — fallback transitions or retry transitions.
 - `routing_rule_id` / `routing_rule_name` - Routing rule that matched the request
+- `complexity_tier` - Complexity tier used for routing (`SIMPLE` / `MEDIUM` / `COMPLEX`); empty when no routing rule referenced `complexity_tier`
+- `complexity_mechanism` - How the effective complexity tier was determined (`semantic`, `llm`, `session`, or `skipped` when no tier was produced). The raw complexity score is deliberately not a label because it has unbounded cardinality; it remains available in request logs and trace attributes
 - `selected_key_id` / `selected_key_name` - API key that successfully served the request (`""` when all attempts failed)
 - `fallback_index` - Fallback position
 - `team_id` / `team_name` - Team identifiers (empty when governance is not used)
 - `customer_id` / `customer_name` - Customer identifiers (empty when governance is not used)
+- `project_id` / `project_name` - Project the request was scoped to (empty when the request named no project). A request is scoped to at most one project, so these stay singular where team and customer identifiers can fan out
 
 <Note>
   **v1.5.0-prerelease4+**: `selected_key_id` / `selected_key_name` are only populated when the request succeeds. On final errors both are empty — use the `attempt_trail` log field to see which keys were tried.

@@ -186,6 +186,10 @@ interface AsyncMultiSelectProps<T> {
 
 	/** callback function to be called when input value changes */
 	onInputChange?: (inputValue: string, actionMeta: { action: string }) => void;
+	/** called when the menu opens — e.g. to start fetching options lazily */
+	onMenuOpen?: () => void;
+	/** called when the menu closes */
+	onMenuClose?: () => void;
 	onKeyDown?: KeyboardEventHandler;
 
 	/** custom no options message */
@@ -403,9 +407,11 @@ export function AsyncMultiSelect<T>(props: AsyncMultiSelectProps<T>) {
 				}}
 				onMenuOpen={() => {
 					menuOpenRef.current = true;
+					props.onMenuOpen?.();
 				}}
 				onMenuClose={() => {
 					menuOpenRef.current = false;
+					props.onMenuClose?.();
 				}}
 				menuIsOpen={props.menuIsOpen}
 				noOptionsMessage={
@@ -415,7 +421,11 @@ export function AsyncMultiSelect<T>(props: AsyncMultiSelectProps<T>) {
 				}
 				inputValue={props.inputValue}
 				styles={{
-					menuPortal: (base) => ({ ...base, zIndex: 9999 }),
+					// react-remove-scroll (used by Radix Dialog/Sheet while open) sets
+					// `pointer-events: none` on body; a menu portaled to body inherits
+					// that and never gets it back, so force it here (same fix as the
+					// Sonner toaster override in globals.css).
+					menuPortal: (base) => ({ ...base, zIndex: 9999, pointerEvents: "auto" }),
 					control: (base) => ({ ...base, boxShadow: "none", minHeight: "32px" }),
 					multiValue: () => ({}),
 					multiValueLabel: () => ({}),

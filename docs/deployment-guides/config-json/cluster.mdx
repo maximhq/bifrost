@@ -188,7 +188,7 @@ for the full deployment guide.
 | `k8s_label_selector` | string | Kubernetes label selector |
 | `dns_names` | array of strings | DNS names to resolve |
 | `udp_broadcast_port` | integer | UDP broadcast port (required for `udp`) |
-| `consul_address` | string | Consul address |
+| `consul_address` | string | Consul agent address (default: `localhost:8500`) |
 | `etcd_endpoints` | array of strings | etcd endpoint URLs |
 | `mdns_service` | string | Optional mDNS service type override (e.g. `"_bifrost-cluster._tcp"`) |
 
@@ -199,6 +199,10 @@ For `discovery.type: "mdns"`, `service_name` is sufficient for most setups. When
 <Warning>
 For `discovery.type: "udp"`, configure both `udp_broadcast_port` and `allowed_address_space`.
 </Warning>
+
+<Note>
+`consul_address` is the only Consul field in `config.json`. ACL tokens, TLS, namespace, and datacenter are **not** `config.json` fields - set them with Consul's standard environment variables on the Bifrost process instead. See [Consul Discovery &rarr; Authentication and TLS](/enterprise/clustering#consul-authentication-and-tls) for the full list.
+</Note>
 
 ---
 

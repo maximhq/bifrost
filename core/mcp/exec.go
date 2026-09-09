@@ -1,7 +1,6 @@
 package mcp
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -82,37 +81,24 @@ func (m *MCPManager) executeToolWithHooks(
 		}
 	}
 
-	// Resolve the upstream client and acquire its connection BEFORE the plugin
-	// gate runs. Connection lifecycle is the orchestrator's concern, not the
-	// plugin op's — the plugin pipeline only wraps the actual CallTool. When
-	// AcquireClientConn fails (e.g. *MCPAuthRequiredError for per-user
-	// clients that need re-auth or headers submission), the plugin gate is
-	// never invoked.
-	state, conn, release, prepErr := m.prepareToolExecution(ctx, request)
-	if prepErr != nil {
-		bErr := &schemas.BifrostError{
-			IsBifrostError: false,
-			Error:          &schemas.ErrorField{Message: prepErr.Error()},
-			ExtraFields:    schemas.BifrostErrorExtraFields{RequestType: requestType, MCPRequestType: request.RequestType},
-		}
-		var authRequiredErr *schemas.MCPAuthRequiredError
-		if errors.As(prepErr, &authRequiredErr) {
-			bErr.ExtraFields.MCPAuthRequired = authRequiredErr
-		}
-		return nil, bErr
-	}
-	defer release()
-
-	// state == nil signals a code-mode tool: pass nil conn/config/mapping and
-	// ToolsManager.ExecuteTool routes directly to CodeMode.
-	var executionConfig *schemas.MCPClientConfig
-	var toolNameMapping map[string]string
-	if state != nil {
-		executionConfig = state.ExecutionConfig
-		toolNameMapping = state.ToolNameMapping
-	}
-
 	resp, bErr := m.RunWithPluginPipeline(ctx, request, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
+		// Resolve and acquire after PreMCPHook so policy plugins can reject denied
+		// MCP clients before any auth or transport work.
+		state, conn, release, prepErr := m.prepareToolExecution(ctx, preReq)
+		if prepErr != nil {
+			return nil, prepErr
+		}
+		defer release()
+
+		// state == nil signals a code-mode tool: pass nil conn/config/mapping and
+		// ToolsManager.ExecuteTool routes directly to CodeMode.
+		var executionConfig *schemas.MCPClientConfig
+		var toolNameMapping map[string]string
+		if state != nil {
+			executionConfig = state.ExecutionConfig
+			toolNameMapping = state.ToolNameMapping
+		}
+
 		result, opErr := m.toolsManager.ExecuteTool(ctx, preReq, conn, executionConfig, toolNameMapping)
 		if opErr != nil {
 			return nil, opErr
@@ -181,6 +167,29 @@ func (m *MCPManager) prepareToolExecution(ctx *schemas.BifrostContext, request *
 	}
 	if shouldSkipToolForRequest(ctx, clientName, toolName) {
 		return nil, nil, nil, fmt.Errorf("tool '%s' is not permitted (filtered by request context)", toolName)
+	}
+	// NeedsReauth is the one hard gate left besides Disabled: the credential
+	// is confirmed permanently dead (see connectToMCPClient's typed
+	// ErrOAuth2TokenExpired classification), so there's no point attempting
+	// a call that's guaranteed to fail — only an explicit reauthorize clears
+	// this, never a later successful call. Say so explicitly rather than
+	// falling through to AcquireClientConn's generic "no active connection",
+	// which wouldn't tell the caller this needs an admin to act. Checked
+	// only after the authorization filters above: a caller not permitted to
+	// see this client/tool in the first place must get the same generic
+	// "not permitted" error regardless of NeedsReauth — surfacing client
+	// name and reauth state to an unauthorized caller would leak
+	// existence/state information the filters exist to hide.
+	//
+	// Unstable is deliberately NOT gated here. It's Bifrost's own periodic
+	// connection-check state (see the connection checker), purely
+	// informational — reflects only Bifrost's own heartbeat/list_tools
+	// checks to the server, never the outcome of a real tool call, in either
+	// direction. A client marked Unstable still keeps its last-known ToolMap
+	// (see failConnectAttempt) and still gets tool calls attempted normally;
+	// it self-heals to Healthy on the checker's next successful pass.
+	if state.State == schemas.MCPConnectionStateNeedsReauth {
+		return nil, nil, nil, fmt.Errorf("tool '%s' is unavailable: client %s needs re-authorization (its admin credential expired or was revoked)", toolName, clientName)
 	}
 	conn, release, err := m.AcquireClientConn(ctx, state)
 	if err != nil {

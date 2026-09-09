@@ -19,6 +19,8 @@ interface PluginTracingSheetProps {
 	pluginName: string;
 	/** Human-readable destination used in the copy, e.g. "the OTEL collector", "Datadog". */
 	destination: string;
+	/** Show the overhead-spans toggle. Connectors that don't honor it (BigQuery) pass false. */
+	showOverheadToggle?: boolean;
 }
 
 function resolveToggleState(filter: PluginSpanFilter | null | undefined, allPlugins: string[]): Record<string, boolean> {
@@ -59,7 +61,7 @@ function PluginRow({ name, checked, onChange }: { name: string; checked: boolean
 	);
 }
 
-export default function PluginTracingSheet({ open, onClose, pluginName, destination }: PluginTracingSheetProps) {
+export default function PluginTracingSheet({ open, onClose, pluginName, destination, showOverheadToggle = true }: PluginTracingSheetProps) {
 	// All currently loaded plugins (built-in, enterprise, custom, and auto-loaded) that can
 	// emit spans, named to match the connector's span filter. One flat list — the backend
 	// already returns the complete set, so there's no built-in/custom split to maintain.
@@ -67,6 +69,7 @@ export default function PluginTracingSheet({ open, onClose, pluginName, destinat
 	const { data: targetPlugin } = useGetPluginQuery(pluginName);
 	const [updatePlugin, { isLoading }] = useUpdatePluginMutation();
 	const [toggles, setToggles] = useState<Record<string, boolean>>({});
+	const [exportOverheadSpans, setExportOverheadSpans] = useState(false);
 	const wasOpenRef = useRef(false);
 
 	useEffect(() => {
@@ -75,6 +78,7 @@ export default function PluginTracingSheet({ open, onClose, pluginName, destinat
 			const filter = (targetPlugin.config?.plugin_span_filter as PluginSpanFilter | undefined) ?? null;
 			if (isLoadingLoadedPlugins || allPlugins.length === 0) return;
 			setToggles(resolveToggleState(filter, allPlugins));
+			setExportOverheadSpans(Boolean(targetPlugin.config?.export_overhead_spans));
 			wasOpenRef.current = true;
 		}
 		if (!open) wasOpenRef.current = false;
@@ -97,29 +101,32 @@ export default function PluginTracingSheet({ open, onClose, pluginName, destinat
 			return;
 		}
 		const filter = buildFilter(toggles);
+		const config: Record<string, unknown> = { plugin_span_filter: filter };
+		if (showOverheadToggle) {
+			config.export_overhead_spans = exportOverheadSpans;
+		}
 		try {
 			await updatePlugin({
 				name: pluginName,
 				data: {
 					enabled: targetPlugin.enabled,
-					config: { plugin_span_filter: filter },
+					config,
 				},
 			}).unwrap();
-			toast.success("Plugin tracing configuration saved");
+			toast.success("Tracing configuration saved");
 			onClose();
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
-	}, [toggles, targetPlugin, updatePlugin, onClose, pluginName, destination]);
+	}, [toggles, exportOverheadSpans, showOverheadToggle, targetPlugin, updatePlugin, onClose, pluginName, destination]);
 
 	return (
 		<Sheet open={open} onOpenChange={onClose}>
-			<SheetContent className="flex w-full flex-col overflow-hidden p-8">
+			<SheetContent className="flex w-full flex-col overflow-hidden p-4 md:p-8">
 				<SheetHeader className="flex flex-col items-start p-0">
-					<SheetTitle>Configure Plugin Tracing</SheetTitle>
+					<SheetTitle>Configure Tracing</SheetTitle>
 					<SheetDescription>
-						Choose which plugin hook spans are exported to {destination}. Disabling a plugin removes its spans from traces without affecting
-						execution.
+						Choose which spans are exported to {destination}. Disabling a plugin removes its spans from traces without affecting execution.
 					</SheetDescription>
 				</SheetHeader>
 
@@ -149,6 +156,28 @@ export default function PluginTracingSheet({ open, onClose, pluginName, destinat
 								))}
 							</div>
 						</div>
+
+						{showOverheadToggle && (
+							<>
+								<div className="border-t" />
+								<div>
+									<p className="text-muted-foreground mb-2 text-xs font-medium tracking-wide uppercase">Overhead</p>
+									<div className="flex items-center justify-between rounded-md border px-3 py-2.5">
+										<div className="flex flex-col">
+											<span className="text-sm">Overhead latency spans</span>
+											<span className="text-muted-foreground text-xs">
+												Internal timing spans (setup, key selection, pipeline phases). Off by default.
+											</span>
+										</div>
+										<Switch
+											checked={exportOverheadSpans}
+											onCheckedChange={setExportOverheadSpans}
+											data-testid="tracing-overhead-toggle"
+										/>
+									</div>
+								</div>
+							</>
+						)}
 					</div>
 				</div>
 

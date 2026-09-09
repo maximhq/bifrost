@@ -20,17 +20,14 @@ fi
 go work init
 go work use ./core
 go work use ./framework
-go work use ./plugins/compat
-go work use ./plugins/governance
-go work use ./plugins/jsonparser
-go work use ./plugins/logging
-go work use ./plugins/maxim
-go work use ./plugins/mocker
-go work use ./plugins/otel
-go work use ./plugins/prompts
-go work use ./plugins/semanticcache
-go work use ./plugins/modelcatalogresolver
-go work use ./plugins/telemetry
 go work use ./transports
 go work use ./cli
+# Discover plugin modules instead of listing them, so a newly added plugin
+# never needs a matching CI edit. test-all-plugins.sh globs plugins/*/go.mod
+# the same way, so the two lists cannot drift apart.
+for plugin_dir in ./plugins/*/; do
+  if [ -f "$plugin_dir/go.mod" ]; then
+    go work use "$plugin_dir"
+  fi
+done
 echo "✅ Go workspace initialized"

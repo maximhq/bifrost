@@ -3,15 +3,53 @@ package utils
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/maximhq/bifrost/core/network"
 )
+
+// RedactURLForError reduces a resource URL to the part that is safe to echo back in an
+// error: scheme, host, and path. Userinfo, query, and fragment are dropped.
+//
+// A pre-signed URL carries its credential in the query -- AWS SigV4 puts it in
+// X-Amz-Signature, Azure in the SAS `sig` parameter -- and AWS documents pre-signed URLs
+// as bearer tokens that "grant access to those who possess them", valid for up to 7 days
+// (docs.aws.amazon.com/AmazonS3/latest/userguide/using-presigned-url.html). These errors
+// reach the client as a BifrostError and land in logs, so echoing the query hands out
+// working access to whoever reads either one.
+//
+// url.URL.Redacted() is deliberately not used: it masks the password and keeps the query,
+// which is the half that actually carries the credential.
+func RedactURLForError(resourceURL string) string {
+	parsed, err := url.Parse(resourceURL)
+	if err != nil || parsed.Host == "" {
+		// Nothing safe is identifiable, so nothing is echoed. A useless-but-safe
+		// placeholder beats guessing which half of an unparseable string was the secret.
+		return "[redacted url]"
+	}
+	return (&url.URL{Scheme: parsed.Scheme, Host: parsed.Host, Path: parsed.Path}).String()
+}
+
+// sanitizeFetchError strips the URL out of the cause as well as the message. net/http
+// wraps transport failures in *url.Error, whose Error() prints the request URL verbatim
+// apart from the password (net/http's own stripPassword), so a pre-signed signature
+// survives into the message even when the caller's format string is already clean.
+//
+// The Op and the underlying cause are kept: "dial tcp ...: i/o timeout" is where the
+// diagnostic value lives, and it names a host at most.
+func sanitizeFetchError(err error, redacted string) error {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return &url.Error{Op: urlErr.Op, URL: redacted, Err: urlErr.Err}
+	}
+	return err
+}
 
 // FetchAndEncodeURL downloads a remote resource (image, document, etc.) and
 // returns its base64 encoding plus the response Content-Type. Used by providers
@@ -29,33 +67,20 @@ import (
 func FetchAndEncodeURL(ctx context.Context, resourceURL string) (mediaType string, encoded string, err error) {
 	const maxBytes int64 = 25 * 1024 * 1024
 
+	// Every error below names the resource by its redacted form only; see
+	// RedactURLForError for why the query and userinfo never make it into a message.
+	redacted := RedactURLForError(resourceURL)
+
 	parsed, err := url.Parse(resourceURL)
 	if err != nil {
-		return "", "", fmt.Errorf("invalid resource URL %q: %w", resourceURL, err)
+		return "", "", fmt.Errorf("invalid resource URL %q: %w", redacted, sanitizeFetchError(err, redacted))
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return "", "", fmt.Errorf("unsupported URL scheme %q (only http/https allowed)", parsed.Scheme)
 	}
 
-	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	transport := &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			host, port, splitErr := net.SplitHostPort(addr)
-			if splitErr != nil {
-				return nil, splitErr
-			}
-			ips, lookupErr := (&net.Resolver{}).LookupIP(ctx, "ip", host)
-			if lookupErr != nil {
-				return nil, lookupErr
-			}
-			for _, ip := range ips {
-				if !isPublicIP(ip) {
-					return nil, fmt.Errorf("blocked fetch to non-public address %s", ip.String())
-				}
-			}
-			// Dial the first validated IP directly to close the DNS-rebinding TOCTOU.
-			return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
-		},
+		DialContext: network.SSRFSafeDialContext(10 * time.Second),
 	}
 	client := &http.Client{
 		Timeout:   20 * time.Second,
@@ -73,26 +98,26 @@ func FetchAndEncodeURL(ctx context.Context, resourceURL string) (mediaType strin
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, resourceURL, nil)
 	if err != nil {
-		return "", "", fmt.Errorf("invalid resource URL %q: %w", resourceURL, err)
+		return "", "", fmt.Errorf("invalid resource URL %q: %w", redacted, sanitizeFetchError(err, redacted))
 	}
 	req.Header.Set("User-Agent", "bifrost-fetch/1")
 
-	resp, err := client.Do(req)
+	resp, err := DoHTTPRequest(client, req)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to fetch from %q: %w", resourceURL, err)
+		return "", "", fmt.Errorf("failed to fetch from %q: %w", redacted, sanitizeFetchError(err, redacted))
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", "", fmt.Errorf("fetch %q returned non-2xx status %d", resourceURL, resp.StatusCode)
+		return "", "", fmt.Errorf("fetch %q returned non-2xx status %d", redacted, resp.StatusCode)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
 	if err != nil {
-		return "", "", fmt.Errorf("failed to read body from %q: %w", resourceURL, err)
+		return "", "", fmt.Errorf("failed to read body from %q: %w", redacted, sanitizeFetchError(err, redacted))
 	}
 	if int64(len(body)) > maxBytes {
-		return "", "", fmt.Errorf("resource at %q exceeds %d-byte limit", resourceURL, maxBytes)
+		return "", "", fmt.Errorf("resource at %q exceeds %d-byte limit", redacted, maxBytes)
 	}
 
 	mediaType = resp.Header.Get("Content-Type")
@@ -101,79 +126,4 @@ func FetchAndEncodeURL(ctx context.Context, resourceURL string) (mediaType strin
 	}
 
 	return mediaType, base64.StdEncoding.EncodeToString(body), nil
-}
-
-// cgnat is the RFC 6598 Carrier-Grade NAT shared address space (100.64.0.0/10).
-// It is reserved for provider-internal networks and is used for pod IPs on some
-// Kubernetes platforms (e.g. EKS), so it must not be reachable. netip's
-// IsPrivate() does not cover it.
-var cgnat = netip.MustParsePrefix("100.64.0.0/10")
-
-// isPublicIP reports whether ip is safe to fetch from: not loopback, private,
-// CGNAT, link-local, unique-local, site-local, multicast, or unspecified.
-// IPv6 forms that embed an IPv4 address (IPv4-mapped, 6to4, NAT64) are reduced
-// to that IPv4 and re-checked, so an internal IPv4 such as the 169.254.169.254
-// metadata endpoint cannot be reached by wrapping it in an IPv6 transition
-// representation.
-func isPublicIP(ip net.IP) bool {
-	addr, ok := netip.AddrFromSlice(ip)
-	if !ok {
-		return false
-	}
-	addr = addr.Unmap()
-
-	// If the address embeds an IPv4 via a transition mechanism (6to4 / NAT64),
-	// classify the embedded IPv4 — otherwise an internal target like
-	// 169.254.169.254 can be reached as 2002:a9fe:a9fe:: or 64:ff9b::a9fe:a9fe,
-	// neither of which Unmap() collapses.
-	if embedded, ok := embeddedIPv4(addr); ok {
-		addr = embedded
-	}
-
-	if addr.IsLoopback() || addr.IsPrivate() || cgnat.Contains(addr) ||
-		addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() ||
-		addr.IsMulticast() || addr.IsUnspecified() || addr.IsInterfaceLocalMulticast() ||
-		addr == netip.AddrFrom4([4]byte{255, 255, 255, 255}) {
-		return false
-	}
-
-	// Deprecated IPv6 site-local fec0::/10 (RFC 3879) isn't matched by any
-	// helper above; reject it explicitly.
-	if addr.Is6() {
-		b := addr.As16()
-		if b[0] == 0xfe && (b[1]&0xc0) == 0xc0 {
-			return false
-		}
-	}
-
-	return true
-}
-
-// embeddedIPv4 extracts the IPv4 address carried inside an IPv6 transition
-// address: 6to4 (2002::/16) or NAT64 (RFC 6052 well-known 64:ff9b::/96 and
-// RFC 8215 local-use 64:ff9b:1::/48). Returns false for anything else.
-//
-// Limitation: NAT64 with an operator-chosen Network-Specific Prefix (any other
-// /32../96) is indistinguishable from a normal global address and is not
-// unwrapped — only the two standard prefixes are covered.
-func embeddedIPv4(addr netip.Addr) (netip.Addr, bool) {
-	if !addr.Is6() {
-		return netip.Addr{}, false
-	}
-	b := addr.As16()
-	switch {
-	case b[0] == 0x20 && b[1] == 0x02: // 6to4 2002::/16 -> bytes 2..5
-		return netip.AddrFrom4([4]byte{b[2], b[3], b[4], b[5]}), true
-	case b[0] == 0x00 && b[1] == 0x64 && b[2] == 0xff && b[3] == 0x9b:
-		// NAT64 well-known 64:ff9b::/96 -> IPv4 in the low 32 bits (bytes 12..15).
-		if b[4] == 0x00 && b[5] == 0x00 {
-			return netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]}), true
-		}
-		// NAT64 local-use 64:ff9b:1::/48 -> per RFC 6052 the IPv4 occupies
-		// bytes 6,7,9,10 (byte 8 is the reserved u-octet, skipped).
-		if b[4] == 0x00 && b[5] == 0x01 {
-			return netip.AddrFrom4([4]byte{b[6], b[7], b[9], b[10]}), true
-		}
-	}
-	return netip.Addr{}, false
 }

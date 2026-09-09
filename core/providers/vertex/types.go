@@ -3,6 +3,7 @@ package vertex
 import (
 	"time"
 
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 )
 
@@ -241,8 +242,10 @@ type VertexValidationError struct {
 // VertexCountTokensResponse models the response payload for Vertex's Gemini-style countTokens.
 // Vertex uses camelCase unlike other request json body.
 type VertexCountTokensResponse struct {
-	TotalTokens             int32 `json:"totalTokens,omitempty"`
-	CachedContentTokenCount int32 `json:"cachedContentTokenCount,omitempty"`
+	TotalTokens             int32                        `json:"totalTokens,omitempty"`
+	TotalBillableCharacters int32                        `json:"totalBillableCharacters,omitempty"`
+	CachedContentTokenCount int32                        `json:"cachedContentTokenCount,omitempty"`
+	PromptTokensDetails     []*gemini.ModalityTokenCount `json:"promptTokensDetails,omitempty"`
 }
 
 // ================================ Batch Prediction API Types ================================
@@ -431,10 +434,12 @@ type VertexBatchJobListResponse struct {
 }
 
 // VertexBatchOutputLine is one line of a predictions-*.jsonl batch output file.
-// The original request is echoed back; labels carry the Bifrost custom_id.
+// The original request is echoed back; the Bifrost custom_id round-trips via the native
+// top-level "custom_id" (Anthropic/Claude jobs) or the request labels (Gemini jobs).
 type VertexBatchOutputLine struct {
-	Status  string `json:"status,omitempty"` // error string for failed records, empty on success
-	Request struct {
+	CustomID string `json:"custom_id,omitempty"` // native custom_id echoed by Anthropic-on-Vertex batch
+	Status   string `json:"status,omitempty"`    // error string for failed records, empty on success
+	Request  struct {
 		Labels map[string]string `json:"labels"`
 	} `json:"request"`
 	Response map[string]interface{} `json:"response,omitempty"`

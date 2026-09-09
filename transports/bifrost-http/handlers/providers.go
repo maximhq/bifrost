@@ -4,6 +4,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -19,7 +20,6 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
-	governanceplugin "github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -34,7 +34,29 @@ type ModelsManager interface {
 	OnKeyAdded(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error
 	OnKeyUpdated(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error
 	OnKeyDeleted(ctx context.Context, provider schemas.ModelProvider, keyID string) error
+	// RefreshLiveModelsForKey re-fetches list-models for a single key on
+	// demand. Returns ErrRefreshInProgress when the provider is already being
+	// refreshed.
+	RefreshLiveModelsForKey(ctx context.Context, provider schemas.ModelProvider, keyID string) error
+	// RefreshLiveModelsForAllKeys re-fetches list-models across every enabled
+	// key of the provider on demand. Returns ErrRefreshInProgress when the
+	// provider is already being refreshed.
+	RefreshLiveModelsForAllKeys(ctx context.Context, provider schemas.ModelProvider) error
+	// ResolveAccess answers what a request may reach, resolving it once onto the request's grant.
+	// Listing routes run outside the request pipeline, so they ask for the answer here rather
+	// than waiting for a hook to. Nil means nothing was resolved: no key was presented, or the
+	// deployment has no governance at all. An error is a request nothing settled who it is.
+	ResolveAccess(ctx *schemas.BifrostContext) (schemas.Access, error)
+	// The models listing narrows its provider fan-out to what the request may reach, by the same
+	// rule the integration routes use.
+	NarrowListModelsProviders(bifrostCtx *schemas.BifrostContext)
 }
+
+// ErrRefreshInProgress is returned by the on-demand model refresh entrypoints
+// when a refresh for the same provider is already running. Repeated presses of
+// the UI refresh button collapse into the in-flight pass rather than each
+// spawning their own (enabled keys x 2) burst of upstream calls.
+var ErrRefreshInProgress = errors.New("model refresh already in progress for this provider")
 
 // ModelPricingAttributesEntry is the wire shape for PUT /api/models/catalog.
 // (model, provider) is the natural key on governance_model_pricing.
@@ -81,6 +103,7 @@ type ProviderResponse struct {
 	StoreRawRequestResponse  bool                             `json:"store_raw_request_response"`       // Capture raw request/response for internal logging only
 	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"` // Custom provider configuration
 	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"`          // OpenAI-specific configuration
+	PromptCache              *schemas.PromptCacheConfig       `json:"prompt_cache,omitempty"`           // Prompt-cache breakpoint injection
 	ProviderStatus           ProviderStatus                   `json:"provider_status"`                  // Health/initialization status of the provider
 	Status                   string                           `json:"status,omitempty"`                 // Operational status (e.g., list_models_failed)
 	Description              string                           `json:"description,omitempty"`            // Error/status description
@@ -109,6 +132,7 @@ type providerCreatePayload struct {
 	StoreRawRequestResponse  *bool                             `json:"store_raw_request_response,omitempty"`
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"` // OpenAI-specific configuration
+	PromptCache              *schemas.PromptCacheConfig        `json:"prompt_cache,omitempty"`  // Prompt-cache breakpoint injection
 }
 
 type providerUpdatePayload struct {
@@ -120,6 +144,44 @@ type providerUpdatePayload struct {
 	StoreRawRequestResponse  *bool                            `json:"store_raw_request_response,omitempty"`
 	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"`
 	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"` // OpenAI-specific configuration
+	PromptCache              *schemas.PromptCacheConfig       `json:"prompt_cache,omitempty"`  // Prompt-cache breakpoint injection
+}
+
+// applyProviderConfigUpdates copies onto config only the nested config blocks the
+// request actually carried, leaving the rest as they were saved.
+//
+// PUT on this endpoint is a partial update. These blocks were added to the payload one
+// release at a time, so a client written against an earlier shape simply does not send
+// the newer ones; assigning unconditionally erased whichever blocks that client had
+// never heard of, on every unrelated update. Omission means "leave this alone".
+//
+// An explicit null still clears a block, which is why presence is read from the raw
+// body rather than inferred from a nil pointer: both decode to nil, and only one of
+// them is a request to delete anything.
+//
+// Replacement stays wholesale. A supplied block overwrites the saved one entirely
+// rather than merging field by field, so clearing one setting inside a block does not
+// require a separate delete verb.
+//
+// Split out of the update handler so this rule is testable without standing up a
+// router and a store.
+func applyProviderConfigUpdates(config *configstore.ProviderConfig, payload *providerUpdatePayload, bodyFields map[string]json.RawMessage) {
+	carried := func(field string) bool {
+		_, ok := bodyFields[field]
+		return ok
+	}
+	if carried("proxy_config") {
+		config.ProxyConfig = payload.ProxyConfig
+	}
+	if carried("custom_provider_config") {
+		config.CustomProviderConfig = payload.CustomProviderConfig
+	}
+	if carried("openai_config") {
+		config.OpenAIConfig = payload.OpenAIConfig
+	}
+	if carried("prompt_cache") {
+		config.PromptCache = payload.PromptCache
+	}
 }
 
 // RegisterRoutes registers all provider management routes
@@ -135,6 +197,11 @@ func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...schema
 	r.PUT("/api/providers/{provider}/keys/{key_id}", lib.ChainMiddlewares(h.updateProviderKey, middlewares...))
 	r.DELETE("/api/providers/{provider}", lib.ChainMiddlewares(h.deleteProvider, middlewares...))
 	r.DELETE("/api/providers/{provider}/keys/{key_id}", lib.ChainMiddlewares(h.deleteProviderKey, middlewares...))
+	// On-demand model discovery. The catalog otherwise refreshes on the
+	// configured live_models_sync_interval, so these let an operator pick up a
+	// newly served model (or re-check a failing key) without waiting.
+	r.POST("/api/providers/{provider}/refresh-models", lib.ChainMiddlewares(h.refreshProviderModels, middlewares...))
+	r.POST("/api/providers/{provider}/keys/{key_id}/refresh-models", lib.ChainMiddlewares(h.refreshProviderKeyModels, middlewares...))
 	r.GET("/api/keys", lib.ChainMiddlewares(h.listKeys, middlewares...))
 	r.GET("/api/models", lib.ChainMiddlewares(h.listModels, middlewares...))
 	r.GET("/api/models/details", lib.ChainMiddlewares(h.listModelDetails, middlewares...))
@@ -312,10 +379,18 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		StoreRawRequestResponse:  payload.StoreRawRequestResponse != nil && *payload.StoreRawRequestResponse,
 		CustomProviderConfig:     payload.CustomProviderConfig,
 		OpenAIConfig:             payload.OpenAIConfig,
+		PromptCache:              payload.PromptCache,
 	}
 	// Validate custom provider configuration before persisting
 	if err := lib.ValidateCustomProvider(config, payload.Provider); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid custom provider config: %v", err))
+		return
+	}
+	// The config-file path validates prompt_cache against config.schema.json; this is the
+	// same contract on the API path, so a TTL the file would reject cannot be stored here
+	// and then rejected by the provider at request time instead.
+	if err := lib.ValidatePromptCache(config.PromptCache); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid prompt cache config: %v", err))
 		return
 	}
 	// Add provider to store (env vars will be processed by store)
@@ -354,6 +429,8 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 			SendBackRawResponse:      config.SendBackRawResponse,
 			StoreRawRequestResponse:  config.StoreRawRequestResponse,
 			CustomProviderConfig:     config.CustomProviderConfig,
+			OpenAIConfig:             config.OpenAIConfig,
+			PromptCache:              config.PromptCache,
 			Status:                   config.Status,
 			Description:              config.Description,
 		}, ProviderStatusActive)
@@ -385,6 +462,16 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	}{}
 
 	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
+		return
+	}
+
+	// Which top-level keys the body actually carried. A nested config block decodes to
+	// nil both when it is omitted and when it is explicitly null, and those are
+	// different requests: omitting means "leave this alone", null means "clear it".
+	// Only a second pass over the raw body can tell them apart.
+	var bodyFields map[string]json.RawMessage
+	if err := sonic.Unmarshal(ctx.PostBody(), &bodyFields); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
@@ -439,6 +526,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		ProxyConfig:              oldConfigRaw.ProxyConfig,
 		CustomProviderConfig:     oldConfigRaw.CustomProviderConfig,
 		OpenAIConfig:             oldConfigRaw.OpenAIConfig,
+		PromptCache:              oldConfigRaw.PromptCache,
 		StoreRawRequestResponse:  oldConfigRaw.StoreRawRequestResponse,
 		Status:                   oldConfigRaw.Status,
 		Description:              oldConfigRaw.Description,
@@ -463,6 +551,10 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	prospective.CustomProviderConfig = payload.CustomProviderConfig
 	if err := lib.ValidateCustomProviderUpdate(prospective, *oldConfigRaw, provider); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid custom provider config: %v", err))
+		return
+	}
+	if err := lib.ValidatePromptCache(payload.PromptCache); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid prompt cache config: %v", err))
 		return
 	}
 
@@ -504,9 +596,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
-	config.ProxyConfig = payload.ProxyConfig
-	config.CustomProviderConfig = payload.CustomProviderConfig
-	config.OpenAIConfig = payload.OpenAIConfig
+	applyProviderConfigUpdates(&config, &payload.providerUpdatePayload, bodyFields)
 	if payload.SendBackRawRequest != nil {
 		config.SendBackRawRequest = *payload.SendBackRawRequest
 	}
@@ -558,6 +648,9 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 			logger.Warn("Model discovery failed for provider %s: %v", provider, err)
 		}
 	}
+	// A base URL, proxy, or credential fixed here is just as likely to be what
+	// broke the complexity classifier's warmup as a disabled key was.
+	h.rearmComplexitySemanticClassifier(provider)
 
 	// Get redacted config for response (in-memory store is now updated by updateKeyStatus)
 	redactedConfig, err := h.inMemoryStore.GetProviderConfigRedacted(provider)
@@ -572,6 +665,8 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 			SendBackRawResponse:      config.SendBackRawResponse,
 			StoreRawRequestResponse:  config.StoreRawRequestResponse,
 			CustomProviderConfig:     config.CustomProviderConfig,
+			OpenAIConfig:             config.OpenAIConfig,
+			PromptCache:              config.PromptCache,
 			Status:                   config.Status,
 			Description:              config.Description,
 		}, ProviderStatusActive)
@@ -649,12 +744,55 @@ type ModelDetailsResponse struct {
 	IsDeprecated         bool                  `json:"is_deprecated,omitempty"`
 	AdditionalAttributes map[string]string     `json:"additional_attributes,omitempty"`
 	AccessibleByKeys     []string              `json:"accessible_by_keys,omitempty"`
+
+	// OverriddenPricing carries the post-override value of each cost field the
+	// UI displays, and only for fields the applied override actually changes —
+	// the client strikes through exactly the fields present here. Nil when no
+	// global/provider-scoped override applies.
+	OverriddenPricing *ModelOverriddenPricing `json:"overridden_pricing,omitempty"`
+	// AppliedOverrideID identifies which override produced OverriddenPricing.
+	AppliedOverrideID string `json:"applied_override_id,omitempty"`
+	// PricingOverrideIDs lists every override matching this model, including
+	// virtual-key/user/provider-key scoped ones that do NOT affect
+	// OverriddenPricing and are shown informationally. Resolve against
+	// ListModelDetailsResponse.PricingOverrides.
+	PricingOverrideIDs []string `json:"pricing_override_ids,omitempty"`
+}
+
+// ModelOverriddenPricing carries the post-override value of each displayed
+// cost field. A field is non-nil only when the applied override changes it.
+type ModelOverriddenPricing struct {
+	InputCostPerToken  *float64 `json:"input_cost_per_token,omitempty"`
+	OutputCostPerToken *float64 `json:"output_cost_per_token,omitempty"`
+	CacheWriteCost     *float64 `json:"cache_creation_input_token_cost,omitempty"`
+	CacheReadCost      *float64 `json:"cache_read_input_token_cost,omitempty"`
+}
+
+// ModelPricingOverrideSummary describes one pricing override referenced by a
+// model row.
+type ModelPricingOverrideSummary struct {
+	ID            string                      `json:"id"`
+	Name          string                      `json:"name"`
+	ScopeKind     modelcatalog.ScopeKind      `json:"scope_kind"`
+	UserID        *string                     `json:"user_id,omitempty"`
+	VirtualKeyID  *string                     `json:"virtual_key_id,omitempty"`
+	ProviderID    *string                     `json:"provider_id,omitempty"`
+	ProviderKeyID *string                     `json:"provider_key_id,omitempty"`
+	MatchType     modelcatalog.MatchType      `json:"match_type"`
+	Pattern       string                      `json:"pattern"`
+	RequestTypes  []schemas.RequestType       `json:"request_types,omitempty"`
+	Patch         modelcatalog.PricingOptions `json:"patch"`
 }
 
 // ListModelDetailsResponse represents the response for listing detailed models.
 type ListModelDetailsResponse struct {
 	Models []ModelDetailsResponse `json:"models"`
 	Total  int                    `json:"total"`
+	// PricingOverrides indexes every override referenced by any row, keyed by
+	// ID. Deduplicated here rather than inlined per row: a single global
+	// wildcard override would otherwise be serialized once for every model on
+	// the page.
+	PricingOverrides map[string]ModelPricingOverrideSummary `json:"pricing_overrides,omitempty"`
 }
 
 type modelListQuery struct {
@@ -666,8 +804,9 @@ type modelListQuery struct {
 	Unfiltered bool
 	// VK-based filtering: populated when a virtual key is found in request headers.
 	// HasVKFilter=true restricts providers/models to those allowed by the VK.
-	HasVKFilter       bool
-	VKProviderConfigs []tables.TableVirtualKeyProviderConfig
+	HasVKFilter bool
+	// Access is what the key-authenticated caller may reach; nil when no key was presented.
+	Access schemas.Access
 }
 
 type listedModel struct {
@@ -687,7 +826,14 @@ type listedModel struct {
 //   - x-bf-vk / Authorization: Bearer / x-api-key / x-goog-api-key: Virtual key (sk-bf-…) to scope
 //     results to providers and models allowed by that virtual key.
 func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
-	query, ok := h.parseModelListQuery(ctx, 5)
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.inMemoryStore)
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
+		return
+	}
+
+	query, ok := h.parseModelListQuery(ctx, bifrostCtx, 5)
 	if !ok {
 		return
 	}
@@ -731,7 +877,14 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 //   - x-bf-vk / Authorization: Bearer / x-api-key / x-goog-api-key: Virtual key (sk-bf-…) to scope
 //     results to providers and models allowed by that virtual key.
 func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
-	query, ok := h.parseModelListQuery(ctx, 20)
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.inMemoryStore)
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
+		return
+	}
+
+	query, ok := h.parseModelListQuery(ctx, bifrostCtx, 20)
 	if !ok {
 		return
 	}
@@ -749,6 +902,7 @@ func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
 	}
 
 	responseModels := make([]ModelDetailsResponse, 0, len(allModels))
+	overrideIndex := map[string]ModelPricingOverrideSummary{}
 	for _, model := range allModels {
 		details := ModelDetailsResponse{
 			Name:     model.Name,
@@ -757,7 +911,8 @@ func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
 		if len(model.AccessibleByKeys) > 0 {
 			details.AccessibleByKeys = model.AccessibleByKeys
 		}
-		if capabilities := modelCatalog.GetModelCapabilityEntryForModel(model.Name, model.Provider); capabilities != nil {
+		capabilities := modelCatalog.GetModelCapabilityEntryForModel(model.Name, model.Provider)
+		if capabilities != nil {
 			details.ContextLength = capabilities.ContextLength
 			details.MaxInputTokens = capabilities.MaxInputTokens
 			details.MaxOutputTokens = capabilities.MaxOutputTokens
@@ -769,13 +924,98 @@ func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
 			details.IsDeprecated = capabilities.IsDeprecated
 			details.AdditionalAttributes = capabilities.AdditionalAttributes
 		}
+
+		// Resolve overrides against the mode the displayed base row came from
+		// (usually chat, but embedding/responses for those models) so an
+		// override scoped to a different mode never strikes this row's price.
+		mode := defaultCatalogPricingMode
+		if capabilities != nil && capabilities.Mode != "" {
+			mode = capabilities.Mode
+		}
+		overrides := modelCatalog.GetCatalogPricingOverrides(model.Name, model.Provider, mode)
+		if len(overrides.Matching) > 0 {
+			details.PricingOverrideIDs = make([]string, 0, len(overrides.Matching))
+			for _, o := range overrides.Matching {
+				details.PricingOverrideIDs = append(details.PricingOverrideIDs, o.ID)
+				if _, seen := overrideIndex[o.ID]; !seen {
+					overrideIndex[o.ID] = toPricingOverrideSummary(o)
+				}
+			}
+		}
+		if overrides.AppliedPatch != nil {
+			if overridden := buildOverriddenPricing(capabilities, overrides.AppliedPatch); overridden != nil {
+				details.OverriddenPricing = overridden
+				details.AppliedOverrideID = overrides.AppliedID
+			}
+		}
+
 		responseModels = append(responseModels, details)
 	}
 
-	SendJSON(ctx, ListModelDetailsResponse{
+	response := ListModelDetailsResponse{
 		Models: responseModels,
 		Total:  total,
-	})
+	}
+	if len(overrideIndex) > 0 {
+		response.PricingOverrides = overrideIndex
+	}
+	SendJSON(ctx, response)
+}
+
+// defaultCatalogPricingMode is the pricing mode used to resolve overrides for
+// a catalog row with no base pricing entry to read a mode from.
+const defaultCatalogPricingMode = "chat"
+
+// changedCost returns patched only when it differs from base, so the UI never
+// strikes a price through with the identical number.
+func changedCost(base, patched *float64) *float64 {
+	if patched == nil {
+		return nil
+	}
+	if base != nil && *base == *patched {
+		return nil
+	}
+	return patched
+}
+
+// buildOverriddenPricing projects the four displayed costs through the applied
+// patch. base may be nil (an override priced a model absent from the catalog).
+// Returns nil when the patch changes none of the displayed fields.
+func buildOverriddenPricing(base *modelcatalog.PricingEntry, patch *modelcatalog.PricingOptions) *ModelOverriddenPricing {
+	if patch == nil {
+		return nil
+	}
+	var baseOptions modelcatalog.PricingOptions
+	if base != nil {
+		baseOptions = base.Options
+	}
+	overridden := ModelOverriddenPricing{
+		InputCostPerToken:  changedCost(baseOptions.InputCostPerToken, patch.InputCostPerToken),
+		OutputCostPerToken: changedCost(baseOptions.OutputCostPerToken, patch.OutputCostPerToken),
+		CacheWriteCost:     changedCost(baseOptions.CacheCreationInputTokenCost, patch.CacheCreationInputTokenCost),
+		CacheReadCost:      changedCost(baseOptions.CacheReadInputTokenCost, patch.CacheReadInputTokenCost),
+	}
+	if overridden.InputCostPerToken == nil && overridden.OutputCostPerToken == nil &&
+		overridden.CacheWriteCost == nil && overridden.CacheReadCost == nil {
+		return nil
+	}
+	return &overridden
+}
+
+func toPricingOverrideSummary(o modelcatalog.PricingOverride) ModelPricingOverrideSummary {
+	return ModelPricingOverrideSummary{
+		ID:            o.ID,
+		Name:          o.Name,
+		ScopeKind:     o.ScopeKind,
+		UserID:        o.UserID,
+		VirtualKeyID:  o.VirtualKeyID,
+		ProviderID:    o.ProviderID,
+		ProviderKeyID: o.ProviderKeyID,
+		MatchType:     o.MatchType,
+		Pattern:       o.Pattern,
+		RequestTypes:  o.RequestTypes,
+		Patch:         o.Options,
+	}
 }
 
 func (h *ProviderHandler) isModelDeprecated(model string, provider schemas.ModelProvider) bool {
@@ -787,9 +1027,13 @@ func (h *ProviderHandler) isModelDeprecated(model string, provider schemas.Model
 	return capabilities != nil && capabilities.IsDeprecated
 }
 
-// parseModelListQuery normalizes the management model-list query string and resolves
-// any virtual key present in the request headers to populate provider/model filters.
-func (h *ProviderHandler) parseModelListQuery(ctx *fasthttp.RequestCtx, defaultLimit int) (modelListQuery, bool) {
+// parseModelListQuery normalizes the management model-list query string and resolves what a
+// virtual key presented in the request headers may reach, to populate provider/model filters.
+//
+// bifrostCtx is the caller's request context: it carries the presented key and whatever else
+// the request was authenticated with, which is what access resolution reads. The caller owns
+// its lifetime, because the request outlives this parse.
+func (h *ProviderHandler) parseModelListQuery(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, defaultLimit int) (modelListQuery, bool) {
 	queryArgs := ctx.QueryArgs()
 	query := modelListQuery{
 		Provider:   schemas.ModelProvider(string(queryArgs.Peek("provider"))),
@@ -821,27 +1065,16 @@ func (h *ProviderHandler) parseModelListQuery(ctx *fasthttp.RequestCtx, defaultL
 		}
 	}
 
-	// Resolve virtual key from request headers and populate provider/model filters.
-	if vkValue := governanceplugin.ParseVirtualKeyFromFastHTTPRequest(ctx); vkValue != nil {
-		trimmedVKValue := strings.TrimSpace(*vkValue)
-
-		if h.dbStore == nil {
-			SendError(ctx, fasthttp.StatusServiceUnavailable, "database store unavailable")
-			return query, false
-		}
-
-		vk, err := h.dbStore.GetVirtualKeyByValue(ctx, trimmedVKValue)
-		if err != nil {
-			if !errors.Is(err, configstore.ErrNotFound) {
-				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to resolve virtual key: %v", err))
-				return query, false
-			}
-		}
-
-		if vk != nil {
-			query.HasVKFilter = true
-			query.VKProviderConfigs = vk.ProviderConfigs
-		}
+	// Resolve what a key-authenticated caller may reach, and filter the listing to it. This
+	// route runs outside the request pipeline, so it asks governance directly rather than
+	// waiting for a hook to.
+	//
+	// Nothing resolved leaves the listing unfiltered: an unknown key, or a deployment with no
+	// governance at all, has nothing to narrow the listing by. So does a request nothing settled
+	// who it is; it is refused where it matters, and a listing is not that.
+	if access, err := h.modelsManager.ResolveAccess(bifrostCtx); err == nil && access != nil {
+		query.HasVKFilter = true
+		query.Access = access
 	}
 
 	return query, true
@@ -861,12 +1094,13 @@ func (h *ProviderHandler) listManagementModels(query modelListQuery) ([]listedMo
 	}
 
 	// When a virtual key is present, restrict the provider list to those explicitly
-	// permitted by the VK. An empty ProviderConfigs means no providers are allowed
-	// (deny-by-default), so we return nothing even if providers are configured.
+	// permitted for the caller. A caller granted no provider is shown nothing, even when
+	// providers are configured: deny-by-default.
 	if query.HasVKFilter {
+		granted := query.Access.GrantedProvidersForModel("")
 		providers = slices.DeleteFunc(providers, func(p schemas.ModelProvider) bool {
-			return !slices.ContainsFunc(query.VKProviderConfigs, func(pc tables.TableVirtualKeyProviderConfig) bool {
-				return strings.EqualFold(pc.Provider, string(p))
+			return !slices.ContainsFunc(granted, func(grantedProvider string) bool {
+				return strings.EqualFold(grantedProvider, string(p))
 			})
 		})
 	}
@@ -903,15 +1137,12 @@ func (h *ProviderHandler) listManagementModelsForProvider(
 		models = h.modelsManager.GetUnfilteredModelsForProvider(provider)
 	}
 
-	// Apply VK-level model whitelist filtering.
-	// AllowedModels=["*"] passes all; empty AllowedModels denies all (deny-by-default).
+	// Keep only the models the caller may use on this provider. A model granted only through
+	// something composed onto the request is kept; one the composition removed is dropped.
 	if query.HasVKFilter {
-		if idx := slices.IndexFunc(query.VKProviderConfigs, func(pc tables.TableVirtualKeyProviderConfig) bool {
-			return strings.EqualFold(pc.Provider, string(provider))
-		}); idx >= 0 {
-			allowedModels := query.VKProviderConfigs[idx].AllowedModels
-			models = slices.DeleteFunc(models, func(m string) bool { return !allowedModels.IsAllowed(m) })
-		}
+		models = slices.DeleteFunc(models, func(m string) bool {
+			return !query.Access.IsModelAllowed(string(provider), m)
+		})
 	}
 
 	if len(query.KeyIDs) == 0 || query.Unfiltered {
@@ -984,7 +1215,20 @@ func (h *ProviderHandler) getModelParameters(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	params, err := h.dbStore.GetModelParametersByModel(ctx, modelParam)
+	// Prefer catalog-aware resolution so provider-qualified IDs from
+	// /v1/models ("openai/gpt-5.5", "openrouter/openai/gpt-5.5") and bare
+	// aliases resolve to the datasheet's stored key instead of 404ing on an
+	// exact-match miss.
+	var params *tables.TableModelParameters
+	var err error
+	if h.inMemoryStore != nil && h.inMemoryStore.ModelCatalog != nil {
+		params, err = h.inMemoryStore.ModelCatalog.ResolveModelParameters(ctx, modelParam)
+	} else {
+		params, err = h.dbStore.GetModelParametersByModel(ctx, modelParam)
+	}
+	if err == nil && params == nil {
+		err = configstore.ErrNotFound
+	}
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("no parameters found for model %s", modelParam))
@@ -1221,6 +1465,7 @@ func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelPr
 		StoreRawRequestResponse:  config.StoreRawRequestResponse,
 		CustomProviderConfig:     config.CustomProviderConfig,
 		OpenAIConfig:             config.OpenAIConfig,
+		PromptCache:              config.PromptCache,
 		ProviderStatus:           status,
 		Status:                   config.Status,
 		Description:              config.Description,

@@ -85,3 +85,36 @@ func (rl *TableRateLimit) BeforeSave(tx *gorm.DB) error {
 
 	return nil
 }
+
+// AdoptCalendarAlignment re-anchors this rate limit's open counters onto the
+// calendar grid they have just been told to follow, and reports whether either
+// moved. Counterpart to TableBudget.AdoptCalendarAlignment; the reasoning for
+// moving the boundary rather than resetting is documented there.
+//
+// The two counters are decided independently: they carry their own durations and
+// their own LastReset values, so a monthly token limit can adopt the month
+// boundary while an hourly request limit stays rolling in the same call.
+// Usage is never cleared - the operator changed a schedule, not a quota.
+func (rl *TableRateLimit) AdoptCalendarAlignment(now time.Time) bool {
+	if rl == nil || !rl.IsCalendarAligned {
+		return false
+	}
+	adopt := func(duration *string, lastReset *time.Time) bool {
+		if duration == nil || !IsCalendarAlignableDuration(*duration) {
+			return false
+		}
+		// Rate limits carry no quarter definition, so the fiscal start is not
+		// applicable here; see QuarterStartNotApplicable.
+		start := GetCalendarPeriodStart(*duration, now, QuarterStartNotApplicable)
+		if !start.After(*lastReset) {
+			return false
+		}
+		*lastReset = start
+		return true
+	}
+	// Both counters are evaluated; || would short-circuit and leave the second
+	// one on a stale boundary whenever the first adopted.
+	tokenMoved := adopt(rl.TokenResetDuration, &rl.TokenLastReset)
+	requestMoved := adopt(rl.RequestResetDuration, &rl.RequestLastReset)
+	return tokenMoved || requestMoved
+}

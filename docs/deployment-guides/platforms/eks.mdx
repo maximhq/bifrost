@@ -1,0 +1,319 @@
+---
+title: "Amazon Elastic Kubernetes Service"
+sidebarTitle: "Amazon Elastic Kubernetes Service"
+description: "Deploy Bifrost to an existing Amazon EKS cluster"
+icon: "aws"
+---
+
+This guide deploys Bifrost to an existing EKS cluster using the Helm chart. It covers the Bifrost image, secrets, storage, database connection, service exposure, verification, and scaling.
+
+<Note>
+The Helm configuration is validated in the repository. The complete guide is not continuously exercised in a live AWS account, so test the selected values in a non-production cluster before rollout.
+</Note>
+
+## Bifrost on EKS
+
+| Bifrost setting | EKS configuration |
+|---|---|
+| Container | OSS image or Enterprise image supplied by Maxim; nodes must match `linux/amd64` or `linux/arm64` |
+| HTTP | `ClusterIP` Service on `8080/TCP` by default |
+| Health | `GET /health` on the HTTP Service |
+| SQLite persistence (OSS only) | One replica and a `ReadWriteOnce` PVC; EBS CSI driver and a usable StorageClass are platform requirements |
+| PostgreSQL | PostgreSQL 16 or later reachable from the cluster; it may run inside or outside AWS |
+| External access | Any compatible Gateway API, ingress, Service `LoadBalancer`, or external proxy |
+| Enterprise mesh | Kubernetes pod discovery plus bidirectional `10101/TCP+UDP` and `10102/TCP` between Bifrost pods |
+| Image pull | Public Docker Hub for OSS, or the Enterprise registry/mirror identity supplied for the customer through [Enterprise AWS](/deployment-guides/enterprise/aws) |
+
+Bifrost Enterprise requires PostgreSQL 16 or later for both stores and does not support SQLite. The SQLite path below is available only for OSS deployments.
+
+## Deploy Bifrost
+
+The commands below use an existing EKS cluster and PostgreSQL database. Run them from Bash after replacing every value inside angle brackets.
+
+### Step 1: Connect to EKS
+
+```bash
+export EKS_CLUSTER='<EKS_CLUSTER_NAME>'
+export AWS_REGION='<AWS_REGION>'
+export BIFROST_VERSION='<BIFROST_VERSION>'
+aws eks update-kubeconfig \
+  --name "${EKS_CLUSTER}" \
+  --region "${AWS_REGION}"
+
+kubectl get nodes
+helm version
+```
+
+Continue only after the nodes report `Ready`.
+
+### Step 2: Create secrets and Helm values
+
+The following commands prompt for sensitive values so they are not written into the values file:
+
+The encryption key protects persisted credentials. Create it once, keep it unchanged after Bifrost writes encrypted data, and use the same value for every replica. Replacing the key makes existing encrypted values unreadable.
+
+```bash
+kubectl create namespace bifrost \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+read -r -s -p 'Stable Bifrost encryption key: ' BIFROST_ENCRYPTION_KEY; echo
+kubectl create secret generic bifrost-encryption \
+  --namespace bifrost \
+  --from-literal=encryption-key="${BIFROST_ENCRYPTION_KEY}" \
+  --dry-run=client -o yaml | kubectl apply -f -
+unset BIFROST_ENCRYPTION_KEY
+```
+
+Choose the storage configuration for this deployment:
+
+<Tabs>
+<Tab title="PostgreSQL">
+
+```bash
+export POSTGRES_HOST='<POSTGRES_HOST>'
+export POSTGRES_PORT='5432'
+export POSTGRES_USER='<POSTGRES_USER>'
+export POSTGRES_DATABASE='<POSTGRES_DATABASE>'
+
+read -r -s -p 'PostgreSQL password: ' POSTGRES_PASSWORD; echo
+kubectl create secret generic postgres-credentials \
+  --namespace bifrost \
+  --from-literal=password="${POSTGRES_PASSWORD}" \
+  --dry-run=client -o yaml | kubectl apply -f -
+unset POSTGRES_PASSWORD
+
+cat > bifrost-values.yaml <<EOF
+image:
+  repository: docker.io/maximhq/bifrost
+  tag: "${BIFROST_VERSION}"
+
+replicaCount: 1
+
+storage:
+  mode: postgres
+
+postgresql:
+  enabled: false
+  external:
+    enabled: true
+    host: "${POSTGRES_HOST}"
+    port: ${POSTGRES_PORT}
+    user: "${POSTGRES_USER}"
+    database: "${POSTGRES_DATABASE}"
+    sslMode: require
+    existingSecret: postgres-credentials
+    passwordKey: password
+
+bifrost:
+  encryptionKeySecret:
+    name: bifrost-encryption
+    key: encryption-key
+EOF
+```
+
+This configuration uses PostgreSQL for both Bifrost stores. It does not create a Bifrost SQLite PVC. Enterprise customers should replace the image settings with the private image coordinates supplied by Maxim before continuing.
+
+
+Amazon RDS or Aurora PostgreSQL is one AWS-hosted option. The database may instead be operated by the customer or another provider as long as the cluster can reach it.
+
+Verify connectivity from the cluster before installing Bifrost:
+
+```bash
+kubectl run postgres-check --namespace bifrost \
+  --image=postgres:16-alpine --restart=Never \
+  --env="PGHOST=${POSTGRES_HOST}" --env="PGPORT=${POSTGRES_PORT}" \
+  --env="PGDATABASE=${POSTGRES_DATABASE}" --env="PGUSER=${POSTGRES_USER}" \
+  --env="PGSSLMODE=require" \
+  --command -- sleep 3600
+
+kubectl wait --namespace bifrost --for=condition=Ready pod/postgres-check --timeout=2m
+kubectl exec --namespace bifrost -it postgres-check -- psql \
+  -c "SHOW server_version;" \
+  -c "SHOW server_encoding;"
+kubectl delete pod --namespace bifrost postgres-check
+```
+
+Enter the PostgreSQL password when psql prompts. A successful connection confirms DNS, TCP, TLS, and database authentication from the pod network. Confirm that `server_version` reports PostgreSQL 16 or later and `server_encoding` reports `UTF8`.
+
+</Tab>
+<Tab title="SQLite (OSS only)">
+
+This option is available only for OSS Bifrost. Use SQLite for a single replica and select a StorageClass backed by the EBS CSI driver or another CSI implementation that provides a ReadWriteOnce volume.
+
+```bash
+kubectl get storageclass
+
+cat > bifrost-values.yaml <<EOF
+image:
+  repository: docker.io/maximhq/bifrost
+  tag: "${BIFROST_VERSION}"
+
+replicaCount: 1
+
+storage:
+  mode: sqlite
+  persistence:
+    enabled: true
+    accessMode: ReadWriteOnce
+    size: 10Gi
+    storageClass: "<STORAGE_CLASS>"
+
+bifrost:
+  encryptionKeySecret:
+    name: bifrost-encryption
+    key: encryption-key
+EOF
+```
+
+Replace `<STORAGE_CLASS>` with a class returned by `kubectl get storageclass`. This creates persistent `/app/data` storage for the OSS SQLite deployment. PostgreSQL is not required for this OSS option.
+
+</Tab>
+</Tabs>
+
+### Step 3: Install Bifrost
+
+```bash
+helm repo add bifrost https://maximhq.github.io/bifrost/helm-charts
+helm repo update
+
+helm upgrade --install bifrost bifrost/bifrost \
+  --namespace bifrost \
+  --values bifrost-values.yaml \
+  --atomic \
+  --timeout 15m
+```
+
+### Step 4: Verify and access Bifrost
+
+```bash
+kubectl wait --namespace bifrost \
+  --for=condition=Ready pod \
+  --selector=app.kubernetes.io/name=bifrost \
+  --timeout=10m
+
+kubectl get pods,service --namespace bifrost
+```
+
+Choose how you want to access the deployment:
+
+<Tabs>
+<Tab title="Without a load balancer">
+
+```bash
+kubectl port-forward service/bifrost --namespace bifrost 8080:8080
+```
+
+Keep that terminal open. In another terminal:
+
+```bash
+curl --fail --show-error http://127.0.0.1:8080/health
+```
+
+Expected: HTTP `200` and a response containing `"status":"ok"`.
+
+</Tab>
+<Tab title="With a load balancer">
+
+Use this option when the cluster has EKS Auto Mode load balancing or AWS Load Balancer Controller configured:
+
+```bash
+cat >> bifrost-values.yaml <<'EOF'
+
+service:
+  type: LoadBalancer
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "external"
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+EOF
+
+helm upgrade bifrost bifrost/bifrost \
+  --namespace bifrost \
+  --values bifrost-values.yaml \
+  --atomic \
+  --timeout 15m
+
+kubectl get service bifrost --namespace bifrost --watch
+```
+
+After `EXTERNAL-IP` displays a hostname, stop the watch and run:
+
+```bash
+export BIFROST_HOST="$(kubectl get service bifrost \
+  --namespace bifrost \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}{.status.loadBalancer.ingress[0].ip}')"
+
+curl --fail --show-error "http://${BIFROST_HOST}/health"
+```
+
+This creates an HTTP endpoint. Configure TLS through the customer's ingress, gateway, or load-balancer policy before exposing Bifrost to untrusted clients.
+
+</Tab>
+<Tab title="With ingress">
+
+This example uses AWS Load Balancer Controller and an existing ACM certificate. Install the controller using the [AWS Load Balancer Controller guide](https://docs.aws.amazon.com/eks/latest/userguide/lbc-helm.html) before applying these values.
+
+```bash
+cat > ingress-values.yaml <<'EOF'
+service:
+  type: ClusterIP
+
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=3600
+    alb.ingress.kubernetes.io/certificate-arn: "<ACM_CERTIFICATE_ARN>"
+  hosts:
+    - host: "<BIFROST_HOSTNAME>"
+      paths:
+        - path: /
+          pathType: Prefix
+EOF
+
+helm upgrade bifrost bifrost/bifrost \
+  --namespace bifrost \
+  --values bifrost-values.yaml \
+  --values ingress-values.yaml \
+  --atomic \
+  --timeout 15m
+
+kubectl get ingress --namespace bifrost --watch
+```
+
+Point the hostname to the provisioned load balancer and verify `https://<BIFROST_HOSTNAME>/health`. Adjust the idle timeout for the longest expected streaming interval.
+
+</Tab>
+</Tabs>
+
+## Scale Bifrost
+
+### Replica configuration
+
+- Keep OSS with SQLite at one replica.
+- Keep OSS with DB-managed configuration at one replica, or use the [file-only OSS multinode pattern](/deployment-guides/how-to/multinode).
+- For Enterprise replicas, use PostgreSQL, enable clustering, enable `rbac.podDiscovery`, and permit internal cluster ports. Start from [Cluster Mode and HA](/deployment-guides/helm/cluster), not from an EKS-specific copy of those values.
+
+An external load balancer distributes client traffic; it does not synchronize Bifrost configuration or governance state.
+
+## Upgrade, troubleshooting, and production
+
+Follow the [upgrade guidance](/deployment-guides/runtime-contract#upgrade-bifrost). Common EKS-specific checks are:
+
+```bash
+kubectl describe pod --namespace bifrost -l app.kubernetes.io/name=bifrost
+kubectl get events --namespace bifrost --sort-by=.lastTimestamp
+kubectl describe pvc --namespace bifrost
+kubectl logs --namespace bifrost -l app.kubernetes.io/name=bifrost --tail=200
+```
+
+- Pending OSS SQLite pod: inspect PVC events, StorageClass, EBS CSI controller, and zone placement.
+- `ImagePullBackOff`: verify the repository, tag, node/pod pull identity, and registry reachability.
+- `/health` returns `503`: inspect Bifrost logs and verify each configured store from the pod network.
+- Streaming stops at a fixed interval: inspect every ingress/proxy idle timeout and response buffering setting.
+- Enterprise members are missing: verify pod-discovery RBAC and bidirectional `10101/TCP+UDP` and `10102/TCP`.
+
+Complete the [deployment verification checklist](/deployment-guides/runtime-contract#verify-the-deployment) for database availability, backups, TLS, secrets, autoscaling, and observability. See [Enterprise clustering](/enterprise/clustering) when the deployment spans several clusters or regions.

@@ -13,6 +13,7 @@ type TablePricingOverride struct {
 	ID               string    `gorm:"primaryKey;type:varchar(255)" json:"id"`
 	Name             string    `gorm:"type:varchar(255);not null" json:"name"`
 	ScopeKind        string    `gorm:"type:varchar(50);index:idx_pricing_override_scope;not null" json:"scope_kind"`
+	UserID           *string   `gorm:"type:varchar(255);index:idx_pricing_override_scope" json:"user_id,omitempty"`
 	VirtualKeyID     *string   `gorm:"type:varchar(255);index:idx_pricing_override_scope" json:"virtual_key_id,omitempty"`
 	ProviderID       *string   `gorm:"type:varchar(255);index:idx_pricing_override_scope" json:"provider_id,omitempty"`
 	ProviderKeyID    *string   `gorm:"type:varchar(255);index:idx_pricing_override_scope" json:"provider_key_id,omitempty"`

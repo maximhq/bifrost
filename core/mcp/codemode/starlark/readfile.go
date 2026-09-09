@@ -120,7 +120,7 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 					}
 				}
 				errorMsg += "\nPlease use a more specific filename. Use the exact display name from listToolFiles to avoid ambiguity."
-				return createToolResponseMessage(toolCall, errorMsg), nil
+				return createToolResponseMessage(toolCall, errorMsg, true), nil
 			}
 
 			matchedClientName = clientName
@@ -148,7 +148,7 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 					for _, t := range availableTools {
 						errorMsg += fmt.Sprintf("  - servers/%s/%s.pyi\n", clientName, t)
 					}
-					return createToolResponseMessage(toolCall, errorMsg), nil
+					return createToolResponseMessage(toolCall, errorMsg, true), nil
 				}
 
 				matchedTools = []schemas.ChatTool{*foundTool}
@@ -185,7 +185,7 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 		for _, f := range availableFiles {
 			errorMsg += fmt.Sprintf("  - %s\n", f)
 		}
-		return createToolResponseMessage(toolCall, errorMsg), nil
+		return createToolResponseMessage(toolCall, errorMsg, true), nil
 	}
 
 	// Generate compact Python signatures
@@ -244,7 +244,7 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 		fileContent = strings.Join(selectedLines, "\n")
 	}
 
-	return createToolResponseMessage(toolCall, fileContent), nil
+	return createToolResponseMessage(toolCall, fileContent, false), nil
 }
 
 // parseVFSFilePath parses a VFS file path and extracts the server name and optional tool name.

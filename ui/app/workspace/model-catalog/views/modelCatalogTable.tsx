@@ -1,3 +1,4 @@
+import PageTitle from "@/components/pageTitle";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -54,7 +55,7 @@ export default function ModelCatalogTable({
 	return (
 		<div className="space-y-6">
 			{/* Summary Cards */}
-			<div className="grid grid-cols-4 gap-4">
+			<div className="grid grid-cols-1 gap-4 md:grid-cols-4">
 				{summaryCards.map((card) => (
 					<Card key={card.label} className="py-4 shadow-none">
 						<CardContent className="px-4">
@@ -66,11 +67,8 @@ export default function ModelCatalogTable({
 			</div>
 
 			{/* Header + Filter */}
-			<div className="flex items-center justify-between">
-				<div>
-					<h2 className="text-lg font-semibold">Model Catalog</h2>
-					<p className="text-muted-foreground text-sm">Overview of all configured providers, models, and usage.</p>
-				</div>
+			<div className="flex items-center justify-end">
+				<PageTitle title="Model Catalog">Overview of all configured providers, models, and usage.</PageTitle>
 				<Select
 					value={providerFilter || "all"}
 					onValueChange={(val) => onProviderFilterChange(val === "all" ? "" : val)}

@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -60,6 +61,10 @@ type Store struct {
 	mu      sync.RWMutex
 	entries map[schemas.ModelProvider]*providerState
 	logger  schemas.Logger
+
+	// writeGen counts entry mutations; the composer's model→provider memo
+	// stamps it to detect staleness. Atomic so readers skip mu.
+	writeGen atomic.Uint64
 }
 
 // New constructs an empty Store.
@@ -88,6 +93,12 @@ func (s *Store) Replace(snapshot map[schemas.ModelProvider][]schemas.Key) {
 		}
 	}
 	s.entries = next
+	s.writeGen.Add(1)
+}
+
+// WriteGen returns the monotonic count of entry mutations.
+func (s *Store) WriteGen() uint64 {
+	return s.writeGen.Load()
 }
 
 // SetProvider replaces the cached state for one provider. Call after a
@@ -98,9 +109,11 @@ func (s *Store) SetProvider(provider schemas.ModelProvider, keys []schemas.Key) 
 	defer s.mu.Unlock()
 	if st == nil {
 		delete(s.entries, provider)
+		s.writeGen.Add(1)
 		return
 	}
 	s.entries[provider] = st
+	s.writeGen.Add(1)
 }
 
 // RemoveProvider drops all state for the provider. Call on provider delete.
@@ -108,6 +121,7 @@ func (s *Store) RemoveProvider(provider schemas.ModelProvider) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.entries, provider)
+	s.writeGen.Add(1)
 }
 
 // EntriesFor returns all per-key entries for the provider (including

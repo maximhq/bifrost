@@ -52,6 +52,35 @@ func TestUpsertLiveFromResponse_PopulatesFromResponse(t *testing.T) {
 	}
 }
 
+// TestGetUnfilteredModelsForProvider_UsesDatabricksPricing verifies the management catalog
+// still returns Databricks models when the provider intentionally publishes no live models.
+func TestGetUnfilteredModelsForProvider_UsesDatabricksPricing(t *testing.T) {
+	pricingPath := filepath.Join(t.TempDir(), "pricing.json")
+	pricingJSON := []byte(`{
+		"databricks/databricks-pricing-model": {
+			"provider":"databricks",
+			"mode":"chat",
+			"base_model":"pricing-model"
+		}
+	}`)
+	if err := os.WriteFile(pricingPath, pricingJSON, 0o600); err != nil {
+		t.Fatalf("write pricing testdata: %v", err)
+	}
+
+	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + pricingPath})
+	if err := ds.LoadFromURLIntoMemory(t.Context()); err != nil {
+		t.Fatalf("load pricing testdata: %v", err)
+	}
+	mc := NewTestCatalogWithDatasheet(ds)
+	mc.UpsertLive(schemas.Databricks, "key-1", true, []string{})
+
+	got := mc.GetUnfilteredModelsForProvider(schemas.Databricks)
+	want := []string{"databricks-pricing-model"}
+	if !slices.Equal(got, want) {
+		t.Errorf("GetUnfilteredModelsForProvider(Databricks) = %v, want %v", got, want)
+	}
+}
+
 func TestGetModelsForProvider_IncludesDeprecatedDatasheetModelsWhenLiveExists(t *testing.T) {
 	pricingPath := filepath.Join(t.TempDir(), "pricing.json")
 	pricingJSON := []byte(`{
@@ -143,6 +172,7 @@ func TestGetModelsForProvider_DeprecatedDatasheetModelsRespectAllowBlock(t *test
 				keyconf:   kc,
 				done:      make(chan struct{}),
 			}
+			mc.initCaches()
 			mc.UpsertLive(schemas.OpenAI, "k1", false, []string{"live-model"})
 
 			got := mc.GetModelsForProvider(schemas.OpenAI)
@@ -318,5 +348,64 @@ func TestInvalidateLiveProvider_DropsAcrossKeys(t *testing.T) {
 	// Other providers untouched.
 	if got := mc.GetModelsForProvider(schemas.Anthropic); !slices.Equal(got, []string{"claude-sonnet"}) {
 		t.Errorf("Anthropic after InvalidateLiveProvider(OpenAI) = %v, want [claude-sonnet]", got)
+	}
+}
+
+// TestUpsertLiveFromResponseIfCurrent_DropsStaleFetch covers the forwarder for
+// the deleted-key race the server hits: a background refresh reads the
+// generation, the key is deleted while list-models is in flight (dropping its
+// entries), and the response then arrives. No later pass fetches or prunes a
+// key that is no longer configured, so committing here would advertise the
+// deleted key's models until the process restarted.
+func TestUpsertLiveFromResponseIfCurrent_DropsStaleFetch(t *testing.T) {
+	mc := NewTestCatalog(nil)
+	mc.UpsertLive(schemas.OpenAI, "k1", false, []string{"gpt-4o"})
+
+	gen := mc.LiveGeneration(schemas.OpenAI)
+	resp := &schemas.BifrostListModelsResponse{Data: []schemas.Model{{ID: "openai/gpt-4o"}}}
+
+	mc.InvalidateLive(schemas.OpenAI, "k1")
+
+	if mc.UpsertLiveFromResponseIfCurrent(schemas.OpenAI, "k1", false, resp, gen) {
+		t.Fatal("committed a list-models response fetched before the key was deleted")
+	}
+	if got := mc.GetModelsForProvider(schemas.OpenAI); len(got) != 0 {
+		t.Errorf("GetModelsForProvider after dropped commit = %v, want [] (deleted key stays gone)", got)
+	}
+}
+
+// TestUpsertLiveFromResponseIfCurrent_CommitsWhenUnchanged is the happy path:
+// the guard must not cost the ordinary refresh anything, so an uncontended
+// commit lands the same models UpsertLiveFromResponse would.
+func TestUpsertLiveFromResponseIfCurrent_CommitsWhenUnchanged(t *testing.T) {
+	mc := NewTestCatalog(nil)
+	gen := mc.LiveGeneration(schemas.OpenAI)
+	resp := &schemas.BifrostListModelsResponse{
+		Data: []schemas.Model{{ID: "openai/gpt-4o"}, {ID: "openai/o1"}},
+	}
+
+	if !mc.UpsertLiveFromResponseIfCurrent(schemas.OpenAI, "k1", false, resp, gen) {
+		t.Fatal("uncontended guarded commit was dropped")
+	}
+
+	got := mc.GetModelsForProvider(schemas.OpenAI)
+	slices.Sort(got)
+	if want := []string{"gpt-4o", "o1"}; !slices.Equal(got, want) {
+		t.Errorf("GetModelsForProvider = %v, want %v", got, want)
+	}
+}
+
+// TestUpsertLiveFromResponseIfCurrent_NilRespIsNoop keeps the guarded variant
+// on the same contract as UpsertLiveFromResponse: a missing response must never
+// be able to clear a healthy entry.
+func TestUpsertLiveFromResponseIfCurrent_NilRespIsNoop(t *testing.T) {
+	mc := NewTestCatalog(nil)
+	mc.UpsertLive(schemas.OpenAI, "k1", false, []string{"gpt-4o"})
+
+	if mc.UpsertLiveFromResponseIfCurrent(schemas.OpenAI, "k1", false, nil, mc.LiveGeneration(schemas.OpenAI)) {
+		t.Error("nil resp reported as a committed write")
+	}
+	if got := mc.GetModelsForProvider(schemas.OpenAI); !slices.Equal(got, []string{"gpt-4o"}) {
+		t.Errorf("after nil-resp guarded upsert = %v, want [gpt-4o] (entry must survive)", got)
 	}
 }

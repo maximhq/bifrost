@@ -89,10 +89,15 @@ def test_summary():
     return results
 
 
+@pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item, call):
-    """Hook to capture test results"""
-    # Only record results during the "call" phase to avoid double counting
-    if call.when == "call":
+    """Capture finalized call outcomes without counting retries as failures."""
+    outcome = yield
+    report = outcome.get_result()
+
+    # pytest-rerunfailures changes unsuccessful attempts to the non-terminal
+    # "rerun" outcome. Ignore those and record only the final call report.
+    if report.when == "call" and report.outcome in {"passed", "failed", "skipped"}:
         # Extract integration and test info
         integration = None
         if "test_openai" in item.nodeid:
@@ -115,22 +120,33 @@ def pytest_runtest_makereport(item, call):
             "nodeid": item.nodeid,
         }
 
-        if hasattr(item.session, "test_results"):
-            if call.excinfo is None:
-                item.session.test_results["passed"].append(result_info)
-            else:
-                result_info["error"] = str(call.excinfo.value)
-                item.session.test_results["failed"].append(result_info)
+        if hasattr(item.session, "test_results_by_nodeid"):
+            if report.passed:
+                result_outcome = "passed"
+            elif report.skipped:
+                result_outcome = "skipped"
+            elif report.failed:
+                result_info["error"] = str(call.excinfo.value) if call.excinfo else report.longreprtext
+                result_outcome = "failed"
+
+            # Retries emit multiple reports for the same node ID. Keeping only
+            # the latest report lets a successful retry replace earlier failures.
+            item.session.test_results_by_nodeid[item.nodeid] = (
+                result_outcome,
+                result_info,
+            )
 
 
 def pytest_sessionstart(session):
     """Initialize test results collection"""
-    session.test_results = {"passed": [], "failed": [], "skipped": []}
+    session.test_results_by_nodeid = {}
 
 
 def pytest_sessionfinish(session, exitstatus):
     """Print test summary at the end"""
-    results = session.test_results
+    results = {"passed": [], "failed": [], "skipped": []}
+    for result_outcome, result_info in session.test_results_by_nodeid.values():
+        results[result_outcome].append(result_info)
 
     print("\n" + "=" * 80)
     print("INTEGRATION TEST SUMMARY")

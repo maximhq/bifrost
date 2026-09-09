@@ -72,6 +72,14 @@ func (p *Plugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.Bifros
 
 	selected, candidates := ResolveProviderFromCatalog(ctx, p.catalog, model)
 	if selected == "" {
+		// ResolveProviderFromCatalog already logged *why* it could not pick
+		// (empty catalog vs allowlist pruned everything). This records the
+		// consequence: no later plugin runs, so the request is now guaranteed to
+		// fail the empty-provider validation in handleRequest. Warn rather than
+		// Info because unlike every other branch here, this one ends in an error.
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, schemas.LogLevelWarn, fmt.Sprintf(
+			"No provider could be resolved for model %s; request will fail provider validation", model,
+		))
 		return nil
 	}
 	req.SetProvider(selected)
@@ -143,6 +151,16 @@ func ResolveProviderFromCatalog(ctx *schemas.BifrostContext, catalog *modelcatal
 	}
 	providers := catalog.GetProvidersForModel(model)
 	if len(providers) == 0 {
+		// Logged because this is one of only two ways the resolver can leave
+		// req.Provider empty, and the caller sees the same generic "could not auto
+		// resolve a provider" error either way. The other way is the allowlist
+		// pruning every candidate, logged below — the two need to be
+		// distinguishable in routing engine logs to be diagnosable at all.
+		if ctx != nil {
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, schemas.LogLevelInfo, fmt.Sprintf(
+				"Model catalog has no provider serving model %s; leaving req.Provider empty", model,
+			))
+		}
 		return "", nil
 	}
 

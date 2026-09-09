@@ -1,0 +1,14 @@
+---
+title: "v2.1.28"
+description: "Helm v2.1.28 changelog - 2026-07-14"
+---
+
+<Update label="Bifrost Helm" description="v2.1.28">
+
+## Changelog
+
+- Restored `runAsUser: 1000` defaults in `podSecurityContext` and `securityContext` (dropped in 2.1.27). Images before v1.6.4 use a non-numeric `USER appuser`, so kubelet could not verify `runAsNonRoot: true` and pods failed with CreateContainerConfigError. OpenShift (restricted-v2) users unset the pins with explicit nulls: `podSecurityContext.runAsUser: null`, `podSecurityContext.fsGroup: null`, `securityContext.runAsUser: null`.
+- Added `project_id` to `bifrost.providers.bedrock.keys[*].bedrock_key_config` (renders into `bedrock_key_config.project_id`) and `bifrost.providers.bedrock_mantle.keys[*].bedrock_mantle_key_config` (renders into `bedrock_mantle_key_config.project_id`) for AWS project scoping via the OpenAI-Project / anthropic-workspace-id headers.
+- Updated the per-alias `project_id` description: it is now a shared cross-provider override (Vertex GCP project; Bedrock/Bedrock Mantle AWS project header).
+
+</Update>

@@ -12,7 +12,7 @@ This guide walks you through creating a native Go plugin for Bifrost using our [
 
 Before you start, ensure you have:
 
-- **Go 1.26.1** installed (must match Bifrost's Go version)
+- **Go 1.27.0** installed (must match Bifrost's Go version)
 - **Linux or macOS** (Go plugins are not supported on Windows)
 - **Bifrost** installed and configured
 - Basic understanding of Go programming
@@ -53,7 +53,7 @@ Your `go.mod` should look like this:
 ```go
 module github.com/yourusername/my-plugin
 
-go 1.26.1
+go 1.27.0
 
 require github.com/maximhq/bifrost/core v1.2.38
 ```
@@ -420,15 +420,112 @@ Key points:
 - **No-op when unscoped** - safe to call in any context; silently ignored outside plugin hooks
 - Logs are retrievable via `ctx.GetPluginLogs()` (read copy) or `ctx.DrainPluginLogs()` (transfer ownership)
 
+#### `ctx.GetModelInfo(provider, model)` <sup>v1.6.7+</sup>
+
+Returns pricing and capability metadata for a model - the same information the `/v1/models` endpoint reports. Available from every hook, and from plugins built without a `framework` dependency.
+
+```go
+info := ctx.GetModelInfo(schemas.Anthropic, "claude-opus-5")
+if info == nil {
+	return // unknown model, or no catalog configured
+}
+
+if info.ContextLength != nil {
+	ctx.Log(schemas.LogLevelInfo, fmt.Sprintf("context window: %d tokens", *info.ContextLength))
+}
+if info.IsDeprecated {
+	ctx.Log(schemas.LogLevelWarn, "model is deprecated")
+}
+```
+
+**What comes back** - a `*schemas.Model`:
+
+| Field | Type | Description |
+|---|---|---|
+| `ID` | `string` | The model string you asked for |
+| `Pricing` | `*schemas.Pricing` | Flat per-token rates as decimal strings - `Prompt`, `Completion`, `Image`, `InputCacheRead`, `InputCacheWrite`, `WebSearch` |
+| `ContextLength` | `*int` | Total context window; falls back to max input tokens when the catalog has no separate value |
+| `MaxInputTokens` | `*int` | Input token ceiling |
+| `MaxOutputTokens` | `*int` | Output token ceiling |
+| `Architecture` | `*schemas.Architecture` | Modality, tokenizer, input/output modalities |
+| `SupportedParameters` | `[]string` | Request parameters the model accepts |
+| `IsDeprecated` | `bool` | Whether the model is retired |
+| `AdditionalAttributes` | `map[string]string` | Editorial metadata (description, tags) |
+
+Key points:
+- **Returns `nil`** when the model is unknown to the catalog, and also when no catalog is configured - always nil-check
+- **Fresh copy** - the returned `*schemas.Model` belongs to you; mutating it affects nothing else
+- **Provider is required** - pass the concrete provider that serves the model. Read it from `req.GetRequestFields()` in a pre-hook, or from the response's `RoutingInfo` in a post-hook, rather than inferring it from the model string
+- **Every field is optional** - the catalog is only as complete as the provider datasheet, so nil-check individual pointers too
+
+#### `ctx.CalculateCost(resp)` <sup>v1.6.7+</sup>
+
+Returns the dollar cost of a completed response.
+
+```go
+func (p *MyPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	cost := ctx.CalculateCost(resp) // compute synchronously
+	go func() {
+		p.reportToBilling(cost) // then use the value anywhere
+	}()
+	return resp, bifrostErr, nil
+}
+```
+
+Prefer this over doing arithmetic on `GetModelInfo(...).Pricing`. That field carries only flat prompt and completion rates, while `CalculateCost` applies the full pricing resolution:
+
+- Long-context tiers (128k / 200k / 272k)
+- Batch, priority, flex and fast rates
+- Cache read and cache write costs
+- The provider and request-mode fallback chain, so aliased and provider-prefixed models still resolve
+- Any virtual key, user, or provider key pricing override in effect for this request
+
+<Warning>
+Call `ctx.CalculateCost` **synchronously inside your hook**. It reads governance scopes (user ID, virtual key ID, selected key ID) off the request context, and that read is not safe once the request has been cancelled. If you need the cost in a background goroutine, compute it in the hook and close over the `float64` as shown above.
+</Warning>
+
+Returns `0` when no catalog is configured or the response carries no billable usage.
+
+<Note>
+Both methods are inert rather than fatal when no model catalog is wired - `GetModelInfo` returns `nil` and `CalculateCost` returns `0`. This keeps plugins portable between the Bifrost HTTP gateway, which always configures a catalog, and Go SDK embeddings of `core`, which may not.
+</Note>
+
 <Tabs>
   <Tab title="v1.5.x+">
+#### `HTTPTransportPreAuthHook(ctx, req)` <sup>v2.0+</sup>
+
+**HTTP transport only.** Intercepts requests BEFORE the transport authenticates them, so anything this
+hook changes is what authentication sees. Implement it only when the plugin's job is to supply or
+translate a credential:
+- Derive a virtual key from an upstream identity header
+- Rewrite or normalise an `Authorization` header before it is validated
+- Reject a request outright with a custom response
+- Native .so plugins join the phase by exporting an `HTTPTransportPreAuthHook` symbol
+
+Key points:
+- Receives serializable `*HTTPRequest` (not raw fasthttp)
+- Carries the same request shape as `HTTPTransportPreHook` - headers, query, path params and body - and the same mutations apply, so a hook can move between the two phases by renaming
+- Modifying `req.Method` or `req.Path` fails the request with `409`
+- Return `(nil, nil)` to continue to authentication, request modifications applied
+- Return `(*HTTPResponse, nil)` to short-circuit with response
+- Return `(nil, error)` to short-circuit with error
+- No post-hook counterpart: `HTTPTransportPostHook` pairs with `HTTPTransportPreHook`, and a request rejected by authentication runs neither
+
 #### `HTTPTransportPreHook(ctx, req)`
 
-**HTTP transport only.** Intercepts requests BEFORE they enter Bifrost core. Use this to:
+**HTTP transport only.** Intercepts requests BEFORE they enter Bifrost core and AFTER the transport has
+authenticated them, so the resolved caller identity is already on `ctx`. Use this to:
 - Modify request headers, body, or query params in-place
 - Short-circuit with a custom response
 - Store values in `BifrostContext` for use in other hooks
 - Works with both native .so and WASM plugins
+
+<Warning>
+**Changed in v2.0.** This hook used to run before authentication. A credential written here is now set
+too late to be authenticated against - move that work to `HTTPTransportPreAuthHook`. Nothing errors
+either way: where authentication rejects the request this hook never runs, and where it permits the
+request the hook runs and its header still reaches components downstream of it.
+</Warning>
 
 Key points:
 - Receives serializable `*HTTPRequest` (not raw fasthttp)
@@ -815,6 +912,64 @@ func PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.BifrostMCPResponse, 
 The full working example covering all four MCP hooks (envelope + Connect) lives at [`examples/plugins/mcp-only`](https://github.com/maximhq/bifrost/tree/main/examples/plugins/mcp-only). Use it as a starting point rather than retyping the boilerplate.
 </Tip>
 
+#### Recipe: injecting dynamic headers server-side <sup>v1.5.x+</sup>
+
+[Header forwarding](../mcp/connecting-to-servers#forwarding-request-headers-to-mcp-servers) covers the case where the **caller** supplies per-request header values. Sometimes the value has to be computed server-side instead:
+
+- An **identity header the caller must not control**, like the authenticated user's email for per-user authorization upstream
+- A **dynamic value on a shared MCP connection**, like a short-lived service token or a per-request correlation ID, which the static `headers` field cannot express because it is fixed at configuration time
+
+In both cases, write the header into `BifrostContextKeyMCPExtraHeaders` from `PreMCPHook`. Bifrost re-reads that key on every outgoing wire call over the shared connection, so a single hook covers ping, list_tools, and execute_tool, and refreshed values take effect on the very next call with no reconnect. The example below stamps the signed-in user's email; anything you can compute in the hook (a token fetched from a secrets manager, a tenant ID resolved from the virtual key) is injected the same way.
+
+```go
+const (
+    userEmailHeader = "X-User-Email"
+    targetClient    = "acme_api"
+)
+
+// No IsExecuteTool() early-out here: the header should ride along on pings
+// and tool-list refreshes too, not just tool executions.
+func PreMCPHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, error) {
+    // Scope the injection to the client meant to receive identity. The
+    // extra-headers map feeds every outgoing MCP call on this request, so
+    // without this guard any client whose allowed_extra_headers permits the
+    // header (including "*") would receive the user's email.
+    if req.ClientName != targetClient {
+        return req, nil, nil
+    }
+
+    // Populated by the auth middleware when the request carries a signed-in
+    // user; empty otherwise (e.g. an unauthenticated health check).
+    email, _ := ctx.Value(schemas.BifrostContextKeyUserEmail).(string)
+    if email == "" {
+        return req, nil, nil
+    }
+
+    // Merge rather than overwrite: the HTTP transport layer or an earlier
+    // plugin may already have populated this map with caller-forwarded headers.
+    merged := make(map[string][]string)
+    if existing, ok := ctx.Value(schemas.BifrostContextKeyMCPExtraHeaders).(map[string][]string); ok {
+        for k, v := range existing {
+            merged[k] = v
+        }
+    }
+    merged[userEmailHeader] = []string{email}
+    ctx.SetValue(schemas.BifrostContextKeyMCPExtraHeaders, merged)
+
+    return req, nil, nil
+}
+```
+
+<Note>
+`BifrostContextKeyUserEmail` is only populated on Enterprise deployments with [user provisioning (OIDC + SCIM)](../enterprise/user-provisioning) enabled; elsewhere it is always empty, making this exact plugin a no-op. Treat the email header as just one example of the pattern: any header can be injected this way. The inbound request headers are also available on the context under `BifrostContextKeyRequestHeaders` (a `map[string]string` with lowercased keys), so a value the caller sent can be transformed and re-injected too.
+</Note>
+
+Key points:
+- **The per-client allowlist still applies.** At execution time every header in `BifrostContextKeyMCPExtraHeaders` (plugin-injected or caller-forwarded) is checked against the MCP client's `allowed_extra_headers`. Add `X-User-Email` (or `"*"`) to each client that should receive it, otherwise the header is silently dropped on the wire. Note the allowlist is delivery gating, not privacy scoping: a client configured with `"*"` accepts every injected header, so restrict sensitive headers to their intended destination in the hook itself (the `req.ClientName` guard above).
+- **HTTP and SSE only.** STDIO and in-process transports carry no HTTP headers, so the injection is a no-op for them.
+- The Connect hooks are the wrong place for this: Connect runs once per shared transport, before any per-request identity exists, so there is no single caller to stamp. Per-request identity belongs in the envelope hooks.
+- The other MCP hook symbols don't need to be exported for this plugin to load; the loader treats each hook as optional.
+
 #### `Cleanup() error`
 
 Called on Bifrost shutdown. Use this to:
@@ -908,7 +1063,6 @@ Add your plugin to Bifrost's `config.json`:
       "enabled": true,
       "name": "my-plugin",
       "path": "/path/to/my-plugin.so",
-      "version": 1,
       "config": {
         "api_key": "your-api-key",
         "custom_setting": "value"
@@ -924,7 +1078,6 @@ Add your plugin to Bifrost's `config.json`:
 - `name` - Plugin identifier (used in logs)
 - `path` - Absolute or relative path to the `.so` file
 - `config` - Plugin-specific configuration passed to `Init()`
-- `version` - (Optional) Plugin version number (default: 1). Increment this value to force a reload of the plugin and database update when Bifrost restarts. Useful when you want to ensure config changes take effect without manually clearing plugin state.
 
 ## Step 6: Test Your Plugin
 
@@ -1114,18 +1267,18 @@ Use `go version -m` to inspect the build info of both your plugin and the Bifros
 ```bash
 # Check what versions your plugin was built with:
 $ go version -m my-plugin.so
-my-plugin.so: go1.26.1
+my-plugin.so: go1.27.0
   dep  github.com/maximhq/bifrost/core  v1.3.50
   dep  github.com/valyala/fasthttp      v1.51.0
 
 # Check what versions Bifrost was built with:
 $ go version -m bifrost-http
-bifrost-http: go1.26.1
+bifrost-http: go1.27.0
   dep  github.com/maximhq/bifrost/core  v1.3.54   # <-- MISMATCH!
   dep  github.com/valyala/fasthttp      v1.55.0   # <-- MISMATCH!
 ```
 
-Notice that even though the Go version matches (`go1.26.1`), the **package versions** are different - this causes the error.
+Notice that even though the Go version matches (`go1.27.0`), the **package versions** are different - this causes the error.
 
 **Step 2: Update your plugin dependencies**
 

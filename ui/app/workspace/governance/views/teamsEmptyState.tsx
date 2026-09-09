@@ -17,7 +17,7 @@ export function TeamsEmptyState({ onAddClick, canCreate = true }: TeamsEmptyStat
 			</div>
 			<div className="flex flex-col gap-1">
 				<h1 className="text-muted-foreground text-xl font-medium">Teams organize users with shared budgets and access</h1>
-				<div className="text-muted-foreground mx-auto mt-2 max-w-[600px] text-sm font-normal">
+				<div className="text-muted-foreground mx-auto mt-2 w-full max-w-[600px] text-sm font-normal">
 					Create teams to group users, assign customer accounts, and set budgets and rate limits at the team level.
 				</div>
 				<div className="mx-auto mt-6 flex flex-row flex-wrap items-center justify-center gap-2">

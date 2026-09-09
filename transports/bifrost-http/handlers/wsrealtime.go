@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fasthttp/router"
@@ -78,25 +79,12 @@ func (h *WSRealtimeHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
-	providerKey, model, err := resolveRealtimeTarget(ctx, h.config, path, modelParam, deploymentParam)
-	if err != nil {
-		upgrader := h.websocketUpgrader("")
-		upgradeErr := upgrader.Upgrade(ctx, func(conn *ws.Conn) {
-			defer conn.Close()
-			clientConn := newRealtimeClientConn(conn)
-			clientConn.writeRealtimeError(newRealtimeWireBifrostError(400, "invalid_request_error", err.Error()))
-		})
-		if upgradeErr != nil {
-			logger.Warn("websocket upgrade failed for %s: %v", path, upgradeErr)
-		}
-		return
-	}
-
-	// Run PreRequestHook to give governance + LB a chance to route the realtime connection.
-	// Realtime bypasses handleRequest (per-turn pipelines instead), so we invoke the routing
-	// phase explicitly here. Mutations to provider/model are read back into the local vars
-	// and copied to fasthttp user values so snapshotRealtimeMiddlewareValues picks up any
-	// ctx changes (governance team/customer IDs, routing engine logs).
+	// The pre-request context is built first because the admission gate below reads the
+	// credentials it records. Realtime bypasses handleRequest (per-turn pipelines instead), so
+	// the routing phase is invoked explicitly further down. Mutations to provider/model are
+	// read back into the local vars and copied to fasthttp user values so
+	// snapshotRealtimeMiddlewareValues picks up any ctx changes (governance team/customer IDs,
+	// routing engine logs).
 	preReqCtx, preReqCancel := createBifrostContextFromAuth(h.handlerStore, auth)
 	if preReqCtx == nil {
 		preReqCancel()
@@ -114,6 +102,41 @@ func (h *WSRealtimeHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 	preReqCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.RealtimeRequest)
 	if realtimeDefaultProviderForPath(path) == schemas.OpenAI {
 		preReqCtx.SetValue(schemas.BifrostContextKeyIntegrationType, "openai")
+	}
+
+	// Admission check, before the upgrade, before any routing work, and before the target is
+	// even resolved: completing this upgrade selects the operator's provider key and opens an
+	// upstream session, which the per-turn governance pipeline only gets to inspect one turn
+	// too late. Refused with a plain 401 on the HTTP request rather than an in-band error
+	// frame, matching how the auth middleware already refuses unauthenticated WebSocket
+	// upgrades. Ordering it ahead of resolveRealtimeTarget matters: that resolver's error path
+	// upgrades the connection to report in-band, so an anonymous caller with a missing or
+	// malformed model would otherwise get a completed upgrade and a way to probe which models
+	// and paths the deployment accepts, without ever presenting a credential.
+	if authErr := refuseUnauthenticatedRealtime(
+		h.config.ClientConfig.EnforceAuthOnInference,
+		h.handlerStore.GetKVStore(),
+		preReqCtx,
+		auth.authorization,
+	); authErr != nil {
+		preReqCancel()
+		SendBifrostError(ctx, authErr)
+		return
+	}
+
+	providerKey, model, err := resolveRealtimeTarget(ctx, h.config, path, modelParam, deploymentParam)
+	if err != nil {
+		preReqCancel()
+		upgrader := h.websocketUpgrader("")
+		upgradeErr := upgrader.Upgrade(ctx, func(conn *ws.Conn) {
+			defer conn.Close()
+			clientConn := newRealtimeClientConn(conn)
+			clientConn.writeRealtimeError(newRealtimeWireBifrostError(400, "invalid_request_error", err.Error()))
+		})
+		if upgradeErr != nil {
+			logger.Warn("websocket upgrade failed for %s: %v", path, upgradeErr)
+		}
+		return
 	}
 	// Surface full request headers + query params on the pre-request context so governance
 	// CEL routing rules (which read headers[...] / params[...]) see the same shape they would
@@ -252,6 +275,10 @@ func (h *WSRealtimeHandler) runRealtimeSession(
 	// routing engine logs, raw-storage header overrides, and other values set by
 	// HTTPTransportPreHook plugins (governance, prompts, etc.).
 	applyRealtimeMiddlewareValues(bifrostCtx, middlewareValues)
+	// The middleware values are where the user the upgrade authenticated arrives, after the
+	// session context settled its identity from the headers alone, so it is settled again now
+	// that everything the connection presented is on it.
+	lib.SettleIdentity(bifrostCtx)
 
 	// Resolve ephemeral key mapping to restore virtual key context.
 	token := extractRealtimeBearerTokenFromHeader(auth.authorization)
@@ -303,11 +330,16 @@ func (h *WSRealtimeHandler) runRealtimeSession(
 		clientConn.writeRealtimeError(headerErr)
 		return
 	}
+	var proxyConfig *schemas.ProxyConfig
+	if providerCfg, cfgErr := h.config.GetProviderConfigRaw(providerKey); cfgErr == nil && providerCfg != nil {
+		proxyConfig = providerCfg.ProxyConfig
+	}
+
 	upstream, err := h.pool.Get(bfws.PoolKey{
 		Provider: providerKey,
 		KeyID:    key.ID,
 		Endpoint: wsURL,
-	}, mapToHTTPHeader(realtimeHeaders))
+	}, mapToHTTPHeader(realtimeHeaders), proxyConfig)
 	if err != nil {
 		clientConn.writeRealtimeError(newRealtimeWireBifrostError(502, "server_error", err.Error()))
 		return
@@ -388,7 +420,7 @@ func (h *WSRealtimeHandler) relayClientToRealtimeProvider(
 			if inputSummary != "" {
 				session.RecordRealtimeInput(inputItemID, inputSummary, string(message))
 			}
-			if bifrostErr := startRealtimeTurnHooks(h.client, bifrostCtx, session, provider, providerKey, model, &key, event.Type); bifrostErr != nil {
+			if bifrostErr := startRealtimeTurnHooks(h.client, bifrostCtx, session, provider, providerKey, model, &key, event); bifrostErr != nil {
 				clientConn.writeRealtimeError(bifrostErr)
 				return nil
 			}
@@ -520,7 +552,7 @@ func (h *WSRealtimeHandler) relayRealtimeProviderToClient(
 					session.AppendRealtimeOutputText(event.Delta.Transcript)
 				}
 				if provider.ShouldStartRealtimeTurn(event) && session.PeekRealtimeTurnHooks() == nil {
-					if bifrostErr := startRealtimeTurnHooks(h.client, bifrostCtx, session, provider, providerKey, model, &key, event.Type); bifrostErr != nil {
+					if bifrostErr := startRealtimeTurnHooks(h.client, bifrostCtx, session, provider, providerKey, model, &key, event); bifrostErr != nil {
 						clientConn.writeRealtimeError(bifrostErr)
 						return nil
 					}
@@ -661,12 +693,23 @@ type realtimeClientConn struct {
 	writeMu   sync.Mutex
 	closeOnce sync.Once
 	done      chan struct{}
+
+	// pingInterval is the heartbeat period. It is a field rather than a constant
+	// so tests can drive the heartbeat without waiting out realtimeWSPingInterval.
+	pingInterval time.Duration
+
+	// heartbeatStarted guards heartbeatDone: waiting on it is only valid once the
+	// heartbeat goroutine exists to close it.
+	heartbeatStarted atomic.Bool
+	heartbeatDone    chan struct{}
 }
 
 func newRealtimeClientConn(conn *ws.Conn) *realtimeClientConn {
 	return &realtimeClientConn{
-		conn: conn,
-		done: make(chan struct{}),
+		conn:          conn,
+		done:          make(chan struct{}),
+		pingInterval:  realtimeWSPingInterval,
+		heartbeatDone: make(chan struct{}),
 	}
 }
 
@@ -694,8 +737,14 @@ func (c *realtimeClientConn) startHeartbeat() {
 	c.installPongHandler()
 	c.refreshReadDeadline()
 
+	if !c.heartbeatStarted.CompareAndSwap(false, true) {
+		return
+	}
+
 	go func() {
-		ticker := time.NewTicker(realtimeWSPingInterval)
+		defer close(c.heartbeatDone)
+
+		ticker := time.NewTicker(c.pingInterval)
 		defer ticker.Stop()
 
 		for {
@@ -712,8 +761,20 @@ func (c *realtimeClientConn) startHeartbeat() {
 	}()
 }
 
+// stopHeartbeat signals the heartbeat goroutine and waits for it to exit.
+//
+// The wait is what makes it safe for the upgrade handler to return afterwards.
+// fasthttp recycles the hijacked connection as soon as that handler returns,
+// nilling the net.Conn underneath it, and a ping already inside WriteMessage
+// would dereference it. Unlike the /ws broadcast path there is no recover here,
+// so that panic would take the whole process down.
+//
+// A ping in flight can hold this up for at most realtimeWSPingWriteTimeout.
 func (c *realtimeClientConn) stopHeartbeat() {
 	c.closeDone()
+	if c.heartbeatStarted.Load() {
+		<-c.heartbeatDone
+	}
 }
 
 func (c *realtimeClientConn) installPongHandler() {
@@ -815,6 +876,8 @@ var realtimeMiddlewareKeys = []any{
 	schemas.BifrostContextKeyGovernanceTeamName,
 	schemas.BifrostContextKeyGovernanceBusinessUnitID,
 	schemas.BifrostContextKeyGovernanceBusinessUnitName,
+	schemas.BifrostContextKeyGovernanceProjectID,
+	schemas.BifrostContextKeyGovernanceProjectName,
 	schemas.BifrostContextKeyGovernanceIncludeOnlyKeys,
 	schemas.BifrostContextKeyGovernancePluginName,
 	schemas.BifrostContextKeyRoutingEnginesUsed,
@@ -830,11 +893,11 @@ var realtimeMiddlewareKeys = []any{
 	schemas.BifrostContextKeyAPIKeyName,
 	schemas.BifrostContextKeySelectedKeyID,
 	schemas.BifrostContextKeySelectedKeyName,
-	// NOTE: BifrostContextKeyTraceID is intentionally NOT inherited here. The
-	// upgrade request's trace is already ended by the time realtime turns run, so
-	// inheriting it would route each turn's log entry into pendingLogsToInject
-	// under a dead trace ID whose Inject() never fires, dropping the row. Each
-	// realtime turn mints its own trace in RunRealtimeTurnPreHooks instead.
+	// NOTE: BifrostContextKeyTraceID (and its W3C export, BifrostContextKeyExportTraceID)
+	// are intentionally NOT inherited here. The upgrade request's trace is already ended
+	// by the time realtime turns run, so inheriting it would route each turn's log entry
+	// into pendingLogsToInject under a dead trace ID whose Inject() never fires, dropping
+	// the row. Each realtime turn mints its own trace in RunRealtimeTurnPreHooks instead.
 	schemas.BifrostContextKeyTransportPluginLogs,
 }
 

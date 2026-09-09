@@ -3,9 +3,40 @@ import { SecretVar } from "./schemas";
 
 export type MCPConnectionType = "http" | "stdio" | "sse";
 
-export type MCPConnectionState = "connected" | "disconnected" | "error" | "pending_tools" | "disabled";
+export type MCPConnectionState =
+	| "healthy"
+	| "unstable"
+	| "error"
+	| "pending_verification"
+	| "disabled"
+	| "needs_reauth"
+	// Read-time aggregate value, never a single instance's own reported
+	// state: multiple instances of a distributed deployment currently
+	// report different states for this client. Never produced by a
+	// single-instance deployment.
+	| "degraded";
 
-export type MCPAuthType = "none" | "headers" | "oauth" | "per_user_oauth" | "per_user_headers";
+export type MCPAuthType = "none" | "headers" | "oauth" | "per_user_oauth" | "per_user_headers" | "token_exchange";
+
+// Which step of Bifrost's own connection handling failed. Mirrors the Go
+// MCPConnectionFailureStage constants.
+export type MCPConnectionFailureStage = "connect" | "ping" | "list_tools" | "tool_discovery" | "transport_lost" | "credential";
+
+// Why a server's state is not healthy: the step that failed, the error it
+// failed with, the most recent failed attempt, and when the current run of
+// failures began. Absent while healthy.
+export interface MCPConnectionFailure {
+	stage: MCPConnectionFailureStage;
+	message: string;
+	at: string;
+	since: string;
+}
+
+// One instance's own view of a server in a distributed deployment.
+export interface MCPInstanceState {
+	state: MCPConnectionState;
+	last_failure?: MCPConnectionFailure;
+}
 
 // Lifecycle states for a per-user MCP header credential row. Mirrors the
 // status column on mcp_per_user_header_credentials.
@@ -29,6 +60,40 @@ export interface MCPTLSConfig {
 	ca_cert_pem?: SecretVar;
 }
 
+// Delegated token-exchange scoping for auth_type === "token_exchange": each
+// caller's identity-provider token is exchanged at runtime for a short-lived
+// token scoped to this server's audience. Carries no credentials — the
+// exchange endpoint and client come from the deployment's identity-provider
+// integration.
+export interface MCPTokenExchangeConfig {
+	audience: string; // Resource identifier at the identity provider, e.g. "api://jira-mcp"
+	// Identity-provider application authorized to perform exchanges for this
+	// audience — typically a dedicated registration carrying the
+	// token-exchange (or on-behalf-of) grant, separate from the SSO login
+	// application. Required unless use_idp_credentials is true. Redacted on
+	// GET.
+	client_id?: SecretVar;
+	client_secret?: SecretVar; // Omit for public clients. Ignored when use_idp_credentials is true. Redacted on GET.
+	// When true, performs the exchange as the SSO login application itself
+	// instead of client_id/client_secret above, which are then ignored. Some
+	// providers require this — Microsoft Entra ID's on-behalf-of grant only
+	// accepts an assertion audienced to the exchanging application, and the
+	// SSO login flow always requests a token self-audienced to itself, so a
+	// separate exchange application can never receive a usable one.
+	use_idp_credentials?: boolean;
+	// Optional scopes on the exchanged token. Include "offline_access" (where
+	// the identity provider supports it) so the retained admin discovery
+	// credential gets a refresh token and stays self-renewing.
+	scopes?: string[];
+	// Overrides where the exchange request is sent, for identity providers
+	// that bind an audience to a specific authorization server distinct from
+	// the one used for SSO login (e.g. Okta's per-resource Custom
+	// Authorization Servers). Leave empty to use the deployment's SSO login
+	// issuer, which is correct for providers with one tenant-wide token
+	// endpoint (Entra, Auth0).
+	authorization_server_url?: string;
+}
+
 export interface OAuthConfig {
 	client_id: SecretVar;
 	client_secret?: SecretVar; // Optional for public clients using PKCE
@@ -37,17 +102,24 @@ export interface OAuthConfig {
 	registration_url?: string; // Optional, for dynamic client registration
 	scopes?: string[]; // Optional, can be discovered
 	server_url?: string; // MCP server URL for OAuth discovery (automatically set from connection_string)
+	resource?: string; // Optional OAuth resource indicator; omitted when empty
 }
 
-/** OAuth fields allowed on MCP client update (e.g. client_secret-only rotation). */
+/** OAuth fields allowed on MCP client update. Any field left unset keeps its stored value. */
 export interface OAuthConfigUpdate {
 	client_id?: SecretVar;
 	client_secret?: SecretVar;
+	authorize_url?: string;
+	token_url?: string;
+	registration_url?: string;
+	scopes?: string[];
+	resource?: string;
 }
 
 export interface MCPClientConfig {
 	client_id: string; // Maps to ClientID in TableMCPClient
 	name: string;
+	endpoint_slug?: string; // URL-safe, immutable after creation; served at /mcp/<slug>
 	is_code_mode_client?: boolean;
 	connection_type: MCPConnectionType;
 	connection_string?: SecretVar;
@@ -57,6 +129,13 @@ export interface MCPClientConfig {
 	oauth_config_id?: string;
 	oauth_client_id?: SecretVar; // Redacted existing client ID (populated on GET for oauth clients)
 	oauth_client_secret?: SecretVar; // Redacted existing client secret (populated on GET for oauth clients)
+	// Remaining oauth_config fields, populated on GET for oauth clients so the
+	// full config can be reviewed and edited, not just the credentials.
+	oauth_authorize_url?: string;
+	oauth_token_url?: string;
+	oauth_registration_url?: string;
+	oauth_scopes?: string[];
+	oauth_resource?: string;
 	tools_to_execute?: string[];
 	tools_to_auto_execute?: string[];
 	headers?: Record<string, SecretVar>;
@@ -65,12 +144,24 @@ export interface MCPClientConfig {
 	// in the credential store, not on the client config. Required (non-empty)
 	// for per_user_headers auth; ignored for all other auth types.
 	per_user_header_keys?: string[];
+	// token_exchange-only: audience/scopes the exchanged tokens are scoped to.
+	// Required (with a non-empty audience) for token_exchange auth.
+	token_exchange?: MCPTokenExchangeConfig;
 	is_ping_available?: boolean;
+	// Only meaningful when connection_type === "http": whether this client
+	// maintains one persistent connection reused across every caller (true)
+	// or connects fresh per call (nil/false, the default for newly created
+	// clients — pre-existing clients were backfilled to true). SSE and STDIO
+	// always behave as sticky regardless of this field.
+	needs_session_stickiness?: boolean;
 	tool_pricing?: Record<string, number>;
-	tool_sync_interval?: number; // Per-client override in minutes (0 = use global, -1 = disabled)
+	// Per-client override (0 = use global). API returns NANOSECONDS
+	// (Go time.Duration), while updates send minutes — convert with
+	// toolSyncIntervalToMinutes before showing or resending this value.
+	tool_sync_interval?: number;
 	tool_execution_timeout?: string | number; // Per-client tool execution timeout; API returns string e.g. "30s", UI sends integer seconds (0 = use global)
 	allowed_extra_headers?: string[]; // Allowlist of x-bf-eh-* headers forwarded to this MCP server. ["*"] = allow all.
-	allow_on_all_virtual_keys?: boolean; // When true, available to all VKs with all tools allowed by default; explicit VK config overrides this
+	allow_by_default?: boolean; // When true, available to every caller not assigned this server explicitly, with all tools allowed; an explicit assignment overrides this
 	disabled?: boolean; // When true, connection/workers are shut down; tools are unavailable until re-enabled
 }
 
@@ -80,15 +171,61 @@ export interface MCPVKConfigResponse {
 	tools_to_execute: string[];
 }
 
+// MCPClientCredential is the read-only view of the credential a server holds
+// on its own behalf, as opposed to the per-caller credentials listed under
+// MCP sessions: the single shared token for an oauth server, the retained
+// admin token for per_user_oauth and token_exchange servers (used only to
+// refresh the tool list), or the retained admin header values for a
+// per_user_headers server. Never carries secret material: the refresh token
+// is reported as present or absent, and header values only by name.
+export interface MCPClientCredential {
+	kind: "oauth" | "headers";
+	// oauth: active | orphaned | needs_reauth. headers: active | orphaned | needs_update.
+	status: "active" | "orphaned" | "needs_reauth" | "needs_update";
+	// oauth only: why the status left active, as recorded when it flipped:
+	// the provider's rejection of the last refresh (HTTP status plus the
+	// OAuth error and description), a credential rotation, or a failed admin
+	// exchange. Absent while active.
+	status_reason?: string;
+	// oauth only: access token expiry; absent when the provider did not report one.
+	expires_at?: string | null;
+	// oauth only: set once the access token has been refreshed or the
+	// credential re-authorized at least once.
+	last_refreshed_at?: string | null;
+	// oauth only: whether the provider issued a refresh token. Always false for headers.
+	has_refresh_token: boolean;
+	// oauth only: scopes the provider reported at consent. Empty when the
+	// provider omitted them from its token response.
+	scopes?: string[];
+	// headers only: names of the headers the stored admin values cover, sorted.
+	header_keys?: string[];
+	created_at: string;
+	updated_at: string;
+}
+
 export interface MCPClient {
 	config: MCPClientConfig;
 	tools: ToolFunction[];
 	state: MCPConnectionState;
 	vk_configs: MCPVKConfigResponse[];
+	// The failure behind a `state` other than healthy, as recorded by the
+	// instance that served this request. Absent while healthy.
+	last_failure?: MCPConnectionFailure;
+	// Per-instance breakdown behind `state` in a distributed deployment
+	// (instance ID -> that instance's own state and failure). Present when
+	// instances disagree (`state` is then "degraded") and when they all
+	// report unstable, so each instance's own reason is visible. Never
+	// present in a single-instance deployment.
+	node_states?: Record<string, MCPInstanceState>;
+	// The credential this server holds on its own behalf. Absent for auth
+	// types without one (none, headers) and for servers that have not
+	// completed their one-time authorization yet.
+	credential?: MCPClientCredential;
 }
 
 export interface CreateMCPClientRequest {
 	name: string;
+	endpoint_slug?: string; // Optional on create (derived from name when blank); immutable after
 	is_code_mode_client?: boolean;
 	connection_type: MCPConnectionType;
 	connection_string?: SecretVar;
@@ -101,6 +238,11 @@ export interface CreateMCPClientRequest {
 	headers?: Record<string, SecretVar>;
 	// per_user_headers-only: admin-declared header schema (names only).
 	per_user_header_keys?: string[];
+	// token_exchange-only: audience/scopes the exchanged tokens are scoped to.
+	// Verification runs automatically as the signed-in admin (their own
+	// identity-provider token is the exchange subject); sessions without one
+	// (e.g. API-key auth) create the client in pending_verification.
+	token_exchange?: MCPTokenExchangeConfig;
 	// per_user_headers-only: a sample set of header values supplied by the
 	// admin so the server can verify upstream + discover tools in the same
 	// create call. Discarded after verification (never persisted). Mirrors
@@ -108,6 +250,9 @@ export interface CreateMCPClientRequest {
 	// the analogous role. Ignored for all other auth types.
 	user_headers?: Record<string, string>;
 	is_ping_available?: boolean;
+	// Only meaningful when connection_type === "http". See MCPClientConfig's
+	// field doc for the full contract.
+	needs_session_stickiness?: boolean;
 }
 
 export interface OAuthFlowResponse {
@@ -123,7 +268,6 @@ export interface OAuthStatusResponse {
 	id: string;
 	status: "pending" | "authorized" | "failed" | "expired" | "revoked";
 	created_at: string;
-	expires_at: string;
 	token_id?: string;
 	token_expires_at?: string;
 	token_scopes?: string;
@@ -146,14 +290,20 @@ export interface UpdateMCPClientRequest {
 	tools_to_execute?: string[];
 	tools_to_auto_execute?: string[];
 	is_ping_available?: boolean;
+	// Only meaningful when connection_type === "http". Toggling this on an
+	// existing client takes effect immediately: switching to true dials the
+	// persistent connection now, switching to false closes it. See
+	// MCPClientConfig's field doc for the full contract.
+	needs_session_stickiness?: boolean;
 	tool_pricing?: Record<string, number>;
-	tool_sync_interval?: number; // Per-client override in minutes (0 = use global, -1 = disabled)
+	tool_sync_interval?: number; // Per-client override in minutes (0 = use global)
 	tool_execution_timeout?: number; // Per-client tool execution timeout in seconds (0 = use global)
 	allowed_extra_headers?: string[]; // Allowlist of x-bf-eh-* headers forwarded to this MCP server. ["*"] = allow all.
-	allow_on_all_virtual_keys?: boolean; // When true, available to all VKs with all tools allowed by default; explicit VK config overrides this
+	allow_by_default?: boolean; // When true, available to every caller not assigned this server explicitly, with all tools allowed; an explicit assignment overrides this
 	disabled?: boolean; // Set to true to shut down connection/workers; false to reconnect
 	tls_config?: MCPTLSConfig; // TLS configuration for HTTP/SSE connections
 	oauth_config?: OAuthConfigUpdate; // Only supported for existing oauth/per_user_oauth clients (credential rotation)
+	token_exchange?: MCPTokenExchangeConfig; // Only supported for existing token_exchange clients; omitted = preserve
 	vk_configs?: MCPVKConfig[]; // When provided, replaces all VK assignments for this MCP client
 }
 
@@ -165,13 +315,13 @@ export interface GetMCPClientsParams {
 	server?: string;
 	// Comma-separated exact-match filters (OR semantics), mirroring the library page.
 	connection_type?: string; // http,sse,stdio
-	auth_type?: string; // none,headers,oauth,per_user_oauth,per_user_headers
+	auth_type?: string; // none,headers,oauth,per_user_oauth,per_user_headers,token_exchange
 	state?: string; // connected,disconnected — resolved against live engine state
 	virtual_keys?: string; // comma-separated VK IDs the client is assigned to
 	// Boolean facets — omit for "no filter".
 	code_mode?: boolean; // filters is_code_mode_client
 	disabled?: boolean; // filters disabled status
-	all_virtual_keys?: boolean; // when true, include clients open to all virtual keys
+	allowed_by_default?: boolean; // when true, include clients allowed by default
 }
 
 // Paginated response for MCP clients list

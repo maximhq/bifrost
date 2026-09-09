@@ -20,6 +20,20 @@ func MatchHeaderPattern(headerName, pattern string) bool {
 	return headerName == pattern
 }
 
+// RedactSensitiveHeaders replaces the value of every credential-bearing header
+// (per IsSensitiveHeader) with RedactedAttrValue, keeping the key so header
+// presence is still visible in telemetry. Mutates and returns the given map;
+// safe on nil. Call this before exporting captured request headers to any
+// observability backend, since FilterHeaders itself does no redaction.
+func RedactSensitiveHeaders(headers map[string]string) map[string]string {
+	for name := range headers {
+		if IsSensitiveHeader(name) {
+			headers[name] = RedactedAttrValue
+		}
+	}
+	return headers
+}
+
 // FilterHeaders returns the subset of headers whose (lowercased) keys match any of the
 // given patterns (exact name or wildcard like "x-custom-*" or "*"). Header keys are
 // expected to already be lowercased by the capture layer. Returns nil when nothing matches.

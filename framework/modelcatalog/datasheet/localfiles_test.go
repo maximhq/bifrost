@@ -11,7 +11,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// TestFilePathFromURL verifies that filePathFromURL resolves every shape of
+// TestFilePathFromURL verifies that FilePathFromURL resolves every shape of
 // file:// URL to a usable filesystem path. url.Parse scatters a relative path
 // across Opaque/Host/Path depending on its form, so the resolver must reassemble
 // it. This is what lets the example configs reference datasheets with relative
@@ -34,8 +34,8 @@ func TestFilePathFromURL(t *testing.T) {
 		if err != nil {
 			t.Fatalf("url.Parse(%q): %v", tc.raw, err)
 		}
-		if got := filePathFromURL(parsed); got != tc.want {
-			t.Errorf("filePathFromURL(%q) = %q, want %q", tc.raw, got, tc.want)
+		if got := FilePathFromURL(parsed); got != tc.want {
+			t.Errorf("FilePathFromURL(%q) = %q, want %q", tc.raw, got, tc.want)
 		}
 	}
 }

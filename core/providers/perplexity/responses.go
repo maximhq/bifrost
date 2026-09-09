@@ -31,6 +31,12 @@ func ToPerplexityResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *
 		perplexityReq.Temperature = bifrostReq.Params.Temperature
 		perplexityReq.TopP = bifrostReq.Params.TopP
 
+		// Structured output: Perplexity speaks chat-completions, so the Responses
+		// text.format has to be carried over as response_format. Without this a
+		// Responses request reaches Perplexity with no schema at all. An explicit
+		// response_format in ExtraParams still wins; it is applied further below.
+		perplexityReq.ResponseFormat = schemas.ChatResponseFormatFromResponsesFormat(bifrostReq.Params.Text.GetFormat())
+
 		// Handle reasoning effort mapping
 		if bifrostReq.Params.Reasoning != nil && bifrostReq.Params.Reasoning.Effort != nil {
 			if *bifrostReq.Params.Reasoning.Effort == "minimal" {
@@ -110,6 +116,7 @@ func ToPerplexityResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *
 			if responseFormat, ok := schemas.SafeExtractFromMap(bifrostReq.Params.ExtraParams, "response_format"); ok {
 				perplexityReq.ResponseFormat = &responseFormat
 			}
+
 
 			// Perplexity-specific request fields
 			if numSearchResults, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["num_search_results"]); ok {

@@ -2,6 +2,7 @@ package integrations
 
 import (
 	"context"
+	"io"
 	"strings"
 	"testing"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -40,7 +42,7 @@ func strPtr(s string) *string {
 }
 
 func newTestGenericRouter() *GenericRouter {
-	return NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, &testLogger{})
+	return NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, &testLogger{})
 }
 
 func newTestBifrostContext() *schemas.BifrostContext {
@@ -73,6 +75,43 @@ func TestExtractAndParseFallbacks_GeminiGenerationRequest(t *testing.T) {
 // sets the HTTP status code from the provider's BifrostError.StatusCode field.
 // All three providers (OpenAI, Anthropic, Bedrock) return actual HTTP error codes
 // for pre-stream errors, so Bifrost must propagate them faithfully.
+func TestJSONErrorsPreserveBodyForBodylessStatus(t *testing.T) {
+	router := newTestGenericRouter()
+	converter := func(_ *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+		return err
+	}
+	for _, streaming := range []bool{false, true} {
+		for _, code := range []int{
+			fasthttp.StatusContinue,
+			fasthttp.StatusSwitchingProtocols,
+			fasthttp.StatusEarlyHints,
+			fasthttp.StatusNoContent,
+			fasthttp.StatusResetContent,
+			fasthttp.StatusNotModified,
+		} {
+			ctx := &fasthttp.RequestCtx{}
+			bifrostCtx := newTestBifrostContext()
+			bifrostErr := &schemas.BifrostError{
+				StatusCode: ptr(code),
+				Error:      &schemas.ErrorField{Message: "provider API error"},
+			}
+			if streaming {
+				router.sendStreamError(ctx, bifrostCtx, RouteConfig{
+					ErrorConverter: converter,
+				}, bifrostErr)
+			} else {
+				router.sendError(ctx, bifrostCtx, converter, bifrostErr)
+			}
+			assert.Equal(t, fasthttp.StatusBadGateway, ctx.Response.StatusCode(),
+				"streaming=%v upstream=%d", streaming, code)
+			assert.Equal(t, "application/json", string(ctx.Response.Header.ContentType()))
+			assert.True(t, sonic.Valid(ctx.Response.Body()))
+			assert.Contains(t, ctx.Response.String(), "provider API error",
+				"serialized error body missing: streaming=%v upstream=%d", streaming, code)
+		}
+	}
+}
+
 func TestSendStreamError_PropagatesProviderStatusCode(t *testing.T) {
 	tests := []struct {
 		name               string
@@ -299,76 +338,35 @@ func TestSendStreamError_ForwardsProviderHeaders(t *testing.T) {
 	assert.Equal(t, "ValidationException", string(ctx.Response.Header.Peek("x-amzn-errortype")))
 }
 
-// TestApplyBifrostResponseHeaders covers the routed-identity headers added so
-// drop-in integration callers (Anthropic SDK against `/anthropic/v1/messages`,
-// OpenAI SDK against `/openai/v1/chat/completions`, etc.) can recover the
-// actual provider/model that handled the request — including after fallback
-// or routing-rule resolution. The body shape they get back has no place to
-// surface this; headers do.
-func TestApplyBifrostResponseHeaders(t *testing.T) {
-	t.Run("routed identity emits all headers", func(t *testing.T) {
-		ctx := &fasthttp.RequestCtx{}
-		bifrostCtx := newTestBifrostContext()
+// TestTryStreamLargeResponse_AppliesRoutedIdentityHeaders verifies that
+// large-response early returns (speech audio, transcription, image bytes)
+// carry the routed-identity headers even though they skip the common footer
+// in handleNonStreamingRequest that normally emits them.
+func TestTryStreamLargeResponse_AppliesRoutedIdentityHeaders(t *testing.T) {
+	router := newTestGenericRouter()
+	ctx := &fasthttp.RequestCtx{}
+	bifrostCtx := newTestBifrostContext()
+	bifrostCtx.SetValue(schemas.BifrostContextKeyLargeResponseMode, true)
+	bifrostCtx.SetValue(schemas.BifrostContextKeyLargeResponseReader, io.NopCloser(strings.NewReader("audio-bytes")))
 
-		extra := schemas.BifrostResponseExtraFields{
-			Provider:               schemas.Bedrock,
-			OriginalModelRequested: "claude-sonnet-4-6",
-			ResolvedModelUsed:      "us.anthropic.claude-sonnet-4-6",
-			RequestType:            schemas.ChatCompletionRequest,
-			ProviderResponseHeaders: map[string]string{
-				"x-amzn-requestid": "req-789",
-			},
-		}
-
-		applyBifrostResponseHeaders(ctx, bifrostCtx, extra)
-
-		assert.Equal(t, "bedrock", string(ctx.Response.Header.Peek(HeaderBifrostProvider)))
-		assert.Equal(t, "claude-sonnet-4-6", string(ctx.Response.Header.Peek(HeaderBifrostOriginalModel)))
-		assert.Equal(t, "us.anthropic.claude-sonnet-4-6", string(ctx.Response.Header.Peek(HeaderBifrostResolvedModel)))
-		assert.Equal(t, string(schemas.ChatCompletionRequest), string(ctx.Response.Header.Peek(HeaderBifrostRequestType)))
-		assert.Equal(t, "req-789", string(ctx.Response.Header.Peek("x-amzn-requestid")))
-		// No fallback fired — header must be absent.
-		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostFallbackIndex)))
-	})
-
-	t.Run("fallback index from context emits when non-zero", func(t *testing.T) {
-		ctx := &fasthttp.RequestCtx{}
-		bifrostCtx := newTestBifrostContext()
-		bifrostCtx.SetValue(schemas.BifrostContextKeyFallbackIndex, 2)
-
-		extra := schemas.BifrostResponseExtraFields{
-			Provider:          schemas.Anthropic,
-			ResolvedModelUsed: "claude-haiku-4-5",
-		}
-
-		applyBifrostResponseHeaders(ctx, bifrostCtx, extra)
-
-		assert.Equal(t, "2", string(ctx.Response.Header.Peek(HeaderBifrostFallbackIndex)))
-	})
-
-	t.Run("zero-value extra writes no headers", func(t *testing.T) {
-		ctx := &fasthttp.RequestCtx{}
-		bifrostCtx := newTestBifrostContext()
-
-		applyBifrostResponseHeaders(ctx, bifrostCtx, schemas.BifrostResponseExtraFields{})
-
-		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostProvider)))
-		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostOriginalModel)))
-		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostResolvedModel)))
-		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostRequestType)))
-		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostFallbackIndex)))
-	})
-
-	t.Run("primary-provider success (FallbackIndex=0) does not emit fallback header", func(t *testing.T) {
-		ctx := &fasthttp.RequestCtx{}
-		bifrostCtx := newTestBifrostContext()
-		bifrostCtx.SetValue(schemas.BifrostContextKeyFallbackIndex, 0)
-
-		applyBifrostResponseHeaders(ctx, bifrostCtx, schemas.BifrostResponseExtraFields{
+	extra := schemas.BifrostResponseExtraFields{
+		Provider:          schemas.OpenAI,
+		ResolvedModelUsed: "tts-1",
+		RequestType:       schemas.SpeechRequest,
+		RoutingInfo: schemas.RoutingInfo{
 			Provider: schemas.OpenAI,
-		})
+			Model:    "tts-1",
+			Key:      "openai-key",
+		},
+	}
 
-		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostFallbackIndex)),
-			"FallbackIndex=0 means primary succeeded; absence of header is the signal")
-	})
+	handled := router.tryStreamLargeResponse(ctx, bifrostCtx, extra)
+
+	require.True(t, handled, "large response mode active — call must handle the response")
+	assert.Equal(t, "openai", string(ctx.Response.Header.Peek(lib.HeaderBifrostProvider)))
+	assert.Equal(t, "tts-1", string(ctx.Response.Header.Peek(lib.HeaderBifrostResolvedModel)))
+	assert.Equal(t, string(schemas.SpeechRequest), string(ctx.Response.Header.Peek(lib.HeaderBifrostRequestType)))
+	assert.Equal(t, "openai", string(ctx.Response.Header.Peek(lib.HeaderBifrostRoutingInfoProvider)))
+	assert.Equal(t, "tts-1", string(ctx.Response.Header.Peek(lib.HeaderBifrostRoutingInfoModel)))
+	assert.Equal(t, "openai-key", string(ctx.Response.Header.Peek(lib.HeaderBifrostRoutingInfoKey)))
 }

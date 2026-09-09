@@ -3,6 +3,7 @@ import { formatCurrencyNumber } from "@/lib/utils/numbers";
 import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import {
+	computeDisplaySeries,
 	formatCost,
 	formatFullTimestamp,
 	formatTimestamp,
@@ -10,7 +11,6 @@ import {
 	OTHER_SERIES_COLOR,
 	OTHER_SERIES_KEY,
 	OTHER_SERIES_LABEL,
-	pickTopSeries,
 } from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
@@ -79,9 +79,8 @@ function ProviderCostChartImpl({ data, chartType, startTime, endTime, selectedPr
 		let providers: string[];
 		let hasOther = false;
 		if (selectedProvider === "all") {
-			const top = pickTopSeries(data.buckets, data.providers, (b, p) => b.by_provider?.[p] ?? 0);
-			hasOther = top.length < data.providers.length;
-			providers = hasOther ? [...top, OTHER_SERIES_KEY] : top;
+			providers = computeDisplaySeries(data.buckets, data.providers, (b, p) => b.by_provider?.[p] ?? 0);
+			hasOther = providers[providers.length - 1] === OTHER_SERIES_KEY;
 		} else {
 			providers = [selectedProvider];
 		}

@@ -1,3 +1,4 @@
+import { FilterSidebarTrigger } from "@/components/filters/filterSidebarTrigger";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -5,11 +6,13 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scrollArea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TruncatedLabel } from "@/components/ui/truncatedLabel";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { RequestTypeLabels, RequestTypes, RoutingEngineUsedLabels, Statuses } from "@/lib/constants/logs";
 import { useGetAvailableFilterDataQuery, useGetProvidersQuery } from "@/lib/store";
+import { COMPLEXITY_MECHANISM_LABELS, COMPLEXITY_MECHANISM_VALUES, COMPLEXITY_TIER_VALUES, LEGACY_COMPLEXITY_TIER_VALUES } from "@/lib/types/complexityRouter";
 import type { LogFilters } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
-import { ChevronDown, LoaderCircle, PanelLeftClose, PanelLeftOpen, Plus, RotateCcw, Search } from "lucide-react";
+import { ChevronDown, LoaderCircle, PanelLeftClose, Plus, RotateCcw, Search } from "lucide-react";
 import { Ref, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const COLLAPSE_STORAGE_KEY = "logs-filter-sidebar-collapsed";
@@ -24,14 +27,19 @@ interface LogsSidebarProps {
 }
 
 export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps) {
+	const isMobile = useIsMobile();
 	const [collapsed, setCollapsed] = useState(false);
 
 	// Load persisted collapsed state on mount
 	useEffect(() => {
 		if (typeof window === "undefined") return;
+		if (isMobile) {
+			setCollapsed(true);
+			return;
+		}
 		const stored = window.localStorage.getItem(COLLAPSE_STORAGE_KEY);
-		if (stored === "true") setCollapsed(true);
-	}, []);
+		setCollapsed(stored === "true");
+	}, [isMobile]);
 
 	const toggleCollapsed = useCallback(() => {
 		setCollapsed((prev) => {
@@ -44,7 +52,7 @@ export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps
 	}, []);
 
 	const activeFilterCount = useMemo(() => {
-		const excludedKeys = ["start_time", "end_time", "content_search", "metadata_filters", "period", "polling"];
+		const excludedKeys = ["start_time", "end_time", "content_search", "request_id", "metadata_filters", "period", "polling"];
 		let count = Object.entries(filters).reduce((c, [key, value]) => {
 			if (excludedKeys.includes(key)) return c;
 			if (Array.isArray(value)) return c + value.length;
@@ -65,27 +73,11 @@ export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps
 
 	// Collapsed: thin rail with vertical "Filters" label — whole rail is clickable to expand
 	if (collapsed) {
-		return (
-			<button
-				type="button"
-				onClick={toggleCollapsed}
-				className="bg-card group flex h-full w-10 shrink-0 cursor-pointer flex-col items-center gap-3 rounded-r-md py-4 text-sm font-medium"
-				title="Show filters"
-				aria-label="Show filters"
-			>
-				<PanelLeftOpen className="text-muted-foreground group-hover:text-foreground size-4 transition-colors" />
-				<span className="rotate-180 select-none [writing-mode:vertical-rl]">Filters</span>
-				{activeFilterCount > 0 && (
-					<span className="bg-primary/10 text-primary flex size-6 items-center justify-center rounded-full text-xs font-medium">
-						{activeFilterCount}
-					</span>
-				)}
-			</button>
-		);
+		return <FilterSidebarTrigger activeFilterCount={activeFilterCount} onClick={toggleCollapsed} />;
 	}
 
 	return (
-		<div className="bg-card flex h-full w-64 shrink-0 flex-col rounded-r-md">
+		<div className="bg-card fixed inset-y-2 left-2 z-40 flex h-auto w-[calc(100vw-1rem)] max-w-72 shrink-0 flex-col rounded-md border shadow-xl md:static md:h-full md:w-64 md:max-w-none md:rounded-md md:shadow-none">
 			{/* Header */}
 			<div className="flex h-11 items-center justify-between border-b pr-2 pl-5">
 				<span className="text-sm font-semibold">Filters</span>
@@ -107,23 +99,29 @@ export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps
 				<div className="flex grow flex-col gap-1">
 					{/* First 2 open by default */}
 					<StatusFilter filters={filters} onFiltersChange={onFiltersChange} defaultOpen />
-					<ModelsFilter filters={filters} onFiltersChange={onFiltersChange} defaultOpen />
+					<ModelsFilter filters={filters} onFiltersChange={onFiltersChange} />
 					{/* Rest closed unless they have active filters */}
 					<SelectedKeysFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<VirtualKeysFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<ProvidersFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<AppFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<TypeFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<AliasesFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<RoutingEnginesFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<RoutingRulesFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<ComplexityTierFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<ComplexityMechanismFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<RequestSessionFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<LocalCachingFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<UserFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<TeamFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<CustomerFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<BusinessUnitFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<ProjectFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<SessionFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<CostFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<StopReasonFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<ToolCallsFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<MetadataFilters filters={filters} onFiltersChange={onFiltersChange} />
 				</div>
 			</ScrollArea>
@@ -260,6 +258,7 @@ function SearchableCheckboxList({
 	placeholder = "Search...",
 	inputRef,
 	testIdPrefix,
+	normalizeTestIdKey = false,
 	allowCustom = false,
 	onSearch,
 	fetching,
@@ -270,6 +269,10 @@ function SearchableCheckboxList({
 	placeholder?: string;
 	inputRef?: Ref<HTMLInputElement>;
 	testIdPrefix?: string;
+	// When true, item keys are slugified before composing the per-row data-testid
+	// (e.g. "Claude Desktop" -> "claude-desktop"). Use for free-form keys like app
+	// names so E2E selectors stay space/case-stable; leave off for already-safe keys.
+	normalizeTestIdKey?: boolean;
 	allowCustom?: boolean;
 	onSearch?: (query: string) => void;
 	fetching?: boolean;
@@ -324,7 +327,17 @@ function SearchableCheckboxList({
 					label={item.label}
 					checked={isSelected(item.key)}
 					onCheckedChange={() => onToggle(item.key)}
-					testId={testIdPrefix ? `${testIdPrefix}-checkbox-${item.key}` : undefined}
+					testId={
+						testIdPrefix
+							? `${testIdPrefix}-checkbox-${normalizeTestIdKey
+								? item.key
+									.toLowerCase()
+									.replace(/[^a-z0-9]+/g, "-")
+									.replace(/^-+|-+$/g, "")
+								: item.key
+							}`
+							: undefined
+					}
 				/>
 			))}
 			{filtered.length === 0 && !showAddCustom && (
@@ -419,6 +432,105 @@ function StopReasonFilter({ filters, onFiltersChange, defaultOpen }: FilterCompo
 				onSearch={setSearchQuery}
 				fetching={isFetching}
 				testIdPrefix="stop-reason-filter"
+			/>
+		</FilterSection>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// ToolCallsFilter
+// ---------------------------------------------------------------------------
+
+function ToolCallsFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const hasActive = (filters.tool_call_names || []).length > 0;
+	const [opened, setOpened] = useState(defaultOpen || hasActive);
+	const searchInputRef = useAutoFocusOnOpen(opened);
+	const [searchQuery, setSearchQuery] = useState("");
+	const {
+		data: filterData,
+		isUninitialized,
+		isLoading,
+		isFetching,
+	} = useGetAvailableFilterDataQuery({ dimensions: ["tool_call_names"], q: searchQuery || undefined }, { skip: !opened && !hasActive });
+	const availableToolCallNames = filterData?.tool_call_names || [];
+	const items = useMemo(() => {
+		const seen = new Set(availableToolCallNames);
+		const extras = (filters.tool_call_names || []).filter((n) => !seen.has(n));
+		return [...availableToolCallNames, ...extras].map((n) => ({ key: n, label: n }));
+	}, [availableToolCallNames, filters.tool_call_names]);
+
+	if (!isUninitialized && !isLoading && availableToolCallNames.length === 0 && !hasActive && !opened) return null;
+
+	return (
+		<FilterSection
+			title="Tool Calls"
+			defaultOpen={defaultOpen || hasActive}
+			loading={isLoading}
+			onOpenChange={setOpened}
+			testId="tool-calls-filter-toggle"
+		>
+			<SearchableCheckboxList
+				inputRef={searchInputRef}
+				placeholder="Search or add a function name"
+				items={items}
+				allowCustom
+				isSelected={(name) => (filters.tool_call_names || []).includes(name)}
+				onToggle={(name) => {
+					const current = filters.tool_call_names || [];
+					const next = current.includes(name) ? current.filter((n) => n !== name) : [...current, name];
+					onFiltersChange({ ...filters, tool_call_names: next });
+				}}
+				onSearch={setSearchQuery}
+				fetching={isFetching}
+				testIdPrefix="tool-calls-filter"
+			/>
+		</FilterSection>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// AppFilter
+// ---------------------------------------------------------------------------
+
+function AppFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const hasActive = (filters.apps || []).length > 0;
+	const [opened, setOpened] = useState(defaultOpen || hasActive);
+	const searchInputRef = useAutoFocusOnOpen(opened);
+	const {
+		data: filterData,
+		isUninitialized,
+		isLoading,
+	} = useGetAvailableFilterDataQuery({ dimensions: ["apps"] }, { skip: !opened && !hasActive });
+	const availableApps = useMemo(() => (filterData?.apps as string[] | undefined) || [], [filterData]);
+	const items = useMemo(
+		() => [...new Set([...availableApps, ...(filters.apps || [])])].sort().map((name) => ({ key: name, label: name })),
+		[availableApps, filters.apps],
+	);
+
+	if (!isUninitialized && !isLoading && availableApps.length === 0 && !hasActive && !opened) return null;
+
+	const selectedSet = new Set(filters.apps || []);
+
+	return (
+		<FilterSection
+			title="App"
+			defaultOpen={defaultOpen || hasActive}
+			loading={isLoading}
+			onOpenChange={setOpened}
+			testId="app-filter-toggle"
+		>
+			<SearchableCheckboxList
+				inputRef={searchInputRef}
+				placeholder="Search apps"
+				items={items}
+				isSelected={(appName) => selectedSet.has(appName)}
+				onToggle={(appName) => {
+					const current = filters.apps || [];
+					const next = current.includes(appName) ? current.filter((app) => app !== appName) : [...current, appName];
+					onFiltersChange({ ...filters, apps: next.length > 0 ? next : undefined });
+				}}
+				testIdPrefix="app-filter"
+				normalizeTestIdKey
 			/>
 		</FilterSection>
 	);
@@ -815,13 +927,92 @@ function RoutingRulesFilter({ filters, onFiltersChange, defaultOpen }: FilterCom
 }
 
 // ---------------------------------------------------------------------------
+// ComplexityTierFilter – static enum, no fetch (tiers are a closed value set)
+// ---------------------------------------------------------------------------
+
+function ComplexityTierFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const hasActive = (filters.complexity_tiers || []).length > 0;
+	// Legacy tiers (REASONING, merged into COMPLEX) are offered so historical
+	// rows recorded under the old scheme stay reachable through the filter.
+	const tiers: { value: string; label: string }[] = [
+		...COMPLEXITY_TIER_VALUES.map((tier) => ({ value: tier as string, label: tier.toLowerCase() })),
+		...LEGACY_COMPLEXITY_TIER_VALUES.map((tier) => ({ value: tier as string, label: `${tier.toLowerCase()} (legacy)` })),
+	];
+	return (
+		<FilterSection title="Complexity Tier" defaultOpen={defaultOpen || hasActive} testId="complexity-tier-filter-toggle">
+			{tiers.map(({ value, label }) => (
+				<CheckboxFilterItem
+					key={value}
+					labelClassName="capitalize"
+					label={label}
+					checked={(filters.complexity_tiers || []).includes(value)}
+					onCheckedChange={() => {
+						const current = filters.complexity_tiers || [];
+						const next = current.includes(value) ? current.filter((t) => t !== value) : [...current, value];
+						onFiltersChange({ ...filters, complexity_tiers: next });
+					}}
+					testId={`complexity-tier-filter-checkbox-${value.toLowerCase()}`}
+				/>
+			))}
+		</FilterSection>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// ComplexityMechanismFilter – static enum, no fetch (mechanisms are a closed value set)
+// ---------------------------------------------------------------------------
+
+function ComplexityMechanismFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const hasActive = (filters.complexity_mechanisms || []).length > 0;
+	return (
+		<FilterSection title="Complexity Mechanism" defaultOpen={defaultOpen || hasActive} testId="complexity-mechanism-filter-toggle">
+			{COMPLEXITY_MECHANISM_VALUES.map((mechanism) => (
+				<CheckboxFilterItem
+					key={mechanism}
+					label={COMPLEXITY_MECHANISM_LABELS[mechanism] ?? mechanism}
+					checked={(filters.complexity_mechanisms || []).includes(mechanism)}
+					onCheckedChange={() => {
+						const current = filters.complexity_mechanisms || [];
+						const next = current.includes(mechanism) ? current.filter((m) => m !== mechanism) : [...current, mechanism];
+						onFiltersChange({ ...filters, complexity_mechanisms: next });
+					}}
+					testId={`complexity-mechanism-filter-checkbox-${mechanism}`}
+				/>
+			))}
+		</FilterSection>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// RequestSessionFilter
+// ---------------------------------------------------------------------------
+
+function RequestSessionFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const hasActive = !!filters.session_id;
+	return (
+		<FilterSection title="Session ID" defaultOpen={defaultOpen || hasActive} testId="request-session-filter-toggle">
+			<div className="relative">
+				<Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
+				<Input
+					value={filters.session_id || ""}
+					onChange={(event) => onFiltersChange({ ...filters, session_id: event.target.value })}
+					placeholder="Exact session ID"
+					className="h-8 border-0 pl-8 text-sm"
+					data-testid="request-session-id-filter-input"
+				/>
+			</div>
+		</FilterSection>
+	);
+}
+
+// ---------------------------------------------------------------------------
 // SessionFilter
 // ---------------------------------------------------------------------------
 
 function SessionFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
 	const hasActive = !!filters.parent_request_id;
 	return (
-		<FilterSection title="Session" defaultOpen={defaultOpen || hasActive} testId="session-filter-toggle">
+		<FilterSection title="Parent request ID" defaultOpen={defaultOpen || hasActive} testId="session-filter-toggle">
 			<div className="relative">
 				<Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
 				<Input
@@ -1059,6 +1250,65 @@ function BusinessUnitFilter({ filters, onFiltersChange, defaultOpen }: FilterCom
 				onSearch={setSearchQuery}
 				fetching={isFetching}
 				testIdPrefix="business-units-filter"
+			/>
+		</FilterSection>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// ProjectFilter
+// ---------------------------------------------------------------------------
+
+function ProjectFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const hasActive = (filters.project_ids || []).length > 0;
+	const [opened, setOpened] = useState(defaultOpen || hasActive);
+	const searchInputRef = useAutoFocusOnOpen(opened);
+	const [searchQuery, setSearchQuery] = useState("");
+	const {
+		data: filterData,
+		isUninitialized,
+		isLoading,
+		isFetching,
+	} = useGetAvailableFilterDataQuery({ dimensions: ["projects"], q: searchQuery || undefined }, { skip: !opened && !hasActive });
+	const availableProjects = filterData?.projects || [];
+	const nameToIds = useMemo(() => groupByName(availableProjects), [availableProjects]);
+
+	if (!isUninitialized && !isLoading && availableProjects.length === 0 && !hasActive && !opened) return null;
+
+	const toggle = (name: string) => {
+		const resolvedIds = nameToIds.get(name) || [name];
+		const current = filters.project_ids || [];
+		const allSelected = resolvedIds.every((id) => current.includes(id));
+		const next = allSelected
+			? current.filter((v) => !resolvedIds.includes(v))
+			: [...current, ...resolvedIds.filter((id) => !current.includes(id))];
+		onFiltersChange({ ...filters, project_ids: next });
+	};
+
+	const isSelected = (name: string) => {
+		const resolvedIds = nameToIds.get(name) || [name];
+		const current = filters.project_ids || [];
+		return resolvedIds.every((id) => current.includes(id));
+	};
+
+	return (
+		<FilterSection
+			title="Projects"
+			defaultOpen={defaultOpen || hasActive}
+			loading={isLoading}
+			onOpenChange={setOpened}
+			testId="projects-filter-toggle"
+		>
+			<SearchableCheckboxList
+				inputRef={searchInputRef}
+				placeholder="Search or add a project"
+				items={dedup(availableProjects).map((name) => ({ key: name, label: name }))}
+				allowCustom
+				isSelected={isSelected}
+				onToggle={toggle}
+				onSearch={setSearchQuery}
+				fetching={isFetching}
+				testIdPrefix="projects-filter"
 			/>
 		</FilterSection>
 	);

@@ -23,10 +23,7 @@ export const oauth2ConsentApi = baseApi.injectEndpoints({
 				url: `/oauth2/consent/flows/${encodeURIComponent(flowId)}`,
 			}),
 		}),
-		submitOAuth2ConsentFlow: builder.mutation<
-			OAuth2ConsentSubmitResponse,
-			{ flowId: string; body: OAuth2ConsentSubmitRequest }
-		>({
+		submitOAuth2ConsentFlow: builder.mutation<OAuth2ConsentSubmitResponse, { flowId: string; body: OAuth2ConsentSubmitRequest }>({
 			query: ({ flowId, body }) => ({
 				url: `/oauth2/consent/flows/${encodeURIComponent(flowId)}`,
 				method: "PUT",
@@ -36,7 +33,4 @@ export const oauth2ConsentApi = baseApi.injectEndpoints({
 	}),
 });
 
-export const {
-	useGetOAuth2ConsentFlowQuery,
-	useSubmitOAuth2ConsentFlowMutation,
-} = oauth2ConsentApi;
+export const { useGetOAuth2ConsentFlowQuery, useSubmitOAuth2ConsentFlowMutation } = oauth2ConsentApi;

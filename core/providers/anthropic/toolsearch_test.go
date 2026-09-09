@@ -281,7 +281,8 @@ func TestToolSearch_ReverseRebuildsAnthropicBlocks(t *testing.T) {
 		},
 	}
 
-	msgs, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, history, true, schemas.Anthropic, "claude-sonnet-4-6")
+	msgs, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, history, true,
+		schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-6"))
 
 	var serverToolUse, resultBlock *AnthropicContentBlock
 	for mi := range msgs {

@@ -40,7 +40,10 @@ You can discover the exact IDs your account serves with a **list-models** reques
 | Structured outputs | ✅ |
 | Prompt caching (Claude) | ✅ |
 | List models | ✅ |
-| Text completion, embeddings, batch, files, images, audio, count tokens, rerank | ❌ |
+| Count tokens (Claude only) | ✅ |
+| Text completion, embeddings, batch, files, images, audio, rerank | ❌ |
+
+Count tokens uses the native-Anthropic `/anthropic/v1/messages/count_tokens` path, so it is available for Claude models only - `gpt-*` and Gemma models return an unsupported-operation error. This path is the only way to count tokens for Claude models that ship cross-Region-inference-only on `bedrock-runtime` and therefore have no regional endpoint for the Bedrock `CountTokens` API. See the AWS guide on [counting tokens on the bedrock-mantle endpoint](https://docs.aws.amazon.com/bedrock/latest/userguide/count-tokens.html#count-tokens-mantle).
 
 For Claude models, request/response handling (beta headers, cache control, reasoning, message conversion) follows the same rules as the [Bedrock provider's Anthropic behavior](./bedrock) — refer to that page for the deep parameter mapping.
 

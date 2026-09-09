@@ -18,7 +18,11 @@ var errorPatterns = []*regexp.Regexp{
 	// Plain-prose error markers that real CLIs print on failure.
 	regexp.MustCompile(`(?i)API Error`),
 	regexp.MustCompile(`(?i)Request failed`),
-	regexp.MustCompile(`(?i)\brate[_ -]?limit\b`),
+	// Requires a failure word near the phrase. A bare `\brate[_ -]?limit\b`
+	// matched the model's own prose: a cell failed because it read Bifrost's
+	// architecture docs and quoted "PreLLMHook Pipeline (auth, rate-limit, cache
+	// check)". Naming the concept is not hitting it.
+	rateLimitSignalRE,
 	regexp.MustCompile(`\b(?:401|403|429|5\d{2})\b\s+(?i)(?:error|status)`),
 	regexp.MustCompile(`(?i)authentication failed`),
 	regexp.MustCompile(`(?i)invalid[_ ]api[_ ]key`),

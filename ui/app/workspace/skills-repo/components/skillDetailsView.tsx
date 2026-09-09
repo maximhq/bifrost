@@ -217,6 +217,7 @@ export function SkillDetailView({
 										dataTestId: "skill-add-version-btn",
 										className: "bg-transparent",
 										disabled: !hasEditAccess,
+										"aria-label": "Add new version",
 									}}
 									dropdownContent={{
 										align: "end",
@@ -237,7 +238,7 @@ export function SkillDetailView({
 									}}
 								>
 									<Plus className="h-3.5 w-3.5" />
-									Add New Version
+									<span className="hidden md:inline">Add New Version</span>
 								</SplitButton>
 								<DropdownMenu>
 									<DropdownMenuTrigger asChild>

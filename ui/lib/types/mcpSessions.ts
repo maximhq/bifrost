@@ -64,6 +64,14 @@ export interface MCPSessionRow {
 	// last submission/edit. OAuth rows omit this field.
 	updated_at?: string | null;
 	oauth_config_id?: string;
+	// scopes: token rows only. What the provider reported when it issued the
+	// token; absent when the provider omitted scopes from its token response,
+	// which many do when granted equals requested.
+	scopes?: string[];
+	// has_refresh_token: token rows only. Whether the provider issued a
+	// refresh token; without one the access token cannot be renewed at use
+	// time and the row needs re-auth once it expires.
+	has_refresh_token?: boolean;
 	// can_reauth mirrors the server-side identity gate on POST /reauth. For
 	// user-bound rows it's true only when the calling user matches the row's
 	// bound user; for vk/session rows it's always true. The UI hides the
@@ -97,6 +105,11 @@ export interface MCPSessionsQueryParams {
 	status?: MCPSessionStatus[];
 	auth_mode?: AuthMode[];
 	mcp_client_id?: string[];
+	virtual_key_id?: string[];
+	// Multi-select user filter (enterprise only — see the Users sidebar
+	// section). Distinct from `identity` above: this is a facet, not a
+	// single deep-link pin.
+	user_id?: string[];
 	limit?: number;
 	offset?: number;
 }

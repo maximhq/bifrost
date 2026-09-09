@@ -21,13 +21,13 @@ Bifrost provides **100% compatible endpoints** for popular AI SDKs by acting as 
 ```python
 # Before: Direct to OpenAI
 client = openai.OpenAI(
-    api_key="your-openai-key"
+    api_key="<YOUR-OPENAI-API-KEY>"
 )
 
 # After: Through Bifrost
 client = openai.OpenAI(
     base_url="http://localhost:8080/openai",  # Only change needed
-    api_key="dummy-key"  # Keys handled by Bifrost
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>"  # Replace with your actual Bifrost virtual key.
 )
 ```
 
@@ -38,13 +38,13 @@ client = openai.OpenAI(
 ```python
 # Before: Direct to Anthropic
 client = anthropic.Anthropic(
-    api_key="your-anthropic-key"
+    api_key="<YOUR-ANTHROPIC-API-KEY>"
 )
 
 # After: Through Bifrost
 client = anthropic.Anthropic(
     base_url="http://localhost:8080/anthropic",  # Only change needed
-    api_key="dummy-key"  # Keys handled by Bifrost
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>"  # Replace with your actual Bifrost virtual key.
 )
 ```
 

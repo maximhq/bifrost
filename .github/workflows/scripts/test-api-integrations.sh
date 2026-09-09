@@ -71,12 +71,22 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "🎨 Building UI..."
-(cd "$REPO_ROOT" && make build-ui)
+# CI's build-gateway job supplies the binary as an artifact; only build it here
+# when running locally (or if CI ever drops that job).
+if [ "${SKIP_GATEWAY_BUILD:-0}" = "1" ]; then
+  if [ ! -x "$BIFROST_BINARY" ]; then
+    echo "❌ SKIP_GATEWAY_BUILD=1 but no executable binary at $BIFROST_BINARY" >&2
+    exit 1
+  fi
+  echo "⏭️  Using prebuilt bifrost-http binary at $BIFROST_BINARY"
+else
+  echo "🎨 Building UI..."
+  (cd "$REPO_ROOT" && make build-ui)
 
-echo "🔨 Building bifrost-http binary..."
-mkdir -p "$BIN_DIR"
-(cd "$REPO_ROOT/transports/bifrost-http" && go build -o "$BIFROST_BINARY" .)
+  echo "🔨 Building bifrost-http binary..."
+  mkdir -p "$BIN_DIR"
+  (cd "$REPO_ROOT/transports/bifrost-http" && go build -o "$BIFROST_BINARY" .)
+fi
 
 echo "🐳 Starting Docker services (PostgreSQL + dependencies)..."
 docker compose -f "$COMPOSE_FILE" up -d
@@ -139,6 +149,14 @@ jq --arg host "$POSTGRES_HOST" --arg port "$POSTGRES_PORT" --arg user "$POSTGRES
      "config_store": {"enabled": true, "type": "postgres", "config": {"host": $host, "port": $port, "user": $user, "password": $pass, "db_name": $db, "ssl_mode": $ssl}},
      "logs_store":   {"enabled": true, "type": "postgres", "config": {"host": $host, "port": $port, "user": $user, "password": $pass, "db_name": $db, "ssl_mode": $ssl}}
    }' "$SOURCE_CONFIG" > "$MERGED_CONFIG"
+
+# The authenticated newman pass needs a first admin account. Creating it is the one
+# config write the server accepts unauthenticated, and it demands a bootstrap token
+# the server resolves at boot from BIFROST_SETUP_TOKEN. Export it here so both the
+# server process and the runner (which reads BIFROST_E2E_SETUP_TOKEN) share it;
+# without it set-auth-config skips the auth pass and the MCP/vMCP tests run nowhere.
+export BIFROST_SETUP_TOKEN="${BIFROST_SETUP_TOKEN:-bifrost-e2e-setup-token}"
+export BIFROST_E2E_SETUP_TOKEN="$BIFROST_SETUP_TOKEN"
 
 echo "🚀 Starting bifrost-http on port $PORT..."
 "$BIFROST_BINARY" --app-dir "$TEMP_DIR" --port "$PORT" --log-level debug > "$SERVER_LOG" 2>&1 &

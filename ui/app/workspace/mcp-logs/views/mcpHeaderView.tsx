@@ -73,7 +73,7 @@ export function McpHeaderView({
 	);
 
 	return (
-		<div className="flex grow items-center justify-between space-x-2">
+		<div className="flex grow flex-wrap items-center justify-between gap-2">
 			<Button
 				variant="outline"
 				size="sm"
@@ -95,7 +95,7 @@ export function McpHeaderView({
 				{polling ? <Radio className="h-4 w-4 animate-pulse" /> : <Radio className="h-4 w-4" />}
 				Live
 			</Button>
-			<div className="border-input flex h-7.5 flex-1 items-center gap-2 rounded-sm border">
+			<div className="border-input flex h-7.5 min-w-[12rem] flex-1 items-center gap-2 rounded-sm border">
 				<Search className="mr-0.5 ml-2 size-4" />
 				<Input
 					type="text"
@@ -106,6 +106,7 @@ export function McpHeaderView({
 				/>
 			</div>
 			<DateTimePickerWithRange
+				buttonClassName="w-full sm:w-auto"
 				dateTime={{ from: startTime, to: endTime }}
 				predefinedPeriod={period || undefined}
 				showTimezone

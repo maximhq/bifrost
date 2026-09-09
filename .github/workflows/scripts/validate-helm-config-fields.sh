@@ -305,8 +305,6 @@ bifrost:
           azure_key_config:
             endpoint: "https://myresource.openai.azure.com"
             api_version: "2024-02-15-preview"
-            deployments:
-              gpt-4o: "my-deployment"
     vertex:
       keys:
         - name: "vertex-key"
@@ -363,7 +361,6 @@ assert_field_value 'providers.openai.send_back_raw_response' '.providers.openai.
 # Azure key config
 assert_field_value 'providers.azure.keys[0].azure_key_config.endpoint' '.providers.azure.keys.[0].azure_key_config.endpoint' '"https://myresource.openai.azure.com"'
 assert_field_value 'providers.azure.keys[0].azure_key_config.api_version' '.providers.azure.keys.[0].azure_key_config.api_version' '"2024-02-15-preview"'
-assert_field 'providers.azure.keys[0].azure_key_config.deployments' '.providers.azure.keys.[0].azure_key_config.deployments'
 
 # Vertex key config
 assert_field_value 'providers.vertex.keys[0].vertex_key_config.project_id' '.providers.vertex.keys.[0].vertex_key_config.project_id' '"my-project"'
@@ -643,8 +640,6 @@ bifrost:
       enabled: true
       config:
         provider: "openai"
-        keys:
-          - "sk-embed-key"
         embedding_model: "text-embedding-3-small"
         dimension: 1536
         threshold: 0.85
@@ -726,7 +721,6 @@ assert_field_value 'plugins: maxim log_repo_id' '.plugins.[3].config.log_repo_id
 # Semantic cache plugin
 assert_field_value 'plugins: semantic_cache name' '.plugins.[4].name' '"semantic_cache"'
 assert_field_value 'plugins: semantic_cache provider' '.plugins.[4].config.provider' '"openai"'
-assert_field 'plugins: semantic_cache keys' '.plugins.[4].config.keys'
 assert_field_value 'plugins: semantic_cache embedding_model' '.plugins.[4].config.embedding_model' '"text-embedding-3-small"'
 assert_field_value 'plugins: semantic_cache dimension' '.plugins.[4].config.dimension' '1536'
 assert_field_value 'plugins: semantic_cache threshold' '.plugins.[4].config.threshold' '0.85'
@@ -1142,10 +1136,22 @@ bifrost:
         name: "Block PII"
         description: "Block PII in requests"
         enabled: true
-        cel_expression: "!contains(request.body, 'SSN')"
+        target: "mcp"
+        cel_expression: 'mcp_client == "github" && mcp_tool == "create_issue"'
         apply_to: "input"
         sampling_rate: 100
         timeout: 1000
+        stream_replay_event_interval_ms: 25
+        provider_config_ids:
+          - 1
+      - id: 2
+        name: "Current input only"
+        enabled: true
+        target: "llm"
+        cel_expression: 'provider == "openai"'
+        apply_to: "input"
+        send_all_conversation_turns: false
+        max_turns_to_send: 0
         provider_config_ids:
           - 1
     providers:
@@ -1164,10 +1170,14 @@ assert_field_value 'guardrails rule[0].id' '.guardrails_config.guardrail_rules.[
 assert_field_value 'guardrails rule[0].name' '.guardrails_config.guardrail_rules.[0].name' '"Block PII"'
 assert_field_value 'guardrails rule[0].description' '.guardrails_config.guardrail_rules.[0].description' '"Block PII in requests"'
 assert_field_value 'guardrails rule[0].enabled' '.guardrails_config.guardrail_rules.[0].enabled' 'true'
+assert_field_value 'guardrails rule[0].target' '.guardrails_config.guardrail_rules.[0].target' '"mcp"'
 assert_field_value 'guardrails rule[0].apply_to' '.guardrails_config.guardrail_rules.[0].apply_to' '"input"'
 assert_field_value 'guardrails rule[0].sampling_rate' '.guardrails_config.guardrail_rules.[0].sampling_rate' '100'
 assert_field_value 'guardrails rule[0].timeout' '.guardrails_config.guardrail_rules.[0].timeout' '1000'
+assert_field_value 'guardrails rule[0].stream_replay_event_interval_ms' '.guardrails_config.guardrail_rules.[0].stream_replay_event_interval_ms' '25'
 assert_field 'guardrails rule[0].provider_config_ids' '.guardrails_config.guardrail_rules.[0].provider_config_ids'
+assert_field_value 'guardrails rule[1].send_all_conversation_turns' '.guardrails_config.guardrail_rules.[1].send_all_conversation_turns' 'false'
+assert_field_value 'guardrails rule[1].max_turns_to_send' '.guardrails_config.guardrail_rules.[1].max_turns_to_send' '0'
 
 assert_field 'guardrails_config.guardrail_providers' '.guardrails_config.guardrail_providers'
 assert_field_value 'guardrails provider[0].id' '.guardrails_config.guardrail_providers.[0].id' '1'

@@ -1,7 +1,7 @@
 ---
 title: "MCP Authentication"
 sidebarTitle: "Overview"
-description: "Pick the right auth type for your MCP servers. Bifrost supports None, Headers, OAuth 2.0, Per-User OAuth, and Per-User Headers."
+description: "Pick the right auth type for your MCP servers. Bifrost supports None, Headers, OAuth 2.0, Per-User OAuth, Per-User Headers, and Token Exchange."
 icon: "shield-check"
 ---
 
@@ -25,6 +25,7 @@ Per-user auth applies to the **HTTP** and **SSE** connection types. STDIO connec
 | `per_user_headers`   | Each end-user, lazily       | HTTP headers (per-user)  | Per-user API keys, signed tokens, anything keyed to a person      |
 | `oauth`              | Admin, once                 | OAuth 2.0 access token   | Shared third-party service the whole team uses                    |
 | `per_user_oauth`     | Each end-user, lazily       | OAuth 2.0 access token   | Per-user services like Notion, GitHub, Sentry                     |
+| `token_exchange`     | Each caller, every call     | Exchanged identity-provider token (never stored) | First-party/internal MCP servers that trust your identity provider |
 
 [→ Pick your auth type](#pick-your-auth-type) for the decision flow, or jump straight to a type:
 
@@ -33,6 +34,7 @@ Per-user auth applies to the **HTTP** and **SSE** connection types. STDIO connec
 - [Per-User Headers](./per-user-headers) — each user submits their own header values
 - [OAuth 2.0](./oauth) — admin OAuth with token refresh
 - [Per-User OAuth](./per-user-oauth) — each user authenticates themselves
+- [Token Exchange](./token-exchange) — each caller's identity token is exchanged automatically (enterprise)
 
 ---
 
@@ -50,6 +52,12 @@ Per-user auth applies to the **HTTP** and **SSE** connection types. STDIO connec
 
 Per-user auth requires every request to carry an identity. See [Identity modes](#identity-modes) below.
 
+[Token Exchange](./token-exchange) (`token_exchange`) is a third shape that doesn't fit either column cleanly: like per-user auth, every caller reaches the upstream server under their own identity — but unlike `per_user_oauth` / `per_user_headers`, no credential is persisted per caller. Each tool call carries the caller's identity-provider token, and Bifrost exchanges it on a cache miss (with a short in-memory cache), so there's no consent step, no Sessions UI row, and no per-user revoke step — offboarding a user at the identity provider is reflected within the token's cached lifetime (up to 5 minutes, or the identity provider's own token expiry if shorter), not instantly. It requires identity authentication on every request; a virtual key alone is not sufficient.
+
+Connection-state semantics describe a persistent upstream connection, so most of them only apply to server-level clients. Per-user clients don't maintain a persistent upstream connection between calls: each tool call resolves and uses the caller's credential on its own, with nothing held open between calls, so the dashboard links a per-user client to its [MCP Sessions](../sessions) rows instead of showing a connection state for it. Two lifecycle states are the exception: `pending_verification` appears for every auth type, and `needs_reauth` appears for `oauth`, `per_user_oauth`, `per_user_headers`, and `token_exchange`.
+
+For the full connection-state table, connection-mode (sticky vs. per-call) matrix, and per-auth-type lifecycle walkthroughs, see **[Connections, States & Lifecycles →](../connections)**.
+
 ---
 
 ## Pick your auth type
@@ -59,11 +67,13 @@ flowchart TD
     A[Does the MCP need any auth?] -->|No| N[Use 'none']
     A -->|Yes| B{Same credential for everyone?}
     B -->|Yes| C{OAuth 2.0 provider?}
-    B -->|No, each user different| D{Upstream does OAuth?}
+    B -->|No, each user different| D{Does it trust your SCIM identity provider's issuer?}
     C -->|Yes| O[Use 'oauth']
     C -->|No, static headers| H[Use 'headers']
-    D -->|Yes| PO[Use 'per_user_oauth']
-    D -->|No, just per-user API keys| PH[Use 'per_user_headers']
+    D -->|Yes, first-party/internal server| TE[Use 'token_exchange']
+    D -->|No| E{Upstream does OAuth?}
+    E -->|Yes| PO[Use 'per_user_oauth']
+    E -->|No, just per-user API keys| PH[Use 'per_user_headers']
 ```
 
 A few common patterns:
@@ -72,6 +82,7 @@ A few common patterns:
 - "We use a custom internal MCP with a bearer token" → `headers`
 - "Each user connects to their own Notion workspace" → `per_user_oauth`
 - "Each user has their own API key for an LLM provider's MCP wrapper" → `per_user_headers`
+- "Our own internal MCP server trusts our workforce identity provider" → `token_exchange`
 
 ---
 
@@ -184,7 +195,7 @@ The `mcp_auth_required` payload carries a `kind` discriminator (`"oauth"` or `"h
 
 Every per-user credential — OAuth tokens and submitted headers — shows up on the **MCP Sessions** page. From there callers can:
 
-- See the credential's status (`active`, `orphaned`, `needs_reauth`, `needs_update`)
+- See the credential's status (`active`, `pending`, `orphaned`, `needs_reauth`, `needs_update`)
 - **Re-authenticate** an OAuth row whose upstream token went stale
 - **Edit values** on a header row when their key changes
 - **Revoke** a credential outright
@@ -200,4 +211,5 @@ Bifrost also keeps credentials in sync with the VK ↔ MCP allowlist automatical
 - [Per-User Headers](./per-user-headers)
 - [OAuth 2.0](./oauth) — admin OAuth
 - [Per-User OAuth](./per-user-oauth)
+- [Token Exchange](./token-exchange) — each caller's identity token exchanged automatically (enterprise)
 - [MCP Sessions](../sessions) — per-user credential lifecycle

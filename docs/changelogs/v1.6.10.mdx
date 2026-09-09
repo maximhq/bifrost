@@ -1,0 +1,109 @@
+---
+title: "v1.6.10"
+description: "v1.6.10 changelog - 2026-08-12"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.6.10
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.6.10
+    docker run -p 8080:8080 maximhq/bifrost:v1.6.10
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.6.10">
+## ✨ Features
+
+- **Quarterly Budget Windows** - Budgets support a quarterly reset period, with a configurable fiscal start month so a fiscal year that does not begin in January windows correctly.
+- **Per-Model Budgets and Rate Limits** - Virtual key provider configs accept budgets and rate limits scoped to individual models, surfaced in the UI through a unified budget override manager that groups provider and model budgets together.
+- **Budget Usage Reset** - The reset budget usage flow now covers teams, customers, model limits and provider governance, not just virtual keys.
+- **Fiscal Quarter UI** - The governance UI exposes the quarterly period with fiscal-quarter advanced settings, and provider cards show a model budget count in the header summary.
+
+## 🐞 Fixed
+
+- **Calendar Alignment Semantics** - Enabling calendar alignment preserves the currently open window and applies from the next period, instead of truncating the window in flight.
+- **Together Pricing Lookup** - Fixed the pricing provider lookup for Together so model costs resolve correctly (thanks [@dani29](https://github.com/dani29)!)
+- **Encrypted Reasoning Verification** - Patched encrypted reasoning content that providers rejected as unverifiable.
+- **Gemini Reasoning Replay** - Standalone Gemini reasoning messages are no longer skipped when converting Responses history to Gemini contents, and a consumed reasoning item's thought text is carried alongside the signature the preceding function call took from it.
+- **Bedrock Reasoning Blocks** - Bedrock no longer receives a reasoning block with an absent text key, the replayed signature attaches to the first reasoning summary block, and signature-only replay blocks serialize to a shape Bifrost can decode.
+- **Cohere Encrypted Reasoning** - Encrypted reasoning is emitted alongside the summary rather than instead of it, and the marker is parsed back into EncryptedContent on ingress so it no longer reaches clients as visible reasoning text.
+- **Replayed Reasoning Dropped** - Messages carrying a non-nil but empty ContentBlocks list no longer drop replayed reasoning in the Anthropic, Bedrock and Cohere converters.
+
+## 🗄️ Database Migrations
+
+- **add_budget_reset_config_column** - Adds the nullable `reset_config_json` column to `governance_budgets` to hold a budget's fiscal-quarter definition. Additive with no backfill, so it is safe during a rolling deploy: older binaries ignore the column and a NULL value reads back as the January default. **Non-reversible**: dropping the column would permanently delete every budget's fiscal-quarter definition and silently re-window those budgets onto the calendar year.
+
+  <Warning>
+    This migration cannot be rolled back. Take a backup of `governance_budgets` before upgrading if you need a path back to the previous release.
+  </Warning>
+
+## 🐙 Closed GitHub Issues
+
+- [#4851](https://github.com/maximhq/bifrost/issues/4851) - v1.6.2 and v1.6.3 governance rate-limit reset causes high CPU in BumpRateLimitUsage/updateRateLimitReferences
+
+</Update>
+<Update label="Core" description="1.7.9">
+- fix: patch encrypted reasoning content that providers rejected as unverifiable (#6041)
+
+</Update>
+<Update label="Framework" description="1.5.8">
+- feat: quarterly budget windows with a configurable fiscal start month (#5996, #5997)
+- feat: per-model budgets and rate limits on virtual key provider configs (#5703)
+- feat: add the add_budget_reset_config_column migration, storing a budget's fiscal-quarter definition in a new nullable reset_config_json column on governance_budgets (#5997)
+- fix: fixed the Together pricing provider lookup so model costs resolve correctly (thanks [@dani29](https://github.com/dani29)!) (#6037)
+- fix: enabling calendar alignment preserves the currently open window instead of truncating it in flight (#6013)
+
+</Update>
+<Update label="compat" description="0.1.34">
+- chore: upgraded core to v1.7.9 and framework to v1.5.8
+
+</Update>
+<Update label="governance" description="1.6.12">
+- feat: quarterly budget cycles honouring the configured fiscal start month (#5997)
+- feat: extend the reset budget usage flow to teams, customers, model limits and provider governance (#6002, #6004)
+- fix: calendar alignment applies from the next period rather than the current one (#6003)
+- fix: enabling calendar alignment preserves the open window (#6013)
+- chore: upgraded core to v1.7.9 and framework to v1.5.8
+
+</Update>
+<Update label="jsonparser" description="1.5.35">
+- chore: upgraded core to v1.7.9 and framework to v1.5.8
+
+</Update>
+<Update label="logging" description="1.6.8">
+- chore: upgraded core to v1.7.9 and framework to v1.5.8
+
+</Update>
+<Update label="maxim" description="1.6.35">
+- chore: upgraded core to v1.7.9 and framework to v1.5.8
+
+</Update>
+<Update label="mocker" description="1.5.35">
+- chore: upgraded core to v1.7.9 and framework to v1.5.8
+
+</Update>
+<Update label="modelcatalogresolver" description="1.0.16">
+- chore: upgraded core to v1.7.9 and framework to v1.5.8
+
+</Update>
+<Update label="otel" description="1.4.7">
+- chore: upgraded core to v1.7.9 and framework to v1.5.8
+
+</Update>
+<Update label="prompts" description="1.0.35">
+- chore: upgraded core to v1.7.9 and framework to v1.5.8
+
+</Update>
+<Update label="semanticcache" description="1.5.35">
+- chore: upgraded core to v1.7.9 and framework to v1.5.8
+
+</Update>
+<Update label="telemetry" description="1.5.35">
+- chore: upgraded core to v1.7.9 and framework to v1.5.8
+
+</Update>

@@ -6,14 +6,14 @@ import (
 
 	"github.com/bytedance/sonic"
 
-	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
-// sanitizeMessagesForHuggingFace removes unsupported ChatAssistantMessage fields
-// from chat messages. HuggingFace's OpenAI-compatible API doesn't support fields
+// sanitizeMessagesForHuggingFace removes unsupported fields from chat messages.
+// HuggingFace's OpenAI-compatible API doesn't support ChatAssistantMessage fields
 // like reasoning_details, reasoning, annotations, audio, and refusal.
 // Only ToolCalls is preserved from ChatAssistantMessage.
+// Tool messages also lose is_error, which has no OpenAI-wire equivalent.
 func sanitizeMessagesForHuggingFace(messages []schemas.ChatMessage) []schemas.ChatMessage {
 	sanitized := make([]schemas.ChatMessage, len(messages))
 	for i, msg := range messages {
@@ -23,6 +23,13 @@ func sanitizeMessagesForHuggingFace(messages []schemas.ChatMessage) []schemas.Ch
 			Content:         msg.Content,
 			ChatToolMessage: msg.ChatToolMessage,
 		}
+		// The OpenAI-compatible wire has no tool-error field; strip is_error.
+		// Clone first — ChatToolMessage is shared with the caller's input.
+		if msg.ChatToolMessage != nil && msg.ChatToolMessage.IsError != nil {
+			toolMsgCopy := *msg.ChatToolMessage
+			toolMsgCopy.IsError = nil
+			sanitized[i].ChatToolMessage = &toolMsgCopy
+		}
 		// Only preserve ToolCalls from ChatAssistantMessage
 		if msg.ChatAssistantMessage != nil && len(msg.ChatAssistantMessage.ToolCalls) > 0 {
 			sanitized[i].ChatAssistantMessage = &schemas.ChatAssistantMessage{
@@ -31,6 +38,36 @@ func sanitizeMessagesForHuggingFace(messages []schemas.ChatMessage) []schemas.Ch
 		}
 	}
 	return sanitized
+}
+
+// ToHuggingFaceChatCompletionStreamRequest builds the streaming variant of the
+// chat request: the same body as the non-streaming path, plus stream and a
+// defaulted stream_options.include_usage.
+//
+// The shared openai.HandleOpenAIChatCompletionStreaming sets include_usage on its
+// own request path, but returns early when a provider supplies a custom request
+// converter, so HuggingFace has to opt in here. Without it the router omits the
+// terminal usage chunk for several inference providers, and the shared accumulator
+// only reads top-level usage, so the stream completes with zero tokens and
+// therefore zero cost. Defaulted rather than forced, so an explicit stream_options
+// from the caller still wins.
+func ToHuggingFaceChatCompletionStreamRequest(bifrostReq *schemas.BifrostChatRequest) (*HuggingFaceChatRequest, error) {
+	reqBody, err := ToHuggingFaceChatCompletionRequest(bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	if reqBody == nil {
+		return nil, nil
+	}
+
+	reqBody.Stream = schemas.Ptr(true)
+	if reqBody.StreamOptions == nil {
+		reqBody.StreamOptions = &schemas.ChatStreamOptions{
+			IncludeUsage: schemas.Ptr(true),
+		}
+	}
+
+	return reqBody, nil
 }
 
 func ToHuggingFaceChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*HuggingFaceChatRequest, error) {
@@ -80,16 +117,11 @@ func ToHuggingFaceChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) 
 		// Handle response format (direct type assertion to avoid marshal→unmarshal round-trip)
 		if params.ResponseFormat != nil {
 			var hfRF *HuggingFaceResponseFormat
-			if rfMap, ok := (*params.ResponseFormat).(map[string]interface{}); ok {
-				hfRF = &HuggingFaceResponseFormat{}
-				if t, ok := rfMap["type"].(string); ok {
-					hfRF.Type = t
-				}
-				if jsVal, ok := rfMap["json_schema"]; ok {
-					jsBytes, err := providerUtils.MarshalSorted(jsVal)
-					if err != nil {
-						return nil, fmt.Errorf("failed to marshal json_schema: %w", err)
-					}
+			if rf, ok := schemas.ParseChatResponseFormat(params.ResponseFormat); ok {
+				hfRF = &HuggingFaceResponseFormat{Type: rf.Type}
+				// HuggingFaceJSONSchema keeps the schema as raw JSON, so decoding
+				// the wrapper carries the client's schema bytes through untouched.
+				if jsBytes := rf.RawJSONSchema(); len(jsBytes) > 0 {
 					var hfSchema HuggingFaceJSONSchema
 					if err := sonic.Unmarshal(jsBytes, &hfSchema); err != nil {
 						return nil, fmt.Errorf("failed to unmarshal json_schema: %w", err)

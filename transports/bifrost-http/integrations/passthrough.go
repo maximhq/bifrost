@@ -4,6 +4,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/valyala/fasthttp"
 )
 
 // PassthroughRouter is a catch-all router that forwards all requests directly
@@ -16,6 +17,7 @@ type PassthroughRouter struct {
 func NewPassthroughRouter(
 	client *bifrost.Bifrost,
 	handlerStore lib.HandlerStore,
+	accessResolver AccessResolver,
 	logger schemas.Logger,
 	cfg *PassthroughConfig,
 ) *PassthroughRouter {
@@ -23,13 +25,13 @@ func NewPassthroughRouter(
 		cfg = &PassthroughConfig{}
 	}
 	return &PassthroughRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, nil, cfg, logger),
+		GenericRouter: NewGenericRouter(client, handlerStore, accessResolver, nil, cfg, logger),
 	}
 }
 
 // NewAnthropicPassthroughRouter creates a passthrough router for /anthropic_passthrough.
-func NewAnthropicPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *PassthroughRouter {
-	return NewPassthroughRouter(client, handlerStore, logger, &PassthroughConfig{
+func NewAnthropicPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *PassthroughRouter {
+	return NewPassthroughRouter(client, handlerStore, accessResolver, logger, &PassthroughConfig{
 		Provider: schemas.Anthropic,
 		StripPrefix: []string{
 			"/anthropic_passthrough",
@@ -38,8 +40,8 @@ func NewAnthropicPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Han
 }
 
 // NewOpenAIPassthroughRouter creates a passthrough router for /openai_passthrough.
-func NewOpenAIPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *PassthroughRouter {
-	return NewPassthroughRouter(client, handlerStore, logger, &PassthroughConfig{
+func NewOpenAIPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *PassthroughRouter {
+	return NewPassthroughRouter(client, handlerStore, accessResolver, logger, &PassthroughConfig{
 		Provider: schemas.OpenAI,
 		StripPrefix: []string{
 			"/openai_passthrough",
@@ -47,9 +49,25 @@ func NewOpenAIPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handle
 	})
 }
 
+// NewChatGPTPassthroughRouter creates a passthrough router for /chatgpt_passthrough.
+// Restricted to the Codex responses endpoint only — this is not a general-purpose
+// ChatGPT backend proxy.
+func NewChatGPTPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *PassthroughRouter {
+	return NewPassthroughRouter(client, handlerStore, accessResolver, logger, &PassthroughConfig{
+		Provider:    schemas.OpenAI,
+		UpstreamURL: "https://chatgpt.com",
+		StripPrefix: []string{
+			"/chatgpt_passthrough",
+		},
+		AllowedRoutes: []PassthroughRoute{
+			{Method: fasthttp.MethodPost, Path: "/chatgpt_passthrough/backend-api/codex/responses"},
+		},
+	})
+}
+
 // NewAzurePassthroughRouter creates a passthrough router for /azure_passthrough.
-func NewAzurePassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *PassthroughRouter {
-	return NewPassthroughRouter(client, handlerStore, logger, &PassthroughConfig{
+func NewAzurePassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *PassthroughRouter {
+	return NewPassthroughRouter(client, handlerStore, accessResolver, logger, &PassthroughConfig{
 		Provider: schemas.Azure,
 		StripPrefix: []string{
 			"/azure_passthrough",
@@ -57,9 +75,21 @@ func NewAzurePassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handler
 	})
 }
 
+// NewRunwarePassthroughRouter creates a passthrough router for /runware_passthrough. Runware exposes
+// a single task-based endpoint, so this forwards raw task arrays and unlocks any Runware task type
+// (3D, upscaling, background removal, ...) that Bifrost does not model natively.
+func NewRunwarePassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *PassthroughRouter {
+	return NewPassthroughRouter(client, handlerStore, accessResolver, logger, &PassthroughConfig{
+		Provider: schemas.Runware,
+		StripPrefix: []string{
+			"/runware_passthrough",
+		},
+	})
+}
+
 // NewGenAIPassthroughRouter creates a passthrough router for /genai_passthrough.
-func NewGenAIPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *PassthroughRouter {
-	return NewPassthroughRouter(client, handlerStore, logger, &PassthroughConfig{
+func NewGenAIPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *PassthroughRouter {
+	return NewPassthroughRouter(client, handlerStore, accessResolver, logger, &PassthroughConfig{
 		Provider:         schemas.Gemini,
 		ProviderDetector: detectProviderFromGenAIRequest,
 		StripPrefix: []string{

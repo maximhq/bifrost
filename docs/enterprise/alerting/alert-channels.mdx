@@ -1,0 +1,284 @@
+---
+title: "Alert Channels"
+description: "Configure where Bifrost Enterprise delivers alerts - Slack, Microsoft Teams, PagerDuty, or any HTTP webhook - with encrypted configuration, SSRF protection, and per-channel cooldowns."
+icon: "megaphone"
+keywords: ["alert channels", "slack", "microsoft teams", "pagerduty", "webhook", "notifications"]
+---
+
+## Overview
+
+An **alert channel** is a notification destination. When an [alert rule](/enterprise/alerting/alert-rules) triggers, Bifrost dispatches a notification to each channel attached to that rule. Channel configuration (URLs, keys, headers) is encrypted at rest.
+
+## Channel types
+
+| Type | `type` value | Required config key | Payload format |
+| --- | --- | --- | --- |
+| **Slack** | `slack` | `webhook_url` (or `url`) | Slack Block Kit message with header and message section. |
+| **Microsoft Teams** | `microsoft_teams` | `webhook_url` (or `url`) | Adaptive Card (28 KB payload limit). |
+| **PagerDuty** | `pagerduty` | `routing_key` (or `integration_key`) | PagerDuty Events API v2 event. |
+| **Webhook** | `webhook` | `url` (or `webhook_url`) | Generic JSON payload. |
+
+Every channel also accepts an optional `name`, an optional `description`, and an optional per-channel cooldown.
+
+---
+
+## Slack
+
+Create a Slack [incoming webhook](https://api.slack.com/messaging/webhooks) and provide its URL.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `webhook_url` | string | Yes | Slack incoming webhook URL (HTTPS). Also accepted as `url`. |
+
+```json
+{
+  "name": "Engineering Slack",
+  "type": "slack",
+  "config": {
+    "webhook_url": "https://hooks.slack.com/services/T000/B000/XXXX"
+  }
+}
+```
+
+Notifications are sent as Block Kit messages. Each message includes a header block showing the rule name and a section block containing the alert details in a markdown code block.
+
+---
+
+## Microsoft Teams
+
+Provide a Teams incoming webhook or Workflows URL.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `webhook_url` | string | Yes | Teams webhook URL (HTTPS). Also accepted as `url`. |
+
+```json
+{
+  "name": "Platform Teams",
+  "type": "microsoft_teams",
+  "config": {
+    "webhook_url": "https://prod-00.westus.logic.azure.com/workflows/XXXX"
+  }
+}
+```
+
+Notifications are sent as Adaptive Cards. Teams enforces a **28 KB** payload limit.
+
+---
+
+## PagerDuty
+
+Use a PagerDuty service integration key (routing key) from an Events API v2 integration.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `routing_key` | string | Yes | PagerDuty Events API v2 integration (routing) key. Also accepted as `integration_key`. |
+
+```json
+{
+  "name": "On-call",
+  "type": "pagerduty",
+  "config": {
+    "routing_key": "R0XXXXXXXXXXXXXXXXXXXXXXXX"
+  }
+}
+```
+
+Events are sent via the PagerDuty Events API v2 with `event_action: "trigger"`, severity `"warning"`, and a deduplication key derived from the rule ID, scope, and target so repeated triggers update the same incident. The source field is set to `"Bifrost Alerting"`.
+
+---
+
+## Webhook
+
+Send a generic JSON payload to any HTTPS endpoint.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `url` | string | Yes | Destination URL. HTTPS required unless `allow_http` is enabled in `webhook_network` config. Also accepted as `webhook_url`. |
+| `headers` | object | No | Additional HTTP headers to send. Sensitive headers are stripped (see [Security](#security)). |
+
+```json
+{
+  "name": "Internal webhook",
+  "type": "webhook",
+  "config": {
+    "url": "https://hooks.example.com/alerts",
+    "headers": {
+      "X-API-Key": "your-secret"
+    }
+  }
+}
+```
+
+### Webhook payload
+
+```json
+{
+  "event": "alert.triggered",
+  "timestamp": "2026-06-11T12:00:00Z",
+  "rule": { "id": "rule_123", "name": "Budget at 80%" },
+  "scope": { "type": "virtual_key", "id": "vk-abc" },
+  "cel_expression": "budget_usage_percent >= 80.0",
+  "input": {
+    "budget_usage_percent": 91.2,
+    "budget_spent": 456.0,
+    "budget_limit": 500.0,
+    "scope_type": "virtual_key",
+    "scope_id": "vk-abc",
+    "target_type": "budget",
+    "target_id": "budget-a"
+  },
+  "message": "Alert matched: Budget at 80%\nScope: virtual_key/vk-abc\nTarget: budget/budget-a\nExpression: budget_usage_percent >= 80.0\nValues: budget_limit=500, budget_spent=456, budget_usage_percent=91.2"
+}
+```
+
+---
+
+## Cooldowns
+
+Each channel can define an optional cooldown that applies on top of the rule's cooldown. When a channel is within its cooldown window, matched alerts that would have been delivered through that channel are recorded as `skipped` in [alert history](/enterprise/alerting/alert-history) with reason `"channel_cooldown"`.
+
+- A channel cooldown of `0` means no additional suppression beyond the rule cooldown.
+- The API accepts `cooldown_milliseconds`, which must be a multiple of 1000.
+- `config.json` accepts `cooldown_seconds`, a whole-second integer.
+
+---
+
+## Security
+
+All channels enforce network safety controls:
+
+- **HTTPS by default.** Slack, Microsoft Teams, and generic webhook channels require HTTPS unless `webhook_network.allow_http` is `true`. PagerDuty always uses its fixed HTTPS Events API endpoint.
+- **SSRF protection.** RFC1918 private-network destinations are blocked unless `webhook_network.allow_private_network` is `true`. Loopback destinations such as `localhost` are permitted for local development. Link-local and unspecified addresses remain blocked regardless of this setting.
+- **Header sanitization.** Sensitive outbound headers are stripped from webhook requests: `authorization`, `connection`, `content-length`, `cookie`, `host`, `proxy-authorization`, `set-cookie`, `te`, `trailer`, `transfer-encoding`, `upgrade`.
+
+<Warning>
+Enabling `allow_http` or `allow_private_network` weakens TLS or SSRF protections. Only enable these for trusted internal or air-gapped networks.
+</Warning>
+
+---
+
+## Creating a channel
+
+<Tabs group="setup-method">
+<Tab title="Web UI">
+
+Open **Alerting** in the Bifrost dashboard, go to the **Channels** tab, and click **Add Channel**.
+
+<Frame>
+  <img src="/media/alerting/alerting-channels-list.png" alt="Alert Channels list showing name, type, cooldown, and status columns" />
+</Frame>
+
+1. Enter a **Channel Name** and optional **Description**.
+2. Select a **Channel Type**: Slack, Microsoft Teams, PagerDuty, or Webhook.
+3. Provide the type-specific configuration (webhook URL, routing key, etc.).
+4. Optionally set a **Channel Cooldown** and, for webhooks, **Custom Headers**.
+
+<Frame>
+  <img src="/media/alerting/alerting-create-channel.png" alt="Create Alert Channel dialog showing name, channel type, and Slack webhook URL fields" />
+</Frame>
+
+5. Click **Create Channel**.
+
+</Tab>
+<Tab title="API">
+
+All endpoints are under `/api/alerting/`.
+
+| Method | Endpoint | Description |
+| --- | --- | --- |
+| `GET` | `/channels` | List channels (config redacted). |
+| `GET` | `/channels/{id}` | Get a channel by ID. |
+| `POST` | `/channels` | Create a channel. |
+| `PUT` | `/channels/{id}` | Update a channel. |
+| `DELETE` | `/channels/{id}` | Delete a channel and detach it from all rules. |
+
+```bash
+curl -X POST https://your-bifrost-gateway/api/alerting/channels \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Engineering Slack",
+    "type": "slack",
+    "config": { "webhook_url": "https://hooks.slack.com/services/T000/B000/XXXX" }
+  }'
+```
+
+To create a webhook with a per-channel cooldown:
+
+```bash
+curl -X POST https://your-bifrost-gateway/api/alerting/channels \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Custom Webhook",
+    "type": "webhook",
+    "config": {
+      "url": "https://hooks.example.com/alerts",
+      "headers": { "X-API-Key": "secret" }
+    },
+    "cooldown_milliseconds": 60000
+  }'
+```
+
+</Tab>
+<Tab title="config.json">
+<span id="configjson"></span>
+
+Channels can be declared statically in the `alerting` section of `config.json`. Changes are reconciled on gateway reload.
+
+```json
+{
+  "alerting": {
+    "channels": [
+      {
+        "id": "slack-prod",
+        "name": "Production Slack",
+        "type": "slack",
+        "enabled": true,
+        "config": {
+          "webhook_url": "https://hooks.slack.com/services/xxx"
+        },
+        "cooldown_seconds": 60
+      },
+      {
+        "id": "pagerduty-critical",
+        "name": "On-call PagerDuty",
+        "type": "pagerduty",
+        "enabled": true,
+        "config": {
+          "routing_key": "abc123..."
+        }
+      },
+      {
+        "id": "generic-webhook",
+        "name": "Custom Webhook",
+        "type": "webhook",
+        "enabled": true,
+        "config": {
+          "url": "https://my-service.example.com/alerts",
+          "headers": {
+            "X-Trace-ID": "value"
+          }
+        }
+      }
+    ]
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Alert Rules" icon="gavel" href="/enterprise/alerting/alert-rules">
+    Attach channels to rules and define trigger conditions.
+  </Card>
+  <Card title="Alert History" icon="clock-rotate-left" href="/enterprise/alerting/alert-history">
+    Review delivery outcomes for every channel.
+  </Card>
+</CardGroup>

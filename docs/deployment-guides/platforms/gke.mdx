@@ -1,0 +1,322 @@
+---
+title: "Google Kubernetes Engine"
+sidebarTitle: "Google Kubernetes Engine"
+description: "Deploy Bifrost to an existing Google Kubernetes Engine cluster"
+icon: "google"
+---
+
+This guide deploys Bifrost to an existing GKE cluster using the Helm chart. It covers the Bifrost image, secrets, storage, database connection, service exposure, verification, and scaling.
+
+<Note>
+The Helm configuration is validated in the repository. The complete guide is not continuously exercised in a live Google Cloud project, so test the selected values in a non-production cluster before rollout.
+</Note>
+
+## Bifrost on GKE
+
+| Bifrost setting | GKE configuration |
+|---|---|
+| Container | OSS or supplied Enterprise image on `linux/amd64` or `linux/arm64` nodes |
+| HTTP and health | `ClusterIP` Service on `8080/TCP`; `GET /health` |
+| SQLite (OSS only) | One replica and a `ReadWriteOnce` Persistent Disk or another compatible CSI volume |
+| PostgreSQL | PostgreSQL 16 or later reachable from the pod network, regardless of provider |
+| External access | Any compatible Gateway API, ingress, Service `LoadBalancer`, mesh gateway, or proxy |
+| Enterprise mesh | Kubernetes discovery and pod-to-pod `10101/TCP+UDP`, `10102/TCP` |
+| Image pull | Public Docker Hub for OSS; Enterprise pull secret/identity from [Enterprise GCP](/deployment-guides/enterprise/gcp) |
+
+Bifrost Enterprise requires PostgreSQL 16 or later for both stores and does not support SQLite. The SQLite path below is available only for OSS deployments.
+
+## Deploy Bifrost
+
+The commands below use an existing regional GKE cluster and PostgreSQL database. Run them from Bash after replacing every value inside angle brackets.
+
+### Step 1: Connect to GKE
+
+```bash
+export GCP_PROJECT='<GCP_PROJECT_ID>'
+export GKE_CLUSTER='<GKE_CLUSTER_NAME>'
+export GCP_REGION='<GCP_REGION>'
+export BIFROST_VERSION='<BIFROST_VERSION>'
+gcloud config set project "${GCP_PROJECT}"
+gcloud container clusters get-credentials "${GKE_CLUSTER}" \
+  --region "${GCP_REGION}" \
+  --project "${GCP_PROJECT}"
+
+kubectl get nodes
+helm version
+```
+
+For a zonal cluster, replace `--region` with `--zone` and set the corresponding location.
+
+### Step 2: Create secrets and Helm values
+
+The encryption key protects persisted credentials. Create it once, keep it unchanged after Bifrost writes encrypted data, and use the same value for every replica. Replacing the key makes existing encrypted values unreadable.
+
+```bash
+kubectl create namespace bifrost \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+read -r -s -p 'Stable Bifrost encryption key: ' BIFROST_ENCRYPTION_KEY; echo
+kubectl create secret generic bifrost-encryption \
+  --namespace bifrost \
+  --from-literal=encryption-key="${BIFROST_ENCRYPTION_KEY}" \
+  --dry-run=client -o yaml | kubectl apply -f -
+unset BIFROST_ENCRYPTION_KEY
+```
+
+Choose the storage configuration for this deployment:
+
+<Tabs>
+<Tab title="PostgreSQL">
+
+```bash
+export POSTGRES_HOST='<POSTGRES_HOST>'
+export POSTGRES_PORT='5432'
+export POSTGRES_USER='<POSTGRES_USER>'
+export POSTGRES_DATABASE='<POSTGRES_DATABASE>'
+
+read -r -s -p 'PostgreSQL password: ' POSTGRES_PASSWORD; echo
+kubectl create secret generic postgres-credentials \
+  --namespace bifrost \
+  --from-literal=password="${POSTGRES_PASSWORD}" \
+  --dry-run=client -o yaml | kubectl apply -f -
+unset POSTGRES_PASSWORD
+
+cat > bifrost-values.yaml <<EOF
+image:
+  repository: docker.io/maximhq/bifrost
+  tag: "${BIFROST_VERSION}"
+
+replicaCount: 1
+
+storage:
+  mode: postgres
+
+postgresql:
+  enabled: false
+  external:
+    enabled: true
+    host: "${POSTGRES_HOST}"
+    port: ${POSTGRES_PORT}
+    user: "${POSTGRES_USER}"
+    database: "${POSTGRES_DATABASE}"
+    sslMode: require
+    existingSecret: postgres-credentials
+    passwordKey: password
+
+bifrost:
+  encryptionKeySecret:
+    name: bifrost-encryption
+    key: encryption-key
+EOF
+```
+
+This uses PostgreSQL for both Bifrost stores and does not create a Bifrost SQLite PVC. Enterprise customers should replace the image settings and registry authentication using the values supplied by Maxim.
+
+
+Cloud SQL for PostgreSQL is one Google Cloud-hosted option. The database may instead be operated by the customer or another provider as long as the cluster can reach it.
+
+Verify connectivity from the cluster before installing Bifrost:
+
+```bash
+kubectl run postgres-check --namespace bifrost \
+  --image=postgres:16-alpine --restart=Never \
+  --env="PGHOST=${POSTGRES_HOST}" --env="PGPORT=${POSTGRES_PORT}" \
+  --env="PGDATABASE=${POSTGRES_DATABASE}" --env="PGUSER=${POSTGRES_USER}" \
+  --env="PGSSLMODE=require" \
+  --command -- sleep 3600
+
+kubectl wait --namespace bifrost --for=condition=Ready pod/postgres-check --timeout=2m
+kubectl exec --namespace bifrost -it postgres-check -- psql \
+  -c "SHOW server_version;" \
+  -c "SHOW server_encoding;"
+kubectl delete pod --namespace bifrost postgres-check
+```
+
+Enter the PostgreSQL password when psql prompts. A successful connection confirms DNS, TCP, TLS, and database authentication from the pod network. Confirm that `server_version` reports PostgreSQL 16 or later and `server_encoding` reports `UTF8`.
+
+</Tab>
+<Tab title="SQLite (OSS only)">
+
+This option is available only for OSS Bifrost. Use SQLite for a single replica and select a compatible ReadWriteOnce StorageClass; the default Persistent Disk class is suitable for many single-replica deployments.
+
+```bash
+kubectl get storageclass
+
+cat > bifrost-values.yaml <<EOF
+image:
+  repository: docker.io/maximhq/bifrost
+  tag: "${BIFROST_VERSION}"
+
+replicaCount: 1
+
+storage:
+  mode: sqlite
+  persistence:
+    enabled: true
+    accessMode: ReadWriteOnce
+    size: 10Gi
+    storageClass: "<STORAGE_CLASS>"
+
+bifrost:
+  encryptionKeySecret:
+    name: bifrost-encryption
+    key: encryption-key
+EOF
+```
+
+Replace `<STORAGE_CLASS>` with a class returned by `kubectl get storageclass`. This creates persistent `/app/data` storage for the OSS SQLite deployment. PostgreSQL is not required for this OSS option.
+
+</Tab>
+</Tabs>
+
+### Step 3: Install Bifrost
+
+```bash
+helm repo add bifrost https://maximhq.github.io/bifrost/helm-charts
+helm repo update
+
+helm upgrade --install bifrost bifrost/bifrost \
+  --namespace bifrost \
+  --values bifrost-values.yaml \
+  --atomic \
+  --timeout 15m
+```
+
+### Step 4: Verify and access Bifrost
+
+```bash
+kubectl wait --namespace bifrost \
+  --for=condition=Ready pod \
+  --selector=app.kubernetes.io/name=bifrost \
+  --timeout=10m
+
+kubectl get pods,service --namespace bifrost
+```
+
+Choose how you want to access the deployment:
+
+<Tabs>
+<Tab title="Without a load balancer">
+
+```bash
+kubectl port-forward service/bifrost --namespace bifrost 8080:8080
+```
+
+Keep that terminal open. In another terminal:
+
+```bash
+curl --fail --show-error http://127.0.0.1:8080/health
+```
+
+</Tab>
+<Tab title="With a load balancer">
+
+```bash
+cat >> bifrost-values.yaml <<'EOF'
+
+service:
+  type: LoadBalancer
+EOF
+
+helm upgrade bifrost bifrost/bifrost \
+  --namespace bifrost \
+  --values bifrost-values.yaml \
+  --atomic \
+  --timeout 15m
+
+kubectl get service bifrost --namespace bifrost --watch
+```
+
+After `EXTERNAL-IP` displays an address, stop the watch and run:
+
+```bash
+export BIFROST_HOST="$(kubectl get service bifrost \
+  --namespace bifrost \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}{.status.loadBalancer.ingress[0].ip}')"
+
+curl --fail --show-error "http://${BIFROST_HOST}:8080/health"
+```
+
+This creates an HTTP endpoint. Configure TLS through the selected Google Cloud or Kubernetes frontend before exposing Bifrost to untrusted clients.
+
+</Tab>
+<Tab title="With ingress">
+
+This example uses [GKE Ingress](https://cloud.google.com/kubernetes-engine/docs/how-to/ingress-configuration). It configures the Bifrost health path explicitly through a `BackendConfig`.
+
+```bash
+cat > gke-ingress.yaml <<'EOF'
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: bifrost-backend
+  namespace: bifrost
+spec:
+  timeoutSec: 3600
+  healthCheck:
+    type: HTTP
+    requestPath: /health
+    port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: bifrost
+  namespace: bifrost
+  annotations:
+    kubernetes.io/ingress.class: gce
+spec:
+  rules:
+    - host: "<BIFROST_HOSTNAME>"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: bifrost
+                port:
+                  number: 8080
+EOF
+
+kubectl annotate service bifrost \
+  --namespace bifrost \
+  'cloud.google.com/neg={"ingress":true}' \
+  'cloud.google.com/backend-config={"default":"bifrost-backend"}' \
+  --overwrite
+
+kubectl apply -f gke-ingress.yaml
+kubectl get ingress --namespace bifrost --watch
+```
+
+Point the hostname to the ingress address, configure a Google-managed certificate or another TLS implementation, and verify `https://<BIFROST_HOSTNAME>/health`.
+
+</Tab>
+</Tabs>
+
+## Scale Bifrost
+
+- OSS with SQLite: one replica.
+- OSS DB-managed configuration: one replica; alternatively use [file-only OSS multinode](/deployment-guides/how-to/multinode).
+- Enterprise: PostgreSQL plus [Cluster Mode and HA](/deployment-guides/helm/cluster), pod-discovery RBAC, and internal mesh reachability.
+
+GKE load balancing and NEGs distribute traffic; they do not provide Bifrost state synchronization.
+
+## Upgrade, troubleshooting, and production
+
+Follow the [upgrade guidance](/deployment-guides/runtime-contract#upgrade-bifrost). Diagnose with:
+
+```bash
+kubectl describe pod --namespace bifrost -l app.kubernetes.io/name=bifrost
+kubectl get events --namespace bifrost --sort-by=.lastTimestamp
+kubectl describe pvc --namespace bifrost
+kubectl logs --namespace bifrost -l app.kubernetes.io/name=bifrost --tail=200
+```
+
+- Unschedulable OSS SQLite pod: inspect StorageClass, PVC events, zone constraints, and Autopilot policy messages.
+- `ImagePullBackOff`: verify image repository/tag and Enterprise pull-secret refresh.
+- `/health` `503`: test every configured store from the pod network.
+- Fixed streaming cutoff: inspect GKE/backend/proxy timeout and buffering configuration.
+- Missing Enterprise members: verify RBAC and all three internal port/protocol rules.
+
+Complete the [deployment verification checklist](/deployment-guides/runtime-contract#verify-the-deployment) for database availability, backups, TLS, secrets, autoscaling, and observability. See [Enterprise clustering](/enterprise/clustering) when the deployment spans several clusters or regions.

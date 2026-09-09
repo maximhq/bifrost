@@ -1,6 +1,21 @@
 import { Button } from "@/components/ui/button";
+import { isSkewError, reportSkew } from "@/lib/utils/versionSkew";
+import type { ErrorComponentProps } from "@tanstack/react-router";
+import { useEffect } from "react";
+import { UpdatingScreen } from "./__updating";
 
-export function ErrorComponent() {
+export function ErrorComponent({ error }: Partial<ErrorComponentProps>) {
+	const skew = isSkewError(error);
+
+	// Notifying skew subscribers is a store write, so keep it out of render.
+	useEffect(() => {
+		if (skew) reportSkew("hard");
+	}, [skew]);
+
+	if (skew) {
+		return <UpdatingScreen />;
+	}
+
 	return (
 		<main className="h-base flex items-center justify-center p-6">
 			<div className="mx-auto w-full max-w-md text-center">

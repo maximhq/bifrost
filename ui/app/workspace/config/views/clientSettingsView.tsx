@@ -1,3 +1,4 @@
+import PageTitle from "@/components/pageTitle";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,6 +14,7 @@ import { DefaultLargePayloadConfig, LargePayloadConfig } from "@enterprise/lib/t
 import { Info, Plus, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import UserAgentMappingsView from "./userAgentMappingsView";
 
 // Security headers that cannot be configured in allowlist/denylist
 // These headers are always blocked for security reasons regardless of configuration
@@ -286,10 +288,7 @@ export default function ClientSettingsView() {
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-6">
-			<div>
-				<h2 className="text-lg font-semibold tracking-tight">Client Settings</h2>
-				<p className="text-muted-foreground text-sm">Configure client behavior and request handling.</p>
-			</div>
+			<PageTitle title="Client Settings">Configure client behavior and request handling.</PageTitle>
 
 			<div className="space-y-4">
 				{/* Drop Excess Requests */}
@@ -378,6 +377,8 @@ export default function ClientSettingsView() {
 					/>
 				</div>
 			</div>
+
+			<UserAgentMappingsView disabled={isLoading || !hasSettingsUpdateAccess} />
 
 			{/* Header Filter Section */}
 			<div className="space-y-4">

@@ -33,7 +33,7 @@ export default function SkillsRepoPage() {
 	// Create view
 	if (urlState.create) {
 		return (
-			<div className="no-padding-parent flex h-full w-full flex-col p-0">
+			<div className="no-padding-parent flex h-full w-full min-w-0 flex-col p-0">
 				<SkillCreateView onCreated={handleCreated} onBack={handleBack} />
 			</div>
 		);
@@ -44,7 +44,9 @@ export default function SkillsRepoPage() {
 		return (
 			<div
 				className={
-					urlState.edit ? "no-padding-parent flex h-full w-full flex-col p-0" : "no-padding-parent flex h-full w-full flex-col p-4 pt-0"
+					urlState.edit
+						? "no-padding-parent flex h-full w-full min-w-0 flex-col p-0"
+						: "no-padding-parent flex h-full w-full min-w-0 flex-col p-4 pt-0"
 				}
 			>
 				<SkillDetailView skillId={urlState.skillId} isEditing={urlState.edit} setIsEditing={setIsEditing} onBack={handleBack} />
@@ -54,7 +56,7 @@ export default function SkillsRepoPage() {
 
 	// List view
 	return (
-		<div className="no-padding-parent flex h-[calc(100dvh_-_16px)] w-full flex-col p-4">
+		<div className="no-padding-parent flex min-h-full w-full min-w-0 flex-col p-4 md:h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))] md:min-h-0">
 			<SkillsListView onSelectSkill={handleSelectSkill} onCreateNew={() => setUrlState({ create: true, skillId: null, edit: false })} />
 		</div>
 	);

@@ -29,6 +29,8 @@ export class ProvidersPage extends BasePage {
   readonly addProviderOptionCustom: Locator
   readonly addKeyBtn: Locator
   readonly keysTable: Locator
+  /** Provider-level "Refresh model list" button in the keys table header */
+  readonly refreshProviderModelsBtn: Locator
 
   // Custom provider sheet
   readonly customProviderSheet: Locator
@@ -57,6 +59,7 @@ export class ProvidersPage extends BasePage {
     // Keys table
     this.addKeyBtn = page.getByTestId('add-key-btn')
     this.keysTable = page.getByTestId('keys-table')
+    this.refreshProviderModelsBtn = page.getByTestId('provider-refresh-models')
 
     // Custom provider sheet
     this.customProviderSheet = page.getByTestId('custom-provider-sheet')
@@ -347,6 +350,33 @@ export class ProvidersPage extends BasePage {
     const switchEl = keyRow.getByTestId('key-enabled-switch')
     await switchEl.click()
     await this.waitForSuccessToast()
+  }
+
+  /**
+   * Get the per-key "Refresh model list" button for a key row.
+   */
+  getKeyRefreshModelsBtn(keyName: string): Locator {
+    return this.getKeyRow(keyName).getByTestId(`key-refresh-models-${keyName}`)
+  }
+
+  /**
+   * Trigger model discovery for every enabled key of the selected provider.
+   */
+  async refreshProviderModels(): Promise<void> {
+    await this.dismissToasts()
+    await this.refreshProviderModelsBtn.click()
+    await this.waitForSuccessToast('refreshed')
+  }
+
+  /**
+   * Trigger model discovery for a single key.
+   */
+  async refreshKeyModels(keyName: string): Promise<void> {
+    await this.dismissToasts()
+    const refreshBtn = this.getKeyRefreshModelsBtn(keyName)
+    await refreshBtn.scrollIntoViewIfNeeded()
+    await refreshBtn.click()
+    await this.waitForSuccessToast('refreshed')
   }
 
   /**
