@@ -3345,6 +3345,19 @@ func TestClearCtxForFallback_DropsCallerSuppliedKey(t *testing.T) {
 		t.Fatalf("RoutingPinnedAPIKeyID survived clearCtxForFallback: %q", pin)
 	}
 
+	// #6973: provider response headers belong to the provider that produced
+	// them. If a fallback attempt fails pre-flight, the previous provider's
+	// headers must not survive on the context and be forwarded with the
+	// fallback's error response.
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, map[string]string{
+		"retry-after":                  "60",
+		"x-ratelimit-remaining-tokens": "0",
+	})
+	clearCtxForFallback(ctx)
+	if headers, ok := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
+		t.Fatalf("ProviderResponseHeaders survived clearCtxForFallback: %v", headers)
+	}
+
 	keys, _, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, schemas.ChatCompletionRequest, schemas.Anthropic, "claude-opus-4-5", schemas.Anthropic)
 	if err != nil {
 		t.Fatalf("selectKeyFromProviderForModelWithPool: %v", err)
