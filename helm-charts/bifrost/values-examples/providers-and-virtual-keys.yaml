@@ -13,8 +13,8 @@
 # mounted on the pod — see values-examples/secrets-from-k8s.yaml for patterns.
 #
 # Field names follow transports/config.schema.json (the Bifrost runtime config
-# contract). VK provider_configs use the helm-native keys:[{name:...}] form,
-# which the helm chart template passes through to config.json.
+# contract). VK provider_configs use key_ids; because these provider keys omit
+# id, the chart defaults each key's id to its name before generating config.json.
 
 # ==========================================================================
 # ENVIRONMENT VARIABLES REFERENCED
@@ -420,18 +420,34 @@ bifrost:
     # Budgets — spending caps per period
     # --------------------------------------------------------------------
     budgets:
-      - id: "budget-dev"
+      - id: "budget-vk-all-providers-dev"
         max_limit: 50 # $50
         reset_duration: "1M" # monthly
-      - id: "budget-production"
+        virtual_key_id: "vk-all-providers-dev"
+      - id: "budget-vk-openai-scoped"
         max_limit: 500 # $500
         reset_duration: "1M"
-      - id: "budget-testing"
+        virtual_key_id: "vk-openai-scoped"
+      - id: "budget-vk-multi-provider"
+        max_limit: 500 # $500
+        reset_duration: "1M"
+        virtual_key_id: "vk-multi-provider"
+      - id: "budget-vk-cloud-providers"
+        max_limit: 2000 # $2000 — larger cloud-provider budget
+        reset_duration: "1M"
+        virtual_key_id: "vk-cloud-providers"
+      - id: "budget-vk-self-hosted"
+        max_limit: 50 # $50
+        reset_duration: "1M"
+        virtual_key_id: "vk-self-hosted"
+      - id: "budget-vk-testing-limited"
         max_limit: 10 # $10
         reset_duration: "1d" # daily
-      - id: "budget-team-platform"
-        max_limit: 2000 # $2000 — larger team/platform budget
+        virtual_key_id: "vk-testing-limited"
+      - id: "budget-vk-batch-api"
+        max_limit: 500 # $500
         reset_duration: "1M"
+        virtual_key_id: "vk-batch-api"
 
     # --------------------------------------------------------------------
     # Rate limits — token + request caps per period
@@ -461,120 +477,113 @@ bifrost:
     # --------------------------------------------------------------------
     # Virtual keys — access tokens scoped to providers/models/keys
     # --------------------------------------------------------------------
-    # provider_configs[].keys scopes the VK to specific provider keys by name.
-    # Omit provider_configs to grant access to every provider.
-    # Omit keys inside a provider_config to allow all keys for that provider.
+    # provider_configs[].key_ids scopes the VK to specific provider key IDs.
+    # This file omits provider key ids, so the chart-generated ids equal their names.
+    # Omit provider_configs to deny every provider unless allow_all_providers is true.
+    # Use key_ids: ["*"] to allow all keys for a provider; empty or omitted denies all keys.
 
     virtualKeys:
       # 1. Dev key — access to every provider, no restrictions.
       - id: "vk-all-providers-dev"
         name: "Dev: all providers"
         is_active: true
-        budget_id: "budget-dev"
         rate_limit_id: "rate-limit-standard"
-        # No provider_configs -> all providers accessible
+        allow_all_providers: true
+        # No provider_configs + allow_all_providers -> all providers accessible
 
       # 2. OpenAI only — restricted to 2 keys and 2 models.
       - id: "vk-openai-scoped"
         name: "OpenAI only (scoped)"
         is_active: true
-        budget_id: "budget-production"
         rate_limit_id: "rate-limit-high"
         provider_configs:
           - provider: "openai"
             weight: 1
             allowed_models: ["gpt-4o", "gpt-4o-mini"]
-            keys:
-              - name: "openai-primary"
-              - name: "openai-secondary"
+            key_ids: ["openai-primary", "openai-secondary"]
 
       # 3. Multi-provider — weighted routing across OpenAI/Anthropic/Groq.
       # OpenAI gets 50% (weight 2), the others 25% each (weight 1).
       - id: "vk-multi-provider"
         name: "Multi-provider weighted"
         is_active: true
-        budget_id: "budget-production"
         rate_limit_id: "rate-limit-high"
         provider_configs:
           - provider: "openai"
             weight: 2
             allowed_models: ["*"]
-            # Omitting keys -> all openai keys allowed
+            key_ids: ["*"]
           - provider: "anthropic"
             weight: 1
             allowed_models: ["*"]
-            keys:
-              - name: "anthropic-primary"
+            key_ids: ["anthropic-primary"]
           - provider: "groq"
             weight: 1
             allowed_models: ["*"]
+            key_ids: ["*"]
 
       # 4. Cloud providers — Azure + Vertex + Bedrock only.
       # Shows that VK scoping is identical regardless of nested key_config.
       - id: "vk-cloud-providers"
         name: "Cloud providers (Azure/Vertex/Bedrock)"
         is_active: true
-        budget_id: "budget-team-platform"
         rate_limit_id: "rate-limit-high"
         provider_configs:
           - provider: "azure"
             weight: 1
-            keys:
-              - name: "azure-apikey"
-              - name: "azure-managed-identity"
+            allowed_models: ["*"]
+            key_ids: ["azure-apikey", "azure-managed-identity"]
           - provider: "vertex"
             weight: 1
-            keys:
-              - name: "vertex-sa-key"
-              - name: "vertex-workload-id"
+            allowed_models: ["*"]
+            key_ids: ["vertex-sa-key", "vertex-workload-id"]
           - provider: "bedrock"
             weight: 1
-            keys:
-              - name: "bedrock-static"
-              - name: "bedrock-irsa"
-              - name: "bedrock-assumerole"
+            allowed_models: ["*"]
+            key_ids: ["bedrock-static", "bedrock-irsa", "bedrock-assumerole"]
 
       # 5. Self-hosted — Ollama + vLLM + SGL only.
       # Low budget because self-hosted inference is ~free.
       - id: "vk-self-hosted"
         name: "Self-hosted (Ollama/vLLM/SGL)"
         is_active: true
-        budget_id: "budget-dev"
         rate_limit_id: "rate-limit-high"
         provider_configs:
           - provider: "ollama"
             weight: 1
+            allowed_models: ["*"]
+            key_ids: ["*"]
           - provider: "vllm"
             weight: 1
+            allowed_models: ["*"]
+            key_ids: ["*"]
           - provider: "sgl"
             weight: 1
+            allowed_models: ["*"]
+            key_ids: ["*"]
 
       # 6. Testing — tight budget, tight rate limit, single model, single key.
       - id: "vk-testing-limited"
         name: "Testing (gpt-4o-mini only)"
         is_active: true
-        budget_id: "budget-testing"
         rate_limit_id: "rate-limit-testing"
         provider_configs:
           - provider: "openai"
             weight: 1
             allowed_models: ["gpt-4o-mini"]
-            keys:
-              - name: "openai-secondary"
+            key_ids: ["openai-secondary"]
 
       # 7. Batch API — restricted to keys flagged use_for_batch_api: true.
       # Pairs with the openai-batch key above. Burst rate-limit for batch flushes.
       - id: "vk-batch-api"
         name: "Batch API workloads"
         is_active: true
-        budget_id: "budget-production"
         rate_limit_id: "rate-limit-burst"
         provider_configs:
           - provider: "openai"
             weight: 1
             allowed_models: ["*"]
-            keys:
-              - name: "openai-batch"
+            key_ids: ["openai-batch"]
 
   # Plugins configuration
   plugins:
