@@ -20,6 +20,7 @@ import { Input } from "@/components/ui/input";
 import { MultiSelect } from "@/components/ui/multiSelect";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -37,7 +38,7 @@ import {
 	useGetVirtualMCPsQuery,
 	useUpdateMCPClientMutation,
 } from "@/lib/store";
-import { MCPClient, MCPVKConfig } from "@/lib/types/mcp";
+import { MCPClient, MCPVKConfig, resolveToolMode } from "@/lib/types/mcp";
 import { VirtualMCP } from "@/lib/types/virtualMcps";
 import { mcpClientUpdateSchema, type MCPClientUpdateSchema } from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
@@ -306,6 +307,7 @@ export default function MCPClientSheet({
 		defaultValues: {
 			name: mcpClient.config.name,
 			is_code_mode_client: mcpClient.config.is_code_mode_client || false,
+			tool_mode: resolveToolMode(mcpClient.config),
 			is_ping_available: mcpClient.config.is_ping_available === true || mcpClient.config.is_ping_available === undefined,
 			needs_session_stickiness: mcpClient.config.needs_session_stickiness === true,
 			allow_by_default: mcpClient.config.allow_by_default || false,
@@ -357,6 +359,7 @@ export default function MCPClientSheet({
 		form.reset({
 			name: mcpClient.config.name,
 			is_code_mode_client: mcpClient.config.is_code_mode_client || false,
+			tool_mode: resolveToolMode(mcpClient.config),
 			is_ping_available: mcpClient.config.is_ping_available === true || mcpClient.config.is_ping_available === undefined,
 			needs_session_stickiness: mcpClient.config.needs_session_stickiness === true,
 			allow_by_default: mcpClient.config.allow_by_default || false,
@@ -502,7 +505,7 @@ export default function MCPClientSheet({
 				id: mcpClient.config.client_id,
 				data: {
 					name: data.name,
-					is_code_mode_client: data.is_code_mode_client,
+					tool_mode: data.tool_mode,
 					is_ping_available: data.is_ping_available,
 					// Only meaningful (and only accepted) for http clients — an
 					// explicit false is rejected for sse/stdio, which always keep
@@ -829,16 +832,16 @@ export default function MCPClientSheet({
 										<div className="space-y-4">
 											<SectionHeader
 												title="Server Behavior"
-												description="Control how this server participates in code mode and health checks."
+												description="Control how this server's tools are exposed to the model and how health checks run."
 											/>
 											<div className="divide-y rounded-md border">
 												<FormField
 													control={form.control}
-													name="is_code_mode_client"
+													name="tool_mode"
 													render={({ field }) => (
 														<FormItem className="flex flex-row items-center justify-between gap-4 px-4 py-3">
 															<div className="flex items-center gap-2">
-																<FormLabel>Code Mode Server</FormLabel>
+																<FormLabel>Tool Mode</FormLabel>
 																<TooltipProvider>
 																	<Tooltip>
 																		<TooltipTrigger asChild>
@@ -846,21 +849,44 @@ export default function MCPClientSheet({
 																				href="https://docs.getbifrost.ai/mcp/code-mode"
 																				target="_blank"
 																				rel="noopener noreferrer"
-																				data-testid="code-mode-link-help"
+																				data-testid="tool-mode-link-help"
 																				className="text-muted-foreground hover:text-foreground focus-visible:ring-ring rounded focus-visible:ring-2 focus-visible:outline-none"
-																				aria-label="Learn more about Code Mode"
+																				aria-label="Learn more about tool modes"
 																			>
 																				<Info className="h-4 w-4 cursor-help" />
 																			</a>
 																		</TooltipTrigger>
 																		<TooltipContent>
-																			<p>Click to learn more about Code Mode</p>
+																			<p>
+																				How this server&apos;s tools reach the model. Compact and Search cut context usage without code.
+																			</p>
 																		</TooltipContent>
 																	</Tooltip>
 																</TooltipProvider>
 															</div>
 															<FormControl>
-																<Switch checked={field.value || false} onCheckedChange={field.onChange} />
+																<Select value={field.value ?? "direct"} onValueChange={field.onChange}>
+																	<SelectTrigger className="w-[300px]" data-testid="tool-mode-select">
+																		<SelectValue placeholder="Select tool mode" />
+																	</SelectTrigger>
+																	<SelectContent>
+																		<SelectItem value="direct" data-testid="tool-mode-direct">
+																			Direct — full tool definitions
+																		</SelectItem>
+																		<SelectItem value="compact" data-testid="tool-mode-compact">
+																			Compact — names and schema, no descriptions
+																		</SelectItem>
+																		<SelectItem value="compact_names" data-testid="tool-mode-compact-names">
+																			Compact (names) — names only, details on demand
+																		</SelectItem>
+																		<SelectItem value="search" data-testid="tool-mode-search">
+																			Search — on-demand via searchTools
+																		</SelectItem>
+																		<SelectItem value="code" data-testid="tool-mode-code">
+																			Code Mode — Starlark sandbox
+																		</SelectItem>
+																	</SelectContent>
+																</Select>
 															</FormControl>
 														</FormItem>
 													)}

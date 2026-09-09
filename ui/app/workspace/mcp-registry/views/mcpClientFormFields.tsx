@@ -432,15 +432,18 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 		<>
 			{/* Server Behavior */}
 			<div className="space-y-4">
-				<SectionHeader title="Server Behavior" description="Control how this server participates in code mode and health checks." />
+				<SectionHeader
+					title="Server Behavior"
+					description="Control how this server's tools are exposed to the model and how health checks run."
+				/>
 				<div className="divide-y rounded-md border">
 					<FormField
 						control={control}
-						name="is_code_mode_client"
+						name="tool_mode"
 						render={({ field }) => (
 							<FormItem className="flex flex-row items-center justify-between gap-4 px-4 py-3">
 								<div className="flex items-center gap-2">
-									<FormLabel htmlFor="code-mode">Code Mode Server</FormLabel>
+									<FormLabel htmlFor="tool-mode">Tool Mode</FormLabel>
 									<TooltipProvider>
 										<Tooltip>
 											<TooltipTrigger asChild>
@@ -448,21 +451,42 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 													href="https://docs.getbifrost.ai/mcp/code-mode"
 													target="_blank"
 													rel="noopener noreferrer"
-													data-testid="code-mode-link-help"
+													data-testid="tool-mode-link-help"
 													className="text-muted-foreground hover:text-foreground focus-visible:ring-ring rounded focus-visible:ring-2 focus-visible:outline-none"
-													aria-label="Learn more about Code Mode"
+													aria-label="Learn more about tool modes"
 												>
 													<Info className="h-4 w-4 cursor-help" />
 												</a>
 											</TooltipTrigger>
 											<TooltipContent>
-												<p>Click to learn more about Code Mode</p>
+												<p>How this server&apos;s tools reach the model. Compact and Search cut context usage without code.</p>
 											</TooltipContent>
 										</Tooltip>
 									</TooltipProvider>
 								</div>
 								<FormControl>
-									<Switch id="code-mode" data-testid="code-mode-switch" checked={field.value || false} onCheckedChange={field.onChange} />
+									<Select value={field.value ?? "direct"} onValueChange={field.onChange}>
+										<SelectTrigger id="tool-mode" className="w-[300px]" data-testid="tool-mode-select">
+											<SelectValue placeholder="Select tool mode" />
+										</SelectTrigger>
+										<SelectContent>
+											<SelectItem value="direct" data-testid="tool-mode-direct">
+												Direct — full tool definitions
+											</SelectItem>
+											<SelectItem value="compact" data-testid="tool-mode-compact">
+												Compact — names and schema, no descriptions
+											</SelectItem>
+											<SelectItem value="compact_names" data-testid="tool-mode-compact-names">
+												Compact (names) — names only, details on demand
+											</SelectItem>
+											<SelectItem value="search" data-testid="tool-mode-search">
+												Search — on-demand via searchTools
+											</SelectItem>
+											<SelectItem value="code" data-testid="tool-mode-code">
+												Code Mode — Starlark sandbox
+											</SelectItem>
+										</SelectContent>
+									</Select>
 								</FormControl>
 							</FormItem>
 						)}

@@ -475,6 +475,7 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 	if requestCtx == nil {
 		requestCtx = m.ctx
 	}
+	config.NormalizeToolMode()
 	if err := validateMCPClientConfig(config); err != nil {
 		return fmt.Errorf("invalid MCP client configuration: %w", err)
 	}
@@ -1446,6 +1447,7 @@ var ErrMCPEnableConnectFailed = errors.New("mcp client enabled, but establishing
 // Returns:
 //   - error: Any error that occurred during client update or tool retrieval
 func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientConfig) (retErr error) {
+	updatedConfig.NormalizeToolMode()
 	finish, ok := m.beginExclusiveClientOp(id)
 	if !ok {
 		return fmt.Errorf("reconnect or connection credential update already in progress for MCP client %s", id)
@@ -1529,6 +1531,7 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 			// Updatable fields - copy from updated config with proper cloning
 			Name:                   updatedConfig.Name,
 			IsCodeModeClient:       updatedConfig.IsCodeModeClient,
+			ToolMode:               updatedConfig.ToolMode,
 			Headers:                maps.Clone(updatedConfig.Headers),
 			ToolsToExecute:         slices.Clone(updatedConfig.ToolsToExecute),
 			ToolsToAutoExecute:     slices.Clone(updatedConfig.ToolsToAutoExecute),

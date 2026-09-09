@@ -133,9 +133,12 @@ func (m *MCPManager) prepareToolExecution(ctx *schemas.BifrostContext, request *
 		return nil, nil, nil, fmt.Errorf("tool call missing function name")
 	}
 
-	// Code-mode tools have no upstream client — skip client lookup.
+	// Code-mode and search-mode meta-tools have no upstream client — skip client lookup.
 	codeMode := m.toolsManager.GetCodeMode()
 	if codeMode != nil && codeMode.IsCodeModeTool(toolName) {
+		return nil, nil, func() {}, nil
+	}
+	if IsSearchModeTool(toolName) {
 		return nil, nil, func() {}, nil
 	}
 

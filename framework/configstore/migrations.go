@@ -491,6 +491,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_allow_all_providers_to_virtual_key"}, run: migrationAddAllowAllProvidersToVirtualKey},
 	{IDs: []string{"backfill_vk_allow_all_providers_hash"}, run: migrationBackfillVirtualKeyAllowAllProvidersHash},
 	{IDs: []string{"add_prompt_cache_json_column"}, run: migrationAddPromptCacheJSONColumn},
+	{IDs: []string{"add_mcp_client_tool_mode_column"}, run: migrationAddMCPClientToolModeColumn},
 }
 
 // videoResolutionPricingColumns are the resolution-banded video output rate columns.
@@ -2599,6 +2600,43 @@ func migrationAddIsCodeModeClientColumn(ctx context.Context, db *gorm.DB, logger
 	}})
 	err := m.Migrate()
 	if err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPClientToolModeColumn adds the tool_mode column to config_mcp_clients
+// and backfills it from the legacy is_code_mode_client flag (true -> "code", else
+// "direct"). is_code_mode_client is kept and stays in sync on every write so a
+// rolled-back binary still reads a consistent value.
+func migrationAddMCPClientToolModeColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_tool_mode_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableMCPClient{}, "tool_mode") {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "tool_mode"); err != nil {
+					return err
+				}
+			}
+			if err := tx.Exec("UPDATE config_mcp_clients SET tool_mode = 'code' WHERE is_code_mode_client = ? AND (tool_mode IS NULL OR tool_mode = '')", true).Error; err != nil {
+				return fmt.Errorf("failed to backfill tool_mode for code mode clients: %w", err)
+			}
+			if err := tx.Exec("UPDATE config_mcp_clients SET tool_mode = 'direct' WHERE tool_mode IS NULL OR tool_mode = ''").Error; err != nil {
+				return fmt.Errorf("failed to backfill tool_mode: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "tool_mode")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running db migration: %s", err.Error())
 	}
 	return nil

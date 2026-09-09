@@ -3,6 +3,23 @@ import { SecretVar } from "./schemas";
 
 export type MCPConnectionType = "http" | "stdio" | "sse";
 
+/** How a client's tools are exposed to the model. Mirrors schemas.MCPToolMode. */
+export type MCPToolMode = "direct" | "code" | "compact" | "compact_names" | "search";
+
+export const MCP_TOOL_MODE_LABELS: Record<MCPToolMode, string> = {
+	direct: "Direct",
+	compact: "Compact",
+	compact_names: "Compact (names)",
+	search: "Search",
+	code: "Code Mode",
+};
+
+/** Effective tool mode: explicit tool_mode wins, else the legacy code-mode flag. */
+export function resolveToolMode(config: { tool_mode?: MCPToolMode; is_code_mode_client?: boolean }): MCPToolMode {
+	if (config.tool_mode) return config.tool_mode;
+	return config.is_code_mode_client ? "code" : "direct";
+}
+
 export type MCPConnectionState =
 	| "healthy"
 	| "unstable"
@@ -120,7 +137,8 @@ export interface MCPClientConfig {
 	client_id: string; // Maps to ClientID in TableMCPClient
 	name: string;
 	endpoint_slug?: string; // URL-safe, immutable after creation; served at /mcp/<slug>
-	is_code_mode_client?: boolean;
+	is_code_mode_client?: boolean; // legacy; prefer tool_mode
+	tool_mode?: MCPToolMode;
 	connection_type: MCPConnectionType;
 	connection_string?: SecretVar;
 	stdio_config?: MCPStdioConfig;
@@ -226,7 +244,8 @@ export interface MCPClient {
 export interface CreateMCPClientRequest {
 	name: string;
 	endpoint_slug?: string; // Optional on create (derived from name when blank); immutable after
-	is_code_mode_client?: boolean;
+	is_code_mode_client?: boolean; // legacy; prefer tool_mode
+	tool_mode?: MCPToolMode;
 	connection_type: MCPConnectionType;
 	connection_string?: SecretVar;
 	stdio_config?: MCPStdioConfig;
@@ -280,7 +299,8 @@ export interface MCPVKConfig {
 
 export interface UpdateMCPClientRequest {
 	name?: string;
-	is_code_mode_client?: boolean;
+	is_code_mode_client?: boolean; // legacy; prefer tool_mode
+	tool_mode?: MCPToolMode;
 	headers?: Record<string, SecretVar>;
 	// Set to a new list (including empty) to replace per-user-headers schema.
 	// Omitted = preserve existing. When this list changes against the stored

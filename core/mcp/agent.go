@@ -191,6 +191,24 @@ func (a *AgentModeExecutor) executeAgent(
 					autoExecutableTools = append(autoExecutableTools, toolCall)
 					a.logger.Debug("Tool %s can be auto-executed", toolName)
 					continue
+				} else if toolName == ToolTypeSearchTools || toolName == ToolTypeGetToolDetails {
+					// Search mode discovery tools are read-only.
+					autoExecutableTools = append(autoExecutableTools, toolCall)
+					a.logger.Debug("Tool %s can be auto-executed", toolName)
+					continue
+				} else if toolName == ToolTypeExecuteTool {
+					// executeTool is auto-executable exactly when the inner tool
+					// would be if the model had called it directly.
+					if innerClient, innerTool, ok := resolveExecuteToolTarget(toolCall, clientManager); ok &&
+						innerClient.ExecutionConfig.ResolvedToolMode() == schemas.MCPToolModeSearch &&
+						canAutoExecuteTool(innerTool, innerClient.ExecutionConfig) {
+						autoExecutableTools = append(autoExecutableTools, toolCall)
+						a.logger.Debug("%s executeTool(%s) can be auto-executed", SearchModeLogPrefix, innerTool)
+					} else {
+						nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)
+						a.logger.Debug("%s executeTool(%s) cannot be auto-executed", SearchModeLogPrefix, innerTool)
+					}
+					continue
 				} else if toolName == ToolTypeExecuteToolCode {
 					// Build allowed auto-execution tools map for code mode validation
 					allClientNames, allowedAutoExecutionTools := buildAllowedAutoExecutionTools(ctx, clientManager)
@@ -490,7 +508,7 @@ func buildAllowedAutoExecutionTools(ctx *schemas.BifrostContext, clientManager C
 		allClientNames = append(allClientNames, clientName)
 
 		// Only include code mode clients
-		if !client.ExecutionConfig.IsCodeModeClient {
+		if client.ExecutionConfig.ResolvedToolMode() != schemas.MCPToolModeCode {
 			continue
 		}
 
@@ -520,4 +538,24 @@ func buildAllowedAutoExecutionTools(ctx *schemas.BifrostContext, clientManager C
 	}
 
 	return allClientNames, allowedTools
+}
+
+// resolveExecuteToolTarget parses an executeTool call's "tool" argument and
+// resolves it to the owning client. ok is false when the argument is missing,
+// malformed, or names a tool no client serves.
+func resolveExecuteToolTarget(toolCall schemas.ChatAssistantMessageToolCall, clientManager ClientManager) (*schemas.MCPClientState, string, bool) {
+	var arguments map[string]interface{}
+	if err := sonic.Unmarshal([]byte(toolCall.Function.Arguments), &arguments); err != nil {
+		return nil, "", false
+	}
+	innerTool, _ := arguments["tool"].(string)
+	innerTool = strings.TrimSpace(innerTool)
+	if innerTool == "" {
+		return nil, innerTool, false
+	}
+	client := clientManager.GetClientForTool(innerTool)
+	if client == nil || client.ExecutionConfig == nil {
+		return nil, innerTool, false
+	}
+	return client, innerTool, true
 }

@@ -242,6 +242,12 @@ func (m *ToolsManager) GetAvailableTools(ctx *schemas.BifrostContext) []schemas.
 	// Flatten tools from all clients into a single slice, avoiding duplicates
 	var availableTools []schemas.ChatTool
 	var includeCodeModeTools bool
+	// Search mode: servers whose tools are hidden behind the search meta-tools,
+	// and how many tools that is (both go into the searchTools description).
+	var searchModeServers []string
+	searchModeToolCount := 0
+	// compact_names clients need getToolDetails even when no client is in search mode.
+	includeDetailsTool := false
 	// Track tool names to prevent duplicates
 	seenToolNames := make(map[string]bool)
 
@@ -259,18 +265,51 @@ func (m *ToolsManager) GetAvailableTools(ctx *schemas.BifrostContext) []schemas.
 			m.logger.Warn("%s Client %s not found, skipping", MCPLogPrefix, clientName)
 			continue
 		}
-		if client.ExecutionConfig.IsCodeModeClient {
+		toolMode := client.ExecutionConfig.ResolvedToolMode()
+		if toolMode == schemas.MCPToolModeCode {
 			includeCodeModeTools = true
 		}
-		// Add tools from this client, checking for duplicates
+		clientContributedSearchTools := false
+		// Add tools from this client, checking for duplicates. Code and search
+		// mode clients are recorded (so the context knows they were "added")
+		// but their definitions stay out of the request: the meta-tools
+		// appended below stand in for them.
 		for _, tool := range clientTools {
 			if tool.Function != nil && tool.Function.Name != "" && !seenToolNames[tool.Function.Name] {
 				seenToolNames[tool.Function.Name] = true
 				schemas.AppendToContextList(ctx, schemas.BifrostContextKeyMCPAddedTools, tool.Function.Name)
-				if !client.ExecutionConfig.IsCodeModeClient {
+				switch toolMode {
+				case schemas.MCPToolModeCode:
+				case schemas.MCPToolModeSearch:
+					searchModeToolCount++
+					clientContributedSearchTools = true
+				case schemas.MCPToolModeCompact:
+					availableTools = append(availableTools, compactToolDefinition(tool))
+				case schemas.MCPToolModeCompactNames:
+					availableTools = append(availableTools, nameOnlyToolDefinition(tool))
+					includeDetailsTool = true
+				default:
 					availableTools = append(availableTools, tool)
 				}
 			}
+		}
+		if clientContributedSearchTools {
+			searchModeServers = append(searchModeServers, clientName)
+		}
+	}
+
+	// Add search mode tools if any client exposes tools through search;
+	// otherwise just getToolDetails when a compact_names client needs it.
+	var metaTools []schemas.ChatTool
+	if len(searchModeServers) > 0 {
+		metaTools = searchModeTools(searchModeServers, searchModeToolCount)
+	} else if includeDetailsTool {
+		metaTools = []schemas.ChatTool{createGetToolDetailsTool()}
+	}
+	for _, tool := range metaTools {
+		if tool.Function != nil && tool.Function.Name != "" && !seenToolNames[tool.Function.Name] {
+			availableTools = append(availableTools, tool)
+			seenToolNames[tool.Function.Name] = true
 		}
 	}
 
@@ -685,6 +724,12 @@ func (m *ToolsManager) executeToolInternal(
 	toolNameMapping map[string]string,
 ) (*schemas.ChatMessage, string, string, error) {
 	toolName := *toolCall.Function.Name
+
+	// Search mode meta-tools have no upstream client of their own.
+	if IsSearchModeTool(toolName) {
+		msg, err := m.executeSearchModeTool(ctx, *toolCall)
+		return msg, "", toolName, err
+	}
 
 	// Check if this is a code mode tool and delegate to CodeMode implementation
 	if m.codeMode != nil && m.codeMode.IsCodeModeTool(toolName) {

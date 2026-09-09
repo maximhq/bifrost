@@ -1763,6 +1763,11 @@ func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) 
 				logger.Warn("skipping MCP client config %q from config file: %v", c.Name, err)
 				continue
 			}
+			if c.ToolMode != "" && !schemas.IsValidMCPToolMode(c.ToolMode) {
+				logger.Warn("skipping MCP client config %q from config file: invalid tool_mode %q (must be one of direct, code, compact, compact_names, search)", c.Name, c.ToolMode)
+				continue
+			}
+			c.NormalizeToolMode()
 			if c.AuthType == schemas.MCPAuthTypeTokenExchange {
 				if isEnterprise, _ := ctx.Value(schemas.BifrostContextKeyIsEnterprise).(bool); !isEnterprise {
 					logger.Error("skipping MCP client config %q from config file: auth_type 'token_exchange' is not supported", c.Name)
@@ -2386,6 +2391,7 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 		ClientID:                  clientConfig.ID,
 		Name:                      clientConfig.Name,
 		IsCodeModeClient:          clientConfig.IsCodeModeClient,
+		ToolMode:                  clientConfig.ToolMode,
 		ConnectionType:            string(clientConfig.ConnectionType),
 		ConnectionString:          clientConfig.ConnectionString,
 		StdioConfig:               clientConfig.StdioConfig,

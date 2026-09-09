@@ -171,6 +171,10 @@ export const mcpApi = baseApi.injectEndpoints({
 									// Merge the updated fields into the existing client
 									if (data.name !== undefined) draft.clients[index].config.name = data.name;
 									if (data.is_code_mode_client !== undefined) draft.clients[index].config.is_code_mode_client = data.is_code_mode_client;
+									if (data.tool_mode !== undefined) {
+										draft.clients[index].config.tool_mode = data.tool_mode;
+										draft.clients[index].config.is_code_mode_client = data.tool_mode === "code";
+									}
 									if (data.headers !== undefined) draft.clients[index].config.headers = data.headers;
 									if (data.per_user_header_keys !== undefined) draft.clients[index].config.per_user_header_keys = data.per_user_header_keys;
 									if (data.tools_to_execute !== undefined) draft.clients[index].config.tools_to_execute = data.tools_to_execute;

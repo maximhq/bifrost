@@ -34,7 +34,7 @@ import {
 } from "@/lib/store";
 import { getExternalBaseUrl } from "@/app/workspace/mcp-registry/views/mcpUsageGuide/utils";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
-import { MCPAuthType, MCPClient } from "@/lib/types/mcp";
+import { MCP_TOOL_MODE_LABELS, MCPAuthType, MCPClient, resolveToolMode } from "@/lib/types/mcp";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
 import {
@@ -961,7 +961,7 @@ export default function MCPClientsTable({
 								<TableHead className="w-[150px] font-semibold">Connection Type</TableHead>
 								<TableHead className="w-[150px] font-semibold">Auth Type</TableHead>
 								<TableHead className="w-[140px] font-semibold">Auth Scope</TableHead>
-								<TableHead className="w-[120px] font-semibold">Code Mode</TableHead>
+								<TableHead className="w-[120px] font-semibold">Tool Mode</TableHead>
 								<TableHead className="w-[150px] font-semibold">Access</TableHead>
 								<TableHead className="w-[130px] font-semibold">Enabled Tools</TableHead>
 								<TableHead className="w-[160px] font-semibold">Auto-execute Tools</TableHead>
@@ -1046,12 +1046,13 @@ export default function MCPClientsTable({
 											</TableCell>
 											<TableCell data-testid="mcp-client-auth-type">{getAuthTypeDisplay(c.config.auth_type)}</TableCell>
 											<TableCell data-testid="mcp-client-auth-scope">{getAuthScopeDisplay(c.config.auth_type)}</TableCell>
-											<TableCell data-testid="mcp-client-code-mode">
+											<TableCell data-testid="mcp-client-tool-mode">
 												{/* Pure config, valid whatever the connection state is: a server
-												    that can't be reached right now is still configured for code
-												    mode or not. */}
-												<Badge className={c.config.is_code_mode_client ? "bg-green-100 text-green-800" : "bg-gray-100 text-gray-800"}>
-													{c.config.is_code_mode_client ? "Enabled" : "Disabled"}
+												    that can't be reached right now still has a tool mode. */}
+												<Badge
+													className={resolveToolMode(c.config) === "direct" ? "bg-gray-100 text-gray-800" : "bg-green-100 text-green-800"}
+												>
+													{MCP_TOOL_MODE_LABELS[resolveToolMode(c.config)]}
 												</Badge>
 											</TableCell>
 											<TableCell data-testid="mcp-client-vk-access">

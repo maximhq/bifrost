@@ -540,6 +540,7 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 		ClientID:                  clientConfig.ID,
 		Name:                      clientConfig.Name,
 		IsCodeModeClient:          clientConfig.IsCodeModeClient,
+		ToolMode:                  clientConfig.ToolMode,
 		ConnectionType:            string(clientConfig.ConnectionType),
 		ConnectionString:          clientConfig.ConnectionString,
 		StdioConfig:               clientConfig.StdioConfig,
@@ -714,6 +715,7 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 		ClientID:                  clientConfig.ID,
 		Name:                      clientConfig.Name,
 		IsCodeModeClient:          clientConfig.IsCodeModeClient,
+		ToolMode:                  clientConfig.ToolMode,
 		ConnectionType:            string(clientConfig.ConnectionType),
 		ConnectionString:          clientConfig.ConnectionString,
 		StdioConfig:               clientConfig.StdioConfig,
@@ -1430,6 +1432,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 			Name:                   dbClient.Name,
 			EndpointSlug:           dbClient.EndpointSlug,
 			IsCodeModeClient:       dbClient.IsCodeModeClient,
+			ToolMode:               dbClient.ToolMode,
 			ConnectionType:         schemas.MCPConnectionType(dbClient.ConnectionType),
 			ConnectionString:       dbClient.ConnectionString,
 			StdioConfig:            dbClient.StdioConfig,
@@ -1634,6 +1637,7 @@ type MCPClientUpdateRequest struct {
 	Disabled               *bool                           `json:"disabled,omitempty"`
 	AllowByDefault         *bool                           `json:"allow_by_default,omitempty"`
 	IsCodeModeClient       *bool                           `json:"is_code_mode_client,omitempty"`
+	ToolMode               *schemas.MCPToolMode            `json:"tool_mode,omitempty"`
 	IsPingAvailable        *bool                           `json:"is_ping_available,omitempty"`
 	NeedsSessionStickiness *bool                           `json:"needs_session_stickiness,omitempty"`
 	ToolSyncInterval       *int                            `json:"tool_sync_interval,omitempty"`
@@ -1784,6 +1788,18 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid tools_to_auto_execute: %v", err))
 		return
 	}
+	if req.ToolMode != "" && !schemas.IsValidMCPToolMode(req.ToolMode) {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid tool_mode %q: must be one of direct, code, compact, compact_names, search", req.ToolMode))
+		return
+	}
+	// Keep tool_mode and the legacy is_code_mode_client flag in sync before the
+	// request is copied into the persisted and runtime configs below.
+	{
+		modeCfg := schemas.MCPClientConfig{IsCodeModeClient: req.IsCodeModeClient, ToolMode: req.ToolMode}
+		modeCfg.NormalizeToolMode()
+		req.ToolMode = modeCfg.ToolMode
+		req.IsCodeModeClient = modeCfg.IsCodeModeClient
+	}
 	if err := mcp.ValidateMCPClientName(req.Name); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid client name: %v", err))
 		return
@@ -1881,6 +1897,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			Name:                   req.Name,
 			EndpointSlug:           req.EndpointSlug,
 			IsCodeModeClient:       req.IsCodeModeClient,
+			ToolMode:               req.ToolMode,
 			IsPingAvailable:        &isPingAvailable,
 			NeedsSessionStickiness: req.NeedsSessionStickiness,
 			ToolSyncInterval:       toolSyncInterval,
@@ -1999,6 +2016,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			Name:                   req.Name,
 			EndpointSlug:           req.EndpointSlug,
 			IsCodeModeClient:       req.IsCodeModeClient,
+			ToolMode:               req.ToolMode,
 			IsPingAvailable:        &isPingAvailable,
 			NeedsSessionStickiness: req.NeedsSessionStickiness,
 			ToolSyncInterval:       toolSyncInterval,
@@ -2138,6 +2156,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			ID:                     req.ClientID,
 			Name:                   req.Name,
 			IsCodeModeClient:       req.IsCodeModeClient,
+			ToolMode:               req.ToolMode,
 			IsPingAvailable:        &isPingAvailable,
 			NeedsSessionStickiness: req.NeedsSessionStickiness,
 			ToolSyncInterval:       toolSyncInterval,
@@ -2224,6 +2243,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			ID:                     req.ClientID,
 			Name:                   req.Name,
 			IsCodeModeClient:       req.IsCodeModeClient,
+			ToolMode:               req.ToolMode,
 			IsPingAvailable:        req.IsPingAvailable,
 			NeedsSessionStickiness: req.NeedsSessionStickiness,
 			ToolSyncInterval:       toolSyncInterval,
@@ -2282,6 +2302,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		Name:                   req.Name,
 		EndpointSlug:           req.EndpointSlug,
 		IsCodeModeClient:       req.IsCodeModeClient,
+		ToolMode:               req.ToolMode,
 		ConnectionType:         schemas.MCPConnectionType(req.ConnectionType),
 		ConnectionString:       req.ConnectionString,
 		StdioConfig:            req.StdioConfig,
@@ -2395,10 +2416,24 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		disabled = *req.Disabled
 	}
 	allowByDefault := req.resolvedAllowByDefault(existingConfig.AllowByDefault)
-	isCodeMode := existingConfig.IsCodeModeClient
-	if req.IsCodeModeClient != nil {
-		isCodeMode = *req.IsCodeModeClient
+	// tool_mode is the source of truth; the legacy is_code_mode_client flag is
+	// honored only when tool_mode is not sent, and the two are written back in
+	// sync (see MCPClientConfig.NormalizeToolMode).
+	toolMode := existingConfig.ResolvedToolMode()
+	if req.ToolMode != nil {
+		if !schemas.IsValidMCPToolMode(*req.ToolMode) {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid tool_mode %q: must be one of direct, code, compact, compact_names, search", *req.ToolMode))
+			return
+		}
+		toolMode = *req.ToolMode
+	} else if req.IsCodeModeClient != nil {
+		if *req.IsCodeModeClient {
+			toolMode = schemas.MCPToolModeCode
+		} else if toolMode == schemas.MCPToolModeCode {
+			toolMode = schemas.MCPToolModeDirect
+		}
 	}
+	isCodeMode := toolMode == schemas.MCPToolModeCode
 	isPingAvailable := existingConfig.IsPingAvailable
 	if req.IsPingAvailable != nil {
 		isPingAvailable = req.IsPingAvailable
@@ -2773,6 +2808,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		ClientID:               id,
 		Name:                   name,
 		IsCodeModeClient:       isCodeMode,
+		ToolMode:               toolMode,
 		ConnectionType:         string(existingConfig.ConnectionType),
 		ConnectionString:       existingConfig.ConnectionString,
 		StdioConfig:            existingConfig.StdioConfig,
@@ -2829,6 +2865,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		ID:                     id,
 		Name:                   name,
 		IsCodeModeClient:       isCodeMode,
+		ToolMode:               toolMode,
 		ConnectionType:         existingConfig.ConnectionType,
 		ConnectionString:       existingConfig.ConnectionString,
 		StdioConfig:            existingConfig.StdioConfig,
@@ -3443,6 +3480,7 @@ func (h *MCPHandler) completePerUserOAuthAdminRepair(ctx *fasthttp.RequestCtx, b
 		ClientID:                  clientConfig.ID,
 		Name:                      clientConfig.Name,
 		IsCodeModeClient:          clientConfig.IsCodeModeClient,
+		ToolMode:                  clientConfig.ToolMode,
 		ConnectionType:            string(clientConfig.ConnectionType),
 		ConnectionString:          clientConfig.ConnectionString,
 		StdioConfig:               clientConfig.StdioConfig,
@@ -3701,6 +3739,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 				ClientID:                  mcpClientConfig.ID,
 				Name:                      mcpClientConfig.Name,
 				IsCodeModeClient:          mcpClientConfig.IsCodeModeClient,
+				ToolMode:                  mcpClientConfig.ToolMode,
 				ConnectionType:            string(mcpClientConfig.ConnectionType),
 				ConnectionString:          mcpClientConfig.ConnectionString,
 				StdioConfig:               mcpClientConfig.StdioConfig,
@@ -3832,6 +3871,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			ClientID:                  mcpClientConfig.ID,
 			Name:                      mcpClientConfig.Name,
 			IsCodeModeClient:          mcpClientConfig.IsCodeModeClient,
+			ToolMode:                  mcpClientConfig.ToolMode,
 			ConnectionType:            string(mcpClientConfig.ConnectionType),
 			ConnectionString:          mcpClientConfig.ConnectionString,
 			StdioConfig:               mcpClientConfig.StdioConfig,

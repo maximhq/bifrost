@@ -13,20 +13,21 @@ import (
 
 // TableMCPClient represents an MCP client configuration in the database
 type TableMCPClient struct {
-	ID                      uint               `gorm:"primaryKey;autoIncrement" json:"id"` // ID is used as the internal primary key and is also accessed by public methods, so it must be present.
-	ClientID                string             `gorm:"type:varchar(255);uniqueIndex;not null" json:"client_id"`
-	Name                    string             `gorm:"type:varchar(255);uniqueIndex;not null" json:"name"`
-	EndpointSlug            string             `gorm:"column:endpoint_slug;type:varchar(255);uniqueIndex" json:"endpoint_slug"`
-	IsCodeModeClient        bool               `gorm:"default:false" json:"is_code_mode_client"`         // Whether the client is a code mode client
-	ConnectionType          string             `gorm:"type:varchar(20);not null" json:"connection_type"` // schemas.MCPConnectionType
-	ConnectionString        *schemas.SecretVar `gorm:"type:text" json:"connection_string,omitempty"`
-	StdioConfigJSON         *string            `gorm:"type:text" json:"-"`                              // JSON serialized schemas.MCPStdioConfig
-	TLSConfigJSON           *string            `gorm:"type:text" json:"-"`                              // JSON serialized schemas.MCPTLSConfig
-	ToolsToExecuteJSON      string             `gorm:"type:text" json:"-"`                              // JSON serialized []string
-	ToolsToAutoExecuteJSON  string             `gorm:"type:text" json:"-"`                              // JSON serialized []string
-	HeadersJSON             string             `gorm:"type:text" json:"-"`                              // JSON serialized map[string]string
-	AllowedExtraHeadersJSON string             `gorm:"type:text" json:"-"`                              // JSON serialized []string
-	IsPingAvailable         *bool              `gorm:"default:true" json:"is_ping_available,omitempty"` // Whether the MCP server supports ping for health checks
+	ID                      uint                `gorm:"primaryKey;autoIncrement" json:"id"` // ID is used as the internal primary key and is also accessed by public methods, so it must be present.
+	ClientID                string              `gorm:"type:varchar(255);uniqueIndex;not null" json:"client_id"`
+	Name                    string              `gorm:"type:varchar(255);uniqueIndex;not null" json:"name"`
+	EndpointSlug            string              `gorm:"column:endpoint_slug;type:varchar(255);uniqueIndex" json:"endpoint_slug"`
+	IsCodeModeClient        bool                `gorm:"default:false" json:"is_code_mode_client"`               // Whether the client is a code mode client
+	ToolMode                schemas.MCPToolMode `gorm:"type:varchar(20);default:''" json:"tool_mode,omitempty"` // How tools are exposed: direct, code, compact, search (empty = resolve from is_code_mode_client)
+	ConnectionType          string              `gorm:"type:varchar(20);not null" json:"connection_type"`       // schemas.MCPConnectionType
+	ConnectionString        *schemas.SecretVar  `gorm:"type:text" json:"connection_string,omitempty"`
+	StdioConfigJSON         *string             `gorm:"type:text" json:"-"`                              // JSON serialized schemas.MCPStdioConfig
+	TLSConfigJSON           *string             `gorm:"type:text" json:"-"`                              // JSON serialized schemas.MCPTLSConfig
+	ToolsToExecuteJSON      string              `gorm:"type:text" json:"-"`                              // JSON serialized []string
+	ToolsToAutoExecuteJSON  string              `gorm:"type:text" json:"-"`                              // JSON serialized []string
+	HeadersJSON             string              `gorm:"type:text" json:"-"`                              // JSON serialized map[string]string
+	AllowedExtraHeadersJSON string              `gorm:"type:text" json:"-"`                              // JSON serialized []string
+	IsPingAvailable         *bool               `gorm:"default:true" json:"is_ping_available,omitempty"` // Whether the MCP server supports ping for health checks
 	// NeedsSessionStickiness: nil/false = per-call connection (the default
 	// for newly created clients); true = persistent shared connection
 	// (today's only behavior — every pre-existing row is explicitly

@@ -361,6 +361,42 @@ const (
 	CodeModeBindingLevelTool   CodeModeBindingLevel = "tool"
 )
 
+// MCPToolMode controls how an MCP client's tools are exposed to the model.
+//
+//   - direct:  every tool definition is injected into the request as-is.
+//   - code:    tools are hidden behind the code mode meta-tools (listToolFiles,
+//     readToolFile, getToolDocs, executeToolCode) and orchestrated from a
+//     Starlark sandbox.
+//   - compact: every tool is injected, but with the tool description and all
+//     parameter descriptions stripped. Names and the JSON schema skeleton stay,
+//     so the model can still call tools directly.
+//   - search:  tools are hidden behind the search mode meta-tools (searchTools,
+//     getToolDetails, executeTool). The model finds tools with a BM25 query
+//     over names and descriptions, loads full docs on demand, and invokes a
+//     tool through executeTool.
+type MCPToolMode string
+
+const (
+	MCPToolModeDirect  MCPToolMode = "direct"
+	MCPToolModeCode    MCPToolMode = "code"
+	MCPToolModeCompact MCPToolMode = "compact"
+	MCPToolModeSearch  MCPToolMode = "search"
+	// compact_names: every tool is injected with its name only (empty, open
+	// parameter schema), plus the getToolDetails meta-tool so the model can
+	// fetch a tool's parameters on demand before calling it directly.
+	MCPToolModeCompactNames MCPToolMode = "compact_names"
+)
+
+// IsValidMCPToolMode reports whether mode is one of the known tool modes.
+// The empty string is not valid here; callers resolve it via ResolvedToolMode.
+func IsValidMCPToolMode(mode MCPToolMode) bool {
+	switch mode {
+	case MCPToolModeDirect, MCPToolModeCode, MCPToolModeCompact, MCPToolModeCompactNames, MCPToolModeSearch:
+		return true
+	}
+	return false
+}
+
 // MCPAuthType defines the authentication type for MCP connections
 type MCPAuthType string
 
@@ -474,7 +510,8 @@ type MCPClientConfig struct {
 	ID                string            `json:"client_id"`                     // Client ID
 	Name              string            `json:"name"`                          // Client name
 	EndpointSlug      string            `json:"endpoint_slug"`                 // URL-safe, immutable; serves /mcp/<slug>
-	IsCodeModeClient  bool              `json:"is_code_mode_client"`           // Whether the client is a code mode client
+	IsCodeModeClient  bool              `json:"is_code_mode_client"`           // Deprecated in favor of ToolMode; kept in sync (true iff ToolMode == code) so rolled-back binaries still read the right value
+	ToolMode          MCPToolMode       `json:"tool_mode,omitempty"`           // How this client's tools are exposed to the model: direct (default), code, compact, or search
 	ConnectionType    MCPConnectionType `json:"connection_type"`               // How to connect (HTTP, STDIO, SSE, or InProcess)
 	ConnectionString  *SecretVar        `json:"connection_string,omitempty"`   // HTTP or SSE URL (required for HTTP or SSE connections)
 	StdioConfig       *MCPStdioConfig   `json:"stdio_config,omitempty"`        // STDIO configuration (required for STDIO connections)
@@ -567,6 +604,33 @@ type MCPClientConfig struct {
 	// Stored values are plaintext; env-var-reference resolution is not
 	// applied to fields inside this block.
 	PendingOAuthConfig *OAuth2Config `json:"oauth_config,omitempty"`
+}
+
+// ResolvedToolMode returns the effective tool mode for this client. An explicit
+// ToolMode wins; otherwise the legacy IsCodeModeClient flag maps to code, and
+// everything else is direct.
+func (c *MCPClientConfig) ResolvedToolMode() MCPToolMode {
+	if c == nil {
+		return MCPToolModeDirect
+	}
+	if c.ToolMode != "" {
+		return c.ToolMode
+	}
+	if c.IsCodeModeClient {
+		return MCPToolModeCode
+	}
+	return MCPToolModeDirect
+}
+
+// NormalizeToolMode makes ToolMode and IsCodeModeClient agree: ToolMode is
+// filled in from the legacy flag when empty, and the flag is then derived from
+// ToolMode so a binary that predates ToolMode still reads a consistent value.
+func (c *MCPClientConfig) NormalizeToolMode() {
+	if c == nil {
+		return
+	}
+	c.ToolMode = c.ResolvedToolMode()
+	c.IsCodeModeClient = c.ToolMode == MCPToolModeCode
 }
 
 // UnmarshalJSON supports Go duration strings (e.g. "10m") for tool_sync_interval and

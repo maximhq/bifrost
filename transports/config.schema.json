@@ -5636,7 +5636,12 @@
         },
         "is_code_mode_client": {
           "type": "boolean",
-          "description": "Whether this client is a code mode client"
+          "description": "Deprecated: use tool_mode. Kept in sync with tool_mode (true iff tool_mode is \"code\")."
+        },
+        "tool_mode": {
+          "type": "string",
+          "enum": ["direct", "code", "compact", "compact_names", "search"],
+          "description": "How this client's tools are exposed to the model. direct: full definitions (default). code: hidden behind the code mode meta-tools and Starlark sandbox. compact: definitions with all descriptions stripped. compact_names: names only plus a getToolDetails meta-tool for on-demand parameters. search: hidden behind searchTools / getToolDetails / executeTool with BM25 discovery."
         },
         "connection_type": {
           "type": "string",
