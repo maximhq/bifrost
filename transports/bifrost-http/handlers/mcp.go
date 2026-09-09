@@ -235,10 +235,17 @@ func (h *MCPHandler) reauthorizeMCPClient(ctx *fasthttp.RequestCtx) {
 	}
 
 	completeURL := fmt.Sprintf("/api/mcp/client/%s/complete-oauth", flowInitiation.OauthConfigID)
-	statusURL := fmt.Sprintf("/api/oauth/config/%s/status", flowInitiation.OauthConfigID)
+	// status_url carries the flow id: this client's oauth_configs row has
+	// been "authorized" since its original bootstrap and that status never
+	// regresses (see isPrematureOAuthCompletion), so a poller reading the
+	// bare config status would see "authorized" before the admin has even
+	// signed in. With flow_id the status endpoint answers from the flow row
+	// instead, which stays "pending" until the callback actually completes.
+	statusURL := fmt.Sprintf("/api/oauth/config/%s/status?flow_id=%s", flowInitiation.OauthConfigID, url.QueryEscape(flowID))
 	SendJSON(ctx, map[string]any{
 		"status":          "pending_oauth",
 		"oauth_config_id": flowInitiation.OauthConfigID,
+		"flow_id":         flowID,
 		"authorize_url":   authorizeURL,
 		"expires_at":      flowInitiation.ExpiresAt,
 		"mcp_client_id":   clientConfig.ID,

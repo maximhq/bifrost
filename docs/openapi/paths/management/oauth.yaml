@@ -62,6 +62,13 @@ oauth-config-status:
       Retrieves the current status of an OAuth configuration.
       Shows whether the OAuth flow is pending, authorized, or failed,
       and includes token expiration and scopes if authorized.
+
+      For a reauthorize flow (POST /api/mcp/client/{id}/reauthorize) pass the
+      returned flow_id: the config's own status has been "authorized" since the
+      client was first verified and never regresses, so only the flow row can
+      say whether this particular consent has completed. With flow_id the
+      status is pending until the provider redirects back, then authorized,
+      failed, or expired.
     tags:
       - OAuth
     parameters:
@@ -69,6 +76,12 @@ oauth-config-status:
         in: path
         required: true
         description: OAuth config ID
+        schema:
+          type: string
+      - name: flow_id
+        in: query
+        required: false
+        description: Flow ID from the reauthorize response; resolves the status from that flow row
         schema:
           type: string
     security:
@@ -82,7 +95,7 @@ oauth-config-status:
             schema:
               $ref: '../../schemas/management/oauth.yaml#/OAuthConfigStatus'
       '404':
-        description: OAuth config not found
+        description: OAuth config not found, or flow_id does not belong to this OAuth config
         content:
           application/json:
             schema:
