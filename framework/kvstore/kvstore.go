@@ -2,6 +2,7 @@ package kvstore
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -176,7 +177,7 @@ func (s *Store) SetNXWithTTL(key string, value any, ttl time.Duration) (bool, er
 	}
 
 	s.mu.Lock()
-	
+
 	// Check if key exists and is not expired
 	if existing, ok := s.data[key]; ok {
 		if !isExpired(existing, now) {
@@ -185,7 +186,7 @@ func (s *Store) SetNXWithTTL(key string, value any, ttl time.Duration) (bool, er
 		}
 		// Key exists but is expired, allow overwrite
 	}
-	
+
 	// Key doesn't exist or is expired, set it
 	s.data[key] = entry{
 		value:     value,
@@ -429,4 +430,59 @@ func (s *Store) decodeValue(key string, valueJSON []byte) any {
 
 func isExpired(e entry, nowUnixNano int64) bool {
 	return e.expiresAt != noExpirationUnixNanos && nowUnixNano >= e.expiresAt
+}
+
+func (s *Store) CompareAndSwap(key string, oldValue any, newValue any, ttl time.Duration) (bool, error) {
+	if err := s.validateMutable(key, ttl); err != nil {
+		return false, err
+	}
+
+	now := time.Now().UnixNano()
+
+	var expiresAt int64
+	if ttl > 0 {
+		expiresAt = now + int64(ttl)
+	}
+
+	var valueJSON []byte
+	var err error
+
+	if s.delegate != nil {
+		valueJSON, err = sonic.Marshal(newValue)
+		if err != nil {
+			return false, err
+		}
+	}
+
+	s.mu.Lock()
+
+	current, exists := s.data[key]
+	if !exists {
+		s.mu.Unlock()
+		return false, nil
+	}
+
+	if isExpired(current, now) {
+		delete(s.data, key)
+		s.mu.Unlock()
+		return false, nil
+	}
+
+	if !reflect.DeepEqual(current.value, oldValue) {
+		s.mu.Unlock()
+		return false, nil
+	}
+
+	s.data[key] = entry{
+		value:     newValue,
+		writtenAt: now,
+		expiresAt: expiresAt,
+	}
+
+	s.mu.Unlock()
+	if s.delegate != nil {
+		s.delegate.OnSet(key, valueJSON, now, expiresAt)
+	}
+
+	return true, nil
 }

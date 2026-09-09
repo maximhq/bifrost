@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/bytedance/sonic"
@@ -31,6 +32,9 @@ type mockHandlerStore struct {
 	availableProviders         []schemas.ModelProvider
 	mcpHeaderCombinedAllowlist schemas.WhiteList
 	modelCatalog               *modelcatalog.ModelCatalog
+	maxRequestBodySizeMB       int
+	maxResumableUploadSizeMB   int
+	uploadSessionTTL           time.Duration
 }
 
 func (m *mockHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher {
@@ -75,6 +79,21 @@ func (m *mockHandlerStore) GetMCPExternalServerURL() string {
 
 func (m *mockHandlerStore) GetMCPExternalClientURL() string {
 	return ""
+}
+
+func (m *mockHandlerStore) GetMaxRequestBodySizeMB() int {
+	if m.maxRequestBodySizeMB > 0 {
+		return m.maxRequestBodySizeMB
+	}
+	return lib.DefaultMaxRequestBodySizeMB
+}
+
+func (m *mockHandlerStore) GetMaxResumableUploadSizeMB() int {
+	return 100
+}
+
+func (m *mockHandlerStore) GetUploadSessionTTL() time.Duration {
+	return 1 * time.Minute
 }
 
 func (m *mockHandlerStore) GetModelCatalog() *modelcatalog.ModelCatalog {

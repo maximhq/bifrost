@@ -10,7 +10,8 @@
     "enforce_auth_on_inference": true,
     "initial_pool_size": 300,
     "log_retention_days": 365,
-    "max_request_body_size_mb": 100
+    "max_request_body_size_mb": 100,
+    "max_resumable_upload_size_mb": 150
   },
   "config_store": {
     "enabled": true,

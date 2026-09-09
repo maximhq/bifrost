@@ -168,6 +168,12 @@
           "minimum": 1,
           "description": "Maximum request body size in MB"
         },
+        "max_resumable_upload_size_mb": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 150,
+          "description": "Maximum total size in MB allowed for a resumable file upload session"
+        },
         "compat": {
           "type": "object",
           "description": "Compat plugin configuration for request type conversion, parameter dropping, and parameter value conversion",

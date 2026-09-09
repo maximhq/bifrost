@@ -1022,7 +1022,14 @@ func (m *MockConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ..
 }
 
 func (m *MockConfigStore) GetVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error) {
-	return nil, nil
+	isActive := true
+
+	return &tables.TableVirtualKey{
+		ID:       id,
+		Name:     "test-virtual-key",
+		Value:    "test-virtual-key",
+		IsActive: &isActive,
+	}, nil
 }
 
 func (m *MockConfigStore) GetVirtualKeys(ctx context.Context) ([]tables.TableVirtualKey, error) {

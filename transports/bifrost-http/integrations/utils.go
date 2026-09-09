@@ -2,6 +2,7 @@ package integrations
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"net/url"
 	"reflect"
@@ -16,6 +17,25 @@ import (
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
+
+type errorWithStatus struct {
+	err        error
+	statusCode int
+}
+
+func (e *errorWithStatus) Error() string { return e.err.Error() }
+func (e *errorWithStatus) Unwrap() error { return e.err }
+
+func newErrorWithStatus(err error, statusCode int) error {
+	return &errorWithStatus{err: err, statusCode: statusCode}
+}
+
+func statusCodeFromError(err error) (int, bool) {
+	if statusErr, ok := errors.AsType[*errorWithStatus](err); ok {
+		return statusErr.statusCode, true
+	}
+	return 0, false
+}
 
 var bifrostContextKeyProvider = schemas.BifrostContextKey("provider")
 
