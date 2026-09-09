@@ -563,3 +563,85 @@ func TestApplyCustomLabels(t *testing.T) {
 		})
 	}
 }
+
+// gaugeValue gathers the named gauge family from the registry and sums every series' value.
+func gaugeValue(t *testing.T, reg *prometheus.Registry, name string) float64 {
+	t.Helper()
+	fams, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	for _, mf := range fams {
+		if mf.GetName() != name {
+			continue
+		}
+		var sum float64
+		for _, m := range mf.GetMetric() {
+			sum += m.GetGauge().GetValue()
+		}
+		return sum
+	}
+	return 0
+}
+
+// TestPostLLMHookActiveRequestsIdempotentDecrement covers #7005: PostLLMHook
+// runs once per stream chunk, and the stream-end indicator is sticky once any
+// path sets it. The decrement must happen exactly once per request no matter
+// how many subsequent chunk hooks observe the stale flag — the gauge must not
+// drift negative.
+func TestPostLLMHookActiveRequestsIdempotentDecrement(t *testing.T) {
+	p := newTestPlugin(t)
+	ctx := newHookContext(schemas.ChatCompletionStreamRequest)
+
+	// PreLLMHook's Inc, replicated for the test (the hook itself also sets
+	// startTimeKey, which newHookContext already primes).
+	p.ActiveRequests.WithLabelValues(string(schemas.ChatCompletionStreamRequest)).Inc()
+
+	resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: 5, CompletionTokens: 5, TotalTokens: 10},
+	}}
+	resp.PopulateExtraFields(schemas.ChatCompletionStreamRequest, "openai", "m", "m")
+
+	// Simulate the sticky stream-end flag being set (e.g. by a cancellation
+	// handler mid-stream), then run the post hook for the "final" chunk and
+	// for several already-queued trailing chunks.
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	const queuedChunks = 5
+	for i := 0; i <= queuedChunks; i++ {
+		if _, _, err := p.PostLLMHook(ctx, resp, nil); err != nil {
+			t.Fatalf("PostLLMHook chunk %d: %v", i, err)
+		}
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	if got := gaugeValue(t, p.registry, "bifrost_active_requests"); got != 0 {
+		t.Errorf("bifrost_active_requests = %v after 1 inc + %d dec-candidate hooks, want exactly 0",
+			got, queuedChunks+1)
+	}
+}
+
+// TestPostLLMHookActiveRequestsDecrementOnMissingStartTime covers the
+// opposite leak from #7005: PostLLMHook used to return early when
+// startTime was missing, leaving the gauge incremented forever.
+func TestPostLLMHookActiveRequestsDecrementOnMissingStartTime(t *testing.T) {
+	p := newTestPlugin(t)
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(time.Minute))
+	ctx.SetValue(activeRequestTypeKey, schemas.ChatCompletionRequest)
+	p.ActiveRequests.WithLabelValues(string(schemas.ChatCompletionRequest)).Inc()
+
+	resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: 5, CompletionTokens: 5, TotalTokens: 10},
+	}}
+	resp.PopulateExtraFields(schemas.ChatCompletionRequest, "openai", "m", "m")
+
+	// No startTimeKey set: the hook warns and skips metric recording, but the
+	// gauge must still come back to zero.
+	if _, _, err := p.PostLLMHook(ctx, resp, nil); err != nil {
+		t.Fatalf("PostLLMHook: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	if got := gaugeValue(t, p.registry, "bifrost_active_requests"); got != 0 {
+		t.Errorf("bifrost_active_requests = %v, want 0 (missing startTime must not leak the gauge)", got)
+	}
+}

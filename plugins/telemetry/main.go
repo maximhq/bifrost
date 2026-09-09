@@ -32,9 +32,16 @@ const (
 const (
 	startTimeKey         schemas.BifrostContextKey = "bf-prom-start-time"
 	activeRequestTypeKey schemas.BifrostContextKey = "bf-prom-active-req-type"
-	mcpStartTimeKey      schemas.BifrostContextKey = "bf-prom-mcp-start-time"
-	mcpClientNameKey     schemas.BifrostContextKey = "bf-prom-mcp-client-name"
-	mcpToolNameKey       schemas.BifrostContextKey = "bf-prom-mcp-tool-name"
+	// activeRequestsDecrementedKey marks that the in-flight gauge has already
+	// been decremented for this request. PostLLMHook runs once per stream
+	// chunk, and the stream-end indicator is sticky once any path sets it, so
+	// a plain bool check decrements once per chunk and drives the gauge
+	// negative. This flag is set-and-cleared atomically via GetAndSetValue,
+	// making the decrement idempotent per request (#7005).
+	activeRequestsDecrementedKey schemas.BifrostContextKey = "bf-prom-active-req-dec"
+	mcpStartTimeKey              schemas.BifrostContextKey = "bf-prom-mcp-start-time"
+	mcpClientNameKey             schemas.BifrostContextKey = "bf-prom-mcp-client-name"
+	mcpToolNameKey               schemas.BifrostContextKey = "bf-prom-mcp-tool-name"
 
 	// Overhead is measured across the transport hooks rather than the LLM hooks,
 	// so the window matches the OTEL root span. See recordOverhead.
@@ -999,6 +1006,15 @@ func canonicalEntitySet(ctx context.Context, idsKey, namesKey, scalarIDKey, scal
 func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	requestType, provider, originalModel, resolvedModel := bifrost.GetResponseFields(result, bifrostErr)
 
+	// Decrement the in-flight gauge exactly once, as early as possible: every
+	// later early return (pre-dispatch rejection, missing startTime) would
+	// otherwise leak the gauge upward (#7005).
+	if method, ok := ctx.Value(activeRequestTypeKey).(schemas.RequestType); ok {
+		if prev, _ := ctx.GetAndSetValue(activeRequestsDecrementedKey, true).(bool); !prev {
+			p.ActiveRequests.WithLabelValues(string(method)).Dec()
+		}
+	}
+
 	// Effective model + alias (mirrors logging's applyModelAlias). model is normalized
 	// so it doesn't split across series; alias keeps the raw requested name.
 	model := originalModel
@@ -1012,11 +1028,8 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	model = schemas.NormalizeModelName(model)
 
 	// Skip pre-dispatch rejections (no provider and no model) to avoid empty-label
-	// series. Decrement ActiveRequests first, since PreLLMHook incremented it.
+	// series. The ActiveRequests decrement already happened above.
 	if provider == "" && model == "" {
-		if method, ok := ctx.Value(activeRequestTypeKey).(schemas.RequestType); ok {
-			p.ActiveRequests.WithLabelValues(string(method)).Dec()
-		}
 		return result, bifrostErr, nil
 	}
 
@@ -1080,8 +1093,8 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		"customer_name":        customerName,
 		"business_unit_id":     businessUnitID,
 		"business_unit_name":   businessUnitName,
-		"project_id":          projectID,
-		"project_name":        projectName,
+		"project_id":           projectID,
+		"project_name":         projectName,
 	}
 
 	// Get all custom prometheus labels from context BEFORE the goroutine.
@@ -1096,11 +1109,6 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 	// Decrement active requests on the final (or only) call for this request
 	isStreamFinal := !bifrost.IsStreamRequestType(requestType) || (hasFinalChunkIndicator && isFinalChunk)
-	if isStreamFinal {
-		if method, ok := ctx.Value(activeRequestTypeKey).(schemas.RequestType); ok {
-			p.ActiveRequests.WithLabelValues(string(method)).Dec()
-		}
-	}
 
 	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(provider))
 
