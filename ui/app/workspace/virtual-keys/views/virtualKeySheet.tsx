@@ -302,18 +302,20 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 
 	const hasCreateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Create);
 	const hasUpdateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Update);
+	const hasCreateStandalone = useRbac(RbacResource.VirtualKeys, RbacOperation.CreateStandalone);
 	const canSubmit = isEditing ? hasUpdateAccess : hasCreateAccess;
 
 	// Detect AP-managed status via the managing profile's virtual_key_ids, not just by the presence
 	// of assignees — directly-attached users don't imply an access-profile relation.
 	const { assignedUsers, isManagedByProfile: isManagedByProfileHook, managingProfile } = useVirtualKeyUsage(virtualKey);
-	// On create, check whether the user's access profile will govern the new VK. If so,
-	// lock the governance fields up front — the server applies the profile regardless.
+	// On create, the VK is governed unless the role grants CreateStandalone (the freedom to
+	// create ungoverned keys); the profile that will apply comes from vkCreationPolicy. If
+	// governed, lock the governance fields up front — the server applies the profile regardless.
 	const { data: vkCreationPolicy } = useGetMyVKCreationPolicyQuery(undefined, {
 		skip: isEditing,
 		refetchOnMountOrArgChange: true,
 	});
-	const willBeGovernedOnCreate = !isEditing && !!vkCreationPolicy?.governed;
+	const willBeGovernedOnCreate = !isEditing && !hasCreateStandalone;
 	const isManagedByProfile = (isEditing && isManagedByProfileHook) || willBeGovernedOnCreate;
 	// User assignment is enterprise-only: OSS registers no picker, so the option stays hidden.
 	const UserPicker = getUserPicker();
