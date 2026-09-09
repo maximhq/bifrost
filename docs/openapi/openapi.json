@@ -111308,11 +111308,6 @@
             },
             "additionalProperties": false
           },
-          "calendar_aligned": {
-            "type": "boolean",
-            "description": "When true, resets align to calendar period boundaries in UTC (not rolling from last reset)",
-            "default": false
-          },
           "last_reset": {
             "type": "string",
             "format": "date-time"

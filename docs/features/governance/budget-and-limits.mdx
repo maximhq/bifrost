@@ -368,6 +368,7 @@ curl -X POST "https://your-bifrost-instance.com/api/governance/virtual-keys" \
   -d '{
     "name": "marketing-team-vk",
     "description": "Marketing team virtual key with provider-specific limits",
+    "calendar_aligned": true,
     "provider_configs": [
       {
         "provider": "openai",
@@ -377,8 +378,7 @@ curl -X POST "https://your-bifrost-instance.com/api/governance/virtual-keys" \
         "budgets": [
           {
             "max_limit": 500.00,
-            "reset_duration": "1M",
-            "calendar_aligned": true
+            "reset_duration": "1M"
           }
         ],
         "rate_limit": {
@@ -410,15 +410,14 @@ curl -X POST "https://your-bifrost-instance.com/api/governance/virtual-keys" \
     "budgets": [
       {
         "max_limit": 1000.00,
-        "reset_duration": "1M",
-        "calendar_aligned": true
+        "reset_duration": "1M"
       }
     ],
     "is_active": true
   }'
 ```
 
-Use `calendar_aligned` only with `d` / `w` / `M` / `Y` reset durations (see [Calendar-aligned budgets](#calendar-aligned-budgets)).
+Calendar alignment affects only `d` / `w` / `M` / `Q` / `Y` reset durations (see [Calendar-aligned budgets](#calendar-aligned-budgets)); sub-day windows remain rolling. The virtual-key-level setting applies to its direct budgets, provider-config budgets, and rate limits.
 
 ### Update Provider Configuration
 
@@ -457,6 +456,7 @@ curl -X PUT "https://your-bifrost-instance.com/api/governance/virtual-keys/{vk_i
     "id": "vk_123",
     "name": "marketing-team-vk",
     "value": "vk_abc123def456",
+    "calendar_aligned": true,
     "provider_configs": [
       {
         "id": 1,
@@ -470,7 +470,6 @@ curl -X PUT "https://your-bifrost-instance.com/api/governance/virtual-keys/{vk_i
             "max_limit": 500.00,
             "current_usage": 0.00,
             "reset_duration": "1M",
-            "calendar_aligned": true,
             "last_reset": "2024-01-01T00:00:00Z"
           }
         ],
@@ -493,7 +492,6 @@ curl -X PUT "https://your-bifrost-instance.com/api/governance/virtual-keys/{vk_i
         "max_limit": 1000.00,
         "current_usage": 0.00,
         "reset_duration": "1M",
-        "calendar_aligned": true,
         "last_reset": "2024-01-01T00:00:00Z"
       }
     ]
@@ -509,9 +507,9 @@ curl -X PUT "https://your-bifrost-instance.com/api/governance/virtual-keys/{vk_i
 | `weight` | float | Load balancing weight (0.0-1.0) |
 | `allowed_models` | array | Specific models allowed for this provider |
 | `key_ids` | array | Provider API key IDs allowed for this config. `["*"]` allows all; empty or omitted denies all |
+| `calendar_aligned` | boolean | Virtual-key-level setting. When true, all supported budget and rate-limit windows owned by the virtual key reset at calendar boundaries in UTC |
 | `budgets[].max_limit` | float | Maximum spend in USD |
 | `budgets[].reset_duration` | string | Reset period (e.g., "1h", "1d", "1M") |
-| `budgets[].calendar_aligned` | boolean | When true, resets at calendar boundaries in UTC (requires `d`/`w`/`M`/`Y` durations) |
 | `rate_limit.token_max_limit` | integer | Maximum tokens per period |
 | `rate_limit.request_max_limit` | integer | Maximum requests per period |
 
@@ -533,6 +531,7 @@ Configure provider-level governance through Bifrost's configuration file for dec
         "name": "development-team-vk",
         "description": "Development team with multi-provider setup",
         "is_active": true,
+        "calendar_aligned": true,
         "rate_limit_id": "rl-vk-dev",
         "provider_configs": [
           {
@@ -559,8 +558,7 @@ Configure provider-level governance through Bifrost's configuration file for dec
         "id": "budget-vk-dev",
         "virtual_key_id": "vk-dev-001",
         "max_limit": 2000.00,
-        "reset_duration": "1M",
-        "calendar_aligned": true
+        "reset_duration": "1M"
       },
       {
         "id": "budget-pc-openai",
@@ -602,7 +600,7 @@ Configure provider-level governance through Bifrost's configuration file for dec
 }
 ```
 
-Budgets and rate limits live as **separate top-level arrays** inside `governance`. Virtual keys and provider configs reference them by id (`rate_limit_id`) or are referenced back (`virtual_key_id` / `provider_config_id` on each `budgets[]` entry). Optional `calendar_aligned` on each `budget` matches the HTTP API and [calendar-aligned behavior](#calendar-aligned-budgets).
+Budgets and rate limits live as **separate top-level arrays** inside `governance`. Virtual keys and provider configs reference them by id (`rate_limit_id`) or are referenced back (`virtual_key_id` / `provider_config_id` on each `budgets[]` entry). Set optional `calendar_aligned` on the owning virtual key—not on individual budget or rate-limit entries—to enable [calendar-aligned behavior](#calendar-aligned-budgets) for all of its supported reset windows.
 
 ### Advanced Configuration Examples
 

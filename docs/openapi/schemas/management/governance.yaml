@@ -38,10 +38,6 @@ Budget:
             July and October all reset on calendar quarters and differ only in which quarter is
             labelled Q1.
       additionalProperties: false
-    calendar_aligned:
-      type: boolean
-      description: When true, resets align to calendar period boundaries in UTC (not rolling from last reset)
-      default: false
     last_reset:
       type: string
       format: date-time
