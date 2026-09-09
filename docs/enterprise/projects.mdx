@@ -6,7 +6,7 @@ icon: "square-kanban"
 
 ## Overview
 
-Bifrost Enterprise already answers **who is calling**. Virtual keys, teams, customers, business units and access profiles are all attributes of the caller: they are fixed the moment a request authenticates, and spend flows up one ownership tree.
+Bifrost Enterprise already answers **who is calling**. Virtual keys, teams, customers, business units and access profiles are all attributes of the caller (a User or a Virtual Key): they are fixed the moment a request authenticates, and spend flows up one ownership tree.
 
 A **project** answers a different question: **what is this call for?**
 
@@ -40,15 +40,15 @@ To create your first project, skip to [Configuration](#configuration). The secti
 
 Every other governance entity describes a person or a credential. A project describes work. That gives a single decision rule:
 
-> Ask whether the access should apply to **every request this person makes, for as long as they hold it**. If yes, it is an access profile. If it should apply **only while they are doing a particular piece of work, and that work has its own budget**, it is a project.
+> Ask whether the access should apply to **every request this person makes, for as long as they hold it**. If yes, it is an [Access Profile](/enterprise/access-profiles). If it should apply **only while they are doing a particular piece of work, and that work has its own budget**, it is a project.
 
-So "contractors get `gpt-4o-mini` only, with \$50 a month" is an access profile and should stay one. "This evaluation has \$5,000 and these six people can draw on it" is a project.
+So "contractors get `gpt-4o-mini` only, with \$50 a month" is an access profile and should stay one. "This proof of concept agent can spend a max of \$5,000 USD and these six people can work on it" is a project.
 
 ### A worked example
 
 An organisation has a `platform` team and a `data-science` team, both under an `acme-internal` customer. Engineers sign in with SSO and hold an "Engineer" access profile: OpenAI `gpt-4o-mini` only, \$200 per month. That is the right policy for their day-to-day work and none of it should change.
 
-Leadership now wants to evaluate moving to Claude. Six named people, four from platform, two from data-science, plus one contractor, get \$5,000 for the quarter to run comparisons on Anthropic models. The spend must not touch their personal budgets, must report as one line item, must stop dead at \$5,000, and nobody else gets Anthropic.
+Leadership now wants to evaluate moving to Claude. Six named people, three from platform, two from data-science, plus one contractor, get \$5,000 for the quarter to run comparisons on Anthropic models. The spend must not touch their personal budgets, must report as one line item, must stop dead at \$5,000, and nobody else gets Anthropic.
 
 As a project that is one entity: access rule **Extend** with an Anthropic provider config, accounting **Project only**, a \$5,000 quarterly budget, split policy **Equal**, and six explicit members. The engineers keep their own identity and their own profile for everything else, and add `x-bf-project-id` to eval calls only. Those calls, and only those calls, reach Anthropic; the spend lands on the project's \$5,000 and is taken off their personal, team and customer limits; every log row carries `project=claude-eval`; and the equal split caps each member near \$833 so one person cannot drain the pot.
 
@@ -150,15 +150,15 @@ Two details worth knowing. Provider **weights** do not compose, because two pref
 |---|---|---|---|---|
 | `both` (default) | Charged | Charged | Charged | Charged |
 | `project_only` | Charged | Charged | Not consulted | Charged |
-| `principal_only` | Not consulted | Not consulted | Charged | Charged |
+| User only (`principal_only`) | Not consulted | Not consulted | Charged | Charged |
 
 **`both`** enforces everything. A request has to fit inside the project's caps *and* the caller's own.
 
 **`project_only`** takes the request off everything the caller funds, including their per-model budgets and the teams and business units above them. Use it when an initiative's spend genuinely should not count against the people doing the work, as in the evaluation example.
 
-**`principal_only`** is pure attribution: the project keeps its caps on record but checks and charges none of them, so the request is capped only by the caller and by the deployment. The project's own Overview tab says so explicitly while this mode is set, because a funded project that charges nothing is otherwise a confusing thing to look at.
+**User only** is pure attribution: the project keeps its caps on record but checks and charges none of them, so the request is capped only by the caller and by the deployment. The project's own Overview tab says so explicitly while this mode is set, because a funded project that charges nothing is otherwise a confusing thing to look at.
 
-A scoped request whose caller holds no permit at all is refused under `both` and `principal_only`: those modes say the caller's money moves, and there is nothing to take it from.
+A scoped request whose caller holds no permit at all is refused under `both` and User only: those modes say the caller's money moves, and there is nothing to take it from.
 
 ---
 
@@ -534,7 +534,7 @@ See [Data Access Control](/enterprise/data-access-control) for how scopes are as
 
 ## Examples
 
-### An evaluation with its own funding
+### Power users evaluating a new model release with its own budget
 
 Six people from two teams get \$5,000 for the quarter to evaluate a provider nobody personally has access to, without their own budgets being touched.
 
