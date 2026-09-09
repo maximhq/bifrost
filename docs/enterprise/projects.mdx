@@ -106,7 +106,7 @@ Send one or the other. If `x-bf-project-id` is present at all it decides the out
 
 A request may name **one** project. There is no list form, and no request is placed in a project implicitly: activation is always the explicit header.
 
-When a named project cannot scope the request, the answer is `403` with `error.type` of `access_blocked` and the message `project "<name>" not found. It does not exist or does not admit this request.` That single answer deliberately covers both "no such project" and "you are not one of its members": a caller who may not use a project has no business learning whether it exists.
+When a named project cannot scope the request, the answer is `403` with a top-level `type` of `access_blocked` and the message `project "<name>" not found. It does not exist or does not admit this request.` That single answer deliberately covers both "no such project" and "you are not one of its members": a caller who may not use a project has no business learning whether it exists.
 
 A request that names no project is served exactly as it is today, against the caller's own access and ledgers.
 
@@ -205,7 +205,7 @@ A project can hold money at three tiers, and a request is checked against all of
 - **Per-provider budgets and rate limits**, on a provider configuration.
 - **Per-model budgets and rate limits**, on a model under a provider configuration.
 
-Whichever cap binds first refuses the request, and the refusal names the tier that ran out rather than the project as a whole. A budget refusal is `402` with `error.type` of `budget_exceeded`; a rate-limit refusal is `429` as `rate_limited`, `token_limited` or `request_limited`. Rate limits are checked before budgets, so a caller who is both throttled and out of money gets the cheaper answer consistently.
+Whichever cap binds first refuses the request, and the refusal names the tier that ran out rather than the project as a whole. A budget refusal is `402` with a top-level `type` of `budget_exceeded`; a rate-limit refusal is `429` as `rate_limited`, `token_limited` or `request_limited`. The type is a field beside `status_code` rather than inside `error`, which carries only the message. Rate limits are checked before budgets, so a caller who is both throttled and out of money gets the cheaper answer consistently.
 
 ### Splitting caps between members
 
