@@ -1888,6 +1888,13 @@
                   "access_profile": {
                     "type": "string"
                   },
+                  "access_profiles": {
+                    "type": "array",
+                    "description": "Names of all access profiles granted by this role. When present, this field takes precedence over access_profile; an empty list removes all profile grants.",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
                   "permissions": {
                     "type": "array",
                     "items": {
