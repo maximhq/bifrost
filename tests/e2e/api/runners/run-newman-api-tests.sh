@@ -590,6 +590,39 @@ if [ "$AUTH_ENABLED_BY_RUN" = "1" ]; then
     fi
 fi
 
+# Governance suites (virtual key quota, rate limit / budget enforcement, and
+# rotation cooldown). These run as their own newman invocations rather than
+# through --extra-collection: merging folds them into the management collection,
+# which would drop their collection variables, subject their deliberate 401/403/
+# 429/402 assertions to that collection's 2xx gate, and run them a second time in
+# the authenticated pass. They also run after auth is restored to disabled,
+# because they provision virtual keys through the unauthenticated management API.
+# Roughly 7 minutes, most of it the rotation suite waiting out real 1m and 3m
+# grace windows; set BIFROST_E2E_SKIP_GOVERNANCE=1 to skip them.
+if [ $EXIT_CODE -eq 0 ] && [ "${BIFROST_E2E_SKIP_GOVERNANCE:-0}" != "1" ]; then
+    for governance_suite in \
+        "vk-quota:run-newman-vk-quota-tests.sh" \
+        "rate-limit:run-newman-rate-limit-tests.sh" \
+        "vk-rotation-cooldown:run-newman-vk-rotation-cooldown-tests.sh"; do
+        suite_name="${governance_suite%%:*}"
+        suite_runner="${governance_suite##*:}"
+        echo "" | tee -a "$LOG_FILE"
+        echo -e "${GREEN}Running ${suite_name} governance tests...${NC}" | tee -a "$LOG_FILE"
+        set +e
+        BIFROST_BASE_URL="$BASE_URL" \
+            "$SCRIPT_DIR/individual/$suite_runner" 2>&1 | tee -a "$LOG_FILE"
+        GOVERNANCE_EXIT=${PIPESTATUS[0]}
+        set -e
+        if [ $GOVERNANCE_EXIT -ne 0 ]; then
+            EXIT_CODE=$GOVERNANCE_EXIT
+            break
+        fi
+    done
+elif [ $EXIT_CODE -eq 0 ]; then
+    echo "" | tee -a "$LOG_FILE"
+    echo -e "${YELLOW}Skipping governance test suites (BIFROST_E2E_SKIP_GOVERNANCE=1).${NC}" | tee -a "$LOG_FILE"
+fi
+
 echo ""
 if [ $EXIT_CODE -eq 0 ]; then
     echo -e "${GREEN}✓ All tests passed!${NC}"

@@ -151,11 +151,17 @@ Open **Webhooks** in the sidebar to see your endpoints and their status.
   <img src="/media/ui-webhooks-secret.png" alt="Signing secret dialog in the Bifrost Web UI showing the one-time whsec_ secret with a copy button and a link to the verification docs" />
 </Frame>
 
-6. Open an endpoint to view its **delivery history**, send a **Test** delivery, or **Rotate secret** if a secret is ever exposed. Rotation takes effect immediately with no grace window, so update your receiver in the same change.
+6. Open an endpoint to see its **recent deliveries**, send a **Test** delivery, or **Rotate secret** if a secret is ever exposed. Rotation takes effect immediately with no grace window, so update your receiver in the same change.
 
 <Frame>
   <img src="/media/ui-webhooks-deliveries.png" alt="Endpoint deliveries panel in the Bifrost Web UI showing recent delivery attempts with their status codes alongside the Test and Rotate secret actions" />
 </Frame>
+
+7. For anything beyond the last few deliveries, use **View delivery history** to open the dedicated deliveries page at `/workspace/webhooks/deliveries`. It lists deliveries across every endpoint and filters by outcome, event, response status class (`2xx`/`4xx`/`5xx`/no response), webhook, and time range, with lookup by request ID or delivery ID. Arriving from an endpoint pre-selects that webhook; clear the filter to see deliveries fleet-wide.
+
+<Note>
+Rows are grouped by delivery, not by attempt: one row is one notification owed to the endpoint, and its `503 → 503 → 200` chips are that delivery's attempts. A delivery that was manually redelivered expands to show each send separately.
+</Note>
 
 </Tab>
 <Tab title="API">
@@ -185,6 +191,7 @@ Other operations:
 | `POST` | `/api/webhooks/{id}/rotate-secret` | Rotate the signing secret; returns the new secret once. |
 | `POST` | `/api/webhooks/{id}/test` | Send a test delivery for a chosen event. |
 | `GET` | `/api/webhooks/{id}/deliveries` | List delivery history for the endpoint. |
+| `GET` | `/api/webhooks/deliveries` | Search delivery history across endpoints, with filters. |
 | `POST` | `/api/webhooks/deliveries/{id}/redeliver` | Re-queue a past delivery. |
 
 <Note>

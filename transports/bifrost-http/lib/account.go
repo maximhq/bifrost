@@ -101,5 +101,8 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 	if config.OpenAIConfig != nil {
 		providerConfig.OpenAIConfig = config.OpenAIConfig
 	}
+	if config.PromptCache != nil {
+		providerConfig.PromptCache = config.PromptCache
+	}
 	return providerConfig, nil
 }

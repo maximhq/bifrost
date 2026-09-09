@@ -10,6 +10,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -115,6 +116,39 @@ func TestSubmitJob_PropagatesContextValues(t *testing.T) {
 	assert.Equal(t, "production", capturedCtx.Value(schemas.BifrostContextKey("x-bf-prom-env")))
 	assert.Equal(t, "custom-value", capturedCtx.Value(schemas.BifrostContextKey("x-bf-eh-custom")))
 	assert.Equal(t, true, capturedCtx.Value(schemas.BifrostIsAsyncRequest))
+}
+
+// TestSubmitJob_PropagatesGrant covers the same gap realtime turn contexts already guard against
+// (see newRealtimeTurnContext): the background context executeJob builds is new, so a grant
+// settled on the submit call's context must be carried over explicitly, not assumed to survive
+// GetUserValues — Grant lives on its own field, not the user-values map.
+func TestSubmitJob_PropagatesGrant(t *testing.T) {
+	executor := newTestAsyncExecutor(t)
+
+	submitCtx := schemas.NewBifrostContext(context.Background(), time.Now().Add(1*time.Minute))
+	submitCtx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
+	g := grant.New()
+	g.SetIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialVirtualKey, "sk-bf-test"), nil, nil, nil, nil, nil, nil))
+	require.True(t, submitCtx.SetGrant(g))
+
+	var gotGrant schemas.Grant
+	var done atomic.Bool
+
+	operation := func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
+		gotGrant = bgCtx.Grant()
+		done.Store(true)
+		return map[string]string{"status": "ok"}, nil
+	}
+
+	job, err := executor.SubmitJob(submitCtx, 3600, operation, schemas.ChatCompletionRequest)
+	require.NoError(t, err)
+	require.NotNil(t, job)
+
+	waitForJobCompletion(t, &done)
+
+	require.NotNil(t, gotGrant, "background context lost the grant settled on the submit call's context")
+	assert.Same(t, g, gotGrant, "background context must carry the submit call's grant, not a copy")
+	assert.Equal(t, "sk-bf-test", gotGrant.Identity().Credential().Value)
 }
 
 func TestSubmitJob_StoresRequestID(t *testing.T) {

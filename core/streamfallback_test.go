@@ -102,6 +102,42 @@ func newStreamTestClient(t *testing.T, account *MockAccount) *Bifrost {
 	return client
 }
 
+func TestAzureSpeechErrorAfterPreamble(t *testing.T) {
+	primary := httptest.NewServer(sseHandler(
+		`{"type":"speech.audio.delta","audio":""}`,
+		`{"error":{"message":"rate limited","type":"rate_limit_error"}}`,
+	))
+	defer primary.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.Azure, 1, 1, primary.URL)
+	account.configs[schemas.Azure].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.Azure, []schemas.Key{{
+		ID: "azure-key", Value: *schemas.NewSecretVar("test-key"),
+		Models: schemas.WhiteList{"*"}, Weight: 100,
+		AzureKeyConfig: &schemas.AzureKeyConfig{
+			Endpoint: *schemas.NewSecretVar(primary.URL),
+		},
+	}})
+	client := newStreamTestClient(t, account)
+
+	ctx := schemas.NewBifrostContext(
+		context.Background(), time.Now().Add(5*time.Second),
+	)
+	stream, err := client.SpeechStreamRequest(ctx, &schemas.BifrostSpeechRequest{
+		Provider: schemas.Azure,
+		Model:    "gpt-4o-mini-tts",
+		Input:    &schemas.SpeechInput{Input: "hello"},
+	})
+	if stream != nil {
+		for range stream {
+		}
+	}
+	if err == nil || err.Error == nil || err.Error.Message != "rate limited" {
+		t.Fatalf("expected original startup error, got %v", err)
+	}
+}
+
 func TestStreamFallbackAfterFirstChunkError(t *testing.T) {
 	primary := httptest.NewServer(sseHandler(`{"error":{"message":"rate limited","type":"rate_limit_error"}}`))
 	defer primary.Close()
@@ -146,6 +182,116 @@ func TestStreamFallbackAfterFirstChunkError(t *testing.T) {
 	}
 	if content != "hello" {
 		t.Fatalf("fallback stream content = %q, want %q", content, "hello")
+	}
+}
+
+func TestAzureChatFallbackAfterPreamble(t *testing.T) {
+	testAzureFallbackAfterPreamble(t, false)
+}
+
+func TestAzureResponsesFallbackAfterPreamble(t *testing.T) {
+	testAzureFallbackAfterPreamble(t, true)
+}
+
+func testAzureFallbackAfterPreamble(t *testing.T, responses bool) {
+	t.Helper()
+	payloads := []string{
+		`{"choices":[],"prompt_filter_results":[]}`,
+		`{"id":"failed-attempt","choices":[{"index":0,"delta":{"role":"assistant"}}]}`,
+		`{"error":{"message":"rate limit exceeded","type":"rate_limit_error"}}`,
+	}
+	if responses {
+		payloads = []string{
+			`{"type":"response.created","response":{"id":"failed-attempt","status":"in_progress","output":[]}}`,
+			`{"type":"response.in_progress","response":{"id":"failed-attempt","status":"in_progress","output":[]}}`,
+			`{"type":"response.output_item.added","item":{"id":"failed-item","type":"message","role":"assistant","status":"in_progress","content":[]}}`,
+			`{"type":"response.content_part.added","part":{"type":"output_text","text":"","annotations":[]}}`,
+			`{"type":"response.failed","response":{"id":"failed-attempt","error":{"code":"rate_limit_exceeded","message":"rate limit exceeded"}}}`,
+		}
+	}
+	primary := httptest.NewServer(sseHandler(payloads...))
+	defer primary.Close()
+	var fallbackHits atomic.Int32
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackHits.Add(1)
+		anthropicMessagesHandler(nil)(w, r)
+	}))
+	defer fallback.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.Azure, 1, 1, primary.URL)
+	account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, fallback.URL)
+	account.configs[schemas.Azure].NetworkConfig.MaxRetries = 0
+	account.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.Azure, []schemas.Key{{
+		ID: "azure-key", Value: *schemas.NewSecretVar("test-key"),
+		Models: schemas.WhiteList{"*"}, Weight: 100,
+		AzureKeyConfig: &schemas.AzureKeyConfig{
+			Endpoint: *schemas.NewSecretVar(primary.URL),
+		},
+	}})
+	account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{{
+		ID: "fallback-key", Value: *schemas.NewSecretVar("test-key"),
+		Models: schemas.WhiteList{"*"}, Weight: 100,
+	}})
+	client := newStreamTestClient(t, account)
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(5*time.Second))
+	request := &schemas.BifrostChatRequest{
+		Provider: schemas.Azure,
+		Model:    "gpt-4o-mini",
+		Input: []schemas.ChatMessage{{
+			Role: schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{
+				ContentStr: schemas.Ptr("hi"),
+			},
+		}},
+		Fallbacks: []schemas.Fallback{{
+			Provider: schemas.Anthropic, Model: "claude-3-5-haiku-20241022",
+		}},
+	}
+	var stream chan *schemas.BifrostStreamChunk
+	var err *schemas.BifrostError
+	if responses {
+		stream, err = client.ResponsesStreamRequest(ctx, request.ToResponsesRequest())
+	} else {
+		stream, err = client.ChatCompletionStreamRequest(ctx, request)
+	}
+	if err != nil {
+		t.Fatalf("fallback failed: %v", err)
+	}
+	if stream == nil {
+		t.Fatal("expected fallback stream")
+	}
+	var content strings.Builder
+	for chunk := range stream {
+		if chunk == nil || chunk.BifrostError != nil {
+			t.Fatalf("unexpected fallback chunk: %v", chunk)
+		}
+		if responses {
+			response := chunk.BifrostResponsesStreamResponse
+			if response == nil || response.ExtraFields.Provider != schemas.Anthropic {
+				t.Fatal("received a chunk outside the successful fallback attempt")
+			}
+			if response.Type == schemas.ResponsesStreamResponseTypeOutputTextDelta &&
+				response.Delta != nil {
+				content.WriteString(*response.Delta)
+			}
+			continue
+		}
+		response := chunk.BifrostChatResponse
+		if response == nil || response.ExtraFields.Provider != schemas.Anthropic {
+			t.Fatal("received a chunk outside the successful fallback attempt")
+		}
+		for _, choice := range response.Choices {
+			if choice.ChatStreamResponseChoice != nil && choice.Delta != nil &&
+				choice.Delta.Content != nil {
+				content.WriteString(*choice.Delta.Content)
+			}
+		}
+	}
+	if fallbackHits.Load() != 1 || content.String() != "hello" {
+		t.Fatalf("fallback hits = %d, content = %q", fallbackHits.Load(), content.String())
 	}
 }
 

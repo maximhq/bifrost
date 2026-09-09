@@ -449,6 +449,10 @@
                 "shouldConvertParams": {
                   "type": "boolean",
                   "description": "Converts model parameter values that are not supported by the model."
+                },
+                "azureDeepseek": {
+                  "type": "boolean",
+                  "description": "Convert Azure DeepSeek responses requests to chat completions so reasoning is preserved for coding harnesses."
                 }
               },
               "additionalProperties": false
@@ -576,6 +580,13 @@
               "description": "Allow callers to bypass the registered key pool by supplying x-bf-direct-key: true with an Authorization header carrying the provider key. Maps to client.allow_direct_keys.",
               "default": false
             },
+            "vkRotationCooldown": {
+              "type": ["string", "integer"],
+              "minimum": 0,
+              "maximum": 2592000000000000,
+              "description": "Cooldown after a virtual key rotation: grace period during which the previous key value still authenticates. Accepts a Go duration string (e.g. \"5m\", \"1h\"); integer values are nanoseconds, so prefer strings. 0 or an empty string disables the grace period. Maximum 30 days. Maps to client.vk_rotation_cooldown.",
+              "default": 0
+            },
             "mcpExternalClientUrl": {
               "type": "string",
               "description": "Public base URL Bifrost uses as the redirect_uri when acting as an OAuth client to upstream MCP servers. Maps to client.mcp_external_client_url."
@@ -656,10 +667,7 @@
                 },
                 "mcpLibraryUrl": {
                   "description": "URL to a custom MCP server catalog. Leave empty to use the default Bifrost catalog.",
-                  "anyOf": [
-                    {"type": "string", "format": "uri"},
-                    {"const": ""}
-                  ]
+                  "anyOf": [{ "type": "string", "format": "uri" }, { "const": "" }]
                 },
                 "mcpLibrarySyncInterval": {
                   "type": "integer",
@@ -671,10 +679,7 @@
                   "type": "integer",
                   "description": "How often each provider's list-models response is re-fetched in the background, in seconds. Set to 0 to disable background refresh. Default is 3600 (1 hour); minimum when enabled is 60 seconds.",
                   "default": 3600,
-                  "anyOf": [
-                    {"const": 0},
-                    {"minimum": 60}
-                  ]
+                  "anyOf": [{ "const": 0 }, { "minimum": 60 }]
                 }
               },
               "additionalProperties": false
@@ -757,9 +762,17 @@
                 }
               ]
             },
+            "virtualMcps": {
+              "type": "array",
+              "description": "Virtual MCPs: named bundles of tools from one or more MCP clients, served at /mcp/<endpointSlug> and attachable to virtual keys. Renders into mcp.virtual_mcps. Canonical key; supersedes the deprecated toolGroups alias.",
+              "items": {
+                "$ref": "#/$defs/virtualMcpConfig"
+              }
+            },
             "toolGroups": {
               "type": "array",
-              "description": "Enterprise MCP tool groups with optional governance associations",
+              "description": "DEPRECATED: use virtualMcps instead. Enterprise MCP tool groups with optional governance associations. Renders into mcp.tool_groups.",
+              "deprecated": true,
               "items": {
                 "$ref": "#/$defs/mcpToolGroupConfig"
               }
@@ -957,7 +970,8 @@
                         "parasail",
                         "perplexity",
                         "sgl",
-                        "huggingface"
+                        "huggingface",
+                        "databricks"
                       ]
                     },
                     "embedding_model": {
@@ -1168,6 +1182,10 @@
                     },
                     "plugin_span_filter": {
                       "$ref": "#/$defs/pluginSpanFilter"
+                    },
+                    "export_overhead_spans": {
+                      "type": "boolean",
+                      "description": "Export internal overhead/latency spans (setup, key selection, pipeline phases). Default false."
                     }
                   }
                 }
@@ -1466,6 +1484,10 @@
                     },
                     "plugin_span_filter": {
                       "$ref": "#/$defs/pluginSpanFilter"
+                    },
+                    "export_overhead_spans": {
+                      "type": "boolean",
+                      "description": "Export internal overhead/latency spans (setup, key selection, pipeline phases). Default false."
                     }
                   }
                 }
@@ -1539,6 +1561,10 @@
                     },
                     "plugin_span_filter": {
                       "$ref": "#/$defs/pluginSpanFilter"
+                    },
+                    "export_overhead_spans": {
+                      "type": "boolean",
+                      "description": "Export internal overhead/latency spans (setup, key selection, pipeline phases). Default false."
                     }
                   }
                 }
@@ -1912,6 +1938,10 @@
                   "calendar_aligned": {
                     "type": "boolean"
                   },
+                  "allow_all_providers": {
+                    "type": "boolean",
+                    "description": "Grant this virtual key access to every provider, including ones added later. Coexists with provider_configs: a provider with a config row keeps its model allow/blacklist, budgets, rate limits, and key selection; providers without a config get all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
+                  },
                   "provider_configs": {
                     "type": "array",
                     "items": {
@@ -1940,6 +1970,13 @@
                   }
                 },
                 "required": ["id", "name"]
+              }
+            },
+            "projects": {
+              "type": "array",
+              "description": "Projects declared under governance.projects: what each allows, what it may spend, and how that is divided between its members. Members are added from the dashboard or the API. Renders into governance.projects.",
+              "items": {
+                "$ref": "#/$defs/project"
               }
             },
             "routingRules": {
@@ -2107,6 +2144,39 @@
                   },
                   "store_raw_request_response": {
                     "type": "boolean"
+                  },
+                  "prompt_cache": {
+                    "type": "object",
+                    "description": "Synthesize prompt-cache breakpoints for requests that carry none. Off by default; requests that already carry their own cache markers are never modified.",
+                    "properties": {
+                      "auto_inject": {
+                        "type": "boolean",
+                        "description": "Mark the first cacheable content block, keeping the cached prefix stable across agent turns"
+                      },
+                      "ttl": {
+                        "type": "string",
+                        "enum": ["1h"],
+                        "description": "Lifetime for injected markers; omit for the provider default"
+                      },
+                      "cache_control_injection_points": {
+                        "type": "array",
+                        "description": "Target specific messages instead. When set, replaces auto_inject rather than adding to it.",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "location": { "type": "string", "enum": ["message"] },
+                            "role": {
+                              "type": "string",
+                              "enum": ["system", "developer", "user", "assistant"]
+                            },
+                            "index": {
+                              "type": "integer",
+                              "description": "Negative values count from the end"
+                            }
+                          }
+                        }
+                      }
+                    }
                   }
                 },
                 "required": ["name"]
@@ -2181,71 +2251,277 @@
             },
             "complexityAnalyzerConfig": {
               "type": ["object", "null"],
-              "description": "Runtime configuration for complexity_tier CEL routing. Renders into governance.complexity_analyzer_config in config.json.",
+              "description": "Runtime configuration for complexity_tier CEL routing. Renders into governance.complexity_analyzer_config in config.json. Semantic (embedding-based) classification is the primary mechanism — without the semantic block no complexity_tier is published. The optional llm block is a chat-completion fallback engaged only when semantic.fallback is 'llm'. The optional session block retains the highest tier observed for a session.",
               "properties": {
+                "session": {
+                  "type": "object",
+                  "description": "Session-aware complexity routing. Retains the highest observed tier across normally sequential turns for 24 hours of inactivity. Overlapping requests for the same session are best-effort and resolve by last writer wins.",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean",
+                      "description": "Enable monotonic session tier retention. Requires semantic complexity classification; default: false."
+                    }
+                  },
+                  "required": ["enabled"],
+                  "additionalProperties": false
+                },
+                "semantic": {
+                  "type": "object",
+                  "description": "Embedding-based (semantic) complexity classification settings. Presence of this block enables the classifier; it embeds the per-tier keyword lists as reference phrases.",
+                  "properties": {
+                    "provider": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Provider used to generate embeddings for complexity classification (must have an enabled key)"
+                    },
+                    "embedding_model": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Model used to generate embeddings for complexity classification"
+                    },
+                    "timeout": {
+                      "description": "Per-request embedding timeout (duration string like '1.5s', or milliseconds as a number; default: 1.5s). On timeout no tier is published for that request.",
+                      "oneOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"
+                        },
+                        {
+                          "type": "number",
+                          "exclusiveMinimum": 0
+                        }
+                      ]
+                    },
+                    "min_similarity": {
+                      "type": "number",
+                      "minimum": 0,
+                      "exclusiveMaximum": 1,
+                      "description": "Similarity floor a nearest-phrase match must clear before its tier is used (default: 0, nearest phrase always wins). Compared against the backend's own score scale, so retune when switching vector stores."
+                    },
+                    "message_history_count": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 10,
+                      "description": "How many of the most recent user messages are combined (oldest first) into the embedded text (default: 1). Only user turns count; system prompts and assistant replies are never embedded."
+                    },
+                    "count_toward_budgets": {
+                      "type": "boolean",
+                      "description": "Record classification embedding cost against governance budgets (record-only, never enforced; default: false)"
+                    },
+                    "vector_store": {
+                      "type": "string",
+                      "enum": ["embedded", "vector_store"],
+                      "description": "Where phrase embeddings are stored: 'embedded' uses the built-in chromem store; 'vector_store' uses the configured top-level vectorStore and falls back to embedded when none is configured (default: embedded)."
+                    },
+                    "fallback": {
+                      "type": "string",
+                      "enum": ["none", "llm"],
+                      "description": "What answers when semantic classification produces no tier (a match below min_similarity, a timeout, an unfinished warmup): 'none' (default) records the request as skipped; 'llm' asks the chat model configured in the sibling llm block, which is required when this is set."
+                    }
+                  },
+                  "required": ["provider", "embedding_model"],
+                  "additionalProperties": false
+                },
+                "llm": {
+                  "type": "object",
+                  "description": "Chat-completion (LLM) fallback classifier settings. Inert unless semantic.fallback selects 'llm'; the classifier runs only after semantic classification produces no tier. Tier names and the response format are fixed and always appended by the gateway.",
+                  "properties": {
+                    "provider": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Provider used to run the classification chat completion (must have an enabled key)"
+                    },
+                    "model": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Chat model asked to name the tier. Every fallback classification waits on one completion from this model, so pick a small, fast one."
+                    },
+                    "timeout": {
+                      "description": "Per-request classification timeout (duration string like '2s', or milliseconds as a number; default: 4s). On timeout no tier is published for that request.",
+                      "oneOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"
+                        },
+                        {
+                          "type": "number",
+                          "exclusiveMinimum": 0
+                        }
+                      ]
+                    },
+                    "prompt": {
+                      "type": "string",
+                      "maxLength": 4000,
+                      "description": "Replaces the shipped classification guidance (max 4000 characters); empty means the shipped guidance is used. The gateway always appends a fixed tier-name and response-format reinforcement."
+                    },
+                    "message_history_count": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 10,
+                      "description": "How many of the most recent user messages are given to the classifier, oldest first (default: 1, the latest message only)."
+                    },
+                    "count_toward_budgets": {
+                      "type": "boolean",
+                      "description": "Record classification completion cost against governance budgets (record-only, never enforced; default: false)"
+                    }
+                  },
+                  "required": ["provider", "model"],
+                  "additionalProperties": false
+                },
                 "tier_boundaries": {
                   "type": "object",
+                  "deprecated": true,
+                  "description": "Deprecated lexical-classifier score thresholds. Optional and accepted for upgrades, but ignored by semantic classification.",
                   "properties": {
                     "simple_medium": {
                       "type": "number",
                       "exclusiveMinimum": 0,
-                      "exclusiveMaximum": 1
+                      "exclusiveMaximum": 1,
+                      "deprecated": true,
+                      "description": "Deprecated and ignored by semantic classification"
                     },
                     "medium_complex": {
                       "type": "number",
                       "exclusiveMinimum": 0,
-                      "exclusiveMaximum": 1
+                      "exclusiveMaximum": 1,
+                      "deprecated": true,
+                      "description": "Deprecated and ignored by semantic classification. Must remain greater than simple_medium when the legacy block is supplied."
                     },
                     "complex_reasoning": {
                       "type": "number",
                       "exclusiveMinimum": 0,
-                      "exclusiveMaximum": 1
+                      "exclusiveMaximum": 1,
+                      "deprecated": true,
+                      "description": "Retired REASONING-tier boundary. It is ignored during configuration load because REASONING was merged into COMPLEX; accepted only so older values continue to validate."
                     }
                   },
-                  "required": ["simple_medium", "medium_complex", "complex_reasoning"],
+                  "required": ["simple_medium", "medium_complex"],
                   "additionalProperties": false
                 },
                 "keywords": {
-                  "type": "object",
-                  "properties": {
-                    "code_keywords": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1
+                  "description": "Required reference phrases per tier when complexityAnalyzerConfig is non-null. A request is embedded and takes the tier of its nearest phrase. In split mode these lists merge with stored phrases; the legacy four-list shape remains accepted for upgrades.",
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "simple_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          },
+                          "minItems": 1
+                        },
+                        "medium_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          },
+                          "minItems": 1
+                        },
+                        "complex_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          },
+                          "minItems": 1
+                        }
                       },
-                      "minItems": 1
+                      "required": ["simple_keywords", "medium_keywords", "complex_keywords"],
+                      "additionalProperties": false
                     },
-                    "reasoning_keywords": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1
+                    {
+                      "type": "object",
+                      "deprecated": true,
+                      "properties": {
+                        "code_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "minItems": 1
+                        },
+                        "reasoning_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "minItems": 1
+                        },
+                        "technical_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "minItems": 1
+                        },
+                        "simple_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "minItems": 1
+                        }
                       },
-                      "minItems": 1
-                    },
-                    "technical_keywords": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "minItems": 1
-                    },
-                    "simple_keywords": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "minItems": 1
+                      "required": [
+                        "code_keywords",
+                        "reasoning_keywords",
+                        "technical_keywords",
+                        "simple_keywords"
+                      ],
+                      "additionalProperties": false
                     }
-                  },
-                  "required": ["code_keywords", "reasoning_keywords", "technical_keywords", "simple_keywords"],
-                  "additionalProperties": false
+                  ]
                 }
               },
-              "required": ["tier_boundaries", "keywords"],
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "session": {
+                        "properties": {
+                          "enabled": {
+                            "const": true
+                          }
+                        },
+                        "required": ["enabled"]
+                      }
+                    },
+                    "required": ["session"]
+                  },
+                  "then": {
+                    "required": ["semantic"]
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "semantic": {
+                        "properties": {
+                          "fallback": {
+                            "const": "llm"
+                          }
+                        },
+                        "required": ["fallback"]
+                      }
+                    },
+                    "required": ["semantic"]
+                  },
+                  "then": {
+                    "required": ["llm"]
+                  }
+                }
+              ],
+              "required": ["keywords"],
               "additionalProperties": false
             }
           },
@@ -2495,7 +2771,16 @@
             },
             "provider": {
               "type": "string",
-              "enum": ["", "okta", "entra", "keycloak", "zitadel", "google", "sailpoint", "generic"],
+              "enum": [
+                "",
+                "okta",
+                "entra",
+                "keycloak",
+                "zitadel",
+                "google",
+                "sailpoint",
+                "generic"
+              ],
               "description": "SCIM/SSO provider type (empty when not configured)"
             },
             "config": {
@@ -2514,7 +2799,15 @@
               "then": {
                 "properties": {
                   "provider": {
-                    "enum": ["okta", "entra", "keycloak", "zitadel", "google", "sailpoint", "generic"]
+                    "enum": [
+                      "okta",
+                      "entra",
+                      "keycloak",
+                      "zitadel",
+                      "google",
+                      "sailpoint",
+                      "generic"
+                    ]
                   }
                 },
                 "required": ["provider"]
@@ -2584,14 +2877,19 @@
                         "description": "JWT claim field for roles (default: 'roles')",
                         "default": "roles"
                       },
-                      "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
-                      "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
-                      "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
-                      "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
-                      "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-                      "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
-                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
-                      "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
+                      "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
+                      "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
+                      "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+                      "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
+                      "attributeBusinessUnitMappings": {
+                        "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+                      },
+                      "attributeAccessProfileMappings": {
+                        "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+                      },
+                      "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
+                      "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" },
+                      "provisioningToken": { "$ref": "#/$defs/scim_provisioning_token" }
                     },
                     "required": ["issuerUrl", "clientId", "clientSecret"],
                     "additionalProperties": false
@@ -2659,14 +2957,24 @@
                         "description": "JWT claim field for roles (default: 'roles')",
                         "default": "roles"
                       },
-                      "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
-                      "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
-                      "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
-                      "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
-                      "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-                      "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
-                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
-                      "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
+                      "enableBulkSync": {
+                        "type": "boolean",
+                        "description": "Whether Bifrost may bulk-sync users and groups from Microsoft Graph. Normally set by the SCIM verify step (disabled when the app registration lacks the required Graph permissions); set it explicitly to opt out of bulk sync while keeping login-time claim sync.",
+                        "default": true
+                      },
+                      "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
+                      "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
+                      "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+                      "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
+                      "attributeBusinessUnitMappings": {
+                        "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+                      },
+                      "attributeAccessProfileMappings": {
+                        "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+                      },
+                      "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
+                      "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" },
+                      "provisioningToken": { "$ref": "#/$defs/scim_provisioning_token" }
                     },
                     "required": ["tenantId", "clientId"],
                     "additionalProperties": false
@@ -2728,13 +3036,18 @@
                         "description": "JWT claim field for roles (default: 'roles')",
                         "default": "roles"
                       },
-                      "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
-                      "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
-                      "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
-                      "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
-                      "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-                      "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
-                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
+                      "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
+                      "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
+                      "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+                      "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
+                      "attributeBusinessUnitMappings": {
+                        "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+                      },
+                      "attributeAccessProfileMappings": {
+                        "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+                      },
+                      "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
+                      "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" }
                     },
                     "required": ["serverUrl", "realm", "clientId", "clientSecret"],
                     "additionalProperties": false
@@ -2795,13 +3108,18 @@
                         "description": "JWT claim field for team/group IDs (default: 'groups')",
                         "default": "groups"
                       },
-                      "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
-                      "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
-                      "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
-                      "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
-                      "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-                      "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
-                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
+                      "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
+                      "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
+                      "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+                      "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
+                      "attributeBusinessUnitMappings": {
+                        "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+                      },
+                      "attributeAccessProfileMappings": {
+                        "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+                      },
+                      "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
+                      "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" }
                     },
                     "required": ["domain", "clientId"],
                     "additionalProperties": false
@@ -2872,13 +3190,23 @@
                         "description": "Claim field for team/group IDs (default: 'groups')",
                         "default": "groups"
                       },
-                      "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
-                      "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
-                      "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
-                      "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
-                      "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-                      "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
-                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
+                      "enableBulkSync": {
+                        "type": "boolean",
+                        "description": "Whether Bifrost may bulk-sync users and groups from the Google Workspace Directory API. Normally set by the SCIM verify step (disabled when the service account lacks the required Directory API scopes); set it explicitly to opt out of bulk sync while keeping login-time claim sync.",
+                        "default": true
+                      },
+                      "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
+                      "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
+                      "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+                      "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
+                      "attributeBusinessUnitMappings": {
+                        "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+                      },
+                      "attributeAccessProfileMappings": {
+                        "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+                      },
+                      "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
+                      "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" }
                     },
                     "required": ["domain", "clientId"],
                     "additionalProperties": false,
@@ -2971,14 +3299,19 @@
                         "type": "string",
                         "description": "JWT claim field for team IDs"
                       },
-                      "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
-                      "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
-                      "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
-                      "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
-                      "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-                      "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
-                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
-                      "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
+                      "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
+                      "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
+                      "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+                      "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
+                      "attributeBusinessUnitMappings": {
+                        "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+                      },
+                      "attributeAccessProfileMappings": {
+                        "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+                      },
+                      "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
+                      "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" },
+                      "provisioningToken": { "$ref": "#/$defs/scim_provisioning_token" }
                     },
                     "required": ["product"],
                     "additionalProperties": false
@@ -3045,14 +3378,19 @@
                         "description": "Additional OAuth2 scopes to request",
                         "items": { "type": "string" }
                       },
-                      "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
-                      "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
-                      "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
-                      "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
-                      "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-                      "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
-                      "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
-                      "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
+                      "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
+                      "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
+                      "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+                      "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
+                      "attributeBusinessUnitMappings": {
+                        "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+                      },
+                      "attributeAccessProfileMappings": {
+                        "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+                      },
+                      "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
+                      "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" },
+                      "provisioningToken": { "$ref": "#/$defs/scim_provisioning_token" }
                     },
                     "required": ["issuerUrl", "clientId"],
                     "additionalProperties": false
@@ -3177,10 +3515,14 @@
                     "minimum": 0,
                     "description": "Timeout in seconds for rule execution"
                   },
+                  "send_all_conversation_turns": {
+                    "type": "boolean",
+                    "description": "Whether to send all input conversation turns to the guardrail provider. When false, max_turns_to_send selects the current input plus preceding turns. Omit this field to preserve legacy behavior."
+                  },
                   "max_turns_to_send": {
                     "type": "integer",
                     "minimum": 0,
-                    "description": "Number of historical conversation turns to send to the guardrail provider; the latest message is always included on top. 0 sends all turns."
+                    "description": "Number of preceding conversation turns to include when send_all_conversation_turns is false. 0 sends only the current input."
                   },
                   "evaluation_mode": {
                     "type": "string",
@@ -3614,6 +3956,11 @@
                 "type": "boolean",
                 "description": "Snap budget and rate-limit reset windows to clean calendar boundaries (day, week, month, year) for this profile",
                 "default": false
+              },
+              "allow_all_providers": {
+                "type": "boolean",
+                "description": "Grant access to every provider, including ones without a provider_configs entry and providers added later. Listed providers keep their own model, key, budget, and rate-limit rules.",
+                "default": false
               }
             },
             "required": ["name"],
@@ -3688,13 +4035,19 @@
                             "webhook_url": {
                               "type": "string",
                               "minLength": 1,
-                              "anyOf": [{ "format": "uri" }, { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }],
+                              "anyOf": [
+                                { "format": "uri" },
+                                { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }
+                              ],
                               "description": "Slack incoming webhook URL. Supports env.VAR_NAME references."
                             },
                             "url": {
                               "type": "string",
                               "minLength": 1,
-                              "anyOf": [{ "format": "uri" }, { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }],
+                              "anyOf": [
+                                { "format": "uri" },
+                                { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }
+                              ],
                               "description": "Alias for webhook_url. Supports env.VAR_NAME references."
                             }
                           },
@@ -3718,13 +4071,19 @@
                             "webhook_url": {
                               "type": "string",
                               "minLength": 1,
-                              "anyOf": [{ "format": "uri" }, { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }],
+                              "anyOf": [
+                                { "format": "uri" },
+                                { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }
+                              ],
                               "description": "Microsoft Teams incoming webhook or workflow URL. Supports env.VAR_NAME references."
                             },
                             "url": {
                               "type": "string",
                               "minLength": 1,
-                              "anyOf": [{ "format": "uri" }, { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }],
+                              "anyOf": [
+                                { "format": "uri" },
+                                { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }
+                              ],
                               "description": "Alias for webhook_url. Supports env.VAR_NAME references."
                             }
                           },
@@ -3756,7 +4115,10 @@
                               "description": "Alias for routing_key. Supports env.VAR_NAME references."
                             }
                           },
-                          "oneOf": [{ "required": ["routing_key"] }, { "required": ["integration_key"] }],
+                          "oneOf": [
+                            { "required": ["routing_key"] },
+                            { "required": ["integration_key"] }
+                          ],
                           "additionalProperties": true
                         }
                       },
@@ -3776,13 +4138,19 @@
                             "url": {
                               "type": "string",
                               "minLength": 1,
-                              "anyOf": [{ "format": "uri" }, { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }],
+                              "anyOf": [
+                                { "format": "uri" },
+                                { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }
+                              ],
                               "description": "Generic webhook URL. Supports env.VAR_NAME references."
                             },
                             "webhook_url": {
                               "type": "string",
                               "minLength": 1,
-                              "anyOf": [{ "format": "uri" }, { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }],
+                              "anyOf": [
+                                { "format": "uri" },
+                                { "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$" }
+                              ],
                               "description": "Alias for url. Supports env.VAR_NAME references."
                             },
                             "headers": {
@@ -3817,7 +4185,10 @@
                     "enum": ["virtual_key", "team", "customer"],
                     "description": "Governance owner scope to evaluate"
                   },
-                  "scope_id": { "type": "string", "description": "ID of the virtual key, team, or customer" },
+                  "scope_id": {
+                    "type": "string",
+                    "description": "ID of the virtual key, team, or customer"
+                  },
                   "cel_expression": {
                     "type": "string",
                     "description": "CEL expression evaluated against usage variables (budget_usage_percent, budget_spent, request_usage, token_usage, etc.)"
@@ -3851,7 +4222,15 @@
                   },
                   "target_id": { "type": "string", "description": "ID of the explicit target" }
                 },
-                "required": ["id", "name", "enabled", "scope_type", "scope_id", "cel_expression", "channel_ids"],
+                "required": [
+                  "id",
+                  "name",
+                  "enabled",
+                  "scope_type",
+                  "scope_id",
+                  "cel_expression",
+                  "channel_ids"
+                ],
                 "allOf": [
                   {
                     "if": {
@@ -4252,7 +4631,14 @@
                     "description": "Response header whose value (in ms) overrides default_cooldown"
                   }
                 },
-                "required": ["name", "primary_provider", "primary_model", "fallback_provider", "fallback_model", "condition"],
+                "required": [
+                  "name",
+                  "primary_provider",
+                  "primary_model",
+                  "fallback_provider",
+                  "fallback_model",
+                  "condition"
+                ],
                 "additionalProperties": false
               }
             }
@@ -4376,6 +4762,12 @@
             "enabled": {
               "type": "boolean"
             },
+            "hiddenRequestTypes": {
+              "type": "array",
+              "items": { "type": "string" },
+              "default": [],
+              "description": "Request types hidden from dashboard/API reads. Logs are still stored."
+            },
             "type": {
               "type": "string",
               "enum": ["", "sqlite", "postgres", "clickhouse"]
@@ -4482,13 +4874,20 @@
                   }
                 },
                 {
-                  "not": {
-                    "required": ["password", "passwordCommand"]
-                  }
-                },
-                {
-                  "not": {
-                    "required": ["existingSecret", "passwordCommand"]
+                  "if": {
+                    "required": ["passwordCommand"]
+                  },
+                  "then": {
+                    "properties": {
+                      "password": {
+                        "const": "",
+                        "description": "Must be empty when passwordCommand is set: the password is produced by the command instead."
+                      },
+                      "existingSecret": {
+                        "const": "",
+                        "description": "Must be empty when passwordCommand is set: the password is produced by the command instead."
+                      }
+                    }
                   }
                 }
               ],
@@ -4758,13 +5157,20 @@
               }
             },
             {
-              "not": {
-                "required": ["password", "passwordCommand"]
-              }
-            },
-            {
-              "not": {
-                "required": ["existingSecret", "passwordCommand"]
+              "if": {
+                "required": ["passwordCommand"]
+              },
+              "then": {
+                "properties": {
+                  "password": {
+                    "const": "",
+                    "description": "Must be empty when passwordCommand is set: the password is produced by the command instead."
+                  },
+                  "existingSecret": {
+                    "const": "",
+                    "description": "Must be empty when passwordCommand is set: the password is produced by the command instead."
+                  }
+                }
               }
             }
           ]
@@ -4847,7 +5253,7 @@
         },
         "type": {
           "type": "string",
-          "enum": ["none", "weaviate", "redis", "qdrant", "pinecone"]
+          "enum": ["none", "weaviate", "redis", "qdrant", "pinecone", "chromem"]
         },
         "weaviate": {
           "type": "object",
@@ -5162,6 +5568,20 @@
               }
             }
           }
+        },
+        "chromem": {
+          "type": "object",
+          "description": "Chromem configuration — embedded in-process vector store (no external service). The top-level vectorStore.enabled controls activation. Renders into vector_store.config in config.json.",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Directory for file persistence; omit for a memory-only store that re-populates on restart"
+            },
+            "compress": {
+              "type": "boolean",
+              "description": "Gzip-compress persisted documents (only used when path is set)"
+            }
+          }
         }
       }
     },
@@ -5343,6 +5763,10 @@
         },
         "plugin_span_filter": {
           "$ref": "#/$defs/pluginSpanFilter"
+        },
+        "export_overhead_spans": {
+          "type": "boolean",
+          "description": "Export internal overhead/latency spans (setup, key selection, pipeline phases). Default false."
         }
       },
       "allOf": [
@@ -5419,6 +5843,10 @@
         },
         "plugin_span_filter": {
           "$ref": "#/$defs/pluginSpanFilter"
+        },
+        "export_overhead_spans": {
+          "type": "boolean",
+          "description": "Export internal overhead/latency spans (setup, key selection, pipeline phases). Default false."
         },
         "enabled": {
           "type": "boolean",
@@ -5586,12 +6014,49 @@
           "type": "boolean",
           "description": "Capture raw request/response for plugins only; stripped before returning to client"
         },
+        "prompt_cache": {
+          "type": "object",
+          "description": "Synthesize prompt-cache breakpoints for requests that carry none. Off by default; requests that already carry their own cache markers are never modified.",
+          "properties": {
+            "auto_inject": {
+              "type": "boolean",
+              "description": "Mark the first cacheable content block, keeping the cached prefix stable across agent turns"
+            },
+            "ttl": {
+              "type": "string",
+              "enum": ["1h"],
+              "description": "Lifetime for injected markers; omit for the provider default"
+            },
+            "cache_control_injection_points": {
+              "type": "array",
+              "description": "Target specific messages instead. When set, replaces auto_inject rather than adding to it.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "location": { "type": "string", "enum": ["message"] },
+                  "role": {
+                    "type": "string",
+                    "enum": ["system", "developer", "user", "assistant"]
+                  },
+                  "index": {
+                    "type": "integer",
+                    "description": "Negative values count from the end"
+                  }
+                }
+              }
+            }
+          }
+        },
         "custom_provider_config": {
           "type": "object",
           "description": "Custom provider configuration",
           "properties": {
             "is_key_less": {
               "type": "boolean"
+            },
+            "does_not_send_done_marker": {
+              "type": "boolean",
+              "description": "Whether the provider ends streams on finish_reason without sending a data: [DONE] marker"
             },
             "base_provider_type": {
               "type": "string"
@@ -5900,6 +6365,73 @@
             }
           },
           "required": ["url", "model_name"],
+          "additionalProperties": false
+        },
+        "databricks_key_config": {
+          "type": "object",
+          "description": "Databricks key configuration. Required on every key of a databricks provider.",
+          "properties": {
+            "workspace_url": {
+              "type": "string",
+              "description": "Databricks workspace URL, e.g. https://dbc-1234abcd-5678.cloud.databricks.com (can use env. prefix). A scheme and trailing path are tolerated."
+            },
+            "api_format": {
+              "type": "string",
+              "enum": ["auto", "model_serving", "ai_gateway"],
+              "description": "Which Databricks inference surface to target. 'model_serving' uses /serving-endpoints; 'ai_gateway' uses /ai-gateway/mlflow/v1; 'auto' (default) picks by model name — a dotted name such as system.ai.claude-sonnet-4-5 goes to the AI Gateway, anything else to Model Serving.",
+              "default": "auto"
+            },
+            "client_id": {
+              "type": "string",
+              "description": "OAuth M2M service principal client ID (can use env. prefix). Set together with client_secret, and leave the key value empty, to authenticate without a personal access token."
+            },
+            "client_secret": {
+              "type": "string",
+              "description": "OAuth M2M service principal client secret (can use env. prefix)"
+            },
+            "forward_gateway_tags": {
+              "type": "boolean",
+              "description": "Forward Bifrost governance labels (virtual key, team, customer names) to Databricks as the Databricks-Ai-Gateway-Request-Tags header for usage attribution.",
+              "default": false
+            }
+          },
+          "required": ["workspace_url"],
+          "dependentRequired": {
+            "client_id": ["client_secret"],
+            "client_secret": ["client_id"]
+          },
+          "additionalProperties": false
+        },
+        "github_copilot_key_config": {
+          "type": "object",
+          "description": "GitHub App credentials for a github-copilot provider key. Set this instead of value to mint installation tokens from a GitHub App.",
+          "properties": {
+            "app_id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "GitHub App ID or Client ID; the App JWT issuer (can use env. prefix)"
+            },
+            "installation_id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Installation to mint tokens for, digits only (can use env. prefix)"
+            },
+            "repository_id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Repository the installation token is scoped to, digits only (can use env. prefix)"
+            },
+            "private_key": {
+              "type": "string",
+              "minLength": 1,
+              "description": "GitHub App private key in PKCS#1 or PKCS#8 PEM form (can use env. prefix)"
+            },
+            "github_domain": {
+              "type": "string",
+              "description": "GitHub Enterprise domain, e.g. acme.ghe.com. Leave unset for github.com."
+            }
+          },
+          "required": ["app_id", "installation_id", "repository_id", "private_key"],
           "additionalProperties": false
         },
         "aliases": {
@@ -6279,7 +6811,14 @@
         },
         "authType": {
           "type": "string",
-          "enum": ["none", "headers", "oauth", "per_user_oauth", "per_user_headers", "token_exchange"],
+          "enum": [
+            "none",
+            "headers",
+            "oauth",
+            "per_user_oauth",
+            "per_user_headers",
+            "token_exchange"
+          ],
           "description": "Authentication type for MCP connection. 'token_exchange' is only honored on Enterprise builds."
         },
         "oauthConfig": {
@@ -6451,8 +6990,19 @@
         },
         "allowOnAllVirtualKeys": {
           "type": "boolean",
-          "description": "When true, this MCP server is accessible to all virtual keys without requiring explicit per-key assignment.",
+          "deprecated": true,
+          "description": "Deprecated: use allowByDefault. Read only when allowByDefault is absent. Maps to allow_on_all_virtual_keys.",
           "default": false
+        },
+        "allowByDefault": {
+          "type": "boolean",
+          "description": "When true, this MCP server is available to every caller that has not been assigned it explicitly, with all tools allowed. An explicit assignment for a caller takes precedence. Maps to allow_by_default.",
+          "default": false
+        },
+        "endpointSlug": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "description": "URL-safe, immutable slug that serves this client at /mcp/<slug>. Derived from the name when omitted; must be unique across MCP clients and Virtual MCPs. Maps to endpoint_slug."
         },
         "tlsConfig": {
           "type": "object",
@@ -6523,8 +7073,82 @@
         }
       ]
     },
+    "virtualMcpConfig": {
+      "type": "object",
+      "description": "A Virtual MCP: a named bundle of tools from one or more MCP clients, served at /mcp/<endpointSlug> and attachable to virtual keys. Renders into mcp.virtual_mcps[].",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "DB ID of this Virtual MCP. When set, the reconciler updates the existing Virtual MCP with this ID rather than matching by name. Maps to mcp.virtual_mcps[].id in config.json."
+        },
+        "name": {
+          "type": "string",
+          "description": "Virtual MCP display name (unique)"
+        },
+        "endpointSlug": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "description": "URL-safe path the Virtual MCP is served at (/mcp/<endpointSlug>). Honored on create only (immutable after); derived from the name when omitted. Unique across Virtual MCPs and MCP clients. Maps to mcp.virtual_mcps[].endpoint_slug."
+        },
+        "description": {
+          "type": "string",
+          "description": "Virtual MCP description"
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether the Virtual MCP is enabled. A disabled Virtual MCP is not served.",
+          "default": true
+        },
+        "tools": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Per-client tool specs the Virtual MCP exposes",
+          "items": {
+            "type": "object",
+            "properties": {
+              "mcpClientId": {
+                "type": "string",
+                "description": "MCP client ID"
+              },
+              "mcpClientName": {
+                "type": "string",
+                "description": "MCP client name (resolved to client_id at startup)"
+              },
+              "toolNames": {
+                "type": "array",
+                "description": "Tool names to expose. [\"*\"] means all tools (including future ones); [] means none; a named list means only those tools.",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "oneOf": [
+              {
+                "required": ["mcpClientId"]
+              },
+              {
+                "required": ["mcpClientName"]
+              }
+            ],
+            "additionalProperties": false
+          }
+        },
+        "virtualKeyIds": {
+          "type": "array",
+          "description": "Virtual keys this Virtual MCP is attached to. Maps to mcp.virtual_mcps[].virtual_key_ids.",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["name", "tools"],
+      "additionalProperties": false
+    },
     "mcpToolGroupConfig": {
       "type": "object",
+      "description": "DEPRECATED: use virtualMcpConfig (bifrost.mcp.virtualMcps) instead.",
+      "deprecated": true,
       "properties": {
         "id": {
           "type": "integer",
@@ -6561,7 +7185,7 @@
               },
               "toolNames": {
                 "type": "array",
-                "description": "Tool names to allow. Empty means all tools from this MCP client.",
+                "description": "Tool names to expose. [\"*\"] means all tools (including future ones); [] means none; a named list means only those tools.",
                 "items": {
                   "type": "string"
                 }
@@ -6586,30 +7210,40 @@
         },
         "teamIds": {
           "type": "array",
+          "description": "DEPRECATED: attach Virtual MCPs to virtual keys via virtualKeyIds instead.",
+          "deprecated": true,
           "items": {
             "type": "string"
           }
         },
         "customerIds": {
           "type": "array",
+          "description": "DEPRECATED: attach Virtual MCPs to virtual keys via virtualKeyIds instead.",
+          "deprecated": true,
           "items": {
             "type": "string"
           }
         },
         "userIds": {
           "type": "array",
+          "description": "DEPRECATED: attach Virtual MCPs to virtual keys via virtualKeyIds instead.",
+          "deprecated": true,
           "items": {
             "type": "string"
           }
         },
         "providerNames": {
           "type": "array",
+          "description": "DEPRECATED: attach Virtual MCPs to virtual keys via virtualKeyIds instead.",
+          "deprecated": true,
           "items": {
             "type": "string"
           }
         },
         "apiKeyIds": {
           "type": "array",
+          "description": "DEPRECATED: attach Virtual MCPs to virtual keys via virtualKeyIds instead.",
+          "deprecated": true,
           "items": {
             "type": "integer"
           }
@@ -7034,6 +7668,337 @@
         "additionalProperties": false
       }
     },
+    "project": {
+      "type": "object",
+      "description": "A project declared under governance.projects: what it allows, what it may spend, and how that is divided between its members. Members themselves are added from the dashboard or the API.",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "membership_mode": {
+                "const": "open"
+              }
+            },
+            "required": ["membership_mode"]
+          },
+          "then": {
+            "properties": {
+              "split_policy": {
+                "const": "none"
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Unique project name. Requests reference it with the x-bf-project-name header; the reconciler matches the declaration to the stored project by this name."
+        },
+        "description": {
+          "type": "string",
+          "description": "Optional project description"
+        },
+        "is_active": {
+          "type": "boolean",
+          "description": "Whether the project allows and accounts for anything",
+          "default": true
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the project stops allowing anything; omit to never expire"
+        },
+        "access_rule": {
+          "type": "string",
+          "description": "How the project's own access composes with the access a caller already holds: union leaves the caller's own access untouched (a project with no provider or MCP config then only accounts for spend), intersect permits only what both allow.",
+          "enum": ["union", "intersect"]
+        },
+        "membership_mode": {
+          "type": "string",
+          "description": "explicit consults the membership rows; open lets any caller opt in. An open project cannot divide its budget between members.",
+          "enum": ["explicit", "open"],
+          "default": "explicit"
+        },
+        "accounting_mode": {
+          "type": "string",
+          "description": "Which ledgers a request's spend lands on: the project's, the calling principal's, or both",
+          "enum": ["both", "project_only", "principal_only"],
+          "default": "both"
+        },
+        "split_policy": {
+          "type": "string",
+          "description": "How the budgets and rate limits the project holds, at every tier (its own, each provider's, and each model's), are divided between members: none leaves them shared, equal gives every member an equal share of each. A change to an equal split's roster or caps recomputes every share in the background.",
+          "enum": ["none", "equal"],
+          "default": "none"
+        },
+        "calendar_aligned": {
+          "type": "boolean",
+          "description": "Snap the project's budget and rate-limit reset windows to calendar boundaries (day, week, month, quarter, year) instead of rolling from first use. Windows shorter than a day cannot be aligned and stay rolling.",
+          "default": false
+        },
+        "allow_all_providers": {
+          "type": "boolean",
+          "description": "Grant access to every provider, including ones without a provider_configs entry and providers added later. Listed providers keep their own model, key, budget, and rate-limit rules.",
+          "default": false
+        },
+        "budgets": {
+          "type": "array",
+          "description": "Project-level spend caps. Declared without ids: on a change, a budget is matched to its stored row by reset_duration so its accumulated spend and window carry over.",
+          "items": {
+            "$ref": "#/$defs/project_budget"
+          }
+        },
+        "rate_limit": {
+          "$ref": "#/$defs/project_rate_limit"
+        },
+        "provider_configs": {
+          "type": "array",
+          "description": "Per-provider access and accounting, one entry per provider",
+          "items": {
+            "$ref": "#/$defs/project_provider_config"
+          }
+        },
+        "mcp_configs": {
+          "type": "array",
+          "description": "MCP clients the project allows, one entry per client",
+          "items": {
+            "$ref": "#/$defs/project_mcp_config"
+          }
+        },
+        "virtual_mcps": {
+          "type": "array",
+          "description": "Virtual MCPs assigned to the project, one entry per assignment. A request scoped to the project can reach each one at its /mcp/<slug> endpoint.",
+          "items": {
+            "$ref": "#/$defs/project_virtual_mcp"
+          }
+        }
+      },
+      "required": ["name", "access_rule"],
+      "additionalProperties": false
+    },
+    "project_budget": {
+      "type": "object",
+      "description": "A spend cap on a project, a provider inside it, or a model under that provider",
+      "allOf": [
+        {
+          "if": {
+            "required": ["reset_config"]
+          },
+          "then": {
+            "required": ["reset_duration"],
+            "properties": {
+              "reset_duration": {
+                "const": "1Q"
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "max_limit": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Maximum spend limit in USD"
+        },
+        "reset_duration": {
+          "type": "string",
+          "description": "Reset window, e.g. \"1M\", \"1h\", \"1Q\". Also what pairs a declared budget with its stored row on a change."
+        },
+        "reset_config": {
+          "type": "object",
+          "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (\"1Q\").",
+          "properties": {
+            "quarter_start_month": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 12,
+              "description": "First month of Q1 as 1-12. Omitted or 0 means January."
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "required": ["max_limit", "reset_duration"],
+      "additionalProperties": false
+    },
+    "project_rate_limit": {
+      "type": "object",
+      "description": "A request and token rate limit on a project, a provider inside it, or a model under that provider. A cap is enforced only with its window, and a limit with neither pair enforces nothing, so at least one complete pair is required.",
+      "properties": {
+        "token_max_limit": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum number of tokens allowed in the reset window"
+        },
+        "token_reset_duration": {
+          "type": "string",
+          "description": "Token reset window, e.g. \"1M\", \"1h\""
+        },
+        "request_max_limit": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum number of requests allowed in the reset window"
+        },
+        "request_reset_duration": {
+          "type": "string",
+          "description": "Request reset window, e.g. \"1M\", \"1h\""
+        }
+      },
+      "dependentRequired": {
+        "token_max_limit": ["token_reset_duration"],
+        "token_reset_duration": ["token_max_limit"],
+        "request_max_limit": ["request_reset_duration"],
+        "request_reset_duration": ["request_max_limit"]
+      },
+      "anyOf": [
+        {
+          "required": ["token_max_limit"]
+        },
+        {
+          "required": ["request_max_limit"]
+        }
+      ],
+      "additionalProperties": false
+    },
+    "project_provider_config": {
+      "type": "object",
+      "properties": {
+        "provider_name": {
+          "type": "string",
+          "description": "Provider name. A project names each provider at most once; on a change the entry is matched to its stored row by this name."
+        },
+        "all_models_allowed": {
+          "type": "boolean",
+          "description": "Whether all models under this provider are allowed",
+          "default": false
+        },
+        "allowed_models": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Allowed model names (ignored when all_models_allowed is true)"
+        },
+        "blacklisted_models": {
+          "type": "array",
+          "description": "Models blocked for this provider even if matched by allowed_models (denylist wins). Use [\"*\"] to block all; empty array or omitted blocks none.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "key_ids": {
+          "type": "array",
+          "description": "Key IDs allowed for this provider. Use [\"*\"] to allow all keys; empty array or omitted allows none, regardless of the top-level version. Specific IDs restrict access to those keys only, and each must belong to this provider.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "weight": {
+          "type": ["number", "null"],
+          "description": "Load-balancer seed weight for this provider (null opts out of weighted routing / no override)",
+          "default": null
+        },
+        "budgets": {
+          "type": "array",
+          "description": "Spend caps on this provider inside the project",
+          "items": {
+            "$ref": "#/$defs/project_budget"
+          }
+        },
+        "rate_limit": {
+          "$ref": "#/$defs/project_rate_limit"
+        },
+        "model_budgets": {
+          "type": "array",
+          "description": "Per-model budgets and rate limits under this provider, at most one entry per model",
+          "items": {
+            "$ref": "#/$defs/project_provider_model_budget"
+          }
+        }
+      },
+      "required": ["provider_name"],
+      "additionalProperties": false
+    },
+    "project_provider_model_budget": {
+      "type": "object",
+      "description": "Per-model budget group under a project provider config, with optional per-model rate limit",
+      "properties": {
+        "model_name": {
+          "type": "string",
+          "not": {
+            "const": "*"
+          },
+          "description": "Model this budget group applies to (scoped to the parent provider). The \"*\" tier is not accepted here; the provider's own budgets cover it."
+        },
+        "budgets": {
+          "type": "array",
+          "description": "Spend caps for this model",
+          "items": {
+            "$ref": "#/$defs/project_budget"
+          }
+        },
+        "rate_limit": {
+          "$ref": "#/$defs/project_rate_limit"
+        }
+      },
+      "required": ["model_name"],
+      "additionalProperties": false
+    },
+    "project_mcp_config": {
+      "type": "object",
+      "properties": {
+        "mcp_client_name": {
+          "type": "string",
+          "description": "Name of the MCP client (as declared under mcp.client_configs) the project allows. Resolved to the stored client on startup; a name that matches no client is refused."
+        },
+        "tools_to_execute": {
+          "type": "array",
+          "description": "Tools of the client the project may execute. Use [\"*\"] to allow every tool; empty array or omitted allows none, regardless of the top-level version.",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["mcp_client_name"],
+      "additionalProperties": false
+    },
+    "project_virtual_mcp": {
+      "type": "object",
+      "description": "A virtual MCP assigned to a project. Assignments are a set, so a repeated id is ignored rather than doubled.",
+      "properties": {
+        "virtual_mcp_id": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Virtual MCP ID. Ids are assigned by the database, so a file that has to be portable across environments should assign virtual MCPs from the dashboard or the API instead."
+        }
+      },
+      "required": ["virtual_mcp_id"],
+      "additionalProperties": false
+    },
+    "scim_attribute_access_profile_mappings": {
+      "type": "array",
+      "description": "Attribute -> access-profile mappings. Every matching rule applies: the user is granted the union of the profiles it matches, on top of any profile assigned by role or from the dashboard. Bifrost keeps the tightest limit across the granted profiles.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "attribute": {
+            "type": "string",
+            "description": "JWT claim name (supports dot paths, e.g. 'realm_access.roles')"
+          },
+          "value": {
+            "type": "string",
+            "description": "Claim value to match (case-insensitive). '*' matches whenever the claim carries any non-empty value; glob patterns (e.g. 'bifrost-*') are also supported."
+          },
+          "accessProfile": {
+            "type": "string",
+            "description": "Name of the access profile (defined in bifrost.accessProfiles) to grant on match"
+          }
+        },
+        "required": ["attribute", "value", "accessProfile"],
+        "additionalProperties": false
+      }
+    },
     "scim_attribute_business_unit_mappings": {
       "type": "array",
       "description": "Attribute -> business-unit mappings (all matches apply).",
@@ -7161,7 +8126,10 @@
         },
         {
           "if": {
-            "properties": { "enabled": { "const": true }, "provider": { "const": "cloudflare-access" } },
+            "properties": {
+              "enabled": { "const": true },
+              "provider": { "const": "cloudflare-access" }
+            },
             "required": ["enabled", "provider"]
           },
           "then": {

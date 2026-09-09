@@ -11,7 +11,7 @@ import (
 )
 
 // CalculateCost calculates the cost of a Bifrost response.
-// It handles all request types, cache and guardrail billing, and tiered pricing.
+// It handles all request types, cache, guardrail, and routing billing, and tiered pricing.
 // If scopes is nil, an empty LookupScopes is used; global and provider-scoped
 // overrides may still apply since the provider is derived from the response.
 func (s *Store) CalculateCost(result *schemas.BifrostResponse, scopes *LookupScopes) float64 {
@@ -39,25 +39,43 @@ func (s *Store) CalculateCostBreakdown(result *schemas.BifrostResponse, scopes *
 	extraFields := result.GetExtraFields()
 
 	// Handle semantic cache billing
-	cacheDebug := extraFields.CacheDebug
 	var requestCost *schemas.BifrostCost
-	if cacheDebug != nil {
-		requestCost = s.calculateCostWithCache(result, cacheDebug, lookupScopes)
+	if extraFields != nil && extraFields.CacheDebug != nil {
+		requestCost = s.calculateCostWithCache(result, extraFields.CacheDebug, lookupScopes)
 	} else {
 		requestCost = s.calculateBaseCost(result, lookupScopes)
 	}
-
-	// Handle guardrail judge-call billing
-	if extraFields.GuardrailDebug == nil {
+	if extraFields == nil {
 		return requestCost
 	}
+
+	// The main request and each internal sidecar are independently billable, so
+	// price every debug stamp rather than returning on the first one present:
+	// cache, guardrail, and routing metadata can coexist on one response.
 	guardrailCost := s.CalculateGuardrailCost(extraFields.GuardrailDebug, &lookupScopes)
-	if guardrailCost == 0 {
+
+	// Each routing-classification call is billed independently: a request that
+	// classifies via semantic and then falls back to the llm classifier makes
+	// two billable calls, and each carries its own count_toward_budgets flag.
+	// A call's cost only folds in here when that flag is set; telemetry prices
+	// every call unconditionally via RoutingCallCost directly, without this gate.
+	var routingCost float64
+	if extraFields.RoutingMetadata != nil {
+		for _, call := range extraFields.RoutingMetadata.Calls {
+			if call.CountTowardBudgets {
+				routingCost += s.RoutingCallCost(call, &lookupScopes)
+			}
+		}
+	}
+
+	sidecarCost := guardrailCost + routingCost
+	if sidecarCost == 0 {
 		return requestCost
 	}
 	// Copy rather than mutate: requestCost may alias the provider-supplied
-	// usage.Cost. The judge call is a separate internal cost with no input/output
-	// token category, so it lands on the additional side (and the total).
+	// usage.Cost. The judge and classification calls are separate internal costs
+	// with no input/output token category, so they land on the additional side
+	// (and the total).
 	merged := &schemas.BifrostCost{}
 	if requestCost != nil {
 		*merged = *requestCost
@@ -69,10 +87,81 @@ func (s *Store) CalculateCostBreakdown(result *schemas.BifrostResponse, scopes *
 	if merged.AdditionalCostDetails == nil {
 		merged.AdditionalCostDetails = &schemas.AdditionalCostDetails{}
 	}
-	merged.AdditionalCost += guardrailCost
+	merged.AdditionalCost += sidecarCost
 	merged.AdditionalCostDetails.GuardrailCost += guardrailCost
-	merged.TotalCost += guardrailCost
+	merged.AdditionalCostDetails.RoutingCost += routingCost
+	merged.TotalCost += sidecarCost
 	return merged
+}
+
+// RoutingCallCost calculates the cost of one routing-classification call — a
+// semantic classification embed, or an llm classification completion when the
+// call carries OutputTokens. Exported (unlike the cache equivalent) so
+// telemetry can price each call independently and unconditionally, while
+// CalculateCost folds a call's cost into the request's cost only when that
+// call's CountTowardBudgets is set. If scopes is nil, an empty LookupScopes is
+// used.
+func (s *Store) RoutingCallCost(call schemas.BifrostRoutingCall, scopes *LookupScopes) float64 {
+	if call.ProviderUsed == nil || call.ModelUsed == nil || call.InputTokens == nil {
+		return 0
+	}
+	// Malformed usage must never create a negative sidecar cost that subtracts
+	// from the request's budget attribution.
+	if *call.InputTokens < 0 {
+		return 0
+	}
+	if call.OutputTokens != nil && *call.OutputTokens < 0 {
+		return 0
+	}
+	var lookupScopes LookupScopes
+	if scopes != nil {
+		lookupScopes = *scopes
+	}
+	// The classification call may use a different configured provider key, so
+	// do not let the parent request's key-specific override price this call.
+	lookupScopes.SelectedKeyID = ""
+	// Caller scopes carry the main request's provider; the classification ran
+	// against ProviderUsed, so provider-scoped overrides must key on it.
+	// The embedding can use a different provider from the main request, so its
+	// provider-scoped overrides must be resolved against the embedding provider.
+	lookupScopes.Provider = *call.ProviderUsed
+	// A present OutputTokens marks the call as a chat completion (the llm
+	// classifier); an embedding call never carries one. The two price on
+	// different rate tables, so the request type must follow the call shape.
+	requestType := schemas.EmbeddingRequest
+	if call.OutputTokens != nil {
+		requestType = schemas.ChatCompletionRequest
+	}
+	// Mirrors computeCacheEmbeddingCost: a single model identifier maps to
+	// RoutingInfo.Model — no alias resolution context exists for the internal
+	// classification call.
+	pricing := s.resolvePricing(schemas.RoutingInfo{
+		Provider: schemas.ModelProvider(*call.ProviderUsed),
+		Model:    *call.ModelUsed,
+	}, requestType, lookupScopes)
+	if pricing == nil {
+		return 0
+	}
+	usage := &schemas.BifrostLLMUsage{PromptTokens: *call.InputTokens}
+	// The compute helpers return a per-category breakdown; a routing call is an
+	// internal sidecar with no category of its own, so only the total is kept.
+	var breakdown *schemas.BifrostCost
+	if requestType == schemas.EmbeddingRequest {
+		breakdown = computeEmbeddingCost(pricing, usage, serviceTier{})
+	} else {
+		usage.CompletionTokens = *call.OutputTokens
+		breakdown = computeTextCost(pricing, usage, serviceTier{})
+	}
+	var cost float64
+	if breakdown != nil {
+		cost = breakdown.TotalCost
+	}
+	// Each routing classification is a distinct provider request, so its flat
+	// fee applies once on top of the usage-based cost.
+	if pricing.CostPerRequest != nil {
+		cost += *pricing.CostPerRequest
+	}
+	return cost
 }
 
 // CalculateCostForUsage computes the dollar cost from a bare usage object plus
@@ -134,13 +223,13 @@ func (s *Store) CalculateCostBreakdownForUsage(usage *schemas.BifrostLLMUsage, p
 // CalculateCost uses this for normal responses. Logging also calls it directly
 // for input guardrail blocks, where the main provider call never produced a
 // BifrostResponse.
-func (s *Store) CalculateGuardrailCost(debug *schemas.BifrostGuardrailDebug, scopes *LookupScopes) float64 {
-	if debug == nil || len(debug.JudgeCalls) == 0 {
+func (s *Store) CalculateGuardrailCost(metadata *schemas.BifrostGuardrailMetadata, scopes *LookupScopes) float64 {
+	if metadata == nil || len(metadata.JudgeCalls) == 0 {
 		return 0
 	}
 
 	var total float64
-	for _, call := range debug.JudgeCalls {
+	for _, call := range metadata.JudgeCalls {
 		total += s.computeGuardrailJudgeCost(call, scopes)
 	}
 	return total
@@ -288,18 +377,18 @@ func cloneFloat64Pointer(value *float64) *float64 {
 	return &clone
 }
 
-// calculateCostWithCache handles cost calculation when semantic cache debug info is present.
-func (s *Store) calculateCostWithCache(result *schemas.BifrostResponse, cacheDebug *schemas.BifrostCacheDebug, scopes LookupScopes) *schemas.BifrostCost {
-	if cacheDebug.CacheHit {
+// calculateCostWithCache handles cost calculation when semantic cache metadata is present.
+func (s *Store) calculateCostWithCache(result *schemas.BifrostResponse, cacheMetadata *schemas.BifrostCacheMetadata, scopes LookupScopes) *schemas.BifrostCost {
+	if cacheMetadata.CacheHit {
 		// Direct cache hit — no LLM call, no cost
-		if cacheDebug.HitType != nil && *cacheDebug.HitType == "direct" {
+		if cacheMetadata.HitType != nil && *cacheMetadata.HitType == "direct" {
 			return nil
 		}
 		// Semantic cache hit — only the embedding lookup cost. It's an internal
 		// sidecar cost (a separate embedding call), so it lands on the additional
 		// side, alongside guardrail/MCP, not folded into the request's input.
-		if cacheDebug.ProviderUsed != nil && cacheDebug.ModelUsed != nil && cacheDebug.InputTokens != nil {
-			c := s.computeCacheEmbeddingCost(cacheDebug, scopes)
+		if cacheMetadata.ProviderUsed != nil && cacheMetadata.ModelUsed != nil && cacheMetadata.InputTokens != nil {
+			c := s.computeCacheEmbeddingCost(cacheMetadata, scopes)
 			if c == 0 {
 				return nil
 			}
@@ -314,7 +403,7 @@ func (s *Store) calculateCostWithCache(result *schemas.BifrostResponse, cacheDeb
 
 	// Cache miss — full LLM cost + embedding lookup cost (a sidecar additional cost)
 	base := s.calculateBaseCost(result, scopes)
-	embeddingCost := s.computeCacheEmbeddingCost(cacheDebug, scopes)
+	embeddingCost := s.computeCacheEmbeddingCost(cacheMetadata, scopes)
 	if embeddingCost == 0 {
 		return base
 	}
@@ -337,24 +426,24 @@ func (s *Store) calculateCostWithCache(result *schemas.BifrostResponse, cacheDeb
 }
 
 // computeCacheEmbeddingCost calculates the embedding cost for a semantic cache lookup.
-func (s *Store) computeCacheEmbeddingCost(cacheDebug *schemas.BifrostCacheDebug, scopes LookupScopes) float64 {
-	if cacheDebug == nil || cacheDebug.ProviderUsed == nil || cacheDebug.ModelUsed == nil || cacheDebug.InputTokens == nil {
+func (s *Store) computeCacheEmbeddingCost(cacheMetadata *schemas.BifrostCacheMetadata, scopes LookupScopes) float64 {
+	if cacheMetadata == nil || cacheMetadata.ProviderUsed == nil || cacheMetadata.ModelUsed == nil || cacheMetadata.InputTokens == nil {
 		return 0
 	}
 	if scopes.Provider == "" {
-		scopes.Provider = *cacheDebug.ProviderUsed
+		scopes.Provider = *cacheMetadata.ProviderUsed
 	}
-	// Cache-debug pricing has only a single model identifier (whatever the
+	// Cache metadata pricing has only a single model identifier (whatever the
 	// cache recorded). Maps to RoutingInfo.Model — no alias resolution
 	// context exists for the cache-replayed request.
 	pricing := s.resolvePricing(schemas.RoutingInfo{
-		Provider: schemas.ModelProvider(*cacheDebug.ProviderUsed),
-		Model:    *cacheDebug.ModelUsed,
+		Provider: schemas.ModelProvider(*cacheMetadata.ProviderUsed),
+		Model:    *cacheMetadata.ModelUsed,
 	}, schemas.EmbeddingRequest, scopes)
 	if pricing == nil {
 		return 0
 	}
-	cost := float64(*cacheDebug.InputTokens) * tieredInputRate(pricing, *cacheDebug.InputTokens, serviceTier{})
+	cost := float64(*cacheMetadata.InputTokens) * tieredInputRate(pricing, *cacheMetadata.InputTokens, serviceTier{})
 	// The lookup is a separate embedding call, so the embedding model's flat
 	// per-request fee applies once, mirroring the synchronous/batch paths.
 	if pricing.CostPerRequest != nil {
@@ -364,12 +453,12 @@ func (s *Store) computeCacheEmbeddingCost(cacheDebug *schemas.BifrostCacheDebug,
 }
 
 // CalculateCacheEmbeddingCost computes the semantic-cache embedding lookup cost.
-func (s *Store) CalculateCacheEmbeddingCost(cacheDebug *schemas.BifrostCacheDebug, scopes *LookupScopes) float64 {
+func (s *Store) CalculateCacheEmbeddingCost(cacheMetadata *schemas.BifrostCacheMetadata, scopes *LookupScopes) float64 {
 	var lookupScopes LookupScopes
 	if scopes != nil {
 		lookupScopes = *scopes
 	}
-	return s.computeCacheEmbeddingCost(cacheDebug, lookupScopes)
+	return s.computeCacheEmbeddingCost(cacheMetadata, lookupScopes)
 }
 
 // computeContainerCreationCost returns the cost for creating a container from an already-resolved pricing entry.
@@ -417,6 +506,19 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 
 	// Extract usage data from the response (passthrough and native paths unified)
 	input := extractCostInput(result)
+
+	// A video is billed once, at settlement — the job may still be queued, may
+	// produce different dimensions than were asked for, and may fail outright. This
+	// gate sits *ahead* of the provider-cost short-circuit below rather than in the
+	// modality switch, because a provider-reported cost on a job that has not
+	// finished is a quote, not a bill, and would otherwise be returned here before
+	// any status was consulted.
+	//
+	// An absent status means the provider does not report one, so there is nothing
+	// to gate on and pricing proceeds as before.
+	if input.videoStatus != "" && input.videoStatus != schemas.VideoStatusCompleted {
+		return nil
+	}
 
 	// If provider already computed cost, use it
 	if input.usage != nil && input.usage.Cost != nil && input.usage.Cost.TotalCost > 0 {
@@ -470,7 +572,7 @@ func (s *Store) calculateAzureModelRouterCost(result *schemas.BifrostResponse, i
 
 	cost := s.computeCostFromInput(input, routingInfo, pricingRequestType, scopes)
 
-	if servedModel := azureModelRouterServedModel(result); servedModel != "" && servedModel != routingInfo.Model {
+	if servedModel := result.ServedModel(); servedModel != "" && servedModel != routingInfo.Model {
 		underlyingRoutingInfo := schemas.RoutingInfo{
 			Provider: routingInfo.Provider,
 			Model:    servedModel,
@@ -479,24 +581,6 @@ func (s *Store) calculateAzureModelRouterCost(result *schemas.BifrostResponse, i
 	}
 
 	return cost
-}
-
-// azureModelRouterServedModel reads the model Azure Model Router actually
-// routed to off the response body's own model field separate from the "model-router"
-// deployment name carried on RoutingInfo.Model.
-func azureModelRouterServedModel(result *schemas.BifrostResponse) string {
-	switch {
-	case result.ChatResponse != nil:
-		return result.ChatResponse.Model
-	case result.ResponsesResponse != nil:
-		return result.ResponsesResponse.Model
-	case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil:
-		return result.ResponsesStreamResponse.Response.Model
-	case result.TextCompletionResponse != nil:
-		return result.TextCompletionResponse.Model
-	default:
-		return ""
-	}
 }
 
 // computeCostFromInput resolves pricing for the given routing info + request
@@ -543,7 +627,7 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 	case schemas.ImageGenerationRequest, schemas.ImageEditRequest, schemas.ImageVariationRequest:
 		cost = computeImageCost(pricing, input.imageUsage, input.imageSize, input.imageQuality, input.tier)
 	case schemas.VideoGenerationRequest, schemas.VideoRemixRequest, schemas.VideoEditRequest:
-		cost = computeVideoCost(pricing, input.usage, input.videoSeconds, input.tier)
+		cost = computeVideoCost(pricing, input.usage, input.videoSeconds, input.videoSize, input.videoCount, input.tier)
 	case schemas.OCRRequest:
 		cost = computeOCRCost(pricing, input.ocrProcessedPages, input.ocrIsAnnotated)
 	case schemas.ContainerCreateRequest:
@@ -649,16 +733,25 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 		input.imageSize = result.ImageGenerationStreamResponse.Size
 		input.imageQuality = result.ImageGenerationStreamResponse.Quality
 
-	case result.VideoGenerationResponse != nil && result.VideoGenerationResponse.Usage != nil && result.VideoGenerationResponse.Usage.Cost != nil:
-		// Provider-reported cost (e.g. Runware's per-task cost). Routed through input.usage.Cost so
-		// the provider-cost short-circuit in computeCost uses it verbatim; covers task types (3D,
-		// etc.) that have no datasheet rate.
-		input.usage = &schemas.BifrostLLMUsage{Cost: result.VideoGenerationResponse.Usage.Cost}
-
-	case result.VideoGenerationResponse != nil && result.VideoGenerationResponse.Seconds != nil:
-		seconds, err := strconv.Atoi(*result.VideoGenerationResponse.Seconds)
-		if err == nil {
-			input.videoSeconds = &seconds
+	case result.VideoGenerationResponse != nil:
+		video := result.VideoGenerationResponse
+		input.videoStatus = video.Status
+		if video.Usage != nil && video.Usage.Cost != nil {
+			// Provider-reported cost (e.g. Runware's per-task cost). Routed through input.usage.Cost so
+			// the provider-cost short-circuit in computeCost uses it verbatim; covers task types (3D,
+			// etc.) that have no datasheet rate.
+			input.usage = &schemas.BifrostLLMUsage{Cost: video.Usage.Cost}
+		} else {
+			if video.Seconds != nil {
+				if seconds, err := strconv.Atoi(*video.Seconds); err == nil {
+					input.videoSeconds = &seconds
+				}
+			}
+			// Size and clip count drive the output rate and its multiplier. Neither can
+			// bypass the no-usage guard below on its own: without seconds there is still
+			// nothing to price.
+			input.videoSize = video.Size
+			input.videoCount = len(video.Videos)
 		}
 
 	case result.OCRResponse != nil:
@@ -1470,7 +1563,7 @@ func imageQualityRate(pricing *configstoreTables.TableModelPricing, quality stri
 
 // computeVideoCost handles video generation requests.
 // Input and output are calculated independently — tokens first, then per-second fallback.
-func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, videoSeconds *int, tier serviceTier) *schemas.BifrostCost {
+func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, videoSeconds *int, videoSize string, videoCount int, tier serviceTier) *schemas.BifrostCost {
 	tierTokens := inputTierTokens(usage)
 
 	// Input: text prompt tokens first, then per-second fallback
@@ -1488,14 +1581,66 @@ func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schem
 	if usage != nil && usage.CompletionTokens > 0 {
 		outputCost = float64(usage.CompletionTokens) * tieredOutputRate(pricing, tierTokens, tier)
 	} else if videoSeconds != nil && *videoSeconds > 0 {
-		if pricing.OutputCostPerVideoPerSecond != nil {
-			outputCost = float64(*videoSeconds) * *pricing.OutputCostPerVideoPerSecond
-		} else if pricing.OutputCostPerSecond != nil {
-			outputCost = float64(*videoSeconds) * *pricing.OutputCostPerSecond
-		}
+		// Seconds is one clip's duration, and a single job can return several clips
+		// (Veo's sampleCount). Count is 0 on a job that has not produced its outputs
+		// yet, which still owes one clip's worth rather than nothing.
+		outputCost = float64(*videoSeconds) * videoOutputPerSecondRate(pricing, videoSize) * float64(max(1, videoCount))
 	}
 
 	return newInputOutputCost(inputCost, outputCost)
+}
+
+// videoOutputPerSecondRate returns the per-second output rate for a generated video,
+// preferring the band matching its resolution.
+//
+// Providers publish a distinct rate per output resolution — sora-2-pro is $0.30/s at
+// 720p but $0.70/s at 1080p, Veo 3.1 is $0.40/s at 720p/1080p and $0.60/s at 4K — which
+// the single unbanded rate cannot express.
+//
+// Bands match exactly on the short edge rather than at-or-above: an unlisted resolution
+// falls back to the unbanded rate instead of rounding up into a more expensive band, so a
+// 480p clip is never billed at the 720p rate.
+func videoOutputPerSecondRate(pricing *configstoreTables.TableModelPricing, size string) float64 {
+	switch videoResolutionBand(size) {
+	case 480:
+		if pricing.OutputCostPerVideoPerSecond480p != nil {
+			return *pricing.OutputCostPerVideoPerSecond480p
+		}
+	case 720:
+		if pricing.OutputCostPerVideoPerSecond720p != nil {
+			return *pricing.OutputCostPerVideoPerSecond720p
+		}
+	case 1024:
+		if pricing.OutputCostPerVideoPerSecond1024p != nil {
+			return *pricing.OutputCostPerVideoPerSecond1024p
+		}
+	case 1080:
+		if pricing.OutputCostPerVideoPerSecond1080p != nil {
+			return *pricing.OutputCostPerVideoPerSecond1080p
+		}
+	case 2160:
+		if pricing.OutputCostPerVideoPerSecond4k != nil {
+			return *pricing.OutputCostPerVideoPerSecond4k
+		}
+	}
+	if pricing.OutputCostPerVideoPerSecond != nil {
+		return *pricing.OutputCostPerVideoPerSecond
+	}
+	if pricing.OutputCostPerSecond != nil {
+		return *pricing.OutputCostPerSecond
+	}
+	return 0
+}
+
+// videoResolutionBand returns the short edge of a "WxH" size, which is the number
+// providers name their resolution tiers after ("1920x1080" and "1080x1920" are both
+// 1080p). Returns 0 when the size is absent or malformed.
+func videoResolutionBand(size string) int {
+	width, height := parseImageDimensions(size)
+	if width <= 0 || height <= 0 {
+		return 0
+	}
+	return min(width, height)
 }
 
 // computeOCRCost handles OCR requests, billing per page processed.

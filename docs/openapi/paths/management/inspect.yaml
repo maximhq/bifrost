@@ -1,0 +1,48 @@
+# Paths for the inspect endpoint.
+
+inspect:
+  post:
+    operationId: inspectRequest
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Inspect a request without forwarding it
+    description: |
+      Runs the pre-model plugin checks against a request and answers whether
+      forwarding it upstream is allowed, without calling any provider. Intended
+      for an intercepting proxy that holds the original request and needs a
+      verdict before releasing it.
+
+      Plugins that mutate execution or depend on a provider call are skipped.
+
+      Unlike the inference routes, this endpoint takes its request context in
+      the body rather than in HTTP headers: entries in `metadata` are read as
+      the request's headers, so `{"x-bf-project-id": "..."}` scopes the
+      inspected request to a governance project exactly as the header would.
+      When called with `phase: "response"` and `log: true`, the resolved
+      project is recorded on the log row this endpoint writes.
+    tags:
+      - Infrastructure
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/inspect.yaml#/InspectEnvelope'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Verdict returned
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/inspect.yaml#/InspectResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

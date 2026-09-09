@@ -11,8 +11,7 @@
     {
       "enabled": true,
       "name": "hello-world",
-      "path": "/Users/akshay/Codebase/universe/bifrost/examples/plugins/hello-world/build/hello-world.so",
-      "version": 3
+      "path": "/Users/akshay/Codebase/universe/bifrost/examples/plugins/hello-world/build/hello-world.so"
     }
   ]
 }

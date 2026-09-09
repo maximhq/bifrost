@@ -322,6 +322,17 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// vk_rotation_cooldown bounds: negative is meaningless, and anything past 30
+	// days keeps a retired credential alive long enough to defeat the rotation.
+	if payload.ClientConfig.VKRotationCooldown < 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "vk_rotation_cooldown must not be negative")
+		return
+	}
+	if payload.ClientConfig.VKRotationCooldown.D() > configstore.MaxVKRotationCooldown {
+		SendError(ctx, fasthttp.StatusBadRequest, "vk_rotation_cooldown must not exceed 30 days")
+		return
+	}
+
 	// Validating framework config
 	if payload.FrameworkConfig.PricingURL != nil && *payload.FrameworkConfig.PricingURL != modelcatalog.DefaultPricingURL {
 		if err := checkURLAccessibility(*payload.FrameworkConfig.PricingURL); err != nil {
@@ -589,13 +600,15 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	newCompat := payload.ClientConfig.Compat
 	oldCompat := currentConfig.Compat
 	if newCompat != oldCompat {
-		newEnabled := newCompat.ConvertTextToChat || newCompat.ConvertChatToResponses || newCompat.ShouldDropParams || newCompat.ShouldConvertParams
+		newEnabled := newCompat.ConvertTextToChat || newCompat.ConvertChatToResponses || newCompat.ShouldDropParams || newCompat.ShouldConvertParams ||
+			newCompat.AzureDeepseek
 		if newEnabled {
 			compatCfg := &compat.Config{
 				ConvertTextToChat:      newCompat.ConvertTextToChat,
 				ConvertChatToResponses: newCompat.ConvertChatToResponses,
 				ShouldDropParams:       newCompat.ShouldDropParams,
 				ShouldConvertParams:    newCompat.ShouldConvertParams,
+				AzureDeepseek:          newCompat.AzureDeepseek,
 			}
 			if err := h.configManager.ReloadPlugin(ctx, compat.PluginName, nil, compatCfg, nil, nil); err != nil {
 				logger.Warn("failed to load compat plugin: %v", err)
@@ -645,6 +658,10 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// Toggle whether deleted virtual keys should appear in logs filter data.
 	updatedConfig.HideDeletedVirtualKeysInFilters = payload.ClientConfig.HideDeletedVirtualKeysInFilters
 
+	// Request types hidden from log reads. No restart needed: the log routes read the
+	// live client config on every request, and the filter-data cache keys on the list.
+	updatedConfig.HiddenRequestTypes = lib.NormalizeHiddenRequestTypes(payload.ClientConfig.HiddenRequestTypes)
+
 	// Toggle allowing per-request override for content storage and raw request/response storage
 	updatedConfig.AllowPerRequestContentStorageOverride = payload.ClientConfig.AllowPerRequestContentStorageOverride
 
@@ -653,6 +670,10 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 
 	// Toggle allowing direct key bypass via x-bf-direct-key header
 	updatedConfig.AllowDirectKeys = payload.ClientConfig.AllowDirectKeys
+
+	// Rotation grace period; bounds validated up front. Copied unconditionally
+	// so 0 clears a previously stored cooldown.
+	updatedConfig.VKRotationCooldown = payload.ClientConfig.VKRotationCooldown
 
 	// No restart needed - routing engine reads via pointer, change is effective immediately.
 	if payload.ClientConfig.RoutingChainMaxDepth > 0 {

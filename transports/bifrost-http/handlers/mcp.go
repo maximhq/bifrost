@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net"
+	"net/url"
 	"slices"
 	"sort"
 	"strconv"
@@ -19,6 +21,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/mcp"
 	mcputils "github.com/maximhq/bifrost/core/mcp/utils"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -552,7 +555,7 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 		ToolPricing:               clientConfig.ToolPricing,
 		ToolSyncInterval:          int(clientConfig.ToolSyncInterval / time.Second),
 		ToolExecutionTimeout:      int(clientConfig.ToolExecutionTimeout / time.Second),
-		AllowOnAllVirtualKeys:     clientConfig.AllowOnAllVirtualKeys,
+		AllowByDefault:            clientConfig.AllowByDefault,
 		PerUserHeaderKeys:         clientConfig.PerUserHeaderKeys,
 		DiscoveredTools:           clientConfig.DiscoveredTools,
 		DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
@@ -726,7 +729,7 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 		ToolPricing:               clientConfig.ToolPricing,
 		ToolSyncInterval:          int(clientConfig.ToolSyncInterval / time.Second),
 		ToolExecutionTimeout:      int(clientConfig.ToolExecutionTimeout / time.Second),
-		AllowOnAllVirtualKeys:     clientConfig.AllowOnAllVirtualKeys,
+		AllowByDefault:            clientConfig.AllowByDefault,
 		TokenExchange:             clientConfig.TokenExchange,
 		DiscoveredTools:           clientConfig.DiscoveredTools,
 		DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
@@ -802,25 +805,142 @@ type MCPClientResponse struct {
 	Tools     []schemas.ChatToolFunction `json:"tools"`
 	State     schemas.MCPConnectionState `json:"state"`
 	VKConfigs []MCPVKConfigResponse      `json:"vk_configs"`
-	// NodeStates is the per-instance breakdown behind State when it is
-	// schemas.MCPConnectionStateDegraded (instance ID -> that instance's own
-	// self-reported state). Only ever populated by a configured
-	// MCPClusterStateAggregator; nil in a single-instance deployment.
-	NodeStates map[string]string `json:"node_states,omitempty"`
+	// LastFailure is the instance serving this request's own record of what
+	// its connection handling last failed with: the step, the error, when it
+	// last happened and when the current run began (see
+	// schemas.MCPConnectionFailure). Nil while healthy. It is deliberately not
+	// derived from credential rows: when projectMCPCredentialState overlays
+	// needs_reauth onto a runtime that has recorded nothing yet, the state and
+	// the credential block already say why, and the next connect or check to
+	// hit the dead credential records the provider's real error here.
+	LastFailure *schemas.MCPConnectionFailure `json:"last_failure,omitempty"`
+	// NodeStates is the per-instance breakdown behind State in a distributed
+	// deployment (instance ID -> that instance's own self-reported state and
+	// failure). Present when instances disagree (State is then
+	// schemas.MCPConnectionStateDegraded) and when they agree on unstable, so
+	// each instance's own reason is visible; only ever populated by a
+	// configured MCPClusterStateAggregator, nil in a single-instance
+	// deployment.
+	NodeStates map[string]schemas.MCPInstanceState `json:"node_states,omitempty"`
+	// Credential is the read-only view of the credential the client holds on
+	// its own behalf (see MCPClientCredentialResponse). Nil when the client's
+	// auth type has no such credential (none, headers) or when none has been
+	// issued yet (a client still pending its one-time authorization).
+	Credential *MCPClientCredentialResponse `json:"credential,omitempty"`
+}
+
+// MCPClientCredentialResponse describes the credential a client holds on its
+// own behalf, as opposed to the per-caller credentials listed under
+// /api/mcp/sessions: the single shared token for an oauth client, the
+// retained admin token for per_user_oauth and token_exchange clients (used
+// only to refresh the tool list), or the retained admin header values for a
+// per_user_headers client. Secret material never appears here: the refresh
+// token is reported as present or absent, and header values only by name.
+type MCPClientCredentialResponse struct {
+	Kind   string `json:"kind"`   // "oauth" | "headers"
+	Status string `json:"status"` // oauth: active | orphaned | needs_reauth. headers: active | orphaned | needs_update.
+	// StatusReason says why an oauth credential's status left active: the
+	// provider's rejection of the last refresh (HTTP status plus the OAuth
+	// error and description), a credential rotation, or a failed admin
+	// exchange. Empty while active and for headers credentials.
+	StatusReason string `json:"status_reason,omitempty"`
+	// ExpiresAt is the access token's expiry on oauth credentials; nil when
+	// the provider did not report one. Always nil for headers credentials.
+	ExpiresAt *string `json:"expires_at,omitempty"`
+	// LastRefreshedAt is set on oauth credentials once the access token has
+	// been refreshed or the credential re-authorized at least once.
+	LastRefreshedAt *string `json:"last_refreshed_at,omitempty"`
+	// HasRefreshToken reports whether the provider issued a refresh token, so
+	// the access token can be renewed without another consent. Always false
+	// for headers credentials.
+	HasRefreshToken bool `json:"has_refresh_token"`
+	// Scopes are the scopes the provider reported at consent time. Empty when
+	// the provider omitted them from its token response.
+	Scopes []string `json:"scopes,omitempty"`
+	// HeaderKeys are the names of the headers the stored admin values cover,
+	// sorted. Compared against the client's per_user_header_keys, a key
+	// present there but missing here is one the stored values predate.
+	HeaderKeys []string `json:"header_keys,omitempty"`
+	CreatedAt  string   `json:"created_at"`
+	UpdatedAt  string   `json:"updated_at"`
+}
+
+// mcpClientCredentialResponse picks the credential row a client of the given
+// auth type depends on and projects it to the wire shape. Mirrors the row
+// selection in projectMCPCredentialState so the sheet's credential block and
+// the client's state badge always describe the same row. Returns nil when
+// the auth type holds no such credential or the row does not exist.
+func mcpClientCredentialResponse(
+	authType schemas.MCPAuthType,
+	adminToken *configstoreTables.TableMCPOauthToken,
+	adminCred *configstoreTables.TableMCPPerUserHeaderCredential,
+	sharedToken *configstoreTables.TableMCPOauthToken,
+) *MCPClientCredentialResponse {
+	oauthCredential := func(t *configstoreTables.TableMCPOauthToken) *MCPClientCredentialResponse {
+		if t == nil {
+			return nil
+		}
+		resp := &MCPClientCredentialResponse{
+			Kind:            "oauth",
+			Status:          t.Status,
+			StatusReason:    t.StatusReason,
+			HasRefreshToken: t.RefreshToken != "",
+			Scopes:          parseOauthScopesJSON(t.Scopes),
+			CreatedAt:       t.CreatedAt.UTC().Format(rfc3339Nano),
+			UpdatedAt:       t.UpdatedAt.UTC().Format(rfc3339Nano),
+		}
+		if t.ExpiresAt != nil {
+			resp.ExpiresAt = bifrost.Ptr(t.ExpiresAt.UTC().Format(rfc3339Nano))
+		}
+		if t.LastRefreshedAt != nil {
+			resp.LastRefreshedAt = bifrost.Ptr(t.LastRefreshedAt.UTC().Format(rfc3339Nano))
+		}
+		return resp
+	}
+	switch authType {
+	case schemas.MCPAuthTypePerUserOauth, schemas.MCPAuthTypeTokenExchange:
+		return oauthCredential(adminToken)
+	case schemas.MCPAuthTypeOauth:
+		return oauthCredential(sharedToken)
+	case schemas.MCPAuthTypePerUserHeaders:
+		if adminCred == nil {
+			return nil
+		}
+		resp := &MCPClientCredentialResponse{
+			Kind:      "headers",
+			Status:    adminCred.Status,
+			CreatedAt: adminCred.CreatedAt.UTC().Format(rfc3339Nano),
+			UpdatedAt: adminCred.UpdatedAt.UTC().Format(rfc3339Nano),
+		}
+		// Names only. A decode failure (a row written before encryption was
+		// configured and read after, say) leaves the key list empty rather
+		// than hiding the row: status and timestamps are still accurate.
+		if headers, err := adminCred.GetHeaders(); err == nil && len(headers) > 0 {
+			resp.HeaderKeys = make([]string, 0, len(headers))
+			for name := range headers {
+				resp.HeaderKeys = append(resp.HeaderKeys, name)
+			}
+			sort.Strings(resp.HeaderKeys)
+		}
+		return resp
+	}
+	return nil
 }
 
 // MCPClusterStateAggregator is an optional capability the configured
-// MCPManager may additionally implement: given a client and the state its
-// own runtime already reports locally, it returns the cluster-aggregated
-// view — the same value when every instance agrees, or
-// schemas.MCPConnectionStateDegraded plus a per-instance breakdown when they
-// don't. A nil aggregated map means "agreement" or "not applicable"; a
-// non-nil one is only ever attached to the response when the returned state
-// is actually Degraded. Single-instance deployments never implement this,
-// so the type assertion in getMCPClientsPaginated simply misses and the
-// response is unchanged from today.
+// MCPManager may additionally implement: given a client's locally resolved
+// state and failure record, it folds in every other instance's self-reported
+// pair for the same client and returns the deployment-wide view. A nil
+// nodeStates means the local view stands as-is (every instance agrees on a
+// healthy state, or the state is one that is not compared per instance);
+// a non-nil one is the per-instance breakdown to attach, with state the
+// aggregate to show above it: schemas.MCPConnectionStateDegraded when the
+// instances disagree, or the agreed non-healthy state when they all report
+// it but may each have a different reason. Single-instance deployments never
+// implement this, so the type assertion in getMCPClientsPaginated simply
+// misses and the response is unchanged from today.
 type MCPClusterStateAggregator interface {
-	AggregateMCPClientState(clientID string, localState schemas.MCPConnectionState) (state schemas.MCPConnectionState, nodeStates map[string]string)
+	AggregateMCPClientState(clientID string, local schemas.MCPInstanceState) (state schemas.MCPConnectionState, nodeStates map[string]schemas.MCPInstanceState)
 }
 
 // getMCPClients handles GET /api/mcp/clients - Get all MCP clients
@@ -844,11 +964,18 @@ func (h *MCPHandler) getMCPClients(ctx *fasthttp.RequestCtx) {
 		AuthTypes:       parseCommaSeparated(string(ctx.QueryArgs().Peek("auth_type"))),
 		VirtualKeyIDs:   parseCommaSeparated(string(ctx.QueryArgs().Peek("virtual_keys"))),
 	}
-	if b, ok, err := parseBoolQueryArg(ctx, "all_virtual_keys"); err != nil {
+	// allowed_by_default replaced all_virtual_keys. The earlier name is still read, and the current
+	// one decides when both are sent.
+	if b, ok, err := parseBoolQueryArg(ctx, "allowed_by_default"); err != nil {
+		SendError(ctx, 400, "Invalid allowed_by_default parameter: must be a boolean")
+		return
+	} else if ok {
+		params.OnlyAllowedByDefault = b
+	} else if b, ok, err := parseBoolQueryArg(ctx, "all_virtual_keys"); err != nil {
 		SendError(ctx, 400, "Invalid all_virtual_keys parameter: must be a boolean")
 		return
 	} else if ok {
-		params.OnlyAllVirtualKeys = b
+		params.OnlyAllowedByDefault = b
 	}
 	// Runtime state selection (healthy/unstable) — resolved against the
 	// live engine inside getMCPClientsPaginated since it isn't a DB column.
@@ -1112,6 +1239,23 @@ func projectMCPCredentialState(
 	return runtimeState
 }
 
+// oauthTokenStatus and headerCredentialStatus read the status off a possibly
+// absent credential row, so projectMCPCredentialState's "" (no row) input
+// falls out of a plain map miss.
+func oauthTokenStatus(t *configstoreTables.TableMCPOauthToken) string {
+	if t == nil {
+		return ""
+	}
+	return t.Status
+}
+
+func headerCredentialStatus(c *configstoreTables.TableMCPPerUserHeaderCredential) string {
+	if c == nil {
+		return ""
+	}
+	return c.Status
+}
+
 func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params configstore.MCPClientsQueryParams, states []string) {
 	// Get connected clients from Bifrost engine — used both to resolve the
 	// runtime state filter and to merge live state/tools onto each row below.
@@ -1209,15 +1353,18 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 		}
 	}
 
-	// Batch-fetch the retained admin discovery credentials for this page's
-	// per-user clients so their registry state can carry the needs_reauth
-	// projection (see projectPerUserAdminCredentialState). Best-effort: a
-	// batch-read failure only means the projection is skipped and runtime
-	// states pass through untouched. Debug, not Error, because this runs on
-	// every registry list.
-	adminTokenStatusByClientID := make(map[string]string)
-	adminCredStatusByClientID := make(map[string]string)
-	sharedTokenStatusByClientID := make(map[string]string)
+	// Batch-fetch the credential row each of this page's clients holds on its
+	// own behalf (the retained admin discovery credential for per-user
+	// clients, the shared token for oauth ones). Each row feeds two things:
+	// the needs_reauth state projection (see projectMCPCredentialState) and
+	// the read-only credential block on the response (see
+	// mcpClientCredentialResponse). Best-effort: a batch-read failure only
+	// means the projection is skipped, runtime states pass through untouched,
+	// and the credential block is absent. Debug, not Error, because this runs
+	// on every registry list.
+	adminTokenByClientID := make(map[string]*configstoreTables.TableMCPOauthToken)
+	adminCredByClientID := make(map[string]*configstoreTables.TableMCPPerUserHeaderCredential)
+	sharedTokenByClientID := make(map[string]*configstoreTables.TableMCPOauthToken)
 	if h.store.ConfigStore != nil {
 		adminTokenClientIDs := make([]string, 0)
 		perUserHeaderClientIDs := make([]string, 0)
@@ -1243,7 +1390,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 		if len(adminTokenClientIDs) > 0 {
 			if adminTokens, err := h.store.ConfigStore.GetAdminOauthTokensByMCPClientIDs(ctx, adminTokenClientIDs); err == nil {
 				for clientID, token := range adminTokens {
-					adminTokenStatusByClientID[clientID] = token.Status
+					adminTokenByClientID[clientID] = token
 				}
 			} else {
 				logger.Debug("failed to batch-get admin oauth tokens for MCP registry state projection: %v", err)
@@ -1252,7 +1399,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 		if len(perUserHeaderClientIDs) > 0 {
 			if adminCreds, err := h.store.ConfigStore.GetAdminMCPPerUserHeaderCredentialsByClientIDs(ctx, perUserHeaderClientIDs); err == nil {
 				for clientID, cred := range adminCreds {
-					adminCredStatusByClientID[clientID] = cred.Status
+					adminCredByClientID[clientID] = cred
 				}
 			} else {
 				logger.Debug("failed to batch-get admin header credentials for MCP registry state projection: %v", err)
@@ -1262,7 +1409,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 			if sharedTokens, err := h.store.ConfigStore.GetSharedOauthTokensByConfigIDs(ctx, sharedOauthConfigIDs); err == nil {
 				for oauthConfigID, token := range sharedTokens {
 					for _, clientID := range clientIDsByOauthConfigID[oauthConfigID] {
-						sharedTokenStatusByClientID[clientID] = token.Status
+						sharedTokenByClientID[clientID] = token
 					}
 				}
 			} else {
@@ -1281,6 +1428,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 		clientConfig := &schemas.MCPClientConfig{
 			ID:                     dbClient.ClientID,
 			Name:                   dbClient.Name,
+			EndpointSlug:           dbClient.EndpointSlug,
 			IsCodeModeClient:       dbClient.IsCodeModeClient,
 			ConnectionType:         schemas.MCPConnectionType(dbClient.ConnectionType),
 			ConnectionString:       dbClient.ConnectionString,
@@ -1297,7 +1445,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 			ToolSyncInterval:       time.Duration(dbClient.ToolSyncInterval) * time.Second,
 			ToolExecutionTimeout:   time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
 			ToolPricing:            dbClient.ToolPricing,
-			AllowOnAllVirtualKeys:  dbClient.AllowOnAllVirtualKeys,
+			AllowByDefault:         dbClient.AllowByDefault,
 			Disabled:               dbClient.Disabled,
 			PerUserHeaderKeys:      dbClient.PerUserHeaderKeys,
 			TokenExchange:          dbClient.TokenExchange,
@@ -1328,6 +1476,10 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 			})
 		}
 		redactedConfig := h.store.RedactMCPClientConfig(clientConfig)
+		adminToken := adminTokenByClientID[dbClient.ClientID]
+		adminCred := adminCredByClientID[dbClient.ClientID]
+		sharedToken := sharedTokenByClientID[dbClient.ClientID]
+		credential := mcpClientCredentialResponse(clientConfig.AuthType, adminToken, adminCred, sharedToken)
 		if connectedClient, exists := connectedClientsMap[clientConfig.ID]; exists {
 			sortedTools := make([]schemas.ChatToolFunction, len(connectedClient.Tools))
 			copy(sortedTools, connectedClient.Tools)
@@ -1337,18 +1489,21 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 			resolvedState := projectMCPCredentialState(
 				clientConfig.AuthType,
 				connectedClient.State,
-				adminTokenStatusByClientID[dbClient.ClientID],
-				adminCredStatusByClientID[dbClient.ClientID],
-				sharedTokenStatusByClientID[dbClient.ClientID],
+				oauthTokenStatus(adminToken),
+				headerCredentialStatus(adminCred),
+				oauthTokenStatus(sharedToken),
 			)
 			resp := MCPClientResponse{
-				Config:    redactedConfig,
-				Tools:     sortedTools,
-				State:     resolvedState,
-				VKConfigs: vkConfigs,
+				Config:      redactedConfig,
+				Tools:       sortedTools,
+				State:       resolvedState,
+				LastFailure: connectedClient.LastFailure,
+				VKConfigs:   vkConfigs,
+				Credential:  credential,
 			}
 			if aggregator, ok := h.mcpManager.(MCPClusterStateAggregator); ok {
-				if aggState, nodeStates := aggregator.AggregateMCPClientState(clientConfig.ID, resolvedState); aggState == schemas.MCPConnectionStateDegraded {
+				local := schemas.MCPInstanceState{State: resolvedState, LastFailure: resp.LastFailure}
+				if aggState, nodeStates := aggregator.AggregateMCPClientState(clientConfig.ID, local); nodeStates != nil {
 					resp.State = aggState
 					resp.NodeStates = nodeStates
 				}
@@ -1356,10 +1511,11 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 			clients = append(clients, resp)
 		} else {
 			clients = append(clients, MCPClientResponse{
-				Config:    redactedConfig,
-				Tools:     []schemas.ChatToolFunction{},
-				State:     schemas.MCPConnectionStateError,
-				VKConfigs: vkConfigs,
+				Config:     redactedConfig,
+				Tools:      []schemas.ChatToolFunction{},
+				State:      schemas.MCPConnectionStateError,
+				VKConfigs:  vkConfigs,
+				Credential: credential,
 			})
 		}
 	}
@@ -1437,6 +1593,23 @@ type MCPClientRequest struct {
 	UserHeaders map[string]string   `json:"user_headers,omitempty"`
 }
 
+// UnmarshalJSON reads allow_by_default under its earlier name as well, allow_on_all_virtual_keys, so a
+// caller that has not moved to the current key is still understood. The current key decides when both
+// are sent; see schemas.ResolveAllowByDefault.
+func (r *MCPClientRequest) UnmarshalJSON(data []byte) error {
+	type alias MCPClientRequest
+	aux := &struct {
+		AllowByDefault        *bool `json:"allow_by_default,omitempty"`
+		AllowOnAllVirtualKeys *bool `json:"allow_on_all_virtual_keys,omitempty"`
+		*alias
+	}{alias: (*alias)(r)}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	r.AllowByDefault = schemas.ResolveAllowByDefault(aux.AllowByDefault, aux.AllowOnAllVirtualKeys)
+	return nil
+}
+
 // MCPVKConfigRequest represents a per-VK tool access config for an MCP client
 type MCPVKConfigRequest struct {
 	VirtualKeyID   string            `json:"virtual_key_id"`
@@ -1459,7 +1632,7 @@ const errToolSyncIntervalNegative = "tool_sync_interval must be 0 (use the globa
 type MCPClientUpdateRequest struct {
 	Name                   *string                         `json:"name,omitempty"`
 	Disabled               *bool                           `json:"disabled,omitempty"`
-	AllowOnAllVirtualKeys  *bool                           `json:"allow_on_all_virtual_keys,omitempty"`
+	AllowByDefault         *bool                           `json:"allow_by_default,omitempty"`
 	IsCodeModeClient       *bool                           `json:"is_code_mode_client,omitempty"`
 	IsPingAvailable        *bool                           `json:"is_ping_available,omitempty"`
 	NeedsSessionStickiness *bool                           `json:"needs_session_stickiness,omitempty"`
@@ -1475,9 +1648,100 @@ type MCPClientUpdateRequest struct {
 	TLSConfig              *schemas.MCPTLSConfig           `json:"tls_config,omitempty"`
 	VKConfigs              *[]MCPVKConfigRequest           `json:"vk_configs,omitempty"`
 	OauthConfig            *OAuthConfigRequest             `json:"oauth_config,omitempty"`
+
+	// AllowOnAllVirtualKeys is the earlier name of allow_by_default, still accepted. AllowByDefault
+	// decides when both are sent; see schemas.ResolveAllowByDefault.
+	AllowOnAllVirtualKeys *bool `json:"allow_on_all_virtual_keys,omitempty"`
+}
+
+// resolvedAllowByDefault applies PATCH semantics to allow_by_default: the request's value when it
+// sent one under either wire name, otherwise existing. The current name decides when both are sent;
+// see schemas.ResolveAllowByDefault.
+func (req *MCPClientUpdateRequest) resolvedAllowByDefault(existing bool) bool {
+	if req.AllowByDefault == nil && req.AllowOnAllVirtualKeys == nil {
+		return existing
+	}
+	return schemas.ResolveAllowByDefault(req.AllowByDefault, req.AllowOnAllVirtualKeys)
+}
+
+// rejectPrivateMCPTargetIfAuthBypassed refuses to register an HTTP/SSE MCP
+// client whose connection_string resolves to a loopback, private-network,
+// link-local, or CGNAT address when the caller reached this endpoint with no
+// credential check at all (default-open posture, BifrostContextKeyAuthBypassed).
+// A genuinely authenticated admin keeps the documented ability to point an MCP
+// client at a local or private server (see docs/mcp/connecting-to-servers.mdx,
+// whose own HTTP-client example uses http://localhost:3001/mcp) - only the
+// unauthenticated path is restricted, the same scoping used for the STDIO
+// client gate below. Returns true if the request was rejected (the error
+// response has already been written); the caller should return immediately.
+func rejectPrivateMCPTargetIfAuthBypassed(ctx *fasthttp.RequestCtx, connType string, connectionString *schemas.SecretVar) bool {
+	authBypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool)
+	if !authBypassed {
+		return false
+	}
+	if connType != string(schemas.MCPConnectionTypeHTTP) && connType != string(schemas.MCPConnectionTypeSSE) {
+		return false
+	}
+	if connectionString == nil {
+		return false
+	}
+	parsed, err := url.Parse(connectionString.GetValue())
+	if err != nil || parsed.Hostname() == "" {
+		// Malformed/unresolvable target: let the normal connect path surface
+		// its own error rather than duplicating URL validation here.
+		return false
+	}
+	// A bounded, request-independent context: this lookup is a pre-check, not
+	// a dial, and must not be tied to the request's own (often much longer)
+	// deadline.
+	lookupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ips, err := net.DefaultResolver.LookupIP(lookupCtx, "ip", parsed.Hostname())
+	if err != nil {
+		return false
+	}
+	for _, ip := range ips {
+		if !network.IsPublicIP(ip) {
+			SendError(ctx, fasthttp.StatusForbidden, "unauthenticated callers cannot register MCP clients that connect to loopback, private-network, or link-local addresses; set an admin password to allow this")
+			return true
+		}
+	}
+	return false
+}
+
+// rejectStdioMCPClientIfAuthBypassed refuses to register a stdio MCP client for
+// a caller that was let through because dashboard auth is unconfigured or
+// disabled. A stdio client makes Bifrost exec() an admin-supplied command and
+// args as the gateway process: intentional admin functionality, but only for a
+// caller who actually authenticated. Registering one over this network API with
+// no credential check is equivalent to unauthenticated remote code execution,
+// so it is refused even though the rest of the management API stays open for
+// the zero-config experience. Stdio clients can still be provisioned by an
+// operator with host/filesystem access via config.json. Returns true if the
+// request was rejected (the error response has already been written).
+func rejectStdioMCPClientIfAuthBypassed(ctx *fasthttp.RequestCtx, connType string) bool {
+	if connType != string(schemas.MCPConnectionTypeSTDIO) {
+		return false
+	}
+	if bypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool); !bypassed {
+		return false
+	}
+	SendError(ctx, fasthttp.StatusForbidden, "Registering a stdio MCP client requires an authenticated admin session; dashboard auth is currently disabled or unconfigured. Enable dashboard authentication, or provision this client via config.json instead.")
+	return true
 }
 
 // addMCPClient handles POST /api/mcp/client - Add a new MCP client
+// endpointSlugDerivable reports whether a usable /mcp/<slug> can be derived from the caller's
+// endpoint_slug, or failing that the name. The create handlers check this before any upstream dial
+// so an underivable slug fails with a 400 rather than after contacting the MCP server.
+func endpointSlugDerivable(endpointSlug, name string) bool {
+	base := endpointSlug
+	if base == "" {
+		base = name
+	}
+	return configstore.Slugify(base) != ""
+}
+
 func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 	if h.store.ConfigStore == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP operations unavailable: config store is disabled")
@@ -1489,6 +1753,16 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 	var req MCPClientRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
+		return
+	}
+
+	// Both gates run before anything else: registering a client is what makes
+	// Bifrost spawn the subprocess / dial the target, so a refusal has to land
+	// before any of that work is scheduled.
+	if rejectStdioMCPClientIfAuthBypassed(ctx, req.ConnectionType) {
+		return
+	}
+	if rejectPrivateMCPTargetIfAuthBypassed(ctx, req.ConnectionType, req.ConnectionString) {
 		return
 	}
 
@@ -1512,6 +1786,12 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 	}
 	if err := mcp.ValidateMCPClientName(req.Name); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid client name: %v", err))
+		return
+	}
+	// Reject an underivable endpoint slug up front, before any upstream verify/OAuth dial, so
+	// invalid input fails fast with a 400 instead of after contacting the MCP server.
+	if !endpointSlugDerivable(req.EndpointSlug, req.Name) {
+		SendError(ctx, fasthttp.StatusBadRequest, "Could not derive an endpoint slug from the name; provide an endpoint_slug")
 		return
 	}
 	if err := validateAllowedExtraHeaders(req.AllowedExtraHeaders); err != nil {
@@ -1599,6 +1879,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		schemasConfig := &schemas.MCPClientConfig{
 			ID:                     req.ClientID,
 			Name:                   req.Name,
+			EndpointSlug:           req.EndpointSlug,
 			IsCodeModeClient:       req.IsCodeModeClient,
 			IsPingAvailable:        &isPingAvailable,
 			NeedsSessionStickiness: req.NeedsSessionStickiness,
@@ -1614,7 +1895,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			ToolPricing:            req.ToolPricing,
 			Headers:                req.Headers,
 			AllowedExtraHeaders:    req.AllowedExtraHeaders,
-			AllowOnAllVirtualKeys:  req.AllowOnAllVirtualKeys,
+			AllowByDefault:         req.AllowByDefault,
 		}
 
 		// Verify connection and discover tools using the admin's sample
@@ -1633,6 +1914,14 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		if err := h.store.ConfigStore.CreateMCPClientConfig(ctx, schemasConfig); err != nil {
 			if errors.Is(err, configstore.ErrAlreadyExists) {
 				SendError(ctx, fasthttp.StatusConflict, "An MCP client with this name already exists")
+				return
+			}
+			if errors.Is(err, configstore.ErrMCPEndpointSlugExists) {
+				SendError(ctx, fasthttp.StatusConflict, "An MCP endpoint with this slug already exists")
+				return
+			}
+			if errors.Is(err, configstore.ErrMCPEndpointSlugInvalid) {
+				SendError(ctx, fasthttp.StatusBadRequest, "Could not derive an endpoint slug from the name; provide an endpoint_slug")
 				return
 			}
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create MCP config: %v", err))
@@ -1708,6 +1997,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		schemasConfig := &schemas.MCPClientConfig{
 			ID:                     req.ClientID,
 			Name:                   req.Name,
+			EndpointSlug:           req.EndpointSlug,
 			IsCodeModeClient:       req.IsCodeModeClient,
 			IsPingAvailable:        &isPingAvailable,
 			NeedsSessionStickiness: req.NeedsSessionStickiness,
@@ -1724,7 +2014,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			ToolPricing:            req.ToolPricing,
 			Headers:                req.Headers,
 			AllowedExtraHeaders:    req.AllowedExtraHeaders,
-			AllowOnAllVirtualKeys:  req.AllowOnAllVirtualKeys,
+			AllowByDefault:         req.AllowByDefault,
 		}
 
 		// Resolve an admin credential for synchronous verification + tool
@@ -1758,6 +2048,14 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		if err := h.store.ConfigStore.CreateMCPClientConfig(ctx, schemasConfig); err != nil {
 			if errors.Is(err, configstore.ErrAlreadyExists) {
 				SendError(ctx, fasthttp.StatusConflict, "An MCP client with this name already exists")
+				return
+			}
+			if errors.Is(err, configstore.ErrMCPEndpointSlugExists) {
+				SendError(ctx, fasthttp.StatusConflict, "An MCP endpoint with this slug already exists")
+				return
+			}
+			if errors.Is(err, configstore.ErrMCPEndpointSlugInvalid) {
+				SendError(ctx, fasthttp.StatusBadRequest, "Could not derive an endpoint slug from the name; provide an endpoint_slug")
 				return
 			}
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create MCP config: %v", err))
@@ -1855,7 +2153,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			ToolPricing:            req.ToolPricing,
 			Headers:                req.Headers,
 			AllowedExtraHeaders:    req.AllowedExtraHeaders,
-			AllowOnAllVirtualKeys:  req.AllowOnAllVirtualKeys,
+			AllowByDefault:         req.AllowByDefault,
 		}
 
 		if err := h.oauthHandler.StorePendingMCPClient(flowInitiation.OauthConfigID, pendingConfig); err != nil {
@@ -1941,7 +2239,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			Headers:                req.Headers,
 			AllowedExtraHeaders:    req.AllowedExtraHeaders,
 			ToolPricing:            req.ToolPricing,
-			AllowOnAllVirtualKeys:  req.AllowOnAllVirtualKeys,
+			AllowByDefault:         req.AllowByDefault,
 		}
 
 		// Store pending config in database (associated with oauth_config_id for multi-instance support)
@@ -1982,6 +2280,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 	schemasConfig := &schemas.MCPClientConfig{
 		ID:                     req.ClientID,
 		Name:                   req.Name,
+		EndpointSlug:           req.EndpointSlug,
 		IsCodeModeClient:       req.IsCodeModeClient,
 		ConnectionType:         schemas.MCPConnectionType(req.ConnectionType),
 		ConnectionString:       req.ConnectionString,
@@ -1998,7 +2297,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		ToolSyncInterval:       toolSyncInterval,
 		ToolExecutionTimeout:   resolvedToolExecutionTimeout,
 		ToolPricing:            req.ToolPricing,
-		AllowOnAllVirtualKeys:  req.AllowOnAllVirtualKeys,
+		AllowByDefault:         req.AllowByDefault,
 	}
 
 	// Creating MCP client config in config store
@@ -2006,6 +2305,14 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		if err := h.store.ConfigStore.CreateMCPClientConfig(ctx, schemasConfig); err != nil {
 			if errors.Is(err, configstore.ErrAlreadyExists) {
 				SendError(ctx, fasthttp.StatusConflict, "An MCP client with this name already exists")
+				return
+			}
+			if errors.Is(err, configstore.ErrMCPEndpointSlugExists) {
+				SendError(ctx, fasthttp.StatusConflict, "An MCP endpoint with this slug already exists")
+				return
+			}
+			if errors.Is(err, configstore.ErrMCPEndpointSlugInvalid) {
+				SendError(ctx, fasthttp.StatusBadRequest, "Could not derive an endpoint slug from the name; provide an endpoint_slug")
 				return
 			}
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create MCP config: %v", err))
@@ -2074,7 +2381,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	// PerUserHeaderKeys is snapshotted via append (independent backing array) rather
 	// than a bare slice-header copy, so we're safe if a future change mutates the
 	// slice contents in-place instead of reassigning the header.
-	existingAllowOnAllVirtualKeys := existingConfig.AllowOnAllVirtualKeys
+	existingAllowByDefault := existingConfig.AllowByDefault
 	existingPerUserHeaderKeys := append([]string(nil), existingConfig.PerUserHeaderKeys...)
 
 	// Resolve all mutable fields with PATCH semantics: use the provided value if
@@ -2087,10 +2394,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	if req.Disabled != nil {
 		disabled = *req.Disabled
 	}
-	allowOnAllVKs := existingConfig.AllowOnAllVirtualKeys
-	if req.AllowOnAllVirtualKeys != nil {
-		allowOnAllVKs = *req.AllowOnAllVirtualKeys
-	}
+	allowByDefault := req.resolvedAllowByDefault(existingConfig.AllowByDefault)
 	isCodeMode := existingConfig.IsCodeModeClient
 	if req.IsCodeModeClient != nil {
 		isCodeMode = *req.IsCodeModeClient
@@ -2483,7 +2787,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		ToolExecutionTimeout:   int(resolvedToolExecutionTimeout / time.Second),
 		AuthType:               string(existingConfig.AuthType),
 		OauthConfigID:          existingConfig.OauthConfigID,
-		AllowOnAllVirtualKeys:  allowOnAllVKs,
+		AllowByDefault:         allowByDefault,
 		Disabled:               disabled,
 		PerUserHeaderKeys:      perUserHeaderKeys,
 		TokenExchange:          tokenExchange,
@@ -2540,7 +2844,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		ToolSyncInterval:       toolSyncInterval,
 		ToolExecutionTimeout:   resolvedToolExecutionTimeout,
 		ToolPricing:            toolPricing,
-		AllowOnAllVirtualKeys:  allowOnAllVKs,
+		AllowByDefault:         allowByDefault,
 		Disabled:               disabled,
 		PerUserHeaderKeys:      perUserHeaderKeys,
 		TokenExchange:          tokenExchange,
@@ -2671,7 +2975,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	// comment) and no separate config table to update in the same
 	// transaction — the client row was already persisted above.
 	if shouldMarkExchangeNeedsReauth {
-		if err := h.store.ConfigStore.MarkAdminExchangeTokenNeedsReauthByMCPClientID(ctx, id); err != nil {
+		if err := h.store.ConfigStore.MarkAdminExchangeTokenNeedsReauthByMCPClientID(ctx, id, "token exchange settings were updated; the admin credential must be re-verified"); err != nil {
 			// Mirrors shouldRotateOAuthConfig's [PARTIAL SUCCESS] handling
 			// above: the rest of the update already committed, only the
 			// reauth marking failed.
@@ -2827,15 +3131,15 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	// Per-user credential reconciliation for changes that mutate who can
 	// access this MCP. Two trigger conditions:
 	//   1. vk_configs explicitly diffed (rows added/removed/updated).
-	//   2. AllowOnAllVirtualKeys flipped — the implicit fallback toggled,
-	//      every VK with a credential for this MCP needs re-evaluation.
+	//   2. allow_by_default flipped: the default grant toggled, so every
+	//      credential held for this MCP needs re-evaluation.
 	//
 	// Reconcile is enterprise-only behavior (no-op in OSS). It orphans
 	// credentials whose MCP just lost the grant and reactivates orphaned
 	// ones whose MCP regained the grant. Both surfaces (OAuth + headers)
 	// are reconciled — they share the same VK→MCP allowlist model.
 	if h.store.ConfigStore != nil {
-		shouldReconcile := req.VKConfigs != nil || allowOnAllVKs != existingAllowOnAllVirtualKeys
+		shouldReconcile := req.VKConfigs != nil || allowByDefault != existingAllowByDefault
 		if shouldReconcile {
 			if err := h.store.ConfigStore.ReconcileOauthAfterMCPChange(ctx, id); err != nil {
 				logger.Error(fmt.Sprintf("reconcile OAuth credentials after MCP %s update failed: %v", id, err))
@@ -3154,7 +3458,7 @@ func (h *MCPHandler) completePerUserOAuthAdminRepair(ctx *fasthttp.RequestCtx, b
 		ToolPricing:               clientConfig.ToolPricing,
 		ToolSyncInterval:          int(clientConfig.ToolSyncInterval / time.Second),
 		ToolExecutionTimeout:      int(clientConfig.ToolExecutionTimeout / time.Second),
-		AllowOnAllVirtualKeys:     clientConfig.AllowOnAllVirtualKeys,
+		AllowByDefault:            clientConfig.AllowByDefault,
 		PerUserHeaderKeys:         clientConfig.PerUserHeaderKeys,
 		DiscoveredTools:           clientConfig.DiscoveredTools,
 		DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
@@ -3412,7 +3716,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 				ToolPricing:               mcpClientConfig.ToolPricing,
 				ToolSyncInterval:          int(mcpClientConfig.ToolSyncInterval / time.Second),
 				ToolExecutionTimeout:      int(mcpClientConfig.ToolExecutionTimeout / time.Second),
-				AllowOnAllVirtualKeys:     mcpClientConfig.AllowOnAllVirtualKeys,
+				AllowByDefault:            mcpClientConfig.AllowByDefault,
 				PerUserHeaderKeys:         mcpClientConfig.PerUserHeaderKeys,
 				DiscoveredTools:           mcpClientConfig.DiscoveredTools,
 				DiscoveredToolNameMapping: mcpClientConfig.DiscoveredToolNameMapping,
@@ -3435,6 +3739,14 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 				if err := h.store.ConfigStore.CreateMCPClientConfig(ctx, mcpClientConfig); err != nil {
 					if errors.Is(err, configstore.ErrAlreadyExists) {
 						SendError(ctx, fasthttp.StatusConflict, "An MCP client with this name already exists")
+						return
+					}
+					if errors.Is(err, configstore.ErrMCPEndpointSlugExists) {
+						SendError(ctx, fasthttp.StatusConflict, "An MCP endpoint with this slug already exists")
+						return
+					}
+					if errors.Is(err, configstore.ErrMCPEndpointSlugInvalid) {
+						SendError(ctx, fasthttp.StatusBadRequest, "Could not derive an endpoint slug from the name; provide an endpoint_slug")
 						return
 					}
 					SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create MCP config: %v", err))
@@ -3535,7 +3847,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			ToolSyncInterval:          int(mcpClientConfig.ToolSyncInterval / time.Second),
 			ToolExecutionTimeout:      int(mcpClientConfig.ToolExecutionTimeout / time.Second),
 			TLSConfig:                 mcpClientConfig.TLSConfig,
-			AllowOnAllVirtualKeys:     mcpClientConfig.AllowOnAllVirtualKeys,
+			AllowByDefault:            mcpClientConfig.AllowByDefault,
 			DiscoveredTools:           mcpClientConfig.DiscoveredTools,
 			DiscoveredToolNameMapping: mcpClientConfig.DiscoveredToolNameMapping,
 			Disabled:                  mcpClientConfig.Disabled,
@@ -3569,6 +3881,14 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			if err := h.store.ConfigStore.CreateMCPClientConfig(ctx, mcpClientConfig); err != nil {
 				if errors.Is(err, configstore.ErrAlreadyExists) {
 					SendError(ctx, fasthttp.StatusConflict, "An MCP client with this name already exists")
+					return
+				}
+				if errors.Is(err, configstore.ErrMCPEndpointSlugExists) {
+					SendError(ctx, fasthttp.StatusConflict, "An MCP endpoint with this slug already exists")
+					return
+				}
+				if errors.Is(err, configstore.ErrMCPEndpointSlugInvalid) {
+					SendError(ctx, fasthttp.StatusBadRequest, "Could not derive an endpoint slug from the name; provide an endpoint_slug")
 					return
 				}
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create MCP config: %v", err))

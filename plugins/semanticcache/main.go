@@ -198,22 +198,27 @@ var VectorStoreProperties = map[string]vectorstore.VectorStoreProperties{
 	"cache_key": {
 		DataType:    vectorstore.VectorStorePropertyTypeString,
 		Description: "The cache key from the request",
+		Filterable:  true,
 	},
 	"provider": {
 		DataType:    vectorstore.VectorStorePropertyTypeString,
 		Description: "The provider used for the request",
+		Filterable:  true,
 	},
 	"model": {
 		DataType:    vectorstore.VectorStorePropertyTypeString,
 		Description: "The model used for the request",
+		Filterable:  true,
 	},
 	"params_hash": {
 		DataType:    vectorstore.VectorStorePropertyTypeString,
 		Description: "The hash of the parameters used for the request",
+		Filterable:  true,
 	},
 	"from_bifrost_semantic_cache_plugin": {
 		DataType:    vectorstore.VectorStorePropertyTypeBoolean,
 		Description: "Whether the cache entry was created by the BifrostSemanticCachePlugin",
+		Filterable:  true,
 	},
 }
 
@@ -527,10 +532,10 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 
 	extraFields := res.GetExtraFields()
 	requestType := extraFields.RequestType
-	cacheDebug := extraFields.CacheDebug
+	cacheMetadata := extraFields.CacheDebug
 
-	// Final-chunk signaling for cache replays: stampCacheDebugForHit only
-	// stamps CacheDebug.CacheHit=true on the LAST replay chunk (see search.go).
+	// Final-chunk signaling for cache replays: stampCacheMetadataForHit only
+	// stamps CacheHit=true on the LAST replay chunk (see search.go).
 	// When we see that stamp, we set the stream-end indicator on the root ctx
 	// synchronously — same goroutine as the rest of the post-hook chain.
 	//
@@ -538,13 +543,13 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 	// races: the producer can advance to its next iteration (and SetValue)
 	// while the receiver is still running PostLLMHooks for the previous
 	// chunk, poisoning that chunk's IsFinalChunk read.
-	if bifrost.IsStreamRequestType(requestType) && cacheDebug != nil && cacheDebug.CacheHit {
+	if bifrost.IsStreamRequestType(requestType) && cacheMetadata != nil && cacheMetadata.CacheHit {
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 	}
 	// Cache hit replay: cache_debug was already stamped in PreLLMHook by
-	// stampCacheDebugForHit. There's nothing further to do here — no new
+	// stampCacheMetadataForHit. There's nothing further to do here — no new
 	// telemetry to stamp, no write to perform.
-	if cacheDebug != nil && cacheDebug.CacheHit {
+	if cacheMetadata != nil && cacheMetadata.CacheHit {
 		plugin.clearCacheState(requestID)
 		return res, nil, nil
 	}
@@ -577,7 +582,7 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 
 	// PreLLMHook short-circuited from cache (non-final stream chunks of a
 	// replay land here). Telemetry is already stamped on the final chunk by
-	// stampCacheDebugForHit; non-final chunks have no telemetry to add.
+	// stampCacheMetadataForHit; non-final chunks have no metadata to add.
 	// Without this guard non-final chunks would slip into addStreamingResponse
 	// and trigger a duplicate write at the same directCacheID
 	// (Weaviate 422 "id already exists").
@@ -593,7 +598,7 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 	// Observability shouldn't depend on the write decision — that was
 	// previously the case and made the cache layer invisible to callers
 	// using no-store.
-	plugin.stampCacheDebugForMiss(state, extraFields, storageID, isStream, isFinalChunk)
+	plugin.stampCacheMetadataForMiss(state, extraFields, storageID, isStream, isFinalChunk)
 
 	// Now decide whether to actually write. Skipping the write still
 	// leaves cache_debug stamped above.
@@ -649,7 +654,7 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 // or large-payload modes are in effect. The cache-hit-replay case is handled
 // separately as an early return in PostLLMHook because it must short-circuit
 // before stamping (cache_debug for hits is already populated by
-// stampCacheDebugForHit during PreLLMHook).
+// stampCacheMetadataForHit during PreLLMHook).
 func (plugin *Plugin) shouldSkipCacheWrite(ctx *schemas.BifrostContext) bool {
 	if isLargePayload, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool); ok && isLargePayload {
 		return true
@@ -691,27 +696,27 @@ func (plugin *Plugin) resolveStorageIDAndEmbedding(ctx *schemas.BifrostContext, 
 	return storageID, embedding, shouldStoreEmbeddings
 }
 
-// stampCacheDebugForMiss attaches cache miss telemetry to the response. It
+// stampCacheMetadataForMiss attaches cache miss metadata to the response. It
 // always sets CacheHit=false and CacheID to the storage ID where the entry
 // will be written, so the caller can later invalidate via ClearCacheForCacheID.
 // Embedding-cost fields (ProviderUsed/ModelUsed/InputTokens) are only stamped
 // when semantic search actually ran. For streams, only the final chunk is
 // stamped to avoid duplicating telemetry.
-func (plugin *Plugin) stampCacheDebugForMiss(state *cacheState, extraFields *schemas.BifrostResponseExtraFields, storageID string, isStream, isFinalChunk bool) {
+func (plugin *Plugin) stampCacheMetadataForMiss(state *cacheState, extraFields *schemas.BifrostResponseExtraFields, storageID string, isStream, isFinalChunk bool) {
 	if isStream && !isFinalChunk {
 		return
 	}
 	if extraFields.CacheDebug == nil {
-		extraFields.CacheDebug = &schemas.BifrostCacheDebug{}
+		extraFields.CacheDebug = &schemas.BifrostCacheMetadata{}
 	}
-	cd := extraFields.CacheDebug
-	cd.CacheHit = false
-	cd.CacheID = bifrost.Ptr(storageID)
+	cacheMetadata := extraFields.CacheDebug
+	cacheMetadata.CacheHit = false
+	cacheMetadata.CacheID = bifrost.Ptr(storageID)
 	if state.EmbeddingsInputTokens > 0 {
 		inputTokens := state.EmbeddingsInputTokens
-		cd.ProviderUsed = bifrost.Ptr(string(plugin.config.Provider))
-		cd.ModelUsed = bifrost.Ptr(plugin.config.EmbeddingModel)
-		cd.InputTokens = &inputTokens
+		cacheMetadata.ProviderUsed = bifrost.Ptr(string(plugin.config.Provider))
+		cacheMetadata.ModelUsed = bifrost.Ptr(plugin.config.EmbeddingModel)
+		cacheMetadata.InputTokens = &inputTokens
 	}
 }
 
@@ -804,7 +809,7 @@ func (plugin *Plugin) ClearCacheForKey(cacheKey string) error {
 }
 
 // ClearCacheForCacheID deletes a single cache entry by its storage ID. The
-// caller obtains the ID from BifrostResponse.ExtraFields.CacheDebug.CacheID,
+// caller obtains the ID from the response's cache metadata compatibility field,
 // which is stamped on both cache hits and cache misses — so the same handle
 // works whether the request wrote the entry or read it.
 func (plugin *Plugin) ClearCacheForCacheID(cacheID string) error {

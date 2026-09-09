@@ -446,6 +446,71 @@ test.describe('Config Settings', () => {
       const isVisible = await configSettingsPage.isRateLimitingSectionVisible()
       expect(isVisible).toBeDefined()
     })
+
+    test.describe('Virtual Key Rotation Cooldown', () => {
+      // The cooldown is a text input, which the generic settings capture and
+      // restore (number inputs and switches only) does not cover, so each test
+      // restores the operator's original value itself.
+      let originalCooldown: string
+
+      test.beforeEach(async ({ configSettingsPage }) => {
+        // The onboarding checklist covers the Save button in the bottom-right
+        // corner on a fresh instance, so dismiss it before touching settings.
+        await configSettingsPage.dismissOnboardingWidget()
+        originalCooldown = await configSettingsPage.getVkRotationCooldown()
+      })
+
+      test.afterEach(async ({ configSettingsPage }) => {
+        await configSettingsPage.goto('security')
+        await configSettingsPage.dismissOnboardingWidget()
+        const current = await configSettingsPage.getVkRotationCooldown()
+        if (current !== originalCooldown) {
+          await configSettingsPage.setVkRotationCooldown(originalCooldown)
+          if (await configSettingsPage.hasPendingChanges()) {
+            await configSettingsPage.saveSettings()
+          }
+        }
+      })
+
+      test('should display the rotation cooldown input', async ({ configSettingsPage }) => {
+        await expect(configSettingsPage.vkRotationCooldownInput).toBeVisible()
+        await expect(configSettingsPage.vkRotationCooldownInput).toHaveAttribute('placeholder', '5m')
+      })
+
+      test('should persist a duration across a reload', async ({ configSettingsPage }) => {
+        await configSettingsPage.setVkRotationCooldown('5m')
+        await configSettingsPage.saveSettings()
+
+        await configSettingsPage.goto('security')
+        // The API stores and returns the cooldown as nanoseconds, so this also
+        // pins that the UI formats it back into the duration string that was
+        // typed rather than showing 300000000000.
+        await expect(configSettingsPage.vkRotationCooldownInput).toHaveValue('5m')
+      })
+
+      test('should reject an invalid duration without saving it', async ({ configSettingsPage }) => {
+        await configSettingsPage.setVkRotationCooldown('not-a-duration')
+        await configSettingsPage.saveBtn.click()
+        await configSettingsPage.waitForErrorToast()
+
+        await configSettingsPage.goto('security')
+        await expect(configSettingsPage.vkRotationCooldownInput).not.toHaveValue('not-a-duration')
+      })
+
+      test('should disable the grace period when cleared', async ({ configSettingsPage }) => {
+        await configSettingsPage.setVkRotationCooldown('30s')
+        await configSettingsPage.saveSettings()
+        await configSettingsPage.goto('security')
+        await expect(configSettingsPage.vkRotationCooldownInput).toHaveValue('30s')
+
+        // Clearing the field is how an operator turns the grace period off: the
+        // previous key value must stop working the moment a key is rotated.
+        await configSettingsPage.setVkRotationCooldown('')
+        await configSettingsPage.saveSettings()
+        await configSettingsPage.goto('security')
+        await expect(configSettingsPage.vkRotationCooldownInput).toHaveValue('')
+      })
+    })
   })
 
   test.describe('Performance Tuning Settings', () => {

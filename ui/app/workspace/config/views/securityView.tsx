@@ -14,12 +14,16 @@ import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } f
 import { AuthConfig, CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
 import { SecretVar } from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
+import { formatCooldown } from "@/lib/utils/duration";
 import { getPasswordPolicyFailures, validateOrigins } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetAuthTypeQuery } from "@enterprise/lib/store/apis/scimApi";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+
+// Go duration string: one or more <number><unit> segments, e.g. "5m", "1h30m".
+const COOLDOWN_PATTERN = /^(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/;
 
 export default function SecurityView() {
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
@@ -37,11 +41,13 @@ export default function SecurityView() {
 		allowed_headers: string;
 		required_headers: string;
 		whitelisted_routes: string;
+		vk_rotation_cooldown: string;
 	}>({
 		allowed_origins: "",
 		allowed_headers: "",
 		required_headers: "",
 		whitelisted_routes: "",
+		vk_rotation_cooldown: "",
 	});
 
 	const [authConfig, setAuthConfig] = useState<AuthConfig>({
@@ -66,6 +72,7 @@ export default function SecurityView() {
 				allowed_headers: config?.allowed_headers?.join(", ") || "",
 				required_headers: config?.required_headers?.join(", ") || "",
 				whitelisted_routes: config?.whitelisted_routes?.join(", ") || "",
+				vk_rotation_cooldown: formatCooldown(config?.vk_rotation_cooldown),
 			});
 		}
 		if (bifrostConfig?.auth_config) {
@@ -108,6 +115,7 @@ export default function SecurityView() {
 		const allowDirectKeysChanged = localConfig.allow_direct_keys !== config.allow_direct_keys;
 		const dualCredentialConflictBehaviorChanged =
 			(localConfig.dual_credential_conflict_behavior || "prefer_idp") !== (config.dual_credential_conflict_behavior || "prefer_idp");
+		const vkRotationCooldownChanged = formatCooldown(localConfig.vk_rotation_cooldown) !== formatCooldown(config.vk_rotation_cooldown);
 
 		return (
 			originsChanged ||
@@ -117,7 +125,8 @@ export default function SecurityView() {
 			authChanged ||
 			enforceAuthOnInferenceChanged ||
 			allowDirectKeysChanged ||
-			dualCredentialConflictBehaviorChanged
+			dualCredentialConflictBehaviorChanged ||
+			vkRotationCooldownChanged
 		);
 	}, [config, localConfig, authConfig, bifrostConfig, showPasswordSection]);
 
@@ -161,6 +170,12 @@ export default function SecurityView() {
 		setLocalConfig((prev) => ({ ...prev, [field]: value }));
 	}, []);
 
+	const handleVkRotationCooldownChange = useCallback((value: string) => {
+		setLocalValues((prev) => ({ ...prev, vk_rotation_cooldown: value }));
+		// The backend accepts Go duration strings; empty input means 0 (disabled).
+		setLocalConfig((prev) => ({ ...prev, vk_rotation_cooldown: value.trim() === "" ? 0 : value.trim() }));
+	}, []);
+
 	const handleAuthToggle = useCallback((checked: boolean) => {
 		setAuthConfig((prev) => ({ ...prev, is_enabled: checked }));
 	}, []);
@@ -182,6 +197,11 @@ export default function SecurityView() {
 				toast.error(
 					`Invalid origins: ${validation.invalidOrigins.join(", ")}. Origins must be valid URLs like https://example.com, wildcard patterns like https://*.example.com, or "*" to allow all origins`,
 				);
+				return;
+			}
+			const cooldownInput = localValues.vk_rotation_cooldown.trim();
+			if (cooldownInput !== "" && cooldownInput !== "0" && !COOLDOWN_PATTERN.test(cooldownInput)) {
+				toast.error('Rotation cooldown must be a duration like "30s", "5m", or "1h30m" (leave empty to disable).');
 				return;
 			}
 			const hasUsername = authConfig.admin_username?.value || authConfig.admin_username?.ref;
@@ -227,7 +247,7 @@ export default function SecurityView() {
 				toast.error(message);
 			}
 		}
-	}, [bifrostConfig, localConfig, authConfig, showPasswordSection, updateCoreConfig, isFirstTimeSetup, setupToken]);
+	}, [bifrostConfig, localConfig, localValues.vk_rotation_cooldown, authConfig, showPasswordSection, updateCoreConfig, isFirstTimeSetup, setupToken]);
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4">
@@ -406,6 +426,27 @@ export default function SecurityView() {
 						data-testid="security-allow-direct-keys-switch"
 						checked={localConfig.allow_direct_keys}
 						onCheckedChange={(checked) => handleConfigChange("allow_direct_keys", checked)}
+					/>
+				</div>
+				{/* Cooldown After Virtual Key Rotation */}
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="vk-rotation-cooldown" className="text-sm font-medium">
+							Cooldown After Virtual Key Rotation
+						</label>
+						<p className="text-muted-foreground text-sm">
+							After rotating a virtual key, the previous value keeps authenticating for this long, giving callers time to switch to the new
+							key. Use a duration like <b>30s</b>, <b>5m</b>, or <b>1h</b>. Leave empty (or 0) to have the old value stop working
+							immediately. Maximum 30 days.
+						</p>
+					</div>
+					<Input
+						id="vk-rotation-cooldown"
+						data-testid="security-vk-rotation-cooldown-input"
+						className="w-[180px]"
+						placeholder="5m"
+						value={localValues.vk_rotation_cooldown}
+						onChange={(e) => handleVkRotationCooldownChange(e.target.value)}
 					/>
 				</div>
 				{/* Allowed Origins */}

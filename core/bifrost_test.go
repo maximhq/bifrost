@@ -3,6 +3,8 @@ package bifrost
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"runtime"
 	"strings"
 	"sync"
@@ -618,6 +620,96 @@ func TestHandleProviderRequest_OCROperationNotAllowed(t *testing.T) {
 	}
 }
 
+// https://github.com/maximhq/bifrost/issues/6784: an OpenAI-compatible upstream that ends
+// generation on finish_reason, never sends [DONE] and then parks the connection behind SSE
+// heartbeats holds the stream open indefinitely — heartbeat bytes reset the idle timer without
+// making semantic progress. custom_provider_config.does_not_send_done_marker is the operator's
+// declaration that finish_reason is terminal for this upstream; this pins the whole path, from
+// the account config through the per-attempt context stamp to the provider's read loop.
+func TestCustomProviderDoesNotSendDoneMarkerEndsParkedStream(t *testing.T) {
+	const chunk = `data: {"id":"chatcmpl-repro","object":"chat.completion.chunk","created":1,"model":"repro-model",` +
+		`"choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}` + "\n\n" +
+		`data: {"id":"chatcmpl-repro","object":"chat.completion.chunk","created":1,"model":"repro-model",` +
+		`"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}` + "\n\n"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl, ok := w.(http.Flusher)
+		if !ok {
+			return
+		}
+		if _, err := w.Write([]byte(chunk)); err != nil {
+			return
+		}
+		fl.Flush()
+
+		ticker := time.NewTicker(20 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-ticker.C:
+				if _, err := w.Write([]byte(": ping\n\n")); err != nil {
+					return
+				}
+				fl.Flush()
+			}
+		}
+	}))
+	defer server.Close()
+
+	const customProvider = schemas.ModelProvider("custom-openai")
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(customProvider, 1, 1, server.URL)
+	account.configs[customProvider].NetworkConfig.MaxRetries = 0
+	account.SetCustomProviderConfig(customProvider, &schemas.CustomProviderConfig{
+		BaseProviderType:      schemas.OpenAI,
+		DoesNotSendDoneMarker: true,
+	})
+	account.SetKeysForProvider(customProvider, []schemas.Key{
+		{ID: "custom-key", Value: *schemas.NewSecretVar("sk-custom"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+
+	client := newStreamTestClient(t, account)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: customProvider,
+		Model:    "repro-model",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: Ptr("hi")},
+		}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("stream request failed: %v", bifrostErr)
+	}
+
+	type drained struct {
+		content string
+		errs    []string
+	}
+	done := make(chan drained, 1)
+	go func() {
+		content, errs := drainChatStream(stream)
+		done <- drained{content: content, errs: errs}
+	}()
+
+	select {
+	case result := <-done:
+		if len(result.errs) > 0 {
+			t.Fatalf("stream carried errors: %v", result.errs)
+		}
+		if result.content != "hello" {
+			t.Errorf("expected the streamed content to survive the early break, got %q", result.content)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("stream never terminated: does_not_send_done_marker did not reach the provider read loop")
+	}
+}
+
 // Test that transientServerStatusCodes are properly defined.
 // These are upstream-side failures unrelated to the credential — the same key is retried.
 func TestTransientServerStatusCodes(t *testing.T) {
@@ -753,6 +845,8 @@ type MockAccount struct {
 	mu      sync.RWMutex
 	configs map[schemas.ModelProvider]*schemas.ProviderConfig
 	keys    map[schemas.ModelProvider][]schemas.Key
+	// keyLookups counts GetKeysForProvider calls per provider
+	keyLookups sync.Map
 }
 
 func NewMockAccount() *MockAccount {
@@ -823,6 +917,9 @@ func (ma *MockAccount) GetConfigForProvider(provider schemas.ModelProvider) (*sc
 }
 
 func (ma *MockAccount) GetKeysForProvider(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+	counter, _ := ma.keyLookups.LoadOrStore(provider, &atomic.Int64{})
+	counter.(*atomic.Int64).Add(1)
+
 	ma.mu.RLock()
 	defer ma.mu.RUnlock()
 	if keys, exists := ma.keys[provider]; exists {
@@ -835,6 +932,21 @@ func (ma *MockAccount) SetKeysForProvider(provider schemas.ModelProvider, keys [
 	ma.mu.Lock()
 	defer ma.mu.Unlock()
 	ma.keys[provider] = keys
+}
+
+func (ma *MockAccount) SetCustomProviderConfig(provider schemas.ModelProvider, customConfig *schemas.CustomProviderConfig) {
+	ma.mu.Lock()
+	defer ma.mu.Unlock()
+	if config, exists := ma.configs[provider]; exists {
+		config.CustomProviderConfig = customConfig
+	}
+}
+
+func (ma *MockAccount) KeyLookupCount(provider schemas.ModelProvider) int64 {
+	if counter, ok := ma.keyLookups.Load(provider); ok {
+		return counter.(*atomic.Int64).Load()
+	}
+	return 0
 }
 
 type countingTracer struct {
@@ -893,6 +1005,110 @@ func TestFilterProvidersByContext(t *testing.T) {
 			t.Fatalf("expected no providers for malformed context value, got %v", filtered)
 		}
 	})
+}
+
+// TestListAllModels_CustomProviderAllowedRequestsGate covers the fan-out gate:
+// a custom provider that disables list_models via allowed_requests must not be
+// dispatched at all, while providers that allow it — explicitly or by leaving
+// AllowedRequests nil, which permits every operation — still report their models.
+// The key lookup count is what separates "skipped" from "dispatched and bounced":
+// both end up contributing no models to the aggregated response.
+func TestListAllModels_CustomProviderAllowedRequestsGate(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"object":"list","data":[{"id":"model-a","object":"model","created":0,"owned_by":"test"}]}`)
+	}))
+	defer server.Close()
+
+	tests := []struct {
+		name            string
+		provider        schemas.ModelProvider
+		allowedRequests *schemas.AllowedRequests
+		wantDispatched  bool
+	}{
+		{
+			name:            "nil allowed requests allows all operations",
+			provider:        schemas.ModelProvider("custom-openai-nil"),
+			allowedRequests: nil,
+			wantDispatched:  true,
+		},
+		{
+			name:            "list models explicitly allowed",
+			provider:        schemas.ModelProvider("custom-openai-allowed"),
+			allowedRequests: &schemas.AllowedRequests{ListModels: true},
+			wantDispatched:  true,
+		},
+		{
+			name:            "list models explicitly disallowed",
+			provider:        schemas.ModelProvider("custom-openai-gated"),
+			allowedRequests: &schemas.AllowedRequests{ListModels: false},
+			wantDispatched:  false,
+		},
+	}
+
+	// All cases share one fan-out so the gate is exercised the way it runs in
+	// production: a mix of gated and ungated providers in a single pass.
+	account := NewMockAccount()
+	for _, tt := range tests {
+		account.AddProviderWithBaseURL(tt.provider, 1, 1, server.URL)
+		account.SetKeysForProvider(tt.provider, []schemas.Key{
+			{
+				ID:     fmt.Sprintf("test-key-%s", tt.provider),
+				Value:  *schemas.NewSecretVar(fmt.Sprintf("sk-test-%s", tt.provider)),
+				Models: schemas.WhiteList{"*"},
+				Weight: 100,
+			},
+		})
+		account.SetCustomProviderConfig(tt.provider, &schemas.CustomProviderConfig{
+			BaseProviderType: schemas.OpenAI,
+			AllowedRequests:  tt.allowedRequests,
+		})
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	client, err := Init(ctx, schemas.BifrostConfig{
+		Account: account,
+		Logger:  NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("Error initializing Bifrost: %v", err)
+	}
+	defer client.Shutdown()
+
+	response, bifrostErr := client.ListAllModels(ctx, &schemas.BifrostListModelsRequest{})
+	if bifrostErr != nil {
+		t.Fatalf("ListAllModels returned error: %v", bifrostErr)
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			keyLookups := account.KeyLookupCount(tt.provider)
+			foundModels := false
+			for _, model := range response.Data {
+				if strings.HasPrefix(model.ID, string(tt.provider)+"/") {
+					foundModels = true
+					break
+				}
+			}
+
+			if tt.wantDispatched {
+				if keyLookups == 0 {
+					t.Error("expected provider to be dispatched, got 0 key lookups")
+				}
+				if !foundModels {
+					t.Errorf("expected models from provider, got %+v", response.Data)
+				}
+				return
+			}
+
+			if keyLookups != 0 {
+				t.Errorf("expected provider to be skipped before key selection, got %d key lookups", keyLookups)
+			}
+			if foundModels {
+				t.Errorf("expected no models from skipped provider, got %+v", response.Data)
+			}
+		})
+	}
 }
 
 func TestRunStreamPreHooks_FinalChunkFlushesTrace(t *testing.T) {
@@ -2935,9 +3151,12 @@ func TestRunPreRequestHooks_CommitsRoutingPinnedKey(t *testing.T) {
 
 // TestClearAnthropicPassthroughForNonNativeProvider verifies that Anthropic raw-body
 // passthrough flags are cleared only when an Anthropic-integration request resolves to a
-// provider that doesn't speak the Anthropic Messages API natively (e.g. Bedrock). This
-// guards the fix for Claude-via-Bedrock tool calls breaking when the model is routed to
-// Bedrock through a key alias (so the catalog-time guard never fires).
+// provider/model pair that doesn't speak the Anthropic Messages API natively (e.g. Bedrock).
+// This guards the fix for Claude-via-Bedrock tool calls breaking when the model is routed to
+// Bedrock through a key alias (so the catalog-time guard never fires), and the fix for a
+// routing rule retargeting a Claude Code request to a non-Claude model on a multi-family
+// provider (Vertex/Azure/Bedrock Mantle), which sent the raw Anthropic body to that provider's
+// OpenAI/Gemini surface.
 func TestClearAnthropicPassthroughForNonNativeProvider(t *testing.T) {
 	flagKeys := []schemas.BifrostContextKey{
 		schemas.BifrostContextKeyUseRawRequestBody,
@@ -2949,14 +3168,31 @@ func TestClearAnthropicPassthroughForNonNativeProvider(t *testing.T) {
 		name            string
 		integrationType string
 		baseProvider    schemas.ModelProvider
+		model           string
+		alias           *schemas.ResolvedAlias
 		wantCleared     bool
 	}{
-		{"anthropic integration to bedrock clears", "anthropic", schemas.Bedrock, true},
-		{"anthropic integration to anthropic preserved", "anthropic", schemas.Anthropic, false},
-		{"anthropic integration to vertex preserved", "anthropic", schemas.Vertex, false},
-		{"anthropic integration to azure preserved", "anthropic", schemas.Azure, false},
-		{"non-anthropic integration to bedrock preserved", "openai", schemas.Bedrock, false},
-		{"no integration type to bedrock preserved", "", schemas.Bedrock, false},
+		{"anthropic integration to bedrock clears", "anthropic", schemas.Bedrock, "anthropic.claude-sonnet-4-20250514-v1:0", nil, true},
+		{"anthropic integration to anthropic preserved", "anthropic", schemas.Anthropic, "claude-sonnet-4-20250514", nil, false},
+		{"anthropic integration to vertex preserved", "anthropic", schemas.Vertex, "claude-sonnet-4@20250514", nil, false},
+		{"anthropic integration to azure preserved", "anthropic", schemas.Azure, "claude-sonnet-4-20250514", nil, false},
+		{"anthropic integration to bedrock mantle preserved", "anthropic", schemas.BedrockMantle, "claude-sonnet-4-20250514", nil, false},
+		{"anthropic integration to bedrock mantle openai model clears", "anthropic", schemas.BedrockMantle, "gpt-5-6-luna", nil, true},
+		{"anthropic integration to azure openai model clears", "anthropic", schemas.Azure, "gpt-5", nil, true},
+		{"anthropic integration to vertex gemini model clears", "anthropic", schemas.Vertex, "gemini-2.5-pro", nil, true},
+		{
+			name:            "anthropic integration to bedrock mantle claude alias preserved",
+			integrationType: "anthropic",
+			baseProvider:    schemas.BedrockMantle,
+			model:           "fast-model",
+			alias: &schemas.ResolvedAlias{
+				Key:    "fast-model",
+				Config: &schemas.AliasConfig{ModelID: "anthropic.claude-sonnet-4-20250514-v1:0"},
+			},
+			wantCleared: false,
+		},
+		{"non-anthropic integration to bedrock preserved", "openai", schemas.Bedrock, "claude-sonnet-4-20250514", nil, false},
+		{"no integration type to bedrock preserved", "", schemas.Bedrock, "claude-sonnet-4-20250514", nil, false},
 	}
 
 	for _, tt := range tests {
@@ -2965,6 +3201,9 @@ func TestClearAnthropicPassthroughForNonNativeProvider(t *testing.T) {
 			if tt.integrationType != "" {
 				ctx.SetValue(schemas.BifrostContextKeyIntegrationType, tt.integrationType)
 			}
+			if tt.alias != nil {
+				ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, tt.alias)
+			}
 			for _, k := range flagKeys {
 				ctx.SetValue(k, true)
 			}
@@ -2972,7 +3211,7 @@ func TestClearAnthropicPassthroughForNonNativeProvider(t *testing.T) {
 			ctx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
 			ctx.SetValue(schemas.BifrostContextKeyURLPath, "/v1/messages")
 
-			clearAnthropicPassthroughForNonNativeProvider(ctx, tt.baseProvider)
+			clearAnthropicPassthroughForNonNativeProvider(ctx, tt.baseProvider, tt.model)
 
 			for _, k := range flagKeys {
 				got, _ := ctx.Value(k).(bool)
@@ -2999,6 +3238,79 @@ func TestClearAnthropicPassthroughForNonNativeProvider(t *testing.T) {
 			// see isKeySkippingAllowed.
 			if skip, _ := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); !skip {
 				t.Error("SkipKeySelection was cleared; it must be gated at the read site, not mutated per attempt")
+			}
+		})
+	}
+}
+
+// TestClearAnthropicPassthroughForUnsupportedStructuredOutput covers a Claude Code session-title
+// call (a one-field JSON schema in output_config.format) that a routing rule retargets to Bedrock
+// Mantle. The ingress guard in the Anthropic integration only sees a provider spelled out in the
+// caller's model string, so an alias or routing rule hides it and the raw body used to reach the
+// Mantle Messages API with output_config.format intact — 400 "Extra inputs are not permitted".
+// Only the raw request body is dropped: the raw response flags stay on, and the response path
+// keys off the synthetic bf_so_* tool name instead. Vertex and Azure take the same route.
+func TestClearAnthropicPassthroughForUnsupportedStructuredOutput(t *testing.T) {
+	const outputConfigBody = `{"model":"claude-sonnet-5","output_config":{"format":{"type":"json_schema","schema":{"type":"object","properties":{"title":{"type":"string"}}}}}}`
+	// Legacy beta shape: top-level output_format instead of output_config.format.
+	const outputFormatBody = `{"model":"claude-sonnet-5","output_format":{"type":"json_schema","schema":{"type":"object"}}}`
+	const noFormatBody = `{"model":"claude-sonnet-5","messages":[]}`
+
+	responsesRequest := func(rawBody string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{
+			ResponsesRequest: &schemas.BifrostResponsesRequest{RawRequestBody: []byte(rawBody)},
+		}
+	}
+
+	tests := []struct {
+		name            string
+		integrationType string
+		baseProvider    schemas.ModelProvider
+		useRawBody      bool
+		req             *schemas.BifrostRequest
+		wantCleared     bool
+	}{
+		{"bedrock mantle with output_config.format clears", "anthropic", schemas.BedrockMantle, true, responsesRequest(outputConfigBody), true},
+		{"bedrock mantle with legacy output_format clears", "anthropic", schemas.BedrockMantle, true, responsesRequest(outputFormatBody), true},
+		{"vertex with output_config.format clears", "anthropic", schemas.Vertex, true, responsesRequest(outputConfigBody), true},
+		{"azure with output_config.format clears", "anthropic", schemas.Azure, true, responsesRequest(outputConfigBody), true},
+		// Anthropic and Bedrock Converse serve the schema natively; nothing to rewrite.
+		{"anthropic with output_config.format preserved", "anthropic", schemas.Anthropic, true, responsesRequest(outputConfigBody), false},
+		{"bedrock with output_config.format preserved", "anthropic", schemas.Bedrock, true, responsesRequest(outputConfigBody), false},
+		{"bedrock mantle without a format preserved", "anthropic", schemas.BedrockMantle, true, responsesRequest(noFormatBody), false},
+		// Typed conversion is already in force — the raw body is never consulted.
+		{"passthrough already off stays off", "anthropic", schemas.BedrockMantle, false, responsesRequest(outputConfigBody), false},
+		{"non-anthropic integration preserved", "openai", schemas.BedrockMantle, true, responsesRequest(outputConfigBody), false},
+		{"no integration type preserved", "", schemas.BedrockMantle, true, responsesRequest(outputConfigBody), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if tt.integrationType != "" {
+				ctx.SetValue(schemas.BifrostContextKeyIntegrationType, tt.integrationType)
+			}
+			ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, tt.useRawBody)
+			ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
+			ctx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, true)
+
+			clearAnthropicPassthroughForUnsupportedStructuredOutput(ctx, tt.baseProvider, tt.req)
+
+			useRawBody, _ := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool)
+			if want := tt.useRawBody && !tt.wantCleared; useRawBody != want {
+				t.Errorf("UseRawRequestBody = %v, want %v", useRawBody, want)
+			}
+
+			// The raw-response side is untouched: the Anthropic integration skips passthrough on
+			// the way back when a structured-output tool name is set, so clearing these here would
+			// only lose the caller's raw-response opt-in.
+			for _, k := range []schemas.BifrostContextKey{
+				schemas.BifrostContextKeySendBackRawResponse,
+				schemas.BifrostContextKeyPassthroughOverridesPresent,
+			} {
+				if flag, _ := ctx.Value(k).(bool); !flag {
+					t.Errorf("flag %v was cleared, want it preserved", k)
+				}
 			}
 		})
 	}
@@ -3251,5 +3563,44 @@ func TestExecuteRequestWithRetries_EmptyStreamReturnsClosedChannel(t *testing.T)
 	}
 	if count != 0 {
 		t.Errorf("Expected range over empty stream to yield 0 chunks, got %d", count)
+	}
+}
+
+// TestApplyRawCaptureSignals_RunsAfterPassthroughClear pins the ordering between
+// clearAnthropicPassthroughForNonNativeProvider and applyRawCaptureSignals. The derivation reads
+// the very override keys the clear drops, so deriving first leaves a converted provider response
+// captured and unstripped on a request that no longer passes anything through.
+func TestApplyRawCaptureSignals_RunsAfterPassthroughClear(t *testing.T) {
+	// Provider config asks for nothing: any capture must come from the passthrough override.
+	config := &schemas.ProviderConfig{}
+
+	tests := []struct {
+		name            string
+		model           string
+		wantCaptureResp bool
+	}{
+		{"non-native model drops the override", "gpt-5-6-luna", false},
+		{"claude model keeps the override", "claude-sonnet-4-20250514", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
+			ctx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, true)
+			ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
+
+			clearAnthropicPassthroughForNonNativeProvider(ctx, schemas.BedrockMantle, tt.model)
+			applyRawCaptureSignals(ctx, config)
+
+			captureResp, _ := ctx.Value(schemas.BifrostContextKeyCaptureRawResponse).(bool)
+			if captureResp != tt.wantCaptureResp {
+				t.Errorf("CaptureRawResponse = %v, want %v", captureResp, tt.wantCaptureResp)
+			}
+			// Nothing is stored, so the client-strip flag stays off either way.
+			if dropResp, _ := ctx.Value(schemas.BifrostContextKeyDropRawResponseFromClient).(bool); dropResp {
+				t.Error("DropRawResponseFromClient = true, want false (store is off)")
+			}
+		})
 	}
 }

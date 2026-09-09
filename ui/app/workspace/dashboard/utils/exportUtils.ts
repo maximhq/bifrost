@@ -200,6 +200,7 @@ export interface DashboardData {
 	teamRankingsData: DimensionRankingsResponse | null;
 	customerRankingsData: DimensionRankingsResponse | null;
 	buRankingsData: DimensionRankingsResponse | null;
+	projectRankingsData: DimensionRankingsResponse | null;
 	userRankingsData: DimensionRankingsResponse | null;
 	virtualKeyRankingsData: DimensionRankingsResponse | null;
 	appRankingsData: DimensionRankingsResponse | null;
@@ -216,6 +217,7 @@ export type DashboardTab =
 	| "team-rankings"
 	| "customer-rankings"
 	| "bu-rankings"
+	| "project-rankings"
 	| "user-rankings"
 	| "virtual-key-rankings"
 	| "app-rankings"
@@ -236,6 +238,7 @@ export const DASHBOARD_EXPORT_TABS: { value: DashboardTab; label: string; sectio
 	{ value: "team-rankings", label: "Team Rankings", sectionId: "dashboard-section-team-rankings" },
 	{ value: "customer-rankings", label: "Customer Rankings", sectionId: "dashboard-section-customer-rankings" },
 	{ value: "bu-rankings", label: "BU Rankings", sectionId: "dashboard-section-bu-rankings" },
+	{ value: "project-rankings", label: "Project Rankings", sectionId: "dashboard-section-project-rankings" },
 	{ value: "user-rankings", label: "User Rankings", sectionId: "dashboard-section-user-rankings" },
 	{ value: "virtual-key-rankings", label: "Virtual Key Rankings", sectionId: "dashboard-section-virtual-key-rankings" },
 	{ value: "app-rankings", label: "App Rankings", sectionId: "dashboard-section-app-rankings" },
@@ -279,6 +282,9 @@ export function getCSVSections(data: DashboardData, tab: ExportTab): { name: str
 
 	if (tab === "all" || tab === "bu-rankings") {
 		sections.push({ name: "bu-rankings", csv: dimensionRankingsToCSV(data.buRankingsData, "Business Unit") });
+	}
+	if (tab === "all" || tab === "project-rankings") {
+		sections.push({ name: "project-rankings", csv: dimensionRankingsToCSV(data.projectRankingsData, "Project") });
 	}
 
 	if (tab === "all" || tab === "user-rankings") {

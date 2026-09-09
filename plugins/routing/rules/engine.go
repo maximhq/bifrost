@@ -1,7 +1,6 @@
 package rules
 
 import (
-	"context"
 	"fmt"
 	"math/rand/v2"
 	"regexp"
@@ -37,11 +36,27 @@ type Decision struct {
 	MatchedRuleName string   // Name of the rule that matched
 }
 
+// GovernanceScope is who a request is governed as: the identifiers the access it carries was resolved
+// under, stamped on the context at that moment. Rules match on them as scopes and read them as variables.
+//
+// Identifiers rather than the credential row they came from. A rule asks which key, team or customer a
+// request belongs to, never anything else about them, and a request granted access by something other
+// than a key has those answers too, which a credential row could not have supplied.
+//
+// An empty field means the request has no such scope, which is what a rule scoped to one must not match.
+type GovernanceScope struct {
+	VirtualKeyID   string
+	VirtualKeyName string
+	UserID         string
+	TeamID         string
+	TeamName       string
+	CustomerID     string
+	CustomerName   string
+}
+
 // EvaluationContext holds all data needed for routing rule evaluation
-// Reuses existing configstore table types for VirtualKey, Team, Customer
 type EvaluationContext struct {
-	VirtualKey               *configstoreTables.TableVirtualKey   // nil if no VK
-	UserID                   string                               // Resolved calling user id; empty when the request carries no user identity
+	Scope                    GovernanceScope                      // who the request is governed as
 	Provider                 schemas.ModelProvider                // Current provider
 	Model                    string                               // Current model
 	RequestType              string                               // Request type (e.g., "chat_completion", "embedding"); streaming requests carry a distinct "_stream" suffix (e.g., "chat_completion_stream")
@@ -60,8 +75,7 @@ type EvaluationContext struct {
 // evaluating them against a missing governance store would silently answer those variables
 // with zero values instead of real usage.
 type GovernanceStore interface {
-	GetVirtualKey(ctx context.Context, vkValue string) (*configstoreTables.TableVirtualKey, bool)
-	GetBudgetAndRateLimitStatus(ctx context.Context, model string, provider schemas.ModelProvider, vk *configstoreTables.TableVirtualKey, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *governance.BudgetAndRateLimitStatus
+	GetBudgetAndRateLimitStatus(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *governance.BudgetAndRateLimitStatus
 }
 
 type Engine struct {
@@ -123,7 +137,7 @@ func (re *Engine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *
 
 	// Build scope chain once — it's based on the immutable VirtualKey and user
 	// identity and won't change across chain steps.
-	scopeChain := buildScopeChain(routingCtx.VirtualKey, routingCtx.UserID)
+	scopeChain := buildScopeChain(routingCtx.Scope)
 
 	// Cache rules per scope upfront to avoid redundant store lookups when rules chain
 	// and we re-evaluate the scope hierarchy on subsequent steps.
@@ -169,7 +183,7 @@ func (re *Engine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *
 		iterCtx.Model = currentModel
 		// Refresh budget/rate-limit status for the current provider/model so chained
 		// rules that test budget_used, tokens_used, or request see fresh data.
-		iterCtx.BudgetAndRateLimitStatus = re.governance.GetBudgetAndRateLimitStatus(ctx, currentModel, currentProvider, routingCtx.VirtualKey, nil, nil, nil)
+		iterCtx.BudgetAndRateLimitStatus = re.governance.GetBudgetAndRateLimitStatus(ctx, currentProvider, currentModel, nil, nil, nil)
 
 		variables, err := extractRoutingVariables(&iterCtx)
 		if err != nil {
@@ -369,61 +383,28 @@ func selectWeightedTarget(targets []configstoreTables.TableRoutingTarget) (confi
 	return valid[len(valid)-1], true
 }
 
-// buildScopeChain builds the scope evaluation chain based on organizational hierarchy
-// Returns scope levels in precedence order (highest to lowest)
-// VirtualKey > User > Team > Customer > Global
-func buildScopeChain(virtualKey *configstoreTables.TableVirtualKey, userID string) []ScopeLevel {
+// buildScopeChain orders the scopes a request matches rules at, most specific first:
+// VirtualKey > User > Team > Customer > Global. First match within an iteration wins.
+//
+// A scope is present when the request has an identifier for it, and every identifier arrives the same
+// way: the user level is independent of the others, so a session-authenticated request carrying no
+// credential still matches user-scoped rules.
+func buildScopeChain(scope GovernanceScope) []ScopeLevel {
 	var chain []ScopeLevel
-
-	// VirtualKey level (highest precedence)
-	if virtualKey != nil {
-		chain = append(chain, ScopeLevel{
-			ScopeName: "virtual_key",
-			ScopeID:   virtualKey.ID,
-		})
-	}
-
-	// User level: the resolved calling user. Independent of VK presence so
-	// session-authenticated requests without a virtual key still match
-	// user-scoped rules.
-	if userID != "" {
-		chain = append(chain, ScopeLevel{
-			ScopeName: "user",
-			ScopeID:   userID,
-		})
-	}
-
-	if virtualKey != nil {
-		// Team level
-		if virtualKey.Team != nil {
-			chain = append(chain, ScopeLevel{
-				ScopeName: "team",
-				ScopeID:   virtualKey.Team.ID,
-			})
-
-			// Customer level (from Team)
-			if virtualKey.Team.Customer != nil {
-				chain = append(chain, ScopeLevel{
-					ScopeName: "customer",
-					ScopeID:   virtualKey.Team.Customer.ID,
-				})
-			}
-		} else if virtualKey.Customer != nil {
-			// Customer level (VK attached directly to customer, no Team)
-			chain = append(chain, ScopeLevel{
-				ScopeName: "customer",
-				ScopeID:   virtualKey.Customer.ID,
-			})
+	appendScope := func(name, id string) {
+		if id == "" {
+			return
 		}
+		chain = append(chain, ScopeLevel{ScopeName: name, ScopeID: id})
 	}
 
-	// Global level (lowest precedence)
-	chain = append(chain, ScopeLevel{
-		ScopeName: "global",
-		ScopeID:   "",
-	})
+	appendScope("virtual_key", scope.VirtualKeyID)
+	appendScope("user", scope.UserID)
+	appendScope("team", scope.TeamID)
+	appendScope("customer", scope.CustomerID)
 
-	return chain
+	// Global level (lowest precedence), and the only one every request matches at.
+	return append(chain, ScopeLevel{ScopeName: "global", ScopeID: ""})
 }
 
 // evaluateCELExpression evaluates a compiled CEL program with given variables
@@ -501,43 +482,16 @@ func extractRoutingVariables(ctx *EvaluationContext) (map[string]interface{}, er
 	}
 	variables["params"] = normalizedParams
 
-	// Extract VirtualKey context if available
-	if ctx.VirtualKey != nil {
-		variables["virtual_key_id"] = ctx.VirtualKey.ID
-		variables["virtual_key_name"] = ctx.VirtualKey.Name
-	} else {
-		variables["virtual_key_id"] = ""
-		variables["virtual_key_name"] = ""
-	}
-
-	// Resolved calling user id; empty when the request carries no user identity
-	variables["user_id"] = ctx.UserID
-
-	// Extract Team context if available (from VirtualKey)
-	if ctx.VirtualKey != nil && ctx.VirtualKey.Team != nil {
-		variables["team_id"] = ctx.VirtualKey.Team.ID
-		variables["team_name"] = ctx.VirtualKey.Team.Name
-	} else {
-		variables["team_id"] = ""
-		variables["team_name"] = ""
-	}
-
-	// Extract Customer context if available (from Team or directly from VirtualKey)
-	if ctx.VirtualKey != nil {
-		if ctx.VirtualKey.Team != nil && ctx.VirtualKey.Team.Customer != nil {
-			variables["customer_id"] = ctx.VirtualKey.Team.Customer.ID
-			variables["customer_name"] = ctx.VirtualKey.Team.Customer.Name
-		} else if ctx.VirtualKey.Customer != nil {
-			variables["customer_id"] = ctx.VirtualKey.Customer.ID
-			variables["customer_name"] = ctx.VirtualKey.Customer.Name
-		} else {
-			variables["customer_id"] = ""
-			variables["customer_name"] = ""
-		}
-	} else {
-		variables["customer_id"] = ""
-		variables["customer_name"] = ""
-	}
+	// Who the request is governed as. Absent scopes are the empty string, which is what a rule comparing
+	// against one has always seen: the branching this replaced existed only to reach through a
+	// credential row for the same six values.
+	variables["virtual_key_id"] = ctx.Scope.VirtualKeyID
+	variables["virtual_key_name"] = ctx.Scope.VirtualKeyName
+	variables["user_id"] = ctx.Scope.UserID
+	variables["team_id"] = ctx.Scope.TeamID
+	variables["team_name"] = ctx.Scope.TeamName
+	variables["customer_id"] = ctx.Scope.CustomerID
+	variables["customer_name"] = ctx.Scope.CustomerName
 
 	// Populate budget and rate limit variables for current provider/model combination
 	if ctx.BudgetAndRateLimitStatus != nil {

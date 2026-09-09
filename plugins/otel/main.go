@@ -184,6 +184,9 @@ type Config struct {
 	// single-object config it is read from the object; in a profiles wrapper it is read
 	// from the top-level field (or hoisted from the first profile that carries one).
 	PluginSpanFilter *PluginSpanFilter `json:"plugin_span_filter,omitempty"`
+
+	// ExportOverheadSpans exports internal overhead/latency spans; nil/false drops them.
+	ExportOverheadSpans *bool `json:"export_overhead_spans,omitempty"`
 }
 
 // UnmarshalJSON normalizes both supported config shapes into Profiles. A wrapper object
@@ -198,10 +201,13 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		*c = Config(w)
-		// Allow plugin_span_filter to live on the first profile too; hoist it if the
-		// top-level field was omitted.
+		// Allow plugin_span_filter / export_overhead_spans to live on the first profile
+		// too; hoist them if the top-level field was omitted.
 		if c.PluginSpanFilter == nil {
 			c.PluginSpanFilter = hoistSpanFilter(data)
+		}
+		if c.ExportOverheadSpans == nil {
+			c.ExportOverheadSpans = hoistExportOverhead(data)
 		}
 		return nil
 	}
@@ -212,39 +218,54 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	c.Profiles = []*Profile{&prof}
-	c.PluginSpanFilter = spanFilterFrom(data)
+	carrier := spanFilterFrom(data)
+	c.PluginSpanFilter = carrier.PluginSpanFilter
+	c.ExportOverheadSpans = carrier.ExportOverheadSpans
 	return nil
 }
 
-// spanFilterCarrier captures only the plugin_span_filter field from a config or profile object.
+// spanFilterCarrier captures only the span-filter fields from a config or profile object.
 type spanFilterCarrier struct {
-	PluginSpanFilter *PluginSpanFilter `json:"plugin_span_filter,omitempty"`
+	PluginSpanFilter    *PluginSpanFilter `json:"plugin_span_filter,omitempty"`
+	ExportOverheadSpans *bool             `json:"export_overhead_spans,omitempty"`
 }
 
-// spanFilterFrom extracts a top-level plugin_span_filter from a JSON object, or nil.
-func spanFilterFrom(data []byte) *PluginSpanFilter {
+// spanFilterFrom extracts the top-level span-filter fields from a JSON object.
+func spanFilterFrom(data []byte) spanFilterCarrier {
 	var c spanFilterCarrier
-	if err := sonic.Unmarshal(data, &c); err != nil {
-		return nil
-	}
-	return c.PluginSpanFilter
+	_ = sonic.Unmarshal(data, &c)
+	return c
 }
 
-// hoistSpanFilter returns the first plugin_span_filter found among the profiles of a
-// wrapper-shaped config, used as a fallback when the top-level field is absent.
+// hoistSpanFilter falls back to the first profile's plugin_span_filter.
 func hoistSpanFilter(data []byte) *PluginSpanFilter {
+	for _, p := range profileCarriers(data) {
+		if p.PluginSpanFilter != nil {
+			return p.PluginSpanFilter
+		}
+	}
+	return nil
+}
+
+// hoistExportOverhead falls back to the first profile's export_overhead_spans.
+func hoistExportOverhead(data []byte) *bool {
+	for _, p := range profileCarriers(data) {
+		if p.ExportOverheadSpans != nil {
+			return p.ExportOverheadSpans
+		}
+	}
+	return nil
+}
+
+// profileCarriers reads the span-filter fields off each profile of a wrapper-shaped config.
+func profileCarriers(data []byte) []spanFilterCarrier {
 	var w struct {
 		Profiles []spanFilterCarrier `json:"profiles"`
 	}
 	if err := sonic.Unmarshal(data, &w); err != nil {
 		return nil
 	}
-	for _, p := range w.Profiles {
-		if p.PluginSpanFilter != nil {
-			return p.PluginSpanFilter
-		}
-	}
-	return nil
+	return w.Profiles
 }
 
 // profileForStorage is the persisted form of a single profile: *SecretVar fields are
@@ -274,8 +295,9 @@ type profileForStorage struct {
 
 // configForStorage is the persisted wrapper shape.
 type configForStorage struct {
-	Profiles         []profileForStorage `json:"profiles"`
-	PluginSpanFilter *PluginSpanFilter   `json:"plugin_span_filter,omitempty"`
+	Profiles            []profileForStorage `json:"profiles"`
+	PluginSpanFilter    *PluginSpanFilter   `json:"plugin_span_filter,omitempty"`
+	ExportOverheadSpans *bool               `json:"export_overhead_spans,omitempty"`
 }
 
 // MarshalForStorage serializes Config to JSON with *SecretVar fields as plain strings
@@ -284,8 +306,9 @@ type configForStorage struct {
 // For HTTP API responses use json.Marshal directly so clients receive full SecretVar objects.
 func (c *Config) MarshalForStorage() ([]byte, error) {
 	out := configForStorage{
-		Profiles:         make([]profileForStorage, 0, len(c.Profiles)),
-		PluginSpanFilter: c.PluginSpanFilter,
+		Profiles:            make([]profileForStorage, 0, len(c.Profiles)),
+		PluginSpanFilter:    c.PluginSpanFilter,
+		ExportOverheadSpans: c.ExportOverheadSpans,
 	}
 	for _, p := range c.Profiles {
 		if p == nil {
@@ -326,7 +349,7 @@ func (c *Config) Redacted() *Config {
 	if c == nil {
 		return nil
 	}
-	redacted := &Config{PluginSpanFilter: c.PluginSpanFilter}
+	redacted := &Config{PluginSpanFilter: c.PluginSpanFilter, ExportOverheadSpans: c.ExportOverheadSpans}
 	if c.Profiles != nil {
 		redacted.Profiles = make([]*Profile, 0, len(c.Profiles))
 		for _, p := range c.Profiles {
@@ -460,7 +483,8 @@ type OtelPlugin struct {
 
 	pricingManager *modelcatalog.ModelCatalog
 
-	pluginSpanFilter *PluginSpanFilter
+	pluginSpanFilter    *PluginSpanFilter
+	exportOverheadSpans bool
 }
 
 // Init function for the OTEL plugin
@@ -511,6 +535,7 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 		attributesFromEnvironment: attributesFromEnvironment,
 		instanceAttrs:             instanceAttrs,
 		pluginSpanFilter:          config.PluginSpanFilter,
+		exportOverheadSpans:       config.ExportOverheadSpans != nil && *config.ExportOverheadSpans,
 	}
 	p.ctx, p.cancel = context.WithCancel(ctx)
 
@@ -754,7 +779,7 @@ func (p *OtelPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostR
 // PostLLMHook records the cache-hit metric. Every other metric is derived from the
 // completed trace in recordMetricsFromTrace, but semantic-cache hits short-circuit the
 // request in a PreHook before any llm.call span exists, so the cache signal never reaches
-// a span. We therefore read CacheDebug straight off the response here, mirroring how the
+// a span. We therefore read cache metadata through the compatibility response field here, mirroring how the
 // Prometheus telemetry plugin and the Datadog plugin emit this metric.
 //
 // This is the ONLY place RecordCacheHit is called — do not also emit it from
@@ -1048,6 +1073,8 @@ func buildSpanAttrs(span *schemas.Span) []attribute.KeyValue {
 		customerNames,
 		buIDs,
 		buNames,
+		getStringAttr(attrs, schemas.AttrBifrostProjectID),
+		getStringAttr(attrs, schemas.AttrBifrostProjectName),
 	)
 }
 
@@ -1078,6 +1105,8 @@ func buildContextAttrs(ctx context.Context, resp *schemas.BifrostResponse, bifro
 		customerNames,
 		buIDs,
 		buNames,
+		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectID),
+		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectName),
 	)
 }
 
@@ -1113,6 +1142,8 @@ var mcpGovernanceLabelMap = map[string]string{
 	schemas.AttrBifrostCustomerName:     "customer_name",
 	schemas.AttrBifrostBusinessUnitID:   "business_unit_id",
 	schemas.AttrBifrostBusinessUnitName: "business_unit_name",
+	schemas.AttrBifrostProjectID:        "project_id",
+	schemas.AttrBifrostProjectName:      "project_name",
 }
 
 // recordMCPMetricsFromTrace records the duration metric once per MCP client span. Called

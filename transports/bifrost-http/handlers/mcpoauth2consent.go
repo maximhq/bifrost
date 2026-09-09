@@ -35,12 +35,6 @@ type OAuth2IdentityResolver interface {
 	// ResolveVKUserUpgrade checks whether a VK is bound to a specific user.
 	// Returns the userID if bound, empty string if unbound.
 	ResolveVKUserUpgrade(ctx context.Context, vkID string) (userID string, err error)
-	// ResolveUserVirtualKey returns the ID of a virtual key that represents the
-	// user's effective MCP grant, or an empty string when the user has none.
-	// Callers use it to scope the /mcp tool listing for user-mode tokens, which
-	// carry no virtual key of their own. When a user maps to several equivalent
-	// virtual keys, any one of them may be returned.
-	ResolveUserVirtualKey(ctx context.Context, userID string) (vkID string, err error)
 	// IsUserActive reports whether the given user identity still exists and is
 	// usable. Returns (false, nil) when the user is gone or deactivated; an
 	// error is reserved for transient lookup failures that should be retried.

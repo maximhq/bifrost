@@ -133,6 +133,14 @@ type TableModelPricing struct {
 	OutputCostPerVideoPerSecond *float64 `gorm:"default:null;column:output_cost_per_video_per_second" json:"output_cost_per_video_per_second,omitempty"`
 	OutputCostPerSecond         *float64 `gorm:"default:null;column:output_cost_per_second" json:"output_cost_per_second,omitempty"` // For both speech and video models
 
+	// Resolution-banded video output rates, matched on the short edge of the generated
+	// video's size. Absent band falls back to OutputCostPerVideoPerSecond, then OutputCostPerSecond.
+	OutputCostPerVideoPerSecond480p  *float64 `gorm:"default:null;column:output_cost_per_video_per_second_480p" json:"output_cost_per_video_per_second_480p,omitempty"`
+	OutputCostPerVideoPerSecond720p  *float64 `gorm:"default:null;column:output_cost_per_video_per_second_720p" json:"output_cost_per_video_per_second_720p,omitempty"`
+	OutputCostPerVideoPerSecond1024p *float64 `gorm:"default:null;column:output_cost_per_video_per_second_1024p" json:"output_cost_per_video_per_second_1024p,omitempty"`
+	OutputCostPerVideoPerSecond1080p *float64 `gorm:"default:null;column:output_cost_per_video_per_second_1080p" json:"output_cost_per_video_per_second_1080p,omitempty"`
+	OutputCostPerVideoPerSecond4k    *float64 `gorm:"default:null;column:output_cost_per_video_per_second_4k" json:"output_cost_per_video_per_second_4k,omitempty"`
+
 	// Costs - Other
 	SearchContextCostPerQuery     *float64 `gorm:"default:null;column:search_context_cost_per_query" json:"search_context_cost_per_query,omitempty"`
 	InputCostPerQuery             *float64 `gorm:"default:null;column:input_cost_per_query" json:"input_cost_per_query,omitempty"`

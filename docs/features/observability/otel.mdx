@@ -79,12 +79,12 @@ The plugin supports multiple trace formats to match your observability platform:
   "metrics_enabled": true,
   "metrics_endpoint": "https://collector.example.com/v1/metrics",
   "metrics_headers": {
-    "X-Databricks-Table": "my_metrics_table"
+    "x-databricks-zerobus-table-name": "my_catalog.my_schema.my_metrics_table"
   }
 }
 ```
 
-In this example the trace endpoint receives only `Authorization`, while the metrics endpoint receives both `Authorization` and `X-Databricks-Table`.
+In this example the trace endpoint receives only `Authorization`, while the metrics endpoint receives both `Authorization` and `x-databricks-zerobus-table-name`. See the [Databricks integration](#popular-platform-integrations) below for a full example.
 
 ### Resource Attributes
 
@@ -728,6 +728,48 @@ Langfuse only supports HTTP protocol. Do not use gRPC.
 See the [Langfuse OpenTelemetry documentation](https://langfuse.com/integrations/native/opentelemetry) for more details.
 
 </Tab>
+<Tab title="Databricks">
+
+Databricks' [Zerobus Ingest OTLP endpoint](https://docs.databricks.com/gcp/en/ingestion/opentelemetry/) writes OpenTelemetry data directly into Unity Catalog Delta tables. Each signal targets its **own** table (traces → the spans table, metrics → the metrics table), passed via the `x-databricks-zerobus-table-name` header in `catalog.schema.table` format. Because the header value differs per signal, put it in [`trace_headers` / `metrics_headers`](#per-signal-headers) and keep the shared `Authorization` bearer token in `headers`.
+
+```json
+{
+  "plugins": [
+    {
+      "enabled": true,
+      "name": "otel",
+      "config": {
+        "service_name": "bifrost",
+        "collector_url": "https://<workspace-id>.zerobus.<region>.cloud.databricks.com/v1/traces",
+        "trace_type": "genai_extension",
+        "protocol": "http",
+        "headers": {
+          "Authorization": "env.DATABRICKS_TOKEN"
+        },
+        "trace_headers": {
+          "x-databricks-zerobus-table-name": "my_catalog.my_schema.my_prefix_otel_spans"
+        },
+        "metrics_enabled": true,
+        "metrics_endpoint": "https://<workspace-id>.zerobus.<region>.cloud.databricks.com/v1/metrics",
+        "metrics_headers": {
+          "x-databricks-zerobus-table-name": "my_catalog.my_schema.my_prefix_otel_metrics"
+        }
+      }
+    }
+  ]
+}
+```
+
+Set environment variable:
+```bash
+export DATABRICKS_TOKEN="Bearer <your-oauth-token>"
+```
+
+<Note>
+The token is an OAuth bearer token minted from a Databricks service principal, and static tokens expire after one hour. For long-running deployments, front Bifrost with an [OpenTelemetry Collector using `oauth2clientauthextension`](https://learn.microsoft.com/en-us/azure/databricks/ingestion/opentelemetry/configure) to refresh the token automatically, and point `collector_url` / `metrics_endpoint` at that Collector instead. See the [Databricks OTLP setup guide](https://learn.microsoft.com/en-us/azure/databricks/ingestion/opentelemetry/configure) for creating the target tables and granting the service principal access.
+</Note>
+
+</Tab>
 <Tab title="Self-Hosted">
 
 Use the included Docker Compose stack or point to your own collector:
@@ -897,7 +939,7 @@ Default port: **4317**
 
 The OTel plugin supports **push-based metrics export** via OTLP, which is essential for multi-node cluster deployments. Instead of relying on Prometheus scraping each node's `/metrics` endpoint (which can miss nodes behind a load balancer), all nodes actively push metrics to a central OTEL Collector.
 
-MCP client operations are exported as `mcp.client.operation.duration` (histogram, seconds) following the OTel MCP semantic conventions, dimensioned by `mcp.method.name`, `gen_ai.tool.name`, `network.transport`, `error.type`, and the governance dimensions `virtual_key_id`, `virtual_key_name`, `team_id`, `team_name`, `customer_id`, `customer_name`, `business_unit_id`, `business_unit_name`. This histogram covers all MCP client methods (`tools/call`, `tools/list`, `ping`, `initialize`) — to measure tool calls only, filter for `mcp.method.name="tools/call"`.
+MCP client operations are exported as `mcp.client.operation.duration` (histogram, seconds) following the OTel MCP semantic conventions, dimensioned by `mcp.method.name`, `gen_ai.tool.name`, `network.transport`, `error.type`, and the governance dimensions `virtual_key_id`, `virtual_key_name`, `team_id`, `team_name`, `customer_id`, `customer_name`, `business_unit_id`, `business_unit_name`, `project_id`, `project_name`. This histogram covers all MCP client methods (`tools/call`, `tools/list`, `ping`, `initialize`) — to measure tool calls only, filter for `mcp.method.name="tools/call"`.
 
 ### Configuration
 
@@ -1190,7 +1232,7 @@ By default every plugin's pre- and post-hook execution generates a span, which c
 }
 ```
 
-**Via the UI**: Open the **Observability** page, select the **Open Telemetry** connector, and click **Configure Plugin Tracing**. Toggle individual plugins on or off and save. UI-saved settings persist across restarts unless `plugin_span_filter` is set in config.json with a higher `version` value.
+**Via the UI**: Open the **Observability** page, select the **Open Telemetry** connector, and click **Configure Plugin Tracing**. Toggle individual plugins on or off and save. UI-saved settings persist across restarts unless `source_of_truth: "config.json"` makes the file authoritative.
 
 **Filter modes:**
 
@@ -1204,7 +1246,7 @@ By default every plugin's pre- and post-hook execution generates a span, which c
 When a plugin span is filtered out, its children are automatically re-parented to the nearest exported ancestor so the trace hierarchy stays connected.
 
 <Note>
-  `plugin_span_filter` follows the standard plugin config precedence rules. To make a config.json value override UI-saved DB settings on restart, set a higher `version` on the OTEL plugin entry (e.g. `"version": 2`). See [Plugin Versioning](/deployment-guides/config-json/plugins) for details.
+  `plugin_span_filter` follows the standard plugin config precedence rules. To make a config.json value override UI-saved DB settings on restart, set `source_of_truth: "config.json"`. See [Source of Truth & Reconciliation](/deployment-guides/config-json/source-of-truth) for details.
 </Note>
 
 ---

@@ -242,6 +242,75 @@ curl -X DELETE http://localhost:8080/api/governance/virtual-keys/{vk_id}
 </Tab>
 </Tabs>
 
+### Provider access
+
+By default a virtual key is **deny-by-default** for providers: it can only use providers listed in `provider_configs`. An empty `provider_configs` blocks every provider.
+
+Set **`allow_all_providers`** to `true` to grant the key access to **every configured provider, including providers added later**, without listing each one.
+
+<Tabs group="config-method">
+<Tab title="Web UI">
+
+In the **Provider Configurations** section of the virtual key form, turn on the **Allow all providers** toggle. Every configured provider is listed as a row, so you can optionally set per-provider budgets, rate limits, or model/key restrictions on any of them. When the toggle is off, provider access is deny-by-default: only providers listed in `provider_configs` are allowed, and providers added later are denied.
+
+</Tab>
+<Tab title="API">
+
+```bash
+curl -X POST http://localhost:8080/api/governance/virtual-keys \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "All Providers Key",
+    "allow_all_providers": true,
+    "team_id": "team-eng-001",
+    "is_active": true
+  }'
+```
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "governance": {
+    "virtual_keys": [
+      {
+        "id": "vk-all",
+        "name": "All Providers Key",
+        "value": "sk-bf-*",
+        "is_active": true,
+        "allow_all_providers": true
+      }
+    ]
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+`allow_all_providers` **coexists** with `provider_configs`. When it is on, a provider that also has a `provider_configs` entry still has that entry's model allow/blacklist, budgets, rate limits, and key selection applied; providers without an entry get all models, all keys, and no per-provider limits. This lets you allow everything while still capping or restricting specific providers.
+
+#### How access is resolved
+
+Access depends on the `allow_all_providers` value and whether the provider has a `provider_configs` entry:
+
+| Flag value | Listed in `provider_configs` | Not listed |
+| --- | --- | --- |
+| `false` (default) | Allowed, subject to that entry's models, keys, budgets, and rate limits | **Denied** |
+| `true` | Allowed, subject to that entry's models, keys, budgets, and rate limits | Allowed with all models, all keys, and no per-provider limits |
+
+When `allow_all_providers` is `true`:
+
+- A listed provider's `allowed_models` and `blacklisted_models` still apply. Allow-all never widens an allowlist: a model outside a listed provider's `allowed_models` stays denied, and a model in its `blacklisted_models` stays denied.
+- A listed provider's budgets, rate limits, and `key_ids` selection still apply. Allow-all does not lift per-provider limits on providers you have configured.
+- Only providers with no `provider_configs` entry get the open treatment (all models, all keys, no limits).
+- Providers added to Bifrost after the key was created are treated as unlisted, so they are allowed automatically without editing the key.
+
+<Note>
+`allow_all_providers` defaults to `false`. When it is `false`, provider access stays deny-by-default via `provider_configs`.
+</Note>
+
 ## User Groups
 
 ### Teams
@@ -690,10 +759,10 @@ Timestamps must be RFC3339 and in the future; otherwise the API returns `400`. O
 **Expired key rejection:**
 ```json
 {
-  "type": "virtual_key_blocked",
+  "type": "access_blocked",
   "status_code": 403,
   "error": {
-    "message": "Virtual key has expired"
+    "message": "virtual key has expired"
   }
 }
 ```
@@ -761,7 +830,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ### Listing models with a virtual key
 
-When you call `GET /v1/models` with a virtual key, Bifrost **only lists (and only queries) providers that are allowed by that virtual key**. This avoids unnecessary “provider not allowed” errors in logs and keeps error-rate metrics meaningful.
+When you call `GET /v1/models` with a virtual key, Bifrost **only lists (and only queries) providers that are allowed by that virtual key**. This avoids unnecessary “provider not allowed” errors in logs and keeps error-rate metrics meaningful. A key with `allow_all_providers` enabled lists and queries every configured provider.
 
 ```bash
 # Lists models across providers allowed by the virtual key
@@ -829,52 +898,42 @@ curl -X PUT http://localhost:8080/api/config \
 
 ### Error Responses
 
-- Virtual Key Not Found (400)
+`type` is a **top-level** field, beside `status_code`, and `error` carries only the
+message. A client branching on the refusal reads `type`, not `error.type`.
+
+- Authentication Required (401), when no credential was presented and virtual keys are mandatory
 ```json
 {
+  "type": "virtual_key_required",
+  "status_code": 401,
   "error": {
-    "type": "virtual_key_required",
-    "message": "virtual key is missing in headers"
+    "message": "virtual key is required. Provide a virtual key via the x-bf-vk header."
   }
 }
 ```
 
-- Virtual Key Blocked (403)
+- Inactive or Expired (403), when the credential is real but may not be used
 ```json
 {
+  "type": "access_blocked",
+  "status_code": 403,
   "error": {
-    "type": "virtual_key_blocked", 
-    "message": "Virtual key is inactive"
+    "message": "virtual key is inactive"
   }
 }
 ```
 
-- Rate Limit Exceeded (429)
-```json
-{
-  "error": {
-    "type": "rate_limited",
-    "message": "Rate limits exceeded: [token limit exceeded (1500/1000, resets every 1h)]"
-  }
-}
-```
+  A key that is both inactive and expired reports `is inactive`: the check runs in that
+  order and answers on the first that matches. The same type and shape covers an expired
+  key (`virtual key has expired`) and an access profile that is inactive or expired.
 
-- Token Limit Exceeded (429)
+- Rate Limit Exceeded (429): `rate_limited`, or `token_limited` / `request_limited` for the dimension that ran out
 ```json
 {
+  "type": "token_limited",
+  "status_code": 429,
   "error": {
-    "type": "token_limited",
-    "message": "Rate limits exceeded: [token limit exceeded (1500/1000, resets every 1h)]"
-  }
-}
-```
-
-- Request Limit Exceeded (429)
-```json
-{
-  "error": {
-    "type": "request_limited", 
-    "message": "Rate limits exceeded: [request limit exceeded (101/100, resets every 1m)]"
+    "message": "Rate limit exceeded: rate limit violated for vk_model_config * : [token limit exceeded (1500/1000, resets every 1h)]"
   }
 }
 ```
@@ -882,19 +941,24 @@ curl -X PUT http://localhost:8080/api/config \
 - Budget Exceeded (402)
 ```json
 {
+  "type": "budget_exceeded",
+  "status_code": 402,
   "error": {
-    "type": "budget_exceeded",
-    "message": "Budget exceeded: VK budget exceeded: 105.50 > 100.00 dollars"
+    "message": "Budget exceeded: vk_model_config * budget exceeded: 105.5000 >= 100.0000 dollars"
   }
 }
 ```
 
+  The name after the holder kind is what ran out, so a refusal says which tier stopped the
+  request rather than only that something did.
+
 - Model Not Allowed (403)
 ```json
 {
+  "type": "model_blocked",
+  "status_code": 403,
   "error": {
-    "type": "model_blocked",
-    "message": "Model 'gpt-4o' is not allowed for this virtual key"
+    "message": "Model 'gpt-4o' is not allowed for virtual key 'my-key'"
   }
 }
 ```
@@ -902,9 +966,21 @@ curl -X PUT http://localhost:8080/api/config \
 - Provider Not Allowed (403)
 ```json
 {
+  "type": "provider_blocked",
+  "status_code": 403,
   "error": {
-    "type": "provider_blocked",
-    "message": "Provider 'anthropic' is not allowed for this virtual key"
+    "message": "Provider 'anthropic' is not allowed for virtual key 'my-key'"
+  }
+}
+```
+
+- MCP Tool Not Allowed (403)
+```json
+{
+  "type": "mcp_tool_blocked",
+  "status_code": 403,
+  "error": {
+    "message": "MCP tool 'filesystem-write_file' is not allowed for virtual key 'my-key'"
   }
 }
 ```

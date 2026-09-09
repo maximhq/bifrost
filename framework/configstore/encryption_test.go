@@ -123,8 +123,8 @@ func TestEncryptPlaintextRows_EncryptsAllTables(t *testing.T) {
 		true, "redis", `{"host":"redis.example.com","password":"secret"}`, now, now)
 
 	insertPlaintextRow(t, db,
-		`INSERT INTO config_plugins (name, enabled, version, config_json, encryption_status, created_at, updated_at)
-		 VALUES (?, ?, 1, ?, 'plain_text', ?, ?)`,
+		`INSERT INTO config_plugins (name, enabled, config_json, encryption_status, created_at, updated_at)
+		 VALUES (?, ?, ?, 'plain_text', ?, ?)`,
 		"test-plugin", true, `{"api_key":"plugin-secret"}`, now, now)
 
 	// Run the startup encryption pass
@@ -320,8 +320,8 @@ func TestEncryptPlaintextPlugins(t *testing.T) {
 	now := time.Now().UTC().Format("2006-01-02 15:04:05")
 
 	insertPlaintextRow(t, db,
-		`INSERT INTO config_plugins (name, enabled, version, config_json, encryption_status, created_at, updated_at)
-		 VALUES (?, ?, 1, ?, 'plain_text', ?, ?)`,
+		`INSERT INTO config_plugins (name, enabled, config_json, encryption_status, created_at, updated_at)
+		 VALUES (?, ?, ?, 'plain_text', ?, ?)`,
 		"batch-plugin", true, `{"secret":"value"}`, now, now)
 
 	count, err := store.encryptPlaintextPlugins(ctx)
@@ -341,8 +341,8 @@ func TestEncryptPlaintextPlugins_SkipsEmptyConfig(t *testing.T) {
 
 	// Insert plugin with empty config — should NOT be picked up by the query
 	insertPlaintextRow(t, db,
-		`INSERT INTO config_plugins (name, enabled, version, config_json, encryption_status, created_at, updated_at)
-		 VALUES (?, ?, 1, '{}', 'plain_text', ?, ?)`,
+		`INSERT INTO config_plugins (name, enabled, config_json, encryption_status, created_at, updated_at)
+		 VALUES (?, ?, '{}', 'plain_text', ?, ?)`,
 		"empty-config-plugin", true, now, now)
 
 	count, err := store.encryptPlaintextPlugins(ctx)
@@ -429,6 +429,37 @@ func TestEncryptPlaintextVirtualKeys_EncryptsAndDecryptsCorrectly(t *testing.T) 
 	var found tables.TableVirtualKey
 	require.NoError(t, db.Where("id = ?", "vk-batch-1").First(&found).Error)
 	assert.Equal(t, "vk-batch-secret", found.Value.GetValue())
+}
+
+func TestVirtualKeyPreviousValue_EncryptsAndDecryptsCorrectly(t *testing.T) {
+	_, db := setupEncryptionTestStore(t)
+	now := time.Now().UTC()
+	exp := now.Add(10 * time.Minute)
+
+	vk := &tables.TableVirtualKey{
+		ID:                     "vk-prev-enc",
+		Name:                   "prev-enc-vk",
+		Value:                  *schemas.NewSecretVar("vk-current-secret"),
+		IsActive:               schemas.Ptr(true),
+		PreviousValue:          *schemas.NewSecretVar("vk-previous-secret"),
+		PreviousValueExpiresAt: &exp,
+		RotatedAt:              &now,
+	}
+	require.NoError(t, db.Create(vk).Error)
+
+	// Raw DB must hold the previous value encrypted, with its hash computed.
+	var raw map[string]any
+	db.Table("governance_virtual_keys").Where("id = ?", "vk-prev-enc").Take(&raw)
+	assert.Equal(t, "encrypted", raw["encryption_status"])
+	assert.NotEqual(t, "vk-previous-secret", raw["previous_value"])
+	assert.NotEmpty(t, raw["previous_value_hash"])
+
+	// GORM hooks should decrypt both values on read.
+	var found tables.TableVirtualKey
+	require.NoError(t, db.Where("id = ?", "vk-prev-enc").First(&found).Error)
+	assert.Equal(t, "vk-current-secret", found.Value.GetValue())
+	assert.Equal(t, "vk-previous-secret", found.PreviousValue.GetValue())
+	assert.True(t, found.HasActivePreviousValue(now))
 }
 
 func TestEncryptPlaintextOAuthConfigs_EncryptsAndDecryptsCorrectly(t *testing.T) {

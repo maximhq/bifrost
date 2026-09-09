@@ -4,7 +4,7 @@ description: "Offload Bifrost request and response payloads to S3 or GCS object 
 icon: "download"
 ---
 
-Bifrost's log store can be paired with an **object storage** backend (S3 or GCS) so that large request/response payloads are streamed to durable object storage while the logs database (SQLite or Postgres) keeps only searchable metadata, indexes, and pointers. This keeps the database small and fast, makes payloads cheap to retain for long periods, and lets you query archived traffic from your own data lake.
+Bifrost's log store can be paired with an **object storage** backend (S3 or GCS) so that large request/response payloads are streamed to durable object storage while the logs database (SQLite, Postgres, or ClickHouse) keeps only searchable metadata, indexes, and pointers. This keeps the database small and fast, makes payloads cheap to retain for long periods, and lets you query archived traffic from your own data lake.
 
 ## How it works
 
@@ -13,8 +13,8 @@ Bifrost's log store can be paired with an **object storage** backend (S3 or GCS)
 ```
 logs_store
 ├── enabled
-├── type            (sqlite | postgres)
-├── config          (SQLite path or Postgres connection)
+├── type            (sqlite | postgres | clickhouse)
+├── config          (SQLite path, or Postgres / ClickHouse connection)
 ├── object_storage              ← S3 or GCS payload offload (optional)
 └── object_storage_exclude_fields
 ```

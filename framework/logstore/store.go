@@ -143,6 +143,8 @@ type LogStore interface {
 	GetDistinctAliases(ctx context.Context, limit int, query string) ([]string, error)
 	GetDistinctKeyPairs(ctx context.Context, idCol, nameCol string, limit int, query string) ([]KeyPairResult, error)
 	GetDistinctRoutingEngines(ctx context.Context, limit int, query string) ([]string, error)
+	// GetDistinctToolCallNames returns distinct function names that responses called, for the "Tool calls" filter.
+	GetDistinctToolCallNames(ctx context.Context, limit int, query string) ([]string, error)
 	GetDistinctStopReasons(ctx context.Context, limit int, query string) ([]string, error)
 	// GetDistinctUserAgents returns distinct raw User-Agent strings from logs for the "App" filter.
 	GetDistinctUserAgents(ctx context.Context, limit int, query string) ([]string, error)
@@ -183,7 +185,7 @@ type LogStore interface {
 	// Webhook Delivery methods
 	CreateWebhookDelivery(ctx context.Context, delivery *WebhookDelivery) error
 	FindWebhookDeliveryByID(ctx context.Context, id string) (*WebhookDelivery, error)
-	SearchWebhookDeliveries(ctx context.Context, endpointID string, pagination PaginationOptions) (*WebhookDeliverySearchResult, error)
+	SearchWebhookDeliveries(ctx context.Context, filters *WebhookDeliverySearchFilters, pagination PaginationOptions) (*WebhookDeliverySearchResult, error)
 	DeleteExpiredWebhookDeliveries(ctx context.Context) (int64, error)
 }
 

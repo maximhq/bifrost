@@ -989,6 +989,38 @@ type ChatToolChoice struct {
 	ChatToolChoiceStruct *ChatToolChoiceStruct
 }
 
+// IsForced reports whether the choice obliges the model to call a tool, in any
+// of its spellings — "any"/"required", a named function or custom tool, a
+// pinned server tool, or an allowed-tools set in "required" mode. Only "none"
+// and "auto" are unforced. Models that reject forced tool use (Fable 5.1+)
+// need the choice dropped; see ModelCaps.SupportsForcedToolChoice.
+func (ctc *ChatToolChoice) IsForced() bool {
+	if ctc == nil {
+		return false
+	}
+	if ctc.ChatToolChoiceStr != nil {
+		switch ChatToolChoiceType(*ctc.ChatToolChoiceStr) {
+		case ChatToolChoiceTypeNone, ChatToolChoiceTypeAuto:
+			return false
+		default:
+			return true
+		}
+	}
+	if ctc.ChatToolChoiceStruct != nil {
+		switch ctc.ChatToolChoiceStruct.Type {
+		case ChatToolChoiceTypeNone, ChatToolChoiceTypeAuto:
+			return false
+		case ChatToolChoiceTypeAllowedTools:
+			// The set is a constraint, not a forcing; only its mode forces.
+			return ctc.ChatToolChoiceStruct.AllowedTools != nil &&
+				ctc.ChatToolChoiceStruct.AllowedTools.Mode == string(ChatToolChoiceTypeRequired)
+		default:
+			return true
+		}
+	}
+	return false
+}
+
 // MarshalJSON implements custom JSON marshalling for ChatMessageContent.
 // It marshals either ContentStr or ContentBlocks directly without wrapping.
 func (ctc ChatToolChoice) MarshalJSON() ([]byte, error) {
@@ -1068,7 +1100,7 @@ const (
 type ChatMessage struct {
 	Name    *string             `json:"name,omitempty"` // for chat completions
 	Role    ChatMessageRole     `json:"role,omitempty"`
-	Content *ChatMessageContent `json:"content,omitempty"`
+	Content *ChatMessageContent `json:"content"`
 
 	// Embedded pointer structs - when non-nil, their exported fields are flattened into the top-level JSON object
 	// IMPORTANT: Only one of the following can be non-nil at a time, otherwise the JSON marshalling will override the common fields
@@ -1098,7 +1130,7 @@ func (cm ChatMessage) MarshalJSON() ([]byte, error) {
 	base, err := Marshal(struct {
 		Name    *string             `json:"name,omitempty"`
 		Role    ChatMessageRole     `json:"role,omitempty"`
-		Content *ChatMessageContent `json:"content,omitempty"`
+		Content *ChatMessageContent `json:"content"`
 	}{Name: cm.Name, Role: cm.Role, Content: cm.Content})
 	if err != nil {
 		return nil, err
@@ -1532,7 +1564,7 @@ type ChatToolMessage struct {
 
 // ChatAssistantMessage represents a message in a chat conversation.
 type ChatAssistantMessage struct {
-	Refusal          *string                          `json:"refusal,omitempty"`
+	Refusal          *string                          `json:"refusal"`
 	Audio            *ChatAudioMessageAudio           `json:"audio,omitempty"`
 	Reasoning        *string                          `json:"reasoning,omitempty"`
 	ReasoningDetails []ChatReasoningDetails           `json:"reasoning_details,omitempty"`
@@ -1673,8 +1705,8 @@ type ChatAudioMessageAudio struct {
 // should be non-nil at a time.
 type BifrostResponseChoice struct {
 	Index        int              `json:"index"`
-	FinishReason *string          `json:"finish_reason,omitempty"`
-	LogProbs     *BifrostLogProbs `json:"logprobs,omitempty"`
+	FinishReason *string          `json:"finish_reason"`
+	LogProbs     *BifrostLogProbs `json:"logprobs"`
 
 	*TextCompletionResponseChoice
 	*ChatNonStreamResponseChoice
@@ -2096,6 +2128,11 @@ type AdditionalCostDetails struct {
 	GuardrailCost     float64 `json:"guardrail_cost,omitempty"`      // Guardrail judge-call cost
 	MCPCost           float64 `json:"mcp_cost,omitempty"`            // MCP tool-execution cost
 	SemanticCacheCost float64 `json:"semantic_cache_cost,omitempty"` // Semantic-cache embedding-lookup cost
+	// RoutingCost is the cost of the internal classification calls the routing
+	// plugin makes for a request, covering every such call the request opted into
+	// budget attribution — today the semantic classification embed. It matches the
+	// AdditionalCost those calls contribute.
+	RoutingCost float64 `json:"routing_cost,omitempty"`
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for BifrostCost. It accepts
@@ -2243,6 +2280,7 @@ func (a *AdditionalCostDetails) add(b *AdditionalCostDetails) *AdditionalCostDet
 		GuardrailCost:     a.GuardrailCost + b.GuardrailCost,
 		MCPCost:           a.MCPCost + b.MCPCost,
 		SemanticCacheCost: a.SemanticCacheCost + b.SemanticCacheCost,
+		RoutingCost:       a.RoutingCost + b.RoutingCost,
 	}
 }
 
