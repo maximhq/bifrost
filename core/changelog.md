@@ -1,0 +1,1 @@
+- fix: drop namespace tools whose name Amazon Bedrock reserves (`web`, `image_gen`, `browser`, `python`) on the Bedrock and Bedrock Mantle Responses paths instead of forwarding them into a `tools.namespace` collision 400; a dropped Codex `web` namespace becomes the hosted `web_search` tool on Bedrock Mantle
