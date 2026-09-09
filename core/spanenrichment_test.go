@@ -33,8 +33,6 @@ var contextDimSources = []struct {
 	{schemas.AttrBifrostCustomerName, schemas.BifrostContextKeyGovernanceCustomerName, "cust-name"},
 	{schemas.AttrBifrostBusinessUnitID, schemas.BifrostContextKeyGovernanceBusinessUnitID, "bu-id"},
 	{schemas.AttrBifrostBusinessUnitName, schemas.BifrostContextKeyGovernanceBusinessUnitName, "bu-name"},
-	{schemas.AttrBifrostProjectID, schemas.BifrostContextKeyGovernanceProjectID, "proj-id"},
-	{schemas.AttrBifrostProjectName, schemas.BifrostContextKeyGovernanceProjectName, "proj-name"},
 	{schemas.AttrBifrostTeamIDs, schemas.BifrostContextKeyGovernanceTeamIDs, []string{"team-id-1", "team-id-2"}},
 	{schemas.AttrBifrostTeamNames, schemas.BifrostContextKeyGovernanceTeamNames, []string{"team-name-1"}},
 	{schemas.AttrBifrostCustomerIDs, schemas.BifrostContextKeyGovernanceCustomerIDs, []string{"cust-id-1"}},

@@ -1,0 +1,2 @@
+- feat: add `framework/overhead` package computing the per-component overhead breakdown from completed trace spans, extracted from the logging plugin so the telemetry and OTel exporters share it (#6980)
+- chore: bump google.golang.org/grpc to v1.83.2 (#7019)

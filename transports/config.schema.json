@@ -2460,6 +2460,11 @@
                       },
                       "description": "Custom labels to add to Prometheus metrics"
                     },
+                    "overhead_breakdown_enabled": {
+                      "type": "boolean",
+                      "description": "Export the per-component overhead histogram bifrost_overhead_component_microseconds (overhead latency split by the overhead_component label). Off by default. Requires tracing to be active, since the breakdown is computed from completed trace spans.",
+                      "default": false
+                    },
                     "push_gateway": {
                       "type": "object",
                       "description": "Configuration for pushing metrics to a Prometheus Push Gateway for multi-node cluster deployments",
@@ -3509,6 +3514,11 @@
           "default": 15,
           "minimum": 1,
           "maximum": 300
+        },
+        "overhead_breakdown_enabled": {
+          "type": "boolean",
+          "description": "Export the per-component overhead histogram bifrost_overhead_component_microseconds (overhead latency split by the overhead_component attribute). Off by default. Requires metrics_enabled and an active trace, since the breakdown is computed from completed spans.",
+          "default": false
         },
         "request_headers": {
           "type": "array",
