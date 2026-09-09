@@ -628,7 +628,9 @@ func HandleGeminiChatCompletionStream(
 					}
 				}
 
-				if sendBackRawResponse {
+				// A split event yields several deltas; attach the upstream event once,
+				// on the last of them, so a base64 media payload is not copied per delta.
+				if sendBackRawResponse && i == len(responses)-1 {
 					response.ExtraFields.RawResponse = string(eventData)
 				}
 

@@ -292,3 +292,54 @@ func TestToBifrostChatCompletionStream_SplitsMixedInlineMedia(t *testing.T) {
 		})
 	}
 }
+
+// TestToBifrostChatCompletionStream_ErrorFinishReasonIsNotSplit pins that a chunk
+// mixing text and inline media on a candidate whose finish reason is an error (here a
+// safety block) is not split into pieces: the converter must return the single error
+// response and suppress every part, exactly as it does for an unmixed chunk, instead of
+// leaking the text or the image ahead of the content-filter error.
+func TestToBifrostChatCompletionStream_ErrorFinishReasonIsNotSplit(t *testing.T) {
+	tests := []struct {
+		name         string
+		finishReason gemini.FinishReason
+	}{
+		{name: "safety", finishReason: gemini.FinishReasonSafety},
+		{name: "image safety", finishReason: gemini.FinishReasonImageSafety},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response := &gemini.GenerateContentResponse{
+				ResponseID:   "blocked-mixed-stream-test",
+				ModelVersion: "gemini-2.5-flash-image",
+				Candidates: []*gemini.Candidate{
+					{
+						FinishReason: tt.finishReason,
+						Content: &gemini.Content{
+							Role: string(gemini.RoleModel),
+							Parts: []*gemini.Part{
+								{Text: "Here is your image:"},
+								{InlineData: &gemini.Blob{MIMEType: "image/png", Data: "YmxvY2tlZA=="}},
+							},
+						},
+					},
+				},
+				UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{CandidatesTokenCount: 12},
+			}
+
+			chunks, bifrostErr, isLast := response.ToBifrostChatCompletionStream(gemini.NewGeminiStreamState())
+			require.Nil(t, bifrostErr)
+			assert.True(t, isLast)
+			require.Len(t, chunks, 1, "a filtered candidate must yield the single error response, not split pieces")
+			require.Len(t, chunks[0].Choices, 1)
+
+			choice := chunks[0].Choices[0]
+			require.NotNil(t, choice.FinishReason)
+			assert.Equal(t, gemini.ConvertGeminiFinishReasonToBifrost(tt.finishReason), *choice.FinishReason)
+			if delta := choice.ChatStreamResponseChoice.Delta; delta != nil && delta.Content != nil {
+				assert.NotContains(t, *delta.Content, "data:image/", "the blocked image must not leak")
+				assert.NotContains(t, *delta.Content, "Here is your image", "the blocked text must not leak")
+			}
+		})
+	}
+}
