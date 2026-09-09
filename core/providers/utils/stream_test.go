@@ -841,3 +841,68 @@ func TestCheckFirstStreamChunk_BufferedChunkWinsOverCancelledCtx(t *testing.T) {
 		t.Fatal("closed source failed to drain")
 	}
 }
+
+func TestStreamThroughputGuard_ClosedStreamWinsOverCancelledContext(t *testing.T) {
+	// Both the closed source and ctx.Done are ready when the probe selects;
+	// the delivered stream state must win so a completed short stream is not
+	// reported as cancelled (or, symmetrically, rejected as too slow).
+	for i := 0; i < 32; i++ {
+		stream := make(chan *schemas.BifrostStreamChunk, 2)
+		stream <- &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{
+			Choices: []schemas.BifrostResponseChoice{{ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+				Delta: &schemas.ChatStreamResponseChoiceDelta{Role: schemas.Ptr("assistant")},
+			}}},
+		}}
+		stream <- chatStreamChunk("ok")
+		close(stream)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		wrapped, drainDone, bifrostErr := CheckFirstStreamChunkForError(ctx, stream, &schemas.StreamThroughputGuardConfig{
+			MinimumOutputCharactersPerSecond: 100000,
+			ProbeWindowInSeconds:             1,
+		})
+		if bifrostErr != nil {
+			t.Fatalf("iteration %d: completed stream rejected: %+v", i, bifrostErr)
+		}
+		var got []string
+		for chunk := range wrapped {
+			if content := chunk.BifrostChatResponse.Choices[0].Delta.Content; content != nil {
+				got = append(got, *content)
+			}
+		}
+		if len(got) != 1 || got[0] != "ok" {
+			t.Fatalf("iteration %d: stream content = %v, want [ok]", i, got)
+		}
+		<-drainDone
+	}
+}
+
+func TestStreamThroughputGuard_CancelledContextBeatsTimeoutAfterReadyChunks(t *testing.T) {
+	// ctx is already done and the source still holds an undersized chunk when
+	// the probe selects: the chunk is folded in first, then the verdict must be
+	// the cancellation (fallbacks off), never a fallback-eligible 503.
+	for i := 0; i < 32; i++ {
+		stream := make(chan *schemas.BifrostStreamChunk, 2)
+		stream <- chatStreamChunk("a")
+		stream <- chatStreamChunk("b")
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		wrapped, drainDone, bifrostErr := CheckFirstStreamChunkForError(ctx, stream, &schemas.StreamThroughputGuardConfig{
+			MinimumOutputCharactersPerSecond: 100000,
+			ProbeWindowInSeconds:             1,
+		})
+		if wrapped != nil {
+			t.Fatalf("iteration %d: undersized output was exposed", i)
+		}
+		if bifrostErr == nil || bifrostErr.Error == nil || bifrostErr.Error.Type == nil || *bifrostErr.Error.Type != schemas.RequestCancelled {
+			t.Fatalf("iteration %d: expected cancellation, got %+v", i, bifrostErr)
+		}
+		if bifrostErr.AllowFallbacks == nil || *bifrostErr.AllowFallbacks {
+			t.Fatalf("iteration %d: cancelled probe must not allow fallbacks", i)
+		}
+		close(stream)
+		<-drainDone
+	}
+}

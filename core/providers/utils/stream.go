@@ -307,30 +307,64 @@ func CheckFirstStreamChunkForError(
 		return nil, drainInBackground(stream), newStreamProbeBufferError()
 	}
 
+	// consume folds one receive into the probe; done reports a final verdict.
+	consume := func(chunk *schemas.BifrostStreamChunk, streamOpen bool) (wrapped chan *schemas.BifrostStreamChunk, drainDone <-chan struct{}, err *schemas.BifrostError, done bool) {
+		if !streamOpen {
+			wrapped, drainDone, err = closedBufferedStream(buffered)
+			return wrapped, drainDone, err, true
+		}
+		if err = streamChunkError(chunk); err != nil {
+			return nil, drainInBackground(stream), err, true
+		}
+		buffered = append(buffered, chunk)
+		characters += streamChunkCharacters(chunk)
+		bufferedBytes += streamChunkSize(chunk)
+		if characters >= int(targetCharacters) {
+			wrapped, drainDone, err = wrapStream(ctx, stream, buffered)
+			return wrapped, drainDone, err, true
+		}
+		if len(buffered) >= maxStreamProbeChunks || bufferedBytes >= maxStreamProbeBytes {
+			return nil, drainInBackground(stream), newStreamProbeBufferError(), true
+		}
+		return nil, nil, nil, false
+	}
+	// consumeReady folds every already-delivered chunk (or a close) before a
+	// deadline or cancellation verdict: select picks randomly among ready cases,
+	// so without this a completed short stream could be rejected as too slow.
+	consumeReady := func() (wrapped chan *schemas.BifrostStreamChunk, drainDone <-chan struct{}, err *schemas.BifrostError, done bool) {
+		for {
+			select {
+			case chunk, streamOpen := <-stream:
+				if wrapped, drainDone, err, done = consume(chunk, streamOpen); done {
+					return wrapped, drainDone, err, true
+				}
+			default:
+				return nil, nil, nil, false
+			}
+		}
+	}
+
 	timer := time.NewTimer(probeDuration)
 	defer timer.Stop()
 	for {
 		select {
 		case chunk, streamOpen := <-stream:
-			if !streamOpen {
-				return closedBufferedStream(buffered)
+			if wrapped, drainDone, err, done := consume(chunk, streamOpen); done {
+				return wrapped, drainDone, err
 			}
-			if err := streamChunkError(chunk); err != nil {
-				return nil, drainInBackground(stream), err
-			}
-			buffered = append(buffered, chunk)
-			characters += streamChunkCharacters(chunk)
-			bufferedBytes += streamChunkSize(chunk)
-			if characters >= int(targetCharacters) {
-				return wrapStream(ctx, stream, buffered)
-			}
-			if len(buffered) >= maxStreamProbeChunks || bufferedBytes >= maxStreamProbeBytes {
-				return nil, drainInBackground(stream), newStreamProbeBufferError()
-			}
-		case <-timer.C:
-			return nil, drainInBackground(stream), newStreamThroughputError(config)
 		case <-ctx.Done():
+			if wrapped, drainDone, err, done := consumeReady(); done {
+				return wrapped, drainDone, err
+			}
 			return nil, drainInBackground(stream), newStreamContextError(ctx)
+		case <-timer.C:
+			if wrapped, drainDone, err, done := consumeReady(); done {
+				return wrapped, drainDone, err
+			}
+			if ctx.Err() != nil {
+				return nil, drainInBackground(stream), newStreamContextError(ctx)
+			}
+			return nil, drainInBackground(stream), newStreamThroughputError(config)
 		}
 	}
 }
