@@ -251,7 +251,7 @@ The list shows every project you can see, with its providers, the budget closest
 
 <Frame>
   <img
-    src="/media/projects/projects-home.png"
+    src="/media/ui-projects-table.png"
     alt="Projects list page with provider chips, budget meters, access rule and member count columns"
   />
 </Frame>
@@ -267,36 +267,20 @@ Click **Create Project**.
 
 <Frame>
   <img
-    src="/media/projects/new-project.png"
+    src="/media/ui-new-project.png"
     alt="Create Project sheet showing name, description, enabled toggle, expiry presets and membership mode"
   />
 </Frame>
 
 5. **Access rule.** Choose **Restrict** or **Extend**. The card explains the consequence of each, including that a Restrict project with no providers permits nothing.
 6. **Providers.** Add a provider, then choose all models or an explicit allowlist, optionally a denylist, which keys may serve it, a weight, and any per-provider or per-model money.
-
-<Frame>
-  <img
-    src="/media/projects/project-provider-config.png"
-    alt="Providers section with model allowlist, blocked models, key selection, weight and nested model budgets"
-  />
-</Frame>
-
 7. **MCP configurations.** Choose which tools the project may execute under **MCP servers**, and assign any **Virtual MCPs** it should reach.
-
-<Frame>
-  <img
-    src="/media/projects/project-mcp-config.png"
-    alt="MCP configuration section with per-server tool allowlists and virtual MCP assignment list"
-  />
-</Frame>
-
 8. **Project budget** and **Rate limit.** Add one or more budget lines, each with an amount and a reset window, then optionally a **Maximum tokens** and **Maximum requests** limit. **Align to calendar cycle** moves every window on the project onto the calendar.
 9. **Accounting.** Choose **Both budgets**, **Project only** or **User only**, and a split of **No split** or **Equal**.
 
 <Frame>
   <img
-    src="/media/projects/project-accounting.png"
+    src="/media/ui-project-accounting.png"
     alt="Accounting mode and split policy selectors with explanatory copy beneath each"
   />
 </Frame>
@@ -307,19 +291,12 @@ Save with **Create Project**, or **Create & Add Members** when membership is exp
 
 A project's page has five tabs, in this order: **Overview**, **Budgets & limits**, **Members**, **Providers** and **MCPs**. Each of the last three carries a count, and the **Use project** button beside them shows the headers a caller sends to reach the project.
 
-**Overview** opens with a **Finish Setting Up** checklist while anything essential is missing, then tiles for spend, tokens, requests, members, providers, MCP servers, the access rule, the accounting mode and when the project was created. A **Needs attention** card lists caps near or past their limit, and flags members left holding no slice of a cap under an equal split.
+**Overview** opens with tiles for spend, tokens, requests, members, providers, MCP servers, the access rule, the accounting mode and when the project was created. A **Needs attention** card lists caps near or past their limit, and flags members left holding no slice of a cap under an equal split.
 
 <Frame>
   <img
-    src="/media/projects/project-overview-tab.png"
-    alt="Project Overview tab with Finish Setting Up checklist, usage tiles and Needs attention card"
-  />
-</Frame>
-
-<Frame>
-  <img
-    src="/media/projects/project-use-project.png"
-    alt="Use project sheet showing the project headers and a copy-ready curl request"
+    src="/media/ui-project-overview-tab.png"
+    alt="Project Overview tab with usage tiles and Needs attention card"
   />
 </Frame>
 
@@ -327,26 +304,12 @@ A project's page has five tabs, in this order: **Overview**, **Budgets & limits*
 
 <Frame>
   <img
-    src="/media/projects/project-limits-tab.png"
+    src="/media/ui-project-limits-tab.png"
     alt="Budgets and limits tab showing project, provider and model cap rungs with usage meters"
   />
 </Frame>
 
 **Providers** and **MCPs** are read-only views of what the project allows: allowed and blocked models per provider with weights, and tools per server plus assigned virtual MCPs with their slug endpoints.
-
-<Frame>
-  <img
-    src="/media/projects/project-providers-tab.png"
-    alt="Providers tab listing each provider with allowed models, blocked models and weight"
-  />
-</Frame>
-
-<Frame>
-  <img
-    src="/media/projects/project-mcp-tab.png"
-    alt="MCPs tab listing servers with their allowed tools and assigned virtual MCPs"
-  />
-</Frame>
 
 ### Managing members
 
@@ -354,7 +317,7 @@ A project's page has five tabs, in this order: **Overview**, **Budgets & limits*
 
 <Frame>
   <img
-    src="/media/projects/project-members-tab.png"
+    src="/media/ui-project-members-tab.png"
     alt="Members tab with per-member spend, token and request cap meters"
   />
 </Frame>
@@ -363,7 +326,7 @@ A project's page has five tabs, in this order: **Overview**, **Budgets & limits*
 
 <Frame>
   <img
-    src="/media/projects/add-project-members.png"
+    src="/media/ui-add-project-members.png"
     alt="Add members sheet with user picker, team snapshot option and equal-share before-and-after preview"
   />
 </Frame>
@@ -372,14 +335,7 @@ Clicking a member opens their usage, grouped project then provider then model. F
 
 <Frame>
   <img
-    src="/media/projects/member-usage-sheet.png"
-    alt="Member usage sheet showing every cap that applies to one member, grouped by tier"
-  />
-</Frame>
-
-<Frame>
-  <img
-    src="/media/projects/edit-member-caps.png"
+    src="/media/ui-edit-member-caps.png"
     alt="Edit member caps sheet with amount or percentage unit selectors and live preview"
   />
 </Frame>
@@ -391,13 +347,6 @@ Removing a member takes their caps with them and, under an equal split, redivide
 The **Enabled** switch is on the list row and in the edit sheet; disabling asks for confirmation, since every request naming the project will be refused. Expiry is a field on the edit sheet.
 
 Deleting a project removes its providers, budgets and the spend recorded against them, and removes its members' access through it. Log rows keep the attribution they already carry.
-
-<Frame>
-  <img
-    src="/media/projects/project-delete.png"
-    alt="Delete project confirmation dialog naming what is removed"
-  />
-</Frame>
 
 </Tab>
 <Tab title="config.json">
