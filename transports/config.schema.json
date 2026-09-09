@@ -880,6 +880,14 @@
                 "enum": ["own-data", "team-data", "all-data"],
                 "default": "all-data"
               },
+              "entity_dac": {
+                "type": "object",
+                "description": "Per-entity Data Access Control overrides, keyed by resource name. Each entry narrows or widens the role's global dac for that one entity; entities not listed follow dac. Resources accepting an override as of this release: Logs, MCPLogs, AuditLogs, VirtualKeys, Users, Teams, Customers, BusinessUnits, RBAC, APIKeys, AccessProfiles, PromptRepository, RoutingRules, GuardrailsConfig, MCPGateway, VirtualMCPs, Projects. ",
+                "additionalProperties": {
+                  "type": "string",
+                  "enum": ["own-data", "team-data", "all-data"]
+                }
+              },
               "access_profile": {
                 "type": "string",
                 "description": "Name of the access profile (defined in access_profiles) to attach as the default for this role. Changing this field triggers a re-sync on next startup. Leave unset to let the dashboard manage the assignment."

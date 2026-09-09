@@ -4,10 +4,13 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-<<<<<<< HEAD
-**Latest Version:** 2.1.39
+**Latest Version:** 2.1.40
 
 ## Changelog
+
+### 2.1.40
+
+- Added `bifrost.governance.roles[].entity_dac` — per-entity Data Access Control overrides keyed by resource name, each set to `own-data`, `team-data`, or `all-data`. Resources accepting an override today: `Logs`, `MCPLogs`, `AuditLogs`, `VirtualKeys`, `Users`, `Teams`, `Customers`, `BusinessUnits`, `RBAC`, `APIKeys`, `AccessProfiles`, `PromptRepository`, `RoutingRules`, `GuardrailsConfig`, `MCPGateway`, `VirtualMCPs`, `Projects` 
 
 ### 2.1.39
 
