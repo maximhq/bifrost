@@ -96,7 +96,7 @@ func TestRuntimeModelURLUsesKeyRuntimeEndpoint(t *testing.T) {
 	clearBedrockEndpointEnv(t)
 	provider := &BedrockProvider{}
 	endpoints := &schemas.BedrockEndpoints{
-		Runtime: schemas.NewSecretVar("vpce-runtime.eu-west-2.vpce.amazonaws.com"),
+		Runtime:      schemas.NewSecretVar("vpce-runtime.eu-west-2.vpce.amazonaws.com"),
 		ControlPlane: schemas.NewSecretVar("vpce-control.eu-west-2.vpce.amazonaws.com"),
 	}
 
