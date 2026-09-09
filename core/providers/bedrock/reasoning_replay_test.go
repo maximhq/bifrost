@@ -199,7 +199,7 @@ func TestConvertBifrostReasoningToBedrockReasoning(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			blocks := convertBifrostReasoningToBedrockReasoning(tc.msg, schemas.BedrockReasoningShapeText)
+			blocks := convertBifrostReasoningToBedrockReasoning(tc.msg, schemas.BedrockReasoningShapeText, false)
 
 			require.Len(t, blocks, tc.wantBlocks)
 			reasoningTextInvariant(t, blocks)
@@ -239,7 +239,7 @@ func TestConvertBifrostReasoningToBedrockReasoningEncryptedContent(t *testing.T)
 		},
 	}
 
-	blocks := convertBifrostReasoningToBedrockReasoning(message, schemas.BedrockReasoningShapeText)
+	blocks := convertBifrostReasoningToBedrockReasoning(message, schemas.BedrockReasoningShapeText, false)
 	require.Len(t, blocks, 1)
 	require.NotNil(t, blocks[0].ReasoningContent)
 	require.NotNil(t, blocks[0].ReasoningContent.ReasoningText)
@@ -261,7 +261,7 @@ func TestConvertBifrostReasoningToBedrockReasoningTextAlwaysSerialized(t *testin
 			Summary:          []schemas.ResponsesReasoningSummary{},
 			EncryptedContent: &signature,
 		},
-	}, schemas.BedrockReasoningShapeText)
+	}, schemas.BedrockReasoningShapeText, false)
 	require.Len(t, blocks, 1)
 
 	raw, err := sonic.Marshal(blocks[0])
@@ -403,6 +403,43 @@ func TestConverseReasoningShapeFollowsCanonicalModel(t *testing.T) {
 		"an unresolved opaque id carries no family and must not be guessed as redacted")
 }
 
+func TestConverseRequiresSignedReasoningFamilyFallback(t *testing.T) {
+	tests := []struct {
+		model string
+		want  bool
+	}{
+		{"global.anthropic.claude-sonnet-4-6", true},
+		{"us.anthropic.claude-opus-4-8", true},
+		{"anthropic.claude-3-5-sonnet-20240620-v1:0", true},
+		{"amazon.nova-pro-v1:0", false},
+		{"minimax.minimax-m2", false},
+		{"us.deepseek.r1-v1:0", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.model, func(t *testing.T) {
+			require.Equal(t, tc.want, converseRequiresSignedReasoning(tc.model))
+		})
+	}
+}
+
+func TestConverseRequiresSignedReasoningDatasheetWinsOverFamily(t *testing.T) {
+	t.Run("row can turn it off for a claude id", func(t *testing.T) {
+		const model = "global.anthropic.claude-sonnet-4-6"
+		installBedrockCapabilityRecord(t, model, &schemas.ModelCapabilities{BedrockRequiresSignedReasoning: schemas.Ptr(false)})
+		require.False(t, converseRequiresSignedReasoning(model))
+	})
+	t.Run("row can turn it on for a nova id", func(t *testing.T) {
+		const model = "amazon.nova-pro-v1:0"
+		installBedrockCapabilityRecord(t, model, &schemas.ModelCapabilities{BedrockRequiresSignedReasoning: schemas.Ptr(true)})
+		require.True(t, converseRequiresSignedReasoning(model))
+	})
+	t.Run("empty row falls back to the family", func(t *testing.T) {
+		const model = "global.anthropic.claude-sonnet-4-6"
+		installBedrockCapabilityRecord(t, model, &schemas.ModelCapabilities{})
+		require.True(t, converseRequiresSignedReasoning(model))
+	})
+}
+
 func TestConvertBifrostReasoningToBedrockReasoningRedactedShape(t *testing.T) {
 	blob := "cnNuXzVaVnJpZjRKMGJYSXFtV2RsZWRqN1FJRmVGZWdz"
 
@@ -413,7 +450,7 @@ func TestConvertBifrostReasoningToBedrockReasoningRedactedShape(t *testing.T) {
 				Summary:          []schemas.ResponsesReasoningSummary{},
 				EncryptedContent: &blob,
 			},
-		}, schemas.BedrockReasoningShapeRedacted)
+		}, schemas.BedrockReasoningShapeRedacted, false)
 
 		require.Len(t, blocks, 1)
 		require.NotNil(t, blocks[0].ReasoningContent)
@@ -441,7 +478,7 @@ func TestConvertBifrostReasoningToBedrockReasoningRedactedShape(t *testing.T) {
 			ResponsesReasoning: &schemas.ResponsesReasoning{
 				Summary: []schemas.ResponsesReasoningSummary{},
 			},
-		}, schemas.BedrockReasoningShapeRedacted)
+		}, schemas.BedrockReasoningShapeRedacted, false)
 
 		require.Empty(t, blocks, "an unreplayable block must be dropped, not reshaped")
 	})
@@ -452,7 +489,7 @@ func TestConvertBifrostReasoningToBedrockReasoningRedactedShape(t *testing.T) {
 			ResponsesReasoning: &schemas.ResponsesReasoning{
 				Summary: []schemas.ResponsesReasoningSummary{{Text: "step by step"}},
 			},
-		}, schemas.BedrockReasoningShapeRedacted)
+		}, schemas.BedrockReasoningShapeRedacted, false)
 
 		require.Empty(t, blocks)
 	})

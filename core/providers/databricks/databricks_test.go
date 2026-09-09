@@ -3,6 +3,7 @@ package databricks_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -111,6 +112,13 @@ const stubChatResponse = `{
 	"usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
 }`
 
+const stubEmbeddingResponse = `{
+	"object": "list",
+	"data": [{"object": "embedding", "index": 0, "embedding": [0.1, 0.2]}],
+	"model": "m",
+	"usage": {"prompt_tokens": 1, "total_tokens": 1}
+}`
+
 // TestDatabricksSurfaceRouting pins the base path each surface is addressed on, and the rule
 // that picks between them. A dotted model name is a Unity Catalog model service and must go
 // to the AI Gateway; a bare name is a Model Serving endpoint. Getting this wrong sends every
@@ -125,6 +133,8 @@ func TestDatabricksSurfaceRouting(t *testing.T) {
 		wantPath  string
 	}{
 		{"auto routes a serving endpoint name to model serving", "databricks-claude-sonnet-4-5", "", "/serving-endpoints/chat/completions"},
+		{"auto routes a short model name to the ai gateway", "claude-opus-5", "", "/ai-gateway/mlflow/v1/chat/completions"},
+		{"auto routes a versioned short name to the ai gateway", "gpt-5.5", "", "/ai-gateway/mlflow/v1/chat/completions"},
 		{"auto routes a system.ai name to the ai gateway", "system.ai.claude-sonnet-4-5", "", "/ai-gateway/mlflow/v1/chat/completions"},
 		{"auto routes a unity catalog fqn to the ai gateway", "main.default.my-service", "", "/ai-gateway/mlflow/v1/chat/completions"},
 		{"explicit model_serving overrides a dotted name", "system.ai.claude-sonnet-4-5", schemas.DatabricksAPIFormatModelServing, "/serving-endpoints/chat/completions"},
@@ -171,6 +181,137 @@ func TestDatabricksSurfaceRouting(t *testing.T) {
 			defer mu.Unlock()
 			if gotPath != tt.wantPath {
 				t.Errorf("path: got %q, want %q", gotPath, tt.wantPath)
+			}
+		})
+	}
+}
+
+// TestDatabricksAIGatewayModelPrefix covers the model name Databricks receives. A bare name
+// bound for the Unity AI Gateway gains the system.ai. catalog prefix; names that already
+// carry a catalog, names bound for Model Serving, and names resolved from a key alias are
+// sent exactly as given.
+func TestDatabricksAIGatewayModelPrefix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		model     string
+		apiFormat schemas.DatabricksAPIFormat
+		alias     *schemas.ResolvedAlias
+		wantModel string
+	}{
+		{"bare name on the ai gateway gains the system.ai prefix", "gpt-5.5", schemas.DatabricksAPIFormatAIGateway, nil, "system.ai.gpt-5.5"},
+		{"bare name without a version dot on the ai gateway gains the prefix", "claude-opus-5", schemas.DatabricksAPIFormatAIGateway, nil, "system.ai.claude-opus-5"},
+		{"version dot under auto routes to the ai gateway and gains the prefix", "gpt-5.5", "", nil, "system.ai.gpt-5.5"},
+		{"short name under auto routes to the ai gateway and gains the prefix", "claude-opus-5", "", nil, "system.ai.claude-opus-5"},
+		{
+			"bare alias model_id under auto stays on model serving unchanged",
+			"my-pt-endpoint",
+			"",
+			&schemas.ResolvedAlias{Key: "gpt-5.5", Config: &schemas.AliasConfig{ModelID: "my-pt-endpoint"}},
+			"my-pt-endpoint",
+		},
+		{"system.ai name on the ai gateway is unchanged", "system.ai.gpt-5.5", schemas.DatabricksAPIFormatAIGateway, nil, "system.ai.gpt-5.5"},
+		{"unity catalog fqn on the ai gateway is unchanged", "main.default.my-service", schemas.DatabricksAPIFormatAIGateway, nil, "main.default.my-service"},
+		{"bare name under auto is a serving endpoint and is unchanged", "databricks-claude-sonnet-4-5", "", nil, "databricks-claude-sonnet-4-5"},
+		{"bare name pinned to model serving is unchanged", "gpt-5.5", schemas.DatabricksAPIFormatModelServing, nil, "gpt-5.5"},
+		{
+			"alias model_id on the ai gateway is sent verbatim",
+			"my-gpt-deployment",
+			schemas.DatabricksAPIFormatAIGateway,
+			&schemas.ResolvedAlias{Key: "gpt-5.5", Config: &schemas.AliasConfig{ModelID: "my-gpt-deployment"}},
+			"my-gpt-deployment",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var mu sync.Mutex
+			var gotModels []string
+
+			provider, server := newStubProvider(t, func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode request body: %v", err)
+				}
+				mu.Lock()
+				gotModels = append(gotModels, fmt.Sprint(body["model"]))
+				mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/embeddings"):
+					_, _ = w.Write([]byte(stubEmbeddingResponse))
+				case strings.HasSuffix(r.URL.Path, "/responses"):
+					_, _ = w.Write([]byte(stubResponsesResponse))
+				default:
+					_, _ = w.Write([]byte(stubChatResponse))
+				}
+			})
+
+			key := schemas.Key{
+				Models: []string{"*"},
+				Value:  *schemas.NewSecretVar("dapi-test"),
+				DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
+					WorkspaceURL: *schemas.NewSecretVar(serverHost(t, server)),
+					APIFormat:    tt.apiFormat,
+				},
+			}
+
+			ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if tt.alias != nil {
+				ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, tt.alias)
+			}
+
+			chatRequest := &schemas.BifrostChatRequest{
+				Provider: schemas.Databricks,
+				Model:    tt.model,
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+			}
+			if _, bErr := provider.ChatCompletion(ctx, key, chatRequest); bErr != nil {
+				t.Fatalf("ChatCompletion returned an error: %v", bErr)
+			}
+			if chatRequest.Model != tt.model {
+				t.Errorf("ChatCompletion mutated the caller's model: got %q, want %q", chatRequest.Model, tt.model)
+			}
+
+			embeddingRequest := &schemas.BifrostEmbeddingRequest{
+				Provider: schemas.Databricks,
+				Model:    tt.model,
+				Input:    &schemas.EmbeddingInput{Text: schemas.Ptr("hi")},
+			}
+			if _, bErr := provider.Embedding(ctx, key, embeddingRequest); bErr != nil {
+				t.Fatalf("Embedding returned an error: %v", bErr)
+			}
+			if embeddingRequest.Model != tt.model {
+				t.Errorf("Embedding mutated the caller's model: got %q, want %q", embeddingRequest.Model, tt.model)
+			}
+
+			// Responses is emulated through chat on the AI Gateway and served natively on
+			// Model Serving; the wire model must be rewritten on both routes.
+			responsesRequest := &schemas.BifrostResponsesRequest{
+				Provider: schemas.Databricks,
+				Model:    tt.model,
+				Input:    []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}},
+			}
+			if _, bErr := provider.Responses(ctx, key, responsesRequest); bErr != nil {
+				t.Fatalf("Responses returned an error: %v", bErr)
+			}
+			if responsesRequest.Model != tt.model {
+				t.Errorf("Responses mutated the caller's model: got %q, want %q", responsesRequest.Model, tt.model)
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			if len(gotModels) != 3 {
+				t.Fatalf("expected 3 upstream calls, got %d", len(gotModels))
+			}
+			for i, got := range gotModels {
+				if got != tt.wantModel {
+					t.Errorf("call %d: wire model got %q, want %q", i, got, tt.wantModel)
+				}
 			}
 		})
 	}

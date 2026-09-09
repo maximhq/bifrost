@@ -530,8 +530,8 @@ function formatMicros(us: number): string {
 // names are grouped into a handful of user-facing categories: Serialization (JSON
 // parse/encode), Conversion (API schema translation), Plugins, Middleware (auth/access),
 // Key selection, Processing (internal request pipeline), Networking
-// (client<->gateway<->provider handling), Client delivery (SSE egress to the client), and Scheduling (the
-// residual goroutine-hop latency between phases). "View details" drills into the member
+// (client<->gateway<->provider handling), Client delivery (SSE egress to the client), and Miscellaneous
+// (small glue on no dedicated span plus the residual goroutine-hop latency between phases). "View details" drills into the member
 // spans inside each grouped category with their friendly labels. See OVERHEAD_LABELS /
 // OVERHEAD_BUCKET_CATEGORY / overheadCategoryKey for the mapping.
 type OverheadCategory = {
@@ -556,7 +556,7 @@ const OVERHEAD_CATEGORY_META: Record<string, { label: string; colorClass: string
 	processing: { label: "Processing", colorClass: "bg-teal-500/70" },
 	networking: { label: "Networking", colorClass: "bg-emerald-500/70" },
 	streaming: { label: "Client delivery", colorClass: "bg-red-500/70" },
-	scheduling: { label: "Scheduling", colorClass: "bg-slate-500/70" },
+	miscellaneous: { label: "Miscellaneous", colorClass: "bg-slate-500/70" },
 	other: { label: "Other", colorClass: "bg-muted-foreground/50" },
 };
 
@@ -588,7 +588,7 @@ const OVERHEAD_LABELS: Record<string, string> = {
 	"worker-handoff": "Worker handoff",
 	"queue-wait": "Queue wait",
 	"attribute-population": "Attribute population",
-	miscellaneous: "Miscellaneous",
+	miscellaneous: "Uncaptured glue",
 	// Networking (client<->gateway<->provider handling)
 	"provider-internal": "Provider processing",
 	"transport-context": "Request context building",
@@ -599,7 +599,7 @@ const OVERHEAD_LABELS: Record<string, string> = {
 	// Streaming relay
 	"stream-backpressure": "Client backpressure",
 	"stream-client-write": "Client write",
-	scheduling: "Scheduling",
+	scheduling: "Scheduling residual",
 };
 
 // Category assignment for buckets that aren't matched by a prefix rule below. Every
@@ -616,7 +616,7 @@ const OVERHEAD_BUCKET_CATEGORY: Record<string, string> = {
 	"worker-handoff": "processing",
 	"queue-wait": "processing",
 	"attribute-population": "processing",
-	miscellaneous: "processing",
+	miscellaneous: "miscellaneous",
 	"provider-internal": "networking",
 	"transport-context": "networking",
 	"transport-response-headers": "networking",
@@ -625,7 +625,7 @@ const OVERHEAD_BUCKET_CATEGORY: Record<string, string> = {
 	"credentials-fetch": "networking",
 	"stream-backpressure": "streaming",
 	"stream-client-write": "streaming",
-	scheduling: "scheduling",
+	scheduling: "miscellaneous",
 };
 
 // Raw backend spans that split one user-facing step into internals a reader doesn't care

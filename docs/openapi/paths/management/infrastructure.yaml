@@ -25,15 +25,28 @@ websocket:
       an HTTP response body.
     tags:
       - Infrastructure
+    parameters:
+      - name: ticket
+        in: query
+        required: false
+        description: |
+          Single-use WebSocket ticket from `POST /api/session/ws-ticket`. Use this when an
+          `Authorization` header cannot be set (browser WebSocket clients).
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+      - SessionCookieAuth: []
     responses:
-      '101':
+      "101":
         description: WebSocket upgrade successful
         content:
           application/json:
             schema:
               oneOf:
-                - $ref: '../../schemas/management/infrastructure.yaml#/StoreUpdateMessage'
-                - $ref: '../../schemas/management/infrastructure.yaml#/RedivisionProgressMessage'
+                - $ref: "../../schemas/management/infrastructure.yaml#/StoreUpdateMessage"
+                - $ref: "../../schemas/management/infrastructure.yaml#/RedivisionProgressMessage"
               description: >-
                 One of the server-pushed message envelopes. Listed here because
                 the spec has nowhere else to describe a socket payload.
@@ -67,7 +80,7 @@ mcp-server:
                   - type: string
                   - type: integer
     responses:
-      '200':
+      "200":
         description: JSON-RPC 2.0 response
         content:
           application/json:
@@ -92,7 +105,6 @@ mcp-server:
                     - type: integer
     security:
       - BearerAuth: []
-      - BasicAuth: []
       - VirtualKeyAuth: []
       - ApiKeyAuth: []
   get:
@@ -104,7 +116,7 @@ mcp-server:
     tags:
       - Infrastructure
     responses:
-      '200':
+      "200":
         description: SSE stream opened
         content:
           text/event-stream:
@@ -112,7 +124,6 @@ mcp-server:
               type: string
     security:
       - BearerAuth: []
-      - BasicAuth: []
       - VirtualKeyAuth: []
       - ApiKeyAuth: []
 
@@ -120,11 +131,17 @@ metrics:
   get:
     operationId: getMetrics
     summary: Prometheus metrics
-    description: Returns Prometheus-formatted metrics for monitoring.
+    description: |
+      Returns Prometheus-formatted metrics for monitoring.
+      Registered behind the management auth middleware chain, so a scraper must present
+      management credentials (or the route must be added to `client_config.whitelisted_routes`).
     tags:
       - Infrastructure
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Prometheus metrics
         content:
           text/plain:
@@ -142,5 +159,5 @@ websocket-responses:
     tags:
       - Infrastructure
     responses:
-      '101':
+      "101":
         description: WebSocket upgrade successful

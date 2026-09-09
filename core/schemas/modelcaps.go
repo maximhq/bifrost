@@ -622,6 +622,17 @@ func (c ModelCaps) BedrockReasoningShape(fallback BedrockReasoningShape) Bedrock
 	return fallback
 }
 
+// BedrockRequiresSignedReasoning reports whether the (provider, model) pair
+// verifies reasoning signatures on Converse, so an unsigned reasoningText block
+// cannot be replayed to it. Falls back to the caller's name-based answer when
+// the row says nothing.
+func (c ModelCaps) BedrockRequiresSignedReasoning(fallback bool) bool {
+	if c.record != nil && c.record.BedrockRequiresSignedReasoning != nil {
+		return *c.record.BedrockRequiresSignedReasoning
+	}
+	return fallback
+}
+
 // SupportsResponsesEndpoint reports whether the datasheet's supported_endpoints list
 // includes the Responses API.
 func (c ModelCaps) SupportsResponsesEndpoint(fallback bool) bool {

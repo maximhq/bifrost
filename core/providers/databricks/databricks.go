@@ -8,7 +8,10 @@
 //     OpenAI Responses API at /serving-endpoints/responses.
 //   - Unity AI Gateway model APIs (model services), at /ai-gateway/mlflow/v1. The model name
 //     is a Unity Catalog name (e.g. "system.ai.claude-sonnet-4-5", or a user-created
-//     "<catalog>.<schema>.<service>").
+//     "<catalog>.<schema>.<service>"). A bare name sent to this surface is prefixed with
+//     "system.ai." so callers can address the built-in models by their short name; under the
+//     default auto surface selection, a bare name that is not a "databricks-*" endpoint
+//     lands here.
 //
 // Because both surfaces are OpenAI-compatible, every request is delegated to the shared
 // openai.HandleOpenAI* helpers; this package only resolves the workspace host, selects the
@@ -140,24 +143,72 @@ func normalizeHost(raw string) string {
 	return host
 }
 
+// modelServingEndpointPrefix is the naming convention for Databricks pay-per-token Foundation
+// Model endpoints ("databricks-claude-sonnet-4-5", "databricks-gte-large-en").
+const modelServingEndpointPrefix = "databricks-"
+
 // resolveAPIFormat decides which Databricks surface a request targets. An explicit
-// api_format on the key wins; otherwise the model name decides. A dotted name is a Unity
-// Catalog model service (system.ai.*, or <catalog>.<schema>.<service>) and goes to the Unity
-// AI Gateway; anything else is a Model Serving endpoint name.
+// api_format on the key wins; otherwise the model name decides:
 //
-// Model aliases need no special handling here: alias resolution rewrites the model to its
-// upstream model_id before the provider sees it, so auto-detection reads the wire name.
-func resolveAPIFormat(key schemas.Key, model string) schemas.DatabricksAPIFormat {
+//   - A catalog-qualified name (system.ai.*, or <catalog>.<schema>.<service>) is a Unity
+//     Catalog model service and goes to the Unity AI Gateway.
+//   - A "databricks-*" name is a pay-per-token Foundation Model endpoint on Model Serving.
+//   - A name resolved from a key alias is the exact upstream name the user configured. A bare
+//     one can only be a Model Serving endpoint, since the gateway requires catalog names.
+//   - Any other bare name ("gpt-5.5", "claude-opus-5") is a short name for a ready-to-use
+//     system.ai model and goes to the Unity AI Gateway, where wireModel adds the prefix.
+//
+// Provisioned-throughput endpoints with a custom name need api_format: model_serving or a key
+// alias, because their names carry no marker that separates them from a short gateway name.
+func resolveAPIFormat(ctx *schemas.BifrostContext, key schemas.Key, model string) schemas.DatabricksAPIFormat {
 	if key.DatabricksKeyConfig != nil {
 		switch key.DatabricksKeyConfig.APIFormat {
 		case schemas.DatabricksAPIFormatModelServing, schemas.DatabricksAPIFormatAIGateway:
 			return key.DatabricksKeyConfig.APIFormat
 		}
 	}
-	if strings.Contains(model, ".") {
+	if isCatalogQualified(model) {
 		return schemas.DatabricksAPIFormatAIGateway
 	}
-	return schemas.DatabricksAPIFormatModelServing
+	if strings.HasPrefix(strings.ToLower(model), modelServingEndpointPrefix) || schemas.GetResolvedAlias(ctx) != nil {
+		return schemas.DatabricksAPIFormatModelServing
+	}
+	return schemas.DatabricksAPIFormatAIGateway
+}
+
+// aiGatewayDefaultCatalogPrefix is the Unity Catalog prefix under which Databricks publishes
+// its ready-to-use AI Gateway models. Every account can query these with no setup.
+const aiGatewayDefaultCatalogPrefix = "system.ai."
+
+// wireModel returns the model name sent to Databricks for a request. The Unity AI Gateway
+// addresses models by their three-part Unity Catalog name, so a bare name such as
+// "gpt-5.5" is rewritten to "system.ai.gpt-5.5" when the request targets that surface.
+// This applies whether the surface was pinned with api_format: ai_gateway or picked by the
+// auto rule in resolveAPIFormat. Names that already carry a catalog and schema
+// ("system.ai.gpt-5.5", "main.default.my-service") pass through untouched, as do names
+// resolved from a key alias: the alias's model_id is the exact upstream name the user
+// configured, so it is never rewritten. Requests bound for Model Serving are unaffected
+// because endpoint names there are bare by design.
+//
+// A name counts as catalog-qualified when it has at least two dots. A single dot is a
+// version separator ("gpt-5.5", "claude-sonnet-4.5"), not a catalog boundary.
+func wireModel(ctx *schemas.BifrostContext, key schemas.Key, model string) string {
+	if model == "" || isCatalogQualified(model) {
+		return model
+	}
+	if resolveAPIFormat(ctx, key, model) != schemas.DatabricksAPIFormatAIGateway {
+		return model
+	}
+	if schemas.GetResolvedAlias(ctx) != nil {
+		return model
+	}
+	return aiGatewayDefaultCatalogPrefix + model
+}
+
+// isCatalogQualified reports whether a model name already spells out a Unity Catalog
+// <catalog>.<schema>.<name> path.
+func isCatalogQualified(model string) bool {
+	return strings.Count(model, ".") >= 2
 }
 
 // basePathFor returns the OpenAI-compatible base path under the workspace host for a surface.
@@ -180,7 +231,7 @@ func (provider *DatabricksProvider) buildURL(ctx *schemas.BifrostContext, key sc
 	if bErr != nil {
 		return "", bErr
 	}
-	return "https://" + host + basePathFor(resolveAPIFormat(key, model)) + path, nil
+	return "https://" + host + basePathFor(resolveAPIFormat(ctx, key, model)) + path, nil
 }
 
 // workspaceAPIURL composes a URL for a Databricks control-plane REST API (not an inference

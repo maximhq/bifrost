@@ -774,10 +774,10 @@ Timestamps must be RFC3339 and in the future; otherwise the API returns `400`. O
 **Expired key rejection:**
 ```json
 {
-  "type": "virtual_key_blocked",
+  "type": "access_blocked",
   "status_code": 403,
   "error": {
-    "message": "Virtual key has expired"
+    "message": "virtual key has expired"
   }
 }
 ```
@@ -913,52 +913,42 @@ curl -X PUT http://localhost:8080/api/config \
 
 ### Error Responses
 
-- Virtual Key Not Found (400)
+`type` is a **top-level** field, beside `status_code`, and `error` carries only the
+message. A client branching on the refusal reads `type`, not `error.type`.
+
+- Authentication Required (401), when no credential was presented and virtual keys are mandatory
 ```json
 {
+  "type": "virtual_key_required",
+  "status_code": 401,
   "error": {
-    "type": "virtual_key_required",
-    "message": "virtual key is missing in headers"
+    "message": "virtual key is required. Provide a virtual key via the x-bf-vk header."
   }
 }
 ```
 
-- Virtual Key Blocked (403)
+- Inactive or Expired (403), when the credential is real but may not be used
 ```json
 {
+  "type": "access_blocked",
+  "status_code": 403,
   "error": {
-    "type": "virtual_key_blocked", 
-    "message": "Virtual key is inactive"
+    "message": "virtual key is inactive"
   }
 }
 ```
 
-- Rate Limit Exceeded (429)
-```json
-{
-  "error": {
-    "type": "rate_limited",
-    "message": "Rate limits exceeded: [token limit exceeded (1500/1000, resets every 1h)]"
-  }
-}
-```
+  A key that is both inactive and expired reports `is inactive`: the check runs in that
+  order and answers on the first that matches. The same type and shape covers an expired
+  key (`virtual key has expired`) and an access profile that is inactive or expired.
 
-- Token Limit Exceeded (429)
+- Rate Limit Exceeded (429): `rate_limited`, or `token_limited` / `request_limited` for the dimension that ran out
 ```json
 {
+  "type": "token_limited",
+  "status_code": 429,
   "error": {
-    "type": "token_limited",
-    "message": "Rate limits exceeded: [token limit exceeded (1500/1000, resets every 1h)]"
-  }
-}
-```
-
-- Request Limit Exceeded (429)
-```json
-{
-  "error": {
-    "type": "request_limited", 
-    "message": "Rate limits exceeded: [request limit exceeded (101/100, resets every 1m)]"
+    "message": "Rate limit exceeded: rate limit violated for vk_model_config * : [token limit exceeded (1500/1000, resets every 1h)]"
   }
 }
 ```
@@ -966,19 +956,24 @@ curl -X PUT http://localhost:8080/api/config \
 - Budget Exceeded (402)
 ```json
 {
+  "type": "budget_exceeded",
+  "status_code": 402,
   "error": {
-    "type": "budget_exceeded",
-    "message": "Budget exceeded: VK budget exceeded: 105.50 > 100.00 dollars"
+    "message": "Budget exceeded: vk_model_config * budget exceeded: 105.5000 >= 100.0000 dollars"
   }
 }
 ```
 
+  The name after the holder kind is what ran out, so a refusal says which tier stopped the
+  request rather than only that something did.
+
 - Model Not Allowed (403)
 ```json
 {
+  "type": "model_blocked",
+  "status_code": 403,
   "error": {
-    "type": "model_blocked",
-    "message": "Model 'gpt-4o' is not allowed for this virtual key"
+    "message": "Model 'gpt-4o' is not allowed for virtual key 'my-key'"
   }
 }
 ```
@@ -986,9 +981,21 @@ curl -X PUT http://localhost:8080/api/config \
 - Provider Not Allowed (403)
 ```json
 {
+  "type": "provider_blocked",
+  "status_code": 403,
   "error": {
-    "type": "provider_blocked",
-    "message": "Provider 'anthropic' is not allowed for this virtual key"
+    "message": "Provider 'anthropic' is not allowed for virtual key 'my-key'"
+  }
+}
+```
+
+- MCP Tool Not Allowed (403)
+```json
+{
+  "type": "mcp_tool_blocked",
+  "status_code": 403,
+  "error": {
+    "message": "MCP tool 'filesystem-write_file' is not allowed for virtual key 'my-key'"
   }
 }
 ```

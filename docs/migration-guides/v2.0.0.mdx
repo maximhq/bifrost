@@ -3,7 +3,7 @@ title: "Migrating to v2.0.0"
 description: "Breaking changes and migration instructions for the v2.0.0 release"
 ---
 
-v2.0.0 hardens custom plugin loading against server-side request forgery (SSRF), closes a path that let an unauthenticated caller register a custom native plugin when dashboard auth is disabled or unconfigured, moves all governance APIs under a single `/api/governance` namespace, moves the plugin `HTTPTransportPreHook` phase to run after the transport authenticates the request, and restructures the request `cost` object into a per-category input/output/additional breakdown. This page covers the five breaking changes in this release and how to migrate.
+v2.0.0 hardens custom plugin loading against server-side request forgery (SSRF), closes a path that let an unauthenticated caller register a custom native plugin when dashboard auth is disabled or unconfigured, moves all governance APIs under a single `/api/governance` namespace, moves the plugin `HTTPTransportPreHook` phase to run after the transport authenticates the request, restructures the request `cost` object into a per-category input/output/additional breakdown, and removes legacy observability attribute aliases. This page covers the six breaking changes in this release and how to migrate.
 
 <Note>
 **Running Bifrost Enterprise?** This page covers the OSS behavior only. See the [Enterprise v2.0.0 Migration Guide](/enterprise/migration-guides/v2.0.0) for how these changes interact with SCIM-based authentication.
@@ -331,6 +331,73 @@ BulkUpdateCost(ctx context.Context, updates map[string]CostUpdate) error
 
 ---
 
+## Breaking Change 6: Legacy Observability Attribute Aliases Were Removed
+
+Earlier releases emitted several values twice: once under a legacy Bifrost-specific or pre-semconv key and once under the canonical Bifrost or OpenTelemetry semantic-convention key. v2.0.0 stops emitting the legacy aliases and keeps the canonical keys.
+
+**What changed:** exported spans no longer contain the legacy keys in the tables below. The OpenTelemetry and Prometheus metric instrument names did not change, but dashboards, alerts, processors, and recording rules that read these span attributes must use the canonical keys. Some values also changed type or unit as noted.
+
+**Who is affected:** deployments with custom dashboards, alerts, collector processors, log pipelines, or queries that reference the removed keys; Go code that imports the removed `schemas.Attr*` constants; and callers that used `x-bf-prom-*` request headers as Prometheus label dimensions.
+
+**How to fix it:** replace every legacy key with its canonical key before upgrading.
+
+### Bifrost-internal attributes
+
+These values describe Bifrost routing or governance, so their canonical namespace is `bifrost.*`, not `gen_ai.*`:
+
+| Removed key | Canonical key |
+|---|---|
+| `gen_ai.request_id` | `bifrost.request.id` |
+| `gen_ai.virtual_key_id` | `bifrost.virtual_key.id` |
+| `gen_ai.virtual_key_name` | `bifrost.virtual_key.name` |
+| `gen_ai.selected_key_id` | `bifrost.selected_key.id` |
+| `gen_ai.selected_key_name` | `bifrost.selected_key.name` |
+| `gen_ai.routing_rule_id` | `bifrost.routing_rule.id` |
+| `gen_ai.routing_rule_name` | `bifrost.routing_rule.name` |
+| `gen_ai.team_id` | `bifrost.team.id` |
+| `gen_ai.team_name` | `bifrost.team.name` |
+| `gen_ai.customer_id` | `bifrost.customer.id` |
+| `gen_ai.customer_name` | `bifrost.customer.name` |
+| `gen_ai.number_of_retries` | `bifrost.retries` |
+| `gen_ai.fallback_index` | `bifrost.fallback_index` |
+| `retry.count` | `bifrost.retries` |
+
+### OpenTelemetry semantic-convention attributes
+
+| Removed key | Canonical key | Migration note |
+|---|---|---|
+| `gen_ai.request.n` | `gen_ai.request.choice.count` | Same numeric value |
+| `gen_ai.request.dimensions` | `gen_ai.embeddings.dimension.count` | Same numeric value |
+| `gen_ai.request.encoding_format` | `gen_ai.request.encoding_formats` | Value changes from a string to a string array |
+| `gen_ai.response.time_to_first_token` | `gen_ai.response.time_to_first_chunk` | Value changes from nanoseconds to seconds |
+| `gen_ai.usage.prompt_tokens` | `gen_ai.usage.input_tokens` | Same numeric value |
+| `gen_ai.usage.completion_tokens` | `gen_ai.usage.output_tokens` | Same numeric value |
+| `gen_ai.usage.prompt_token_details.cached_read_tokens` | `gen_ai.usage.cache_read.input_tokens` | Same numeric value |
+| `gen_ai.usage.input_token_details.cached_read_tokens` | `gen_ai.usage.cache_read.input_tokens` | Same numeric value |
+| `gen_ai.usage.prompt_token_details.cached_write_tokens` | `gen_ai.usage.cache_creation.input_tokens` | Same numeric value |
+| `gen_ai.usage.input_token_details.cached_write_tokens` | `gen_ai.usage.cache_creation.input_tokens` | Same numeric value |
+| `gen_ai.usage.completion_token_details.reasoning_tokens` | `gen_ai.usage.reasoning.output_tokens` | Same numeric value |
+| `gen_ai.usage.output_token_details.reasoning_tokens` | `gen_ai.usage.reasoning.output_tokens` | Same numeric value |
+| `gen_ai.error.type` | `error.type` | Uses the general OpenTelemetry error semantic convention |
+
+Attributes not listed here remain available. In particular, canonical GenAI attributes such as `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.usage.total_tokens`, and `gen_ai.usage.cost` were not removed.
+
+### Prometheus custom-dimension headers
+
+`x-bf-prom-*` headers are no longer accepted as Prometheus custom-label sources. Replace them with the unified `x-bf-dim-*` prefix and keep the corresponding label in the telemetry plugin's custom-label configuration:
+
+```http
+# Before
+x-bf-prom-environment: production
+
+# After
+x-bf-dim-environment: production
+```
+
+The removed prefix is swallowed by the HTTP transport and is not forwarded upstream, but it no longer produces a metric label.
+
+---
+
 ## Migration Checklist
 
 <Steps>
@@ -372,5 +439,9 @@ Any client parsing `cost` / `token_usage.cost`, or Go code reading `schemas.Bifr
 
 <Step title="Update custom log store implementations for the new BulkUpdateCost signature">
 If you implement `framework/logstore.LogStore`, change `BulkUpdateCost` to take `map[string]CostUpdate` and read each value's `Total`, `Input`, `Output`, and `Additional`. `CostUpdateFromBreakdown` belongs in the caller that builds the update map, not the implementation.
+</Step>
+
+<Step title="Migrate legacy observability attribute and custom-label keys">
+Update dashboards, alerts, collector processors, recording rules, and Go integrations to use the [canonical observability keys](#breaking-change-6-legacy-observability-attribute-aliases-were-removed). Replace any `x-bf-prom-*` request headers with `x-bf-dim-*`.
 </Step>
 </Steps>

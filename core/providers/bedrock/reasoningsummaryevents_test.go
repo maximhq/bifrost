@@ -1,8 +1,10 @@
 package bedrock_test
 
 import (
+	"context"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -267,6 +269,34 @@ func TestBedrockReasoningItemSummaryNextToolPath(t *testing.T) {
 	items := bedrockReasoningItems(all)
 	require.Len(t, items, 1, "the reasoning block closes exactly once, on the tool block starting")
 	assertBedrockReasoningItemSnapshot(t, items[0], "Picking a tool.", "sig-tool")
+
+	// OpenCode replays these Anthropic blocks after executing the tool. A second
+	// redacted block containing sig-tool makes Bedrock reject that continuation.
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	var thinking, signature string
+	var blockTypes []anthropic.AnthropicContentBlockType
+	for _, frame := range all {
+		frame.ExtraFields.Provider = schemas.Bedrock
+		for _, event := range anthropic.ToAnthropicResponsesStreamResponse(ctx, frame) {
+			if event.ContentBlock != nil {
+				blockTypes = append(blockTypes, event.ContentBlock.Type)
+			}
+			if event.Delta != nil {
+				if event.Delta.Thinking != nil {
+					thinking += *event.Delta.Thinking
+				}
+				if event.Delta.Signature != nil {
+					signature += *event.Delta.Signature
+				}
+			}
+		}
+	}
+	assert.Equal(t, []anthropic.AnthropicContentBlockType{
+		anthropic.AnthropicContentBlockTypeThinking, anthropic.AnthropicContentBlockTypeToolUse,
+	}, blockTypes, "the Anthropic stream must preserve the original Bedrock block sequence")
+	assert.Equal(t, "Picking a tool.", thinking)
+	assert.Equal(t, "sig-tool", signature)
 }
 
 // TestBedrockReasoningItemSummaryFinalizePath covers the close path taken when the

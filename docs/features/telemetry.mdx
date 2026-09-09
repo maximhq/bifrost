@@ -53,6 +53,8 @@ These metrics track requests forwarded to AI providers:
 | `bifrost_success_requests_total`   | Counter   | Total successful requests to upstream providers                   | Base Labels, custom labels                            |
 | `bifrost_error_requests_total`     | Counter   | Total failed requests to upstream providers                       | Base Labels, `status_code`, custom labels             |
 | `bifrost_upstream_latency_seconds` | Histogram | Latency of upstream provider requests                             | Base Labels, `is_success`, custom labels              |
+| `bifrost_overhead_latency_microseconds`   | Histogram | Total Bifrost overhead per request in microseconds (Bifrost's own work, excluding upstream provider time) | Base Labels, custom labels                            |
+| `bifrost_overhead_component_microseconds` | Histogram | Same overhead broken down by internal component. Opt-in via `overhead_breakdown_enabled`; populated only when tracing is active | Base Labels, `overhead_component`, custom labels      |
 | `bifrost_input_tokens_total`       | Counter   | Total input tokens sent to upstream providers                     | Base Labels, custom labels                            |
 | `bifrost_output_tokens_total`      | Counter   | Total output tokens received from upstream providers              | Base Labels, custom labels                            |
 | `bifrost_cache_hits_total`         | Counter   | Total cache hits by type (direct/semantic)                        | Base Labels, `cache_type`, custom labels              |
@@ -83,6 +85,10 @@ Base Labels:
 - `team_id` / `team_name`: Team identifiers (empty when governance is not used)
 - `customer_id` / `customer_name`: Customer identifiers (empty when governance is not used)
 - custom labels: Custom labels configured in the Bifrost configuration
+
+<Note>
+`bifrost_overhead_component_microseconds` is off by default. Enable it with the telemetry plugin's `overhead_breakdown_enabled` config field (a sibling of `metrics_enabled`). It carries the Base Labels above plus an `overhead_component` label whose value is one of ten fixed categories (`serialization`, `conversion`, `plugins`, `middleware`, `routing`, `processing`, `networking`, `streaming`, `miscellaneous`, `other`), the same categories the Bifrost UI's log-detail overhead breakdown groups into; summing the components for a given label set reconstructs `bifrost_overhead_latency_microseconds`. Because the breakdown is derived from completed trace spans, it only populates when tracing is active for the request. See [Prometheus → Overhead Breakdown](/features/observability/prometheus#overhead-breakdown).
+</Note>
 
 ### Streaming Metrics
 

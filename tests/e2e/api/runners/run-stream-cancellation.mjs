@@ -2,8 +2,7 @@
 // Exercises Bifrost's server-side stream cancellation path by opening a stream,
 // reading the first bytes, then aborting the downstream request.
 
-import { writeFileSync, readFileSync } from "node:fs";
-import path from "node:path";
+import { writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { evaluateProbeStream } from "./lib/stream-probe-verdict.mjs";
 import { resolveVariables } from "./lib/resolve-variables.mjs";
@@ -12,6 +11,7 @@ const require = createRequire(import.meta.url);
 
 // Shared with newman-reporter-dbverify so provider alias normalization stays in sync.
 const { resolvePricingEntry } = require("../lib/pricing");
+const { readLogsDbUrl } = require("../lib/logs-db-url");
 
 const args = Object.fromEntries(
   process.argv.slice(2).reduce((acc, cur, i, arr) => {
@@ -38,6 +38,7 @@ const nonStreamAbortMs = Number(args["nonstream-abort-ms"] || 300);
 const skipCostCheck = args["no-cost-check"] === "true";
 const logsDbUrlArg = args["logs-db-url"] || process.env.BIFROST_LOGS_DB_URL || "";
 const configPathArg = args["config"] || process.env.BIFROST_CONFIG_PATH || "config.json";
+const serverWorkingDir = args["server-working-dir"] || process.cwd();
 const pricingUrl =
   args["pricing-url"] || process.env.BIFROST_PRICING_URL || "https://getbifrost.ai/datasheet";
 // Providers that emit usage in the FIRST stream event → a cancel-after-first-byte
@@ -56,31 +57,7 @@ const EARLY_USAGE_PROVIDERS = new Set(["anthropic"]);
 
 // ─── logs DB + datasheet helpers (cost verification) ──────────────────────────
 function resolveLogsDbUrl() {
-  if (logsDbUrlArg) return logsDbUrlArg;
-  try {
-    const cfg = JSON.parse(readFileSync(configPathArg, "utf8"));
-    const ls = cfg.logs_store;
-    if (!ls || !ls.enabled) return "";
-    if (ls.type === "sqlite") {
-      const p = ls.config && ls.config.path;
-      if (!p || typeof p !== "string") return "";
-      const abs = path.isAbsolute(p) ? p : path.resolve(path.dirname(configPathArg), p);
-      return "sqlite://" + abs;
-    }
-    if (ls.type === "postgres") {
-      const c = ls.config || {};
-      const host = c.host || "localhost",
-        port = c.port || "5432",
-        user = c.user || "bifrost";
-      const pass = c.password || "",
-        db = c.db_name || "bifrost",
-        ssl = c.ssl_mode || "disable";
-      return `postgresql://${user}:${encodeURIComponent(pass)}@${host}:${port}/${db}?sslmode=${ssl}`;
-    }
-  } catch (_) {
-    /* no config / unreadable → skip */
-  }
-  return "";
+  return logsDbUrlArg || readLogsDbUrl(configPathArg, serverWorkingDir);
 }
 
 async function connectLogsDb(url) {
