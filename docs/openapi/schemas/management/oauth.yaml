@@ -72,6 +72,15 @@ OAuthFlowInitiation:
     oauth_config_id:
       type: string
       description: ID of the OAuth config created for this flow
+    flow_id:
+      type: string
+      description: |
+        ID of the flow row driving this consent. Returned by
+        POST /api/mcp/client/{id}/reauthorize, whose OAuth config has been
+        "authorized" since the client was first verified; pass it as the
+        flow_id query parameter on status polls so they report this flow's
+        own state rather than that stale bootstrap status. Create-time flows
+        do not need it (their config starts "pending").
     authorize_url:
       type: string
       description: URL to redirect the user to for authorization
@@ -92,8 +101,9 @@ OAuthFlowInitiation:
       type: string
       description: |
         Relative URL to poll for the flow status
-        (/api/oauth/config/{oauth_config_id}/status). Wait for
-        status "authorized" before calling complete_url.
+        (/api/oauth/config/{oauth_config_id}/status, with ?flow_id=
+        appended for reauthorize flows). Wait for status "authorized"
+        before calling complete_url.
     next_steps:
       type: array
       items:
@@ -109,16 +119,23 @@ OAuthConfigStatus:
       description: OAuth config ID
     status:
       type: string
-      enum: [pending, authorized, failed]
+      enum: [pending, authorized, failed, expired]
       description: |
         Current status of the OAuth flow:
         - pending: User has not yet authorized
         - authorized: User authorized and token is stored
         - failed: Authorization failed
+        - expired: The flow's deadline passed before the provider redirected back (only with flow_id)
     created_at:
       type: string
       format: date-time
       description: When this OAuth config was created
+    flow_id:
+      type: string
+      description: Echo of the flow_id query parameter, when one was given
+    flow_status:
+      type: string
+      description: Raw status of the flow row (pending, claiming, failed) when flow_id was given and the row still exists
     token_id:
       type: string
       description: ID of the associated OAuth token (only present if status is authorized)
