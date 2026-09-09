@@ -427,10 +427,14 @@ func (response *GenerateContentResponse) ToBifrostChatCompletionStream(state *Ge
 // Candidate metadata that closes the stream (finishReason, usageMetadata, grounding,
 // logprobs, safety ratings) is attached only to the final group so the finish reason
 // and usage are emitted exactly once. A response that needs no split is returned
-// unchanged as the single element.
+// unchanged as the single element. A candidate whose finish reason is an error
+// (safety, image safety, recitation, and so on) is never split: the per-delta
+// converter turns it into a single error response and suppresses every part, and
+// splitting it would leak the pre-final text or media before that error.
 func (response *GenerateContentResponse) splitInlineMediaParts() []*GenerateContentResponse {
 	if len(response.Candidates) == 0 || response.Candidates[0] == nil ||
-		response.Candidates[0].Content == nil || len(response.Candidates[0].Content.Parts) < 2 {
+		response.Candidates[0].Content == nil || len(response.Candidates[0].Content.Parts) < 2 ||
+		isErrorFinishReason(response.Candidates[0].FinishReason) {
 		return []*GenerateContentResponse{response}
 	}
 	candidate := response.Candidates[0]
