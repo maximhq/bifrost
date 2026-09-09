@@ -837,6 +837,7 @@ bifrost:
       #   max_limit: 100
       #   reset_duration: "1M"     # Supports: 30s, 5m, 1h, 1d, 1w, 1M, 1Q, 1Y
       #   calendar_aligned: false  # Snap reset to calendar boundaries (e.g. 1M resets on the 1st)
+      #   virtual_key_id: "vk-1"  # Optional owner; set this on the budget, not budget_id on the virtual key
       #   # reset_config only applies to quarterly ("1Q") budgets:
       #   reset_config:
       #     quarter_start_month: 4  # First month of Q1 as 1-12 (e.g. 4 = fiscal year starting April). 0/omitted = January.
@@ -899,17 +900,14 @@ bifrost:
       #   team_id: "team-1"        # Mutually exclusive with customer_id
       #   customer_id: ""          # Mutually exclusive with team_id
       #   rate_limit_id: "rate-limit-1"
-      #   # Provider-specific configurations (empty means all providers allowed)
+      #   # Provider-specific configurations (empty means no providers allowed unless allow_all_providers is true)
       #   provider_configs:
       #     - provider: "openai"
       #       weight: 1.0
       #       allowed_models: ["gpt-4o"]
       #       blacklisted_models: []   # Models blocked even if matched by allowed_models; ["*"] blocks all
       #       rate_limit_id: ""
-      #       keys:
-      #         - key_id: "uuid-of-key"
-      #           name: "my-key"
-      #           value: "sk-..."
+      #       key_ids: ["*"]       # Provider key IDs; ["*"] allows all, while empty or omitted allows none
       #   # MCP configurations for this virtual key
       #   mcp_configs:
       #     - mcp_client_id: 1

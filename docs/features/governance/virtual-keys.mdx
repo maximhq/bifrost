@@ -68,26 +68,29 @@ curl -X POST http://localhost:8080/api/governance/virtual-keys \
       {
         "provider": "openai",
         "weight": 0.5,
-        "allowed_models": ["gpt-4o-mini"]
+        "allowed_models": ["gpt-4o-mini"],
+        "key_ids": ["8c52039e-38c6-48b2-8016-0bd884b7befb"]
       },
       {
         "provider": "anthropic",
         "weight": 0.5,
-        "allowed_models": ["claude-3-sonnet-20240229"]
+        "allowed_models": ["claude-3-sonnet-20240229"],
+        "key_ids": ["*"]
       }
     ],
     "team_id": "team-eng-001",
-    "budget": {
-      "max_limit": 100.00,
-      "reset_duration": "1M"
-    },
+    "budgets": [
+      {
+        "max_limit": 100.00,
+        "reset_duration": "1M"
+      }
+    ],
     "rate_limit": {
       "token_max_limit": 10000,
       "token_reset_duration": "1h",
       "request_max_limit": 100,
       "request_reset_duration": "1m"
     },
-    "key_ids": ["8c52039e-38c6-48b2-8016-0bd884b7befb"],
     "is_active": true
   }'
 ```
@@ -103,26 +106,31 @@ curl -X POST http://localhost:8080/api/governance/virtual-keys \
       {
         "provider": "openai",
         "weight": 0.5,
-        "allowed_models": ["gpt-4o"]
+        "allowed_models": ["gpt-4o"],
+        "key_ids": ["*"]
       },
       {
         "provider": "anthropic",
         "weight": 0.5,
-        "allowed_models": ["claude-3-opus-20240229"]
+        "allowed_models": ["claude-3-opus-20240229"],
+        "key_ids": ["*"]
       }
     ],
     "customer_id": "customer-acme-corp",
-    "budget": {
-      "max_limit": 500.00,
-      "reset_duration": "1M"
-    },
+    "budgets": [
+      {
+        "max_limit": 500.00,
+        "reset_duration": "1M"
+      }
+    ],
     "is_active": true
   }'
 ```
 
 > **Note**: 
 > - `team_id` and `customer_id` are mutually exclusive - a VK can only belong to one team OR one customer, not both.
-> - `key_ids` restricts the VK to only use those specific provider API keys. Use `["*"]` to allow access to all available keys. An empty array `[]` or omitting the field entirely denies all keys.
+> - `key_ids` belongs inside each `provider_configs` entry and restricts that provider to the listed API key IDs. Use `["*"]` to allow all keys for that provider. An empty array `[]` or an omitted field denies all keys.
+> - `budgets` is always an array, both at the Virtual Key level and inside a provider config. The old singular `budget` and `budget_id` request fields are ignored. See the [v1.5.0 migration guide](/migration-guides/v1.5.0#breaking-change-6-virtual-key-budget-changed-to-multi-budget-budgets) for the before-and-after shapes.
 
 **Update Virtual Key:**
 ```bash
@@ -130,12 +138,16 @@ curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id} \
   -H "Content-Type: application/json" \
   -d '{
     "description": "Updated description",
-    "budget": {
-      "max_limit": 150.00,
-      "reset_duration": "1M"
-    }
+    "budgets": [
+      {
+        "max_limit": 150.00,
+        "reset_duration": "1M"
+      }
+    ]
   }'
 ```
+
+See [Create virtual key](/api-reference/governance/create-virtual-key) and [Update virtual key](/api-reference/governance/update-virtual-key) for the complete request and response schemas.
 
 **Get Virtual Keys:**
 ```bash
@@ -177,7 +189,8 @@ curl -X DELETE http://localhost:8080/api/governance/virtual-keys/{vk_id}
           {
             "provider": "anthropic",
             "weight": 0.5,
-            "allowed_models": ["claude-3-sonnet-20240229"]
+            "allowed_models": ["claude-3-sonnet-20240229"],
+            "key_ids": ["*"]
           }
         ],
         "team_id": "team-eng-001",
@@ -193,12 +206,14 @@ curl -X DELETE http://localhost:8080/api/governance/virtual-keys/{vk_id}
           {
             "provider": "openai",
             "weight": 0.5,
-            "allowed_models": ["gpt-4o"]
+            "allowed_models": ["gpt-4o"],
+            "key_ids": ["*"]
           },
           {
             "provider": "anthropic",
             "weight": 0.5,
-            "allowed_models": ["claude-3-opus-20240229"]
+            "allowed_models": ["claude-3-opus-20240229"],
+            "key_ids": ["*"]
           }
         ],
         "customer_id": "customer-acme-corp"
