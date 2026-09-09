@@ -119,7 +119,7 @@ Sources:
 - [ ] **Code execution v2** (`code_execution_20250825`)
 - [ ] **Code execution programmatic** (`code_execution_20260120`)
 - [ ] **Computer use new-gen** (`computer_20251124` + `text_editor_20250728` + `bash_20250124` for Opus 4.7/4.6/Sonnet 4.6)
-- [ ] **PDF input** (`{ type: "document", source: { type: "base64", media_type: "application/pdf" } }`)
+- [x] **PDF input** (`{ type: "document", source: { type: "base64", media_type: "application/pdf" } }`) - folder 75 (cowork-attachments): native + streaming + `/v1/chat/completions` `file.file_data` + `/v1/responses` `input_file.file_data`, plus Files API `file_id` in all three shapes, each asserting the wire payload via `x-bf-send-back-raw-request`
 - [ ] **Citations** (`citations: { enabled: true }` on document blocks)
 - [ ] **Stop sequences** (`stop_sequences: ["END"]`)
 - [ ] **Sampling** — `temperature` / `top_p` / `top_k` (deprecated for Opus 4.7+ — should NOT be sent)
