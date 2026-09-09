@@ -386,9 +386,122 @@ func NewGeminiStreamState() *GeminiStreamState {
 	return &GeminiStreamState{}
 }
 
-// ToBifrostChatCompletionStream converts a Gemini streaming response to a Bifrost Chat Completion Stream response
-// Returns the response, error (if any), and a boolean indicating if this is the last chunk
-func (response *GenerateContentResponse) ToBifrostChatCompletionStream(state *GeminiStreamState) (*schemas.BifrostChatResponse, *schemas.BifrostError, bool) {
+// ToBifrostChatCompletionStream converts a Gemini streaming response to Bifrost Chat
+// Completion stream chunks. A Gemini chunk usually maps to one delta, but a chunk
+// whose parts mix text with inline media (a generated image or audio blob) is split
+// so that each inline-media part becomes its own delta, in the original part order,
+// and consecutive non-media parts share one. The streaming delta has no content-block
+// array, so splitting is the only way to keep the boundary between text and media on
+// the wire; ToBifrostResponsesStream emits several events per chunk for the same
+// reason on the Responses path.
+//
+// Returns the deltas in order, the error (if any), and whether this Gemini chunk was
+// the last one. Stream-level state (tool call indices, finish reason tracking) is
+// carried across chunks in state.
+func (response *GenerateContentResponse) ToBifrostChatCompletionStream(state *GeminiStreamState) ([]*schemas.BifrostChatResponse, *schemas.BifrostError, bool) {
+	if response == nil {
+		return nil, nil, false
+	}
+	if state == nil {
+		state = NewGeminiStreamState()
+	}
+
+	var chunks []*schemas.BifrostChatResponse
+	isLastChunk := false
+	for _, piece := range response.splitInlineMediaParts() {
+		chunk, bifrostErr, isLast := piece.toBifrostChatCompletionStreamDelta(state)
+		if bifrostErr != nil {
+			return nil, bifrostErr, isLast
+		}
+		if chunk != nil {
+			chunks = append(chunks, chunk)
+		}
+		isLastChunk = isLastChunk || isLast
+	}
+	return chunks, nil, isLastChunk
+}
+
+// splitInlineMediaParts partitions the first candidate's parts into homogeneous
+// groups for streaming: each inline-media part (image or audio InlineData) becomes
+// its own group and consecutive non-media parts form one group, preserving order.
+// Candidate metadata that closes the stream (finishReason, usageMetadata, grounding,
+// logprobs, safety ratings) is attached only to the final group so the finish reason
+// and usage are emitted exactly once. A response that needs no split is returned
+// unchanged as the single element.
+func (response *GenerateContentResponse) splitInlineMediaParts() []*GenerateContentResponse {
+	if len(response.Candidates) == 0 || response.Candidates[0] == nil ||
+		response.Candidates[0].Content == nil || len(response.Candidates[0].Content.Parts) < 2 {
+		return []*GenerateContentResponse{response}
+	}
+	candidate := response.Candidates[0]
+
+	var groups [][]*Part
+	var run []*Part
+	for _, part := range candidate.Content.Parts {
+		if isInlineMediaPart(part) {
+			if len(run) > 0 {
+				groups = append(groups, run)
+				run = nil
+			}
+			groups = append(groups, []*Part{part})
+			continue
+		}
+		run = append(run, part)
+	}
+	if len(run) > 0 {
+		groups = append(groups, run)
+	}
+	if len(groups) < 2 {
+		return []*GenerateContentResponse{response}
+	}
+
+	pieces := make([]*GenerateContentResponse, 0, len(groups))
+	for i, group := range groups {
+		pieceCandidate := &Candidate{
+			Index:   candidate.Index,
+			Content: &Content{Role: candidate.Content.Role, Parts: group},
+		}
+		piece := &GenerateContentResponse{
+			ResponseID:     response.ResponseID,
+			ModelVersion:   response.ModelVersion,
+			CreateTime:     response.CreateTime,
+			PromptFeedback: response.PromptFeedback,
+			Candidates:     []*Candidate{pieceCandidate},
+		}
+		if i == len(groups)-1 {
+			pieceCandidate.FinishReason = candidate.FinishReason
+			pieceCandidate.FinishMessage = candidate.FinishMessage
+			pieceCandidate.TokenCount = candidate.TokenCount
+			pieceCandidate.CitationMetadata = candidate.CitationMetadata
+			pieceCandidate.URLContextMetadata = candidate.URLContextMetadata
+			pieceCandidate.AvgLogprobs = candidate.AvgLogprobs
+			pieceCandidate.GroundingMetadata = candidate.GroundingMetadata
+			pieceCandidate.LogprobsResult = candidate.LogprobsResult
+			pieceCandidate.SafetyRatings = candidate.SafetyRatings
+			piece.UsageMetadata = response.UsageMetadata
+		}
+		pieces = append(pieces, piece)
+	}
+	return pieces
+}
+
+// isInlineMediaPart reports whether part carries a generated image or audio blob.
+func isInlineMediaPart(part *Part) bool {
+	if part == nil || part.InlineData == nil || part.InlineData.Data == "" {
+		return false
+	}
+	return strings.HasPrefix(part.InlineData.MIMEType, "image/") ||
+		strings.HasPrefix(part.InlineData.MIMEType, "audio/")
+}
+
+// toBifrostChatCompletionStreamDelta converts one Gemini chunk into a single Bifrost
+// chat completion delta. Chunks must arrive here through ToBifrostChatCompletionStream,
+// which splits mixed text and inline-media parts first: a chunk reaching this function
+// carries at most one inline-media part and, when it does, no text beside it, so inline
+// media never shares Content with text.
+// Returns the delta (nil when the chunk carries nothing worth emitting), the error (if
+// any), and whether this is the last chunk.
+func (response *GenerateContentResponse) toBifrostChatCompletionStreamDelta(state *GeminiStreamState) (*schemas.BifrostChatResponse, *schemas.BifrostError, bool) {
 	if response == nil {
 		return nil, nil, false
 	}
@@ -441,6 +554,7 @@ func (response *GenerateContentResponse) ToBifrostChatCompletionStream(state *Ge
 		}
 
 		var textContent string
+		var imageDataURL string
 		var toolCalls []schemas.ChatAssistantMessageToolCall
 		var reasoningDetails []schemas.ChatReasoningDetails
 
@@ -539,10 +653,10 @@ func (response *GenerateContentResponse) ToBifrostChatCompletionStream(state *Ge
 			case part.InlineData != nil && part.InlineData.Data != "" && strings.HasPrefix(part.InlineData.MIMEType, "image/"):
 				// The streaming delta has no content-block array, only a string Content
 				// field, so the image is carried the same way the non-stream path's
-				// image_url block carries it: as a data URL. Observed live traffic never
-				// pairs an InlineData part with a text part in the same chunk, so this
-				// does not collide with concurrent text content.
-				textContent += "data:" + part.InlineData.MIMEType + ";base64," + part.InlineData.Data
+				// image_url block carries it: as a data URL. It is held apart from
+				// textContent rather than appended to it; ToBifrostChatCompletionStream
+				// has already split the chunk so no text part travels with this one.
+				imageDataURL = "data:" + part.InlineData.MIMEType + ";base64," + part.InlineData.Data
 			}
 
 			// Handle thought signature separately (not part of the switch since it can co-exist with other types)
@@ -556,9 +670,12 @@ func (response *GenerateContentResponse) ToBifrostChatCompletionStream(state *Ge
 			}
 		}
 
-		// Set text content if present
+		// Set content if present. A split chunk carries either text or an image, never
+		// both, so the image only fills Content when there is no text to displace.
 		if textContent != "" {
 			delta.Content = &textContent
+		} else if imageDataURL != "" {
+			delta.Content = &imageDataURL
 		}
 
 		// Set reasoning details if present

@@ -541,6 +541,7 @@ func HandleGeminiChatCompletionStream(
 		streamUsage := &schemas.BifrostLLMUsage{}
 		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, streamUsage)
 
+	readLoop:
 		for {
 			// If context was cancelled/timed out, let defer handle it
 			if ctx.Err() != nil {
@@ -594,7 +595,7 @@ func HandleGeminiChatCompletionStream(
 
 			// Convert to Bifrost stream response. Per-event mapping -> "convertor" (Convertor) stream phase.
 			convStart := time.Now()
-			response, bifrostErr, isLastChunk := geminiResponse.ToBifrostChatCompletionStream(streamState)
+			responses, bifrostErr, isLastChunk := geminiResponse.ToBifrostChatCompletionStream(streamState)
 			schemas.AddStreamConvert(ctx, time.Since(convStart))
 			if bifrostErr != nil {
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -602,7 +603,10 @@ func HandleGeminiChatCompletionStream(
 				return
 			}
 
-			if response != nil {
+			// A Gemini chunk that mixes text with inline media converts to several deltas
+			// (see ToBifrostChatCompletionStream); only the final one may close the stream.
+			for i, response := range responses {
+				isLastDelta := isLastChunk && i == len(responses)-1
 				response.ID = responseID
 				if modelName != "" {
 					response.Model = modelName
@@ -631,14 +635,14 @@ func HandleGeminiChatCompletionStream(
 				lastChunkTime = time.Now()
 				chunkIndex++
 
-				if isLastChunk {
+				if isLastDelta {
 					if sendBackRawRequest {
 						providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
 					}
 					response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan, postHookSpanFinalizer)
-					break
+					break readLoop
 				}
 
 				// Process response through post-hooks and send to channel
