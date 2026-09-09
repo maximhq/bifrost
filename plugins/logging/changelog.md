@@ -1,7 +1,0 @@
-- feat: record `tool_call_names` and populate `tool_calls` on log entries (#6911, #6912, #6913)
-- feat: persist the served model from the provider response (#6693)
-- feat: add project, complexity routing and session ID columns to log entries (#6702, #6704, #6846, #6166, #6317)
-- feat: add log-level filtering to plugin and routing decision logs (#6811)
-- feat: record video job costs and debug data in job accounting (#6672, #6673, #6674, #6675, #6728)
-- feat: wire tracing into async jobs and split converter processing into span buckets (#6588, #6939)
-- feat: rename cache and routing debug payloads to metadata (#6722)
