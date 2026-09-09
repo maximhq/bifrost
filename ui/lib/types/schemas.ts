@@ -1065,6 +1065,8 @@ export const otelConfigSchema = z
 		export_timeout: z.number().int().min(1).max(60).default(5),
 		// Metrics push configuration
 		metrics_enabled: z.boolean().default(false),
+		// Export per-component Bifrost overhead latency as a histogram.
+		overhead_breakdown_enabled: z.boolean().default(false),
 		metrics_endpoint: secretVarSchema.optional(),
 		metrics_push_interval: z.number().int().min(1).max(300).default(15),
 		request_headers: z.array(z.string()).default([]),
@@ -1256,6 +1258,7 @@ export const prometheusConfigSchema = z
 export const prometheusFormSchema = z
 	.object({
 		metrics_enabled: z.boolean().default(true),
+		overhead_breakdown_enabled: z.boolean().default(false),
 		push_gateway_enabled: z.boolean().default(false),
 		prometheus_config: prometheusConfigSchema,
 	})

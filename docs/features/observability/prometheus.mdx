@@ -231,6 +231,8 @@ The `path` label contains the matched route template (e.g. `/genai/v1beta/models
 |--------|------|-------------|
 | `bifrost_upstream_requests_total` | Counter | Total requests to LLM providers |
 | `bifrost_upstream_latency_seconds` | Histogram | Provider request latency |
+| `bifrost_overhead_latency_microseconds` | Histogram | Total Bifrost overhead per request in microseconds (Bifrost's own work, excluding upstream provider time) |
+| `bifrost_overhead_component_microseconds` | Histogram | That same overhead broken down by internal component via the `overhead_component` label. Opt-in, and populated only when tracing is active — see [Overhead Breakdown](#overhead-breakdown) |
 | `bifrost_success_requests_total` | Counter | Successful provider requests |
 | `bifrost_error_requests_total` | Counter | Failed provider requests |
 | `bifrost_input_tokens_total` | Counter | Total input tokens processed |
@@ -245,6 +247,47 @@ The `path` label contains the matched route template (e.g. `/genai/v1beta/models
 | `bifrost_request_retries` | Histogram | Number of retries used per request (observed once per request; buckets `0,1,2,3,5,10`). |
 | `bifrost_routing_embedding_requests_total` | Counter | Embedding calls made by semantic complexity routing. Labels: `provider`, `model` (the embedding provider/model, not the request's), `phase` (`request` classification vs `warmup` exemplar embedding). |
 | `bifrost_routing_embedding_cost_total` | Counter | Cost in USD of semantic routing embeddings (same labels as above). Recorded regardless of whether embedding usage counts toward budgets. |
+
+### Overhead Breakdown
+
+`bifrost_overhead_component_microseconds` decomposes the same overhead measured by `bifrost_overhead_latency_microseconds` into per-component histograms. It carries the same base labels as `bifrost_overhead_latency_microseconds` (see [Default Labels](#default-labels)) plus an `overhead_component` label naming the internal component, and shares the same bucket boundaries. Summing every component for a given label set reconstructs the scalar total.
+
+`overhead_component` takes one of a fixed set of ten values. Each rolls the individual pipeline spans up into a category, matching the categories the Bifrost UI's [log-detail overhead breakdown](/features/observability/latency-breakdown) groups into, so the metric and the UI agree:
+
+| Value | UI label | Component |
+|-------|----------|-----------|
+| `serialization` | Serialization | JSON parsing and encoding at the request edges (request/response unmarshal and marshal) |
+| `conversion` | Conversion | Translating between Bifrost's unified schema and the provider's native shape, including per-chunk stream conversion |
+| `plugins` | Plugins | All plugin hook spans combined, across every configured plugin |
+| `middleware` | Middleware | HTTP transport auth and access-control middleware |
+| `routing` | Key selection | Selecting which provider API key to use (key-pool lookup and key selection) |
+| `processing` | Processing | Internal pipeline glue: request setup, pre/post-hook loops, worker setup and handoff, queue wait, and attribute population |
+| `networking` | Networking | Handling between client, gateway, and provider: provider-side processing, request context, response headers, response finalize, request signing, and credential fetch |
+| `streaming` | Client delivery | Streaming egress: backpressure and writing chunks back to the client |
+| `miscellaneous` | Miscellaneous | Small glue work not worth its own span, plus the residual overhead not attributed to any phase span |
+| `other` | Other | Any unmapped bucket (its presence signals a new bucket needs a category) |
+
+The set is bounded, so the list above is exhaustive.
+
+This metric is **off by default**. Enable it with the telemetry plugin's `overhead_breakdown_enabled` config field (a sibling of `metrics_enabled`), or toggle **Enable Overhead Breakdown** on the pull-based tab of the **Observability → Prometheus** page in the UI.
+
+```json
+{
+  "plugins": [
+    {
+      "name": "telemetry",
+      "enabled": true,
+      "config": {
+        "overhead_breakdown_enabled": true
+      }
+    }
+  ]
+}
+```
+
+<Note>
+The breakdown is computed from completed trace spans, so it only populates when tracing/observability is active for the request. With tracing off, `bifrost_overhead_component_microseconds` stays empty even when `overhead_breakdown_enabled` is on.
+</Note>
 
 ### Bifrost MCP Metrics
 

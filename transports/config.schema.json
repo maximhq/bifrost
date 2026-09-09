@@ -880,6 +880,14 @@
                 "enum": ["own-data", "team-data", "all-data"],
                 "default": "all-data"
               },
+              "entity_dac": {
+                "type": "object",
+                "description": "Per-entity Data Access Control overrides, keyed by resource name. Each entry narrows or widens the role's global dac for that one entity; entities not listed follow dac. Resources accepting an override as of this release: Logs, MCPLogs, AuditLogs, VirtualKeys, Users, Teams, Customers, BusinessUnits, RBAC, APIKeys, AccessProfiles, PromptRepository, RoutingRules, GuardrailsConfig, MCPGateway, VirtualMCPs, Projects. ",
+                "additionalProperties": {
+                  "type": "string",
+                  "enum": ["own-data", "team-data", "all-data"]
+                }
+              },
               "access_profile": {
                 "type": "string",
                 "description": "Name of the access profile (defined in access_profiles) to attach as the default for this role. Changing this field triggers a re-sync on next startup. Leave unset to let the dashboard manage the assignment."
@@ -2452,6 +2460,11 @@
                       },
                       "description": "Custom labels to add to Prometheus metrics"
                     },
+                    "overhead_breakdown_enabled": {
+                      "type": "boolean",
+                      "description": "Export the per-component overhead histogram bifrost_overhead_component_microseconds (overhead latency split by the overhead_component label). Off by default. Requires tracing to be active, since the breakdown is computed from completed trace spans.",
+                      "default": false
+                    },
                     "push_gateway": {
                       "type": "object",
                       "description": "Configuration for pushing metrics to a Prometheus Push Gateway for multi-node cluster deployments",
@@ -3501,6 +3514,11 @@
           "default": 15,
           "minimum": 1,
           "maximum": 300
+        },
+        "overhead_breakdown_enabled": {
+          "type": "boolean",
+          "description": "Export the per-component overhead histogram bifrost_overhead_component_microseconds (overhead latency split by the overhead_component attribute). Off by default. Requires metrics_enabled and an active trace, since the breakdown is computed from completed spans.",
+          "default": false
         },
         "request_headers": {
           "type": "array",

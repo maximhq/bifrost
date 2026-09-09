@@ -2741,3 +2741,37 @@ func TestTransportPreAuthInterceptorMiddleware_NoPlugins(t *testing.T) {
 		t.Error("expected the request to pass straight through when no plugin implements the hook")
 	}
 }
+
+// TestSecurityHeadersMiddleware_APINoStore verifies that /api/ responses carry
+// Cache-Control: no-store unless the handler sets its own policy, so a CDN never serves
+// one user's session or config data to another. Non-API paths are left alone.
+func TestSecurityHeadersMiddleware_APINoStore(t *testing.T) {
+	tests := []struct {
+		name        string
+		path        string
+		handlerSets string
+		want        string
+	}{
+		{name: "api path gets no-store", path: "/api/session/is-auth-enabled", want: "no-store"},
+		{name: "api path keeps handler policy", path: "/api/branding/logo", handlerSets: "private, max-age=86400", want: "private, max-age=86400"},
+		{name: "non-api path untouched", path: "/ui/assets/app.js", want: ""},
+		{name: "non-api path keeps handler policy", path: "/ui/assets/app.js", handlerSets: "public, max-age=3600", want: "public, max-age=3600"},
+		{name: "prefix must match a segment", path: "/apiary", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := SecurityHeadersMiddleware()(func(ctx *fasthttp.RequestCtx) {
+				if tt.handlerSets != "" {
+					ctx.Response.Header.Set("Cache-Control", tt.handlerSets)
+				}
+				ctx.SetStatusCode(fasthttp.StatusOK)
+			})
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetRequestURI(tt.path)
+			handler(ctx)
+			if got := string(ctx.Response.Header.Peek("Cache-Control")); got != tt.want {
+				t.Fatalf("Cache-Control for %s = %q, want %q", tt.path, got, tt.want)
+			}
+		})
+	}
+}
