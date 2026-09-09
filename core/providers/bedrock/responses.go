@@ -5117,6 +5117,11 @@ func convertBifrostReasoningToBedrockReasoning(msg *schemas.ResponsesMessage, sh
 // convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks converts Bifrost content to Bedrock content blocks.
 // The ctx is propagated to URL fetches inside image blocks.
 func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx context.Context, model string, content schemas.ResponsesMessageContent) ([]BedrockContentBlock, error) {
+	// The Converse API rejects duplicate document names within a request
+	// (#7003). Untitled documents all normalize to the same default, so
+	// disambiguate them with numeric suffixes. Scope: per content-block list;
+	// documents spread across separate messages are deduplicated per message.
+	docNamer := newBedrockDocNamer()
 	var blocks []BedrockContentBlock
 
 	if content.ContentStr != nil {
@@ -5184,6 +5189,9 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 					)
 					if err != nil {
 						return nil, fmt.Errorf("failed to convert document in responses content block: %w", err)
+					// The Converse API rejects duplicate document names within a
+					// request (#7003): disambiguate via the request-scoped namer.
+					document.Name = docNamer.name(document.Name)
 					}
 					bedrockBlock.Document = document
 				}

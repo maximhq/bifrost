@@ -259,6 +259,38 @@ func normalizeBedrockFilename(filename string) string {
 	return normalized
 }
 
+// bedrockDocNamer assigns unique document names within a single Bedrock
+// request: the Converse API rejects duplicate document names, so untitled
+// documents (which all normalize to the same default) get numbered suffixes.
+type bedrockDocNamer struct {
+	used map[string]int
+}
+
+func newBedrockDocNamer() *bedrockDocNamer {
+	return &bedrockDocNamer{used: make(map[string]int)}
+}
+
+// name returns the normalized filename, or the default "document", made
+// unique within the request ("document", "document-2", "document-3", ...).
+// Emitted names are tracked, so a later explicit "document-2" cannot
+// collide with a generated one.
+func (n *bedrockDocNamer) name(filename string) string {
+	base := normalizeBedrockFilename(filename)
+	if n.used[base] == 0 {
+		n.used[base] = 1
+		return base
+	}
+	for count := n.used[base] + 1; ; count++ {
+		candidate := fmt.Sprintf("%s-%d", base, count)
+		if _, taken := n.used[candidate]; taken {
+			continue
+		}
+		n.used[base] = count
+		n.used[candidate] = 1
+		return candidate
+	}
+}
+
 func normalizeBedrockDocumentType(fileType string) string {
 	fileType = strings.ToLower(strings.TrimSpace(fileType))
 	if mediaType, _, err := mime.ParseMediaType(fileType); err == nil {
@@ -1071,6 +1103,8 @@ func ensureChatToolConfigForConversation(ctx context.Context, bifrostReq *schema
 // model is the canonical model id, carried down to the content-block converters because
 // two source unions are model-dependent: see schemas.BedrockModelSupportsS3Location.
 func convertMessages(ctx context.Context, model string, bifrostMessages []schemas.ChatMessage) ([]BedrockMessage, []BedrockSystemMessage, error) {
+	docNamer := newBedrockDocNamer()
+
 	var messages []BedrockMessage
 	var systemMessages []BedrockSystemMessage
 
@@ -1078,7 +1112,7 @@ func convertMessages(ctx context.Context, model string, bifrostMessages []schema
 	if len(bifrostMessages) == 1 && (bifrostMessages[0].Role == schemas.ChatMessageRoleSystem || bifrostMessages[0].Role == schemas.ChatMessageRoleDeveloper) {
 		msg := bifrostMessages[0]
 		msg.Role = schemas.ChatMessageRoleUser
-		bedrockMsg, err := convertMessage(ctx, model, msg)
+		bedrockMsg, err := convertMessage(ctx, model, msg, docNamer)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to convert message: %w", err)
 		}
@@ -1100,7 +1134,7 @@ func convertMessages(ctx context.Context, model string, bifrostMessages []schema
 
 		case schemas.ChatMessageRoleUser, schemas.ChatMessageRoleAssistant:
 			// Convert regular message
-			bedrockMsg, err := convertMessage(ctx, model, msg)
+			bedrockMsg, err := convertMessage(ctx, model, msg, docNamer)
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to convert message: %w", err)
 			}
@@ -1228,7 +1262,7 @@ func leadingBedrockReasoningBlockCount(blocks []BedrockContentBlock) int {
 
 // convertMessage converts a Bifrost message to Bedrock format.
 // The ctx is propagated to URL fetches inside content blocks.
-func convertMessage(ctx context.Context, model string, msg schemas.ChatMessage) (BedrockMessage, error) {
+func convertMessage(ctx context.Context, model string, msg schemas.ChatMessage, docNamer *bedrockDocNamer) (BedrockMessage, error) {
 	bedrockMsg := BedrockMessage{
 		Role: BedrockMessageRole(msg.Role),
 	}
@@ -1290,7 +1324,7 @@ func convertMessage(ctx context.Context, model string, msg schemas.ChatMessage) 
 
 	// Convert text/image content
 	if msg.Content != nil {
-		textBlocks, err := convertContent(ctx, model, *msg.Content)
+		textBlocks, err := convertContent(ctx, model, *msg.Content, docNamer)
 		if err != nil {
 			return BedrockMessage{}, fmt.Errorf("failed to convert content: %w", err)
 		}
@@ -1460,7 +1494,7 @@ func convertToolMessages(ctx context.Context, model string, msgs []schemas.ChatM
 // convertContent converts Bifrost message content to Bedrock content blocks.
 // The ctx is propagated to URL fetches inside individual content blocks; model reaches the
 // per-block converter for the model-dependent s3Location source union.
-func convertContent(ctx context.Context, model string, content schemas.ChatMessageContent) ([]BedrockContentBlock, error) {
+func convertContent(ctx context.Context, model string, content schemas.ChatMessageContent, docNamer *bedrockDocNamer) ([]BedrockContentBlock, error) {
 	var contentBlocks []BedrockContentBlock
 	if content.ContentStr != nil && *content.ContentStr != "" {
 		// Simple text content (skip empty strings as Bedrock rejects blank text)
@@ -1470,7 +1504,7 @@ func convertContent(ctx context.Context, model string, content schemas.ChatMessa
 	} else if content.ContentBlocks != nil {
 		// Multi-modal content
 		for _, block := range content.ContentBlocks {
-			bedrockBlocks, err := convertContentBlock(ctx, model, block)
+			bedrockBlocks, err := convertContentBlock(ctx, model, block, docNamer)
 			if err != nil {
 				return nil, fmt.Errorf("failed to convert content block: %w", err)
 			}
@@ -1484,7 +1518,7 @@ func convertContent(ctx context.Context, model string, content schemas.ChatMessa
 // convertContentBlock converts a Bifrost content block to Bedrock format.
 // The ctx is propagated to URL fetches for image and document blocks; model gates the
 // s3Location source union, which only some Converse backends resolve.
-func convertContentBlock(ctx context.Context, model string, block schemas.ChatContentBlock) ([]BedrockContentBlock, error) {
+func convertContentBlock(ctx context.Context, model string, block schemas.ChatContentBlock, docNamer *bedrockDocNamer) ([]BedrockContentBlock, error) {
 	// Handle Bedrock native format where type may be empty but text is set directly
 	// This occurs when requests are sent in Bedrock's native format (e.g., from Claude Code)
 	// In Bedrock format: {"text": "hello"} vs OpenAI format: {"type": "text", "text": "hello"}
@@ -1554,6 +1588,10 @@ func convertContentBlock(ctx context.Context, model string, block schemas.ChatCo
 		if err != nil {
 			return nil, err
 		}
+		// The Converse API rejects duplicate document names within a
+		// request (#7003): route the materialized name through the
+		// request-scoped namer so untitled documents get numeric suffixes.
+		document.Name = docNamer.name(document.Name)
 		return []BedrockContentBlock{{Document: document}}, nil
 	case schemas.ChatContentBlockTypeInputAudio:
 		// Bedrock doesn't support audio input in Converse API
