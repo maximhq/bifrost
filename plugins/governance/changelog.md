@@ -1,2 +1,0 @@
-- chore: add MCP gateway admission coverage for vk-mode, user-mode and session-mode JWT identities (#7011)
-- chore: upgraded core to v1.8.6 and framework to v1.6.2

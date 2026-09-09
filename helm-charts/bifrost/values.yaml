@@ -873,6 +873,12 @@ bifrost:
       # - name: "dataAnalyst"
       #   description: "Read-only access for data analysts"
       #   dac: "team-data"           # own-data | team-data | all-data (default: all-data)
+      #   # Optional per-entity overrides of the role's global dac. Resources supported as of
+      #   # this chart release: Logs, MCPLogs, AuditLogs, VirtualKeys, Users, Teams, Customers,
+      #   # BusinessUnits, RBAC, APIKeys, AccessProfiles, PromptRepository, RoutingRules,
+      #   # GuardrailsConfig, MCPGateway, VirtualMCPs, Projects.
+      #   entity_dac:
+      #     VirtualKeys: "own-data"  # team-data everywhere else, but only their own keys
       #   access_profile: "analyst-profile"  # Optional: name of an access_profile to attach
       #   permissions:
       #     - resource: "Logs"
