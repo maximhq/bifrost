@@ -143,6 +143,7 @@ func (provider *BedrockProvider) mantleChatCompletions(
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	region := resolveBedrockRegion(ctx, key, request.Model)
 	url := mantleOpenAIURL(bedrockEndpoints(key.BedrockKeyConfig), region, schemas.ResolveCanonicalModel(ctx, request.Model), "chat/completions")
+	defer bareModelScope(&request.Model, &request.RawRequestBody)()
 
 	// SigV4 (empty key value): sign the exact body the handler builds via a signer closure.
 	// Bearer (key has a value): no signer; auth flows through the Authorization header.
@@ -157,7 +158,7 @@ func (provider *BedrockProvider) mantleChatCompletions(
 		ctx,
 		provider.mantleClient,
 		url,
-		withBareModel(request),
+		request,
 		openai.BearerAuthHeader(key),
 		WithMantleProject(provider.networkConfig.ExtraHeaders, MantleOpenAIProjectHeader, resolveMantleProjectID(ctx, key)),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -181,6 +182,7 @@ func (provider *BedrockProvider) mantleChatCompletionsStream(
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	region := resolveBedrockRegion(ctx, key, request.Model)
 	url := mantleOpenAIURL(bedrockEndpoints(key.BedrockKeyConfig), region, schemas.ResolveCanonicalModel(ctx, request.Model), "chat/completions")
+	defer bareModelScope(&request.Model, &request.RawRequestBody)()
 
 	// SigV4 (empty key value): sign the exact body the handler builds via a signer closure.
 	// Bearer (key has a value): no signer; auth flows through the Authorization header.
@@ -192,7 +194,7 @@ func (provider *BedrockProvider) mantleChatCompletionsStream(
 	}
 
 	return openai.HandleOpenAIChatCompletionStreaming(
-		ctx, provider.mantleStreamingClient, url, withBareModel(request),
+		ctx, provider.mantleStreamingClient, url, request,
 		openai.BearerAuthHeader(key), WithMantleProject(provider.networkConfig.ExtraHeaders, MantleOpenAIProjectHeader, resolveMantleProjectID(ctx, key)),
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -227,6 +229,7 @@ func (provider *BedrockProvider) mantleResponses(
 
 	region := resolveBedrockRegion(ctx, key, request.Model)
 	url := mantleOpenAIURL(bedrockEndpoints(key.BedrockKeyConfig), region, canonicalModel, "responses")
+	defer bareModelScope(&request.Model, &request.RawRequestBody)()
 
 	// SigV4 (empty key value): sign the exact body the handler builds via a signer closure.
 	// Bearer (key has a value): no signer; auth flows through the Authorization header.
@@ -241,7 +244,7 @@ func (provider *BedrockProvider) mantleResponses(
 		ctx,
 		provider.mantleClient,
 		url,
-		withBareResponsesModel(request),
+		request,
 		openai.BearerAuthHeader(key),
 		WithMantleProject(provider.networkConfig.ExtraHeaders, MantleOpenAIProjectHeader, resolveMantleProjectID(ctx, key)),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -271,6 +274,7 @@ func (provider *BedrockProvider) mantleResponsesStream(
 
 	region := resolveBedrockRegion(ctx, key, request.Model)
 	url := mantleOpenAIURL(bedrockEndpoints(key.BedrockKeyConfig), region, canonicalModel, "responses")
+	defer bareModelScope(&request.Model, &request.RawRequestBody)()
 
 	// SigV4 (empty key value): sign the exact body the handler builds via a signer closure.
 	// Bearer (key has a value): no signer; auth flows through the Authorization header.
@@ -282,7 +286,7 @@ func (provider *BedrockProvider) mantleResponsesStream(
 	}
 
 	return openai.HandleOpenAIResponsesStreaming(
-		ctx, provider.mantleStreamingClient, url, withBareResponsesModel(request),
+		ctx, provider.mantleStreamingClient, url, request,
 		openai.BearerAuthHeader(key), WithMantleProject(provider.networkConfig.ExtraHeaders, MantleOpenAIProjectHeader, resolveMantleProjectID(ctx, key)),
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -298,28 +302,28 @@ func (provider *BedrockProvider) mantleResponsesStream(
 	)
 }
 
-// withBareModel drops the region addressing prefix from the model a chat request
-// carries, so the body names the id mantle knows. The Converse path resolves the
-// bare id itself, but the OpenAI-compatible handlers read it off the request, and
-// mantle 404s the prefixed form. Copied rather than mutated: the caller's request
-// is what the pipeline keys pricing and logging on.
-func withBareModel(request *schemas.BifrostChatRequest) *schemas.BifrostChatRequest {
-	_, bare := parseBedrockRegionAndModel(request.Model)
-	if bare == request.Model {
-		return request
+// bareModelScope rewrites request.Model (and the model field of a raw passthrough
+// body) to the bare id for the duration of a handler call, and returns the func that
+// puts both back. Nothing is copied: the caller's request is what core hands to the
+// next retry and what pricing and logging read, so it has to leave with its prefix
+// intact. The native-Anthropic handlers take the bare model through their build
+// config; the OpenAI-compatible ones read it off the request, and mantle 404s the
+// prefixed form ("The model 'us-west-2/openai.gpt-6-astra' does not exist"). Costs
+// nothing when there is no prefix, which is every request that names a region on
+// the key or the alias rather than the model.
+func bareModelScope(model *string, raw *[]byte) func() {
+	region, bare := parseBedrockRegionAndModel(*model)
+	if region == "" {
+		return func() {}
 	}
-	clone := *request
-	clone.Model = bare
-	return &clone
-}
-
-// withBareResponsesModel is withBareModel for the Responses surface.
-func withBareResponsesModel(request *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
-	_, bare := parseBedrockRegionAndModel(request.Model)
-	if bare == request.Model {
-		return request
+	origModel, origRaw := *model, *raw
+	*model = bare
+	if len(origRaw) > 0 {
+		if edited, err := providerUtils.SetJSONField(origRaw, "model", bare); err == nil {
+			*raw = edited
+		}
 	}
-	clone := *request
-	clone.Model = bare
-	return &clone
+	return func() {
+		*model, *raw = origModel, origRaw
+	}
 }

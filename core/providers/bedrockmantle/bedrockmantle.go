@@ -215,11 +215,12 @@ func (provider *BedrockMantleProvider) ChatCompletion(ctx *schemas.BifrostContex
 	}
 
 	url := mantleOpenAIURL(mantleEndpoints(key.BedrockMantleKeyConfig), region, schemas.ResolveCanonicalModel(ctx, request.Model), "chat/completions")
+	defer bareModelScope(&request.Model, &request.RawRequestBody)()
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.mantleClient,
 		url,
-		withBareModel(request),
+		request,
 		openai.BearerAuthHeader(key),
 		bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleOpenAIProjectHeader, resolveProjectID(ctx, key)),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -276,8 +277,9 @@ func (provider *BedrockMantleProvider) ChatCompletionStream(ctx *schemas.Bifrost
 	}
 
 	url := mantleOpenAIURL(mantleEndpoints(key.BedrockMantleKeyConfig), region, schemas.ResolveCanonicalModel(ctx, request.Model), "chat/completions")
+	defer bareModelScope(&request.Model, &request.RawRequestBody)()
 	return openai.HandleOpenAIChatCompletionStreaming(
-		ctx, provider.mantleStreamingClient, url, withBareModel(request),
+		ctx, provider.mantleStreamingClient, url, request,
 		openai.BearerAuthHeader(key), bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleOpenAIProjectHeader, resolveProjectID(ctx, key)),
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -330,11 +332,12 @@ func (provider *BedrockMantleProvider) Responses(ctx *schemas.BifrostContext, ke
 	}
 
 	url := mantleOpenAIURL(mantleEndpoints(key.BedrockMantleKeyConfig), region, canonicalModel, "responses")
+	defer bareModelScope(&request.Model, &request.RawRequestBody)()
 	return openai.HandleOpenAIResponsesRequest(
 		ctx,
 		provider.mantleClient,
 		url,
-		withBareResponsesModel(request),
+		request,
 		openai.BearerAuthHeader(key),
 		bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleOpenAIProjectHeader, resolveProjectID(ctx, key)),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -397,8 +400,9 @@ func (provider *BedrockMantleProvider) ResponsesStream(ctx *schemas.BifrostConte
 	}
 
 	url := mantleOpenAIURL(mantleEndpoints(key.BedrockMantleKeyConfig), region, canonicalModel, "responses")
+	defer bareModelScope(&request.Model, &request.RawRequestBody)()
 	return openai.HandleOpenAIResponsesStreaming(
-		ctx, provider.mantleStreamingClient, url, withBareResponsesModel(request),
+		ctx, provider.mantleStreamingClient, url, request,
 		openai.BearerAuthHeader(key), bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleOpenAIProjectHeader, resolveProjectID(ctx, key)),
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
