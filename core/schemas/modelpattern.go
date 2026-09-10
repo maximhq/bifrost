@@ -7,87 +7,153 @@ import (
 	"sync"
 )
 
-// ModelRegexPrefix marks an allow/block list entry as a regular expression.
+// ModelPatternList holds RE2 patterns that admit or block models by shape
+// rather than by name. Each pattern is compiled as a case-insensitive full
+// match ("(?i)^(?:pattern)$") and tried against the bare model name and, when
+// the caller knows the provider, against "<provider>/<model>".
 //
-// An entry of the form "regex:<pattern>" is compiled as RE2 and matched
-// case-insensitively as a full match against the bare model name and, when the
-// caller knows the provider, against "<provider>/<model>". Any other entry is an
-// exact, case-insensitive model name. The prefix itself is matched literally and
-// is case-sensitive.
-const ModelRegexPrefix = "regex:"
+// Patterns live next to the exact lists (WhiteList / BlackList) and never
+// inside them: an exact list holds names and the "*" wildcard, a pattern list
+// holds only patterns. The "*" wildcard is not a valid pattern.
+type ModelPatternList []string
 
-// modelPatternCache holds compiled patterns keyed by the raw list entry (prefix
-// included). Entries are user data evaluated on every request, so compiling
-// once per distinct entry matters. Only successful compiles are cached; invalid
-// entries are rejected at write time by Validate.
+// modelPatternCache holds compiled patterns keyed by the raw pattern. Patterns
+// are user data evaluated on every request, so compiling once per distinct
+// pattern matters. Only successful compiles are cached; invalid patterns are
+// rejected at write time by Validate.
 var modelPatternCache sync.Map // map[string]*regexp.Regexp
 
-// IsRegexEntry reports whether entry carries the regex marker.
-func IsRegexEntry(entry string) bool {
-	return strings.HasPrefix(entry, ModelRegexPrefix)
-}
-
-// RegexEntryPattern returns the raw pattern of a regex entry with the marker
-// stripped, or "" when entry is not a regex entry.
-func RegexEntryPattern(entry string) string {
-	if !IsRegexEntry(entry) {
-		return ""
-	}
-	return strings.TrimPrefix(entry, ModelRegexPrefix)
-}
-
-// CompileModelPattern compiles a regex entry into an anchored, case-insensitive
-// RE2 expression and caches it. It returns an error when entry is not a regex
-// entry, when the pattern is empty, or when RE2 rejects it.
-func CompileModelPattern(entry string) (*regexp.Regexp, error) {
-	if v, ok := modelPatternCache.Load(entry); ok {
+// CompileModelPattern compiles pattern into an anchored, case-insensitive RE2
+// expression and caches it. It returns an error when the pattern is blank or
+// when RE2 rejects it.
+func CompileModelPattern(pattern string) (*regexp.Regexp, error) {
+	if v, ok := modelPatternCache.Load(pattern); ok {
 		return v.(*regexp.Regexp), nil
 	}
-	if !IsRegexEntry(entry) {
-		return nil, fmt.Errorf("entry %q is not a regex entry (expected %q prefix)", entry, ModelRegexPrefix)
-	}
-	pattern := RegexEntryPattern(entry)
 	if strings.TrimSpace(pattern) == "" {
-		return nil, fmt.Errorf("regex entry has an empty pattern")
+		return nil, fmt.Errorf("model pattern is empty")
 	}
 	re, err := regexp.Compile("(?i)^(?:" + pattern + ")$")
 	if err != nil {
 		return nil, err
 	}
-	actual, _ := modelPatternCache.LoadOrStore(entry, re)
+	actual, _ := modelPatternCache.LoadOrStore(pattern, re)
 	return actual.(*regexp.Regexp), nil
 }
 
-// ValidateModelEntry checks that a list entry is well-formed. Non-regex entries
-// are always valid here; regex entries must compile.
-func ValidateModelEntry(entry string) error {
-	if !IsRegexEntry(entry) {
-		return nil
-	}
-	_, err := CompileModelPattern(entry)
-	return err
+// IsEmpty reports whether the list holds no patterns.
+func (pl ModelPatternList) IsEmpty() bool {
+	return len(pl) == 0
 }
 
-// MatchesEntry reports whether one list entry matches model.
-//
-// The "*" wildcard is not handled here; callers decide that through
-// IsUnrestricted / IsBlockAll before consulting individual entries. A plain
-// entry matches by case-insensitive equality. A regex entry matches when the
-// compiled pattern fully matches model, or "<provider>/<model>" when provider is
-// non-empty. An entry that fails to compile never matches.
-func MatchesEntry(entry, model, provider string) bool {
-	if !IsRegexEntry(entry) {
-		return strings.EqualFold(entry, model)
+// Validate checks that every pattern is non-blank, is not the "*" wildcard,
+// compiles as RE2, and appears only once.
+func (pl ModelPatternList) Validate() error {
+	seen := make(map[string]struct{}, len(pl))
+	for _, p := range pl {
+		if strings.TrimSpace(p) == "" {
+			return fmt.Errorf("model pattern is empty")
+		}
+		if p == "*" {
+			return fmt.Errorf("wildcard '*' is not a pattern; use the exact model list instead")
+		}
+		if _, ok := seen[p]; ok {
+			return fmt.Errorf("duplicate pattern '%s'", p)
+		}
+		seen[p] = struct{}{}
+		if _, err := CompileModelPattern(p); err != nil {
+			return fmt.Errorf("invalid pattern '%s': %w", p, err)
+		}
 	}
-	re, err := CompileModelPattern(entry)
-	if err != nil {
+	return nil
+}
+
+// Matches reports whether any pattern fully matches model, or
+// "<provider>/<model>" when provider is non-empty. A pattern that fails to
+// compile never matches.
+func (pl ModelPatternList) Matches(provider, model string) bool {
+	if len(pl) == 0 {
 		return false
 	}
-	if re.MatchString(model) {
-		return true
+	var qualified string
+	if provider != "" {
+		qualified = provider + "/" + model
 	}
-	if provider != "" && re.MatchString(provider+"/"+model) {
-		return true
+	for _, p := range pl {
+		re, err := CompileModelPattern(p)
+		if err != nil {
+			continue
+		}
+		if re.MatchString(model) {
+			return true
+		}
+		if qualified != "" && re.MatchString(qualified) {
+			return true
+		}
 	}
 	return false
+}
+
+// ModelAccessRule is the composition of one exact allow list, one exact block
+// list and their pattern twins. Every site that decides whether a model may be
+// served evaluates through it, so allow and block semantics live in one place:
+//
+//   - a model is admitted when the allow list is "*", names it exactly, or an
+//     allow pattern matches it;
+//   - a model is blocked when the block list is "*", names it exactly, or a
+//     block pattern matches it;
+//   - block wins over allow;
+//   - an empty allow list with no allow patterns admits nothing.
+type ModelAccessRule struct {
+	Allowed         WhiteList
+	Blocked         BlackList
+	AllowedPatterns ModelPatternList
+	BlockedPatterns ModelPatternList
+}
+
+// Blocks reports whether model is blocked by the exact block list or a block
+// pattern.
+func (r ModelAccessRule) Blocks(provider, model string) bool {
+	return r.Blocked.IsBlocked(model) || r.BlockedPatterns.Matches(provider, model)
+}
+
+// Admits reports whether model is admitted by the exact allow list or an allow
+// pattern. It ignores the block side; see Allows.
+func (r ModelAccessRule) Admits(provider, model string) bool {
+	return r.Allowed.IsAllowed(model) || r.AllowedPatterns.Matches(provider, model)
+}
+
+// Allows reports whether model may be served: admitted and not blocked.
+func (r ModelAccessRule) Allows(provider, model string) bool {
+	return !r.Blocks(provider, model) && r.Admits(provider, model)
+}
+
+// IsRestricted reports whether the allow side names specific models, either
+// exactly or by pattern, rather than admitting everything.
+func (r ModelAccessRule) IsRestricted() bool {
+	return r.Allowed.IsRestricted()
+}
+
+// DeniesAll reports whether no model can pass: everything is blocked, or
+// nothing is admitted.
+func (r ModelAccessRule) DeniesAll() bool {
+	return r.Blocked.IsBlockAll() || (r.Allowed.IsEmpty() && r.AllowedPatterns.IsEmpty())
+}
+
+// Validate checks all four lists. The error names the offending side using
+// the given field names so handlers can surface it verbatim.
+func (r ModelAccessRule) Validate() error {
+	if err := r.Allowed.Validate(); err != nil {
+		return fmt.Errorf("allowed models: %w", err)
+	}
+	if err := r.Blocked.Validate(); err != nil {
+		return fmt.Errorf("blocked models: %w", err)
+	}
+	if err := r.AllowedPatterns.Validate(); err != nil {
+		return fmt.Errorf("allowed model patterns: %w", err)
+	}
+	if err := r.BlockedPatterns.Validate(); err != nil {
+		return fmt.Errorf("blocked model patterns: %w", err)
+	}
+	return nil
 }

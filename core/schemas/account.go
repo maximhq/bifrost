@@ -24,61 +24,25 @@ const (
 //   - "*" (alone) means all values are allowed.
 //   - Empty list means nothing is allowed.
 //   - Non-empty list (without "*") means only the listed values are allowed.
-//   - An entry prefixed with ModelRegexPrefix ("regex:") is a pattern; see
-//     MatchesEntry. Pattern entries only take part in Matches / IsAllowed /
-//     AllowsModel; Contains compares them by their literal string.
+//
+// Entries are exact names compared case-insensitively. Shape-based matching
+// lives in ModelPatternList, kept in a separate field next to the list.
 //
 // This type is used generically for any field that needs whitelist behavior
 // (e.g., allowed models, allowed tools).
 type WhiteList []string
 
-// Contains reports whether value is literally in the whitelist (case-insensitive).
-// Regex entries are compared by their raw string, not evaluated. Use Matches or
-// IsAllowed when the list may hold patterns.
+// Contains reports whether value is in the whitelist (case-insensitive).
 func (wl WhiteList) Contains(value string) bool {
 	return slices.ContainsFunc(wl, func(s string) bool {
 		return strings.EqualFold(s, value)
 	})
 }
 
-// Matches reports whether any entry matches value: exact entries by
-// case-insensitive equality, regex entries by pattern. It does not consider
-// the "*" wildcard; see IsAllowed.
-func (wl WhiteList) Matches(value string) bool {
-	return slices.ContainsFunc(wl, func(s string) bool {
-		return MatchesEntry(s, value, "")
-	})
-}
-
-// IsAllowed reports whether value is allowed: the list is unrestricted, or an
-// entry matches it.
+// IsAllowed reports whether value is allowed: the list is unrestricted, or
+// names value.
 func (wl WhiteList) IsAllowed(value string) bool {
-	return wl.IsUnrestricted() || wl.Matches(value)
-}
-
-// AllowsModel is IsAllowed for a model whose provider is known, so regex
-// entries are also tried against "<provider>/<model>".
-func (wl WhiteList) AllowsModel(provider, model string) bool {
-	if wl.IsUnrestricted() {
-		return true
-	}
-	return slices.ContainsFunc(wl, func(s string) bool {
-		return MatchesEntry(s, model, provider)
-	})
-}
-
-// LiteralEntries returns the entries that name a concrete value: neither the
-// "*" wildcard nor a regex entry. Use it wherever the list is expanded into
-// names rather than evaluated against one.
-func (wl WhiteList) LiteralEntries() []string {
-	out := make([]string, 0, len(wl))
-	for _, v := range wl {
-		if v == "*" || IsRegexEntry(v) {
-			continue
-		}
-		out = append(out, v)
-	}
-	return out
+	return wl.IsUnrestricted() || wl.Contains(value)
 }
 
 // IsEmpty reports whether the whitelist has no entries.
@@ -99,8 +63,7 @@ func (wl WhiteList) IsRestricted() bool {
 }
 
 // Validate checks that the whitelist is well-formed.
-// Returns an error if "*" is present alongside other values, if there are
-// duplicate entries, or if a regex entry does not compile.
+// Returns an error if "*" is present alongside other values, or if there are duplicate entries.
 func (wl WhiteList) Validate() error {
 	if wl.Contains("*") && len(wl) > 1 {
 		return fmt.Errorf("wildcard '*' cannot be used with other values in the whitelist")
@@ -112,9 +75,6 @@ func (wl WhiteList) Validate() error {
 			return fmt.Errorf("duplicate value '%s' in whitelist", v)
 		}
 		seen[normalized] = struct{}{}
-		if err := ValidateModelEntry(v); err != nil {
-			return fmt.Errorf("invalid regex entry '%s' in whitelist: %w", v, err)
-		}
 	}
 	return nil
 }
@@ -124,40 +84,21 @@ func (wl WhiteList) Validate() error {
 //   - "*" (alone) means all values are blocked.
 //   - Empty list means nothing is blocked.
 //   - Non-empty list (without "*") means only the listed values are blocked.
-//   - An entry prefixed with ModelRegexPrefix ("regex:") is a pattern; see
-//     MatchesEntry.
+//
+// Entries are exact names compared case-insensitively. Shape-based matching
+// lives in ModelPatternList, kept in a separate field next to the list.
 type BlackList []string
 
-// Contains reports whether value is literally in the blacklist (case-insensitive).
-// Regex entries are compared by their raw string, not evaluated.
+// Contains reports whether value is in the blacklist (case-insensitive).
 func (bl BlackList) Contains(value string) bool {
 	return slices.ContainsFunc(bl, func(s string) bool {
 		return strings.EqualFold(s, value)
 	})
 }
 
-// Matches reports whether any entry matches value, evaluating regex entries.
-// It does not consider the "*" wildcard; see IsBlocked.
-func (bl BlackList) Matches(value string) bool {
-	return slices.ContainsFunc(bl, func(s string) bool {
-		return MatchesEntry(s, value, "")
-	})
-}
-
 // IsBlocked reports whether value is blocked.
 func (bl BlackList) IsBlocked(value string) bool {
-	return bl.IsBlockAll() || bl.Matches(value)
-}
-
-// BlocksModel is IsBlocked for a model whose provider is known, so regex
-// entries are also tried against "<provider>/<model>".
-func (bl BlackList) BlocksModel(provider, model string) bool {
-	if bl.IsBlockAll() {
-		return true
-	}
-	return slices.ContainsFunc(bl, func(s string) bool {
-		return MatchesEntry(s, model, provider)
-	})
+	return bl.IsBlockAll() || bl.Contains(value)
 }
 
 // IsEmpty reports whether the blacklist has no entries (nothing is blocked).
@@ -182,9 +123,6 @@ func (bl BlackList) Validate() error {
 			return fmt.Errorf("duplicate value '%s' in blacklist", v)
 		}
 		seen[normalized] = struct{}{}
-		if err := ValidateModelEntry(v); err != nil {
-			return fmt.Errorf("invalid regex entry '%s' in blacklist: %w", v, err)
-		}
 	}
 	return nil
 }
@@ -192,30 +130,43 @@ func (bl BlackList) Validate() error {
 // Key represents an API key and its associated configuration for a provider.
 // It contains the key value, supported models, and a weight for load balancing.
 type Key struct {
-	ID                     string                  `json:"id"`                                  // The unique identifier for the key (used by bifrost to identify the key)
-	Name                   string                  `json:"name"`                                // The name of the key (used by users to identify the key, not used by bifrost)
-	Value                  SecretVar               `json:"value"`                               // The actual API key value
-	Models                 WhiteList               `json:"models"`                              // List of models this key can access
-	BlacklistedModels      BlackList               `json:"blacklisted_models"`                  // List of models this key cannot access
-	Weight                 float64                 `json:"weight"`                              // Weight for load balancing between multiple keys
-	Aliases                KeyAliases              `json:"aliases,omitempty"`                   // Mapping of model identifiers to inference profiles
-	AzureKeyConfig         *AzureKeyConfig         `json:"azure_key_config,omitempty"`          // Azure-specific key configuration
-	VertexKeyConfig        *VertexKeyConfig        `json:"vertex_key_config,omitempty"`         // Vertex-specific key configuration
-	BedrockKeyConfig       *BedrockKeyConfig       `json:"bedrock_key_config,omitempty"`        // AWS Bedrock-specific key configuration
-	BedrockMantleKeyConfig *BedrockMantleKeyConfig `json:"bedrock_mantle_key_config,omitempty"` // Bedrock Mantle-specific key configuration
-	VLLMKeyConfig          *VLLMKeyConfig          `json:"vllm_key_config,omitempty"`           // vLLM-specific key configuration
-	ReplicateKeyConfig     *ReplicateKeyConfig     `json:"replicate_key_config,omitempty"`      // Replicate-specific key configuration
-	OllamaKeyConfig        *OllamaKeyConfig        `json:"ollama_key_config,omitempty"`         // Ollama-specific key configuration
-	SGLKeyConfig           *SGLKeyConfig           `json:"sgl_key_config,omitempty"`            // SGLang-specific key configuration
-	DatabricksKeyConfig    *DatabricksKeyConfig    `json:"databricks_key_config,omitempty"`     // Databricks-specific key configuration
-	GithubCopilotKeyConfig *GithubCopilotKeyConfig `json:"github_copilot_key_config,omitempty"` // GitHub Copilot-specific key configuration
-	Enabled                *bool                   `json:"enabled,omitempty"`                   // Whether the key is active (default:true)
-	UseForBatchAPI         *bool                   `json:"use_for_batch_api,omitempty"`         // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
-	UseAnthropicEndpoints  *bool                   `json:"use_anthropic_endpoints,omitempty"`   // Whether to use anthropic endpoints for this key
-	UseOpenAIEndpoints     *bool                   `json:"use_openai_endpoints,omitempty"`      // Whether to use OpenAI-compatible endpoints for this key
-	ConfigHash             string                  `json:"config_hash,omitempty"`               // Hash of config.json version, used for change detection
-	Status                 KeyStatusType           `json:"status,omitempty"`                    // Status of key
-	Description            string                  `json:"description,omitempty"`               // Description of key
+	ID                        string                  `json:"id"`                                    // The unique identifier for the key (used by bifrost to identify the key)
+	Name                      string                  `json:"name"`                                  // The name of the key (used by users to identify the key, not used by bifrost)
+	Value                     SecretVar               `json:"value"`                                 // The actual API key value
+	Models                    WhiteList               `json:"models"`                                // List of models this key can access
+	BlacklistedModels         BlackList               `json:"blacklisted_models"`                    // List of models this key cannot access
+	ModelsPatterns            ModelPatternList        `json:"models_patterns,omitempty"`             // RE2 patterns admitting models by shape, alongside Models
+	BlacklistedModelsPatterns ModelPatternList        `json:"blacklisted_models_patterns,omitempty"` // RE2 patterns blocking models by shape, alongside BlacklistedModels
+	Weight                    float64                 `json:"weight"`                                // Weight for load balancing between multiple keys
+	Aliases                   KeyAliases              `json:"aliases,omitempty"`                     // Mapping of model identifiers to inference profiles
+	AzureKeyConfig            *AzureKeyConfig         `json:"azure_key_config,omitempty"`            // Azure-specific key configuration
+	VertexKeyConfig           *VertexKeyConfig        `json:"vertex_key_config,omitempty"`           // Vertex-specific key configuration
+	BedrockKeyConfig          *BedrockKeyConfig       `json:"bedrock_key_config,omitempty"`          // AWS Bedrock-specific key configuration
+	BedrockMantleKeyConfig    *BedrockMantleKeyConfig `json:"bedrock_mantle_key_config,omitempty"`   // Bedrock Mantle-specific key configuration
+	VLLMKeyConfig             *VLLMKeyConfig          `json:"vllm_key_config,omitempty"`             // vLLM-specific key configuration
+	ReplicateKeyConfig        *ReplicateKeyConfig     `json:"replicate_key_config,omitempty"`        // Replicate-specific key configuration
+	OllamaKeyConfig           *OllamaKeyConfig        `json:"ollama_key_config,omitempty"`           // Ollama-specific key configuration
+	SGLKeyConfig              *SGLKeyConfig           `json:"sgl_key_config,omitempty"`              // SGLang-specific key configuration
+	DatabricksKeyConfig       *DatabricksKeyConfig    `json:"databricks_key_config,omitempty"`       // Databricks-specific key configuration
+	GithubCopilotKeyConfig    *GithubCopilotKeyConfig `json:"github_copilot_key_config,omitempty"`   // GitHub Copilot-specific key configuration
+	Enabled                   *bool                   `json:"enabled,omitempty"`                     // Whether the key is active (default:true)
+	UseForBatchAPI            *bool                   `json:"use_for_batch_api,omitempty"`           // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
+	UseAnthropicEndpoints     *bool                   `json:"use_anthropic_endpoints,omitempty"`     // Whether to use anthropic endpoints for this key
+	UseOpenAIEndpoints        *bool                   `json:"use_openai_endpoints,omitempty"`        // Whether to use OpenAI-compatible endpoints for this key
+	ConfigHash                string                  `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
+	Status                    KeyStatusType           `json:"status,omitempty"`                      // Status of key
+	Description               string                  `json:"description,omitempty"`                 // Description of key
+}
+
+// ModelAccess returns the key's model rule: exact lists plus their pattern
+// twins, so callers decide with one Allows call.
+func (k Key) ModelAccess() ModelAccessRule {
+	return ModelAccessRule{
+		Allowed:         k.Models,
+		Blocked:         k.BlacklistedModels,
+		AllowedPatterns: k.ModelsPatterns,
+		BlockedPatterns: k.BlacklistedModelsPatterns,
+	}
 }
 
 // ModelFamily is a typed enum identifying the underlying model family of an alias target.

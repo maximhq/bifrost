@@ -228,7 +228,11 @@ type ProviderPermit struct {
 	Provider          string    // provider name, as configured
 	AllowedModels     WhiteList // ["*"] allows all models; empty allows none (deny by default)
 	BlacklistedModels BlackList // blocked models; wins over AllowedModels
-	KeyIDs            WhiteList // ["*"] allows all keys of the provider; empty allows none.
+	// AllowedModelsPatterns and BlacklistedModelsPatterns admit or block models by
+	// shape (RE2, full match, case-insensitive) next to the exact lists above.
+	AllowedModelsPatterns     ModelPatternList
+	BlacklistedModelsPatterns ModelPatternList
+	KeyIDs                    WhiteList // ["*"] allows all keys of the provider; empty allows none.
 	//                             Composes with the other side's list, but only where that side also
 	//                             authorizes the request for the provider: a permit the request is not
 	//                             proceeding on does not get to say which keys serve it.
@@ -236,6 +240,17 @@ type ProviderPermit struct {
 	//                  candidate. Unlike the permissions, this does not compose: there is no
 	//                  meaningful intersection of two preferences, so a scoping permit that
 	//                  expresses one wins as the more specific context.
+}
+
+// ModelAccess returns the permit's model rule: exact lists plus their pattern
+// twins.
+func (pp ProviderPermit) ModelAccess() ModelAccessRule {
+	return ModelAccessRule{
+		Allowed:         pp.AllowedModels,
+		Blocked:         pp.BlacklistedModels,
+		AllowedPatterns: pp.AllowedModelsPatterns,
+		BlockedPatterns: pp.BlacklistedModelsPatterns,
+	}
 }
 
 // MCPPermit is permission to execute tools of one MCP client.

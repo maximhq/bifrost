@@ -4,179 +4,179 @@ import (
 	"testing"
 )
 
-func TestIsRegexEntry(t *testing.T) {
-	cases := map[string]bool{
-		"regex:^gpt-4.*":     true,
-		"regex:":             true,
-		"gpt-4o":             false,
-		"*":                  false,
-		"REGEX:^gpt-4.*":     false,
-		"openai/regex:x":     false,
-		"regex: ^gpt-4.*":    true,
-		"regexp:^gpt-4.*":    false,
-		"  regex:^gpt-4.*":   false,
-		"regex:openai/gpt.*": true,
-	}
-	for in, want := range cases {
-		if got := IsRegexEntry(in); got != want {
-			t.Errorf("IsRegexEntry(%q) = %v, want %v", in, got, want)
-		}
-	}
-}
-
 func TestCompileModelPattern(t *testing.T) {
-	re1, err := CompileModelPattern("regex:^gpt-4.*")
+	re1, err := CompileModelPattern("^gpt-4.*")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	re2, err := CompileModelPattern("regex:^gpt-4.*")
+	re2, err := CompileModelPattern("^gpt-4.*")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if re1 != re2 {
 		t.Errorf("expected the cached compiled pattern to be reused")
 	}
-
-	for _, bad := range []string{"regex:", "regex:   ", "regex:(", "regex:[a-", "gpt-4o"} {
+	for _, bad := range []string{"", "   ", "(", "[a-", "(?<=gpt-)4o"} {
 		if _, err := CompileModelPattern(bad); err == nil {
 			t.Errorf("CompileModelPattern(%q) expected error", bad)
 		}
 	}
 }
 
-func TestValidateModelEntry(t *testing.T) {
-	if err := ValidateModelEntry("gpt-4o"); err != nil {
-		t.Errorf("literal entry should validate: %v", err)
+func TestModelPatternListValidate(t *testing.T) {
+	good := ModelPatternList{"^gpt-4.*", ".*-preview$", "^(gpt-4o|gpt-4-turbo)$"}
+	if err := good.Validate(); err != nil {
+		t.Errorf("valid list should pass: %v", err)
 	}
-	if err := ValidateModelEntry("*"); err != nil {
-		t.Errorf("wildcard should validate: %v", err)
+	if err := (ModelPatternList{}).Validate(); err != nil {
+		t.Errorf("empty list should pass: %v", err)
 	}
-	if err := ValidateModelEntry("regex:^claude-3-.*"); err != nil {
-		t.Errorf("valid regex should validate: %v", err)
+	bad := map[string]ModelPatternList{
+		"empty pattern":    {""},
+		"blank pattern":    {"  "},
+		"wildcard":         {"*"},
+		"unparsable":       {"("},
+		"lookbehind":       {"(?<=gpt-)4o"},
+		"duplicate":        {"^gpt-4.*", "^gpt-4.*"},
+		"mixed with valid": {"^gpt-4.*", "["},
 	}
-	if err := ValidateModelEntry("regex:("); err == nil {
-		t.Errorf("invalid regex should fail")
-	}
-	if err := ValidateModelEntry("regex:"); err == nil {
-		t.Errorf("empty regex should fail")
-	}
-}
-
-func TestMatchesEntry(t *testing.T) {
-	tests := []struct {
-		entry, model, provider string
-		want                   bool
-	}{
-		// literal
-		{"gpt-4o", "gpt-4o", "", true},
-		{"GPT-4O", "gpt-4o", "", true},
-		{"gpt-4o", "gpt-4o-mini", "", false},
-		// anchoring: pattern must cover the whole name
-		{"regex:gpt-4", "gpt-4", "", true},
-		{"regex:gpt-4", "gpt-4o", "", false},
-		{"regex:gpt-4.*", "gpt-4o-mini", "", true},
-		{"regex:.*-preview$", "gpt-4o-preview", "", true},
-		{"regex:.*-preview$", "gpt-4o-preview-2", "", false},
-		// case-insensitive
-		{"regex:^claude-3-.*", "Claude-3-Opus", "", true},
-		// provider-qualified
-		{"regex:openai/gpt-4.*", "gpt-4o", "openai", true},
-		{"regex:openai/gpt-4.*", "gpt-4o", "anthropic", false},
-		{"regex:openai/gpt-4.*", "gpt-4o", "", false},
-		{"regex:(openai|azure)/gpt-4.*", "gpt-4o", "azure", true},
-		// invalid regex never matches and never panics
-		{"regex:(", "anything", "", false},
-		{"regex:", "anything", "", false},
-	}
-	for _, tt := range tests {
-		if got := MatchesEntry(tt.entry, tt.model, tt.provider); got != tt.want {
-			t.Errorf("MatchesEntry(%q, %q, %q) = %v, want %v", tt.entry, tt.model, tt.provider, got, tt.want)
+	for name, list := range bad {
+		if err := list.Validate(); err == nil {
+			t.Errorf("%s: expected error for %v", name, list)
 		}
 	}
 }
 
-func TestWhiteListRegex(t *testing.T) {
-	wl := WhiteList{"gpt-4o", "regex:^claude-3-.*"}
-
-	if !wl.IsAllowed("gpt-4o") || !wl.IsAllowed("GPT-4o") {
-		t.Errorf("literal entry should be allowed")
+func TestModelPatternListMatches(t *testing.T) {
+	cases := []struct {
+		name     string
+		patterns ModelPatternList
+		provider string
+		model    string
+		want     bool
+	}{
+		{"prefix wildcard", ModelPatternList{"^gpt-4.*"}, "", "gpt-4o", true},
+		{"case-insensitive", ModelPatternList{"^gpt-4.*"}, "", "GPT-4-TURBO", true},
+		{"full match only", ModelPatternList{"gpt-4"}, "", "gpt-4o", false},
+		{"exact full match", ModelPatternList{"gpt-4"}, "", "GPT-4", true},
+		{"suffix", ModelPatternList{".*-preview$"}, "", "gpt-4o-preview", true},
+		{"no match", ModelPatternList{"^claude.*"}, "", "gpt-4o", false},
+		{"alternation", ModelPatternList{"^(gpt-4o|gpt-4-turbo)$"}, "", "gpt-4-turbo", true},
+		{"provider qualified", ModelPatternList{"^openai/gpt-4o$"}, "openai", "gpt-4o", true},
+		{"provider qualified wrong provider", ModelPatternList{"^openai/gpt-4o$"}, "anthropic", "gpt-4o", false},
+		{"provider qualified without provider", ModelPatternList{"^openai/gpt-4o$"}, "", "gpt-4o", false},
+		{"bare pattern with provider", ModelPatternList{"^gpt-4.*"}, "openai", "gpt-4o", true},
+		{"empty list", ModelPatternList{}, "openai", "gpt-4o", false},
+		{"invalid never matches", ModelPatternList{"("}, "openai", "(", false},
+		{"second pattern wins", ModelPatternList{"^claude.*", "^gpt.*"}, "", "gpt-4o", true},
 	}
-	if !wl.IsAllowed("claude-3-opus") {
-		t.Errorf("regex entry should allow matching model")
-	}
-	if wl.IsAllowed("claude-2") {
-		t.Errorf("regex entry should not allow non-matching model")
-	}
-	if wl.Contains("claude-3-opus") {
-		t.Errorf("Contains must stay literal")
-	}
-	if !wl.Contains("regex:^claude-3-.*") {
-		t.Errorf("Contains should find the raw regex entry")
-	}
-	if got := wl.LiteralEntries(); len(got) != 1 || got[0] != "gpt-4o" {
-		t.Errorf("LiteralEntries = %v, want [gpt-4o]", got)
-	}
-
-	pw := WhiteList{"regex:anthropic/claude-.*"}
-	if !pw.AllowsModel("anthropic", "claude-3-opus") {
-		t.Errorf("provider-qualified regex should allow via provider/model")
-	}
-	if pw.AllowsModel("openai", "claude-3-opus") {
-		t.Errorf("provider-qualified regex should not allow a different provider")
-	}
-	if !(WhiteList{"*"}).AllowsModel("openai", "anything") {
-		t.Errorf("wildcard should allow all")
-	}
-	if (WhiteList{}).AllowsModel("openai", "anything") {
-		t.Errorf("empty list should deny")
+	for _, tc := range cases {
+		if got := tc.patterns.Matches(tc.provider, tc.model); got != tc.want {
+			t.Errorf("%s: Matches(%q, %q) = %v, want %v", tc.name, tc.provider, tc.model, got, tc.want)
+		}
 	}
 }
 
-func TestWhiteListValidateRegex(t *testing.T) {
-	if err := (WhiteList{"gpt-4o", "regex:^claude-3-.*"}).Validate(); err != nil {
-		t.Errorf("valid list should pass: %v", err)
+func TestModelAccessRule(t *testing.T) {
+	cases := []struct {
+		name  string
+		rule  ModelAccessRule
+		model string
+		want  bool
+	}{
+		{"wildcard admits", ModelAccessRule{Allowed: WhiteList{"*"}}, "gpt-4o", true},
+		{"deny by default", ModelAccessRule{}, "gpt-4o", false},
+		{"exact admits", ModelAccessRule{Allowed: WhiteList{"gpt-4o"}}, "GPT-4O", true},
+		{"exact does not evaluate regex syntax", ModelAccessRule{Allowed: WhiteList{"regex:^gpt-4.*"}}, "gpt-4o", false},
+		{"exact regex-looking literal matches itself", ModelAccessRule{Allowed: WhiteList{"regex:^gpt-4.*"}}, "regex:^gpt-4.*", true},
+		{"pattern admits", ModelAccessRule{AllowedPatterns: ModelPatternList{"^gpt-4.*"}}, "gpt-4o", true},
+		{"pattern is anchored", ModelAccessRule{AllowedPatterns: ModelPatternList{"gpt-4"}}, "gpt-4o", false},
+		{"exact block wins", ModelAccessRule{Allowed: WhiteList{"*"}, Blocked: BlackList{"gpt-4o"}}, "gpt-4o", false},
+		{"pattern block wins over exact allow", ModelAccessRule{Allowed: WhiteList{"gpt-4o-preview"}, BlockedPatterns: ModelPatternList{".*-preview$"}}, "gpt-4o-preview", false},
+		{"pattern block wins over pattern allow", ModelAccessRule{AllowedPatterns: ModelPatternList{"^gpt-4.*"}, BlockedPatterns: ModelPatternList{".*-preview$"}}, "gpt-4o-preview", false},
+		{"block all", ModelAccessRule{Allowed: WhiteList{"*"}, Blocked: BlackList{"*"}}, "gpt-4o", false},
+		{"mixed allow: literal", ModelAccessRule{Allowed: WhiteList{"claude-3"}, AllowedPatterns: ModelPatternList{"^o[0-9].*"}}, "claude-3", true},
+		{"mixed allow: pattern", ModelAccessRule{Allowed: WhiteList{"claude-3"}, AllowedPatterns: ModelPatternList{"^o[0-9].*"}}, "o3-mini", true},
+		{"mixed allow: neither", ModelAccessRule{Allowed: WhiteList{"claude-3"}, AllowedPatterns: ModelPatternList{"^o[0-9].*"}}, "gpt-4o", false},
 	}
-	if err := (WhiteList{"*", "regex:^claude-3-.*"}).Validate(); err == nil {
-		t.Errorf("wildcard mixed with regex should fail")
+	for _, tc := range cases {
+		if got := tc.rule.Allows("openai", tc.model); got != tc.want {
+			t.Errorf("%s: Allows(%q) = %v, want %v", tc.name, tc.model, got, tc.want)
+		}
 	}
-	if err := (WhiteList{"regex:("}).Validate(); err == nil {
-		t.Errorf("invalid regex should fail")
+
+	provQualified := ModelAccessRule{AllowedPatterns: ModelPatternList{"^openai/gpt-4o$"}}
+	if !provQualified.Allows("openai", "gpt-4o") {
+		t.Errorf("provider-qualified pattern should admit openai/gpt-4o")
 	}
-	if err := (WhiteList{"regex:"}).Validate(); err == nil {
-		t.Errorf("empty regex should fail")
-	}
-	if err := (WhiteList{"regex:^gpt.*", "regex:^gpt.*"}).Validate(); err == nil {
-		t.Errorf("duplicate regex should fail")
+	if provQualified.Allows("anthropic", "gpt-4o") {
+		t.Errorf("provider-qualified pattern should not admit anthropic/gpt-4o")
 	}
 }
 
-func TestBlackListRegex(t *testing.T) {
-	bl := BlackList{"gpt-4o", "regex:.*-preview$"}
-	if !bl.IsBlocked("gpt-4o") {
-		t.Errorf("literal entry should be blocked")
+func TestModelAccessRuleDeniesAll(t *testing.T) {
+	if !(ModelAccessRule{}).DeniesAll() {
+		t.Errorf("empty rule should deny all")
 	}
-	if !bl.IsBlocked("gpt-4o-preview") {
-		t.Errorf("regex entry should block matching model")
+	if (ModelAccessRule{AllowedPatterns: ModelPatternList{"^gpt.*"}}).DeniesAll() {
+		t.Errorf("patterns-only rule should not deny all")
 	}
-	if bl.IsBlocked("gpt-4o-mini") {
-		t.Errorf("non-matching model should not be blocked")
+	if (ModelAccessRule{Allowed: WhiteList{"gpt-4o"}}).DeniesAll() {
+		t.Errorf("exact allow should not deny all")
 	}
-	if bl.Contains("gpt-4o-preview") {
-		t.Errorf("Contains must stay literal")
+	if !(ModelAccessRule{Allowed: WhiteList{"*"}, Blocked: BlackList{"*"}}).DeniesAll() {
+		t.Errorf("block all should deny all")
 	}
-	if !(BlackList{"regex:openai/.*"}).BlocksModel("openai", "gpt-4o") {
-		t.Errorf("provider-qualified regex should block via provider/model")
+}
+
+func TestModelAccessRuleValidate(t *testing.T) {
+	ok := ModelAccessRule{Allowed: WhiteList{"gpt-4o"}, Blocked: BlackList{"gpt-4o-preview"}, AllowedPatterns: ModelPatternList{"^gpt-4.*"}, BlockedPatterns: ModelPatternList{".*-preview$"}}
+	if err := ok.Validate(); err != nil {
+		t.Errorf("valid rule should pass: %v", err)
 	}
-	if (BlackList{"regex:openai/.*"}).BlocksModel("anthropic", "gpt-4o") {
-		t.Errorf("provider-qualified regex should not block another provider")
+	if err := (ModelAccessRule{AllowedPatterns: ModelPatternList{"("}}).Validate(); err == nil {
+		t.Errorf("invalid allow pattern should fail")
 	}
-	if !(BlackList{"*"}).BlocksModel("openai", "x") {
-		t.Errorf("block-all should block")
+	if err := (ModelAccessRule{BlockedPatterns: ModelPatternList{"*"}}).Validate(); err == nil {
+		t.Errorf("wildcard block pattern should fail")
 	}
-	if err := (BlackList{"regex:("}).Validate(); err == nil {
-		t.Errorf("invalid regex should fail validation")
+	if err := (ModelAccessRule{Allowed: WhiteList{"*", "gpt-4o"}}).Validate(); err == nil {
+		t.Errorf("mixed wildcard allow list should fail")
 	}
-	if err := (BlackList{"*", "regex:x"}).Validate(); err == nil {
-		t.Errorf("wildcard mixed with regex should fail validation")
+	// A regex-looking literal is an ordinary entry in the exact lists.
+	if err := (ModelAccessRule{Allowed: WhiteList{"regex:("}}).Validate(); err != nil {
+		t.Errorf("regex-looking literal should be accepted as an exact entry: %v", err)
+	}
+}
+
+func TestWhiteListBlackListExactOnly(t *testing.T) {
+	wl := WhiteList{"gpt-4o", "regex:^gpt-4.*"}
+	if !wl.IsAllowed("GPT-4O") {
+		t.Errorf("exact entries match case-insensitively")
+	}
+	if wl.IsAllowed("gpt-4-turbo") {
+		t.Errorf("a regex-looking literal must not be evaluated as a pattern")
+	}
+	if !wl.IsAllowed("regex:^gpt-4.*") {
+		t.Errorf("a regex-looking literal matches itself")
+	}
+	bl := BlackList{".*-preview$"}
+	if bl.IsBlocked("gpt-4o-preview") {
+		t.Errorf("a regex-looking literal must not block by pattern")
+	}
+	if !bl.IsBlocked(".*-preview$") {
+		t.Errorf("a regex-looking literal blocks itself")
+	}
+}
+
+func TestKeyAndPermitModelAccess(t *testing.T) {
+	k := Key{Models: WhiteList{"gpt-4o"}, ModelsPatterns: ModelPatternList{"^o[0-9].*"}, BlacklistedModelsPatterns: ModelPatternList{".*-mini$"}}
+	if !k.ModelAccess().Allows("openai", "o3") || k.ModelAccess().Allows("openai", "o3-mini") || !k.ModelAccess().Allows("openai", "gpt-4o") {
+		t.Errorf("key rule should compose exact and pattern lists")
+	}
+	pp := ProviderPermit{Provider: "openai", AllowedModels: WhiteList{"*"}, BlacklistedModels: BlackList{"gpt-3.5-turbo"}, BlacklistedModelsPatterns: ModelPatternList{"^openai/.*-preview$"}}
+	r := pp.ModelAccess()
+	if !r.Allows("openai", "gpt-4o") || r.Allows("openai", "gpt-3.5-turbo") || r.Allows("openai", "gpt-4o-preview") {
+		t.Errorf("permit rule should compose exact and pattern lists")
 	}
 }
