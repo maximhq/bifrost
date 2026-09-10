@@ -143,6 +143,62 @@ variable "volume_size_gb" {
   type        = number
 }
 
+# --- PostgreSQL ---
+variable "create_postgresql" {
+  description = "Create a managed Azure Database for PostgreSQL Flexible Server."
+  type        = bool
+  default     = false
+}
+
+variable "postgresql_engine_version" {
+  description = "PostgreSQL engine version."
+  type        = string
+  default     = "16"
+}
+
+variable "postgresql_instance_class" {
+  description = "Azure Flexible Server SKU name."
+  type        = string
+  default     = null
+}
+
+variable "postgresql_storage_gb" {
+  description = "Storage size in GB."
+  type        = number
+  default     = 20
+}
+
+variable "postgresql_database_name" {
+  description = "Name of the initial database."
+  type        = string
+  default     = "bifrost"
+}
+
+variable "postgresql_username" {
+  description = "Administrator username."
+  type        = string
+  default     = "bifrost"
+}
+
+variable "postgresql_password" {
+  description = "Administrator password. If null, a random password is generated."
+  type        = string
+  default     = null
+  sensitive   = true
+}
+
+variable "postgresql_backup_retention_days" {
+  description = "Backup retention period in days."
+  type        = number
+  default     = 7
+}
+
+variable "postgresql_multi_az" {
+  description = "Enable zone-redundant high availability."
+  type        = bool
+  default     = false
+}
+
 # --- Azure-specific ---
 variable "resource_group_name" {
   description = "Existing Azure resource group name. If null, a new one will be created."

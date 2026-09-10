@@ -197,6 +197,28 @@ module "aks" {
   identity_id                  = azurerm_user_assigned_identity.this.id
 }
 
+# --- PostgreSQL (optional — created only when create_postgresql is true) ---
+module "postgresql" {
+  source = "./postgresql"
+  count  = var.create_postgresql ? 1 : 0
+
+  name_prefix           = var.name_prefix
+  region                = var.region
+  resource_group_name   = local.resource_group_name
+  tags                  = var.tags
+  engine_version        = var.postgresql_engine_version
+  sku_name              = var.postgresql_instance_class
+  storage_mb            = var.postgresql_storage_gb * 1024
+  database_name         = var.postgresql_database_name
+  username              = var.postgresql_username
+  password              = var.postgresql_password
+  backup_retention_days = var.postgresql_backup_retention_days
+  high_availability     = var.postgresql_multi_az
+
+  # Networking — reuse Bifrost VNet
+  vnet_id = local.vnet_id
+}
+
 # --- ACI (Azure Container Instances) ---
 module "aci" {
   source = "./services/aci"
