@@ -142,9 +142,6 @@ type ServerCallbacks interface {
 	ListComplexityGenerations(ctx context.Context) ([]complexity.GenerationInfo, error)
 	DeleteComplexityGeneration(ctx context.Context, namespace string) error
 	// Prompt repository related callbacks
-	// ReloadPromptCache refreshes the prompts plugin's in-memory index after a
-	// prompt, version, folder, or session write. Enterprise overrides it to
-	// gossip the change so peer nodes rebuild their own index.
 	ReloadPromptCache(ctx context.Context) error
 	// Webhook related callbacks
 	ReloadWebhookEndpoint(ctx context.Context, id string) error
@@ -544,16 +541,12 @@ func (s *BifrostHTTPServer) getPromptsPluginName() string {
 	return prompts.PluginName
 }
 
-// promptCacheReloadable is the prompts plugin's cache refresh entry point. It is
-// declared here rather than reused from handlers because the handler-facing
-// interface is named after the server callback, not the plugin method.
+// promptCacheReloadable is the prompts plugin's cache refresh entry point.
 type promptCacheReloadable interface {
 	Reload(ctx context.Context) error
 }
 
-// ReloadPromptCache rebuilds the prompts plugin's in-memory index from the config
-// store after a prompt repository write. It is a no-op when the plugin is not
-// loaded, which is what the handler's previously-nil reloader did.
+// ReloadPromptCache rebuilds the prompts plugin's in-memory index; no-op when the plugin is not loaded.
 func (s *BifrostHTTPServer) ReloadPromptCache(ctx context.Context) error {
 	plugin, err := lib.FindPluginAs[promptCacheReloadable](s.Config, s.getPromptsPluginName())
 	if err != nil || plugin == nil {

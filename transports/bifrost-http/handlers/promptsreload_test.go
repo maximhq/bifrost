@@ -14,8 +14,6 @@ import (
 )
 
 // promptReloadStore implements only the prompt repository slice of ConfigStore.
-// Every write succeeds unless writeErr is set, which is enough to tell apart
-// "the handler reloaded" from "the handler reloaded even though the write failed".
 type promptReloadStore struct {
 	configstore.ConfigStore
 	writeErr error
@@ -58,8 +56,7 @@ func (s *promptReloadStore) RenamePromptSession(context.Context, uint, string) e
 }
 func (s *promptReloadStore) DeletePromptSession(context.Context, uint) error { return s.writeErr }
 
-// promptTestMessage is the smallest valid message body. PromptMessage is a
-// json.RawMessage alias, so a zero value fails to marshal.
+// promptTestMessage is the smallest valid message body; a zero PromptMessage fails to marshal.
 var promptTestMessage = tables.PromptMessage(`{"role":"user","content":"hi"}`)
 
 type countingPromptReloader struct {
@@ -72,8 +69,7 @@ func (r *countingPromptReloader) ReloadPromptCache(context.Context) error {
 	return r.err
 }
 
-// promptMutation is one write endpoint: the handler method, the route param it
-// reads, and a body that gets it as far as the store write.
+// promptMutation is one write endpoint: its handler, route param, and request body.
 type promptMutation struct {
 	name    string
 	invoke  func(h *PromptsHandler, ctx *fasthttp.RequestCtx)
@@ -161,9 +157,7 @@ func promptRequestCtx(t *testing.T, m promptMutation) *fasthttp.RequestCtx {
 	return ctx
 }
 
-// Every write endpoint has to reload, because in a cluster the reload is also
-// what gossips the change to the other nodes. An endpoint that skips it leaves
-// peers resolving prompts against a stale in-memory index.
+// The reload is what gossips the change, so every write endpoint has to do it.
 func TestPromptMutationsReloadCache(t *testing.T) {
 	SetLogger(&mockLogger{})
 	for _, m := range promptMutations() {
@@ -196,8 +190,7 @@ func TestPromptMutationsDoNotReloadOnStoreFailure(t *testing.T) {
 	}
 }
 
-// The reloader is nil when the prompts plugin is not loaded, and a reload error
-// is logged rather than failing the write the user already made.
+// A missing plugin or a failed reload must not fail the write itself.
 func TestPromptMutationsSurviveReloaderProblems(t *testing.T) {
 	SetLogger(&mockLogger{})
 	body := CreatePromptRequest{Name: "greeting"}

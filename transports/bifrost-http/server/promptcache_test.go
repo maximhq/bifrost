@@ -40,8 +40,7 @@ func TestReloadPromptCacheReloadsThePlugin(t *testing.T) {
 	require.Equal(t, 1, plugin.reloads)
 }
 
-// A prompt write must not fail just because the prompts plugin is disabled,
-// which is what the handler's previously-nil reloader allowed for.
+// A prompt write must not fail just because the prompts plugin is disabled.
 func TestReloadPromptCacheWithoutPluginIsNoOp(t *testing.T) {
 	server := promptCacheServer()
 
