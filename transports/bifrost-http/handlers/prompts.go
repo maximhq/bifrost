@@ -16,10 +16,12 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// PromptCacheReloader is implemented by the prompts plugin to allow the HTTP handler
-// to trigger an in-memory cache refresh after any repository mutation.
+// PromptCacheReloader triggers an in-memory prompt cache refresh after any
+// repository mutation. The server implements it rather than the plugin directly,
+// so enterprise can override the method and gossip the change to cluster peers
+// before delegating to the local reload (same shape as ReloadProvider).
 type PromptCacheReloader interface {
-	Reload(ctx context.Context) error
+	ReloadPromptCache(ctx context.Context) error
 }
 
 // PromptsHandler handles prompt repository endpoints
@@ -43,7 +45,7 @@ func (h *PromptsHandler) reloadCache(ctx context.Context) {
 	if h.reloader == nil {
 		return
 	}
-	if err := h.reloader.Reload(ctx); err != nil {
+	if err := h.reloader.ReloadPromptCache(ctx); err != nil {
 		logger.Error("failed to reload prompt cache: %v", err)
 	}
 }
@@ -864,6 +866,8 @@ func (h *PromptsHandler) createSession(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	h.reloadCache(ctx)
+
 	SendJSON(ctx, map[string]any{
 		"session": session,
 	})
@@ -930,6 +934,8 @@ func (h *PromptsHandler) updateSession(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	h.reloadCache(ctx)
+
 	SendJSON(ctx, map[string]any{
 		"session": session,
 	})
@@ -962,6 +968,8 @@ func (h *PromptsHandler) deleteSession(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
+
+	h.reloadCache(ctx)
 
 	SendJSON(ctx, map[string]any{
 		"message": "session deleted successfully",
@@ -1008,6 +1016,8 @@ func (h *PromptsHandler) renameSession(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
+
+	h.reloadCache(ctx)
 
 	session.Name = req.Name
 	SendJSON(ctx, map[string]any{
