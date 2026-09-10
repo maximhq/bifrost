@@ -1,17 +1,35 @@
 import PageTitle from "@/components/pageTitle";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { MultiSelect } from "@/components/ui/multiSelect";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
-import { RequestTypeLabels } from "@/lib/constants/logs";
+import { RequestTypeLabels, RequestTypes } from "@/lib/constants/logs";
 import { CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
 import { parseArrayFromText } from "@/lib/utils/array";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+
+const requestTypeLabel = (requestType: string): string =>
+	Object.hasOwn(RequestTypeLabels, requestType) ? RequestTypeLabels[requestType as keyof typeof RequestTypeLabels] : requestType;
+
+// Every known request type, plus any stored value the UI does not know about yet
+// (for example a type set from config.json on a newer server) so it stays selectable.
+const hiddenRequestTypeOptions = (selected: string[]) => {
+	const known = new Set<string>(RequestTypes);
+	const extra = selected.filter((requestType) => !known.has(requestType));
+	return [...RequestTypes, ...extra].map((requestType) => ({ value: requestType, label: requestTypeLabel(requestType) }));
+};
+
+// Order-independent equality; the multi-select emits values in selection order.
+const sameRequestTypes = (a: string[] | undefined, b: string[] | undefined): boolean => {
+	const left = [...(a || [])].sort();
+	const right = [...(b || [])].sort();
+	return left.length === right.length && left.every((value, index) => value === right[index]);
+};
 
 export default function LoggingView() {
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
@@ -39,7 +57,8 @@ export default function LoggingView() {
 			localConfig.allow_per_request_raw_override !== config.allow_per_request_raw_override ||
 			localConfig.log_retention_days !== config.log_retention_days ||
 			localConfig.hide_deleted_virtual_keys_in_filters !== config.hide_deleted_virtual_keys_in_filters ||
-			JSON.stringify(localConfig.logging_headers || []) !== JSON.stringify(config.logging_headers || [])
+			JSON.stringify(localConfig.logging_headers || []) !== JSON.stringify(config.logging_headers || []) ||
+			!sameRequestTypes(localConfig.hidden_request_types, config.hidden_request_types)
 		);
 	}, [config, localConfig]);
 
@@ -113,33 +132,33 @@ export default function LoggingView() {
 
 				<div className="min-w-0 space-y-3 rounded-sm border p-4" data-testid="workspace-hidden-request-types">
 					<div className="space-y-0.5">
-						<p className="text-sm font-medium">Hidden Request Types</p>
+						<Label htmlFor="hidden-request-types" className="text-sm font-medium">
+							Hidden Request Types
+						</Label>
 						<p className="text-muted-foreground text-sm">
-							These request types are stored normally but excluded from Logs and Dashboard views. Configure them with{" "}
-							<code className="text-xs">logs_store.hidden_request_types</code> or{" "}
-							<code className="text-xs">storage.logsStore.hiddenRequestTypes</code> in Helm.
+							Selected request types are still logged but excluded from Logs and Dashboard views, including counts, charts and filter
+							options. Streaming and non-streaming types are separate. Leave empty to show every request type. Takes effect on the next
+							request, no restart needed. Can also be set with <code className="text-xs">client.hidden_request_types</code> in config.json.
 						</p>
 					</div>
-					{bifrostConfig?.hidden_request_types.length ? (
-						<div className="flex flex-wrap gap-2">
-							{bifrostConfig.hidden_request_types.map((requestType) => (
-								<Badge key={requestType} variant="secondary" title={requestType} className="max-w-full truncate">
-									{Object.hasOwn(RequestTypeLabels, requestType)
-										? RequestTypeLabels[requestType as keyof typeof RequestTypeLabels]
-										: requestType}
-								</Badge>
-							))}
-						</div>
-					) : bifrostConfig ? (
-						<p className="text-muted-foreground text-sm">All request types are visible.</p>
-					) : isConfigError ? (
+					{isConfigError ? (
 						<p className="text-destructive text-sm" role="alert">
 							Unable to load hidden request types.
 						</p>
 					) : (
-						<p className="text-muted-foreground text-sm" aria-live="polite">
-							{isConfigLoading ? "Loading configuration…" : "Configuration unavailable."}
-						</p>
+						<MultiSelect
+							id="hidden-request-types"
+							data-testid="hidden-request-types-select"
+							options={hiddenRequestTypeOptions(localConfig.hidden_request_types || [])}
+							defaultValue={localConfig.hidden_request_types || []}
+							resetOnDefaultValueChange
+							onValueChange={(values) => handleConfigChange("hidden_request_types", values)}
+							placeholder={isConfigLoading ? "Loading configuration…" : "All request types are visible"}
+							emptyIndicator="No request types found."
+							disabled={!bifrostConfig || !hasSettingsUpdateAccess}
+							maxCount={6}
+							className="border-input text-foreground hover:bg-accent hover:text-accent-foreground min-h-9 rounded-sm bg-transparent font-normal"
+						/>
 					)}
 				</div>
 

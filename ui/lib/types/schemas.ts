@@ -963,6 +963,7 @@ export const coreConfigSchema = z.object({
 	disable_content_logging: z.boolean().default(false),
 	enforce_auth_on_inference: z.boolean().default(false),
 	hide_deleted_virtual_keys_in_filters: z.boolean().default(false),
+	hidden_request_types: z.array(z.string()).default([]),
 	allowed_origins: z.array(z.string()).default(["*"]),
 	max_request_body_size_mb: z.number().min(1).default(100),
 	mcp_agent_depth: z.number().min(1).default(10),
@@ -978,7 +979,6 @@ export const bifrostConfigSchema = z.object({
 	is_db_connected: z.boolean(),
 	is_cache_connected: z.boolean(),
 	is_logs_connected: z.boolean(),
-	hidden_request_types: z.array(z.string()).default([]),
 	is_git_available: z.boolean().optional().default(false),
 });
 
@@ -1065,6 +1065,8 @@ export const otelConfigSchema = z
 		export_timeout: z.number().int().min(1).max(60).default(5),
 		// Metrics push configuration
 		metrics_enabled: z.boolean().default(false),
+		// Export per-component Bifrost overhead latency as a histogram.
+		overhead_breakdown_enabled: z.boolean().default(false),
 		metrics_endpoint: secretVarSchema.optional(),
 		metrics_push_interval: z.number().int().min(1).max(300).default(15),
 		request_headers: z.array(z.string()).default([]),
@@ -1255,6 +1257,7 @@ export const prometheusConfigSchema = z
 export const prometheusFormSchema = z
 	.object({
 		metrics_enabled: z.boolean().default(true),
+		overhead_breakdown_enabled: z.boolean().default(false),
 		push_gateway_enabled: z.boolean().default(false),
 		prometheus_config: prometheusConfigSchema,
 	})

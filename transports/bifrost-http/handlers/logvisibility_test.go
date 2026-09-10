@@ -6,6 +6,7 @@ import (
 
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/plugins/logging"
@@ -52,7 +53,7 @@ func TestHiddenRequestTypesRoutes(t *testing.T) {
 		}
 		h := &LoggingHandler{
 			logManager: mgr, redactedKeysManager: noRedactedKeys{},
-			config: &lib.Config{LogsStoreConfig: &logstore.Config{HiddenRequestTypes: hidden}},
+			config: &lib.Config{ClientConfig: &configstore.ClientConfig{HiddenRequestTypes: hidden}},
 		}
 		r := router.New()
 		h.RegisterRoutes(r)
@@ -76,14 +77,14 @@ func TestHiddenRequestTypesRoutes(t *testing.T) {
 func TestHiddenRequestTypesFilterCache(t *testing.T) {
 	h := &LoggingHandler{
 		logManager: &visibilityLogManager{t: t}, redactedKeysManager: noRedactedKeys{},
-		config: &lib.Config{ClientConfig: &lib.DefaultClientConfig, LogsStoreConfig: &logstore.Config{Type: logstore.LogStoreTypeSQLite}},
+		config: &lib.Config{ClientConfig: &configstore.ClientConfig{}, LogsStoreConfig: &logstore.Config{Type: logstore.LogStoreTypeSQLite}},
 	}
 	r := router.New()
 	h.RegisterRoutes(r)
 	// Populate the unrestricted cache first, then ensure hiding a type does not
 	// serve that cached result. Removing the setting restores all options.
 	for _, hidden := range [][]string{nil, {"embedding"}, nil} {
-		h.config.LogsStoreConfig.HiddenRequestTypes = hidden
+		h.config.ClientConfig.HiddenRequestTypes = hidden
 		var req fasthttp.Request
 		req.SetRequestURI("/api/logs/filterdata?dimensions=models")
 		req.Header.SetMethod("GET")

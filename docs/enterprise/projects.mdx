@@ -6,7 +6,7 @@ icon: "square-kanban"
 
 ## Overview
 
-Bifrost Enterprise already answers **who is calling**. Virtual keys, teams, customers, business units and access profiles are all attributes of the caller: they are fixed the moment a request authenticates, and spend flows up one ownership tree.
+Bifrost Enterprise already answers **who is calling**. Virtual keys, teams, customers, business units and access profiles are all attributes of the caller (a User or a Virtual Key): they are fixed the moment a request authenticates, and spend flows up one ownership tree.
 
 A **project** answers a different question: **what is this call for?**
 
@@ -40,15 +40,15 @@ To create your first project, skip to [Configuration](#configuration). The secti
 
 Every other governance entity describes a person or a credential. A project describes work. That gives a single decision rule:
 
-> Ask whether the access should apply to **every request this person makes, for as long as they hold it**. If yes, it is an access profile. If it should apply **only while they are doing a particular piece of work, and that work has its own budget**, it is a project.
+> Ask whether the access should apply to **every request this person makes, for as long as they hold it**. If yes, it is an [Access Profile](/enterprise/access-profiles). If it should apply **only while they are doing a particular piece of work, and that work has its own budget**, it is a project.
 
-So "contractors get `gpt-4o-mini` only, with \$50 a month" is an access profile and should stay one. "This evaluation has \$5,000 and these six people can draw on it" is a project.
+So "contractors get `gpt-4o-mini` only, with \$50 a month" is an access profile and should stay one. "This proof of concept agent can spend a max of \$5,000 USD and these six people can work on it" is a project.
 
 ### A worked example
 
 An organisation has a `platform` team and a `data-science` team, both under an `acme-internal` customer. Engineers sign in with SSO and hold an "Engineer" access profile: OpenAI `gpt-4o-mini` only, \$200 per month. That is the right policy for their day-to-day work and none of it should change.
 
-Leadership now wants to evaluate moving to Claude. Six named people, four from platform, two from data-science, plus one contractor, get \$5,000 for the quarter to run comparisons on Anthropic models. The spend must not touch their personal budgets, must report as one line item, must stop dead at \$5,000, and nobody else gets Anthropic.
+Leadership now wants to evaluate moving to Claude. Six named people, three from platform, two from data-science, plus one contractor, get \$5,000 for the quarter to run comparisons on Anthropic models. The spend must not touch their personal budgets, must report as one line item, must stop dead at \$5,000, and nobody else gets Anthropic.
 
 As a project that is one entity: access rule **Extend** with an Anthropic provider config, accounting **Project only**, a \$5,000 quarterly budget, split policy **Equal**, and six explicit members. The engineers keep their own identity and their own profile for everything else, and add `x-bf-project-id` to eval calls only. Those calls, and only those calls, reach Anthropic; the spend lands on the project's \$5,000 and is taken off their personal, team and customer limits; every log row carries `project=claude-eval`; and the equal split caps each member near \$833 so one person cannot drain the pot.
 
@@ -106,7 +106,7 @@ Send one or the other. If `x-bf-project-id` is present at all it decides the out
 
 A request may name **one** project. There is no list form, and no request is placed in a project implicitly: activation is always the explicit header.
 
-When a named project cannot scope the request, the answer is `403` with `error.type` of `access_blocked` and the message `project "<name>" not found. It does not exist or does not admit this request.` That single answer deliberately covers both "no such project" and "you are not one of its members": a caller who may not use a project has no business learning whether it exists.
+When a named project cannot scope the request, the answer is `403` with a top-level `type` of `access_blocked` and the message `project "<name>" not found. It does not exist or does not admit this request.` That single answer deliberately covers both "no such project" and "you are not one of its members": a caller who may not use a project has no business learning whether it exists.
 
 A request that names no project is served exactly as it is today, against the caller's own access and ledgers.
 
@@ -150,15 +150,15 @@ Two details worth knowing. Provider **weights** do not compose, because two pref
 |---|---|---|---|---|
 | `both` (default) | Charged | Charged | Charged | Charged |
 | `project_only` | Charged | Charged | Not consulted | Charged |
-| `principal_only` | Not consulted | Not consulted | Charged | Charged |
+| User only (`principal_only`) | Not consulted | Not consulted | Charged | Charged |
 
 **`both`** enforces everything. A request has to fit inside the project's caps *and* the caller's own.
 
 **`project_only`** takes the request off everything the caller funds, including their per-model budgets and the teams and business units above them. Use it when an initiative's spend genuinely should not count against the people doing the work, as in the evaluation example.
 
-**`principal_only`** is pure attribution: the project keeps its caps on record but checks and charges none of them, so the request is capped only by the caller and by the deployment. The project's own Overview tab says so explicitly while this mode is set, because a funded project that charges nothing is otherwise a confusing thing to look at.
+**User only** is pure attribution: the project keeps its caps on record but checks and charges none of them, so the request is capped only by the caller and by the deployment. The project's own Overview tab says so explicitly while this mode is set, because a funded project that charges nothing is otherwise a confusing thing to look at.
 
-A scoped request whose caller holds no permit at all is refused under `both` and `principal_only`: those modes say the caller's money moves, and there is nothing to take it from.
+A scoped request whose caller holds no permit at all is refused under `both` and User only: those modes say the caller's money moves, and there is nothing to take it from.
 
 ---
 
@@ -205,7 +205,7 @@ A project can hold money at three tiers, and a request is checked against all of
 - **Per-provider budgets and rate limits**, on a provider configuration.
 - **Per-model budgets and rate limits**, on a model under a provider configuration.
 
-Whichever cap binds first refuses the request, and the refusal names the tier that ran out rather than the project as a whole. A budget refusal is `402` with `error.type` of `budget_exceeded`; a rate-limit refusal is `429` as `rate_limited`, `token_limited` or `request_limited`. Rate limits are checked before budgets, so a caller who is both throttled and out of money gets the cheaper answer consistently.
+Whichever cap binds first refuses the request, and the refusal names the tier that ran out rather than the project as a whole. A budget refusal is `402` with a top-level `type` of `budget_exceeded`; a rate-limit refusal is `429` as `rate_limited`, `token_limited` or `request_limited`. The type is a field beside `status_code` rather than inside `error`, which carries only the message. Rate limits are checked before budgets, so a caller who is both throttled and out of money gets the cheaper answer consistently.
 
 ### Splitting caps between members
 
@@ -251,7 +251,7 @@ The list shows every project you can see, with its providers, the budget closest
 
 <Frame>
   <img
-    src="/media/projects/projects-home.png"
+    src="/media/ui-projects-table.png"
     alt="Projects list page with provider chips, budget meters, access rule and member count columns"
   />
 </Frame>
@@ -267,36 +267,20 @@ Click **Create Project**.
 
 <Frame>
   <img
-    src="/media/projects/new-project.png"
+    src="/media/ui-new-project.png"
     alt="Create Project sheet showing name, description, enabled toggle, expiry presets and membership mode"
   />
 </Frame>
 
 5. **Access rule.** Choose **Restrict** or **Extend**. The card explains the consequence of each, including that a Restrict project with no providers permits nothing.
 6. **Providers.** Add a provider, then choose all models or an explicit allowlist, optionally a denylist, which keys may serve it, a weight, and any per-provider or per-model money.
-
-<Frame>
-  <img
-    src="/media/projects/project-provider-config.png"
-    alt="Providers section with model allowlist, blocked models, key selection, weight and nested model budgets"
-  />
-</Frame>
-
 7. **MCP configurations.** Choose which tools the project may execute under **MCP servers**, and assign any **Virtual MCPs** it should reach.
-
-<Frame>
-  <img
-    src="/media/projects/project-mcp-config.png"
-    alt="MCP configuration section with per-server tool allowlists and virtual MCP assignment list"
-  />
-</Frame>
-
 8. **Project budget** and **Rate limit.** Add one or more budget lines, each with an amount and a reset window, then optionally a **Maximum tokens** and **Maximum requests** limit. **Align to calendar cycle** moves every window on the project onto the calendar.
 9. **Accounting.** Choose **Both budgets**, **Project only** or **User only**, and a split of **No split** or **Equal**.
 
 <Frame>
   <img
-    src="/media/projects/project-accounting.png"
+    src="/media/ui-project-accounting.png"
     alt="Accounting mode and split policy selectors with explanatory copy beneath each"
   />
 </Frame>
@@ -307,19 +291,12 @@ Save with **Create Project**, or **Create & Add Members** when membership is exp
 
 A project's page has five tabs, in this order: **Overview**, **Budgets & limits**, **Members**, **Providers** and **MCPs**. Each of the last three carries a count, and the **Use project** button beside them shows the headers a caller sends to reach the project.
 
-**Overview** opens with a **Finish Setting Up** checklist while anything essential is missing, then tiles for spend, tokens, requests, members, providers, MCP servers, the access rule, the accounting mode and when the project was created. A **Needs attention** card lists caps near or past their limit, and flags members left holding no slice of a cap under an equal split.
+**Overview** opens with tiles for spend, tokens, requests, members, providers, MCP servers, the access rule, the accounting mode and when the project was created. A **Needs attention** card lists caps near or past their limit, and flags members left holding no slice of a cap under an equal split.
 
 <Frame>
   <img
-    src="/media/projects/project-overview-tab.png"
-    alt="Project Overview tab with Finish Setting Up checklist, usage tiles and Needs attention card"
-  />
-</Frame>
-
-<Frame>
-  <img
-    src="/media/projects/project-use-project.png"
-    alt="Use project sheet showing the project headers and a copy-ready curl request"
+    src="/media/ui-project-overview-tab.png"
+    alt="Project Overview tab with usage tiles and Needs attention card"
   />
 </Frame>
 
@@ -327,26 +304,12 @@ A project's page has five tabs, in this order: **Overview**, **Budgets & limits*
 
 <Frame>
   <img
-    src="/media/projects/project-limits-tab.png"
+    src="/media/ui-project-limits-tab.png"
     alt="Budgets and limits tab showing project, provider and model cap rungs with usage meters"
   />
 </Frame>
 
 **Providers** and **MCPs** are read-only views of what the project allows: allowed and blocked models per provider with weights, and tools per server plus assigned virtual MCPs with their slug endpoints.
-
-<Frame>
-  <img
-    src="/media/projects/project-providers-tab.png"
-    alt="Providers tab listing each provider with allowed models, blocked models and weight"
-  />
-</Frame>
-
-<Frame>
-  <img
-    src="/media/projects/project-mcp-tab.png"
-    alt="MCPs tab listing servers with their allowed tools and assigned virtual MCPs"
-  />
-</Frame>
 
 ### Managing members
 
@@ -354,7 +317,7 @@ A project's page has five tabs, in this order: **Overview**, **Budgets & limits*
 
 <Frame>
   <img
-    src="/media/projects/project-members-tab.png"
+    src="/media/ui-project-members-tab.png"
     alt="Members tab with per-member spend, token and request cap meters"
   />
 </Frame>
@@ -363,7 +326,7 @@ A project's page has five tabs, in this order: **Overview**, **Budgets & limits*
 
 <Frame>
   <img
-    src="/media/projects/add-project-members.png"
+    src="/media/ui-add-project-members.png"
     alt="Add members sheet with user picker, team snapshot option and equal-share before-and-after preview"
   />
 </Frame>
@@ -372,14 +335,7 @@ Clicking a member opens their usage, grouped project then provider then model. F
 
 <Frame>
   <img
-    src="/media/projects/member-usage-sheet.png"
-    alt="Member usage sheet showing every cap that applies to one member, grouped by tier"
-  />
-</Frame>
-
-<Frame>
-  <img
-    src="/media/projects/edit-member-caps.png"
+    src="/media/ui-edit-member-caps.png"
     alt="Edit member caps sheet with amount or percentage unit selectors and live preview"
   />
 </Frame>
@@ -391,13 +347,6 @@ Removing a member takes their caps with them and, under an equal split, redivide
 The **Enabled** switch is on the list row and in the edit sheet; disabling asks for confirmation, since every request naming the project will be refused. Expiry is a field on the edit sheet.
 
 Deleting a project removes its providers, budgets and the spend recorded against them, and removes its members' access through it. Log rows keep the attribution they already carry.
-
-<Frame>
-  <img
-    src="/media/projects/project-delete.png"
-    alt="Delete project confirmation dialog naming what is removed"
-  />
-</Frame>
 
 </Tab>
 <Tab title="config.json">
@@ -585,7 +534,7 @@ See [Data Access Control](/enterprise/data-access-control) for how scopes are as
 
 ## Examples
 
-### An evaluation with its own funding
+### Power users evaluating a new model release with its own budget
 
 Six people from two teams get \$5,000 for the quarter to evaluate a provider nobody personally has access to, without their own budgets being touched.
 

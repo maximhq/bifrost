@@ -652,7 +652,6 @@ export interface BifrostConfig {
 	is_cache_connected: boolean;
 	is_logs_connected: boolean;
 	is_object_storage_connected?: boolean;
-	hidden_request_types: string[];
 	is_git_available: boolean;
 	auth_token?: string;
 	metadata?: Record<string, unknown>;
@@ -702,6 +701,8 @@ export interface CoreConfig {
 	logging_headers: string[];
 	whitelisted_routes: string[];
 	hide_deleted_virtual_keys_in_filters: boolean;
+	// Request types excluded from Logs and Dashboard reads. Logs are still stored.
+	hidden_request_types: string[];
 	routing_chain_max_depth: number;
 	header_filter_config?: GlobalHeaderFilterConfig;
 	mcp_external_client_url?: SecretVar;
@@ -751,6 +752,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	logging_headers: [],
 	whitelisted_routes: [],
 	hide_deleted_virtual_keys_in_filters: false,
+	hidden_request_types: [],
 	routing_chain_max_depth: 10,
 };
 

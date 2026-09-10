@@ -1,4 +1,4 @@
-package logging
+package overhead
 
 import (
 	"testing"
@@ -22,7 +22,7 @@ func span(base time.Time, id, parent, name string, kind schemas.SpanKind, startM
 func bucketMap(t *testing.T, trace *schemas.Trace, overheadMs float64, ovOK bool) map[string]float64 {
 	t.Helper()
 	out := map[string]float64{}
-	buckets, _, _ := computeOverheadBreakdown(trace, overheadMs, ovOK, 0, false)
+	buckets, _, _ := Compute(trace, overheadMs, ovOK, 0, false)
 	for _, b := range buckets {
 		out[b.Name] = b.DurationUs
 	}
@@ -254,16 +254,16 @@ func TestComputeOverheadBreakdown_NegligibleOverhead(t *testing.T) {
 		span(base, "llm", "root", "chat gpt-4o", schemas.SpanKindLLMCall, 0, 100),
 	}}
 
-	if got, _, _ := computeOverheadBreakdown(trace, 0, false, 0, false); len(got) != 0 {
+	if got, _, _ := Compute(trace, 0, false, 0, false); len(got) != 0 {
 		t.Errorf("expected no overhead buckets when overhead is negligible, got %v", got)
 	}
 }
 
 func TestComputeOverheadBreakdown_Empty(t *testing.T) {
-	if got, _, _ := computeOverheadBreakdown(nil, 0, false, 0, false); got != nil {
+	if got, _, _ := Compute(nil, 0, false, 0, false); got != nil {
 		t.Error("nil trace must yield nil")
 	}
-	if got, _, _ := computeOverheadBreakdown(&schemas.Trace{}, 5, true, 0, false); got != nil {
+	if got, _, _ := Compute(&schemas.Trace{}, 5, true, 0, false); got != nil {
 		t.Error("trace with no spans must yield nil")
 	}
 }
@@ -289,7 +289,7 @@ func TestComputeOverheadBreakdown_StreamingNoSchedulingResidual(t *testing.T) {
 
 	// total-upstream overhead is a huge 40ms (dominated by off-CPU relay wait), but the
 	// measured Bifrost CPU is only key.selection (2ms) + stream-parse (1ms) = 3ms.
-	buckets, measuredMs, isStreaming := computeOverheadBreakdown(trace, 40, true, 5, true)
+	buckets, measuredMs, isStreaming := Compute(trace, 40, true, 5, true)
 	if !isStreaming {
 		t.Fatal("expected isStreaming=true when a stream attr is present on the root span")
 	}
@@ -309,4 +309,59 @@ func TestComputeOverheadBreakdown_StreamingNoSchedulingResidual(t *testing.T) {
 	if measuredMs < 2.99 || measuredMs > 3.01 {
 		t.Errorf("measuredMs = %v, want ~3 (2ms key.selection + 1ms stream-parse), not the 40ms total-upstream", measuredMs)
 	}
+}
+
+// ComputeForMetrics rolls each raw bucket into its UI category: plugin.<name> ->
+// "plugins", middleware.<name> -> "middleware", key.selection -> "routing", and the
+// scheduling residual -> "miscellaneous". Raw span names must never leak into the metric.
+func TestComputeForMetrics_RollsUpToCategories(t *testing.T) {
+	base := time.Now()
+	root := span(base, "root", "", "/v1/chat/completions", schemas.SpanKindHTTPRequest, 0, 100)
+	root.Attributes = map[string]any{
+		schemas.AttrBifrostOverheadDurationMs: 20.0, // 20ms total overhead
+	}
+	trace := &schemas.Trace{
+		RootSpan: root,
+		Spans: []*schemas.Span{
+			root,
+			span(base, "mw", "root", "middleware.auth", schemas.SpanKindInternal, 0, 1),               // middleware 1ms
+			span(base, "keysel", "root", "key.selection", schemas.SpanKindInternal, 1, 3),             // routing 2ms
+			span(base, "gpre", "root", "plugin.governance.prehook", schemas.SpanKindPlugin, 3, 8),     // plugins 5ms
+			span(base, "gpost", "root", "plugin.governance.posthook", schemas.SpanKindPlugin, 90, 92), // plugins 2ms
+			span(base, "lpost", "root", "plugin.logging.posthook", schemas.SpanKindPlugin, 92, 94),    // plugins 2ms
+		},
+	}
+
+	got := overheadForTest(trace)
+	// plugins = governance 7ms + logging 2ms = 9ms.
+	if got["plugins"] != 9000 {
+		t.Errorf("plugins = %v us, want 9000 (governance 7ms + logging 2ms)", got["plugins"])
+	}
+	if got["middleware"] != 1000 {
+		t.Errorf("middleware = %v us, want 1000 (middleware.auth)", got["middleware"])
+	}
+	// key.selection rolls into the routing category, not its own bucket.
+	if got["routing"] != 2000 {
+		t.Errorf("routing = %v us, want 2000 (key.selection)", got["routing"])
+	}
+	// 20ms overhead - 12ms measured = 8ms residual, which rolls into miscellaneous.
+	if got["miscellaneous"] != 8000 {
+		t.Errorf("miscellaneous = %v us, want 8000 (scheduling residual)", got["miscellaneous"])
+	}
+	// Raw span names must never leak into the metric — only categories.
+	for _, name := range []string{"plugin.governance", "plugin.logging", "middleware.auth", "key.selection"} {
+		if _, ok := got[name]; ok {
+			t.Errorf("raw span name %q must not appear in metric map (categories only)", name)
+		}
+	}
+}
+
+// overheadForTest is a tiny wrapper so the assertions read cleanly; ComputeForMetrics
+// returns nil for an empty result, which ranges as an empty map.
+func overheadForTest(trace *schemas.Trace) map[string]float64 {
+	got := ComputeForMetrics(trace)
+	if got == nil {
+		return map[string]float64{}
+	}
+	return got
 }

@@ -243,6 +243,11 @@ type anthropicToResponsesStreamState struct {
 	// in `data` on the closed block and again as a fresh redacted_thinking block.
 	reasoningPayloadSentByItem map[string]bool
 
+	// Bedrock also places a thinking signature in the completed item's
+	// encrypted_content. Track emitted signature fragments so output_item.done
+	// does not duplicate that same payload as a redacted_thinking block.
+	reasoningSignaturesByItem map[string]string
+
 	// codeExecServerClosedByItem marks code_interpreter_call items whose
 	// server_tool_use block was already closed early on code.done (python/bash,
 	// where the input reconstructs from the neutral Code and the block must close
@@ -3398,6 +3403,10 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 		// Check if this is a signature delta or text delta
 		if bifrostResp.Signature != nil {
 			// This is a signature_delta
+			if state.reasoningSignaturesByItem == nil {
+				state.reasoningSignaturesByItem = make(map[string]string)
+			}
+			state.reasoningSignaturesByItem[key] += *bifrostResp.Signature
 			streamResp.Delta = &AnthropicStreamDelta{
 				Type:      AnthropicStreamDeltaTypeSignature,
 				Signature: bifrostResp.Signature,
@@ -3723,12 +3732,14 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 			}}
 
 			encrypted, _ := reasoningPayloadAndSummary(bifrostResp.Item)
+			signatureSent := state.reasoningSignaturesByItem[key]
+			delete(state.reasoningSignaturesByItem, key)
 			openedAsThinking := idx != nil && state.blockType(*idx) == AnthropicContentBlockTypeThinking
 			// An item upgraded mid-stream (upgradeLateSummaryToThinkingBlock) also reads
 			// as "opened as thinking" here, because its key now points at the reopened
 			// block -- but its payload already went out in `data` on the redacted block
 			// that was closed. Emitting it again would duplicate the reasoning state.
-			if encrypted != "" && openedAsThinking && !state.reasoningPayloadSent(key) {
+			if encrypted != "" && encrypted != signatureSent && openedAsThinking && !state.reasoningPayloadSent(key) {
 				data := encrypted
 				if providerUtils.ShouldEmbedReasoningItemID(ctx, attemptProvider(bifrostResp.ExtraFields), bifrostResp.ExtraFields.RoutingInfo.Model) {
 					data = providerUtils.EmbedReasoningItemID(bifrostResp.Item.ID, data)

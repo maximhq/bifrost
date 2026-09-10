@@ -427,9 +427,9 @@ Calls CrowdStrike AIDR's `guard_chat_completions` endpoint for policy-driven AI 
 Gray Swan requests automatically include sanitized incoming request headers in Gray Swan `metadata.headers`; no extra `config` field is required. Credential-bearing headers such as `authorization`, `x-api-key`, API-key variants, cookies, and `grayswan-api-key` are excluded, while non-sensitive context headers such as `x-request-id`, `traceparent`, `x-tenant-id`, `content-type`, and `content-length` are included when present.
 
 </Tab>
-<Tab title="Lakera Guard">
+<Tab title="Check Point's AI Agent Security">
 
-Calls Lakera Guard's `POST /v2/guard` endpoint with an OpenAI-style conversation. The Lakera project selects the policy; Bifrost controls whether a flagged result blocks, is recorded, or is redacted from supported payload spans.
+Calls the `POST /v2/guard` endpoint for Check Point's AI Agent Security with an OpenAI-style conversation. The Check Point project selects the policy; Bifrost controls whether a flagged result blocks, is recorded, or is redacted from supported payload spans.
 
 ```json
 {
@@ -438,7 +438,7 @@ Calls Lakera Guard's `POST /v2/guard` endpoint with an OpenAI-style conversation
       {
         "id": 7,
         "provider_name": "lakera",
-        "policy_name": "lakera-production",
+        "policy_name": "ai-agent-security-production",
         "enabled": true,
         "timeout": 30,
         "config": {
@@ -455,7 +455,7 @@ Calls Lakera Guard's `POST /v2/guard` endpoint with an OpenAI-style conversation
 }
 ```
 
-`base_url` is optional and defaults to `https://api.lakera.ai`. For `action: "redact"`, Lakera supplies supported message-content spans and Bifrost performs the transformation. See [Lakera Guard](/integrations/guardrails/lakera) for request compatibility and fail-closed behavior.
+`base_url` is optional and defaults to `https://api.lakera.ai`. For `action: "redact"`, Check Point supplies supported message-content spans and Bifrost performs the transformation. See [Check Point's AI Agent Security](/integrations/guardrails/checkpoint) for request compatibility and fail-closed behavior.
 
 </Tab>
 <Tab title="Repello Argus">
@@ -627,13 +627,13 @@ Any field marked **env.\* supported** accepts a bare `"env.VAR_NAME"` string in 
 | `rules` | No | **Plain only** | Inline rule map (`{ "rule_name": "description" }`) |
 | `timeout` | No | **Plain only** | Execution timeout in seconds |
 
-### Lakera Guard
+### Check Point's AI Agent Security
 
 | Field | Required | env.\* supported | Notes |
 |-------|----------|-----------------|-------|
-| `api_key` | Yes | Yes | Lakera API key |
-| `project_id` | Yes | **Plain only** | Lakera project ID whose assigned policy controls screening |
-| `base_url` | No | Yes | Lakera API base. Defaults to `https://api.lakera.ai` |
+| `api_key` | Yes | Yes | Check Point API key |
+| `project_id` | Yes | **Plain only** | Check Point project ID whose assigned policy controls screening |
+| `base_url` | No | Yes | Check Point API base. Defaults to `https://api.lakera.ai` |
 | `action` | No | **Plain only** | `block` \| `detect_only` \| `redact` (default: `block`) |
 | `redaction_strategy` | No | **Plain only** | `replace` \| `mask` \| `hash` (default: `replace`) |
 | `redaction_mode` | No | **Plain only** | `runtime` \| `logs_only` \| `runtime_reversible` (default: `runtime`) |

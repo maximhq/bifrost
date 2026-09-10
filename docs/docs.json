@@ -323,11 +323,11 @@
             "icon": "bolt",
             "pages": [
               "enterprise/user-provisioning",
+              "enterprise/how-identity-sync-works",
               "enterprise/access-profiles",
               "enterprise/rbac",
               "enterprise/data-access-control",
               "enterprise/virtual-mcps",
-              "enterprise/mcp-tool-groups",
               "enterprise/projects",
               {
                 "group": "Guardrails",
@@ -350,7 +350,7 @@
                       "integrations/guardrails/crowdstrike-aidr",
                       "integrations/guardrails/grayswan",
                       "integrations/guardrails/patronus-ai",
-                      "integrations/guardrails/lakera",
+                      "integrations/guardrails/checkpoint",
                       "integrations/guardrails/repello-argus"
                     ]
                   }
@@ -418,6 +418,18 @@
             "icon": "cloud-arrow-up",
             "pages": [
               "edge/deployment-mdm"
+            ]
+          },
+          {
+            "group": "Onboarding Instructions",
+            "pages": [
+              "edge/setup",
+              "edge/setup-bifrost",
+              "edge/setup-edge-control",
+              "edge/install-direct",
+              "edge/install-mdm",
+              "edge/sign-in-and-verify",
+              "edge/troubleshooting"
             ]
           },
           {
@@ -591,7 +603,7 @@
               "integrations/guardrails/crowdstrike-aidr",
               "integrations/guardrails/grayswan",
               "integrations/guardrails/patronus-ai",
-              "integrations/guardrails/lakera",
+              "integrations/guardrails/checkpoint",
               "integrations/guardrails/repello-argus"
             ]
           },
@@ -1291,6 +1303,7 @@
                   "GET /api/logs/dashboard",
                   "POST /api/logs/recalculate-cost",
                   "GET /api/logs/recalculate-cost/status",
+                  "POST /api/logs/recalculate-cost/cancel",
                   "GET /api/mcp-logs",
                   "DELETE /api/mcp-logs",
                   "GET /api/mcp-logs/{id}",
@@ -1810,12 +1823,19 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
-              "changelogs/v2.0.0",
-              "changelogs/v2.0.0-prerelease3",
-              "changelogs/v1.6.11",
-              "changelogs/v1.6.10",
-              "changelogs/v1.6.9",
-              "changelogs/v1.6.8",
+              "changelogs/v2.1.1",
+              "changelogs/v2.1.0",
+              {
+                "group": "August 2026",
+                "pages": [
+                  "changelogs/v2.0.0",
+                  "changelogs/v2.0.0-prerelease3",
+                  "changelogs/v1.6.11",
+                  "changelogs/v1.6.10",
+                  "changelogs/v1.6.9",
+                  "changelogs/v1.6.8"
+                ]
+              },
               {
                 "group": "July 2026",
                 "pages": [
@@ -2022,13 +2042,22 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
-              "changelogs/ent-v2.0.0",
-              "changelogs/ent-v1.5.12",
-              "changelogs/ent-v1.5.11",
-              "changelogs/ent-v2.0.0-prerelease3",
-              "changelogs/ent-v1.5.10",
-              "changelogs/ent-v1.5.9",
-              "changelogs/ent-v1.5.8",
+              "changelogs/ent-v2.1.1",
+              "changelogs/ent-v2.1.0",
+              "changelogs/ent-v2.0.1",
+              {
+                "group": "August 2026",
+                "pages": [
+                  "changelogs/ent-v1.5.13",
+                  "changelogs/ent-v2.0.0",
+                  "changelogs/ent-v1.5.12",
+                  "changelogs/ent-v1.5.11",
+                  "changelogs/ent-v2.0.0-prerelease3",
+                  "changelogs/ent-v1.5.10",
+                  "changelogs/ent-v1.5.9",
+                  "changelogs/ent-v1.5.8"
+                ]
+              },
               {
                 "group": "July 2026",
                 "pages": [
@@ -2106,6 +2135,7 @@
             "item": "Edge",
             "icon": "grip",
             "pages": [
+              "changelogs/edge-v0.6.0",
               "changelogs/edge-v0.5.6",
               "changelogs/edge-v0.4.0",
               "changelogs/edge-v0.3.0",
@@ -2140,7 +2170,9 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.40",
               "changelogs/helm-v2.1.39",
+              "changelogs/helm-v2.1.38",
               "changelogs/helm-v2.1.37",
               "changelogs/helm-v2.1.36",
               "changelogs/helm-v2.1.35",
@@ -2237,6 +2269,10 @@
     ]
   },
   "redirects": [
+    {
+      "source": "/integrations/guardrails/lakera",
+      "destination": "/integrations/guardrails/checkpoint"
+    },
     {
       "source": "/enterprise/mcp-tool-groups",
       "destination": "/enterprise/virtual-mcps"

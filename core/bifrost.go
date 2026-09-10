@@ -6129,6 +6129,7 @@ func executeRequestWithRetries[T any](
 	logger schemas.Logger,
 ) (result T, bifrostError *schemas.BifrostError) {
 	var attempts int
+	checkAzurePreamble := providerKey == schemas.Azure && IsStreamRequestType(requestType)
 
 	// Emit the terminal routing-engine entry on every return path — including
 	// early returns from key-selection failures and tracer-missing — so the
@@ -6435,17 +6436,34 @@ func executeRequestWithRetries[T any](
 			ctx.SetValue(schemas.BifrostContextKeyStreamStartTime, streamStartTime)
 		}
 
+		// The previous failed stream has drained before reaching this retry.
+		if checkAzurePreamble && attempts > 0 {
+			ctx.ClearValue(schemas.BifrostContextKeyStreamEndIndicator)
+			ctx.ClearValue(schemas.BifrostContextKeyStreamBodyExhausted)
+			ctx.ClearValue(schemas.BifrostContextKeyStreamParkedAfterFinish)
+		}
+
 		// Attempt the request
 		result, bifrostError = requestHandler(currentKey)
 
-		// For streaming requests that returned success, check if the first chunk
-		// is actually an error (e.g., rate limits sent as SSE events in HTTP 200).
-		// This enables retries and fallbacks for providers that embed errors in
-		// the SSE stream instead of returning proper HTTP error status codes.
+		// Detect errors carried inside HTTP 200 streams before returning success.
+		// Azure Chat and Responses may emit startup metadata before an error.
 		emptyStream := false
 		if bifrostError == nil {
 			if streamChan, ok := any(result).(chan *schemas.BifrostStreamChunk); ok {
-				checkedStream, drainDone, firstChunkErr := providerUtils.CheckFirstStreamChunkForError(ctx, streamChan)
+				var (
+					checkedStream chan *schemas.BifrostStreamChunk
+					drainDone     <-chan struct{}
+					firstChunkErr *schemas.BifrostError
+				)
+				if checkAzurePreamble {
+					requestID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+					checkedStream, drainDone, firstChunkErr = providerUtils.CheckStreamPreambleForError(
+						ctx, requestID, streamChan, azure.IsStreamPreamble,
+					)
+				} else {
+					checkedStream, drainDone, firstChunkErr = providerUtils.CheckFirstStreamChunkForError(ctx, streamChan)
+				}
 				if firstChunkErr != nil {
 					<-drainDone
 					// The dead stream's teardown (ReleaseStreamingResponse) claimed the

@@ -250,6 +250,12 @@
           "description": "When true, deleted virtual keys are omitted from logs and MCP logs filter data.",
           "default": false
         },
+        "hidden_request_types": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Request types excluded from dashboard and log API reads. Logs are still stored; an empty array shows all request types. Editable from the UI under Logs Settings."
+        },
         "allowed_headers": {
           "type": "array",
           "items": {
@@ -876,6 +882,14 @@
                 "description": "Data Access Control scope: own-data (user's own records), team-data (user's team records), all-data (unrestricted). Defaults to all-data.",
                 "enum": ["own-data", "team-data", "all-data"],
                 "default": "all-data"
+              },
+              "entity_dac": {
+                "type": "object",
+                "description": "Per-entity Data Access Control overrides, keyed by resource name. Each entry narrows or widens the role's global dac for that one entity; entities not listed follow dac. Resources accepting an override as of this release: Logs, MCPLogs, AuditLogs, VirtualKeys, Users, Teams, Customers, BusinessUnits, RBAC, APIKeys, AccessProfiles, PromptRepository, RoutingRules, GuardrailsConfig, MCPGateway, VirtualMCPs, Projects. ",
+                "additionalProperties": {
+                  "type": "string",
+                  "enum": ["own-data", "team-data", "all-data"]
+                }
               },
               "access_profile": {
                 "type": "string",
@@ -1920,12 +1934,6 @@
           "enum": ["sqlite", "postgres", "clickhouse"],
           "description": "Logs store type"
         },
-        "hidden_request_types": {
-          "type": "array",
-          "items": { "type": "string" },
-          "default": [],
-          "description": "Request types excluded from dashboard and log API reads. Logs are still stored; an empty array shows all request types."
-        },
         "config": {
           "type": "object",
           "oneOf": [
@@ -2454,6 +2462,11 @@
                         "type": "string"
                       },
                       "description": "Custom labels to add to Prometheus metrics"
+                    },
+                    "overhead_breakdown_enabled": {
+                      "type": "boolean",
+                      "description": "Export the per-component overhead histogram bifrost_overhead_component_microseconds (overhead latency split by the overhead_component label). Off by default. Requires tracing to be active, since the breakdown is computed from completed trace spans.",
+                      "default": false
                     },
                     "push_gateway": {
                       "type": "object",
@@ -3505,6 +3518,11 @@
           "default": 15,
           "minimum": 1,
           "maximum": 300
+        },
+        "overhead_breakdown_enabled": {
+          "type": "boolean",
+          "description": "Export the per-component overhead histogram bifrost_overhead_component_microseconds (overhead latency split by the overhead_component attribute). Off by default. Requires metrics_enabled and an active trace, since the breakdown is computed from completed spans.",
+          "default": false
         },
         "request_headers": {
           "type": "array",
@@ -8612,9 +8630,11 @@
             "parasail",
             "perplexity",
             "cerebras",
+            "databricks",
             "deepseek",
             "cloudflare",
             "gemini",
+            "github-copilot",
             "openrouter",
             "elevenlabs",
             "huggingface",

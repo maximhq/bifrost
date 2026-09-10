@@ -368,6 +368,9 @@ false
 {{- if .Values.bifrost.client.loggingHeaders }}
 {{- $_ := set $client "logging_headers" .Values.bifrost.client.loggingHeaders }}
 {{- end }}
+{{- if .Values.storage.logsStore.hiddenRequestTypes }}
+{{- $_ := set $client "hidden_request_types" .Values.storage.logsStore.hiddenRequestTypes }}
+{{- end }}
 {{- if .Values.bifrost.client.whitelistedRoutes }}
 {{- $_ := set $client "whitelisted_routes" .Values.bifrost.client.whitelistedRoutes }}
 {{- end }}
@@ -587,6 +590,7 @@ false
 {{- $role := dict "name" .name }}
 {{- if .description }}{{- $_ := set $role "description" .description }}{{- end }}
 {{- if .dac }}{{- $_ := set $role "dac" .dac }}{{- end }}
+{{- if .entity_dac }}{{- $_ := set $role "entity_dac" .entity_dac }}{{- end }}
 {{- if .access_profile }}{{- $_ := set $role "access_profile" .access_profile }}{{- end }}
 {{- if .permissions }}{{- $_ := set $role "permissions" .permissions }}{{- end }}
 {{- $roles = append $roles $role }}
@@ -1058,9 +1062,6 @@ false
 {{- if $writer }}{{- $_ := set $sqliteLogsStore "writer" $writer }}{{- end }}
 {{- end }}
 {{- $_ := set $config "logs_store" $sqliteLogsStore }}
-{{- end }}
-{{- if .Values.storage.logsStore.hiddenRequestTypes }}
-{{- $_ := set (index $config "logs_store") "hidden_request_types" .Values.storage.logsStore.hiddenRequestTypes }}
 {{- end }}
 {{- /* Object Storage for log payloads */ -}}
 {{- if and .Values.storage.logsStore.objectStorage .Values.storage.logsStore.objectStorage.enabled }}

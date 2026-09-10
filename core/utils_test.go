@@ -388,6 +388,8 @@ func TestClearCtxForFallback(t *testing.T) {
 		schemas.BifrostContextKeyAttemptTrail,
 		schemas.BifrostContextKeyStreamEndIndicator,
 		schemas.BifrostContextKeyConnectionClosed,
+		schemas.BifrostContextKeyStreamBodyExhausted,
+		schemas.BifrostContextKeyStreamParkedAfterFinish,
 		schemas.BifrostContextKeySupportsAssistantPrefill,
 	}
 	// The next attempt resolves its own limits, which needs the same credential and caller.

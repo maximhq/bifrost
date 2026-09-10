@@ -2,7 +2,6 @@ package logstore
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 	"time"
 
@@ -10,26 +9,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
-
-func TestHiddenRequestTypesConfig(t *testing.T) {
-	for _, backend := range []string{"sqlite", "postgres", "clickhouse"} {
-		t.Run(backend, func(t *testing.T) {
-			var config Config
-			require.NoError(t, json.Unmarshal([]byte(`{"enabled":true,"type":"`+backend+`","config":{},"hidden_request_types":["count_tokens","embedding"]}`), &config))
-			require.Equal(t, []string{"count_tokens", "embedding"}, config.HiddenRequestTypes)
-			data, err := json.Marshal(config)
-			require.NoError(t, err)
-			var restored Config
-			require.NoError(t, json.Unmarshal(data, &restored))
-			require.Equal(t, config.HiddenRequestTypes, restored.HiddenRequestTypes)
-			require.NoError(t, json.Unmarshal([]byte(`{"enabled":false}`), &restored))
-			require.Empty(t, restored.HiddenRequestTypes)
-		})
-	}
-	var config Config
-	require.Error(t, json.Unmarshal([]byte(`{"hidden_request_types":"embedding"}`), &config))
-	require.Error(t, json.Unmarshal([]byte(`{"hidden_request_types":[123]}`), &config))
-}
 
 func TestHiddenRequestTypesReads(t *testing.T) {
 	s := newTestSQLiteStore(t)

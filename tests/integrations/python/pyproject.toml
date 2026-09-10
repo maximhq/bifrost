@@ -142,4 +142,5 @@ exclude_lines = [
 # above would otherwise make uv treat it as an editable package, which changes the
 # root's entry in uv.lock and breaks `uv sync --frozen`.
 package = false
-exclude-newer = "2026-08-11T00:00:00Z"
+# Include HTTPX2's security fixes released after the previous cutoff.
+exclude-newer = "2026-09-09T00:00:00Z"
