@@ -548,11 +548,18 @@ type promptCacheReloadable interface {
 
 // ReloadPromptCache rebuilds the prompts plugin's in-memory index; no-op when the plugin is not loaded.
 func (s *BifrostHTTPServer) ReloadPromptCache(ctx context.Context) error {
-	plugin, err := lib.FindPluginAs[promptCacheReloadable](s.Config, s.getPromptsPluginName())
+	name := s.getPromptsPluginName()
+	plugin, err := lib.FindPluginAs[schemas.BasePlugin](s.Config, name)
 	if err != nil || plugin == nil {
 		return nil
 	}
-	return plugin.Reload(ctx)
+	reloader, ok := plugin.(promptCacheReloadable)
+	if !ok {
+		// A plugin registered under this name that cannot reload leaves the cache stale silently.
+		logger.Warn("plugin %s does not support prompt cache reload", name)
+		return nil
+	}
+	return reloader.Reload(ctx)
 }
 
 // getGovernancePlugin safely retrieves the governance plugin with proper locking.
