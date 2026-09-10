@@ -95,10 +95,10 @@ Virtual keys are issued to clients and act as scoped API tokens. Each key specif
 | Field | Required | Description |
 |-------|----------|-------------|
 | `provider` | Yes | Provider name (e.g. `"openai"`) |
-| `allowed_models` | No | Model allow-list of exact names. `["*"]` = all models; `[]` = deny all |
-| `blacklisted_models` | No | Model deny-list of exact names, wins over `allowed_models`. `["*"]` = block all |
-| `allowed_models_patterns` | No | RE2 patterns that allow models by name shape, next to `allowed_models`. Case-insensitive full match against the model name and `provider/model` |
-| `blacklisted_models_patterns` | No | RE2 patterns that block models by name shape; win over the allow side |
+| `allowed_models` | No | Model allow-list of exact names. `["*"]` = all models; `[]` = deny all. A list may not mix `*` with named models |
+| `blacklisted_models` | No | Model deny-list of exact names, wins over `allowed_models`. `["*"]` = block all. A list may not mix `*` with named models |
+| `allowed_models_patterns` | No | RE2 patterns that allow models by name shape, next to `allowed_models`. Case-insensitive full match against the model name and `provider/model`; `*`, blank entries, and duplicates are refused |
+| `blacklisted_models_patterns` | No | RE2 patterns that block models by name shape, matched and validated the same way; win over the allow side |
 | `key_ids` | No | Provider key IDs allowed for this VK. `["*"]` = all keys; `[]` or omission = deny all. Use each provider key's `id` value |
 | `weight` | No | Load-balancing weight when multiple provider configs are present |
 | `rate_limit_id` | No | Attach a per-provider-config rate limit |

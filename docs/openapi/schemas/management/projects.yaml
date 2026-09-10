@@ -251,22 +251,37 @@ ProjectProviderConfig:
       items:
         type: string
       description: >-
-        Denylist, which wins over the allowlist. `["*"]` blocks everything.
+        Denylist, which wins over the allowlist. `["*"]` blocks everything; an
+        empty or omitted list blocks no models. A list may not mix `*` with named
+        entries.
     allowed_models_patterns:
       type: array
+      uniqueItems: true
       items:
         type: string
+        minLength: 1
+        not:
+          const: "*"
       description: >-
         RE2 patterns that allow models by name shape, next to the exact allowlist.
         Each pattern is matched case-insensitively as a full match against the model
-        name and `provider/model`. `*` is not a valid pattern. Ignored when `all_models_allowed` is true.
+        name and `provider/model`. `*` is not a valid pattern. Blank or
+        whitespace-only entries, duplicate patterns, and patterns RE2 rejects are
+        refused when the project is saved. Ignored when `all_models_allowed` is true.
     blacklisted_models_patterns:
       type: array
+      uniqueItems: true
       items:
         type: string
+        minLength: 1
+        not:
+          const: "*"
       description: >-
         RE2 patterns that block models by name shape, next to the exact denylist.
+        Each pattern is matched case-insensitively as a full match against the model
+        name and `provider/model`.
         Block patterns win over the allowlist and the allow patterns.
+        `*` is not a valid pattern, and blank or duplicate entries are refused.
     key_ids:
       type: array
       nullable: true

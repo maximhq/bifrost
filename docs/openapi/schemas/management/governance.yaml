@@ -304,17 +304,22 @@ VirtualKeyProviderConfig:
         type: string
       description: >-
         Allowlist. `["*"]` allows every model; an empty list denies all. A list
-        may not mix `*` with other entries.
+        may not mix `*` with named entries.
     blacklisted_models:
       type: array
       items:
         type: string
       description: >-
-        Denylist, which wins over the allowlist. `["*"]` blocks everything.
+        Denylist, which wins over the allowlist. `["*"]` blocks everything; an
+        empty list blocks no models. A list may not mix `*` with named entries.
     allowed_models_patterns:
       type: array
+      uniqueItems: true
       items:
         type: string
+        minLength: 1
+        not:
+          const: "*"
       description: >-
         RE2 patterns that allow models by name shape, next to the exact allowlist.
         Each pattern is matched case-insensitively as a full match against the model
@@ -323,11 +328,18 @@ VirtualKeyProviderConfig:
         rejects are refused when the configuration is saved.
     blacklisted_models_patterns:
       type: array
+      uniqueItems: true
       items:
         type: string
+        minLength: 1
+        not:
+          const: "*"
       description: >-
         RE2 patterns that block models by name shape, next to the exact denylist.
+        Each pattern is matched case-insensitively as a full match against the model
+        name and `provider/model`.
         Block patterns win over the allowlist and the allow patterns.
+        `*` is not a valid pattern, and blank or duplicate entries are refused.
     allow_all_keys:
       type: boolean
     rate_limit_id:
@@ -486,11 +498,17 @@ CreateVirtualKeyRequest:
             items:
               type: string
             description: >-
-              Denylist, which wins over the allowlist. `["*"]` blocks everything.
+              Denylist, which wins over the allowlist. `["*"]` blocks everything;
+              an empty list blocks no models. A list may not mix `*` with named
+              entries.
           allowed_models_patterns:
             type: array
+            uniqueItems: true
             items:
               type: string
+              minLength: 1
+              not:
+                const: "*"
             description: >-
               RE2 patterns that allow models by name shape, next to the exact allowlist.
               Each pattern is matched case-insensitively as a full match against the model
@@ -499,11 +517,18 @@ CreateVirtualKeyRequest:
               rejects are refused when the configuration is saved.
           blacklisted_models_patterns:
             type: array
+            uniqueItems: true
             items:
               type: string
+              minLength: 1
+              not:
+                const: "*"
             description: >-
               RE2 patterns that block models by name shape, next to the exact denylist.
+              Each pattern is matched case-insensitively as a full match against the model
+              name and `provider/model`.
               Block patterns win over the allowlist and the allow patterns.
+              `*` is not a valid pattern, and blank or duplicate entries are refused.
           budgets:
             type: array
             description: Provider-specific budget quotas. Use this array instead of the removed singular `budget` or `budget_id` fields.
@@ -601,11 +626,17 @@ UpdateVirtualKeyRequest:
             items:
               type: string
             description: >-
-              Denylist, which wins over the allowlist. `["*"]` blocks everything.
+              Denylist, which wins over the allowlist. `["*"]` blocks everything;
+              an empty list blocks no models. A list may not mix `*` with named
+              entries.
           allowed_models_patterns:
             type: array
+            uniqueItems: true
             items:
               type: string
+              minLength: 1
+              not:
+                const: "*"
             description: >-
               RE2 patterns that allow models by name shape, next to the exact allowlist.
               Each pattern is matched case-insensitively as a full match against the model
@@ -614,11 +645,18 @@ UpdateVirtualKeyRequest:
               rejects are refused when the configuration is saved.
           blacklisted_models_patterns:
             type: array
+            uniqueItems: true
             items:
               type: string
+              minLength: 1
+              not:
+                const: "*"
             description: >-
               RE2 patterns that block models by name shape, next to the exact denylist.
+              Each pattern is matched case-insensitively as a full match against the model
+              name and `provider/model`.
               Block patterns win over the allowlist and the allow patterns.
+              `*` is not a valid pattern, and blank or duplicate entries are refused.
           budgets:
             type: array
             description: Provider-specific budget quotas. Replaces all budgets for that provider config when provided; the removed singular `budget` and `budget_id` fields are not request fields.

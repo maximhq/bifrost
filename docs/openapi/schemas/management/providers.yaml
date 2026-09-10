@@ -208,19 +208,32 @@ Key:
         `["*"]` blocks every model. A list may not mix `*` with named entries.
     models_patterns:
       type: array
+      uniqueItems: true
       items:
         type: string
+        minLength: 1
+        not:
+          const: "*"
       description: >-
         RE2 patterns that allow models by name shape, next to the exact allowlist.
         Each pattern is matched case-insensitively as a full match against the model
-        name and `provider/model`. `*` is not a valid pattern.
+        name and `provider/model`. `*` is not a valid pattern. Blank or
+        whitespace-only entries, duplicate patterns, and patterns RE2 rejects are
+        refused when the key is saved.
     blacklisted_models_patterns:
       type: array
+      uniqueItems: true
       items:
         type: string
+        minLength: 1
+        not:
+          const: "*"
       description: >-
         RE2 patterns that block models by name shape, next to the exact denylist.
+        Each pattern is matched case-insensitively as a full match against the model
+        name and `provider/model`.
         Block patterns win over the allowlist and the allow patterns.
+        `*` is not a valid pattern, and blank or duplicate entries are refused.
     weight:
       type: number
       description: Weight for load balancing
