@@ -172,8 +172,10 @@ type Model struct {
 	// the 24-hour pricing sync.
 	AdditionalAttributes map[string]string `json:"additional_attributes,omitempty"`
 
-	OwnedBy          *string  `json:"owned_by,omitempty"`
-	SupportedMethods []string `json:"supported_methods,omitempty"`
+	OwnedBy            *string  `json:"owned_by,omitempty"`
+	Mode               *string  `json:"mode,omitempty"`
+	SupportedEndpoints []string `json:"supported_endpoints,omitempty"`
+	SupportedMethods   []string `json:"supported_methods,omitempty"`
 
 	// ProviderExtra carries opaque provider-specific data (e.g. Anthropic capabilities)
 	// through the Bifrost pipeline for integration reverse-conversion. Never serialized.

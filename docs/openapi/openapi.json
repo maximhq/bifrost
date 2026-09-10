@@ -203,7 +203,7 @@
       "get": {
         "operationId": "listModels",
         "summary": "List available models",
-        "description": "Lists available models. If provider is not specified, lists all models from all configured providers.\n\nIf a virtual key is provided, Bifrost only lists (and only queries) providers allowed by that virtual key.\n",
+        "description": "Lists available models. If provider is not specified, lists all models from all configured providers.\n\nIf a virtual key is provided, Bifrost only lists (and only queries) providers allowed by that virtual key.\n\nWhen Bifrost pricing/catalog metadata is available, `/v1/models` may also backfill:\n- `pricing`, `normalized_name`, and other descriptive fields from the catalog when the provider omitted them,\n- `supported_endpoints`, which currently contains at most one preferred Bifrost endpoint and is not exhaustive for multi-capable models,\n- `mode`, the preferred/default Bifrost API surface (chat, then responses, then text completion, else deterministic fallback) when that preferred mode maps to a known endpoint,\n- `supported_methods`, which preserves provider-native values when present and otherwise backfills Bifrost request-type identifiers derived from `supported_endpoints`.",
         "tags": [
           "Models"
         ],
@@ -96217,8 +96217,20 @@
           "owned_by": {
             "type": "string"
           },
+          "mode": {
+            "type": "string",
+            "description": "Preferred/default Bifrost API surface backfilled from catalog capability metadata when available and when the preferred catalog mode maps to a known endpoint. When a model has multiple catalog entries, one preferred mode is exposed (chat, then responses, then text completion, else deterministic fallback)."
+          },
+          "supported_endpoints": {
+            "type": "array",
+            "description": "Canonical Bifrost endpoints derived from catalog capability metadata when available. This currently contains at most one preferred endpoint and is not an exhaustive list for multi-capable models.",
+            "items": {
+              "type": "string"
+            }
+          },
           "supported_methods": {
             "type": "array",
+            "description": "Supported methods reported by the provider when available. If the provider omits them, Bifrost backfills request-type identifiers derived from supported_endpoints (for example: chat_completion, responses, speech, image_generation).",
             "items": {
               "type": "string"
             }

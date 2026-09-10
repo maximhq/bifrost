@@ -4,20 +4,52 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+var modelInfoEndpointByMode = map[string]string{
+	"completion":          "/v1/completions",
+	"chat":                "/v1/chat/completions",
+	"responses":           "/v1/responses",
+	"embedding":           "/v1/embeddings",
+	"rerank":              "/v1/rerank",
+	"ocr":                 "/v1/ocr",
+	"audio_speech":        "/v1/audio/speech",
+	"audio_transcription": "/v1/audio/transcriptions",
+	"image_generation":    "/v1/images/generations",
+	"image_edit":          "/v1/images/edits",
+	"image_variation":     "/v1/images/variations",
+	"video_generation":    "/v1/videos",
+}
+
+var modelInfoMethodByEndpoint = map[string]string{
+	"/v1/completions":          string(schemas.TextCompletionRequest),
+	"/v1/chat/completions":     string(schemas.ChatCompletionRequest),
+	"/v1/responses":            string(schemas.ResponsesRequest),
+	"/v1/embeddings":           string(schemas.EmbeddingRequest),
+	"/v1/rerank":               string(schemas.RerankRequest),
+	"/v1/ocr":                  string(schemas.OCRRequest),
+	"/v1/audio/speech":         string(schemas.SpeechRequest),
+	"/v1/audio/transcriptions": string(schemas.TranscriptionRequest),
+	"/v1/images/generations":   string(schemas.ImageGenerationRequest),
+	"/v1/images/edits":         string(schemas.ImageEditRequest),
+	"/v1/images/variations":    string(schemas.ImageVariationRequest),
+	"/v1/videos":               string(schemas.VideoGenerationRequest),
+}
+
 // GetModelInfo returns pricing and capability metadata for a (provider, model)
 // pair in the same shape the /v1/models endpoint reports, or nil when the
 // catalog has no entry for it.
 //
-// Lookup order is pricing-row first (exact model+provider across every request
-// mode), then the capability entry, which additionally resolves through the
-// canonical base model and the wider model family. That ordering keeps dated
-// model IDs like "gpt-4o-2024-08-06" resolvable even when only the family row
-// carries capability data.
+// Pricing and capability metadata are resolved independently so pricing comes
+// from the best pricing row while capability surface metadata (mode,
+// supported_endpoints, supported_methods) comes from the catalog's preferred
+// capability entry (chat, then responses, then text completion, else a
+// deterministic fallback). That keeps list-models enrichment and plugin-facing
+// ctx.GetModelInfo aligned.
 //
 // The returned *schemas.Model is freshly allocated and owned by the caller.
 func (mc *ModelCatalog) GetModelInfo(provider schemas.ModelProvider, model string) *schemas.Model {
@@ -25,16 +57,16 @@ func (mc *ModelCatalog) GetModelInfo(provider schemas.ModelProvider, model strin
 		return nil
 	}
 
-	entry := mc.datasheet.GetPricingEntryForModel(model, provider)
-	if entry == nil {
-		entry = mc.datasheet.GetCapabilityEntry(model, provider)
-	}
-	if entry == nil {
+	pricingEntry := mc.GetPricingEntryForModel(model, provider)
+	capabilityEntry := mc.GetModelCapabilityEntryForModel(model, provider)
+	if pricingEntry == nil && capabilityEntry == nil {
 		return nil
 	}
 
 	info := &schemas.Model{ID: model}
-	ApplyModelInfo(info, entry)
+	ApplyModelInfo(info, capabilityEntry)
+	ApplyModelCapabilitySurface(info, capabilityEntry)
+	ApplyModelInfo(info, pricingEntry)
 
 	if params := mc.datasheet.GetSupportedParameters(model); len(params) > 0 {
 		info.SupportedParameters = params
@@ -134,6 +166,44 @@ func ApplyModelInfo(model *schemas.Model, entry *PricingEntry) {
 		pricing.Request = new(formatCost(*entry.CostPerRequest))
 	}
 	model.Pricing = pricing
+}
+
+// ApplyModelCapabilitySurface fills the preferred mode / endpoint / method
+// surface derived from a capability entry. Provider-reported values always win:
+// mode, supported_endpoints, and supported_methods are only backfilled when the
+// provider left them empty.
+func ApplyModelCapabilitySurface(model *schemas.Model, entry *PricingEntry) {
+	if model == nil || entry == nil {
+		return
+	}
+
+	mode := strings.TrimSpace(entry.Mode)
+	if mode == "" {
+		return
+	}
+
+	effectiveMode := mode
+	if model.Mode != nil && strings.TrimSpace(*model.Mode) != "" {
+		effectiveMode = strings.TrimSpace(*model.Mode)
+	}
+
+	endpoint := modelInfoEndpointByMode[effectiveMode]
+	if endpoint == "" {
+		return
+	}
+
+	if model.Mode == nil || strings.TrimSpace(*model.Mode) == "" {
+		modeCopy := effectiveMode
+		model.Mode = &modeCopy
+	}
+	if len(model.SupportedEndpoints) == 0 {
+		model.SupportedEndpoints = []string{endpoint}
+	}
+	if len(model.SupportedMethods) == 0 {
+		if method := modelInfoMethodByEndpoint[endpoint]; method != "" {
+			model.SupportedMethods = []string{method}
+		}
+	}
 }
 
 // CalculateRequestCost returns the dollar cost of resp, resolving governance

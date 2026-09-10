@@ -108,6 +108,15 @@ func TestGetModelInfoPopulatesPricingAndLimits(t *testing.T) {
 	if info.Pricing.InputCacheWrite == nil || *info.Pricing.InputCacheWrite != "0.0000062500" {
 		t.Errorf("Pricing.InputCacheWrite = %v, want 0.0000062500", info.Pricing.InputCacheWrite)
 	}
+	if info.Mode == nil || *info.Mode != "chat" {
+		t.Errorf("Mode = %v, want chat", info.Mode)
+	}
+	if len(info.SupportedEndpoints) != 1 || info.SupportedEndpoints[0] != "/v1/chat/completions" {
+		t.Errorf("SupportedEndpoints = %v, want [/v1/chat/completions]", info.SupportedEndpoints)
+	}
+	if len(info.SupportedMethods) != 1 || info.SupportedMethods[0] != string(schemas.ChatCompletionRequest) {
+		t.Errorf("SupportedMethods = %v, want [%s]", info.SupportedMethods, string(schemas.ChatCompletionRequest))
+	}
 }
 
 func TestGetModelInfoReportsDeprecation(t *testing.T) {
@@ -188,6 +197,14 @@ func TestGetModelInfoReturnsCallerOwnedCopy(t *testing.T) {
 		t.Fatal("SupportedParameters is empty, so mutating it would prove nothing")
 	}
 	first.SupportedParameters[0] = "mutated"
+	if len(first.SupportedEndpoints) == 0 {
+		t.Fatal("SupportedEndpoints is empty, so mutating it would prove nothing")
+	}
+	if len(first.SupportedMethods) == 0 {
+		t.Fatal("SupportedMethods is empty, so mutating it would prove nothing")
+	}
+	first.SupportedEndpoints[0] = "mutated"
+	first.SupportedMethods[0] = "mutated"
 
 	second := mc.GetModelInfo(schemas.Anthropic, "claude-opus-5")
 	if second == nil {
@@ -210,6 +227,12 @@ func TestGetModelInfoReturnsCallerOwnedCopy(t *testing.T) {
 	// lookup hands back a fresh slice.
 	if slices.Contains(second.SupportedParameters, "mutated") {
 		t.Errorf("SupportedParameters leaked a caller mutation into the catalog: %v", second.SupportedParameters)
+	}
+	if slices.Contains(second.SupportedEndpoints, "mutated") {
+		t.Errorf("SupportedEndpoints leaked a caller mutation into the catalog: %v", second.SupportedEndpoints)
+	}
+	if slices.Contains(second.SupportedMethods, "mutated") {
+		t.Errorf("SupportedMethods leaked a caller mutation into the catalog: %v", second.SupportedMethods)
 	}
 
 	// The pointers themselves must differ, else a later caller mutating through
@@ -283,9 +306,32 @@ func TestApplyModelInfoClonesMutableEntryFields(t *testing.T) {
 	}
 }
 
+func TestApplyModelCapabilitySurfaceDoesNotOverwriteProviderValues(t *testing.T) {
+	existingMode := "responses"
+	model := &schemas.Model{
+		Mode:               &existingMode,
+		SupportedEndpoints: []string{"/v1/responses"},
+		SupportedMethods:   []string{"provider-native"},
+	}
+
+	ApplyModelCapabilitySurface(model, &PricingEntry{Mode: "chat"})
+
+	if model.Mode == nil || *model.Mode != "responses" {
+		t.Errorf("Mode = %v, want responses", model.Mode)
+	}
+	if len(model.SupportedEndpoints) != 1 || model.SupportedEndpoints[0] != "/v1/responses" {
+		t.Errorf("SupportedEndpoints = %v, want [/v1/responses]", model.SupportedEndpoints)
+	}
+	if len(model.SupportedMethods) != 1 || model.SupportedMethods[0] != "provider-native" {
+		t.Errorf("SupportedMethods = %v, want [provider-native]", model.SupportedMethods)
+	}
+}
+
 func TestApplyModelInfoNilSafe(t *testing.T) {
 	ApplyModelInfo(nil, nil)
 	ApplyModelInfo(&schemas.Model{}, nil)
+	ApplyModelCapabilitySurface(nil, nil)
+	ApplyModelCapabilitySurface(&schemas.Model{}, nil)
 
 	var nilCatalog *ModelCatalog
 	if got := nilCatalog.GetModelInfo(schemas.Anthropic, "claude-opus-5"); got != nil {
