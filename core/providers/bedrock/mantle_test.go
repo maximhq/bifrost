@@ -66,6 +66,10 @@ func TestMantleOpenAIURL(t *testing.T) {
 			"https://bedrock-mantle.us-east-1.api.aws/v1/chat/completions"},
 		{"grok uses openai/v1", "us-east-1", "xai.grok-4.3", "responses",
 			"https://bedrock-mantle.us-east-1.api.aws/openai/v1/responses"},
+		{"gpt-6 uses openai/v1", "us-west-2", "openai.gpt-6-astra", "responses",
+			"https://bedrock-mantle.us-west-2.api.aws/openai/v1/responses"},
+		{"gpt-6 chat uses openai/v1", "us-west-2", "gpt-6-astra", "chat/completions",
+			"https://bedrock-mantle.us-west-2.api.aws/openai/v1/chat/completions"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

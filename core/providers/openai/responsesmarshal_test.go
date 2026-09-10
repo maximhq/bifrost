@@ -1142,6 +1142,10 @@ func TestEffortPredicatesAgainstCatalogIDs(t *testing.T) {
 		{"gpt-5.4", false, true, false},
 		{"gpt-5.6-terra", false, true, true},
 		{"openai.gpt-5.6-sol", false, true, true},
+		// gpt-6: both top tiers, and no minimal (dropped after the original trio)
+		{"gpt-6-astra", false, true, true},
+		{"openai.gpt-6-astra", false, true, true},
+		{"us.openai.gpt-6-astra", false, true, true},
 		// non-gpt families
 		{"deepseek-v4-pro", false, false, true},
 		{"glm-5.2", false, false, true},
@@ -1156,6 +1160,32 @@ func TestEffortPredicatesAgainstCatalogIDs(t *testing.T) {
 		}
 		if got := acceptsMaxEffort(c.model); got != c.max {
 			t.Errorf("max(%q) = %v, want %v", c.model, got, c.max)
+		}
+	}
+}
+
+// TestIsOpenAIReasoningModel pins the reasoning-model default. It decides whether
+// reasoning survives the request at all on the OpenAI and Azure paths, so a
+// reasoning family the name check misses loses its effort and its replayed
+// reasoning silently rather than erroring.
+func TestIsOpenAIReasoningModel(t *testing.T) {
+	cases := []struct {
+		model string
+		want  bool
+	}{
+		{"o1", true},
+		{"o3-mini", true},
+		{"gpt-oss-120b", true},
+		{"gpt-5", true},
+		{"gpt-5.6-sol", true},
+		{"gpt-6-astra", true},
+		{"openai.gpt-6-astra", true},
+		{"gpt-4o", false},
+		{"claude-opus-4-8", false},
+	}
+	for _, c := range cases {
+		if got := IsOpenAIReasoningModel(c.model); got != c.want {
+			t.Errorf("IsOpenAIReasoningModel(%q) = %v, want %v", c.model, got, c.want)
 		}
 	}
 }
