@@ -95,3 +95,70 @@ func TestBedrockMantle(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
 }
+
+// TestBedrockMantleOpenAICompatible exercises the OpenAI-compatible surface, which
+// TestBedrockMantle does not reach: every model role there is a Claude id, so the
+// whole "v1" vs "openai/v1" base-path split ran untested — which is how a frontier
+// generation came to be routed to the path that rejects it.
+//
+// The model carries a "us-west-2/" addressing prefix because mantle serves Astra in
+// that region only, while the key's region (AWS_REGION, default us-east-1) is where
+// the Claude scenarios run. resolveRegion consults the model prefix ahead of the key,
+// so both functions run from one invocation with no region switch.
+func TestBedrockMantleOpenAICompatible(t *testing.T) {
+	t.Parallel()
+
+	if strings.TrimSpace(os.Getenv("AWS_ACCESS_KEY_ID")) == "" || strings.TrimSpace(os.Getenv("AWS_SECRET_ACCESS_KEY")) == "" {
+		t.Skip("Skipping Bedrock Mantle OpenAI-compatible tests because AWS_ACCESS_KEY_ID or AWS_SECRET_ACCESS_KEY is not set")
+	}
+
+	client, ctx, cancel, err := llmtests.SetupTest()
+	if err != nil {
+		t.Fatalf("Error initializing test setup: %v", err)
+	}
+	defer cancel()
+	defer client.Shutdown()
+
+	const astra = "us-west-2/openai.gpt-6-astra"
+
+	testConfig := llmtests.ComprehensiveTestConfig{
+		Provider:       schemas.BedrockMantle,
+		ChatModel:      astra,
+		VisionModel:    astra,
+		ReasoningModel: astra,
+		// A different region and generation, so the fallback also covers the
+		// prefix being honoured per attempt rather than once per key.
+		Fallbacks: []schemas.Fallback{
+			{Provider: schemas.BedrockMantle, Model: "us-east-1/openai.gpt-5.6-sol"},
+		},
+		Scenarios: llmtests.TestScenarios{
+			SimpleChat:                 true,
+			CompletionStream:           true,
+			MultiTurnConversation:      true,
+			ToolCalls:                  true,
+			ToolCallsStreaming:         true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
+			End2EndToolCalling:         true,
+			AutomaticFunctionCall:      true,
+			CompleteEnd2End:            true,
+			EagerInputStreaming:        true,
+			StructuredOutputs:          true,
+			ImageBase64:                true,
+			Reasoning:                  true,
+
+			// CountTokens lives on the native-Anthropic surface only.
+			CountTokens: false,
+			// Bedrock lists explicit prompt caching for the GPT-5.6 family, not this one.
+			PromptCaching: false,
+			// InterleavedThinking is an Anthropic-surface capability.
+			InterleavedThinking: false,
+			// ListModels is provider-scoped, so TestBedrockMantle already covers it.
+			ListModels: false,
+		},
+	}
+
+	t.Run("BedrockMantleOpenAICompatibleTests", func(t *testing.T) {
+		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
+	})
+}
