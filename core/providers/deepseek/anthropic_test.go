@@ -178,6 +178,142 @@ func TestResponses_UsesAnthropicEndpointAndKeepsWebSearch(t *testing.T) {
 	}
 }
 
+// captureAnthropicMountBody drives a request through DeepSeek's Anthropic-compatible
+// mount and returns the decoded outbound wire body.
+func captureAnthropicMountBody(t *testing.T, request *schemas.BifrostChatRequest) map[string]any {
+	t.Helper()
+
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/anthropic/v1/messages" {
+			t.Errorf("path = %q, want /anthropic/v1/messages", r.URL.Path)
+			http.Error(w, "unexpected path", http.StatusBadRequest)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+			http.Error(w, "read body", http.StatusInternalServerError)
+			return
+		}
+		if err := json.Unmarshal(body, &captured); err != nil {
+			t.Errorf("decode body: %v", err)
+			http.Error(w, "decode body", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, newAnthropicResponse())
+	}))
+	defer server.Close()
+
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if _, bifrostErr := provider.ChatCompletion(ctx, schemas.Key{Value: schemas.SecretVar{Val: "test-api-key"}, UseAnthropicEndpoints: new(true)}, request); bifrostErr != nil {
+		t.Fatalf("ChatCompletion: %v", bifrostErr.Error.Message)
+	}
+	return captured
+}
+
+// TestChatCompletion_AnthropicEndpointForwardsEffort pins the wire shape for
+// reasoning-effort control on DeepSeek's Anthropic mount. DeepSeek documents
+// output_config.effort as the effort control and thinking.budget_tokens as
+// ignored (https://api-docs.deepseek.com/guides/anthropic_api), so an effort
+// request must carry output_config.effort verbatim — and must not dress the
+// intent up as a synthesized thinking.budget_tokens, the field this incident
+// showed silently carrying no meaning upstream. Thinking stays absent: DeepSeek
+// enables thinking by default, so effort alone is the canonical request shape.
+func TestChatCompletion_AnthropicEndpointForwardsEffort(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		effort    string
+		wantWire  string
+		wantModel string
+	}{
+		{"max", "max", "max", "deepseek-v4-flash"},
+		{"high", "high", "high", "deepseek-v4-pro"},
+		// minimal is remapped to low before it reaches output_config
+		// (MapBifrostEffortToAnthropic); low is a documented DeepSeek tier.
+		{"minimal_maps_to_low", "minimal", "low", "deepseek-v4-flash"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			captured := captureAnthropicMountBody(t, &schemas.BifrostChatRequest{
+				Provider: schemas.DeepSeek,
+				Model:    tc.wantModel,
+				Input: []schemas.ChatMessage{{
+					Role:    schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{ContentStr: new("What is 17 * 23?")},
+				}},
+				Params: &schemas.ChatParameters{
+					MaxCompletionTokens: new(128000),
+					Reasoning:           &schemas.ChatReasoning{Effort: new(tc.effort)},
+				},
+			})
+
+			outputConfig, ok := captured["output_config"].(map[string]any)
+			if !ok {
+				t.Fatalf("outbound body missing output_config: %#v", captured)
+			}
+			if got := outputConfig["effort"]; got != tc.wantWire {
+				t.Fatalf("output_config.effort = %v, want %q", got, tc.wantWire)
+			}
+			if thinking, ok := captured["thinking"]; ok {
+				t.Fatalf("thinking must be absent when the caller only asked for effort "+
+					"(DeepSeek defaults thinking on and ignores budget_tokens), got %#v", thinking)
+			}
+		})
+	}
+}
+
+// TestChatCompletion_AnthropicEndpointKeepsCallerBudgetWithEffort pins the
+// co-existence shape: a caller who explicitly supplies a reasoning budget
+// alongside an effort keeps their thinking field verbatim. The budget is
+// documented-ignored by DeepSeek, but it is the caller's own field — the
+// gateway only stops inventing budgets, it does not rewrite explicit ones.
+func TestChatCompletion_AnthropicEndpointKeepsCallerBudgetWithEffort(t *testing.T) {
+	t.Parallel()
+
+	captured := captureAnthropicMountBody(t, &schemas.BifrostChatRequest{
+		Provider: schemas.DeepSeek,
+		Model:    "deepseek-v4-flash",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: new("What is 17 * 23?")},
+		}},
+		Params: &schemas.ChatParameters{
+			MaxCompletionTokens: new(128000),
+			Reasoning: &schemas.ChatReasoning{
+				Effort:    new("max"),
+				MaxTokens: new(60000),
+			},
+		},
+	})
+
+	outputConfig, ok := captured["output_config"].(map[string]any)
+	if !ok {
+		t.Fatalf("outbound body missing output_config: %#v", captured)
+	}
+	if got := outputConfig["effort"]; got != "max" {
+		t.Fatalf("output_config.effort = %v, want max", got)
+	}
+	thinking, ok := captured["thinking"].(map[string]any)
+	if !ok {
+		t.Fatalf("outbound body missing caller-supplied thinking: %#v", captured)
+	}
+	if got := thinking["budget_tokens"]; got != float64(60000) {
+		t.Fatalf("thinking.budget_tokens = %v, want 60000 (caller's explicit budget, verbatim)", got)
+	}
+}
+
 func TestChatCompletion_DisablesThinkingForForcedToolChoice(t *testing.T) {
 	t.Parallel()
 

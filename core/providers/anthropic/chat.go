@@ -809,12 +809,14 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 				} else if SupportsNativeEffort(caps) || SupportsProviderEffort(bifrostReq.Provider, capModel) {
 					// Opus 4.5: native effort + budget_tokens thinking.
 					// z.ai (GLM-5.2+) takes the same shape — the mount maps the
-					// effort value server-side. Model Studio (Alibaba) rejects
-					// effort + thinking_budget together and engages thinking
-					// itself from the effort value, so the effort is forwarded
-					// alone there (verified live 2026-08-23).
+					// effort value server-side. Alibaba and DeepSeek forward the
+					// effort alone: Model Studio rejects effort + thinking_budget
+					// together and engages thinking itself from the effort value
+					// (verified live 2026-08-23); DeepSeek ignores budget_tokens
+					// outright, so a synthesized one means nothing upstream —
+					// see forwardsEffortWithoutThinkingBudget.
 					setEffortOnOutputConfig(anthropicReq, bifrostReq.Provider, capModel, effort)
-					if bifrostReq.Provider != schemas.Alibaba {
+					if !forwardsEffortWithoutThinkingBudget(bifrostReq.Provider) {
 						budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
 						if err != nil {
 							return nil, fmt.Errorf("%w: %w", ErrReasoningMaxTokensTooLow, err)

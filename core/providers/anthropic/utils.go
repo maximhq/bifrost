@@ -1793,10 +1793,17 @@ func clampAlibabaMountEffortForModel(model, effort string) string {
 //     page — it does NOT map out-of-enum values server-side (max 400s). The
 //     gateway therefore clamps to each family's valid values
 //     (clampAlibabaMountEffortForModel) at every emission site.
+//   - DeepSeek: the Anthropic mount documents output_config "Only effort is
+//     supported" for deepseek-v4-flash / deepseek-v4-pro
+//     (https://api-docs.deepseek.com/guides/anthropic_api); out-of-enum values
+//     map server-side (medium/xhigh→high per the thinking-mode guide, identical
+//     for both models), so values forward verbatim like Zhipu's. Legacy IDs
+//     (deepseek-chat, deepseek-reasoner) are not documented to take effort and
+//     stay fail-closed.
 //
 // Cites: Z on the OutputConfigEffort flag (types.go); the alibaba mount is an
 // empirical contract (live-verified 2026-08-23); per-model matrix from the
-// vendor model-page docs supplied 2026-08-23.
+// vendor model-page docs supplied 2026-08-23; deepseek verified 2026-09-10.
 func providerSupportsEffortModel(provider schemas.ModelProvider, model string) bool {
 	m := bareModelName(model)
 	switch provider {
@@ -1807,6 +1814,8 @@ func providerSupportsEffortModel(provider schemas.ModelProvider, model string) b
 			glm5Minor(m) >= 2 ||
 			strings.HasPrefix(m, "deepseek-v4-pro") ||
 			strings.HasPrefix(m, "deepseek-v4-flash")
+	case schemas.DeepSeek:
+		return strings.HasPrefix(m, "deepseek-v4")
 	default:
 		return true
 	}
@@ -2288,6 +2297,31 @@ func setEffortOnOutputConfig(req *AnthropicMessageRequest, provider schemas.Mode
 		req.OutputConfig = &AnthropicOutputConfig{}
 	}
 	req.OutputConfig.Effort = schemas.Ptr(clampAlibabaMountEffortFor(provider, model, effort))
+}
+
+// forwardsEffortWithoutThinkingBudget reports providers whose Anthropic mount
+// takes output_config.effort without a companion thinking.budget_tokens
+// synthesized from the effort value:
+//
+//   - Alibaba: the mount rejects the pair ("'reasoning_effort' and
+//     'thinking_budget' cannot be set simultaneously") and engages thinking
+//     itself from the effort value, so the thinking field is dropped entirely
+//     (see chat.go/responses.go; verified live 2026-08-23).
+//   - DeepSeek: thinking.budget_tokens is documented-ignored
+//     (https://api-docs.deepseek.com/guides/anthropic_api — "Supported
+//     (budget_tokens is ignored)"), so a synthesized budget is dead weight on
+//     the wire, and its derivation (effort ratio vs max_tokens) can reject
+//     requests DeepSeek itself accepts (max_tokens below the minimum budget).
+//     output_config.effort is the only effort control DeepSeek honors, and
+//     thinking defaults to enabled, so the effort alone is the canonical shape.
+//
+// Caller-supplied budgets are unaffected — this only gates the synthesized one.
+func forwardsEffortWithoutThinkingBudget(provider schemas.ModelProvider) bool {
+	switch provider {
+	case schemas.Alibaba, schemas.DeepSeek:
+		return true
+	}
+	return false
 }
 
 // clampAlibabaMountEffortFor is the provider-gated form of
