@@ -409,6 +409,7 @@ export class ProvidersPage extends BasePage {
       gemini: 'Gemini',
       cohere: 'Cohere',
       bedrock: 'AWS Bedrock',
+      elevenlabs: 'Elevenlabs',
     }
     return labels[type] || type
   }
