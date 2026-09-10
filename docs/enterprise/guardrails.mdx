@@ -1,6 +1,6 @@
 ---
 title: "Overview"
-description: "Enterprise-grade content safety and security validation with Prompt Guardrails, native regex, secrets detection, Presidio, Azure AI Language PII, AWS Bedrock Guardrails, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, Gray Swan Cygnal, Patronus AI, Lakera Guard, and Repello Argus."
+description: "Enterprise-grade content safety and security validation with Prompt Guardrails, native regex, secrets detection, Presidio, Azure AI Language PII, AWS Bedrock Guardrails, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, Gray Swan Cygnal, Patronus AI, Check Point's AI Agent Security, and Repello Argus."
 icon: "road-barrier"
 ---
 
@@ -48,7 +48,7 @@ icon: "road-barrier"
   <Card title="Patronus AI" icon="/media/patronus-logo-card.svg" href="/integrations/guardrails/patronus-ai">
     LLM security, hallucination detection, and safety evaluation.
   </Card>
-  <Card title="Lakera Guard" icon="/media/lakera-logo-card-v5.svg" href="/integrations/guardrails/lakera">
+  <Card title="Check Point's AI Agent Security" icon="/media/lakera-logo-card-v5.svg" href="/integrations/guardrails/checkpoint">
     Threat detection for LLM conversations, including prompt injection and sensitive data exposure.
   </Card>
   <Card title="Repello Argus" icon="/media/repello-argus-logo-card.svg" href="/integrations/guardrails/repello-argus">
@@ -63,7 +63,7 @@ Bifrost Guardrails are built around two core concepts that work together to prov
 | Concept | Description |
 |---------|-------------|
 | **Rules** | Custom policies defined using CEL (Common Expression Language) that determine which LLM requests or MCP tool executions to validate and when. Rules can apply to inputs, outputs, or both, and can be linked to one or more profiles for evaluation. |
-| **Profiles** | Configurations for guardrail providers, including Bifrost-managed providers (Prompt Guardrails, Custom Regex, Secrets Detection) and external providers (Presidio, Azure AI Language PII, AWS Bedrock, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, Gray Swan, Patronus AI, Lakera Guard, and Repello Argus). Profiles are reusable and can be shared across multiple rules. |
+| **Profiles** | Configurations for guardrail providers, including Bifrost-managed providers (Prompt Guardrails, Custom Regex, Secrets Detection) and external providers (Presidio, Azure AI Language PII, AWS Bedrock, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, Gray Swan, Patronus AI, Check Point's AI Agent Security, and Repello Argus). Profiles are reusable and can be shared across multiple rules. |
 
 **How They Work Together:**
 - **Profiles** define *how* content is evaluated using native Bifrost checks or external provider capabilities
@@ -75,7 +75,7 @@ Bifrost Guardrails are built around two core concepts that work together to prov
 
 | Feature | Description |
 |---------|-------------|
-| **Multi-Provider Support** | Bifrost-managed Prompt Guardrails, Custom Regex, and Secrets Detection, plus Presidio, Azure AI Language PII, AWS Bedrock, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, Gray Swan, Patronus AI, Lakera Guard, and Repello Argus integrations |
+| **Multi-Provider Support** | Bifrost-managed Prompt Guardrails, Custom Regex, and Secrets Detection, plus Presidio, Azure AI Language PII, AWS Bedrock, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, Gray Swan, Patronus AI, Check Point's AI Agent Security, and Repello Argus integrations |
 | **Dual-Stage Validation** | Guard LLM prompts and responses or MCP tool arguments and results |
 | **Real-Time Processing** | Synchronous and asynchronous validation modes |
 | **CEL-Based Rules** | Define custom policies using Common Expression Language |
@@ -865,7 +865,7 @@ Bifrost-managed providers cover deterministic local checks and natural-language 
 
 See [Guardrail Redaction](/enterprise/guardrails/redaction) for Bifrost-managed redaction modes. Third-party guardrail providers offer the following capabilities:
 
-| Capability | AWS Bedrock | Azure Content Safety | Google Model Armor | CrowdStrike AIDR | Gray Swan | Patronus AI | Lakera Guard | Repello Argus | Azure AI Language PII | Presidio |
+| Capability | AWS Bedrock | Azure Content Safety | Google Model Armor | CrowdStrike AIDR | Gray Swan | Patronus AI | Check Point's AI Agent Security | Repello Argus | Azure AI Language PII | Presidio |
 |------------|-------------|----------------------|--------------------|------------------|-----------|-------------|--------------|---------------|-----------------------|----------|
 | PII Detection | Yes | No | Yes | Policy-dependent | No | Yes | Yes | Yes | Yes | Yes |
 | Content Filtering | Yes | Yes | Yes | Policy-dependent | Yes | Yes | Yes | Yes | No | No |

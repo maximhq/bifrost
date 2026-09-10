@@ -4,9 +4,13 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.39
+**Latest Version:** 2.1.40
 
 ## Changelog
+
+### 2.1.40
+
+- Added `bifrost.governance.roles[].entity_dac` — per-entity Data Access Control overrides keyed by resource name, each set to `own-data`, `team-data`, or `all-data`. Resources accepting an override today: `Logs`, `MCPLogs`, `AuditLogs`, `VirtualKeys`, `Users`, `Teams`, `Customers`, `BusinessUnits`, `RBAC`, `APIKeys`, `AccessProfiles`, `PromptRepository`, `RoutingRules`, `GuardrailsConfig`, `MCPGateway`, `VirtualMCPs`, `Projects` 
 
 ### 2.1.39
 
@@ -24,6 +28,15 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Added `bifrost.client.vkRotationCooldown` (default `0`) — grace period after a virtual key rotation during which the previous key value still authenticates. Go duration string (e.g. `"5m"`), max 30 days; `0` disables
 - Added `databricks_key_config` (`workspace_url`, `api_format`, `client_id`/`client_secret` for OAuth M2M, `forward_gateway_tags`) to provider keys, with `bifrost.providers.databricks` examples in `values.yaml`.
 - Added `allow_all_providers` to `bifrost.governance.projects[]` and `bifrost.accessProfiles[]` (default `false`) — grant access to every provider, including ones without a `provider_configs` entry and providers added later; listed providers keep their own model, key, budget, and rate-limit rules. Renders into each entry's `allow_all_providers`.
+=======
+**Latest Version:** 2.1.38
+
+## Changelog
+
+### 2.1.38
+
+- Fixed `postgresql.external.passwordCommand` being unusable: the values schema excluded `password` / `existingSecret` by key *presence*, and `values.yaml` ships both with empty-string defaults, so any chart that set `passwordCommand` failed schema validation. The exclusion is now value-based — `password` and `existingSecret` must be empty (or omitted) when `passwordCommand` is set.
+
 
 ### 2.1.37
 

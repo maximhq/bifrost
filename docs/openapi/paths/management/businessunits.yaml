@@ -48,6 +48,7 @@ business-units:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -79,6 +80,7 @@ business-units:
             $ref: '../../schemas/management/governance.yaml#/CreateBusinessUnitRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Business unit created successfully
@@ -120,6 +122,7 @@ business-units-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -164,6 +167,7 @@ business-units-by-id:
             $ref: '../../schemas/management/governance.yaml#/CreateBusinessUnitRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Business unit updated successfully
@@ -209,6 +213,7 @@ business-units-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Business unit deleted successfully
@@ -273,6 +278,7 @@ business-units-users:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -319,6 +325,7 @@ business-units-users:
             $ref: '../../schemas/management/governance.yaml#/AssignUserToBusinessUnitRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: User assigned to business unit
@@ -366,6 +373,7 @@ business-units-user-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: User removed from business unit
@@ -418,6 +426,7 @@ business-units-governance:
             $ref: '../../schemas/management/governance.yaml#/CreateBusinessUnitGovernanceRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Business unit governance created successfully
@@ -472,6 +481,7 @@ business-units-governance:
             $ref: '../../schemas/management/governance.yaml#/UpdateBusinessUnitGovernanceRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Business unit governance updated successfully
@@ -512,6 +522,7 @@ business-units-governance:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Business unit governance deleted successfully

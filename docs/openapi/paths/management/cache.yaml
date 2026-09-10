@@ -17,6 +17,7 @@ clear-by-cache-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Cache cleared successfully
@@ -45,6 +46,7 @@ clear-by-cache-key:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Cache cleared successfully

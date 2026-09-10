@@ -1,8 +1,22 @@
 {
   "$schema_note": "Curated smoke selection for `make run-provider-harness-test SMOKE=1`. Rows are matched by (folder, name) against the AUGMENTED collection (tmp/harness-augmented.json), because the cache-parity rows are generated at augment time and do not exist in provider-harness.json. `folder` is the immediate parent folder and is REQUIRED, not advisory: the criss-cross rows are named after their model, so a bare name like `gemini/gemini-2.5-flash` matches 25 requests. Selecting a request pulls in its chained-variable producers automatically (filter-collection.mjs expandWithProducers), so the effective request count can exceed the count here. Rows claimed by more than one provider partition run once per fork, same as in a full sweep.",
-  "budget": 102,
-  "total_selected": 102,
+  "budget": 104,
+  "total_selected": 104,
   "pillars": [
+    {
+      "key": "attachments",
+      "intent": "Local-file attachments reach Anthropic as a base64 application/pdf document and as a Files API file_id, each asserted on the wire via x-bf-send-back-raw-request. The file_id row pulls its upload producer in automatically (chained-vars).",
+      "requests": [
+        {
+          "folder": "75. Anthropic attachments: base64 PDF + Files API file_id across endpoint shapes (cowork-attachments)",
+          "name": "75.01 anthropic/claude-haiku-4-5 native /anthropic/v1/messages base64 PDF document"
+        },
+        {
+          "folder": "75. Anthropic attachments: base64 PDF + Files API file_id across endpoint shapes (cowork-attachments)",
+          "name": "75.06 anthropic/claude-haiku-4-5 native /anthropic/v1/messages document file_id"
+        }
+      ]
+    },
     {
       "key": "cache-parity",
       "intent": "Prompt-cache read/write parity. Round 34 is the direct-vs-Bifrost anchor (a Bifrost leg reading materially less than the direct leg on identical bytes means a dropped breakpoint); Round 35 is one model per provider; folders 41 and 13 cover content-block cache_control / cachePoint placement. These rows match every provider fork, so the harness replays them in one sequential pass after the parallel run.",
