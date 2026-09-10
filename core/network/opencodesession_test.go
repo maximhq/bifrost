@@ -3,6 +3,7 @@ package network
 import (
 	"context"
 	"regexp"
+	"sync"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -253,5 +254,49 @@ func TestNamespaceOpencodeSessionNoCollision(t *testing.T) {
 func TestResolveOpencodeSessionNilContext(t *testing.T) {
 	if got := ResolveOpencodeSession(nil); got != "" {
 		t.Errorf("ResolveOpencodeSession(nil) = %q, want \"\"", got)
+	}
+}
+
+func TestResolveOpencodeSessionStableUnderBlockRestrictedWrites(t *testing.T) {
+	ctx := newTestOpencodeCtx(t, nil)
+	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "vk-1")
+
+	first := ResolveOpencodeSession(ctx)
+	if !uuidValueRe.MatchString(first[5:]) {
+		t.Fatalf("first = %q, want namespaced UUID", first)
+	}
+
+	ctx.BlockRestrictedWrites()
+	second := ResolveOpencodeSession(ctx)
+	if second != first {
+		t.Errorf("under blockRestrictedWrites: second = %q, want %q (cached)", second, first)
+	}
+}
+
+func TestResolveOpencodeSessionConcurrentSameContext(t *testing.T) {
+	ctx := newTestOpencodeCtx(t, nil)
+	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "vk-1")
+
+	const goroutines = 100
+	results := make(chan string, goroutines)
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			results <- ResolveOpencodeSession(ctx)
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	first := <-results
+	for value := range results {
+		if value != first {
+			t.Fatalf("concurrent resolution was not single-flight: got %q and %q", first, value)
+		}
+	}
+	if !uuidValueRe.MatchString(first[5:]) {
+		t.Fatalf("first = %q, want namespaced UUID", first)
 	}
 }

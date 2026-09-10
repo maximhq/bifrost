@@ -55,11 +55,9 @@ func ResolveOpencodeSession(ctx *schemas.BifrostContext) string {
 	if ctx == nil {
 		return ""
 	}
-	if cached, ok := ctx.Value(schemas.BifrostContextKeyOpencodeSession).(string); ok {
-		return cached
-	}
-	value := resolveOpencodeSessionValue(ctx)
-	ctx.SetValue(schemas.BifrostContextKeyOpencodeSession, value)
+	value, _ := ctx.GetOrStoreReservedValue(schemas.BifrostContextKeyOpencodeSession, func() any {
+		return resolveOpencodeSessionValue(ctx)
+	}).(string)
 	return value
 }
 
