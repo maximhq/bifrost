@@ -225,6 +225,31 @@ func TestResolveOpencodeSessionResolvesOncePerRequest(t *testing.T) {
 	}
 }
 
+func TestNamespaceOpencodeSessionNoCollision(t *testing.T) {
+	// Regression: naive "vk:value" concatenation aliases ("a", "b:c") and
+	// ("a:b", "c") because both produce "a:b:c". Each component is escaped so
+	// the only literal separator ":" is the one we insert, keeping the mapping
+	// injective and the two results distinct.
+	mk := func(vk string) *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, vk)
+		return ctx
+	}
+
+	got1 := namespaceOpencodeSession(mk("a"), "b:c")
+	got2 := namespaceOpencodeSession(mk("a:b"), "c")
+
+	if got1 != "a:b\\:c" {
+		t.Errorf("(\"a\",\"b:c\") = %q, want %q", got1, "a:b\\:c")
+	}
+	if got2 != "a\\:b:c" {
+		t.Errorf("(\"a:b\",\"c\") = %q, want %q", got2, "a\\:b:c")
+	}
+	if got1 == got2 {
+		t.Fatalf("collision: (\"a\",\"b:c\") and (\"a:b\",\"c\") both produced %q", got1)
+	}
+}
+
 func TestResolveOpencodeSessionNilContext(t *testing.T) {
 	if got := ResolveOpencodeSession(nil); got != "" {
 		t.Errorf("ResolveOpencodeSession(nil) = %q, want \"\"", got)

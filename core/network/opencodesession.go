@@ -93,10 +93,28 @@ func resolveOpencodeSessionValue(ctx *schemas.BifrostContext) string {
 // cannot collide upstream. The virtual key itself is validated with the same
 // charset rule as session values; an absent or unsafe virtual key leaves the
 // value unqualified rather than dropping the request.
+//
+// Each component is escaped before joining so the only literal ":" in the
+// result is the separator we insert. Without escaping, ("a", "b:c") and
+// ("a:b", "c") both produce "a:b:c" — a collision. Escaping doubles every
+// backslash and prefixes every colon with a backslash, making the mapping
+// injective: distinct (vk, value) pairs always yield distinct namespaced
+// strings. The escaped output stays within isSafeOpencodeSessionValue's
+// charset (only printable ASCII is introduced).
 func namespaceOpencodeSession(ctx *schemas.BifrostContext, value string) string {
 	virtualKey, ok := ctx.Value(schemas.BifrostContextKeyVirtualKey).(string)
 	if !ok || strings.TrimSpace(virtualKey) == "" || !isSafeOpencodeSessionValue(virtualKey) {
 		return value
 	}
-	return virtualKey + ":" + value
+	return escapeSessionComponent(virtualKey) + ":" + escapeSessionComponent(value)
+}
+
+// escapeSessionComponent makes a single session component unambiguous when
+// joined with ":" as a separator. Backslashes are doubled first, then colons
+// are prefixed with a backslash, so the only literal ":" in the final
+// namespaced string is the separator inserted by namespaceOpencodeSession.
+func escapeSessionComponent(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, ":", "\\:")
+	return s
 }
