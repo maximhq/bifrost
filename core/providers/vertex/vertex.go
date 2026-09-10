@@ -283,16 +283,18 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	}
 
 	deployments := key.Aliases
-	allowedModels := key.Models
+	access := key.ModelAccess()
 
-	if !request.Unfiltered && (allowedModels.IsEmpty() && len(deployments) == 0 || key.BlacklistedModels.IsBlockAll()) {
+	if !request.Unfiltered && (access.DeniesAll() && len(deployments) == 0) {
 		return &schemas.BifrostListModelsResponse{Data: make([]schemas.Model, 0)}, nil
 	}
 
-	// If deployments or allowedModels are configured, return those directly without API call
+	// If deployments or an exact allow list are configured, return those directly without an
+	// API call. A patterns-only key has no names to surface, so it falls through to the Model
+	// Garden listing, which the pipeline then filters by pattern.
 	// Skip this fast path when Unfiltered is set so the full Vertex catalog can be retrieved
-	if !request.Unfiltered && (len(deployments) > 0 || allowedModels.IsRestricted()) {
-		return buildResponseFromConfig(deployments, allowedModels, key.BlacklistedModels), nil
+	if !request.Unfiltered && (len(deployments) > 0 || (access.Allowed.IsRestricted() && !access.Allowed.IsEmpty())) {
+		return buildResponseFromConfig(deployments, access), nil
 	}
 
 	// No deployments configured - fetch from Model Garden API
@@ -417,7 +419,7 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 		PublisherModels: allPublisherModels,
 	}
 
-	response := aggregatedResponse.ToBifrostListModelsResponse(key.Models, key.BlacklistedModels, key.Aliases, request.Unfiltered)
+	response := aggregatedResponse.ToBifrostListModelsResponse(key.ModelAccess(), key.Aliases, request.Unfiltered)
 
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 		response.ExtraFields.RawRequest = rawRequests

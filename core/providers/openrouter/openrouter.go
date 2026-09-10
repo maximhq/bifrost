@@ -262,13 +262,19 @@ func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext,
 		normalizedAliases[stripPrefix(k)] = cfg
 	}
 
+	// Patterns are left as configured: they already match the bare name and
+	// "<provider>/<model>", so no prefix stripping is needed.
 	pipeline := &providerUtils.ListModelsPipeline{
-		AllowedModels:     normalizedAllowed,
-		BlacklistedModels: normalizedBlacklist,
-		Aliases:           normalizedAliases,
-		Unfiltered:        request.Unfiltered,
-		ProviderKey:       schemas.OpenRouter,
-		MatchFns:          providerUtils.DefaultMatchFns(),
+		Access: schemas.ModelAccessRule{
+			Allowed:         normalizedAllowed,
+			Blocked:         normalizedBlacklist,
+			AllowedPatterns: key.ModelsPatterns,
+			BlockedPatterns: key.BlacklistedModelsPatterns,
+		},
+		Aliases:     normalizedAliases,
+		Unfiltered:  request.Unfiltered,
+		ProviderKey: schemas.OpenRouter,
+		MatchFns:    providerUtils.DefaultMatchFns(),
 	}
 
 	if pipeline.ShouldEarlyExit() {

@@ -35,8 +35,11 @@ func (mc *ModelCatalog) GetModelsForProvider(provider schemas.ModelProvider) []s
 }
 
 func (mc *ModelCatalog) computeModelsForProvider(provider schemas.ModelProvider) []string {
-	blacklisted := mc.keyconf.BlacklistedFor(provider)
 	allowed := mc.keyconf.AllowedFor(provider)
+	// rule folds the pattern twins in so a name a pattern admits (or blocks) is
+	// treated the same as one the exact lists name.
+	rule := mc.keyconf.AccessFor(provider)
+	providerName := string(provider)
 
 	var out []string
 	if liveModels := mc.live.ModelsForProvider(provider); len(liveModels) > 0 {
@@ -50,14 +53,11 @@ func (mc *ModelCatalog) computeModelsForProvider(provider schemas.ModelProvider)
 		if providersWithPartialListModels[provider] {
 			datasheetModelsToAppend = mc.datasheet.DatasheetModelsForProvider(provider)
 		}
-		out = mc.appendAllowedDatasheetModels(out, datasheetModelsToAppend, allowed, blacklisted)
+		out = mc.appendAllowedDatasheetModels(out, datasheetModelsToAppend, allowed, rule, providerName)
 	} else if datasheetModels := mc.datasheet.DatasheetModelsForProvider(provider); len(datasheetModels) > 0 && allowed != nil {
 		out = make([]string, 0, len(datasheetModels))
 		for _, m := range datasheetModels {
-			if blacklisted.IsBlocked(m) {
-				continue
-			}
-			if allowed.IsAllowed(m) {
+			if rule.Allows(providerName, m) {
 				out = append(out, m)
 			}
 		}
@@ -74,10 +74,11 @@ func (mc *ModelCatalog) computeModelsForProvider(provider schemas.ModelProvider)
 			continue
 		}
 		for alias := range e.Aliases {
-			if blacklisted.IsBlocked(alias) {
-				continue
-			}
-			if allowed == nil || !allowed.IsAllowed(alias) {
+			// No allowed == nil short-circuit: a key may allow models by
+			// pattern alone, which leaves the aggregated exact list empty.
+			// rule.Allows already denies by default when neither side names
+			// anything, and still lets a block pattern win.
+			if !rule.Allows(providerName, alias) {
 				continue
 			}
 			if _, ok := seen[alias]; ok {
@@ -87,9 +88,7 @@ func (mc *ModelCatalog) computeModelsForProvider(provider schemas.ModelProvider)
 			out = append(out, alias)
 		}
 		for _, m := range e.Allowed {
-			// Regex entries are patterns, not model names: the models they admit
-			// are already included above through IsAllowed.
-			if m == "*" || schemas.IsRegexEntry(m) || blacklisted.IsBlocked(m) {
+			if m == "*" || rule.Blocks(providerName, m) {
 				continue
 			}
 			if _, ok := seen[m]; ok {
@@ -102,7 +101,7 @@ func (mc *ModelCatalog) computeModelsForProvider(provider schemas.ModelProvider)
 	return out
 }
 
-func (mc *ModelCatalog) appendAllowedDatasheetModels(out []string, models []string, allowed schemas.WhiteList, blacklisted schemas.BlackList) []string {
+func (mc *ModelCatalog) appendAllowedDatasheetModels(out []string, models []string, allowed schemas.WhiteList, rule schemas.ModelAccessRule, providerName string) []string {
 	if len(models) == 0 {
 		return out
 	}
@@ -114,10 +113,10 @@ func (mc *ModelCatalog) appendAllowedDatasheetModels(out []string, models []stri
 		if _, ok := seen[m]; ok {
 			continue
 		}
-		if blacklisted.IsBlocked(m) {
+		if rule.Blocks(providerName, m) {
 			continue
 		}
-		if allowed != nil && !allowed.IsAllowed(m) {
+		if allowed != nil && !rule.Admits(providerName, m) {
 			continue
 		}
 		seen[m] = struct{}{}
@@ -271,14 +270,15 @@ func (mc *ModelCatalog) computeProvidersForModel(model string) []schemas.ModelPr
 		if _, ok := seen[p]; ok {
 			continue
 		}
-		if mc.keyconf.BlacklistedFor(p).BlocksModel(string(p), model) {
+		rule := mc.keyconf.AccessFor(p)
+		if rule.Blocks(string(p), model) {
 			continue
 		}
-		allowed := mc.keyconf.AllowedFor(p)
+		allowed := rule.Allowed
 		matched := false
-		if _, hit := mc.keyconf.ResolveAlias(p, model); hit && allowed.AllowsModel(string(p), model) {
+		if _, hit := mc.keyconf.ResolveAlias(p, model); hit && rule.Admits(string(p), model) {
 			matched = true
-		} else if allowed.IsRestricted() && allowed.AllowsModel(string(p), model) {
+		} else if allowed.IsRestricted() && rule.Admits(string(p), model) {
 			matched = true
 		} else if allowed.IsUnrestricted() &&
 			len(mc.datasheet.DatasheetModelsForProvider(p)) == 0 &&
@@ -321,27 +321,19 @@ func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider
 		return false
 	}
 
-	// Bare-name and regex matches need no catalog access and cover most
-	// allowlists. Regex entries are tried against both the bare name and
-	// "<provider>/<model>" so a provider-qualified pattern works too.
-	hasPrefixedLiteral := false
-	for _, entry := range allowedModels {
-		if schemas.MatchesEntry(entry, model, string(provider)) {
-			return true
-		}
-		if !schemas.IsRegexEntry(entry) && strings.Contains(entry, "/") {
-			hasPrefixedLiteral = true
-		}
+	// Bare-name match needs no catalog access and covers most allowlists.
+	if allowedModels.Contains(model) {
+		return true
 	}
 
-	// Only provider-prefixed literal entries ("openai/gpt-4o") need the
-	// provider catalog; build it once, and only when one exists.
-	if !hasPrefixedLiteral {
+	// Only provider-prefixed entries ("openai/gpt-4o") need the provider
+	// catalog; build it once, and only when one exists.
+	if !slices.ContainsFunc(allowedModels, func(m string) bool { return strings.Contains(m, "/") }) {
 		return false
 	}
 	providerCatalogModels := mc.GetModelsForProvider(provider)
 	for _, allowedModel := range allowedModels {
-		if schemas.IsRegexEntry(allowedModel) || !strings.Contains(allowedModel, "/") {
+		if !strings.Contains(allowedModel, "/") {
 			continue
 		}
 		if slices.Contains(providerCatalogModels, allowedModel) {

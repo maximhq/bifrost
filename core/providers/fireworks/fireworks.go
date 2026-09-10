@@ -88,8 +88,7 @@ func (provider *FireworksProvider) ListModels(ctx *schemas.BifrostContext, keys 
 func (provider *FireworksProvider) listModelsByKey(_ *schemas.BifrostContext, key schemas.Key, _ *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	return (&openai.OpenAIListModelsResponse{}).ToBifrostListModelsResponse(
 		schemas.Fireworks,
-		key.Models,
-		key.BlacklistedModels,
+		key.ModelAccess(),
 		key.Aliases,
 		false,
 	), nil

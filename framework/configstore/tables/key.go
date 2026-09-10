@@ -21,10 +21,13 @@ type TableKey struct {
 	Value                 schemas.SecretVar `gorm:"type:text;not null" json:"value"`
 	ModelsJSON            string            `gorm:"type:text" json:"-"` // JSON serialized []string
 	BlacklistedModelsJSON string            `gorm:"type:text" json:"-"` // JSON serialized []string
-	Weight                *float64          `json:"weight"`
-	Enabled               *bool             `gorm:"default:true" json:"enabled,omitempty"`
-	CreatedAt             time.Time         `gorm:"index;not null" json:"created_at"`
-	UpdatedAt             time.Time         `gorm:"index;not null" json:"updated_at"`
+	// Pattern twins of the two lists above: RE2 patterns, JSON serialized []string.
+	ModelsPatternsJSON            string    `gorm:"column:models_patterns_json;type:text" json:"-"`
+	BlacklistedModelsPatternsJSON string    `gorm:"column:blacklisted_models_patterns_json;type:text" json:"-"`
+	Weight                        *float64  `json:"weight"`
+	Enabled                       *bool     `gorm:"default:true" json:"enabled,omitempty"`
+	CreatedAt                     time.Time `gorm:"index;not null" json:"created_at"`
+	UpdatedAt                     time.Time `gorm:"index;not null" json:"updated_at"`
 
 	// Config hash is used to detect changes synced from config.json file
 	ConfigHash string `gorm:"type:varchar(255);null" json:"config_hash"`
@@ -116,23 +119,35 @@ type TableKey struct {
 	GithubCopilotGithubDomain   *schemas.SecretVar `gorm:"type:text" json:"github_copilot_github_domain,omitempty"`
 
 	// Virtual fields for runtime use (not stored in DB)
-	Models                 schemas.WhiteList               `gorm:"-" json:"models"` // ["*"] allows all models; empty denies all (deny-by-default)
-	BlacklistedModels      schemas.BlackList               `gorm:"-" json:"blacklisted_models"`
-	Aliases                schemas.KeyAliases              `gorm:"-" json:"aliases,omitempty"`
-	AzureKeyConfig         *schemas.AzureKeyConfig         `gorm:"-" json:"azure_key_config,omitempty"`
-	VertexKeyConfig        *schemas.VertexKeyConfig        `gorm:"-" json:"vertex_key_config,omitempty"`
-	BedrockKeyConfig       *schemas.BedrockKeyConfig       `gorm:"-" json:"bedrock_key_config,omitempty"`
-	BedrockMantleKeyConfig *schemas.BedrockMantleKeyConfig `gorm:"-" json:"bedrock_mantle_key_config,omitempty"`
-	VLLMKeyConfig          *schemas.VLLMKeyConfig          `gorm:"-" json:"vllm_key_config,omitempty"`
-	ReplicateKeyConfig     *schemas.ReplicateKeyConfig     `gorm:"-" json:"replicate_key_config,omitempty"`
-	OllamaKeyConfig        *schemas.OllamaKeyConfig        `gorm:"-" json:"ollama_key_config,omitempty"`
-	SGLKeyConfig           *schemas.SGLKeyConfig           `gorm:"-" json:"sgl_key_config,omitempty"`
-	DatabricksKeyConfig    *schemas.DatabricksKeyConfig    `gorm:"-" json:"databricks_key_config,omitempty"`
-	GithubCopilotKeyConfig *schemas.GithubCopilotKeyConfig `gorm:"-" json:"github_copilot_key_config,omitempty"`
+	Models                    schemas.WhiteList               `gorm:"-" json:"models"` // ["*"] allows all models; empty denies all (deny-by-default)
+	BlacklistedModels         schemas.BlackList               `gorm:"-" json:"blacklisted_models"`
+	ModelsPatterns            schemas.ModelPatternList        `gorm:"-" json:"models_patterns"`             // RE2 patterns admitting models alongside Models
+	BlacklistedModelsPatterns schemas.ModelPatternList        `gorm:"-" json:"blacklisted_models_patterns"` // RE2 patterns blocking models alongside BlacklistedModels
+	Aliases                   schemas.KeyAliases              `gorm:"-" json:"aliases,omitempty"`
+	AzureKeyConfig            *schemas.AzureKeyConfig         `gorm:"-" json:"azure_key_config,omitempty"`
+	VertexKeyConfig           *schemas.VertexKeyConfig        `gorm:"-" json:"vertex_key_config,omitempty"`
+	BedrockKeyConfig          *schemas.BedrockKeyConfig       `gorm:"-" json:"bedrock_key_config,omitempty"`
+	BedrockMantleKeyConfig    *schemas.BedrockMantleKeyConfig `gorm:"-" json:"bedrock_mantle_key_config,omitempty"`
+	VLLMKeyConfig             *schemas.VLLMKeyConfig          `gorm:"-" json:"vllm_key_config,omitempty"`
+	ReplicateKeyConfig        *schemas.ReplicateKeyConfig     `gorm:"-" json:"replicate_key_config,omitempty"`
+	OllamaKeyConfig           *schemas.OllamaKeyConfig        `gorm:"-" json:"ollama_key_config,omitempty"`
+	SGLKeyConfig              *schemas.SGLKeyConfig           `gorm:"-" json:"sgl_key_config,omitempty"`
+	DatabricksKeyConfig       *schemas.DatabricksKeyConfig    `gorm:"-" json:"databricks_key_config,omitempty"`
+	GithubCopilotKeyConfig    *schemas.GithubCopilotKeyConfig `gorm:"-" json:"github_copilot_key_config,omitempty"`
 }
 
 // TableName sets the table name for each model
 func (TableKey) TableName() string { return "config_keys" }
+
+// ModelAccess returns the key's model rule: exact lists plus their pattern twins.
+func (k *TableKey) ModelAccess() schemas.ModelAccessRule {
+	return schemas.ModelAccessRule{
+		Allowed:         k.Models,
+		Blocked:         k.BlacklistedModels,
+		AllowedPatterns: k.ModelsPatterns,
+		BlockedPatterns: k.BlacklistedModelsPatterns,
+	}
+}
 
 // BeforeSave is a GORM hook that serializes runtime config structs into JSON columns and
 // encrypts sensitive fields (API key value, Azure endpoint/client ID/secret/tenant ID/API version,
@@ -156,6 +171,28 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		return err
 	}
 	k.BlacklistedModelsJSON = string(data)
+	if err := k.ModelsPatterns.Validate(); err != nil {
+		return fmt.Errorf("invalid models_patterns: %w", err)
+	}
+	if k.ModelsPatterns == nil {
+		k.ModelsPatterns = schemas.ModelPatternList{}
+	}
+	data, err = json.Marshal(k.ModelsPatterns)
+	if err != nil {
+		return err
+	}
+	k.ModelsPatternsJSON = string(data)
+	if err := k.BlacklistedModelsPatterns.Validate(); err != nil {
+		return fmt.Errorf("invalid blacklisted_models_patterns: %w", err)
+	}
+	if k.BlacklistedModelsPatterns == nil {
+		k.BlacklistedModelsPatterns = schemas.ModelPatternList{}
+	}
+	data, err = json.Marshal(k.BlacklistedModelsPatterns)
+	if err != nil {
+		return err
+	}
+	k.BlacklistedModelsPatternsJSON = string(data)
 	if k.Enabled == nil {
 		enabled := true // DB default
 		k.Enabled = &enabled
@@ -859,6 +896,16 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 	}
 	if k.BlacklistedModelsJSON != "" {
 		if err := json.Unmarshal([]byte(k.BlacklistedModelsJSON), &k.BlacklistedModels); err != nil {
+			return err
+		}
+	}
+	if k.ModelsPatternsJSON != "" {
+		if err := json.Unmarshal([]byte(k.ModelsPatternsJSON), &k.ModelsPatterns); err != nil {
+			return err
+		}
+	}
+	if k.BlacklistedModelsPatternsJSON != "" {
+		if err := json.Unmarshal([]byte(k.BlacklistedModelsPatternsJSON), &k.BlacklistedModelsPatterns); err != nil {
 			return err
 		}
 	}

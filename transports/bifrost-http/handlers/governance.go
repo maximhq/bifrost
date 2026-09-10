@@ -277,14 +277,18 @@ type CreateVirtualKeyRequest struct {
 	Name            string `json:"name" validate:"required"`
 	Description     string `json:"description,omitempty"`
 	ProviderConfigs []struct {
-		Provider          string                  `json:"provider" validate:"required"`
-		Weight            *float64                `json:"weight,omitempty"`
-		AllowedModels     schemas.WhiteList       `json:"allowed_models,omitempty"`     // ["*"] allows all models; empty denies all
-		BlacklistedModels schemas.BlackList       `json:"blacklisted_models,omitempty"` // ["*"] blocks all models; empty blocks none
-		Budgets           []CreateBudgetRequest   `json:"budgets,omitempty"`            // Multi-budget for provider config
-		RateLimit         *CreateRateLimitRequest `json:"rate_limit,omitempty"`         // Provider-level rate limit
-		ModelBudgets      []vkModelBudgetRequest  `json:"model_budgets,omitempty"`      // Per-model budgets/rate-limits under this provider
-		KeyIDs            schemas.WhiteList       `json:"key_ids,omitempty"`            // List of DBKey UUIDs to associate with this provider config
+		Provider          string            `json:"provider" validate:"required"`
+		Weight            *float64          `json:"weight,omitempty"`
+		AllowedModels     schemas.WhiteList `json:"allowed_models,omitempty"`     // ["*"] allows all models; empty denies all
+		BlacklistedModels schemas.BlackList `json:"blacklisted_models,omitempty"` // ["*"] blocks all models; empty blocks none
+		// Pattern twins of the two lists: RE2, full match, case-insensitive, tried against the
+		// model name and "<provider>/<model>". Block patterns win over allow.
+		AllowedModelsPatterns     schemas.ModelPatternList `json:"allowed_models_patterns,omitempty"`
+		BlacklistedModelsPatterns schemas.ModelPatternList `json:"blacklisted_models_patterns,omitempty"`
+		Budgets                   []CreateBudgetRequest    `json:"budgets,omitempty"`       // Multi-budget for provider config
+		RateLimit                 *CreateRateLimitRequest  `json:"rate_limit,omitempty"`    // Provider-level rate limit
+		ModelBudgets              []vkModelBudgetRequest   `json:"model_budgets,omitempty"` // Per-model budgets/rate-limits under this provider
+		KeyIDs                    schemas.WhiteList        `json:"key_ids,omitempty"`       // List of DBKey UUIDs to associate with this provider config
 	} `json:"provider_configs,omitempty"` // Empty means no providers allowed (deny-by-default)
 	MCPConfigs []struct {
 		MCPClientName  string            `json:"mcp_client_name" validate:"required"`
@@ -321,15 +325,19 @@ type UpdateVirtualKeyRequest struct {
 	Name            *string `json:"name,omitempty"`
 	Description     *string `json:"description,omitempty"`
 	ProviderConfigs []struct {
-		ID                *uint                        `json:"id,omitempty"` // null for new entries
-		Provider          string                       `json:"provider" validate:"required"`
-		Weight            *float64                     `json:"weight,omitempty"`
-		AllowedModels     schemas.WhiteList            `json:"allowed_models,omitempty"`     // ["*"] allows all models; empty denies all
-		BlacklistedModels schemas.BlackList            `json:"blacklisted_models,omitempty"` // ["*"] blocks all models; empty blocks none
-		Budgets           []CreateBudgetRequest        `json:"budgets,omitempty"`            // Multi-budget for provider config
-		RateLimit         *UpdateRateLimitRequest      `json:"rate_limit,omitempty"`         // Provider-level rate limit
-		ModelBudgets      []vkModelBudgetUpdateRequest `json:"model_budgets,omitempty"`      // Per-model budgets/rate-limits under this provider (full desired set when provider_configs is supplied)
-		KeyIDs            schemas.WhiteList            `json:"key_ids,omitempty"`            // List of DBKey UUIDs to associate with this provider config
+		ID                *uint             `json:"id,omitempty"` // null for new entries
+		Provider          string            `json:"provider" validate:"required"`
+		Weight            *float64          `json:"weight,omitempty"`
+		AllowedModels     schemas.WhiteList `json:"allowed_models,omitempty"`     // ["*"] allows all models; empty denies all
+		BlacklistedModels schemas.BlackList `json:"blacklisted_models,omitempty"` // ["*"] blocks all models; empty blocks none
+		// Pattern twins of the two lists: RE2, full match, case-insensitive, tried against the
+		// model name and "<provider>/<model>". Block patterns win over allow.
+		AllowedModelsPatterns     schemas.ModelPatternList     `json:"allowed_models_patterns,omitempty"`
+		BlacklistedModelsPatterns schemas.ModelPatternList     `json:"blacklisted_models_patterns,omitempty"`
+		Budgets                   []CreateBudgetRequest        `json:"budgets,omitempty"`       // Multi-budget for provider config
+		RateLimit                 *UpdateRateLimitRequest      `json:"rate_limit,omitempty"`    // Provider-level rate limit
+		ModelBudgets              []vkModelBudgetUpdateRequest `json:"model_budgets,omitempty"` // Per-model budgets/rate-limits under this provider (full desired set when provider_configs is supplied)
+		KeyIDs                    schemas.WhiteList            `json:"key_ids,omitempty"`       // List of DBKey UUIDs to associate with this provider config
 	} `json:"provider_configs,omitempty"`
 	MCPConfigs []struct {
 		ID             *uint             `json:"id,omitempty"` // null for new entries
@@ -1732,6 +1740,12 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 				if err := pc.BlacklistedModels.Validate(); err != nil {
 					return &badRequestError{err: fmt.Errorf("invalid blacklisted_models for provider %s: %w", pc.Provider, err)}
 				}
+				if err := pc.AllowedModelsPatterns.Validate(); err != nil {
+					return &badRequestError{err: fmt.Errorf("invalid allowed_models_patterns for provider %s: %w", pc.Provider, err)}
+				}
+				if err := pc.BlacklistedModelsPatterns.Validate(); err != nil {
+					return &badRequestError{err: fmt.Errorf("invalid blacklisted_models_patterns for provider %s: %w", pc.Provider, err)}
+				}
 				if err := pc.KeyIDs.Validate(); err != nil {
 					return &badRequestError{err: fmt.Errorf("invalid key_ids for provider %s: %w", pc.Provider, err)}
 				}
@@ -1753,13 +1767,15 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 				}
 
 				providerConfig := &configstoreTables.TableVirtualKeyProviderConfig{
-					VirtualKeyID:      vk.ID,
-					Provider:          string(providerName),
-					Weight:            pc.Weight,
-					AllowedModels:     pc.AllowedModels,
-					BlacklistedModels: pc.BlacklistedModels,
-					AllowAllKeys:      allowAllKeys,
-					Keys:              keys,
+					VirtualKeyID:              vk.ID,
+					Provider:                  string(providerName),
+					Weight:                    pc.Weight,
+					AllowedModels:             pc.AllowedModels,
+					BlacklistedModels:         pc.BlacklistedModels,
+					AllowedModelsPatterns:     pc.AllowedModelsPatterns,
+					BlacklistedModelsPatterns: pc.BlacklistedModelsPatterns,
+					AllowAllKeys:              allowAllKeys,
+					Keys:                      keys,
 				}
 
 				if err := h.configStore.CreateVirtualKeyProviderConfig(ctx, providerConfig, tx); err != nil {
@@ -2156,6 +2172,12 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					if err := pc.BlacklistedModels.Validate(); err != nil {
 						return &badRequestError{err: fmt.Errorf("invalid blacklisted_models for provider %s: %w", pc.Provider, err)}
 					}
+					if err := pc.AllowedModelsPatterns.Validate(); err != nil {
+						return &badRequestError{err: fmt.Errorf("invalid allowed_models_patterns for provider %s: %w", pc.Provider, err)}
+					}
+					if err := pc.BlacklistedModelsPatterns.Validate(); err != nil {
+						return &badRequestError{err: fmt.Errorf("invalid blacklisted_models_patterns for provider %s: %w", pc.Provider, err)}
+					}
 					if err := pc.KeyIDs.Validate(); err != nil {
 						return &badRequestError{err: fmt.Errorf("invalid key_ids for provider %s: %w", pc.Provider, err)}
 					}
@@ -2178,13 +2200,15 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 
 					// Create new provider config
 					providerConfig := &configstoreTables.TableVirtualKeyProviderConfig{
-						VirtualKeyID:      vk.ID,
-						Provider:          string(providerName),
-						Weight:            pc.Weight,
-						AllowedModels:     pc.AllowedModels,
-						BlacklistedModels: pc.BlacklistedModels,
-						AllowAllKeys:      allowAllKeys,
-						Keys:              keys,
+						VirtualKeyID:              vk.ID,
+						Provider:                  string(providerName),
+						Weight:                    pc.Weight,
+						AllowedModels:             pc.AllowedModels,
+						BlacklistedModels:         pc.BlacklistedModels,
+						AllowedModelsPatterns:     pc.AllowedModelsPatterns,
+						BlacklistedModelsPatterns: pc.BlacklistedModelsPatterns,
+						AllowAllKeys:              allowAllKeys,
+						Keys:                      keys,
 					}
 					if err := h.configStore.CreateVirtualKeyProviderConfig(ctx, providerConfig, tx); err != nil {
 						return err
@@ -2221,6 +2245,12 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					if err := pc.BlacklistedModels.Validate(); err != nil {
 						return &badRequestError{err: fmt.Errorf("invalid blacklisted_models for provider %s: %w", pc.Provider, err)}
 					}
+					if err := pc.AllowedModelsPatterns.Validate(); err != nil {
+						return &badRequestError{err: fmt.Errorf("invalid allowed_models_patterns for provider %s: %w", pc.Provider, err)}
+					}
+					if err := pc.BlacklistedModelsPatterns.Validate(); err != nil {
+						return &badRequestError{err: fmt.Errorf("invalid blacklisted_models_patterns for provider %s: %w", pc.Provider, err)}
+					}
 					if err := pc.KeyIDs.Validate(); err != nil {
 						return &badRequestError{err: fmt.Errorf("invalid key_ids for provider %s: %w", pc.Provider, err)}
 					}
@@ -2228,6 +2258,8 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					existing.Weight = pc.Weight
 					existing.AllowedModels = pc.AllowedModels
 					existing.BlacklistedModels = pc.BlacklistedModels
+					existing.AllowedModelsPatterns = pc.AllowedModelsPatterns
+					existing.BlacklistedModelsPatterns = pc.BlacklistedModelsPatterns
 
 					// Get keys for this provider config if specified
 					var keys []configstoreTables.TableKey
