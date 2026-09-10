@@ -461,6 +461,20 @@ func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 	return latency, bifrostErr, wait
 }
 
+// MakeStreamingRequestWithContext is MakeRequestWithContext for a response whose
+// body is streamed rather than buffered (resp.StreamBody). It shares the same
+// cancellation, latency and error-classification handling, but sends through
+// net/http so the response body is never fasthttp's pooled *requestStream —
+// see DoStreamingRequest and httpstream.go for why that matters (issue #6143).
+//
+// base must be the caller's long-lived client, not a per-request clone such as
+// BuildLargeResponseClient's, so the net/http twin cache stays bounded. The
+// clone's fasthttp-only knobs have no effect on a net/http send in any case;
+// the large-response threshold is enforced by FinalizeResponseWithLargeDetection.
+func MakeStreamingRequestWithContext(ctx context.Context, base *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) (time.Duration, *schemas.BifrostError, func()) {
+	return makeRequestWithDoFunc(ctx, func() error { return DoStreamingRequestViaHTTP(ctx, base, req, resp) })
+}
+
 // MakeRequestWithContextFollowRedirects is like MakeRequestWithContext but follows up to
 // maxRedirects HTTP redirects automatically (equivalent to curl's -L flag).
 func MakeRequestWithContextFollowRedirects(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response, maxRedirects int) (time.Duration, *schemas.BifrostError, func()) {
@@ -477,11 +491,22 @@ func MakeRequestWithContextFollowRedirects(ctx context.Context, client *fasthttp
 // is measured separately, inside idleTimeoutReader.Read. Both are needed;
 // counting only one attributes the other to Bifrost.
 //
-// Returns client.Do's error untouched so callers keep their own error
+// Returns the send error untouched so callers keep their own error
 // classification and latency bookkeeping.
+//
+// The send goes through net/http rather than fasthttp. fasthttp's streaming
+// close callback recycles the pooled *requestStream and *bufio.Reader before it
+// closes the connection, so cancelling a stream mid-body always resumes the
+// reader on an object that is already back in a sync.Pool (issue #6143). That
+// ordering is inside fasthttp and unchanged across v1.69.0 to v1.73.0.
+// net/http guards Body.Close against a concurrent Read with a mutex and pools
+// nothing, so the same cancellation is safe. See httpstream.go.
+//
+// resp still carries the status, headers and body stream afterwards, so every
+// caller and every downstream helper is unaffected.
 func DoStreamingRequest(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) error {
 	startTime := time.Now()
-	err := client.Do(req, resp)
+	err := DoStreamingRequestViaHTTP(ctx, client, req, resp)
 	schemas.AddUpstreamLatency(ctx, time.Since(startTime))
 	return err
 }
