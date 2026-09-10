@@ -77,6 +77,8 @@ AzureKeyConfig:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
     api_version:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
+      deprecated: true
+      description: Deprecated and ignored. Bifrost uses the Azure OpenAI v1 API, which needs no api-version parameter. Set api_version on an individual alias to override it for that deployment.
     client_id:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
     client_secret:
@@ -179,6 +181,99 @@ VLLMKeyConfig:
       type: string
       description: Exact model name served on this vLLM instance
 
+AliasConfig:
+  type: object
+  description: |
+    Rich configuration for a single key-level alias. Carries the wire model identifier plus
+    optional canonical name, model family, and provider-specific overrides. Shared fields
+    (region, project_id, use_anthropic_endpoints) are accepted on any provider's key but are
+    only read by the providers named in their descriptions. The provider-specific overrides
+    are validated against the owning key's provider and rejected on a mismatch.
+  properties:
+    model_id:
+      type: string
+      minLength: 1
+      description: Provider-specific identifier sent on the wire (deployment name, inference profile ID, fine-tuned model ID, etc.)
+    model_name:
+      type: string
+      description: Canonical model name used for pricing, logging, and family inference. Set this when model_id is opaque.
+    model_family:
+      type: string
+      enum: [anthropic, openai, mistral, cohere, gemini, gemma, llama, imagen, veo, nova, titan]
+      description: Underlying model family used for provider routing decisions. When unset, the family is inferred from model_name, model_id, and the alias name.
+    description:
+      type: string
+      description: Free-form note surfaced in the UI. Not used for routing.
+    region:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+      description: Per-alias region override. Read by Bedrock, Bedrock Mantle, and Vertex; falls back to the key-level region.
+    project_id:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+      description: Per-alias project override. Vertex reads it as the GCP project; Bedrock and Bedrock Mantle send it as the AWS project on the OpenAI-Project / anthropic-workspace-id header.
+    use_anthropic_endpoints:
+      type: boolean
+      description: For DeepSeek, Fireworks, vLLM, and SGLang keys, routes this alias's chat completions and responses requests through the Anthropic-compatible /v1/messages endpoint. Overrides the key-level setting for this alias only.
+    api_version:
+      type: string
+      description: Azure only. Overrides the api-version query parameter.
+    anthropic_version:
+      type: string
+      description: Azure only. Overrides the anthropic-version header for Claude-on-Azure deployments.
+    endpoint:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+      description: Azure only. Overrides the key-level Azure endpoint for this alias.
+    project_number:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+      description: Vertex only. Per-alias GCP project number, required for fine-tuned models.
+    force_single_region:
+      type: boolean
+      description: Vertex only. Calls the alias region as-is and skips promoting multi-region-only models to a multi-region endpoint.
+    inference_profile_arn:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+      description: Bedrock only. Cross-region inference profile ARN invoked instead of the model ID.
+    use_deployments_endpoint:
+      type: boolean
+      description: Replicate only. Routes the alias through the deployments endpoint instead of the models endpoint.
+  required:
+    - model_id
+
+BedrockMantleKeyConfig:
+  type: object
+  description: Bedrock Mantle-specific key configuration
+  properties:
+    access_key:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    secret_key:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    session_token:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    region:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    role_arn:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+      description: IAM role ARN for STS AssumeRole
+    external_id:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    session_name:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    project_id:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+      description: Scopes inference and model listing to a Bedrock project, sent as the OpenAI-Project or anthropic-workspace-id header. Defaults to the account's default project when empty.
+    endpoints:
+      type: object
+      description: Routes each AWS endpoint service through an interface VPC endpoint
+      properties:
+        runtime:
+          $ref: '../../schemas/management/common.yaml#/EnvVar'
+        control_plane:
+          $ref: '../../schemas/management/common.yaml#/EnvVar'
+        mantle:
+          $ref: '../../schemas/management/common.yaml#/EnvVar'
+        agent_runtime:
+          $ref: '../../schemas/management/common.yaml#/EnvVar'
+        s3:
+          $ref: '../../schemas/management/common.yaml#/EnvVar'
+
 Key:
   type: object
   description: API key configuration
@@ -210,15 +305,25 @@ Key:
       propertyNames:
         minLength: 1
       additionalProperties:
-        type: string
-        minLength: 1
-      description: Model alias mappings - maps a user-facing model name to a provider-specific identifier (deployment name, inference profile ID, fine-tuned model ID, etc.)
+        oneOf:
+          - type: string
+            minLength: 1
+            description: Legacy shape. A bare provider-specific identifier, equivalent to an AliasConfig with only model_id set.
+          - $ref: '#/AliasConfig'
+      description: |
+        Model alias mappings. Each entry maps a user-facing model name to either a bare
+        provider-specific identifier (deployment name, inference profile ID, fine-tuned model
+        ID) or an AliasConfig object carrying that identifier plus optional canonical name,
+        model family, and provider-specific overrides. Both shapes are accepted on input; a
+        response emits the bare string when only model_id is set.
     azure_key_config:
       $ref: '#/AzureKeyConfig'
     vertex_key_config:
       $ref: '#/VertexKeyConfig'
     bedrock_key_config:
       $ref: '#/BedrockKeyConfig'
+    bedrock_mantle_key_config:
+      $ref: '#/BedrockMantleKeyConfig'
     vllm_key_config:
       $ref: '#/VllmKeyConfig'
     ollama_key_config:
@@ -233,6 +338,9 @@ Key:
     use_for_batch_api:
       type: boolean
       description: Whether this key can be used for batch API operations
+    use_anthropic_endpoints:
+      type: boolean
+      description: For DeepSeek, Fireworks, vLLM, and SGLang keys, routes chat completions and responses requests through the provider's Anthropic-compatible endpoints. Can be overridden per alias.
     config_hash:
       type: string
       description: Hash of config.json version, used for change detection

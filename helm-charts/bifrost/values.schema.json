@@ -6161,7 +6161,7 @@
             },
             "api_version": {
               "type": "string",
-              "description": "Azure API version"
+              "description": "Deprecated: Bifrost now uses the Azure OpenAI v1 API which does not require an api-version parameter. Set api_version on an individual alias to override it for that deployment."
             }
           },
           "required": ["endpoint"],
@@ -6465,7 +6465,7 @@
                   },
                   "model_family": {
                     "type": "string",
-                    "enum": ["anthropic", "openai", "mistral", "cohere", "gemini", "nova", "titan"],
+                    "enum": ["anthropic", "openai", "mistral", "cohere", "gemini", "gemma", "llama", "imagen", "veo", "nova", "titan"],
                     "description": "Underlying model family. Used by provider routing without substring-sniffing the wire model ID."
                   },
                   "description": {
@@ -6505,7 +6505,7 @@
                   },
                   "use_anthropic_endpoints": {
                     "type": "boolean",
-                    "description": "Routes chat completions and responses requests through Anthropic-compatible endpoints."
+                    "description": "For deepseek, fireworks, vllm, and sgl keys: route this alias's chat completions and responses requests through Anthropic-compatible endpoints. Overrides the key-level use_anthropic_endpoints setting."
                   }
                 },
                 "required": ["model_id"],
@@ -7373,7 +7373,7 @@
                   },
                   "api_version": {
                     "type": "string",
-                    "description": "Azure API version"
+                    "description": "Deprecated: Bifrost now uses the Azure OpenAI v1 API which does not require an api-version parameter. Set api_version on an individual alias to override it for that deployment."
                   }
                 },
                 "dependentRequired": {

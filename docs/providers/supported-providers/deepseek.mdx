@@ -136,14 +136,20 @@ The `use_anthropic_endpoints` boolean is part of the same key payload used by [P
 }
 ```
 
-To override this per-alias (for example, on a virtual key's model config), set `use_anthropic_endpoints` alongside the alias's `model_id`:
+To override this for one alias, set `use_anthropic_endpoints` alongside that alias's `model_id` in the key's `aliases` map:
 
 ```json
 {
-  "model_id": "deepseek-v4-flash",
-  "use_anthropic_endpoints": false
+  "aliases": {
+    "fast-model": {
+      "model_id": "deepseek-v4-flash",
+      "use_anthropic_endpoints": false
+    }
+  }
 }
 ```
+
+See [Aliasing Models](/providers/aliasing-models) for the full alias schema.
 
 | Field | Type | Required | Description |
 |-------|------|----------|--------------|

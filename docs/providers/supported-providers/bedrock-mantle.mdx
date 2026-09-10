@@ -149,6 +149,53 @@ Alternatively, authenticate with a Bedrock Mantle API key sent as a Bearer token
 ```
 </CodeGroup>
 
+### 4. Model Aliases
+
+Mantle model IDs are long and version-less, so a key's `aliases` map is the usual way to expose short, stable names to callers. An alias value can be a bare model ID or an object carrying per-alias overrides:
+
+<CodeGroup>
+```json config.json
+{
+  "providers": {
+    "bedrock_mantle": {
+      "keys": [
+        {
+          "name": "mantle-static",
+          "models": ["*"],
+          "weight": 1.0,
+          "bedrock_mantle_key_config": {
+            "region": "us-east-1",
+            "project_id": "env.BEDROCK_PROJECT_ID"
+          },
+          "aliases": {
+            "claude-opus": "anthropic.claude-opus-4-8",
+            "claude-opus-west": {
+              "model_id": "anthropic.claude-opus-4-8",
+              "model_name": "claude-opus-4-8",
+              "region": "us-west-2",
+              "project_id": "env.BEDROCK_WEST_PROJECT_ID"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
+```
+</CodeGroup>
+
+| Field                      | Required | Description                                                                                                          |
+| -------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `aliases.*.model_id`       | Yes      | The Mantle model ID sent on the wire                                                                                 |
+| `aliases.*.model_name`     | No       | Canonical model name used for pricing and logs. Set this when the alias `model_id` is opaque                         |
+| `aliases.*.model_family`   | No       | Forces the family used for request shaping and response parsing instead of inferring it from the model ID            |
+| `aliases.*.region`         | No       | Per-alias AWS region; overrides `bedrock_mantle_key_config.region` for that alias only                                |
+| `aliases.*.project_id`     | No       | Per-alias Bedrock project, sent as the `OpenAI-Project` header on the OpenAI-compatible surface and `anthropic-workspace-id` on the native-Anthropic surface; overrides `bedrock_mantle_key_config.project_id` |
+
+The per-alias `region` is applied to the endpoint host, so one key can serve the same model from several regions under different names. Region precedence is: a `region/` prefix in the requested model ID, then the alias `region`, then `bedrock_mantle_key_config.region`. Note that alias names, not the underlying model IDs, are what `models` and `blacklisted_models` match against.
+
+In the Web UI these are the expanded fields of a row in the **Deployments** table, under **Bedrock Mantle overrides**. See [Aliasing Models](/providers/aliasing-models) for the full alias schema.
+
 ---
 
 ## Usage
