@@ -5,13 +5,17 @@ import { X } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { ModelAccessChipLabel } from "./modelAccessChip";
 import { RegexPatternInput } from "./regexPatternInput";
-import { addRegexEntry, isRegexEntry, type ModelAccessMode, modelAccessPlaceholder, resolveWildcardSelection } from "./utils";
+import { addPattern, type ModelAccessMode, modelAccessPlaceholder, resolveWildcardSelection } from "./utils";
 
 type EditorTab = "models" | "regex";
 
 export interface ModelAccessSelectorProps {
+	/** The exact list: model names, or "*" alone for every model. */
 	value: string[];
 	onChange: (next: string[]) => void;
+	/** The pattern twin of `value`: raw RE2 patterns. */
+	patterns: string[];
+	onPatternsChange: (next: string[]) => void;
 	/** "allow" for allowed_models / models, "block" for blacklisted_models. Drives placeholders. */
 	mode: ModelAccessMode;
 	provider?: string;
@@ -36,15 +40,16 @@ export interface ModelAccessSelectorProps {
 }
 
 /**
- * The one editor for model allow / block lists. A small toggle switches between
- * picking concrete models (the multiselect everyone used before) and adding
- * regex patterns. Both views operate on the same list: regex entries show as
- * monospace chips inside the multiselect, and the pattern view lists every
- * entry with a remove control so nothing is hidden behind the toggle.
+ * The one editor for a model allow or block side. A small toggle switches
+ * between picking concrete models (the multiselect everyone used before), which
+ * edits the exact list, and adding regex patterns, which edits the pattern
+ * list. The two lists are separate fields on the wire and stay separate here.
  */
 export function ModelAccessSelector({
 	value,
 	onChange,
+	patterns,
+	onPatternsChange,
 	mode,
 	provider,
 	keys,
@@ -61,12 +66,13 @@ export function ModelAccessSelector({
 }: ModelAccessSelectorProps) {
 	const testId = rest["data-testid"];
 	const list = value ?? [];
-	// Open on the view that matches what is already in the list, so an existing
-	// pattern is visible right away instead of hidden behind the toggle.
-	const [tab, setTab] = useState<EditorTab>(() => (list.some(isRegexEntry) ? "regex" : "models"));
+	const patternList = patterns ?? [];
+	// Open on the view that matches what is already configured, so a
+	// patterns-only rule is visible right away instead of hidden behind the toggle.
+	const [tab, setTab] = useState<EditorTab>(() => (patternList.length > 0 && list.length === 0 ? "regex" : "models"));
 	const hasWildcard = list.includes("*");
 
-	const remove = (entry: string) => onChange(list.filter((e) => e !== entry));
+	const removePattern = (pattern: string) => onPatternsChange(patternList.filter((p) => p !== pattern));
 
 	const toggle = (
 		<Tabs value={tab} onValueChange={(next) => setTab(next as EditorTab)} className="shrink-0">
@@ -113,7 +119,7 @@ export function ModelAccessSelector({
 					menuPortalTarget={menuPortalTarget}
 					value={hasWildcard ? ["*"] : list}
 					onChange={(models: string[]) => onChange(resolveWildcardSelection(list, models))}
-					placeholder={modelAccessPlaceholder(list, mode)}
+					placeholder={modelAccessPlaceholder(list, mode, patternList)}
 					renderValueLabel={(option) => <ModelAccessChipLabel entry={option.value} />}
 				/>
 			) : (
@@ -122,24 +128,21 @@ export function ModelAccessSelector({
 						data-testid={testId ? `${testId}-regex` : undefined}
 						inputId={inputId}
 						disabled={disabled}
-						onAdd={(pattern) => onChange(addRegexEntry(list, pattern))}
+						onAdd={(pattern) => onPatternsChange(addPattern(patternList, pattern))}
 					/>
-					{list.length > 0 ? (
+					{patternList.length > 0 ? (
 						<div className="flex flex-wrap gap-1" data-testid={testId ? `${testId}-entries` : undefined}>
-							{list.map((entry) => (
+							{patternList.map((pattern) => (
 								<span
-									key={entry}
-									className={cn(
-										"bg-accent inline-flex max-w-full items-center gap-1 rounded-sm px-1.5 py-0.5 text-sm",
-										isRegexEntry(entry) && "font-mono",
-									)}
+									key={pattern}
+									className="bg-accent inline-flex max-w-full items-center gap-1 rounded-sm px-1.5 py-0.5 font-mono text-sm"
 								>
-									<ModelAccessChipLabel entry={entry} />
+									<ModelAccessChipLabel entry={pattern} kind="pattern" />
 									<button
 										type="button"
-										aria-label={`Remove ${entry}`}
+										aria-label={`Remove ${pattern}`}
 										disabled={disabled}
-										onClick={() => remove(entry)}
+										onClick={() => removePattern(pattern)}
 										className="text-muted-foreground hover:text-foreground shrink-0"
 									>
 										<X className="h-3.5 w-3.5" />
@@ -148,7 +151,9 @@ export function ModelAccessSelector({
 							))}
 						</div>
 					) : (
-						<p className="text-muted-foreground text-xs">{modelAccessPlaceholder(list, mode)}</p>
+						<p className="text-muted-foreground text-xs">
+							{mode === "allow" ? "No patterns. Add an RE2 pattern to allow models by name shape." : "No patterns. Add an RE2 pattern to block models by name shape."}
+						</p>
 					)}
 				</div>
 			)}

@@ -272,14 +272,14 @@ export default function VirtualKeyDetailSheet({
 														<div className="grid grid-cols-1 items-start gap-4 md:grid-cols-3">
 															<span className="text-muted-foreground pt-0.5 text-sm font-medium">Allowed Models</span>
 															<div className="col-span-2">
-																<ModelAccessBadges value={config.allowed_models} mode="allow" />
+																<ModelAccessBadges value={config.allowed_models} patterns={config.allowed_models_patterns} mode="allow" />
 															</div>
 														</div>
 
 														<div className="grid grid-cols-1 items-start gap-4 md:grid-cols-3">
 															<span className="text-muted-foreground pt-0.5 text-sm font-medium">Blocked Models</span>
 															<div className="col-span-2">
-																<ModelAccessBadges value={config.blacklisted_models} mode="block" />
+																<ModelAccessBadges value={config.blacklisted_models} patterns={config.blacklisted_models_patterns} mode="block" />
 															</div>
 														</div>
 

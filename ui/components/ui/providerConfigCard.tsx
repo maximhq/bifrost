@@ -1,6 +1,6 @@
 import { AsyncMultiSelect } from "@/components/ui/asyncMultiselect";
 import { Label } from "@/components/ui/label";
-import { ModelAccessSelector, summarizeModelList } from "@/components/modelAccess";
+import { ModelAccessSelector, summarizeModelAccess } from "@/components/modelAccess";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
 import MultiBudgetLines, { BudgetLineEntry } from "@/components/ui/multibudgets";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
@@ -40,6 +40,9 @@ export interface ProviderConfigCardValue {
 	providerName: string;
 	allowedModels: string[];
 	blacklistedModels: string[];
+	/** RE2 pattern twins of the two lists above. */
+	allowedModelsPatterns: string[];
+	blacklistedModelsPatterns: string[];
 	weight?: number | null;
 	keyIds: string[];
 	budgets: ProviderConfigBudgetLine[];
@@ -204,7 +207,7 @@ export function ProviderConfigCard({
 		: value.keyIds.length > 0
 			? `${value.keyIds.length} key${value.keyIds.length > 1 ? "s" : ""}`
 			: "No keys";
-	const modelsSummary = summarizeModelList(value.allowedModels, "allow");
+	const modelsSummary = summarizeModelAccess(value.allowedModels, value.allowedModelsPatterns, "allow");
 	const hasRl = value.rateLimit?.token_max_limit != null || value.rateLimit?.request_max_limit != null;
 	const rlSummary = hasRl ? "Rate limits set" : "No rate limits";
 
@@ -639,6 +642,8 @@ export function ProviderConfigCard({
 									keys={modelKeyScope}
 									value={value.allowedModels}
 									onChange={(allowedModels) => update({ allowedModels })}
+									patterns={value.allowedModelsPatterns ?? []}
+									onPatternsChange={(allowedModelsPatterns) => update({ allowedModelsPatterns })}
 								/>
 							</div>
 
@@ -664,6 +669,8 @@ export function ProviderConfigCard({
 									keys={modelKeyScope}
 									value={value.blacklistedModels}
 									onChange={(blacklistedModels) => update({ blacklistedModels })}
+									patterns={value.blacklistedModelsPatterns ?? []}
+									onPatternsChange={(blacklistedModelsPatterns) => update({ blacklistedModelsPatterns })}
 								/>
 							</div>
 

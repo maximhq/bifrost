@@ -1,4 +1,4 @@
-import { validateModelEntry } from "@/components/modelAccess/utils";
+import { validateModelRegex } from "@/components/modelAccess/utils";
 import { KnownProvidersNames } from "@/lib/constants/logs";
 import { isRedacted } from "@/lib/utils/validation";
 import { z } from "zod";
@@ -433,9 +433,10 @@ export const aliasConfigSchema = z.preprocess(
 	aliasConfigObjectSchema,
 );
 
-// One allowed_models / blacklisted_models / models entry: a model name, "*",
-// or a "regex:<pattern>" entry that must compile (mirrors the backend rule).
-export const modelListEntrySchema = z.string().refine((entry) => validateModelEntry(entry) === null, {
+// One allowed_models_patterns / blacklisted_models_patterns / models_patterns
+// entry: a raw RE2 pattern that must compile (mirrors the backend rule). The
+// exact lists next to them hold plain names and "*".
+export const modelPatternSchema = z.string().refine((pattern) => validateModelRegex(pattern) === null, {
 	message: "Invalid regex pattern",
 });
 
@@ -445,8 +446,10 @@ export const modelProviderKeySchema = z
 		id: z.string().min(1, "Id is required"),
 		name: z.string().min(1, "Name is required"),
 		value: secretVarSchema.optional(),
-		models: z.array(modelListEntrySchema).optional().default(["*"]),
-		blacklisted_models: z.array(modelListEntrySchema).default([]).optional(),
+		models: z.array(z.string()).optional().default(["*"]),
+		blacklisted_models: z.array(z.string()).default([]).optional(),
+		models_patterns: z.array(modelPatternSchema).default([]).optional(),
+		blacklisted_models_patterns: z.array(modelPatternSchema).default([]).optional(),
 		weight: z
 			.union([z.number(), z.string()])
 			.transform((val, ctx) => {

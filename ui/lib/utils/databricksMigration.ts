@@ -158,6 +158,8 @@ export interface PlannedKey {
 	needsValue: boolean;
 	models: string[];
 	blacklisted_models: string[];
+	models_patterns: string[];
+	blacklisted_models_patterns: string[];
 	weight: number;
 	enabled: boolean;
 	aliases?: Record<string, AliasConfig>;
@@ -308,6 +310,8 @@ export const buildDatabricksMigrationPlan = (
 			needsValue: !auth.token,
 			models: ["*"],
 			blacklisted_models: [],
+			models_patterns: [],
+			blacklisted_models_patterns: [],
 			weight: 1,
 			enabled: true,
 		});
@@ -328,6 +332,8 @@ export const buildDatabricksMigrationPlan = (
 				needsValue: !value,
 				models: key.models ?? ["*"],
 				blacklisted_models: key.blacklisted_models ?? [],
+				models_patterns: key.models_patterns ?? [],
+				blacklisted_models_patterns: key.blacklisted_models_patterns ?? [],
 				weight: key.weight ?? 1,
 				enabled: key.enabled ?? true,
 				aliases: normalizeAliases(key.aliases),
@@ -392,6 +398,8 @@ export const toDatabricksKeyPayload = (plan: MigrationPlan, key: PlannedKey): Mo
 	value: key.value,
 	models: key.models,
 	blacklisted_models: key.blacklisted_models,
+	models_patterns: key.models_patterns,
+	blacklisted_models_patterns: key.blacklisted_models_patterns,
 	weight: key.weight,
 	enabled: key.enabled,
 	aliases: key.aliases,

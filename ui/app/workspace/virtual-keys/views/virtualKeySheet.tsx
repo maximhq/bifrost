@@ -52,7 +52,7 @@ import {
 import { VirtualMcpAssignmentsEditor } from "@/components/mcp/virtualMcpAssignmentsEditor";
 import { diffVmcpAssignments, vmcpAssignmentsDirty } from "./virtualKeySheet.utils";
 import { BudgetOverrideRequest, CreateVirtualKeyRequest, UpdateVirtualKeyRequest, VirtualKey } from "@/lib/types/governance";
-import { modelListEntrySchema } from "@/lib/types/schemas";
+import { modelPatternSchema } from "@/lib/types/schemas";
 import {
 	type BudgetComparisonEntry,
 	budgetSignature,
@@ -92,8 +92,10 @@ const providerConfigSchema = z.object({
 	id: z.number().optional(),
 	provider: z.string().min(1, "Provider is required"),
 	weight: z.number().min(0, "Weight must be at least 0").max(1, "Weight must be at most 1").optional(),
-	allowed_models: z.array(modelListEntrySchema).optional(),
-	blacklisted_models: z.array(modelListEntrySchema).optional(),
+	allowed_models: z.array(z.string()).optional(),
+	blacklisted_models: z.array(z.string()).optional(),
+	allowed_models_patterns: z.array(modelPatternSchema).optional(),
+	blacklisted_models_patterns: z.array(modelPatternSchema).optional(),
 	key_ids: z.array(z.string()).optional(), // Keys associated with this provider config
 	// Provider-level budget
 	budgets: z
@@ -439,6 +441,8 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 					weight: config.weight ?? undefined,
 					allowed_models: config.allowed_models || [],
 					blacklisted_models: config.blacklisted_models || [],
+					allowed_models_patterns: config.allowed_models_patterns || [],
+					blacklisted_models_patterns: config.blacklisted_models_patterns || [],
 					key_ids: config.allow_all_keys ? ["*"] : config.keys?.map((key) => key.key_id) || [],
 					budgets: config.budgets?.map((b) => ({
 						id: b.id,
@@ -1204,6 +1208,8 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 											providerName: config.provider,
 											allowedModels: config.allowed_models || [],
 											blacklistedModels: config.blacklisted_models || [],
+											allowedModelsPatterns: config.allowed_models_patterns || [],
+											blacklistedModelsPatterns: config.blacklisted_models_patterns || [],
 											weight: config.weight,
 											keyIds: config.key_ids || [],
 											budgets: config.budgets || [],
@@ -1221,6 +1227,8 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 													provider: entry.providerName,
 													allowed_models: entry.allowedModels,
 													blacklisted_models: entry.blacklistedModels,
+													allowed_models_patterns: entry.allowedModelsPatterns,
+													blacklisted_models_patterns: entry.blacklistedModelsPatterns,
 													weight: entry.weight ?? undefined,
 													key_ids: entry.keyIds,
 													budgets: (entry.budgets || []).map((l) => ({

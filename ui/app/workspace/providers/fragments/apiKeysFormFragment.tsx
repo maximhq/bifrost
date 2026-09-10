@@ -385,6 +385,8 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 										unfiltered
 										value={field.value || []}
 										onChange={field.onChange}
+										patterns={form.watch("key.models_patterns") ?? []}
+										onPatternsChange={(next) => form.setValue("key.models_patterns", next, { shouldDirty: true, shouldValidate: true })}
 										label={
 											<>
 												<FormLabel>Allowed Models</FormLabel>
@@ -425,6 +427,8 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 										unfiltered
 										value={field.value || []}
 										onChange={field.onChange}
+										patterns={form.watch("key.blacklisted_models_patterns") ?? []}
+										onPatternsChange={(next) => form.setValue("key.blacklisted_models_patterns", next, { shouldDirty: true, shouldValidate: true })}
 										label={
 											<>
 												<FormLabel>Blocked Models</FormLabel>
