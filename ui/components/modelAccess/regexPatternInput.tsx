@@ -12,6 +12,10 @@ interface RegexPatternInputProps {
 	placeholder?: string;
 	"data-testid"?: string;
 	inputId?: string;
+	/** id of the element describing the input, e.g. a form error message (accessibility) */
+	ariaDescribedBy?: string;
+	/** marks the input invalid for assistive tech, on top of the pattern validator (accessibility) */
+	ariaInvalid?: boolean;
 	className?: string;
 }
 
@@ -19,7 +23,7 @@ interface RegexPatternInputProps {
  * One-line pattern editor: type an RE2 pattern, press Enter or click Add.
  * Invalid patterns show the validator's message inline and are not added.
  */
-export function RegexPatternInput({ onAdd, disabled, placeholder, inputId, className, ...rest }: RegexPatternInputProps) {
+export function RegexPatternInput({ onAdd, disabled, placeholder, inputId, ariaDescribedBy, ariaInvalid, className, ...rest }: RegexPatternInputProps) {
 	const [pattern, setPattern] = useState("");
 	const [error, setError] = useState<string | null>(null);
 	const testId = rest["data-testid"];
@@ -46,7 +50,8 @@ export function RegexPatternInput({ onAdd, disabled, placeholder, inputId, class
 					disabled={disabled}
 					placeholder={placeholder ?? "^gpt-4.*"}
 					className={cn("h-9 font-mono text-sm", error && "border-destructive focus-visible:ring-destructive/30")}
-					aria-invalid={!!error}
+					aria-describedby={ariaDescribedBy}
+					aria-invalid={!!error || ariaInvalid}
 					onChange={(e) => {
 						setPattern(e.target.value);
 						if (error) setError(null);

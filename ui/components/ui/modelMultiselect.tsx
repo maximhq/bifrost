@@ -26,6 +26,10 @@ interface ModelMultiselectPropsBase {
 	inputId?: string;
 	/** id of element that labels this control (accessibility) */
 	ariaLabelledBy?: string;
+	/** id of the element describing this control, e.g. a form error message (accessibility) */
+	ariaDescribedBy?: string;
+	/** marks the control invalid for assistive tech (accessibility) */
+	ariaInvalid?: boolean;
 	/** test selector for the container element */
 	"data-testid"?: string;
 	/** Menu position strategy. Use "absolute" inside popovers to avoid portal issues. Defaults to "fixed". */
@@ -271,6 +275,8 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 			hideSearchIcon={props.hideSearchIcon}
 			inputId={props.inputId}
 			ariaLabelledBy={props.ariaLabelledBy}
+			ariaDescribedBy={props.ariaDescribedBy}
+			ariaInvalid={props.ariaInvalid}
 			data-testid={props["data-testid"]}
 			value={selectedOptions}
 			onChange={handleChange}

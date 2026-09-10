@@ -2,7 +2,7 @@ import { ModelMultiselect } from "@/components/ui/modelMultiselect";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { X } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ModelAccessChipLabel } from "./modelAccessChip";
 import { RegexPatternInput } from "./regexPatternInput";
 import { addPattern, type ModelAccessMode, modelAccessPlaceholder, resolveWildcardSelection } from "./utils";
@@ -34,6 +34,10 @@ export interface ModelAccessSelectorProps {
 	label?: ReactNode;
 	"data-testid"?: string;
 	inputId?: string;
+	/** Injected by FormControl when the selector is used as a form field. */
+	id?: string;
+	"aria-describedby"?: string;
+	"aria-invalid"?: boolean;
 	menuPosition?: "absolute" | "fixed";
 	menuPortalTarget?: HTMLElement | null;
 	className?: string;
@@ -65,11 +69,25 @@ export function ModelAccessSelector({
 	...rest
 }: ModelAccessSelectorProps) {
 	const testId = rest["data-testid"];
+	// FormControl injects these onto its child; forward them to whichever input is showing
+	// so the label, the error message and the invalid state still point at a real element.
+	const controlId = inputId ?? rest.id;
+	const describedBy = rest["aria-describedby"];
+	const invalid = rest["aria-invalid"];
 	const list = value ?? [];
 	const patternList = patterns ?? [];
 	// Open on the view that matches what is already configured, so a
 	// patterns-only rule is visible right away instead of hidden behind the toggle.
 	const [tab, setTab] = useState<EditorTab>(() => (patternList.length > 0 && list.length === 0 ? "regex" : "models"));
+	// A form that loads its record asynchronously mounts this empty and resets it later,
+	// after the initializer above has already run. Pick the view once more when the first
+	// real values land; after that the toggle belongs to the user and nothing moves it.
+	const settled = useRef(list.length > 0 || patternList.length > 0);
+	useEffect(() => {
+		if (settled.current || (list.length === 0 && patternList.length === 0)) return;
+		settled.current = true;
+		if (patternList.length > 0 && list.length === 0) setTab("regex");
+	}, [list.length, patternList.length]);
 	const hasWildcard = list.includes("*");
 
 	const removePattern = (pattern: string) => onPatternsChange(patternList.filter((p) => p !== pattern));
@@ -109,7 +127,9 @@ export function ModelAccessSelector({
 					allowAllOption={allowAllOption}
 					hideSearchIcon
 					data-testid={testId}
-					inputId={inputId}
+					inputId={controlId}
+					ariaDescribedBy={describedBy}
+					ariaInvalid={invalid}
 					provider={provider}
 					keys={keys}
 					unfiltered={unfiltered}
@@ -126,7 +146,9 @@ export function ModelAccessSelector({
 				<div className="space-y-1.5">
 					<RegexPatternInput
 						data-testid={testId ? `${testId}-regex` : undefined}
-						inputId={inputId}
+						inputId={controlId}
+						ariaDescribedBy={describedBy}
+						ariaInvalid={invalid}
 						disabled={disabled}
 						onAdd={(pattern) => onPatternsChange(addPattern(patternList, pattern))}
 					/>
