@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/migrator"
 	"gorm.io/gorm"
 	"gorm.io/gorm/schema"
 )
@@ -328,6 +329,13 @@ var clickhouseMigrationSteps = []clickhouseMigrationStep{
 // migration ledger or advisory lock: CREATE TABLE IF NOT EXISTS and ADD COLUMN
 // IF NOT EXISTS are inherently idempotent and concurrency-safe across pods.
 func triggerClickHouseMigrations(ctx context.Context, db *gorm.DB, cluster string, retentionDays int, logger schemas.Logger) error {
+	// No migration ledger exists for ClickHouse, so unlike the SQL stores we
+	// cannot verify the schema is current — --no-migrate just trusts the
+	// out-of-band --migrate-only run.
+	if migrator.SkipStartupMigrations() {
+		logger.Info("[logstore] --no-migrate set; skipping clickhouse migration run")
+		return nil
+	}
 	for _, step := range clickhouseMigrationSteps {
 		if err := step(ctx, db, cluster, retentionDays, logger); err != nil {
 			return err

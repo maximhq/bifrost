@@ -21,6 +21,14 @@ func TestResolveMatViewRefreshIntervalDefaults(t *testing.T) {
 	assert.Equal(t, time.Duration(0), resolveMatViewRefreshInterval("off", testLogger{}))
 	assert.Equal(t, time.Duration(0), resolveMatViewRefreshInterval("0s", testLogger{}))
 	assert.Equal(t, time.Duration(0), resolveMatViewRefreshInterval("-1m", testLogger{}))
+	// "manual" keeps the views but drops the ticker, so it must resolve to a
+	// value distinct from both "off" (0) and any parseable duration.
+	assert.Equal(t, matViewRefreshManual, resolveMatViewRefreshInterval("manual", testLogger{}))
+	assert.NotEqual(t, time.Duration(0), matViewRefreshManual)
+	for _, raw := range []string{"", "not-a-duration", "1s", "5m", "off", "0s", "-1m"} {
+		assert.NotEqual(t, matViewRefreshManual, resolveMatViewRefreshInterval(raw, testLogger{}),
+			"%q must not collide with the manual sentinel", raw)
+	}
 }
 
 func TestStartMatViewRefresherDisabled(t *testing.T) {
