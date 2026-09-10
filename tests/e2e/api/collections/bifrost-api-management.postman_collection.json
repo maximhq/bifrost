@@ -3784,8 +3784,8 @@
       ]
     },
     {
-      "name": "Governance - VK Regex Model Lists",
-      "description": "Regex entries in model lists ('regex:<RE2>' inside allowed_models, blacklisted_models and provider key models). Sections: write-time validation (400s on VK and provider-key endpoints), a base VK exercised on both list-models endpoints plus a real completion and two refusals, a permutation matrix of allow/block combinations checked against the catalog listing and refusal probes, VK updates flipping a literal list to a regex list, and a provider-key round-trip. Refusals are 403 model_blocked; regex entries never appear as models in listings.",
+      "name": "Governance - VK Model Patterns",
+      "description": "Pattern twins of the model lists (allowed_models_patterns and blacklisted_models_patterns on a VK provider config, models_patterns and blacklisted_models_patterns on a provider key): raw RE2 patterns matched case-insensitively as a full match against the model name and provider/model, next to the exact lists which stay exact. Sections: write-time validation (400s on VK and provider-key endpoints, including the wildcard and a regex-looking exact name that is accepted as a plain name), a base VK exercised on both list-models endpoints plus a real completion and two refusals, a permutation matrix of allow/block combinations checked against the catalog listing and refusal probes, VK updates flipping the listing, and a provider-key round-trip.",
       "item": [
         {
           "name": "Create VK with unparsable pattern is rejected (Coverage Probe)",
@@ -3822,7 +3822,7 @@
                   "var body = {",
                   "  name: \"VK Regex Invalid \" + Date.now(),",
                   "  is_active: true,",
-                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"regex:(\"]}]",
+                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [], \"allowed_models_patterns\": [\"(\"]}]",
                   "};",
                   "pm.request.body.raw = JSON.stringify(body);"
                 ]
@@ -3837,8 +3837,8 @@
                   "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(400);",
                   "});",
                   "pm.test('The refusal names the field', function () {",
-                  "  pm.expect(pm.response.text()).to.include(\"allowed_models\");",
-                  "  pm.expect(pm.response.text()).to.include(\"regex\");",
+                  "  pm.expect(pm.response.text()).to.include(\"allowed_models_patterns\");",
+                  "  pm.expect(pm.response.text()).to.include(\"pattern\");",
                   "});"
                 ]
               }
@@ -3846,7 +3846,7 @@
           ]
         },
         {
-          "name": "Create VK with wildcard mixed with a regex is rejected (Coverage Probe)",
+          "name": "Create VK with the wildcard as a pattern is rejected (Coverage Probe)",
           "request": {
             "method": "POST",
             "header": [
@@ -3880,7 +3880,7 @@
                   "var body = {",
                   "  name: \"VK Regex Invalid \" + Date.now(),",
                   "  is_active: true,",
-                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"*\", \"regex:^gpt-4.*\"]}]",
+                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"*\"], \"allowed_models_patterns\": [\"*\"]}]",
                   "};",
                   "pm.request.body.raw = JSON.stringify(body);"
                 ]
@@ -3891,11 +3891,11 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test(\"VK with wildcard mixed with a regex is refused with 400\", function () {",
+                  "pm.test(\"VK with the wildcard as a pattern is refused with 400\", function () {",
                   "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(400);",
                   "});",
                   "pm.test('The refusal names the field', function () {",
-                  "  pm.expect(pm.response.text()).to.include(\"allowed_models\");",
+                  "  pm.expect(pm.response.text()).to.include(\"allowed_models_patterns\");",
                   "});"
                 ]
               }
@@ -3937,7 +3937,7 @@
                   "var body = {",
                   "  name: \"VK Regex Invalid \" + Date.now(),",
                   "  is_active: true,",
-                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"regex:\"]}]",
+                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [], \"allowed_models_patterns\": [\"\"]}]",
                   "};",
                   "pm.request.body.raw = JSON.stringify(body);"
                 ]
@@ -3952,8 +3952,8 @@
                   "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(400);",
                   "});",
                   "pm.test('The refusal names the field', function () {",
-                  "  pm.expect(pm.response.text()).to.include(\"allowed_models\");",
-                  "  pm.expect(pm.response.text()).to.include(\"regex\");",
+                  "  pm.expect(pm.response.text()).to.include(\"allowed_models_patterns\");",
+                  "  pm.expect(pm.response.text()).to.include(\"pattern\");",
                   "});"
                 ]
               }
@@ -3995,7 +3995,7 @@
                   "var body = {",
                   "  name: \"VK Regex Invalid \" + Date.now(),",
                   "  is_active: true,",
-                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"regex:(?<=gpt-)4o\"]}]",
+                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [], \"allowed_models_patterns\": [\"(?<=gpt-)4o\"]}]",
                   "};",
                   "pm.request.body.raw = JSON.stringify(body);"
                 ]
@@ -4010,8 +4010,8 @@
                   "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(400);",
                   "});",
                   "pm.test('The refusal names the field', function () {",
-                  "  pm.expect(pm.response.text()).to.include(\"allowed_models\");",
-                  "  pm.expect(pm.response.text()).to.include(\"regex\");",
+                  "  pm.expect(pm.response.text()).to.include(\"allowed_models_patterns\");",
+                  "  pm.expect(pm.response.text()).to.include(\"pattern\");",
                   "});"
                 ]
               }
@@ -4053,7 +4053,7 @@
                   "var body = {",
                   "  name: \"VK Regex Invalid \" + Date.now(),",
                   "  is_active: true,",
-                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"regex:^gpt-4.*\", \"regex:^gpt-4.*\"]}]",
+                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [], \"allowed_models_patterns\": [\"^gpt-4.*\", \"^gpt-4.*\"]}]",
                   "};",
                   "pm.request.body.raw = JSON.stringify(body);"
                 ]
@@ -4068,7 +4068,7 @@
                   "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(400);",
                   "});",
                   "pm.test('The refusal names the field', function () {",
-                  "  pm.expect(pm.response.text()).to.include(\"allowed_models\");",
+                  "  pm.expect(pm.response.text()).to.include(\"allowed_models_patterns\");",
                   "  pm.expect(pm.response.text()).to.include(\"duplicate\");",
                   "});"
                 ]
@@ -4111,7 +4111,7 @@
                   "var body = {",
                   "  name: \"VK Regex Invalid \" + Date.now(),",
                   "  is_active: true,",
-                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"*\"], \"blacklisted_models\": [\"regex:[\"]}]",
+                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"*\"], \"blacklisted_models\": [], \"blacklisted_models_patterns\": [\"[\"]}]",
                   "};",
                   "pm.request.body.raw = JSON.stringify(body);"
                 ]
@@ -4126,8 +4126,8 @@
                   "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(400);",
                   "});",
                   "pm.test('The refusal names the field', function () {",
-                  "  pm.expect(pm.response.text()).to.include(\"blacklisted_models\");",
-                  "  pm.expect(pm.response.text()).to.include(\"regex\");",
+                  "  pm.expect(pm.response.text()).to.include(\"blacklisted_models_patterns\");",
+                  "  pm.expect(pm.response.text()).to.include(\"pattern\");",
                   "});"
                 ]
               }
@@ -4168,7 +4168,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "// The key never persists: validation refuses it before the store is touched.",
-                  "var body = {\"models\": [\"regex:(\"]};",
+                  "var body = {\"models\": [], \"models_patterns\": [\"(\"]};",
                   "body.name = 'regex-probe-' + Date.now();",
                   "body.value = 'sk-regex-probe-never-stored';",
                   "pm.request.body.raw = JSON.stringify(body);"
@@ -4184,7 +4184,7 @@
                   "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(400);",
                   "});",
                   "pm.test('The refusal names the field', function () {",
-                  "  pm.expect(pm.response.text()).to.include(\"Invalid models\");",
+                  "  pm.expect(pm.response.text()).to.include(\"Invalid models_patterns\");",
                   "});"
                 ]
               }
@@ -4192,7 +4192,7 @@
           ]
         },
         {
-          "name": "Create provider key with wildcard mixed with a regex in models is rejected (Coverage Probe)",
+          "name": "Create provider key with the wildcard as a pattern in models is rejected (Coverage Probe)",
           "request": {
             "method": "POST",
             "header": [
@@ -4225,7 +4225,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "// The key never persists: validation refuses it before the store is touched.",
-                  "var body = {\"models\": [\"*\", \"regex:^gpt-4.*\"]};",
+                  "var body = {\"models\": [\"*\"], \"models_patterns\": [\"*\"]};",
                   "body.name = 'regex-probe-' + Date.now();",
                   "body.value = 'sk-regex-probe-never-stored';",
                   "pm.request.body.raw = JSON.stringify(body);"
@@ -4237,11 +4237,11 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test(\"Key with wildcard mixed with a regex in models is refused with 400\", function () {",
+                  "pm.test(\"Key with the wildcard as a pattern in models is refused with 400\", function () {",
                   "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(400);",
                   "});",
                   "pm.test('The refusal names the field', function () {",
-                  "  pm.expect(pm.response.text()).to.include(\"Invalid models\");",
+                  "  pm.expect(pm.response.text()).to.include(\"Invalid models_patterns\");",
                   "});"
                 ]
               }
@@ -4282,7 +4282,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "// The key never persists: validation refuses it before the store is touched.",
-                  "var body = {\"models\": [\"*\"], \"blacklisted_models\": [\"regex:(\"]};",
+                  "var body = {\"models\": [\"*\"], \"blacklisted_models\": [], \"blacklisted_models_patterns\": [\"(\"]};",
                   "body.name = 'regex-probe-' + Date.now();",
                   "body.value = 'sk-regex-probe-never-stored';",
                   "pm.request.body.raw = JSON.stringify(body);"
@@ -4298,7 +4298,7 @@
                   "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(400);",
                   "});",
                   "pm.test('The refusal names the field', function () {",
-                  "  pm.expect(pm.response.text()).to.include(\"Invalid blacklisted_models\");",
+                  "  pm.expect(pm.response.text()).to.include(\"Invalid blacklisted_models_patterns\");",
                   "});"
                 ]
               }
@@ -4306,7 +4306,7 @@
           ]
         },
         {
-          "name": "Base: create VK (regex allow gpt-4 family, regex block previews)",
+          "name": "Base: create VK (allow pattern for the gpt-4 family, block pattern for previews)",
           "request": {
             "method": "POST",
             "header": [
@@ -4341,7 +4341,7 @@
                   "var body = {",
                   "  name: \"VK Regex Model Lists \" + Date.now(),",
                   "  is_active: true,",
-                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"regex:^gpt-4.*\"], \"blacklisted_models\": [\"regex:.*-preview$\"]}]",
+                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [], \"allowed_models_patterns\": [\"^gpt-4.*\"], \"blacklisted_models\": [], \"blacklisted_models_patterns\": [\".*-preview$\"]}]",
                   "};",
                   "pm.request.body.raw = JSON.stringify(body);"
                 ]
@@ -4367,7 +4367,7 @@
           ]
         },
         {
-          "name": "Base: GET VK round-trips regex entries",
+          "name": "Base: GET VK round-trips the pattern fields",
           "request": {
             "method": "GET",
             "header": [],
@@ -4407,15 +4407,15 @@
                   "var json = pm.response.json();",
                   "var vk = json.virtual_key || json;",
                   "var pc = (vk.provider_configs || []).filter(function (c) { return c.provider === 'openai'; })[0] || {};",
-                  "pm.test('allowed_models keeps the regex entry verbatim', function () { pm.expect(pc.allowed_models || []).to.include('regex:^gpt-4.*'); });",
-                  "pm.test('blacklisted_models keeps the regex entry verbatim', function () { pm.expect(pc.blacklisted_models || []).to.include('regex:.*-preview$'); });"
+                  "pm.test('allowed_models_patterns keeps the pattern verbatim', function () { pm.expect(pc.allowed_models_patterns || []).to.include('^gpt-4.*'); });",
+                  "pm.test('blacklisted_models_patterns keeps the pattern verbatim', function () { pm.expect(pc.blacklisted_models_patterns || []).to.include('.*-preview$'); });"
                 ]
               }
             }
           ]
         },
         {
-          "name": "Base: /api/models honours regex",
+          "name": "Base: /api/models honours the patterns",
           "request": {
             "method": "GET",
             "header": [
@@ -4480,8 +4480,8 @@
                   "  var blocked = entries.filter(function (e) { return /-preview$/i.test(e.name); }).map(function (e) { return e.name; });",
                   "  pm.expect(blocked, 'block regex leaked: ' + JSON.stringify(blocked)).to.eql([]);",
                   "});",
-                  "pm.test('Regex entries are never listed as models', function () {",
-                  "  var pseudo = entries.filter(function (e) { return e.name.indexOf('regex:') === 0; }).map(function (e) { return e.name; });",
+                  "pm.test('Pattern strings are never listed as models', function () {",
+                  "  var pseudo = entries.filter(function (e) { return /[\\^$*(|\\[]/.test(e.name); }).map(function (e) { return e.name; });",
                   "  pm.expect(pseudo, 'pseudo-models: ' + JSON.stringify(pseudo)).to.eql([]);",
                   "});"
                 ]
@@ -4490,7 +4490,7 @@
           ]
         },
         {
-          "name": "Base: /v1/models honours regex",
+          "name": "Base: /v1/models honours the patterns",
           "request": {
             "method": "GET",
             "header": [
@@ -4549,8 +4549,8 @@
                   "  var blocked = entries.filter(function (e) { return /-preview$/i.test(e.name); }).map(function (e) { return e.name; });",
                   "  pm.expect(blocked, 'block regex leaked: ' + JSON.stringify(blocked)).to.eql([]);",
                   "});",
-                  "pm.test('Regex entries are never listed as models', function () {",
-                  "  var pseudo = entries.filter(function (e) { return e.name.indexOf('regex:') === 0; }).map(function (e) { return e.name; });",
+                  "pm.test('Pattern strings are never listed as models', function () {",
+                  "  var pseudo = entries.filter(function (e) { return /[\\^$*(|\\[]/.test(e.name); }).map(function (e) { return e.name; });",
                   "  pm.expect(pseudo, 'pseudo-models: ' + JSON.stringify(pseudo)).to.eql([]);",
                   "});"
                 ]
@@ -4821,7 +4821,7 @@
                   "var body = {",
                   "  name: \"VK Regex allow-all-block-regex \" + Date.now(),",
                   "  is_active: true,",
-                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"*\"], \"blacklisted_models\": [\"regex:.*-preview$\"]}]",
+                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"*\"], \"blacklisted_models\": [], \"blacklisted_models_patterns\": [\".*-preview$\"]}]",
                   "};",
                   "pm.request.body.raw = JSON.stringify(body);"
                 ]
@@ -4890,7 +4890,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// allowed_models: [\"*\"] | blacklisted_models: [\"regex:.*-preview$\"]",
+                  "// allowed_models: [\"*\"] | blacklisted_models: [], blacklisted_models_patterns: [\".*-preview$\"]",
                   "pm.test('GET /api/models with VK returns 200', function () { pm.response.to.have.status(200); });",
                   "var body = pm.response.json();",
                   "var entries = ((body && body.models) || []).map(function (m) {",
@@ -4903,8 +4903,8 @@
                   "  var others = entries.filter(function (e) { return e.provider !== 'openai'; }).map(function (e) { return e.provider + '/' + e.name; });",
                   "  pm.expect(others, 'leaked: ' + JSON.stringify(others)).to.eql([]);",
                   "});",
-                  "pm.test('Regex entries are never listed as models', function () {",
-                  "  var pseudo = names.filter(function (n) { return n.indexOf('regex:') === 0; });",
+                  "pm.test('Pattern strings are never listed as models', function () {",
+                  "  var pseudo = names.filter(function (n) { return /[\\^$*(|\\[]/.test(n); });",
                   "  pm.expect(pseudo, 'pseudo-models: ' + JSON.stringify(pseudo)).to.eql([]);",
                   "});",
                   "pm.test(\"Listing includes gpt-4o-mini\", function () { pm.expect(names).to.include(\"gpt-4o-mini\"); });",
@@ -5054,7 +5054,7 @@
                   "var body = {",
                   "  name: \"VK Regex allow-regex-no-block \" + Date.now(),",
                   "  is_active: true,",
-                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"regex:^gpt-4.*\"]}]",
+                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [], \"allowed_models_patterns\": [\"^gpt-4.*\"]}]",
                   "};",
                   "pm.request.body.raw = JSON.stringify(body);"
                 ]
@@ -5123,7 +5123,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// allowed_models: [\"regex:^gpt-4.*\"] | blacklisted_models: null",
+                  "// allowed_models: [], allowed_models_patterns: [\"^gpt-4.*\"] | blacklisted_models: null",
                   "pm.test('GET /api/models with VK returns 200', function () { pm.response.to.have.status(200); });",
                   "var body = pm.response.json();",
                   "var entries = ((body && body.models) || []).map(function (m) {",
@@ -5136,8 +5136,8 @@
                   "  var others = entries.filter(function (e) { return e.provider !== 'openai'; }).map(function (e) { return e.provider + '/' + e.name; });",
                   "  pm.expect(others, 'leaked: ' + JSON.stringify(others)).to.eql([]);",
                   "});",
-                  "pm.test('Regex entries are never listed as models', function () {",
-                  "  var pseudo = names.filter(function (n) { return n.indexOf('regex:') === 0; });",
+                  "pm.test('Pattern strings are never listed as models', function () {",
+                  "  var pseudo = names.filter(function (n) { return /[\\^$*(|\\[]/.test(n); });",
                   "  pm.expect(pseudo, 'pseudo-models: ' + JSON.stringify(pseudo)).to.eql([]);",
                   "});",
                   "pm.test(\"Listing includes gpt-4o-mini\", function () { pm.expect(names).to.include(\"gpt-4o-mini\"); });",
@@ -5288,7 +5288,7 @@
                   "var body = {",
                   "  name: \"VK Regex allow-regex-block-literal \" + Date.now(),",
                   "  is_active: true,",
-                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"regex:^gpt-4.*\"], \"blacklisted_models\": [\"gpt-4o\"]}]",
+                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [], \"allowed_models_patterns\": [\"^gpt-4.*\"], \"blacklisted_models\": [\"gpt-4o\"]}]",
                   "};",
                   "pm.request.body.raw = JSON.stringify(body);"
                 ]
@@ -5357,7 +5357,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// allowed_models: [\"regex:^gpt-4.*\"] | blacklisted_models: [\"gpt-4o\"]",
+                  "// allowed_models: [], allowed_models_patterns: [\"^gpt-4.*\"] | blacklisted_models: [\"gpt-4o\"]",
                   "pm.test('GET /api/models with VK returns 200', function () { pm.response.to.have.status(200); });",
                   "var body = pm.response.json();",
                   "var entries = ((body && body.models) || []).map(function (m) {",
@@ -5370,8 +5370,8 @@
                   "  var others = entries.filter(function (e) { return e.provider !== 'openai'; }).map(function (e) { return e.provider + '/' + e.name; });",
                   "  pm.expect(others, 'leaked: ' + JSON.stringify(others)).to.eql([]);",
                   "});",
-                  "pm.test('Regex entries are never listed as models', function () {",
-                  "  var pseudo = names.filter(function (n) { return n.indexOf('regex:') === 0; });",
+                  "pm.test('Pattern strings are never listed as models', function () {",
+                  "  var pseudo = names.filter(function (n) { return /[\\^$*(|\\[]/.test(n); });",
                   "  pm.expect(pseudo, 'pseudo-models: ' + JSON.stringify(pseudo)).to.eql([]);",
                   "});",
                   "pm.test(\"Listing includes gpt-4o-mini\", function () { pm.expect(names).to.include(\"gpt-4o-mini\"); });",
@@ -5582,7 +5582,7 @@
                   "var body = {",
                   "  name: \"VK Regex allow-literal-block-regex \" + Date.now(),",
                   "  is_active: true,",
-                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"gpt-4o\", \"gpt-4-turbo-preview\"], \"blacklisted_models\": [\"regex:.*-preview$\"]}]",
+                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"gpt-4o-mini\", \"gpt-4o-mini-preview\"], \"blacklisted_models\": [], \"blacklisted_models_patterns\": [\".*-preview$\"]}]",
                   "};",
                   "pm.request.body.raw = JSON.stringify(body);"
                 ]
@@ -5651,7 +5651,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// allowed_models: [\"gpt-4o\", \"gpt-4-turbo-preview\"] | blacklisted_models: [\"regex:.*-preview$\"]",
+                  "// allowed_models: [\"gpt-4o-mini\", \"gpt-4o-mini-preview\"] | blacklisted_models: [], blacklisted_models_patterns: [\".*-preview$\"]",
                   "pm.test('GET /api/models with VK returns 200', function () { pm.response.to.have.status(200); });",
                   "var body = pm.response.json();",
                   "var entries = ((body && body.models) || []).map(function (m) {",
@@ -5664,8 +5664,8 @@
                   "  var others = entries.filter(function (e) { return e.provider !== 'openai'; }).map(function (e) { return e.provider + '/' + e.name; });",
                   "  pm.expect(others, 'leaked: ' + JSON.stringify(others)).to.eql([]);",
                   "});",
-                  "pm.test('Regex entries are never listed as models', function () {",
-                  "  var pseudo = names.filter(function (n) { return n.indexOf('regex:') === 0; });",
+                  "pm.test('Pattern strings are never listed as models', function () {",
+                  "  var pseudo = names.filter(function (n) { return /[\\^$*(|\\[]/.test(n); });",
                   "  pm.expect(pseudo, 'pseudo-models: ' + JSON.stringify(pseudo)).to.eql([]);",
                   "});",
                   "pm.test(\"Listing includes gpt-4o-mini\", function () { pm.expect(names).to.include(\"gpt-4o-mini\"); });",
@@ -5877,7 +5877,7 @@
                   "var body = {",
                   "  name: \"VK Regex allow-mixed \" + Date.now(),",
                   "  is_active: true,",
-                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"gpt-3.5-turbo\", \"regex:^o[0-9].*\"]}]",
+                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"gpt-4o-mini\"], \"allowed_models_patterns\": [\"^o[0-9].*\"]}]",
                   "};",
                   "pm.request.body.raw = JSON.stringify(body);"
                 ]
@@ -5946,7 +5946,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// allowed_models: [\"gpt-3.5-turbo\", \"regex:^o[0-9].*\"] | blacklisted_models: null",
+                  "// allowed_models: [\"gpt-4o-mini\"], allowed_models_patterns: [\"^o[0-9].*\"] | blacklisted_models: null",
                   "pm.test('GET /api/models with VK returns 200', function () { pm.response.to.have.status(200); });",
                   "var body = pm.response.json();",
                   "var entries = ((body && body.models) || []).map(function (m) {",
@@ -5959,8 +5959,8 @@
                   "  var others = entries.filter(function (e) { return e.provider !== 'openai'; }).map(function (e) { return e.provider + '/' + e.name; });",
                   "  pm.expect(others, 'leaked: ' + JSON.stringify(others)).to.eql([]);",
                   "});",
-                  "pm.test('Regex entries are never listed as models', function () {",
-                  "  var pseudo = names.filter(function (n) { return n.indexOf('regex:') === 0; });",
+                  "pm.test('Pattern strings are never listed as models', function () {",
+                  "  var pseudo = names.filter(function (n) { return /[\\^$*(|\\[]/.test(n); });",
                   "  pm.expect(pseudo, 'pseudo-models: ' + JSON.stringify(pseudo)).to.eql([]);",
                   "});",
                   "pm.test(\"Listing includes gpt-4o-mini\", function () { pm.expect(names).to.include(\"gpt-4o-mini\"); });",
@@ -6111,7 +6111,7 @@
                   "var body = {",
                   "  name: \"VK Regex block-mixed \" + Date.now(),",
                   "  is_active: true,",
-                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"*\"], \"blacklisted_models\": [\"gpt-4o\", \"regex:^gpt-3\\\\.5.*\"]}]",
+                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"*\"], \"blacklisted_models\": [\"gpt-4o\"], \"blacklisted_models_patterns\": [\"^gpt-3\\\\.5.*\"]}]",
                   "};",
                   "pm.request.body.raw = JSON.stringify(body);"
                 ]
@@ -6180,7 +6180,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// allowed_models: [\"*\"] | blacklisted_models: [\"gpt-4o\", \"regex:^gpt-3\\\\.5.*\"]",
+                  "// allowed_models: [\"*\"] | blacklisted_models: [\"gpt-4o\"], blacklisted_models_patterns: [\"^gpt-3\\\\.5.*\"]",
                   "pm.test('GET /api/models with VK returns 200', function () { pm.response.to.have.status(200); });",
                   "var body = pm.response.json();",
                   "var entries = ((body && body.models) || []).map(function (m) {",
@@ -6193,8 +6193,8 @@
                   "  var others = entries.filter(function (e) { return e.provider !== 'openai'; }).map(function (e) { return e.provider + '/' + e.name; });",
                   "  pm.expect(others, 'leaked: ' + JSON.stringify(others)).to.eql([]);",
                   "});",
-                  "pm.test('Regex entries are never listed as models', function () {",
-                  "  var pseudo = names.filter(function (n) { return n.indexOf('regex:') === 0; });",
+                  "pm.test('Pattern strings are never listed as models', function () {",
+                  "  var pseudo = names.filter(function (n) { return /[\\^$*(|\\[]/.test(n); });",
                   "  pm.expect(pseudo, 'pseudo-models: ' + JSON.stringify(pseudo)).to.eql([]);",
                   "});",
                   "pm.test(\"Listing includes gpt-4o-mini\", function () { pm.expect(names).to.include(\"gpt-4o-mini\"); });",
@@ -6406,7 +6406,7 @@
                   "var body = {",
                   "  name: \"VK Regex anchored \" + Date.now(),",
                   "  is_active: true,",
-                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"regex:gpt-4\"]}]",
+                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [], \"allowed_models_patterns\": [\"gpt-4\"]}]",
                   "};",
                   "pm.request.body.raw = JSON.stringify(body);"
                 ]
@@ -6475,7 +6475,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// allowed_models: [\"regex:gpt-4\"] | blacklisted_models: null",
+                  "// allowed_models: [], allowed_models_patterns: [\"gpt-4\"] | blacklisted_models: null",
                   "pm.test('GET /api/models with VK returns 200', function () { pm.response.to.have.status(200); });",
                   "var body = pm.response.json();",
                   "var entries = ((body && body.models) || []).map(function (m) {",
@@ -6488,8 +6488,8 @@
                   "  var others = entries.filter(function (e) { return e.provider !== 'openai'; }).map(function (e) { return e.provider + '/' + e.name; });",
                   "  pm.expect(others, 'leaked: ' + JSON.stringify(others)).to.eql([]);",
                   "});",
-                  "pm.test('Regex entries are never listed as models', function () {",
-                  "  var pseudo = names.filter(function (n) { return n.indexOf('regex:') === 0; });",
+                  "pm.test('Pattern strings are never listed as models', function () {",
+                  "  var pseudo = names.filter(function (n) { return /[\\^$*(|\\[]/.test(n); });",
                   "  pm.expect(pseudo, 'pseudo-models: ' + JSON.stringify(pseudo)).to.eql([]);",
                   "});",
                   "pm.test(\"Listing excludes gpt-4o\", function () { pm.expect(names).to.not.include(\"gpt-4o\"); });",
@@ -6640,7 +6640,7 @@
                   "var body = {",
                   "  name: \"VK Regex case-insensitive \" + Date.now(),",
                   "  is_active: true,",
-                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"regex:^GPT-4O.*\"], \"blacklisted_models\": [\"regex:.*-MINI$\"]}]",
+                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [], \"allowed_models_patterns\": [\"^GPT-4O.*\"], \"blacklisted_models\": [], \"blacklisted_models_patterns\": [\".*-PREVIEW$\"]}]",
                   "};",
                   "pm.request.body.raw = JSON.stringify(body);"
                 ]
@@ -6709,7 +6709,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// allowed_models: [\"regex:^GPT-4O.*\"] | blacklisted_models: [\"regex:.*-MINI$\"]",
+                  "// allowed_models: [], allowed_models_patterns: [\"^GPT-4O.*\"] | blacklisted_models: [], blacklisted_models_patterns: [\".*-PREVIEW$\"]",
                   "pm.test('GET /api/models with VK returns 200', function () { pm.response.to.have.status(200); });",
                   "var body = pm.response.json();",
                   "var entries = ((body && body.models) || []).map(function (m) {",
@@ -6722,8 +6722,8 @@
                   "  var others = entries.filter(function (e) { return e.provider !== 'openai'; }).map(function (e) { return e.provider + '/' + e.name; });",
                   "  pm.expect(others, 'leaked: ' + JSON.stringify(others)).to.eql([]);",
                   "});",
-                  "pm.test('Regex entries are never listed as models', function () {",
-                  "  var pseudo = names.filter(function (n) { return n.indexOf('regex:') === 0; });",
+                  "pm.test('Pattern strings are never listed as models', function () {",
+                  "  var pseudo = names.filter(function (n) { return /[\\^$*(|\\[]/.test(n); });",
                   "  pm.expect(pseudo, 'pseudo-models: ' + JSON.stringify(pseudo)).to.eql([]);",
                   "});",
                   "pm.test(\"Listing includes gpt-4o-mini\", function () { pm.expect(names).to.include(\"gpt-4o-mini\"); });",
@@ -6935,7 +6935,7 @@
                   "var body = {",
                   "  name: \"VK Regex alternation \" + Date.now(),",
                   "  is_active: true,",
-                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"regex:^(gpt-4o|gpt-4-turbo)$\"]}]",
+                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [], \"allowed_models_patterns\": [\"^(gpt-4o-mini|gpt-4-turbo)$\"]}]",
                   "};",
                   "pm.request.body.raw = JSON.stringify(body);"
                 ]
@@ -7004,7 +7004,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// allowed_models: [\"regex:^(gpt-4o|gpt-4-turbo)$\"] | blacklisted_models: null",
+                  "// allowed_models: [], allowed_models_patterns: [\"^(gpt-4o-mini|gpt-4-turbo)$\"] | blacklisted_models: null",
                   "pm.test('GET /api/models with VK returns 200', function () { pm.response.to.have.status(200); });",
                   "var body = pm.response.json();",
                   "var entries = ((body && body.models) || []).map(function (m) {",
@@ -7017,8 +7017,8 @@
                   "  var others = entries.filter(function (e) { return e.provider !== 'openai'; }).map(function (e) { return e.provider + '/' + e.name; });",
                   "  pm.expect(others, 'leaked: ' + JSON.stringify(others)).to.eql([]);",
                   "});",
-                  "pm.test('Regex entries are never listed as models', function () {",
-                  "  var pseudo = names.filter(function (n) { return n.indexOf('regex:') === 0; });",
+                  "pm.test('Pattern strings are never listed as models', function () {",
+                  "  var pseudo = names.filter(function (n) { return /[\\^$*(|\\[]/.test(n); });",
                   "  pm.expect(pseudo, 'pseudo-models: ' + JSON.stringify(pseudo)).to.eql([]);",
                   "});",
                   "pm.test(\"Listing includes gpt-4o-mini\", function () { pm.expect(names).to.include(\"gpt-4o-mini\"); });",
@@ -7170,7 +7170,7 @@
                   "var body = {",
                   "  name: \"VK Regex provider-qualified \" + Date.now(),",
                   "  is_active: true,",
-                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"regex:^openai/gpt-4o$\"]}]",
+                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [], \"allowed_models_patterns\": [\"^openai/gpt-4o-mini$\"]}]",
                   "};",
                   "pm.request.body.raw = JSON.stringify(body);"
                 ]
@@ -7239,7 +7239,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// allowed_models: [\"regex:^openai/gpt-4o$\"] | blacklisted_models: null",
+                  "// allowed_models: [], allowed_models_patterns: [\"^openai/gpt-4o-mini$\"] | blacklisted_models: null",
                   "pm.test('GET /api/models with VK returns 200', function () { pm.response.to.have.status(200); });",
                   "var body = pm.response.json();",
                   "var entries = ((body && body.models) || []).map(function (m) {",
@@ -7252,8 +7252,8 @@
                   "  var others = entries.filter(function (e) { return e.provider !== 'openai'; }).map(function (e) { return e.provider + '/' + e.name; });",
                   "  pm.expect(others, 'leaked: ' + JSON.stringify(others)).to.eql([]);",
                   "});",
-                  "pm.test('Regex entries are never listed as models', function () {",
-                  "  var pseudo = names.filter(function (n) { return n.indexOf('regex:') === 0; });",
+                  "pm.test('Pattern strings are never listed as models', function () {",
+                  "  var pseudo = names.filter(function (n) { return /[\\^$*(|\\[]/.test(n); });",
                   "  pm.expect(pseudo, 'pseudo-models: ' + JSON.stringify(pseudo)).to.eql([]);",
                   "});",
                   "pm.test(\"Listing includes gpt-4o-mini\", function () { pm.expect(names).to.include(\"gpt-4o-mini\"); });",
@@ -7464,7 +7464,7 @@
                   "var body = {",
                   "  name: \"VK Regex wrong-provider \" + Date.now(),",
                   "  is_active: true,",
-                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"regex:^anthropic/.*\"]}]",
+                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [], \"allowed_models_patterns\": [\"^anthropic/.*\"]}]",
                   "};",
                   "pm.request.body.raw = JSON.stringify(body);"
                 ]
@@ -7533,7 +7533,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// allowed_models: [\"regex:^anthropic/.*\"] | blacklisted_models: null",
+                  "// allowed_models: [], allowed_models_patterns: [\"^anthropic/.*\"] | blacklisted_models: null",
                   "pm.test('GET /api/models with VK returns 200', function () { pm.response.to.have.status(200); });",
                   "var body = pm.response.json();",
                   "var entries = ((body && body.models) || []).map(function (m) {",
@@ -7546,8 +7546,8 @@
                   "  var others = entries.filter(function (e) { return e.provider !== 'openai'; }).map(function (e) { return e.provider + '/' + e.name; });",
                   "  pm.expect(others, 'leaked: ' + JSON.stringify(others)).to.eql([]);",
                   "});",
-                  "pm.test('Regex entries are never listed as models', function () {",
-                  "  var pseudo = names.filter(function (n) { return n.indexOf('regex:') === 0; });",
+                  "pm.test('Pattern strings are never listed as models', function () {",
+                  "  var pseudo = names.filter(function (n) { return /[\\^$*(|\\[]/.test(n); });",
                   "  pm.expect(pseudo, 'pseudo-models: ' + JSON.stringify(pseudo)).to.eql([]);",
                   "});",
                   "pm.test(\"Listing excludes gpt-4o\", function () { pm.expect(names).to.not.include(\"gpt-4o\"); });",
@@ -7663,6 +7663,240 @@
           ]
         },
         {
+          "name": "Literal regex-looking: create VK (a regex-looking string in allowed_models is an exact name)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "['vkrx_literal_regex_looking_id', 'vkrx_literal_regex_looking_value'].forEach(function (k) { pm.collectionVariables.unset(k); });",
+                  "var body = {",
+                  "  name: \"VK Regex literal-regex-looking \" + Date.now(),",
+                  "  is_active: true,",
+                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"regex:^gpt-4.*\"]}]",
+                  "};",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Create VK returns 2xx', function () { pm.expect(code, 'body: ' + pm.response.text()).to.be.within(200, 299); });",
+                  "if (code >= 200 && code <= 299) {",
+                  "  var vk = pm.response.json().virtual_key || pm.response.json();",
+                  "  if (vk && vk.id) pm.collectionVariables.set('vkrx_literal_regex_looking_id', vk.id);",
+                  "  if (vk && vk.value) pm.collectionVariables.set('vkrx_literal_regex_looking_value', vk.value);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Literal regex-looking: /api/models lists the expected set",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vkrx_literal_regex_looking_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/models?limit=5000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "5000"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A failed create leaves its id unset; skip rather than fire at a placeholder",
+                  "// path, which would 404 and read as a different failure.",
+                  "if ((!pm.collectionVariables.get('vkrx_literal_regex_looking_value')) && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// allowed_models: [], allowed_models_patterns: [\"^anthropic/.*\"] | blacklisted_models: null",
+                  "pm.test('GET /api/models with VK returns 200', function () { pm.response.to.have.status(200); });",
+                  "var body = pm.response.json();",
+                  "var entries = ((body && body.models) || []).map(function (m) {",
+                  "  var id = String((m && (m.id || m.name)) || '');",
+                  "  var name = id.indexOf('/') >= 0 ? id.slice(id.indexOf('/') + 1) : id;",
+                  "  return { provider: String((m && m.provider) || ''), name: name };",
+                  "});",
+                  "var names = entries.map(function (e) { return e.name; });",
+                  "pm.test('Only the openai provider is listed', function () {",
+                  "  var others = entries.filter(function (e) { return e.provider !== 'openai'; }).map(function (e) { return e.provider + '/' + e.name; });",
+                  "  pm.expect(others, 'leaked: ' + JSON.stringify(others)).to.eql([]);",
+                  "});",
+                  "pm.test('Pattern strings are never listed as models', function () {",
+                  "  var pseudo = names.filter(function (n) { return /[\\^$*(|\\[]/.test(n); });",
+                  "  pm.expect(pseudo, 'pseudo-models: ' + JSON.stringify(pseudo)).to.eql([]);",
+                  "});",
+                  "pm.test(\"Listing excludes gpt-4o\", function () { pm.expect(names).to.not.include(\"gpt-4o\"); });",
+                  "pm.test(\"Listing excludes gpt-3.5-turbo\", function () { pm.expect(names).to.not.include(\"gpt-3.5-turbo\"); });",
+                  "pm.test('Nothing is listed: the regex-looking name is not a pattern and no catalog model carries that name', function () { pm.expect(names).to.eql([]); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Literal regex-looking: chat gpt-4o is denied (Coverage Probe)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vkrx_literal_regex_looking_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai/gpt-4o\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A failed create leaves its id unset; skip rather than fire at a placeholder",
+                  "// path, which would 404 and read as a different failure.",
+                  "if ((!pm.collectionVariables.get('vkrx_literal_regex_looking_value')) && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"gpt-4o is refused with 403\", function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(403);",
+                  "});",
+                  "pm.test('Rejection is a model block', function () {",
+                  "  pm.expect(pm.response.text()).to.include('model_blocked');",
+                  "  pm.expect(pm.response.text()).to.include('is not allowed');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Literal regex-looking: delete VK",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vkrx_literal_regex_looking_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vkrx_literal_regex_looking_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A failed create leaves its id unset; skip rather than fire at a placeholder",
+                  "// path, which would 404 and read as a different failure.",
+                  "if ((!pm.collectionVariables.get('vkrx_literal_regex_looking_id')) && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Delete VK returns 2xx', function () { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "Matrix block-covers-allow: create VK (block regex covering the whole allow regex)",
           "request": {
             "method": "POST",
@@ -7698,7 +7932,7 @@
                   "var body = {",
                   "  name: \"VK Regex block-covers-allow \" + Date.now(),",
                   "  is_active: true,",
-                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"regex:^gpt-4.*\"], \"blacklisted_models\": [\"regex:^gpt-4.*\"]}]",
+                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [], \"allowed_models_patterns\": [\"^gpt-4.*\"], \"blacklisted_models\": [], \"blacklisted_models_patterns\": [\"^gpt-4.*\"]}]",
                   "};",
                   "pm.request.body.raw = JSON.stringify(body);"
                 ]
@@ -7767,7 +8001,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// allowed_models: [\"regex:^gpt-4.*\"] | blacklisted_models: [\"regex:^gpt-4.*\"]",
+                  "// allowed_models: [], allowed_models_patterns: [\"^gpt-4.*\"] | blacklisted_models: [], blacklisted_models_patterns: [\"^gpt-4.*\"]",
                   "pm.test('GET /api/models with VK returns 200', function () { pm.response.to.have.status(200); });",
                   "var body = pm.response.json();",
                   "var entries = ((body && body.models) || []).map(function (m) {",
@@ -7780,8 +8014,8 @@
                   "  var others = entries.filter(function (e) { return e.provider !== 'openai'; }).map(function (e) { return e.provider + '/' + e.name; });",
                   "  pm.expect(others, 'leaked: ' + JSON.stringify(others)).to.eql([]);",
                   "});",
-                  "pm.test('Regex entries are never listed as models', function () {",
-                  "  var pseudo = names.filter(function (n) { return n.indexOf('regex:') === 0; });",
+                  "pm.test('Pattern strings are never listed as models', function () {",
+                  "  var pseudo = names.filter(function (n) { return /[\\^$*(|\\[]/.test(n); });",
                   "  pm.expect(pseudo, 'pseudo-models: ' + JSON.stringify(pseudo)).to.eql([]);",
                   "});",
                   "pm.test(\"Listing excludes gpt-4o\", function () { pm.expect(names).to.not.include(\"gpt-4o\"); });",
@@ -7932,7 +8166,7 @@
                   "var body = {",
                   "  name: \"VK Regex regex-only-blacklist-on-allow-all-literal \" + Date.now(),",
                   "  is_active: true,",
-                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"gpt-4o\", \"gpt-4o-mini\", \"o1\"], \"blacklisted_models\": [\"regex:^gpt-4o-.*\"]}]",
+                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"gpt-4o\", \"gpt-4o-mini\", \"o1\"], \"blacklisted_models\": [], \"blacklisted_models_patterns\": [\"^gpt-4o-.*\"]}]",
                   "};",
                   "pm.request.body.raw = JSON.stringify(body);"
                 ]
@@ -8001,7 +8235,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// allowed_models: [\"gpt-4o\", \"gpt-4o-mini\", \"o1\"] | blacklisted_models: [\"regex:^gpt-4o-.*\"]",
+                  "// allowed_models: [\"gpt-4o\", \"gpt-4o-mini\", \"o1\"] | blacklisted_models: [], blacklisted_models_patterns: [\"^gpt-4o-.*\"]",
                   "pm.test('GET /api/models with VK returns 200', function () { pm.response.to.have.status(200); });",
                   "var body = pm.response.json();",
                   "var entries = ((body && body.models) || []).map(function (m) {",
@@ -8014,8 +8248,8 @@
                   "  var others = entries.filter(function (e) { return e.provider !== 'openai'; }).map(function (e) { return e.provider + '/' + e.name; });",
                   "  pm.expect(others, 'leaked: ' + JSON.stringify(others)).to.eql([]);",
                   "});",
-                  "pm.test('Regex entries are never listed as models', function () {",
-                  "  var pseudo = names.filter(function (n) { return n.indexOf('regex:') === 0; });",
+                  "pm.test('Pattern strings are never listed as models', function () {",
+                  "  var pseudo = names.filter(function (n) { return /[\\^$*(|\\[]/.test(n); });",
                   "  pm.expect(pseudo, 'pseudo-models: ' + JSON.stringify(pseudo)).to.eql([]);",
                   "});",
                   "pm.test(\"Listing excludes gpt-4o-mini\", function () { pm.expect(names).to.not.include(\"gpt-4o-mini\"); });",
@@ -8246,8 +8480,8 @@
                   "  var others = entries.filter(function (e) { return e.provider !== 'openai'; }).map(function (e) { return e.provider + '/' + e.name; });",
                   "  pm.expect(others, 'leaked: ' + JSON.stringify(others)).to.eql([]);",
                   "});",
-                  "pm.test('Regex entries are never listed as models', function () {",
-                  "  var pseudo = names.filter(function (n) { return n.indexOf('regex:') === 0; });",
+                  "pm.test('Pattern strings are never listed as models', function () {",
+                  "  var pseudo = names.filter(function (n) { return /[\\^$*(|\\[]/.test(n); });",
                   "  pm.expect(pseudo, 'pseudo-models: ' + JSON.stringify(pseudo)).to.eql([]);",
                   "});",
                   "pm.test(\"Listing includes gpt-4o-mini\", function () { pm.expect(names).to.include(\"gpt-4o-mini\"); });",
@@ -8258,7 +8492,7 @@
           ]
         },
         {
-          "name": "Update: PUT VK switches the allow list to a regex",
+          "name": "Update: PUT VK switches the allow list to a pattern",
           "request": {
             "method": "PUT",
             "header": [
@@ -8295,7 +8529,7 @@
                   "if ((!pm.collectionVariables.get('vkrxupd_id')) && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "pm.request.body.raw = JSON.stringify({ provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"regex:^gpt-4o.*\"], \"blacklisted_models\": [\"regex:.*-mini$\"]}] });"
+                  "pm.request.body.raw = JSON.stringify({ provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [], \"allowed_models_patterns\": [\"^gpt-4o.*\"], \"blacklisted_models\": [], \"blacklisted_models_patterns\": [\".*-mini$\"]}] });"
                 ]
               }
             },
@@ -8307,9 +8541,9 @@
                   "pm.test('Update VK returns 2xx', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });",
                   "var vk = pm.response.json().virtual_key || pm.response.json();",
                   "var pc = (vk.provider_configs || []).filter(function (c) { return c.provider === 'openai'; })[0] || {};",
-                  "pm.test('Updated VK echoes the regex entries', function () {",
-                  "  pm.expect(pc.allowed_models || []).to.include('regex:^gpt-4o.*');",
-                  "  pm.expect(pc.blacklisted_models || []).to.include('regex:.*-mini$');",
+                  "pm.test('Updated VK echoes the pattern fields', function () {",
+                  "  pm.expect(pc.allowed_models_patterns || []).to.include('^gpt-4o.*');",
+                  "  pm.expect(pc.blacklisted_models_patterns || []).to.include('.*-mini$');",
                   "});"
                 ]
               }
@@ -8374,8 +8608,8 @@
                   "  var others = entries.filter(function (e) { return e.provider !== 'openai'; }).map(function (e) { return e.provider + '/' + e.name; });",
                   "  pm.expect(others, 'leaked: ' + JSON.stringify(others)).to.eql([]);",
                   "});",
-                  "pm.test('Regex entries are never listed as models', function () {",
-                  "  var pseudo = names.filter(function (n) { return n.indexOf('regex:') === 0; });",
+                  "pm.test('Pattern strings are never listed as models', function () {",
+                  "  var pseudo = names.filter(function (n) { return /[\\^$*(|\\[]/.test(n); });",
                   "  pm.expect(pseudo, 'pseudo-models: ' + JSON.stringify(pseudo)).to.eql([]);",
                   "});",
                   "pm.test(\"Listing excludes gpt-3.5-turbo\", function () { pm.expect(names).to.not.include(\"gpt-3.5-turbo\"); });",
@@ -8510,7 +8744,7 @@
           ]
         },
         {
-          "name": "Update: PUT VK with an invalid regex is rejected (Coverage Probe)",
+          "name": "Update: PUT VK with an invalid pattern is rejected (Coverage Probe)",
           "request": {
             "method": "PUT",
             "header": [
@@ -8547,7 +8781,7 @@
                   "if ((!pm.collectionVariables.get('vkrxupd_id')) && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "pm.request.body.raw = JSON.stringify({ provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"regex:(\"]}] });"
+                  "pm.request.body.raw = JSON.stringify({ provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [], \"allowed_models_patterns\": [\"(\"]}] });"
                 ]
               }
             },
@@ -8560,8 +8794,8 @@
                   "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(400);",
                   "});",
                   "pm.test('The refusal names the field', function () {",
-                  "  pm.expect(pm.response.text()).to.include(\"allowed_models\");",
-                  "  pm.expect(pm.response.text()).to.include(\"regex\");",
+                  "  pm.expect(pm.response.text()).to.include(\"allowed_models_patterns\");",
+                  "  pm.expect(pm.response.text()).to.include(\"pattern\");",
                   "});"
                 ]
               }
@@ -8569,7 +8803,7 @@
           ]
         },
         {
-          "name": "Update: GET VK still holds the last valid regex list",
+          "name": "Update: GET VK still holds the last valid pattern list",
           "request": {
             "method": "GET",
             "header": [],
@@ -8609,8 +8843,8 @@
                   "var vk = pm.response.json().virtual_key || pm.response.json();",
                   "var pc = (vk.provider_configs || []).filter(function (c) { return c.provider === 'openai'; })[0] || {};",
                   "pm.test('A refused update did not touch the stored lists', function () {",
-                  "  pm.expect(pc.allowed_models || []).to.eql(['regex:^gpt-4o.*']);",
-                  "  pm.expect(pc.blacklisted_models || []).to.eql(['regex:.*-mini$']);",
+                  "  pm.expect(pc.allowed_models || []).to.eql([]); pm.expect(pc.allowed_models_patterns || []).to.eql([\"^gpt-4o.*\"]);",
+                  "  pm.expect(pc.blacklisted_models || []).to.eql([]); pm.expect(pc.blacklisted_models_patterns || []).to.eql([\".*-mini$\"]);",
                   "});"
                 ]
               }
@@ -8661,7 +8895,7 @@
           ]
         },
         {
-          "name": "Provider key: create key with regex model lists",
+          "name": "Provider key: create key with pattern lists",
           "request": {
             "method": "POST",
             "header": [
@@ -8698,8 +8932,8 @@
                   "  name: 'regex-roundtrip-' + Date.now(),",
                   "  value: 'sk-regex-roundtrip-placeholder',",
                   "  weight: 0,",
-                  "  models: ['regex:^gpt-4.*'],",
-                  "  blacklisted_models: ['regex:.*-preview$']",
+                  "  models: [], models_patterns: ['^gpt-4.*'],",
+                  "  blacklisted_models: [], blacklisted_models_patterns: ['.*-preview$']",
                   "});"
                 ]
               }
@@ -8712,9 +8946,9 @@
                   "pm.test('Create key returns 2xx', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });",
                   "var key = pm.response.json().key || pm.response.json();",
                   "if (key && key.id) pm.collectionVariables.set('rxkey_id', key.id);",
-                  "pm.test('Created key echoes the regex entries', function () {",
-                  "  pm.expect(key.models || []).to.include('regex:^gpt-4.*');",
-                  "  pm.expect(key.blacklisted_models || []).to.include('regex:.*-preview$');",
+                  "pm.test('Created key echoes the pattern fields', function () {",
+                  "  pm.expect(key.models_patterns || []).to.include('^gpt-4.*');",
+                  "  pm.expect(key.blacklisted_models_patterns || []).to.include('.*-preview$');",
                   "});"
                 ]
               }
@@ -8722,7 +8956,7 @@
           ]
         },
         {
-          "name": "Provider key: GET key round-trips regex entries",
+          "name": "Provider key: GET key round-trips the pattern fields",
           "request": {
             "method": "GET",
             "header": [],
@@ -8761,9 +8995,9 @@
                 "exec": [
                   "pm.test('GET key returns 200', function () { pm.response.to.have.status(200); });",
                   "var key = pm.response.json().key || pm.response.json();",
-                  "pm.test('Stored key keeps the regex entries verbatim', function () {",
-                  "  pm.expect(key.models || []).to.include('regex:^gpt-4.*');",
-                  "  pm.expect(key.blacklisted_models || []).to.include('regex:.*-preview$');",
+                  "pm.test('Stored key keeps the pattern fields verbatim', function () {",
+                  "  pm.expect(key.models_patterns || []).to.include('^gpt-4.*');",
+                  "  pm.expect(key.blacklisted_models_patterns || []).to.include('.*-preview$');",
                   "});"
                 ]
               }
@@ -8771,7 +9005,7 @@
           ]
         },
         {
-          "name": "Provider key: PUT key with an invalid regex is rejected (Coverage Probe)",
+          "name": "Provider key: PUT key with an invalid pattern is rejected (Coverage Probe)",
           "request": {
             "method": "PUT",
             "header": [
@@ -8811,7 +9045,7 @@
                   "}",
                   "// PUT merges over the stored key but the value must be re-sent; without it the",
                   "// handler refuses for the missing value before it ever looks at the lists.",
-                  "pm.request.body.raw = JSON.stringify({ value: 'sk-regex-roundtrip-placeholder', models: ['regex:('] });"
+                  "pm.request.body.raw = JSON.stringify({ value: 'sk-regex-roundtrip-placeholder', models: [], models_patterns: ['('] });"
                 ]
               }
             },
@@ -8824,7 +9058,7 @@
                   "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(400);",
                   "});",
                   "pm.test('The refusal names the field', function () {",
-                  "  pm.expect(pm.response.text()).to.include(\"Invalid models\");",
+                  "  pm.expect(pm.response.text()).to.include(\"Invalid models_patterns\");",
                   "});"
                 ]
               }
@@ -8832,7 +9066,7 @@
           ]
         },
         {
-          "name": "Provider key: GET key still holds the valid regex lists",
+          "name": "Provider key: GET key still holds the valid pattern lists",
           "request": {
             "method": "GET",
             "header": [],
@@ -8872,8 +9106,8 @@
                   "pm.test('GET key returns 200', function () { pm.response.to.have.status(200); });",
                   "var key = pm.response.json().key || pm.response.json();",
                   "pm.test('A refused update did not touch the stored lists', function () {",
-                  "  pm.expect(key.models || []).to.eql(['regex:^gpt-4.*']);",
-                  "  pm.expect(key.blacklisted_models || []).to.eql(['regex:.*-preview$']);",
+                  "  pm.expect(key.models || []).to.eql([]); pm.expect(key.models_patterns || []).to.eql([\"^gpt-4.*\"]);",
+                  "  pm.expect(key.blacklisted_models || []).to.eql([]); pm.expect(key.blacklisted_models_patterns || []).to.eql([\".*-preview$\"]);",
                   "});"
                 ]
               }
