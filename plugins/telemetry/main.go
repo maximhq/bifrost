@@ -1006,12 +1006,21 @@ func canonicalEntitySet(ctx context.Context, idsKey, namesKey, scalarIDKey, scal
 func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	requestType, provider, originalModel, resolvedModel := bifrost.GetResponseFields(result, bifrostErr)
 
-	// Decrement the in-flight gauge exactly once, as early as possible: every
-	// later early return (pre-dispatch rejection, missing startTime) would
-	// otherwise leak the gauge upward (#7005).
+	// Decompose the stream-end state here so every early return below still
+	// sees it: non-stream requests decrement immediately, streaming requests
+	// only on the confirmed final chunk (#7005).
+	streamEndIndicatorValue := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator)
+	isFinalChunk, hasFinalChunkIndicator := streamEndIndicatorValue.(bool)
+	isStreamType := bifrost.IsStreamRequestType(requestType)
+	isStreamFinal := !isStreamType || (hasFinalChunkIndicator && isFinalChunk)
 	if method, ok := ctx.Value(activeRequestTypeKey).(schemas.RequestType); ok {
-		if prev, _ := ctx.GetAndSetValue(activeRequestsDecrementedKey, true).(bool); !prev {
-			p.ActiveRequests.WithLabelValues(string(method)).Dec()
+		if isStreamFinal {
+			// GetAndSetValue makes the decrement idempotent: once the terminal
+			// path has decremented (final chunk, cancellation handler), later
+			// chunk hooks observing the sticky flag see prev == true and skip.
+			if prev, _ := ctx.GetAndSetValue(activeRequestsDecrementedKey, true).(bool); !prev {
+				p.ActiveRequests.WithLabelValues(string(method)).Dec()
+			}
 		}
 	}
 
@@ -1103,12 +1112,9 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// Get label values in the correct order (cache_type will be handled separately for cache hits)
 	promLabelValues := getPrometheusLabelValues(append(p.defaultBifrostLabels, p.customLabels...), labelValues)
 
-	// Extract stream end indicator BEFORE the goroutine
-	streamEndIndicatorValue := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator)
-	isFinalChunk, hasFinalChunkIndicator := streamEndIndicatorValue.(bool)
-
-	// Decrement active requests on the final (or only) call for this request
-	isStreamFinal := !bifrost.IsStreamRequestType(requestType) || (hasFinalChunkIndicator && isFinalChunk)
+	// Stream end state (streamEndIndicatorValue / isFinalChunk /
+	// isStreamFinal) was already decomposed at the top of the hook, where the
+	// ActiveRequests decrement happens.
 
 	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(provider))
 

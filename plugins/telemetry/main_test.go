@@ -620,6 +620,54 @@ func TestPostLLMHookActiveRequestsIdempotentDecrement(t *testing.T) {
 	}
 }
 
+// TestPostLLMHookActiveRequestsStaysThroughIntermediateChunks covers the
+// streaming semantics: the gauge must stay at 1 through intermediate chunks
+// and only drop on the confirmed final chunk (review on #7005).
+func TestPostLLMHookActiveRequestsStaysThroughIntermediateChunks(t *testing.T) {
+	p := newTestPlugin(t)
+	ctx := newHookContext(schemas.ChatCompletionStreamRequest)
+	p.ActiveRequests.WithLabelValues(string(schemas.ChatCompletionStreamRequest)).Inc()
+
+	resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: 5, CompletionTokens: 5, TotalTokens: 10},
+	}}
+	resp.PopulateExtraFields(schemas.ChatCompletionStreamRequest, "openai", "m", "m")
+
+	// Intermediate chunk: no stream-end indicator set. The gauge must stay at 1.
+	if _, _, err := p.PostLLMHook(ctx, resp, nil); err != nil {
+		t.Fatalf("PostLLMHook intermediate: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if got := gaugeValue(t, p.registry, "bifrost_active_requests"); got != 1 {
+		t.Fatalf("gauge = %v after an intermediate chunk, want 1 (stream still active)", got)
+	}
+
+	// Another intermediate chunk: still 1 (and not double-decremented later).
+	if _, _, err := p.PostLLMHook(ctx, resp, nil); err != nil {
+		t.Fatalf("PostLLMHook intermediate 2: %v", err)
+	}
+
+	// Final chunk: the indicator flips and the gauge drops to 0.
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	if _, _, err := p.PostLLMHook(ctx, resp, nil); err != nil {
+		t.Fatalf("PostLLMHook final: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if got := gaugeValue(t, p.registry, "bifrost_active_requests"); got != 0 {
+		t.Errorf("gauge = %v after the final chunk, want 0", got)
+	}
+
+	// A trailing stale-flag chunk (queued behind the final one) must not
+	// decrement again.
+	if _, _, err := p.PostLLMHook(ctx, resp, nil); err != nil {
+		t.Fatalf("PostLLMHook trailing: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if got := gaugeValue(t, p.registry, "bifrost_active_requests"); got != 0 {
+		t.Errorf("gauge = %v after a stale trailing chunk, want 0", got)
+	}
+}
+
 // TestPostLLMHookActiveRequestsDecrementOnMissingStartTime covers the
 // opposite leak from #7005: PostLLMHook used to return early when
 // startTime was missing, leaving the gauge incremented forever.
