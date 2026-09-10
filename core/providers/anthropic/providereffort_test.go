@@ -99,15 +99,17 @@ func TestSupportsProviderEffort(t *testing.T) {
 		// Kimi: no effort equivalent on the /anthropic mount.
 		{schemas.Kimi, "kimi-k3", false},
 		{schemas.Kimi, "kimi-k2.6", false},
-		// DeepSeek: output_config.effort documented for deepseek-v4 only
-		// (https://api-docs.deepseek.com/guides/anthropic_api); legacy IDs
-		// stay fail-closed.
+		// DeepSeek: output_config.effort documented mount-wide
+		// (https://api-docs.deepseek.com/guides/anthropic_api); non-current
+		// model names alias to deepseek-v4-flash upstream, so the scope fails
+		// open — including the "deepseek-flash" production shape.
 		{schemas.DeepSeek, "deepseek-v4-flash", true},
 		{schemas.DeepSeek, "deepseek-v4-pro", true},
 		{schemas.DeepSeek, "DEEPSEEK-V4-FLASH", true},
 		{schemas.DeepSeek, "deepseek/deepseek-v4-flash", true},
-		{schemas.DeepSeek, "deepseek-chat", false},
-		{schemas.DeepSeek, "deepseek-reasoner", false},
+		{schemas.DeepSeek, "deepseek-flash", true},
+		{schemas.DeepSeek, "deepseek-chat", true},
+		{schemas.DeepSeek, "deepseek-reasoner", true},
 		// Anthropic falls back to the model gate unchanged.
 		{schemas.Anthropic, "claude-opus-4-6", true},
 		{schemas.Anthropic, "claude-sonnet-4-5", false},

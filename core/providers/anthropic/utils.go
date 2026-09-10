@@ -1794,12 +1794,12 @@ func clampAlibabaMountEffortForModel(model, effort string) string {
 //     gateway therefore clamps to each family's valid values
 //     (clampAlibabaMountEffortForModel) at every emission site.
 //   - DeepSeek: the Anthropic mount documents output_config "Only effort is
-//     supported" for deepseek-v4-flash / deepseek-v4-pro
-//     (https://api-docs.deepseek.com/guides/anthropic_api); out-of-enum values
-//     map server-side (medium/xhigh→high per the thinking-mode guide, identical
-//     for both models), so values forward verbatim like Zhipu's. Legacy IDs
-//     (deepseek-chat, deepseek-reasoner) are not documented to take effort and
-//     stay fail-closed.
+//     supported" mount-wide (https://api-docs.deepseek.com/guides/anthropic_api),
+//     with the effort mapping (low→low, medium/xhigh→high, max→max) identical
+//     across models. The mount also aliases any non-current model name to
+//     deepseek-v4-flash upstream, so effort forwarding is safe for every model
+//     name — including production aliases like "deepseek-flash" that carry no
+//     version suffix. Values forward verbatim like Zhipu's.
 //
 // Cites: Z on the OutputConfigEffort flag (types.go); the alibaba mount is an
 // empirical contract (live-verified 2026-08-23); per-model matrix from the
@@ -1815,7 +1815,9 @@ func providerSupportsEffortModel(provider schemas.ModelProvider, model string) b
 			strings.HasPrefix(m, "deepseek-v4-pro") ||
 			strings.HasPrefix(m, "deepseek-v4-flash")
 	case schemas.DeepSeek:
-		return strings.HasPrefix(m, "deepseek-v4")
+		// Fail-open for every model name — the mount aliases non-current
+		// names to deepseek-v4-flash upstream; see the DeepSeek bullet above.
+		return true
 	default:
 		return true
 	}

@@ -204168,6 +204168,66 @@
               }
             }
           ]
+        },
+        {
+          "name": "deepseek/deepseek-flash-anthropic reasoning_effort max on non-v4 model name reaches wire as output_config.effort",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-flash-anthropic\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: hi\"\n    }\n  ],\n  \"reasoning_effort\": \"max\",\n  \"max_completion_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('deepseek non-v4 model effort max: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('deepseek non-v4 model effort max: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var oc = rr.output_config || {};",
+                  "pm.test('deepseek non-v4 model name: output_config.effort reaches the wire (mount aliases it to deepseek-v4-flash upstream)', function () {",
+                  "  pm.expect(oc.effort, 'output_config: ' + JSON.stringify(oc) + ' - full raw_request: ' + JSON.stringify(rr)).to.eql('max');",
+                  "});",
+                  "pm.test('deepseek non-v4 model name: no synthesized thinking.budget_tokens', function () {",
+                  "  pm.expect(rr.thinking === undefined || rr.thinking === null, 'thinking: ' + JSON.stringify(rr.thinking) + ' - full raw_request: ' + JSON.stringify(rr)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     }

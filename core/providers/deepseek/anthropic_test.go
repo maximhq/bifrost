@@ -240,6 +240,11 @@ func TestChatCompletion_AnthropicEndpointForwardsEffort(t *testing.T) {
 		// minimal is remapped to low before it reaches output_config
 		// (MapBifrostEffortToAnthropic); low is a documented DeepSeek tier.
 		{"minimal_maps_to_low", "minimal", "low", "deepseek-v4-flash"},
+		// Non-v4 model names: the mount aliases them to deepseek-v4-flash
+		// upstream (same effort mapping), so effort forwards for them too.
+		// "deepseek-flash" is the production model name from the incident
+		// that exposed the v4-only scope gap.
+		{"non_v4_model_name", "max", "max", "deepseek-flash"},
 	}
 
 	for _, tc := range cases {

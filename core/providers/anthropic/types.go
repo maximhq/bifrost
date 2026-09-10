@@ -377,10 +377,11 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 	//     https://api-docs.deepseek.com/guides/thinking_mode (verified 2026-09-10).
 	// Per D: thinking is "Supported (budget_tokens is ignored)" and output_config
 	// "Only effort is supported" — low/high/max are honored directly, medium and
-	// xhigh are mapped server-side (medium/xhigh→high), identical for
-	// deepseek-v4-flash and deepseek-v4-pro. Thinking defaults to enabled, with
-	// default effort high; temperature/top_p are accepted but ignored while
-	// thinking is on.
+	// xhigh are mapped server-side (medium/xhigh→high), identical across models.
+	// Thinking defaults to enabled, with default effort high; temperature/top_p
+	// are accepted but ignored while thinking is on. Non-current model names
+	// (e.g. "deepseek-flash") are aliased to deepseek-v4-flash upstream, so
+	// effort applies mount-wide (providerSupportsEffortModel fails open).
 	schemas.DeepSeek: {
 		WebSearch:              true,
 		WebSearchDynamic:       true,
