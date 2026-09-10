@@ -56,6 +56,33 @@ func parseBedrockRegionAndModel(model string) (region, bareModel string) {
 	return "", model
 }
 
+// withBareModel drops the region addressing prefix from the model a chat request
+// carries, so the body names the id mantle knows. The native-Anthropic handlers take
+// the bare model through their build config, but the OpenAI-compatible ones read it
+// off the request, and mantle 404s the prefixed form ("The model
+// 'us-west-2/openai.gpt-6-astra' does not exist"). Copied rather than mutated: the
+// caller's request is what the pipeline keys pricing and logging on.
+func withBareModel(request *schemas.BifrostChatRequest) *schemas.BifrostChatRequest {
+	_, bare := parseBedrockRegionAndModel(request.Model)
+	if bare == request.Model {
+		return request
+	}
+	clone := *request
+	clone.Model = bare
+	return &clone
+}
+
+// withBareResponsesModel is withBareModel for the Responses surface.
+func withBareResponsesModel(request *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
+	_, bare := parseBedrockRegionAndModel(request.Model)
+	if bare == request.Model {
+		return request
+	}
+	clone := *request
+	clone.Model = bare
+	return &clone
+}
+
 // resolveRegion returns the AWS region to use for a request.
 // Priority: model-string region prefix > alias-level Region > key-level
 // BedrockMantleKeyConfig.Region > defaultMantleRegion. The model-string prefix

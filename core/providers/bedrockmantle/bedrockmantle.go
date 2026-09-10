@@ -219,7 +219,7 @@ func (provider *BedrockMantleProvider) ChatCompletion(ctx *schemas.BifrostContex
 		ctx,
 		provider.mantleClient,
 		url,
-		request,
+		withBareModel(request),
 		openai.BearerAuthHeader(key),
 		bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleOpenAIProjectHeader, resolveProjectID(ctx, key)),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -277,7 +277,7 @@ func (provider *BedrockMantleProvider) ChatCompletionStream(ctx *schemas.Bifrost
 
 	url := mantleOpenAIURL(mantleEndpoints(key.BedrockMantleKeyConfig), region, schemas.ResolveCanonicalModel(ctx, request.Model), "chat/completions")
 	return openai.HandleOpenAIChatCompletionStreaming(
-		ctx, provider.mantleStreamingClient, url, request,
+		ctx, provider.mantleStreamingClient, url, withBareModel(request),
 		openai.BearerAuthHeader(key), bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleOpenAIProjectHeader, resolveProjectID(ctx, key)),
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -334,7 +334,7 @@ func (provider *BedrockMantleProvider) Responses(ctx *schemas.BifrostContext, ke
 		ctx,
 		provider.mantleClient,
 		url,
-		request,
+		withBareResponsesModel(request),
 		openai.BearerAuthHeader(key),
 		bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleOpenAIProjectHeader, resolveProjectID(ctx, key)),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -398,7 +398,7 @@ func (provider *BedrockMantleProvider) ResponsesStream(ctx *schemas.BifrostConte
 
 	url := mantleOpenAIURL(mantleEndpoints(key.BedrockMantleKeyConfig), region, canonicalModel, "responses")
 	return openai.HandleOpenAIResponsesStreaming(
-		ctx, provider.mantleStreamingClient, url, request,
+		ctx, provider.mantleStreamingClient, url, withBareResponsesModel(request),
 		openai.BearerAuthHeader(key), bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleOpenAIProjectHeader, resolveProjectID(ctx, key)),
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
