@@ -3777,7 +3777,7 @@ type BifrostResponsesStreamResponse struct {
 // still intentionally emit empty arrays after WithDefaults populates them.
 func (resp BifrostResponsesStreamResponse) MarshalJSON() ([]byte, error) {
 	type alias BifrostResponsesStreamResponse
-	encoded, err := json.Marshal(alias(resp))
+	encoded, err := Marshal(alias(resp))
 	if err != nil {
 		return nil, err
 	}
