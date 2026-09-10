@@ -127,6 +127,11 @@ type Profile struct {
 	// content, tool definitions, and tool call arguments/results are dropped from span attributes.
 	DisableContentLogging bool `json:"disable_content_logging,omitempty"`
 
+	// PropagateTraceAttributes controls whether x-bf-dim-* dimensions stored on the trace
+	// (TraceAttrDimensions) are merged onto every exported span. When false (default),
+	// these attributes are only present on the root span via the standard span-attribute mechanism.
+	PropagateTraceAttributes bool `json:"propagate_trace_attributes,omitempty"`
+
 	// GroupTracesBySession, when true, groups all requests sharing the same x-bf-session-id
 	// header into a single OTEL trace: every span adopts a session-derived trace ID and each
 	// request's root span becomes a top-level sibling under one synthetic session parent
@@ -295,6 +300,7 @@ type profileForStorage struct {
 	OverheadBreakdownEnabled bool              `json:"overhead_breakdown_enabled,omitempty"`
 	RequestHeaders           []string          `json:"request_headers,omitempty"`
 	DisableContentLogging    bool              `json:"disable_content_logging,omitempty"`
+	PropagateTraceAttributes bool              `json:"propagate_trace_attributes,omitempty"`
 	GroupTracesBySession     bool              `json:"group_traces_by_session,omitempty"`
 	DisableRootSpanContent   bool              `json:"disable_root_span_content,omitempty"`
 }
@@ -339,6 +345,7 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 			OverheadBreakdownEnabled: p.OverheadBreakdownEnabled,
 			RequestHeaders:           p.RequestHeaders,
 			DisableContentLogging:    p.DisableContentLogging,
+			PropagateTraceAttributes: p.PropagateTraceAttributes,
 			GroupTracesBySession:     p.GroupTracesBySession,
 			DisableRootSpanContent:   p.DisableRootSpanContent,
 		})
@@ -420,6 +427,7 @@ type otelTarget struct {
 	metricsExporter          *MetricsExporter
 	requestHeaders           []string
 	disableContentLogging    bool
+	propagateTraceAttributes bool
 	groupTracesBySession     bool
 	disableRootSpanContent   bool
 	overheadBreakdownEnabled bool
@@ -621,6 +629,7 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 		traceType:                profile.TraceType,
 		requestHeaders:           slices.Clone(profile.RequestHeaders),
 		disableContentLogging:    profile.DisableContentLogging,
+		propagateTraceAttributes: profile.PropagateTraceAttributes,
 		groupTracesBySession:     profile.GroupTracesBySession,
 		disableRootSpanContent:   profile.DisableRootSpanContent,
 		overheadBreakdownEnabled: profile.OverheadBreakdownEnabled,
@@ -897,7 +906,7 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 			if t.client == nil || t.breakerOpen() {
 				return
 			}
-			resourceSpan := p.convertTraceToResourceSpan(t.serviceName, trace, t.requestHeaders, t.disableContentLogging, t.groupTracesBySession, t.disableRootSpanContent)
+			resourceSpan := p.convertTraceToResourceSpan(t.serviceName, trace, t.requestHeaders, t.disableContentLogging, t.propagateTraceAttributes, t.groupTracesBySession, t.disableRootSpanContent)
 			// The caller passes context.Background(), so this deadline is the only bound
 			// on the export — and the only bound at all on the gRPC path.
 			emitCtx, cancel := context.WithTimeout(ctx, t.exportTimeout)
