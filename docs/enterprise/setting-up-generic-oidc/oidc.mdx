@@ -137,6 +137,34 @@ Select **Generic OIDC Provider** and click **Next**.
 
 </Step>
 
+<Step title="If your IdP is on a private network, add a trusted network">
+
+Skip this step if your IdP is reachable on the public internet.
+
+A self-hosted IdP on `10.x`, `172.16-31.x`, or `192.168.x` is blocked by that guard until you explicitly trust its range, and discovery fails with an error like:
+
+```
+Invalid issuer URL: access to IP 10.20.4.11 is not allowed
+Invalid issuer URL: host idp.internal.company.com resolves to a disallowed address 10.20.4.11
+```
+
+On the **Provider Configuration** screen, click **Trusted Networks** → **Add network**, then enter:
+
+| Field | Value |
+| --- | --- |
+| **IP or CIDR** | The range your IdP resolves to - e.g. `10.20.0.0/16`. A bare IP such as `192.168.1.50` is treated as a single host (`/32`, or `/128` for IPv6). |
+| **Description** | Optional label, e.g. `On-prem Keycloak` |
+
+Add the range **before** clicking **Discover endpoints** - the allowlist is read at discovery time.
+
+<Frame caption="The Trusted Networks control on the Provider Configuration screen, shown for self-hostable providers.">
+  <img src="/media/user-provisioning/generic-oidc/bifrost-trusted-networks.png" alt="Bifrost Generic OIDC Provider Configuration screen with a Trusted Networks button above the Issuer URL field" />
+</Frame>
+
+To remove a range later, reopen the same **Trusted Networks** sheet and delete the row.
+
+</Step>
+
 <Step title="Fill in the provider configuration">
 
 Enter the credentials you copied in Step 3:
@@ -238,6 +266,10 @@ For providers that support it, see [SCIM with Generic OIDC](./scim) to enable re
 ## Troubleshooting
 
 **User is not redirected to the IdP** - verify the provider is enabled in Bifrost and the server was restarted after saving. Confirm the Issuer URL has no trailing slash and is reachable from your Bifrost server.
+
+**Discover endpoints or Discover Claims fails with "access to IP ... is not allowed" or "resolves to a disallowed address"** - your IdP is on a private network. Add its IP or CIDR range under **Trusted Networks** on the Provider Configuration screen (see Step 5), then retry. If the error names `localhost` or `metadata.google.internal`, those hosts can never be trusted - use the IdP's real private address or internal DNS name.
+
+**Discover endpoints fails with "URL scheme must be https"** - the guard on discovery requires TLS even for internal issuers. Terminate HTTPS in front of your IdP with a certificate your Bifrost host trusts.
 
 **JWKS validation fails** - Bifrost fetches `<issuer>/.well-known/openid-configuration` to discover the JWKS endpoint. Ensure this URL is reachable from your Bifrost host.
 
