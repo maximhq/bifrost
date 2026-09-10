@@ -97,3 +97,82 @@ func TestConvertMessages_TitledDocumentsKeepTheirNames(t *testing.T) {
 		t.Fatalf("titled documents renamed: %v", names)
 	}
 }
+
+// TestConvertMessages_TitledNameCollidesWithGeneratedSuffix covers the
+// emissions-as-final-names rule: untitled, untitled, then an explicit
+// "document-2" must not collide — the explicit one gets "document-2-2".
+func TestConvertMessages_TitledDocumentCollidesWithGeneratedSuffix(t *testing.T) {
+	first := "document"
+	block := func(name *string) schemas.ChatContentBlock {
+		return schemas.ChatContentBlock{
+			Type: schemas.ChatContentBlockTypeFile,
+			File: &schemas.ChatInputFile{Filename: name},
+		}
+	}
+	msg := schemas.ChatMessage{
+		Role: schemas.ChatMessageRoleUser,
+		Content: &schemas.ChatMessageContent{
+			ContentBlocks: []schemas.ChatContentBlock{
+				block(nil), block(nil), block(&first),
+			},
+		},
+	}
+
+	bedrockMsgs, _, err := convertMessages(t.Context(), "anthropic.claude-sonnet-5", []schemas.ChatMessage{msg})
+	if err != nil {
+		t.Fatalf("convertMessages: %v", err)
+	}
+
+	seen := map[string]bool{}
+	for _, content := range bedrockMsgs[0].Content {
+		if content.Document == nil {
+			continue
+		}
+		if seen[content.Document.Name] {
+			t.Fatalf("duplicate document name %q", content.Document.Name)
+		}
+		seen[content.Document.Name] = true
+	}
+	if len(seen) != 3 {
+		t.Fatalf("expected 3 unique names, saw %v", seen)
+	}
+}
+
+// TestConvertMessages_UniqueNamesAcrossSeparateMessages: the review noted
+// per-message namer scoping lets documents in separate messages collide.
+// The namer is request-scoped, so a document in message 2 must not reuse
+// message 1's generated name.
+func TestConvertMessages_UniqueNamesAcrossSeparateMessages(t *testing.T) {
+	mkMsg := func() schemas.ChatMessage {
+		return schemas.ChatMessage{
+			Role: schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{
+				ContentBlocks: []schemas.ChatContentBlock{{
+					Type: schemas.ChatContentBlockTypeFile,
+					File: &schemas.ChatInputFile{},
+				}},
+			},
+		}
+	}
+
+	bedrockMsgs, _, err := convertMessages(t.Context(), "anthropic.claude-sonnet-5", []schemas.ChatMessage{mkMsg(), mkMsg()})
+	if err != nil {
+		t.Fatalf("convertMessages: %v", err)
+	}
+
+	seen := map[string]bool{}
+	for _, m := range bedrockMsgs {
+		for _, content := range m.Content {
+			if content.Document == nil {
+				continue
+			}
+			if seen[content.Document.Name] {
+				t.Fatalf("duplicate document name %q across messages", content.Document.Name)
+			}
+			seen[content.Document.Name] = true
+		}
+	}
+	if len(seen) != 2 {
+		t.Fatalf("expected 2 unique names across messages, saw %v", seen)
+	}
+}

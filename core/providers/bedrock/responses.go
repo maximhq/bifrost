@@ -3504,11 +3504,16 @@ func (m *ToolCallStateManager) HasPendingResults() bool {
 // inlined in place; when false, every system/developer message is hoisted (historical behavior).
 // Callers compute it from the provider+model — see the call site in ToBedrockResponsesRequest.
 func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, model string, bifrostMessages []schemas.ResponsesMessage, inlineSystemReminders bool) ([]BedrockMessage, []BedrockSystemMessage, error) {
+	// Request-scoped document namer: the Converse API rejects duplicate
+	// document names across the whole request, not just within one message
+	// (#7003).
+	docNamer := newBedrockDocNamer()
+
 	// If only a single system message is present, convert it user message (since openai allows it)
 	if len(bifrostMessages) == 1 && bifrostMessages[0].Role != nil && (*bifrostMessages[0].Role == schemas.ResponsesInputMessageRoleSystem || *bifrostMessages[0].Role == schemas.ResponsesInputMessageRoleDeveloper) {
 		msg := bifrostMessages[0]
 		msg.Role = schemas.Ptr(schemas.ResponsesInputMessageRoleUser)
-		bedrockMsg, err := convertBifrostMessageToBedrockMessage(ctx, model, &msg)
+		bedrockMsg, err := convertBifrostMessageToBedrockMessage(ctx, model, &msg, docNamer)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -3975,7 +3980,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, model string, 
 				}
 			} else {
 				// Convert user/assistant text message
-				bedrockMsg, err := convertBifrostMessageToBedrockMessage(ctx, model, &msg)
+				bedrockMsg, err := convertBifrostMessageToBedrockMessage(ctx, model, &msg, docNamer)
 				if err != nil {
 					return nil, nil, err
 				}
@@ -4323,7 +4328,7 @@ func convertBifrostSystemReminderToBedrockUserMessage(msg *schemas.ResponsesMess
 // The ctx is propagated to URL fetches inside content blocks. A conversion failure
 // (e.g. an image or document URL that can't be fetched) is returned rather than
 // swallowed - dropping the message would send Bedrock a request missing the turn.
-func convertBifrostMessageToBedrockMessage(ctx context.Context, model string, msg *schemas.ResponsesMessage) (*BedrockMessage, error) {
+func convertBifrostMessageToBedrockMessage(ctx context.Context, model string, msg *schemas.ResponsesMessage, docNamer *bedrockDocNamer) (*BedrockMessage, error) {
 	// Ensure Content is present
 	if msg.Content == nil {
 		return nil, nil
@@ -4334,7 +4339,7 @@ func convertBifrostMessageToBedrockMessage(ctx context.Context, model string, ms
 	}
 
 	// Convert content
-	contentBlocks, err := convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx, model, *msg.Content)
+	contentBlocks, err := convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx, model, *msg.Content, docNamer)
 	if err != nil {
 		return nil, err
 	}
@@ -5116,12 +5121,7 @@ func convertBifrostReasoningToBedrockReasoning(msg *schemas.ResponsesMessage, sh
 
 // convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks converts Bifrost content to Bedrock content blocks.
 // The ctx is propagated to URL fetches inside image blocks.
-func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx context.Context, model string, content schemas.ResponsesMessageContent) ([]BedrockContentBlock, error) {
-	// The Converse API rejects duplicate document names within a request
-	// (#7003). Untitled documents all normalize to the same default, so
-	// disambiguate them with numeric suffixes. Scope: per content-block list;
-	// documents spread across separate messages are deduplicated per message.
-	docNamer := newBedrockDocNamer()
+func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx context.Context, model string, content schemas.ResponsesMessageContent, docNamer *bedrockDocNamer) ([]BedrockContentBlock, error) {
 	var blocks []BedrockContentBlock
 
 	if content.ContentStr != nil {
