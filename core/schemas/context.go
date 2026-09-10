@@ -41,6 +41,7 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeyStreamOverhead:          {},
 	BifrostContextKeyRoutingInfo:             {},
 	BifrostContextKeyMCPInboundBearer:        {},
+	BifrostContextKeyOpencodeSession:         {},
 }
 
 // isReservedKey reports whether key is a reserved context key whose writes are
