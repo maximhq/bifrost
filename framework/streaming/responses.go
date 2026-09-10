@@ -358,6 +358,9 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 				copyAction := *original.ResponsesToolMessage.Action.ResponsesMCPApprovalRequestAction
 				copy.ResponsesToolMessage.Action.ResponsesMCPApprovalRequestAction = &copyAction
 			}
+
+			copyStructPointerFieldByName(copy.ResponsesToolMessage.Action, original.ResponsesToolMessage.Action, "ResponsesImageGenerationToolCallAction")
+			copyRawMessageFieldByName(copy.ResponsesToolMessage.Action, original.ResponsesToolMessage.Action, "Raw")
 		}
 
 		if original.ResponsesToolMessage.Caller != nil {
@@ -487,8 +490,19 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 	return copy
 }
 
-func copyRawMessageFieldByName(dst *schemas.ResponsesMessage, src schemas.ResponsesMessage, fieldName string) {
-	srcField := reflect.ValueOf(src).FieldByName(fieldName)
+func copyRawMessageFieldByName(dst, src any, fieldName string) {
+	srcValue := reflect.ValueOf(src)
+	if srcValue.Kind() == reflect.Ptr {
+		srcValue = srcValue.Elem()
+	}
+	dstValue := reflect.ValueOf(dst)
+	if dstValue.Kind() == reflect.Ptr {
+		dstValue = dstValue.Elem()
+	}
+	if !srcValue.IsValid() || !dstValue.IsValid() {
+		return
+	}
+	srcField := srcValue.FieldByName(fieldName)
 	if !srcField.IsValid() || srcField.IsNil() {
 		return
 	}
@@ -496,10 +510,35 @@ func copyRawMessageFieldByName(dst *schemas.ResponsesMessage, src schemas.Respon
 	if !ok {
 		return
 	}
-	dstField := reflect.ValueOf(dst).Elem().FieldByName(fieldName)
+	dstField := dstValue.FieldByName(fieldName)
 	if dstField.IsValid() && dstField.CanSet() {
 		dstField.Set(reflect.ValueOf(append(json.RawMessage(nil), raw...)))
 	}
+}
+
+// copyStructPointerFieldByName copies optional fields introduced by newer core
+// versions without making standalone framework builds depend on those symbols.
+func copyStructPointerFieldByName(dst, src any, fieldName string) {
+	srcValue := reflect.ValueOf(src)
+	if srcValue.Kind() == reflect.Ptr {
+		srcValue = srcValue.Elem()
+	}
+	dstValue := reflect.ValueOf(dst)
+	if dstValue.Kind() == reflect.Ptr {
+		dstValue = dstValue.Elem()
+	}
+	if !srcValue.IsValid() || !dstValue.IsValid() {
+		return
+	}
+	srcField := srcValue.FieldByName(fieldName)
+	dstField := dstValue.FieldByName(fieldName)
+	if !srcField.IsValid() || !dstField.IsValid() || !dstField.CanSet() || srcField.Kind() != reflect.Ptr || srcField.IsNil() || dstField.Type() != srcField.Type() {
+		return
+	}
+	copyValue := reflect.New(srcField.Elem().Type())
+	copyValue.Elem().Set(srcField.Elem())
+	copyRawMessageFieldByName(copyValue.Interface(), srcField.Interface(), "Raw")
+	dstField.Set(copyValue)
 }
 
 func copyOptionalStringFieldByName(dst *schemas.ResponsesToolMessage, src *schemas.ResponsesToolMessage, fieldName string) {

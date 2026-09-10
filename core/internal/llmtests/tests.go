@@ -28,6 +28,7 @@ func RunAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 		RunSimpleChatTest,
 		RunChatCompletionStreamTest,
 		RunResponsesStreamTest,
+		RunResponsesImageGenerationToolTest,
 		RunMultiTurnConversationTest,
 		RunToolCallsTest,
 		RunToolCallsWithEmptyPropertiesTest,
