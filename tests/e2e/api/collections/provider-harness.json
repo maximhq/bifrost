@@ -145280,6 +145280,162 @@
           }
         }
       ]
+    },
+    {
+      "name": "76. OpenAI image_generation tool call decode (#7059 / PR #7060)",
+      "description": "Regression coverage for PR #7060 (fixes #7059): OpenAI emits an image_generation_call item with `action` as a bare JSON string (\"generate\"), but ResponsesToolMessageActionStruct.UnmarshalJSON opened by peeking at `.type`, which cannot be read out of a JSON string. Non-streaming, that killed the whole decode with \"failed to peek at type field\" wrapped in \"failed to unmarshal response from provider API\". Streaming, the per-event decode in OpenAIProvider.ResponsesStream logs and continues, so it silently dropped the two events carrying the image (response.output_item.done and response.completed); the loop then hit EOF with no terminal event and SendStreamTruncatedError surfaced a bogus 502 \"provider closed the stream before sending a completion marker\". The fix probes for a bare string before the type peek, and fills in the generation settings OpenAI echoes back on the completed item (background, output_format, quality, revised_prompt, size), which ResponsesImageGenerationCall previously dropped. The native /v1/responses cases are the ones that pin the typed re-emit - the /openai drop-in returns RawResponse verbatim, so it would stay green even if the typed path were lossy. image_generation had zero coverage in this collection before this folder (HARNESS_COVERAGE_BACKLOG.md, OpenAI Responses server tools).",
+      "item": [
+        {
+          "name": "openai/gpt-5.4 native responses image_generation non-streaming decodes item settings - #7059",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "// 500/502 are deliberately NOT skipped: they are the #7059 failure signatures.",
+                  "pm.test('image_generation_call decodes and keeps its settings - #7059', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'pre-fix decode failure resurfaced').to.not.include('failed to peek at type field');",
+                  "  pm.expect(body, 'pre-fix decode failure resurfaced').to.not.include('failed to unmarshal response from provider API');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body.slice(0, 600)).to.be.below(400);",
+                  "  var out = (pm.response.json() || {}).output || [];",
+                  "  var img = null;",
+                  "  for (var i = 0; i < out.length; i++) { if (out[i].type === 'image_generation_call') { img = out[i]; break; } }",
+                  "  pm.expect(img, 'expected an image_generation_call item in output').to.not.equal(null);",
+                  "  pm.expect(img.result, 'expected base64 image data on the item').to.be.a('string');",
+                  "  pm.expect(img.result.length, 'expected non-trivial base64 image data').to.be.above(1000);",
+                  "  pm.expect(img.action, 'bare-string action must survive the decode').to.equal('generate');",
+                  "  pm.expect(img.output_format, 'output_format must survive the typed re-emit').to.be.a('string');",
+                  "  pm.expect(img.background, 'background must survive the typed re-emit').to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-5.4\",\"input\":\"Generate an image of a sunset over mountains\",\"tools\":[{\"type\":\"image_generation\",\"quality\":\"low\",\"size\":\"1024x1024\",\"output_format\":\"jpeg\",\"output_compression\":30}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-5.4 native responses image_generation streaming reaches terminal event - #7059",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "// 500/502 are deliberately NOT skipped: they are the #7059 failure signatures.",
+                  "pm.test('image_generation stream is not truncated - #7059', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'pre-fix decode failure resurfaced').to.not.include('failed to peek at type field');",
+                  "  pm.expect(body, 'pre-fix truncation error resurfaced').to.not.include('provider closed the stream');",
+                  "  pm.expect(body, 'pre-fix truncation error resurfaced').to.not.include('unexpected EOF');",
+                  "  pm.expect(pm.response.code, 'stream request failed: ' + body.slice(0, 600)).to.equal(200);",
+                  "  pm.expect(body, 'expected SSE frames').to.include('data:');",
+                  "  pm.expect(body, 'expected the image item to reach the client').to.include('image_generation_call');",
+                  "  pm.expect(body, 'bare-string action must survive the stream decode').to.include('\"action\":\"generate\"');",
+                  "  pm.expect(body, 'expected a terminal response.completed event').to.include('response.completed');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-5.4\",\"input\":\"Generate an image of a sunset over mountains\",\"stream\":true,\"tools\":[{\"type\":\"image_generation\",\"quality\":\"low\",\"size\":\"1024x1024\",\"output_format\":\"jpeg\",\"output_compression\":30}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-5.4 /openai drop-in responses image_generation streaming no truncation - #7059",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "// 500/502 are deliberately NOT skipped: they are the #7059 failure signatures.",
+                  "pm.test('drop-in image_generation stream reaches its terminal event - #7059', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'pre-fix decode failure resurfaced').to.not.include('failed to peek at type field');",
+                  "  pm.expect(body, 'pre-fix truncation error resurfaced').to.not.include('provider closed the stream');",
+                  "  pm.expect(body, 'pre-fix truncation error resurfaced').to.not.include('unexpected EOF');",
+                  "  pm.expect(pm.response.code, 'stream request failed: ' + body.slice(0, 600)).to.equal(200);",
+                  "  pm.expect(body, 'expected the image item to reach the client').to.include('image_generation_call');",
+                  "  pm.expect(body, 'expected a terminal response.completed event').to.include('response.completed');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gpt-5.4\",\"input\":\"Generate an image of a sunset over mountains\",\"stream\":true,\"tools\":[{\"type\":\"image_generation\",\"quality\":\"low\",\"size\":\"1024x1024\",\"output_format\":\"jpeg\",\"output_compression\":30}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
