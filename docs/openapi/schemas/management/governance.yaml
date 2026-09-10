@@ -304,14 +304,30 @@ VirtualKeyProviderConfig:
         type: string
       description: >-
         Allowlist. `["*"]` allows every model; an empty list denies all. A list
-        may not mix `*` with other entries. Entries prefixed with `regex:` are RE2 patterns, matched case-insensitively as a full match against the model name and `provider/model`.
+        may not mix `*` with other entries.
     blacklisted_models:
       type: array
       items:
         type: string
       description: >-
         Denylist, which wins over the allowlist. `["*"]` blocks everything.
-        Entries prefixed with `regex:` are RE2 patterns, matched case-insensitively as a full match against the model name and `provider/model`.
+    allowed_models_patterns:
+      type: array
+      items:
+        type: string
+      description: >-
+        RE2 patterns that allow models by name shape, next to the exact allowlist.
+        Each pattern is matched case-insensitively as a full match against the model
+        name and `provider/model`. `*` is not a valid pattern.
+        Blank or whitespace-only entries, duplicate patterns, and patterns RE2
+        rejects are refused when the configuration is saved.
+    blacklisted_models_patterns:
+      type: array
+      items:
+        type: string
+      description: >-
+        RE2 patterns that block models by name shape, next to the exact denylist.
+        Block patterns win over the allowlist and the allow patterns.
     allow_all_keys:
       type: boolean
     rate_limit_id:
@@ -464,14 +480,29 @@ CreateVirtualKeyRequest:
               type: string
             description: >-
               Allowlist. `["*"]` allows every model; an empty list denies all.
-              Entries prefixed with `regex:` are RE2 patterns, matched case-insensitively as a full match against the model name and `provider/model`.
           blacklisted_models:
             type: array
             items:
               type: string
             description: >-
               Denylist, which wins over the allowlist. `["*"]` blocks everything.
-              Entries prefixed with `regex:` are RE2 patterns, matched case-insensitively as a full match against the model name and `provider/model`.
+          allowed_models_patterns:
+            type: array
+            items:
+              type: string
+            description: >-
+              RE2 patterns that allow models by name shape, next to the exact allowlist.
+              Each pattern is matched case-insensitively as a full match against the model
+              name and `provider/model`. `*` is not a valid pattern.
+              Blank or whitespace-only entries, duplicate patterns, and patterns RE2
+              rejects are refused when the configuration is saved.
+          blacklisted_models_patterns:
+            type: array
+            items:
+              type: string
+            description: >-
+              RE2 patterns that block models by name shape, next to the exact denylist.
+              Block patterns win over the allowlist and the allow patterns.
           budgets:
             type: array
             description: Provider-specific budget quotas. Use this array instead of the removed singular `budget` or `budget_id` fields.
@@ -563,14 +594,29 @@ UpdateVirtualKeyRequest:
               type: string
             description: >-
               Allowlist. `["*"]` allows every model; an empty list denies all.
-              Entries prefixed with `regex:` are RE2 patterns, matched case-insensitively as a full match against the model name and `provider/model`.
           blacklisted_models:
             type: array
             items:
               type: string
             description: >-
               Denylist, which wins over the allowlist. `["*"]` blocks everything.
-              Entries prefixed with `regex:` are RE2 patterns, matched case-insensitively as a full match against the model name and `provider/model`.
+          allowed_models_patterns:
+            type: array
+            items:
+              type: string
+            description: >-
+              RE2 patterns that allow models by name shape, next to the exact allowlist.
+              Each pattern is matched case-insensitively as a full match against the model
+              name and `provider/model`. `*` is not a valid pattern.
+              Blank or whitespace-only entries, duplicate patterns, and patterns RE2
+              rejects are refused when the configuration is saved.
+          blacklisted_models_patterns:
+            type: array
+            items:
+              type: string
+            description: >-
+              RE2 patterns that block models by name shape, next to the exact denylist.
+              Block patterns win over the allowlist and the allow patterns.
           budgets:
             type: array
             description: Provider-specific budget quotas. Replaces all budgets for that provider config when provided; the removed singular `budget` and `budget_id` fields are not request fields.

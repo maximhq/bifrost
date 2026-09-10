@@ -95,8 +95,10 @@ Virtual keys are issued to clients and act as scoped API tokens. Each key specif
 | Field | Required | Description |
 |-------|----------|-------------|
 | `provider` | Yes | Provider name (e.g. `"openai"`) |
-| `allowed_models` | No | Model allow-list. `["*"]` = all models; `[]` = deny all. Entries prefixed with `regex:` are RE2 patterns matched against the whole model name |
-| `blacklisted_models` | No | Model deny-list, wins over `allowed_models`. `["*"]` = block all. Accepts `regex:` entries |
+| `allowed_models` | No | Model allow-list of exact names. `["*"]` = all models; `[]` = deny all |
+| `blacklisted_models` | No | Model deny-list of exact names, wins over `allowed_models`. `["*"]` = block all |
+| `allowed_models_patterns` | No | RE2 patterns that allow models by name shape, next to `allowed_models`. Case-insensitive full match against the model name and `provider/model` |
+| `blacklisted_models_patterns` | No | RE2 patterns that block models by name shape; win over the allow side |
 | `key_ids` | No | Provider key IDs allowed for this VK. `["*"]` = all keys; `[]` or omission = deny all. Use each provider key's `id` value |
 | `weight` | No | Load-balancing weight when multiple provider configs are present |
 | `rate_limit_id` | No | Attach a per-provider-config rate limit |
@@ -381,8 +383,10 @@ Budgets and rate limits inside a project are declared without ids.
 |-------|----------|-------------|
 | `provider_name` | Yes | Provider this entry allows. A project names each provider at most once |
 | `all_models_allowed` | No | Allow every model of the provider |
-| `allowed_models` | No | Allowed model names, ignored when `all_models_allowed` is true. Entries prefixed with `regex:` are RE2 patterns matched against the whole model name |
-| `blacklisted_models` | No | Models blocked even if allowed; `["*"]` blocks all. Accepts `regex:` entries |
+| `allowed_models` | No | Allowed model names, ignored when `all_models_allowed` is true |
+| `blacklisted_models` | No | Models blocked even if allowed; `["*"]` blocks all |
+| `allowed_models_patterns` | No | RE2 patterns that allow models by name shape, ignored when `all_models_allowed` is true |
+| `blacklisted_models_patterns` | No | RE2 patterns that block models by name shape; win over the allow side |
 | `key_ids` | No | Keys that may serve the request; `["*"]` allows all, empty or omitted allows none, regardless of the top-level `version`. Each id must belong to this provider |
 | `weight` | No | Load-balancer seed weight; omit to leave the caller's own preference standing |
 | `budgets` | No | Spend caps on this provider inside the project |

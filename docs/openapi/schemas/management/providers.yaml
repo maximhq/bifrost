@@ -198,14 +198,28 @@ Key:
         type: string
       description: >-
         Models this key can serve (allowlist). `["*"]` allows every model; an
-        empty list denies all. Entries prefixed with `regex:` are RE2 patterns, matched case-insensitively as a full match against the model name and `provider/model`.
+        empty list denies all.
     blacklisted_models:
       type: array
       items:
         type: string
       description: >-
         Models this key must never serve (denylist, wins over the allowlist).
-        Entries prefixed with `regex:` are RE2 patterns, matched case-insensitively as a full match against the model name and `provider/model`.
+    models_patterns:
+      type: array
+      items:
+        type: string
+      description: >-
+        RE2 patterns that allow models by name shape, next to the exact allowlist.
+        Each pattern is matched case-insensitively as a full match against the model
+        name and `provider/model`. `*` is not a valid pattern.
+    blacklisted_models_patterns:
+      type: array
+      items:
+        type: string
+      description: >-
+        RE2 patterns that block models by name shape, next to the exact denylist.
+        Block patterns win over the allowlist and the allow patterns.
     weight:
       type: number
       description: Weight for load balancing
