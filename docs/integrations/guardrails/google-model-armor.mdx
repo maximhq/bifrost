@@ -10,7 +10,7 @@ Bifrost Enterprise supports [**Google Cloud Model Armor**](https://docs.cloud.go
 
 Use it when your safety and data protection policies are managed in Google Cloud and you want Bifrost to enforce those policies inline before prompts reach an LLM and before model responses are returned.
 
-Google owns the Model Armor template. Bifrost owns the gateway enforcement path: it selects when to call Model Armor, sends the relevant text to the template, then blocks or rewrites the Bifrost request/response based on the sanitize result.
+Google owns the Model Armor template. Bifrost owns the gateway enforcement path: it selects when to call Model Armor, sends the relevant text and optionally supported images to the template, then blocks or rewrites the Bifrost request/response based on the sanitize result.
 
 <Note>
   **Streaming output:** When this profile is used in an `output` or `both` rule, Bifrost accumulates the stream until the model response is complete, then checks the full response. It does not check individual stream chunks. See [Streaming Output Guardrails](/enterprise/guardrails#streaming-output-guardrails) for details.
@@ -137,9 +137,11 @@ Then set:
 6. If Model Armor returns a blocking match, Bifrost returns `GUARDRAIL_INTERVENED`.
 7. If Model Armor returns SDP de-identified text, Bifrost replaces the original text with the transformed text and continues.
 
+When `images_enabled` is on, Bifrost sends each supported image as its own request to the same input or output endpoint. This is separate from text because Model Armor does not screen a mixed text-and-image item.
+
 ### API Calls
 
-Bifrost sends text-only Model Armor requests:
+Bifrost sends one Model Armor data item per request. A text input request is:
 
 ```json
 {
@@ -159,6 +161,19 @@ For output checks, Bifrost sends:
 }
 ```
 
+An image input request is:
+
+```json
+{
+  "userPromptData": {
+    "byteItem": {
+      "byteDataType": "IMAGE",
+      "byteData": "<base64-encoded image bytes>"
+    }
+  }
+}
+```
+
 The endpoint is built from the configured project, location, and template:
 
 ```text
@@ -167,7 +182,7 @@ https://modelarmor.LOCATION.rep.googleapis.com/v1/projects/PROJECT_ID/locations/
 ```
 
 <Note>
-Bifrost currently sends text content to Model Armor. It does not send file bytes or per-request multi-language detection metadata.
+Image screening is opt-in with `images_enabled`. It is available only in the `us` and `eu` multi-regions, supports JPEG, PNG, and BMP images up to 4 MiB, and is a Model Armor Preview capability. Bifrost does not send files or PDFs to Model Armor.
 </Note>
 
 ## Configuration Fields
@@ -180,6 +195,7 @@ Bifrost currently sends text content to Model Armor. It does not send file bytes
 | `auth_type` | enum | No | `default_credential` | `default_credential` or `service_account_json`. Supports `env.*`. |
 | `service_account_json` | string | Conditional | - | Full service account key JSON or an `env.*` reference. Required when `auth_type` is `service_account_json`. |
 | `base_url` | string | No | Regional Model Armor endpoint | Optional custom endpoint or proxy. Usually leave blank. Supports `env.*`. |
+| `images_enabled` | boolean | No | `false` | Send supported image blocks to Model Armor. Requires the `us` or `eu` multi-region. |
 | `timeout` | integer | No | `30` | Provider execution timeout in seconds. |
 
 ## Configuration
@@ -201,8 +217,9 @@ Bifrost currently sends text content to Model Armor. It does not send file bytes
    - **Service Account Key JSON** to paste a key or reference an environment variable containing the full key JSON.
 6. Enter **Project ID**, **Location**, and **Template ID**.
 7. Leave **Base URL** blank unless you are routing through a proxy or custom endpoint.
-8. Set the timeout and save the configuration.
-9. Go to **Guardrails** > **Configuration** and attach the Google Model Armor profile to an input, output, or both-phase rule.
+8. Turn on **Screen Images** only when the template uses the `us` or `eu` multi-region and should screen supported images.
+9. Set the timeout and save the configuration.
+10. Go to **Guardrails** > **Configuration** and attach the Google Model Armor profile to an input, output, or both-phase rule.
 
 </Tab>
 <Tab title="API">
@@ -407,7 +424,7 @@ Blocked by Google Model Armor policy
 ```
 
 <Note>
-Model Armor output inspection and de-identification only apply to non-streaming response bodies today. Streaming output mutation is not supported; input guardrails can still run before a streaming request is sent to the LLM.
+For streaming output, Bifrost holds the complete response before Model Armor evaluates it, then applies a permitted transformation before replay. This adds holdback latency and avoids evaluating incomplete tool-call arguments.
 </Note>
 
 ## Troubleshooting
