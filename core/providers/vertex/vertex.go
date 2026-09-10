@@ -290,10 +290,12 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	}
 
 	// If deployments or an exact allow list are configured, return those directly without an
-	// API call. A patterns-only key has no names to surface, so it falls through to the Model
-	// Garden listing, which the pipeline then filters by pattern.
+	// API call. Any allow pattern disables the fast path: a pattern names no model, so the
+	// only way to surface what it admits is the Model Garden listing, which the pipeline then
+	// filters by both the exact lists and the patterns.
 	// Skip this fast path when Unfiltered is set so the full Vertex catalog can be retrieved
-	if !request.Unfiltered && (len(deployments) > 0 || (access.Allowed.IsRestricted() && !access.Allowed.IsEmpty())) {
+	if !request.Unfiltered && access.AllowedPatterns.IsEmpty() &&
+		(len(deployments) > 0 || (access.Allowed.IsRestricted() && !access.Allowed.IsEmpty())) {
 		return buildResponseFromConfig(deployments, access), nil
 	}
 

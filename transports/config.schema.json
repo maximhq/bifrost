@@ -3863,7 +3863,9 @@
           "uniqueItems": true,
           "description": "RE2 patterns that block models by shape, alongside blacklisted_models. Each pattern is matched case-insensitively as a full match against the model name and \"provider/model\". \"*\" is not a valid pattern. Block patterns win over allowed_models and allowed_models_patterns.",
           "items": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1,
+            "not": { "const": "*" }
           }
         },
         "rate_limit_id": {
@@ -7896,7 +7898,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Allowed model names (ignored when all_models_allowed is true)."
+          "description": "Allowed model names. Use [\"*\"] to allow all models; empty array or omitted denies all unless an allowed_models_patterns entry matches (ignored when all_models_allowed is true)."
         },
         "budgets": {
           "type": "array",
@@ -7929,7 +7931,9 @@
           "uniqueItems": true,
           "description": "RE2 patterns that block models by shape, alongside blacklisted_models. Each pattern is matched case-insensitively as a full match against the model name and \"provider/model\". \"*\" is not a valid pattern. Block patterns win over allowed_models and allowed_models_patterns.",
           "items": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1,
+            "not": { "const": "*" }
           }
         },
         "weight": {
@@ -8200,7 +8204,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Allowed model names (ignored when all_models_allowed is true)."
+          "description": "Allowed model names. Use [\"*\"] to allow all models; empty array or omitted denies all unless an allowed_models_patterns entry matches (ignored when all_models_allowed is true)."
         },
         "blacklisted_models": {
           "type": "array",
@@ -8224,7 +8228,9 @@
           "uniqueItems": true,
           "description": "RE2 patterns that block models by shape, alongside blacklisted_models. Each pattern is matched case-insensitively as a full match against the model name and \"provider/model\". \"*\" is not a valid pattern. Block patterns win over allowed_models and allowed_models_patterns.",
           "items": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1,
+            "not": { "const": "*" }
           }
         },
         "key_ids": {

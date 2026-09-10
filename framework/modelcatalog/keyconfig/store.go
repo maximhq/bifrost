@@ -230,13 +230,20 @@ func (s *Store) BlacklistedPatternsFor(provider schemas.ModelProvider) schemas.M
 }
 
 // AccessFor returns the provider-wide model rule built from the aggregated
-// lists, or a deny-all rule when the provider is unknown.
+// lists, or a deny-all rule when the provider is unknown. The four lists are
+// cloned, like the ones the individual accessors return, so a caller that
+// sorts or trims them cannot mutate the snapshot other readers are holding.
 func (s *Store) AccessFor(provider schemas.ModelProvider) schemas.ModelAccessRule {
 	st := s.load(provider)
 	if st == nil {
 		return schemas.ModelAccessRule{}
 	}
-	return st.access()
+	rule := st.access()
+	rule.Allowed = slices.Clone(rule.Allowed)
+	rule.Blocked = slices.Clone(rule.Blocked)
+	rule.AllowedPatterns = slices.Clone(rule.AllowedPatterns)
+	rule.BlockedPatterns = slices.Clone(rule.BlockedPatterns)
+	return rule
 }
 
 // IsAllowed reports whether at least one enabled key can actually serve the

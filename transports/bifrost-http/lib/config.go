@@ -6899,14 +6899,22 @@ func (c *Config) GetAllKeys() ([]configstoreTables.TableKey, error) {
 			if blacklisted == nil {
 				blacklisted = []string{}
 			}
+			modelsPatterns := key.ModelsPatterns
+			if modelsPatterns == nil {
+				modelsPatterns = schemas.ModelPatternList{}
+			}
+			blacklistedPatterns := key.BlacklistedModelsPatterns
+			if blacklistedPatterns == nil {
+				blacklistedPatterns = schemas.ModelPatternList{}
+			}
 			configStoreKey := configstoreTables.TableKey{
 				KeyID:                     key.ID,
 				Name:                      key.Name,
 				Value:                     *key.Value.Redacted(),
 				Models:                    models,
 				BlacklistedModels:         blacklisted,
-				ModelsPatterns:            key.ModelsPatterns,
-				BlacklistedModelsPatterns: key.BlacklistedModelsPatterns,
+				ModelsPatterns:            modelsPatterns,
+				BlacklistedModelsPatterns: blacklistedPatterns,
 				Weight:                    bifrost.Ptr(key.Weight),
 				Provider:                  string(providerKey),
 				ConfigHash:                key.ConfigHash,

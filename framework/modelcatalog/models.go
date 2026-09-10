@@ -39,6 +39,11 @@ func (mc *ModelCatalog) computeModelsForProvider(provider schemas.ModelProvider)
 	// rule folds the pattern twins in so a name a pattern admits (or blocks) is
 	// treated the same as one the exact lists name.
 	rule := mc.keyconf.AccessFor(provider)
+	// A key may allow models by pattern alone, which leaves the aggregated
+	// exact list nil. Restriction is therefore "either side names something",
+	// not "the exact list is non-nil" - otherwise a pattern-only rule reads as
+	// no rule at all and the whole datasheet is listed.
+	restricted := allowed != nil || len(rule.AllowedPatterns) > 0
 	providerName := string(provider)
 
 	var out []string
@@ -53,8 +58,8 @@ func (mc *ModelCatalog) computeModelsForProvider(provider schemas.ModelProvider)
 		if providersWithPartialListModels[provider] {
 			datasheetModelsToAppend = mc.datasheet.DatasheetModelsForProvider(provider)
 		}
-		out = mc.appendAllowedDatasheetModels(out, datasheetModelsToAppend, allowed, rule, providerName)
-	} else if datasheetModels := mc.datasheet.DatasheetModelsForProvider(provider); len(datasheetModels) > 0 && allowed != nil {
+		out = mc.appendAllowedDatasheetModels(out, datasheetModelsToAppend, restricted, rule, providerName)
+	} else if datasheetModels := mc.datasheet.DatasheetModelsForProvider(provider); len(datasheetModels) > 0 && restricted {
 		out = make([]string, 0, len(datasheetModels))
 		for _, m := range datasheetModels {
 			if rule.Allows(providerName, m) {
@@ -101,7 +106,7 @@ func (mc *ModelCatalog) computeModelsForProvider(provider schemas.ModelProvider)
 	return out
 }
 
-func (mc *ModelCatalog) appendAllowedDatasheetModels(out []string, models []string, allowed schemas.WhiteList, rule schemas.ModelAccessRule, providerName string) []string {
+func (mc *ModelCatalog) appendAllowedDatasheetModels(out []string, models []string, restricted bool, rule schemas.ModelAccessRule, providerName string) []string {
 	if len(models) == 0 {
 		return out
 	}
@@ -116,7 +121,7 @@ func (mc *ModelCatalog) appendAllowedDatasheetModels(out []string, models []stri
 		if rule.Blocks(providerName, m) {
 			continue
 		}
-		if allowed != nil && !rule.Admits(providerName, m) {
+		if restricted && !rule.Admits(providerName, m) {
 			continue
 		}
 		seen[m] = struct{}{}
