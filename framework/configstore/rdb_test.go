@@ -128,6 +128,34 @@ func TestRDBConfigStore_UpsertModelPricesSyncsIsDeprecated(t *testing.T) {
 	assert.False(t, prices[0].IsDeprecated)
 }
 
+func TestRDBConfigStore_DeleteOrphanedSessions(t *testing.T) {
+	store := setupRDBTestStore(t)
+	require.NoError(t, store.DB().AutoMigrate(&tables.SessionsTable{}))
+	ctx := context.Background()
+	now := time.Now()
+
+	orphaned := &tables.SessionsTable{Token: "orphaned-session", ExpiresAt: now.Add(-31 * 24 * time.Hour)}
+	recentlyExpired := &tables.SessionsTable{Token: "recently-expired-session", ExpiresAt: now.Add(-time.Minute)}
+	active := &tables.SessionsTable{Token: "active-session", ExpiresAt: now.Add(time.Minute)}
+	require.NoError(t, store.CreateSession(ctx, orphaned))
+	require.NoError(t, store.CreateSession(ctx, recentlyExpired))
+	require.NoError(t, store.CreateSession(ctx, active))
+
+	deleted, err := store.DeleteOrphanedSessions(ctx, 30*24*time.Hour)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, deleted)
+
+	gotOrphaned, err := store.GetSession(ctx, "orphaned-session")
+	require.NoError(t, err)
+	assert.Nil(t, gotOrphaned)
+	gotRecentlyExpired, err := store.GetSession(ctx, "recently-expired-session")
+	require.NoError(t, err)
+	require.NotNil(t, gotRecentlyExpired)
+	gotActive, err := store.GetSession(ctx, "active-session")
+	require.NoError(t, err)
+	require.NotNil(t, gotActive)
+}
+
 func TestRDBConfigStore_ComplexityAnalyzerConfigRoundTrip(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
