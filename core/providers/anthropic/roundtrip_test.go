@@ -11,11 +11,16 @@ package anthropic
 //   F) No top-level system, mid-conv only, unsupported
 //   G) Multiple mid-conv system messages, supported
 //   H) Multiple mid-conv system messages, unsupported
+//   B3) Mid-conv system followed by a thinking-replay assistant turn, supported
+//   B4) Mid-conv system followed by a textless tool_use assistant turn, supported
+//   B5) Mid-conv system followed by a tool-result user turn — NOT forwarded
+//   B6) Mid-conv system followed by a payload-less function_call — NOT forwarded
 //
 // "Supported" means provider=Anthropic + model=claude-opus-4-8 (SupportsMidConversationSystem=true).
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -516,5 +521,171 @@ func TestRoundTrip_ContainerUpload_Grouped(t *testing.T) {
 	}
 	if found.FileID == nil || *found.FileID != fileID {
 		t.Errorf("file_id = %v, want %q", found.FileID, fileID)
+	}
+}
+
+// --- B3: mid-conv system followed by a thinking-replay assistant turn -------
+
+// The replay of an extended-thinking conversation ingests each thinking block
+// as a ROLELESS reasoning item ahead of the assistant message's own item. On
+// Anthropic's wire the thinking rides INSIDE the assistant message, so the
+// emitted shape is still [user, system, assistant] and both placement clauses
+// hold. The gate must evaluate "followed by an assistant turn" against the
+// next role-bearing message, skipping the assistant-side fragments — failing
+// on them forced a hoist/inline fallback for every thinking conversation.
+func TestRoundTrip_B3_MidConvFollowedByThinkingReplay_Supported(t *testing.T) {
+	thinking := "internal deliberation"
+	signature := "sig-1"
+	text := "Understood."
+	messages := []AnthropicMessage{
+		anthMsg(AnthropicMessageRoleUser, "Hello"),
+		anthMsg(AnthropicMessageRoleSystem, "From now on, be concise."),
+		{
+			Role: AnthropicMessageRoleAssistant,
+			Content: AnthropicContent{ContentBlocks: []AnthropicContentBlock{
+				{Type: AnthropicContentBlockTypeThinking, Thinking: &thinking, Signature: &signature},
+				{Type: AnthropicContentBlockTypeText, Text: &text},
+			}},
+		},
+		anthMsg(AnthropicMessageRoleUser, "Thanks."),
+	}
+	system := systemStr("You are a helpful assistant.")
+
+	outMsgs, outSystem := roundTrip(t, messages, system, schemas.Anthropic, "claude-opus-4-8")
+
+	if got := textBlocks(outSystem); len(got) != 1 || got[0] != "You are a helpful assistant." {
+		t.Errorf("system = %v, want only the top-level system (no hoist)", got)
+	}
+	if want := "user,system,assistant,user"; roleSeq(outMsgs) != want {
+		t.Fatalf("role seq = %q, want %q", roleSeq(outMsgs), want)
+	}
+	if got := textBlocks(&outMsgs[1].Content); len(got) == 0 || got[0] != "From now on, be concise." {
+		t.Errorf("mid-conv system text = %v", got)
+	}
+}
+
+// --- B4: mid-conv system followed by a textless tool_use assistant turn -----
+
+// An assistant turn carrying only thinking + tool_use produces NO role-bearing
+// item of its own (reasoning and function_call fragments only). The gate must
+// still forward the system turn natively — the egress regroups the fragments
+// into the assistant message that satisfies the clause.
+func TestRoundTrip_B4_MidConvFollowedByToolUseOnly_Supported(t *testing.T) {
+	thinking := "deciding to call"
+	signature := "sig-2"
+	callID := "toolu_1"
+	toolName := "get_weather"
+	input := json.RawMessage(`{"city":"Paris"}`)
+	result := `{"temp":21}`
+	messages := []AnthropicMessage{
+		anthMsg(AnthropicMessageRoleUser, "Weather in Paris?"),
+		anthMsg(AnthropicMessageRoleSystem, "From now on, be concise."),
+		{
+			Role: AnthropicMessageRoleAssistant,
+			Content: AnthropicContent{ContentBlocks: []AnthropicContentBlock{
+				{Type: AnthropicContentBlockTypeThinking, Thinking: &thinking, Signature: &signature},
+				{Type: AnthropicContentBlockTypeToolUse, ID: &callID, Name: &toolName, Input: input},
+			}},
+		},
+		{
+			Role: AnthropicMessageRoleUser,
+			Content: AnthropicContent{ContentBlocks: []AnthropicContentBlock{
+				{Type: AnthropicContentBlockTypeToolResult, ToolUseID: &callID, Content: &AnthropicContent{ContentStr: &result}},
+			}},
+		},
+	}
+	system := systemStr("You are a helpful assistant.")
+
+	outMsgs, outSystem := roundTrip(t, messages, system, schemas.Anthropic, "claude-opus-4-8")
+
+	if got := textBlocks(outSystem); len(got) != 1 || got[0] != "You are a helpful assistant." {
+		t.Errorf("system = %v, want only the top-level system (no hoist)", got)
+	}
+	if want := "user,system,assistant,user"; roleSeq(outMsgs) != want {
+		t.Fatalf("role seq = %q, want %q", roleSeq(outMsgs), want)
+	}
+}
+
+// --- B5: mid-conv system followed by a tool-result user turn (still fails) --
+
+// A roleless function_call_output is the USER side of a tool exchange: it
+// regroups into a user turn, so a system turn followed by one must NOT be
+// forwarded natively ([user, system, user] is a 400 on Anthropic). The skip
+// in midConvPlacementOK covers assistant-side fragments only. The tool-result
+// user turn sits DIRECTLY after the system turn so the scan meets the
+// function_call_output branch itself — a role-bearing user message first
+// would settle the clause at the role check without ever reaching it.
+func TestRoundTrip_B5_MidConvFollowedByToolOutput_NotForwarded(t *testing.T) {
+	callID := "toolu_2"
+	result := "21"
+	messages := []AnthropicMessage{
+		anthMsg(AnthropicMessageRoleUser, "Weather in Tokyo?"),
+		anthMsg(AnthropicMessageRoleSystem, "From now on, be concise."),
+		{
+			Role: AnthropicMessageRoleUser,
+			Content: AnthropicContent{ContentBlocks: []AnthropicContentBlock{
+				{Type: AnthropicContentBlockTypeToolResult, ToolUseID: &callID, Content: &AnthropicContent{ContentStr: &result}},
+			}},
+		},
+		anthMsg(AnthropicMessageRoleUser, "Thanks."),
+	}
+	system := systemStr("You are a helpful assistant.")
+
+	outMsgs, outSystem := roundTrip(t, messages, system, schemas.Anthropic, "claude-opus-4-8")
+
+	for i, m := range outMsgs {
+		if m.Role == AnthropicMessageRoleSystem {
+			t.Fatalf("msg[%d] forwarded as role:system; role seq = %q", i, roleSeq(outMsgs))
+		}
+	}
+	// Fallback applied: the mid-conv system text must survive in the fallback
+	// output — inlined into a user turn, not hoisted — and the top-level system
+	// must remain the only top-level block.
+	assertInlined(t, outMsgs, outSystem, "From now on, be concise.")
+	if got := textBlocks(outSystem); len(got) != 1 || got[0] != "You are a helpful assistant." {
+		t.Errorf("system = %v, want only the top-level system", got)
+	}
+}
+
+// --- B6: mid-conv system followed by a payload-less function_call (guard) ---
+
+// A roleless function_call with NO tool payload emits no tool_use —
+// convertBifrostFunctionCallToAnthropicToolUse returns nil when
+// ResponsesToolMessage is nil — so no assistant turn materializes after the
+// system turn. The gate must fail the clause for it, or the output becomes
+// [user, system, user], the exact placement Anthropic rejects with a 400.
+// Built from Responses wire JSON (the ingress that can produce this shape)
+// rather than the Anthropic roundTrip, since the Anthropic wire cannot carry
+// a function_call without a payload.
+func TestRoundTrip_B6_MidConvFollowedByPayloadlessFunctionCall_NotForwarded(t *testing.T) {
+	wire := `[
+		{"type":"message","role":"user","content":"hi"},
+		{"type":"message","role":"system","content":"be concise"},
+		{"type":"function_call"},
+		{"type":"message","role":"user","content":"thanks"}
+	]`
+	var bifrost []schemas.ResponsesMessage
+	if err := json.Unmarshal([]byte(wire), &bifrost); err != nil {
+		t.Fatalf("unmarshal wire: %v", err)
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	outMsgs, outSystem := ConvertBifrostMessagesToAnthropicMessages(ctx, bifrost, true, schemas.ResolveModelCaps(schemas.Anthropic, "claude-opus-4-8"))
+
+	for i, m := range outMsgs {
+		if m.Role == AnthropicMessageRoleSystem {
+			t.Fatalf("msg[%d] forwarded as role:system; role seq = %q (a payload-less function_call emits no assistant turn — [user, system, user] is a 400)", i, roleSeq(outMsgs))
+		}
+	}
+	// The system text must survive the fallback — inlined into a user turn,
+	// not hoisted — and the payload-less function_call must not materialize
+	// an assistant turn anywhere in the output.
+	assertInlined(t, outMsgs, outSystem, "be concise")
+	for i, m := range outMsgs {
+		if m.Role == AnthropicMessageRoleAssistant {
+			t.Errorf("msg[%d] is an assistant turn; a payload-less function_call emits no tool_use and must not materialize one (roles = %q)", i, roleSeq(outMsgs))
+		}
 	}
 }
