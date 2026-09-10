@@ -479,7 +479,8 @@ CreateVirtualKeyRequest:
             items:
               type: string
             description: >-
-              Allowlist. `["*"]` allows every model; an empty list denies all.
+              Allowlist. `["*"]` allows every model; an empty list denies all. A
+              list may not mix `*` with named entries.
           blacklisted_models:
             type: array
             items:
@@ -593,7 +594,8 @@ UpdateVirtualKeyRequest:
             items:
               type: string
             description: >-
-              Allowlist. `["*"]` allows every model; an empty list denies all.
+              Allowlist. `["*"]` allows every model; an empty list denies all. A
+              list may not mix `*` with named entries.
           blacklisted_models:
             type: array
             items:

@@ -243,8 +243,8 @@ ProjectProviderConfig:
       items:
         type: string
       description: >-
-        Allowlist. `["*"]` allows every model. A list may not mix `*` with named
-        entries.
+        Allowlist. `["*"]` allows every model; an empty or omitted list denies
+        all. A list may not mix `*` with named entries.
     blacklisted_models:
       type: array
       nullable: true

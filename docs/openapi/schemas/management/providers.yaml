@@ -198,13 +198,14 @@ Key:
         type: string
       description: >-
         Models this key can serve (allowlist). `["*"]` allows every model; an
-        empty list denies all.
+        empty list denies all. A list may not mix `*` with named entries.
     blacklisted_models:
       type: array
       items:
         type: string
       description: >-
         Models this key must never serve (denylist, wins over the allowlist).
+        `["*"]` blocks every model. A list may not mix `*` with named entries.
     models_patterns:
       type: array
       items:

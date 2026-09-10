@@ -385,8 +385,8 @@ Budgets and rate limits inside a project are declared without ids.
 | `all_models_allowed` | No | Allow every model of the provider |
 | `allowed_models` | No | Allowed model names, ignored when `all_models_allowed` is true |
 | `blacklisted_models` | No | Models blocked even if allowed; `["*"]` blocks all |
-| `allowed_models_patterns` | No | RE2 patterns that allow models by name shape, ignored when `all_models_allowed` is true |
-| `blacklisted_models_patterns` | No | RE2 patterns that block models by name shape; win over the allow side |
+| `allowed_models_patterns` | No | RE2 patterns that allow models by name shape, ignored when `all_models_allowed` is true. Each is matched case-insensitively as a full match against the model name and against `provider/model`; `*`, blank entries, and duplicates are refused. See [Allowing or blocking model families with patterns](/features/governance/virtual-keys#allowing-or-blocking-model-families-with-patterns) |
+| `blacklisted_models_patterns` | No | RE2 patterns that block models by name shape, matched and validated the same way; win over the allow side |
 | `key_ids` | No | Keys that may serve the request; `["*"]` allows all, empty or omitted allows none, regardless of the top-level `version`. Each id must belong to this provider |
 | `weight` | No | Load-balancer seed weight; omit to leave the caller's own preference standing |
 | `budgets` | No | Spend caps on this provider inside the project |
