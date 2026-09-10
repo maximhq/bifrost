@@ -8,15 +8,16 @@ icon: "eraser"
 
 Guardrail redaction lets Bifrost rewrite sensitive text detected by supported guardrail providers instead of only detecting or blocking it.
 
-Bifrost-managed redaction is supported by:
+Bifrost applies span-based runtime redaction for:
 
 - [Custom Regex](/enterprise/guardrails/custom-regex)
 - [Secrets Detection](/enterprise/guardrails/secrets-detection)
 - [Microsoft Presidio](/integrations/guardrails/presidio)
 - [Azure AI Language PII](/integrations/guardrails/azure-language-pii)
 - [Check Point's AI Agent Security](/integrations/guardrails/checkpoint)
+- [Singulr AI](/integrations/guardrails/singulr-ai)
 
-Each provider can produce findings with byte ranges and entity types such as `EMAIL`, `PHONE_NUMBER`, `AWS_ACCESS_TOKEN`, or a custom regex `entity_type`. Bifrost then applies the configured redaction action, strategy, and mode.
+Providers return findings with ranges and entity types such as `EMAIL`, `PHONE_NUMBER`, `AWS_ACCESS_TOKEN`, or a custom regex `entity_type`. For providers with Bifrost redaction controls, Bifrost applies the configured action, strategy, and mode. Singulr chooses the action in its own policy configuration; Bifrost applies its valid redaction spans with fixed runtime replacement.
 
 <Note>
 Redaction only applies to text that a guardrail provider detects. If a provider does not detect a value, Bifrost cannot redact that value in runtime payloads, logs, or connector exports.
@@ -34,6 +35,8 @@ Only one rewrite owner can apply to a given request or response phase. If the sa
 Detection-only and blocking guardrails can still run alongside Bifrost-managed redaction. The restriction applies when more than one guardrail path attempts to rewrite the same input or output content.
 
 Check Point's AI Agent Security uses Bifrost-managed redaction, but its response shape is different from a local detector. Check Point returns optional message-content spans for supported findings, and Bifrost maps those spans back to the original text before applying the configured strategy and mode. Check Point documents maskable payload spans for PII, profanity, and custom regular-expression detectors. A flagged Check Point result without safely mappable spans fails closed instead of forwarding the original content.
+
+Singulr AI uses **Singulr-controlled, Bifrost-applied redaction**. It selects `allow`, `block`, or `redact` in its own policy configuration. For a `redact` decision, it returns spans and Bifrost validates then applies fixed runtime replacement to the matching request or response text. Singulr profiles do not expose Bifrost `action`, strategy, or mode settings. A missing or unsafe span fails closed instead of forwarding the original content.
 
 ## Actions
 
@@ -180,8 +183,9 @@ This section describes Bifrost's completed-trace export path. Integrations that 
 | Microsoft Presidio | `detect_only` | `replace` | `runtime` |
 | Azure AI Language PII | `detect_only` | `replace` | `runtime` |
 | Check Point's AI Agent Security | `block` | `replace` | `runtime` |
+| Singulr AI | Singulr policy decision | `replace` | `runtime` |
 
-For redaction, set `action: "redact"` explicitly. Relying on defaults is usually the wrong move here, especially for Presidio and Azure AI Language PII.
+For providers with Bifrost action controls, set `action: "redact"` explicitly. Relying on defaults is usually the wrong move here, especially for Presidio and Azure AI Language PII. Configure the `redact` decision in Singulr for Singulr AI profiles.
 
 ## LLM Tool-Call Arguments
 
@@ -200,5 +204,6 @@ MCP-targeted rules continue to evaluate actual MCP execution arguments and resul
 - Overlapping findings are resolved into a non-overlapping set before replacement.
 - Bifrost-managed redaction cannot be combined with provider-managed transformed output for the same request or response phase.
 - Check Point tool-call arguments are screened but are not rewritten from Check Point message-content spans. A flagged argument that cannot be mapped safely fails closed in `redact` mode.
+- Singulr tool-call arguments and tool-result content can be blocked but are never redacted.
 - Input redaction cannot safely run together with raw-body passthrough transformations; Bifrost fails closed rather than forwarding an inconsistent payload.
 - If a request uses both input and output redaction, Bifrost carries replacements forward so raw log fields and exported trace content are redacted consistently.
