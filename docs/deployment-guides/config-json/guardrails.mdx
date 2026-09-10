@@ -486,6 +486,35 @@ Calls Repello Argus prompt and response analysis endpoints. The configured Argus
 `base_url` is optional and defaults to `https://argusapi.repello.ai/sdk/v1`. Repello `blocked` verdicts intervene, while `flagged` verdicts are recorded and allowed. See [Repello Argus](/integrations/guardrails/repello-argus) for setup, streaming behavior, and supported content.
 
 </Tab>
+<Tab title="Singulr AI">
+
+Calls Singulr AI's Bifrost guardrail endpoint. The Singulr policy decides whether content is allowed, blocked, or redacted. For a `redact` decision, Bifrost validates Singulr's spans and applies fixed runtime replacement.
+
+```json
+{
+  "guardrails_config": {
+    "guardrail_providers": [
+      {
+        "id": 9,
+        "provider_name": "singulr-ai",
+        "policy_name": "singulr-ai-production",
+        "enabled": true,
+        "timeout": 30,
+        "config": {
+          "api_key": "env.SINGULR_API_KEY",
+          "application_id": "[APPLICATION_ID]",
+          "guardrail_id": "guardrail-1234567890",
+          "base_url": "env.SINGULR_BASE_URL"
+        }
+      }
+    ]
+  }
+}
+```
+
+`base_url` is optional and defaults to `https://dev-app6.ai-platform.singulr.ai`. Bifrost appends `/api/v1/ai-gateway/bifrost`; set `base_url` only when Singulr provides a different API root. See [Singulr AI](/integrations/guardrails/singulr-ai) for setup, streaming behavior, and supported content.
+
+</Tab>
 </Tabs>
 
 ### Provider Fields
@@ -493,7 +522,7 @@ Calls Repello Argus prompt and response analysis endpoints. The configured Argus
 | Field | Required | Description |
 |-------|----------|-------------|
 | `id` | Yes | Unique integer ID - referenced by rules via `provider_config_ids` |
-| `provider_name` | Yes | Backend: `"regex"`, `"secrets"`, `"prompt-guardrail"`, `"presidio"`, `"azure-pii"`, `"bedrock"`, `"azure"`, `"model-armor"`, `"crowdstrike-aidr"`, `"patronus-ai"`, `"grayswan"`, `"lakera"`, `"repelloai-argus"` |
+| `provider_name` | Yes | Backend: `"regex"`, `"secrets"`, `"prompt-guardrail"`, `"presidio"`, `"azure-pii"`, `"bedrock"`, `"azure"`, `"model-armor"`, `"crowdstrike-aidr"`, `"patronus-ai"`, `"grayswan"`, `"lakera"`, `"repelloai-argus"`, `"singulr-ai"` |
 | `policy_name` | Yes | Human-readable policy label |
 | `enabled` | Yes | `true` to activate |
 | `timeout` | No | Execution timeout in seconds |
@@ -646,6 +675,16 @@ Any field marked **env.\* supported** accepts a bare `"env.VAR_NAME"` string in 
 | `api_key` | Yes | Yes | Repello Argus API key |
 | `asset_id` | Yes | **Plain only** | Argus asset ID whose configured policies control evaluation |
 | `base_url` | No | Yes | Argus SDK API base URL. Defaults to `https://argusapi.repello.ai/sdk/v1` |
+| `timeout` | No | **Plain only** | Provider execution timeout in seconds |
+
+### Singulr AI
+
+| Field | Required | env.* supported | Notes |
+|-------|----------|-----------------|-------|
+| `api_key` | Yes | Yes | Singulr API key |
+| `application_id` | Yes | **Plain only** | Complete Application ID supplied by Singulr |
+| `guardrail_id` | Yes | **Plain only** | Singulr guardrail configuration ID |
+| `base_url` | No | Yes | Singulr API root. Defaults to `https://dev-app6.ai-platform.singulr.ai` |
 | `timeout` | No | **Plain only** | Provider execution timeout in seconds |
 
 ### Regex
