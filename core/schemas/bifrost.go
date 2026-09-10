@@ -49,6 +49,7 @@ const (
 	Bedrock       ModelProvider = "bedrock"
 	BedrockMantle ModelProvider = "bedrock_mantle"
 	Cohere        ModelProvider = "cohere"
+	CoreWeave     ModelProvider = "coreweave"
 	Vertex        ModelProvider = "vertex"
 	Mistral       ModelProvider = "mistral"
 	Ollama        ModelProvider = "ollama"
@@ -96,6 +97,7 @@ var StandardProviders = []ModelProvider{
 	BedrockMantle,
 	Cerebras,
 	Cohere,
+	CoreWeave,
 	DeepSeek,
 	Gemini,
 	Groq,

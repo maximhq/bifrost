@@ -409,6 +409,9 @@
         "cohere": {
           "$ref": "#/$defs/provider"
         },
+        "coreweave": {
+          "$ref": "#/$defs/provider"
+        },
         "azure": {
           "$ref": "#/$defs/provider_with_azure_config"
         },
@@ -8641,7 +8644,8 @@
             "runware",
             "fireworks",
             "sarvam",
-            "wafer"
+            "wafer",
+            "coreweave"
           ],
           "description": "Base provider type to extend"
         },

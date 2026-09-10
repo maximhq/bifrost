@@ -214,6 +214,43 @@ export const ProviderIcons = {
 		);
 	},
 
+	// CoreWeave's mark. The source art flips the three dark strokes black/white
+	// with prefers-color-scheme; here they use currentColor and follow the text
+	// in both themes. The 188x108 viewBox is not square, so the default
+	// preserveAspectRatio letterboxes it instead of stretching.
+	coreweave: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				viewBox="0 0 187.97 107.72"
+				fill="none"
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<title>CoreWeave</title>
+				<path
+					fill="#2741E7"
+					fillRule="evenodd"
+					d="m 74.1875,81.27 h -27.07 c -1.65,0 -3.3,-0.99 -4.29,-2.64 l -12.55,-22.47 c -0.66,-1.65 -0.66,-3.3 0,-4.62 l 12.55,-22.47 c 0.99,-1.65 2.64,-2.64 4.29,-2.64 h 15.52 c 1.65,0 3.3,-0.99 4.29,-2.64 L 78.1575,3.63 C 79.1475,1.98 77.8275,0 76.1775,0 h -41.6 c -3.63,0 -6.6,1.98 -8.58,4.96 l -24.76,44.28 c -1.65,2.97 -1.65,6.61 0,9.58 l 24.76,43.94 c 1.65,2.97 4.95,4.96 8.58,4.96 h 53.15 c 1.98,0 2.97,-1.98 1.98,-3.64 l -11.55,-20.49 c -0.33,-1.65 -1.98,-2.31 -3.96,-2.31 z"
+				/>
+				<path
+					fill="currentColor"
+					d="m 147.4875,19.48 -10.57,-17.84 c -0.99,-1.65 -3.3,-1.65 -4.29,0 l -44.57,79.3 c -0.66,1.65 -0.66,3.3 0,4.63 l 11.55,20.82 c 0.99,1.65 3.3,1.65 4.29,0 l 43.58,-77.32 c 1.65,-2.97 1.65,-6.61 0,-9.58 z"
+				/>
+				<path
+					fill="currentColor"
+					fillRule="evenodd"
+					d="m 93.6675,55.83 13.21,-23.46 c 0.66,-1.32 0.66,-3.3 0,-4.96 l -15.19,-26.1 c -0.99,-1.65 -3.3,-1.65 -4.29,0 l -12.88,22.8 c -0.66,1.32 -0.66,3.3 0,4.63 l 14.86,26.76 c 0.99,1.98 3.63,1.98 4.29,0.33 z"
+				/>
+				<path
+					fill="currentColor"
+					d="m 186.4375,19.48 -10.57,-17.84 c -0.99,-1.65 -3.3,-1.65 -4.29,0 l -44.57,79.3 c -0.66,1.65 -0.66,3.3 0,4.63 l 11.89,20.82 c 0.99,1.65 3.3,1.65 4.29,0 l 43.58,-77.32 c 1.65,-2.97 1.65,-6.61 -0.33,-9.58 z"
+				/>
+			</svg>
+		);
+	},
 	elevenlabs: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 
