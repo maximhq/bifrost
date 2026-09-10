@@ -44,6 +44,7 @@ func NewElevenlabsProvider(config *schemas.ProviderConfig, logger schemas.Logger
 		MaxConnWaitTimeout:  requestTimeout,
 		MaxConnDuration:     time.Second * time.Duration(schemas.DefaultMaxConnDurationInSeconds),
 		ConnPoolStrategy:    fasthttp.FIFO,
+		ReadBufferSize:      schemas.DefaultClientReadBufferSize,
 	}
 
 	// Configure proxy and retry policy

@@ -14,7 +14,8 @@ const (
 	DefaultRetryBackoffInitial        = 500 * time.Millisecond
 	DefaultRetryBackoffMax            = 5 * time.Second
 	DefaultRequestTimeoutInSeconds    = 300
-	DefaultMaxConnDurationInSeconds   = 300 // 5 minutes — forces connection recycling to prevent stale connections from NAT/LB silent drops
+	DefaultMaxConnDurationInSeconds   = 300       // 5 minutes — forces connection recycling to prevent stale connections from NAT/LB silent drops
+	DefaultClientReadBufferSize       = 64 * 1024 // 64KB read buffer for provider HTTP clients, matching the bifrost HTTP server setting — fasthttp's 4KB default overflows on large response headers (e.g. Cloudflare cookies + CSP headers)
 	DefaultBufferSize                 = 5000
 	DefaultConcurrency                = 1000
 	DefaultStreamBufferSize           = 256

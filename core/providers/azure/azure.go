@@ -182,6 +182,7 @@ func NewAzureProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*A
 		MaxConnWaitTimeout:  requestTimeout,
 		MaxConnDuration:     time.Second * time.Duration(schemas.DefaultMaxConnDurationInSeconds),
 		ConnPoolStrategy:    fasthttp.FIFO,
+		ReadBufferSize:      schemas.DefaultClientReadBufferSize,
 	}
 
 	// Configure proxy and retry policy
