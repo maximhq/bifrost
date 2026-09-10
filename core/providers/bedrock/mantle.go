@@ -157,7 +157,7 @@ func (provider *BedrockProvider) mantleChatCompletions(
 		ctx,
 		provider.mantleClient,
 		url,
-		request,
+		withBareModel(request),
 		openai.BearerAuthHeader(key),
 		WithMantleProject(provider.networkConfig.ExtraHeaders, MantleOpenAIProjectHeader, resolveMantleProjectID(ctx, key)),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -192,7 +192,7 @@ func (provider *BedrockProvider) mantleChatCompletionsStream(
 	}
 
 	return openai.HandleOpenAIChatCompletionStreaming(
-		ctx, provider.mantleStreamingClient, url, request,
+		ctx, provider.mantleStreamingClient, url, withBareModel(request),
 		openai.BearerAuthHeader(key), WithMantleProject(provider.networkConfig.ExtraHeaders, MantleOpenAIProjectHeader, resolveMantleProjectID(ctx, key)),
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -241,7 +241,7 @@ func (provider *BedrockProvider) mantleResponses(
 		ctx,
 		provider.mantleClient,
 		url,
-		request,
+		withBareResponsesModel(request),
 		openai.BearerAuthHeader(key),
 		WithMantleProject(provider.networkConfig.ExtraHeaders, MantleOpenAIProjectHeader, resolveMantleProjectID(ctx, key)),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -282,7 +282,7 @@ func (provider *BedrockProvider) mantleResponsesStream(
 	}
 
 	return openai.HandleOpenAIResponsesStreaming(
-		ctx, provider.mantleStreamingClient, url, request,
+		ctx, provider.mantleStreamingClient, url, withBareResponsesModel(request),
 		openai.BearerAuthHeader(key), WithMantleProject(provider.networkConfig.ExtraHeaders, MantleOpenAIProjectHeader, resolveMantleProjectID(ctx, key)),
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -296,4 +296,30 @@ func (provider *BedrockProvider) mantleResponsesStream(
 		provider.logger,
 		postHookSpanFinalizer,
 	)
+}
+
+// withBareModel drops the region addressing prefix from the model a chat request
+// carries, so the body names the id mantle knows. The Converse path resolves the
+// bare id itself, but the OpenAI-compatible handlers read it off the request, and
+// mantle 404s the prefixed form. Copied rather than mutated: the caller's request
+// is what the pipeline keys pricing and logging on.
+func withBareModel(request *schemas.BifrostChatRequest) *schemas.BifrostChatRequest {
+	_, bare := parseBedrockRegionAndModel(request.Model)
+	if bare == request.Model {
+		return request
+	}
+	clone := *request
+	clone.Model = bare
+	return &clone
+}
+
+// withBareResponsesModel is withBareModel for the Responses surface.
+func withBareResponsesModel(request *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
+	_, bare := parseBedrockRegionAndModel(request.Model)
+	if bare == request.Model {
+		return request
+	}
+	clone := *request
+	clone.Model = bare
+	return &clone
 }
