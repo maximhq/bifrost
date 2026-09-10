@@ -47,6 +47,19 @@ var (
 	ErrMCPReconnectNotApplicable = errors.New("reconnect is not applicable for this client type")
 )
 
+// MCPInboundBearerOmittedReason says why a request that presented an identity-provider token reached
+// token-exchange resolution without one to exchange. Only the auth layer that handled the inbound
+// credential knows the difference between a token it rejected and no token at all, and it records
+// the rejection under BifrostContextKeyMCPInboundBearerOmitted so the refusal a caller reads back
+// names the actual cause. A request with no record simply carried no token.
+type MCPInboundBearerOmittedReason string
+
+const (
+	// MCPInboundBearerRejected: the identity-provider token failed validation, so nothing verified
+	// could be exchanged on the caller's behalf.
+	MCPInboundBearerRejected MCPInboundBearerOmittedReason = "rejected"
+)
+
 // MCPAuthRequiredKind discriminates the kind of inline-401 auth flow surfaced
 // to the caller. The value lands in MCPAuthRequiredError.Kind and on the wire
 // under extra_fields.mcp_auth_required.kind.
