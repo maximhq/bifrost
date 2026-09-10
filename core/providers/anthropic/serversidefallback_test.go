@@ -1321,6 +1321,47 @@ func TestBuildAnthropicResponsesRequestBody_CountTokensStripsRejectedFields(t *t
 	}
 }
 
+// Regression: Claude Code serializes tool_use blocks with provider_specific_fields:null.
+// Strict Anthropic-compatible count_tokens validators (vLLM) reject that unknown field.
+func TestBuildAnthropicResponsesRequestBody_CountTokensStripsProviderSpecificFields(t *testing.T) {
+	t.Parallel()
+
+	rawBody := []byte(`{
+		"model":"vllm/GLM-5.2-NVFP4-MTP",
+		"messages":[
+			{"role":"user","content":"hi"},
+			{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"test","input":{},"provider_specific_fields":null}]},
+			{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":"done"}]}
+		]
+	}`)
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+
+	result, bifrostErr := BuildAnthropicResponsesRequestBody(ctx,
+		&schemas.BifrostResponsesRequest{
+			Provider:       schemas.VLLM,
+			Model:          "GLM-5.2-NVFP4-MTP",
+			RawRequestBody: rawBody,
+		},
+		AnthropicRequestBuildConfig{
+			Provider:      schemas.VLLM,
+			Model:         "GLM-5.2-NVFP4-MTP",
+			IsCountTokens: true,
+		})
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr)
+	}
+	if gjson.GetBytes(result, "messages.1.content.0.provider_specific_fields").Exists() {
+		t.Fatalf("expected provider_specific_fields stripped from tool_use, got: %s", result)
+	}
+	if got := gjson.GetBytes(result, "messages.1.content.0.type").String(); got != "tool_use" {
+		t.Fatalf("tool_use block damaged: type=%q body=%s", got, result)
+	}
+	if got := gjson.GetBytes(result, "messages.1.content.0.id").String(); got != "toolu_01" {
+		t.Fatalf("tool_use id lost: %q body=%s", got, result)
+	}
+}
+
 // A fallback entry's speed override needs the fast-mode beta just as a top-level
 // speed does; without it the parameter is rejected as unrecognised.
 func TestFallbackEntrySpeed_InjectsFastModeBetaHeader(t *testing.T) {
