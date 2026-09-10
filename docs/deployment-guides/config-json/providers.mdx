@@ -67,6 +67,14 @@ Concurrency and buffering per provider:
 | `concurrency_and_buffer_size.concurrency` | integer | Max concurrent requests to this provider |
 | `concurrency_and_buffer_size.buffer_size` | integer | Request queue depth |
 
+Prompt-cache breakpoint injection per provider (see [Auto Prompt Caching](/features/prompt-caching)):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `prompt_cache.auto_inject` | boolean | Mark the first cacheable block when the caller sent no cache markers. Off by default |
+| `prompt_cache.ttl` | string | Lifetime for injected markers. Only `"1h"` is accepted; omit for the provider default |
+| `prompt_cache.cache_control_injection_points` | array | Target specific messages by `role` and/or `index`. Replaces the first-block strategy when set |
+
 ---
 
 <Tabs>
