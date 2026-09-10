@@ -101,6 +101,7 @@ F --> G
    - **Convert Chat to Responses** - converts chat completion requests to responses for models that only support responses
    - **Drop Unsupported Params** - drops unsupported parameters based on model catalog allowlist
    - **Convert Unsupported Params Values** - converts unsupported parameters values to their supported equivalents. See the list of [supported parameters](#supported-parameters) below.
+   - **Azure DeepSeek** - converts Azure DeepSeek responses requests to chat completions so reasoning is preserved for coding harnesses
 4. Save your configuration
 
 ![Compatibility Settings](../media/compatibility-settings.png)
@@ -116,7 +117,8 @@ F --> G
       "convert_text_to_chat": true,
       "convert_chat_to_responses": true,
       "should_drop_params": true,
-      "should_convert_params": true
+      "should_convert_params": true,
+      "azure_deepseek": true
     }
   }
 }
@@ -206,7 +208,7 @@ When errors occur on transformed requests:
 
 To enable compat plugins per request, you can use `x-bf-compat` header:
 - When `x-bf-compat: true` or `x-bf-compat: ["*"]`, enables all compat plugins options
-- When `x-bf-compat: ["<setting1>","<setting2>"]`, enables the specified settings (available settings: `convert_text_to_chat`, `convert_chat_to_responses`, `should_drop_params`, `should_convert_params`)
+- When `x-bf-compat: ["<setting1>","<setting2>"]`, enables the specified settings (available settings: `convert_text_to_chat`, `convert_chat_to_responses`, `should_drop_params`, `should_convert_params`, `azure_deepseek`)
 
 ## What's Preserved
 

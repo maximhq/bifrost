@@ -285,6 +285,7 @@ bifrost:
       convertChatToResponses: false
       shouldDropParams: false
       shouldConvertParams: false
+      azureDeepseek: false
     prometheusLabels: []
     # Header filtering configuration for x-bf-eh-* headers forwarded to LLM providers
     headerFilterConfig:
@@ -298,6 +299,7 @@ bifrost:
     # whitelistedRoutes: []                  # Routes that bypass auth middleware
     # routingChainMaxDepth: 10               # Maximum depth for routing rule chain evaluation
     # allowDirectKeys: false                 # Allow callers to bypass the key pool via x-bf-direct-key + Authorization header
+    # vkRotationCooldown: "5m"              # Grace period after a virtual key rotation during which the previous value still authenticates ("0" disables; max 30d)
     # mcpExternalClientUrl: ""               # Public base URL used as redirect_uri when Bifrost is an OAuth client to MCP servers
 
     # How /mcp authenticates inbound MCP clients: headers (default), both, or oauth
@@ -449,6 +451,19 @@ bifrost:
   #         # Optional: route through an interface VPC endpoint (AWS PrivateLink) instead of the public regional host.
   #         # endpoints:
   #         #   mantle: "vpce-0abc123-x1y2z3.bedrock-mantle.us-east-1.vpce.amazonaws.com"
+  #
+  # # Databricks example (requires databricks_key_config)
+  # databricks:
+  #   keys:
+  #     - name: "databricks-key"
+  #       value: "env.DATABRICKS_TOKEN"           # Personal access token; leave empty when using OAuth M2M below
+  #       weight: 1
+  #       databricks_key_config:
+  #         workspace_url: "https://dbc-1234abcd-5678.cloud.databricks.com"   # Required
+  #         # api_format: "auto"                  # auto (default) | model_serving | ai_gateway
+  #         # client_id: "env.DATABRICKS_CLIENT_ID"          # OAuth M2M service principal; set with client_secret
+  #         # client_secret: "env.DATABRICKS_CLIENT_SECRET"  # and leave value empty
+  #         # forward_gateway_tags: false         # Send Bifrost governance labels as Databricks-Ai-Gateway-Request-Tags
 
   # Provider secrets - use existing Kubernetes secrets for provider API keys
   # These will be injected as environment variables that can be referenced in providers config
@@ -517,9 +532,13 @@ bifrost:
       #   # Only meaningful for connectionType "http": true keeps one persistent connection reused
       #   # across every caller; false (default for new clients) connects fresh per call.
       #   needsSessionStickiness: false
-      #   # When true, this MCP server is accessible to all virtual keys without explicit per-key assignment.
-      #   # If a virtual key has an explicit MCP config for this server, that config takes precedence.
-      #   allowOnAllVirtualKeys: false
+      #   # When true, this MCP server is available to every caller that has not been assigned it
+      #   # explicitly, with all tools allowed. An explicit assignment takes precedence for that caller.
+      #   # Replaces the deprecated allowOnAllVirtualKeys, which is read only when this is absent.
+      #   allowByDefault: false
+      #   # URL-safe, immutable slug serving this client at /mcp/<slug>. Derived from the name when
+      #   # omitted; must be unique across MCP clients and Virtual MCPs.
+      #   endpointSlug: "example-mcp"
       #
       # - name: "example-token-exchange-mcp"
       #   connectionType: "http"
@@ -535,7 +554,18 @@ bifrost:
       #     authorizationServerUrl: ""                   # optional — override exchange endpoint (e.g. Okta custom AS)
       #     scopes: []                                   # optional; include 'offline_access' for refresh tokens
     # toolSyncInterval: "10m"   # Global tool sync interval (Go duration string, e.g. "10m", "1h", "0s")
-    # Assign groups of MCP tools to virtual keys / access profiles.
+    # Virtual MCPs: bundle tools from one or more MCP clients into a single endpoint
+    # served at /mcp/<endpointSlug> and attach it to virtual keys.
+    # virtualMcps:
+    #   - id: 5                        # Optional: DB ID of an existing Virtual MCP; when set, reconciler updates it by ID instead of name
+    #     name: "Platform Tools"
+    #     endpointSlug: "platform-tools"  # Optional; derived from name when omitted. Immutable after creation.
+    #     enabled: true
+    #     tools:
+    #       - mcpClientName: "github"
+    #         toolNames: ["create_pull_request", "list_issues"]
+    #     virtualKeyIds: ["<vk-id>"]
+    # toolGroups (DEPRECATED): use virtualMcps instead. Kept for backward compatibility.
     # toolGroups:
     #   - id: 5                        # Optional: DB ID of an existing group; when set, reconciler updates it by ID instead of name
     #     name: "Platform Tools"
@@ -551,11 +581,9 @@ bifrost:
       # disableAutoToolInject: false    # Disable automatic MCP tool injection
 
   # Plugins configuration
-  # Plugin version must be >= 1 (schema minimum). Use values > 1 to force DB-backed plugin config replacement on upgrade.
   plugins:
     telemetry:
       enabled: false
-      version: 1
       config:
         custom_labels: []
         # metrics_enabled: true   # Serve the Prometheus /metrics scrape endpoint (default: true)
@@ -571,7 +599,6 @@ bifrost:
 
     logging:
       enabled: false
-      version: 1
       config:
         disable_content_logging: false
         logging_headers: []
@@ -583,7 +610,6 @@ bifrost:
 
     governance:
       enabled: false
-      version: 1
       config:
         is_vk_mandatory: false
         required_headers: []
@@ -591,7 +617,6 @@ bifrost:
 
     maxim:
       enabled: false
-      version: 1
       config:
         api_key: ""
         log_repo_id: ""
@@ -602,7 +627,6 @@ bifrost:
 
     semanticCache:
       enabled: false
-      version: 1
       config:
         # Semantic mode (dimension > 1): set provider + embedding_model. The provider's API keys
         #   are inherited from bifrost.providers, so configure that provider there (not here).
@@ -620,7 +644,6 @@ bifrost:
 
     otel:
       enabled: false
-      version: 1
       config:
         # plugin_span_filter:         # Optional: filter which plugin hook spans are exported
         #   mode: "include"           # "include" or "exclude"
@@ -687,7 +710,6 @@ bifrost:
       # inject_timeout: "5s"
     datadog:
       enabled: false
-      version: 1
       config:
         service_name: "bifrost" # Service name reported to Datadog (supports env.VAR_NAME)
         # Datadog Agent address. Supports env.VAR_NAME references — e.g. set
@@ -723,7 +745,6 @@ bifrost:
 
     bigquery:
       enabled: false
-      version: 1
       config:
         project_id: "" # GCP project ID (required when enabled)
         dataset_id: "bifrost_traces"
@@ -742,7 +763,6 @@ bifrost:
 
     kafka:
       enabled: false
-      version: 1
       config:
         brokers: [] # Kafka broker addresses (required when enabled)
         topic: "" # Topic to publish traces to (required when enabled)
@@ -765,7 +785,6 @@ bifrost:
 
     pubsub:
       enabled: false
-      version: 1
       config:
         project_id: "" # GCP project ID (required when enabled)
         topic_id: "" # Pub/Sub topic ID (required when enabled)
@@ -779,7 +798,6 @@ bifrost:
 
     splunk:
       enabled: false
-      version: 1
       config:
         endpoint: "" # HEC base URL, e.g. https://localhost:8088 (required when enabled). Supports env.VAR_NAME.
         token: "" # HEC token (required when enabled). Supports env.VAR_NAME — e.g. "env.SPLUNK_HEC_TOKEN".
@@ -809,7 +827,6 @@ bifrost:
       # - name: "my-custom-plugin"
       #   enabled: true
       #   path: "/plugins/my-plugin.so"
-      #   version: 1 # must be >= 1; increase to force DB-backed plugin config replacement
       #   config:
       #     key: value
 
@@ -856,6 +873,12 @@ bifrost:
       # - name: "dataAnalyst"
       #   description: "Read-only access for data analysts"
       #   dac: "team-data"           # own-data | team-data | all-data (default: all-data)
+      #   # Optional per-entity overrides of the role's global dac. Resources supported as of
+      #   # this chart release: Logs, MCPLogs, AuditLogs, VirtualKeys, Users, Teams, Customers,
+      #   # BusinessUnits, RBAC, APIKeys, AccessProfiles, PromptRepository, RoutingRules,
+      #   # GuardrailsConfig, MCPGateway, VirtualMCPs, Projects.
+      #   entity_dac:
+      #     VirtualKeys: "own-data"  # team-data everywhere else, but only their own keys
       #   access_profile: "analyst-profile"  # Optional: name of an access_profile to attach
       #   permissions:
       #     - resource: "Logs"
@@ -872,6 +895,7 @@ bifrost:
       #   is_active: true
       #   expires_at: "2026-12-31T23:59:59Z"  # Optional RFC3339 expiry; requests rejected once passed. Omit for no expiry
       #   calendar_aligned: false  # Snap all budget resets for this key to calendar boundaries
+      #   allow_all_providers: false  # Grant access to every provider (incl. ones added later); provider_configs still apply per-provider limits
       #   team_id: "team-1"        # Mutually exclusive with customer_id
       #   customer_id: ""          # Mutually exclusive with team_id
       #   rate_limit_id: "rate-limit-1"
@@ -904,6 +928,45 @@ bifrost:
       #   rate_limit_id: "rate-limit-1"
       #   send_back_raw_request: false
       #   send_back_raw_response: false
+    # Projects: what a project allows, what it may spend, and how that is divided between its
+    # members. Members themselves are added from the dashboard or the API, not here.
+    # Requests select one with the x-bf-project-name header.
+    #
+    # projects:
+      # - name: "platform"                 # Required; also how a declaration is matched to its stored row
+      #   description: "Platform team workloads"
+      #   is_active: true
+      #   # expires_at: "2026-12-31T23:59:59Z"
+      #   access_rule: "union"             # union (default behaviour) | intersect — how project access composes with the caller's
+      #   membership_mode: "explicit"      # explicit (membership rows) | open (any caller may opt in)
+      #   accounting_mode: "both"          # both | project_only | principal_only
+      #   split_policy: "none"             # none (shared caps) | equal (each member gets an equal share); open projects must use none
+      #   calendar_aligned: false          # Snap budget and rate-limit windows to calendar boundaries
+      #   allow_all_providers: false       # true grants access to every provider incl. ones added later; a provider with a provider_configs entry keeps its model/key/budget/rate-limit rules; false (default) is deny-by-default via provider_configs
+      #   budgets:
+      #     - max_limit: 5000
+      #       reset_duration: "1M"
+      #   rate_limit:
+      #     request_max_limit: 1000
+      #     request_reset_duration: "1h"
+      #   provider_configs:
+      #     - provider_name: "openai"
+      #       all_models_allowed: false
+      #       allowed_models: ["gpt-4o"]
+      #       key_ids: ["*"]               # ["*"] allows every key of the provider; omitted allows none
+      #       budgets:
+      #         - max_limit: 2000
+      #           reset_duration: "1M"
+      #       model_budgets:
+      #         - model_name: "gpt-4o"
+      #           budgets:
+      #             - max_limit: 500
+      #               reset_duration: "1M"
+      #   mcp_configs:
+      #     - mcp_client_name: "example-mcp"
+      #       tools_to_execute: ["*"]
+      #   virtual_mcps:
+      #     - virtual_mcp_id: 1
     routingRules: []
       # - id: "route-1"
       #   name: "Route to Azure"
@@ -929,15 +992,36 @@ bifrost:
       #   request_types: ["chat_completion"]
       #   pricing_patch: "{\"input_cost_per_token\":0.000001,\"output_cost_per_token\":0.000002}"
     complexityAnalyzerConfig: null
-      # tier_boundaries:
-      #   simple_medium: 0.15
-      #   medium_complex: 0.35
-      #   complex_reasoning: 0.60
-      # keywords:
-      #   code_keywords: ["function", "class", "api", "debug", "deploy"]
-      #   reasoning_keywords: ["step by step", "explain why", "tradeoffs", "root cause analysis"]
-      #   technical_keywords: ["architecture", "kubernetes", "latency", "authentication"]
-      #   simple_keywords: ["hello", "hi", "thanks", "what is", "define"]
+      # semantic:                          # Semantic (embedding-based) complexity classification — the only mechanism; without it no complexity_tier is published
+      #   provider: "openai"               # Embedding provider (must have an enabled key in bifrost.providers)
+      #   embedding_model: "text-embedding-3-small"
+      #                                      # Bifrost detects the embedding dimension during warmup
+      #   timeout: "1.5s"                  # Ceiling on the inline embedding call; exceeding it skips tier routing for that request
+      #   min_similarity: 0                # Similarity floor for the nearest reference phrase; 0 accepts the nearest phrase unconditionally
+      #   message_history_count: 1         # Recent user messages joined into the embedded text (1 = latest only)
+      #   count_toward_budgets: false      # Count embedding usage toward virtual-key budgets (record-only, never enforced)
+      #   vector_store: "embedded"         # Where phrase vectors live.
+      #                                      #   embedded      = in-memory, private to one pod, re-embeds every phrase on restart
+      #                                      #   vector_store  = the configured vectorStore below; shared between pods, re-embeds nothing on restart,
+      #                                      #                   and one pod embeds on a config change while the rest adopt what it wrote.
+      #                                      #                   Falls back to embedded when no vectorStore is configured (reported as
+      #                                      #                   storage_mode on /api/routing/complexity-analyzer-status, and logged).
+      #                                      #                   Qdrant, Weaviate, Redis and Pinecone are all supported here; chromem is
+      #                                      #                   node-local even with a path, so it is private per pod.
+      #   fallback: "none"                 # none (default, records skipped) | llm (asks the llm block below when semantic produces no tier; requires llm to be set)
+      # llm:                                # Chat-completion fallback classifier — inert unless semantic.fallback is "llm"
+      #   provider: "openai"               # Provider used for the classification chat completion (must have an enabled key in bifrost.providers)
+      #   model: "gpt-4o-mini"             # Small, fast chat model — every fallback classification waits on one completion from it
+      #   timeout: "4s"                    # Per-request classification timeout; on timeout no tier is published and the request is recorded as skipped
+      #   prompt: ""                       # Replaces the shipped classification guidance (max 4000 chars); empty uses the shipped guidance
+      #   message_history_count: 1         # Recent user messages sent to the classifier, oldest first (1 = latest only)
+      #   count_toward_budgets: false      # Count classification completion cost toward virtual-key budgets (record-only, never enforced)
+      # session:                            # Optional session-aware routing; requires semantic configuration above
+      #   enabled: true                     # Retain the highest tier across sequential turns for 24 hours; overlapping requests are best-effort
+      # keywords:                          # Required when complexityAnalyzerConfig is non-null; in split mode these phrases merge with stored defaults
+      #   simple_keywords: ["what is a mutex?", "fix the grammar in this sentence."]
+      #   medium_keywords: ["add api-key auth: hash the keys, reject revoked ones, and never log them."]
+      #   complex_keywords: ["balance testing, prescribing rules, and staffing against rising resistant infections."]
     authConfig:
       adminUsername: ""
       adminPassword: ""
@@ -994,12 +1078,17 @@ bifrost:
       # mDNS discovery
       mdnsService: ""
 
-  # SCIM/SSO configuration for enterprise SSO
-  scim:
-    enabled: false
-    # Provider: okta, entra, keycloak, zitadel, google, sailpoint, generic
-    provider: ""
-    config: {}
+  # SCIM/SSO configuration for enterprise SSO. Not set by default — leave the key out
+  # entirely unless you manage SCIM through Helm. While it is absent the chart emits no
+  # scim_config section at all, so SCIM configured from the dashboard is left untouched.
+  # Once you declare it, Helm owns the section: enabled: true renders
+  # "scim_config": {"enabled": true, ...} and enabled: false renders
+  # "scim_config": {"enabled": false, ...}, which actually turns SCIM off.
+  # scim:
+  #   enabled: true
+  #   # Provider: okta, entra, keycloak, zitadel, google, sailpoint, generic
+  #   provider: ""
+  #   config: {}
       # Okta configuration:
       # issuerUrl: "https://your-domain.okta.com/oauth2/default"
       # authServerType: "org"  # "org" or "custom"; auto-detected from issuer URL when omitted
@@ -1043,6 +1132,13 @@ bifrost:
       #   - attribute: "department"
       #     value: "platform"
       #     business_unit: "Platform"
+      # # Attribute -> access-profile grants. Every matching rule applies: the user holds the union of
+      # # the profiles it matches, on top of any profile assigned by role or from the dashboard.
+      # # Bifrost enforces the tightest limit across them.
+      # attributeAccessProfileMappings:
+      #   - attribute: "groups"
+      #     value: "bifrost-power-users"
+      #     accessProfile: "power-user"
       # # SCIM inbound provisioning (Enterprise): the IdP pushes users/groups to Bifrost's SCIM 2.0 endpoint.
       # claimScimAttributes:                         # per-claim SCIM interpretation
       #   groups:
@@ -1084,6 +1180,10 @@ bifrost:
       # userIdField: "oid"
       # teamIdsField: "groups"
       # rolesField: "roles"
+      # # Bulk-sync users/groups from Microsoft Graph. Normally set by the SCIM verify step
+      # # (turned off when the app registration lacks the Graph permissions); set false to opt
+      # # out of bulk sync while keeping login-time claim sync.
+      # enableBulkSync: true
       # attributeRoleMappings:
       #   - attribute: "roles"
       #     value: "BifrostAdmin"
@@ -1093,6 +1193,7 @@ bifrost:
       #     value: "<group-object-id>"
       #     team: "platform-team"
       # attributeBusinessUnitMappings: []
+      # attributeAccessProfileMappings: []
       # # SCIM inbound provisioning (Enterprise): the IdP pushes users/groups to Bifrost's SCIM 2.0 endpoint.
       # claimScimAttributes:                         # per-claim SCIM interpretation
       #   groups:
@@ -1115,6 +1216,7 @@ bifrost:
       #     role: "admin"
       # attributeTeamMappings: []
       # attributeBusinessUnitMappings: []
+      # attributeAccessProfileMappings: []
       #
       # Zitadel configuration:
       # domain: "my-instance.zitadel.cloud"      # no scheme
@@ -1128,6 +1230,7 @@ bifrost:
       # attributeRoleMappings: []
       # attributeTeamMappings: []
       # attributeBusinessUnitMappings: []
+      # attributeAccessProfileMappings: []
       #
       # Google Workspace configuration:
       # domain: "company.com"
@@ -1140,9 +1243,14 @@ bifrost:
       # impersonateServiceAccount: ""             # optional, for Workload Identity
       # audience: ""
       # teamIdsField: "groups"
+      # # Bulk-sync users/groups from the Google Workspace Directory API. Normally set by the SCIM
+      # # verify step (turned off when the service account lacks the Directory API scopes); set
+      # # false to opt out of bulk sync while keeping login-time claim sync.
+      # enableBulkSync: true
       # attributeRoleMappings: []
       # attributeTeamMappings: []
       # attributeBusinessUnitMappings: []
+      # attributeAccessProfileMappings: []
       #
       # Generic OIDC configuration (any standards-compliant OIDC IdP):
       # issuerUrl: "https://idp.company.com"        # required; endpoints resolved via OIDC discovery (.well-known/openid-configuration)
@@ -1159,6 +1267,7 @@ bifrost:
       # attributeRoleMappings: []
       # attributeTeamMappings: []
       # attributeBusinessUnitMappings: []
+      # attributeAccessProfileMappings: []
       # # SCIM inbound provisioning (Enterprise): the IdP pushes users/groups to Bifrost's SCIM 2.0 endpoint.
       # claimScimAttributes:                         # per-claim SCIM interpretation
       #   groups:
@@ -1197,7 +1306,8 @@ bifrost:
       #   apply_to: "both"  # input | output | both
       #   sampling_rate: 100
       #   timeout: 15        # Timeout in seconds for rule execution (default: 60)
-      #   max_turns_to_send: 8   # Historical turns sent to the provider (latest always included); 0 = all
+      #   send_all_conversation_turns: false  # true = all input history; false enables the previous-turn window below
+      #   max_turns_to_send: 8   # With the switch false: current input + 8 previous turns; 0 = current input only
       #   evaluation_mode: "bundled"   # "bundled" (default) | "per_turn" (each turn scanned in isolation; avoids cross-turn false positives, more provider calls)
       #   stream_replay_event_interval_ms: 25  # Delay between buffered events after an allowed response; 0 sends them immediately
       #   provider_config_ids: [1]   # Links this rule to guardrails.providers[].id above
@@ -1230,6 +1340,7 @@ bifrost:
     #   description: "Default platform profile"
     #   is_active: true
     #   calendar_aligned: false  # Snap all budget/rate-limit resets to calendar boundaries
+    #   allow_all_providers: false  # true grants access to every provider incl. ones added later; a provider with a provider_configs entry keeps its model/key/budget/rate-limit rules; false (default) is deny-by-default via provider_configs
     #   tags: ["platform", "default"]
     #   budgets:
     #     - id: "ap-budget-1"
@@ -1463,6 +1574,9 @@ storage:
   # Logs store settings
   logsStore:
     enabled: true
+    # Hide these request types from dashboard/API reads. Logs are still stored.
+    # Example: [count_tokens, embedding, chat_completion_stream]
+    hiddenRequestTypes: []
     # Backend type for logs store. Empty string uses storage.mode as default
     type: "" # Options: sqlite, postgres, clickhouse, or "" (uses storage.mode)
     # PostgreSQL connection pool tuning (only applies when type is postgres)
@@ -1482,6 +1596,7 @@ storage:
     #   sslMode: require    # disable, allow, prefer, require, verify-ca, verify-full
     #   connMaxLifetime: 10m
     #   # Command executed by Bifrost to produce the password on stdout (e.g. RDS IAM auth).
+    #   # Mutually exclusive with `password` and `existingSecret` - both must stay empty when set.
     #   passwordCommand:
     #     command: aws
     #     args:
@@ -1561,6 +1676,8 @@ postgresql:
     password: ""
     # Command that prints the PostgreSQL password on stdout, for dynamic credentials (e.g. AWS RDS
     # IAM auth tokens). Result is cached for cache_ttl (default 60s); keep it below the token's validity.
+    # Mutually exclusive with `password` and `existingSecret` above -- both must stay empty when set.
+    # The command runs inside the Bifrost container, so its binary (e.g. `aws`) must exist in the image.
     # passwordCommand:
     #   command: aws
     #   args:
@@ -1630,9 +1747,9 @@ postgresql:
 
 # Vector store configuration
 vectorStore:
-  # Enable vector store for semantic caching
+  # Enable vector store for semantic caching and semantic complexity routing
   enabled: false
-  type: none # Options: none, weaviate, redis, qdrant
+  type: none # Options: none, weaviate, redis, qdrant, pinecone, chromem
 
   # Weaviate configuration
   weaviate:
@@ -1783,6 +1900,12 @@ vectorStore:
       # Use existing Kubernetes secret for API key (takes precedence over apiKey field)
       existingSecret: ""
       apiKeyKey: "api-key"
+
+  # Chromem configuration (embedded in-process vector store, no external service).
+  # The top-level vectorStore.enabled controls activation.
+  chromem:
+    path: ""       # Directory for file persistence; empty keeps an in-memory store that re-populates on restart
+    compress: false # Gzip-compress persisted documents (only used when path is set)
 
 # Environment variables
 env: []

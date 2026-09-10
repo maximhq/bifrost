@@ -1,0 +1,456 @@
+# Paths for Project management.
+
+projects:
+  get:
+    operationId: listProjects
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: List projects
+    description: |
+      Returns projects visible to the caller: those they created, those with no
+      recorded creator, and those they belong to. Each project's roster is
+      narrowed the same way, so `members` is a subset of the true roster and
+      `pagination.total` counts only what the caller may see.
+    tags:
+      - Projects
+    parameters:
+      - name: limit
+        in: query
+        description: Page size, clamped to 100. Defaults to 20.
+        schema:
+          type: integer
+      - name: offset
+        in: query
+        schema:
+          type: integer
+      - name: page
+        in: query
+        description: >-
+          One-based page number, consulted only when `offset` is absent.
+        schema:
+          type: integer
+      - name: search
+        in: query
+        description: Case-insensitive match on name or description.
+        schema:
+          type: string
+      - name: is_active
+        in: query
+        description: Return only enabled or only disabled projects.
+        schema:
+          type: boolean
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/projects.yaml#/ProjectListResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  post:
+    operationId: createProject
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Create project
+    description: |
+      Creates a project. `access_rule` is required and has no default, since a
+      rule that could be assumed might widen a request. The project starts with
+      no members: add the roster through the member routes.
+    tags:
+      - Projects
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/projects.yaml#/CreateProjectRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '201':
+        description: Project created
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/projects.yaml#/ProjectResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '409':
+        description: A project with the same name already exists.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+projects-by-id:
+  get:
+    operationId: getProject
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Get project
+    description: |
+      Returns one project with its caps, its provider and MCP access, and the
+      part of its roster the caller may see. A project outside the caller's data
+      access reads as not found rather than forbidden.
+    tags:
+      - Projects
+    parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/projects.yaml#/ProjectResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Project not found
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  put:
+    operationId: updateProject
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Update project
+    description: |
+      Applies a patch to the stored project. Fields the body omits are left as
+      stored, and child lists are paired with their stored rows by `id`, so a
+      cap keeps its accumulated spend and its window across an edit while a
+      child the body stops naming is deleted.
+
+      Changing the roster or any divided cap on a project with
+      `split_policy: equal` recalculates every member's slice. That work is
+      queued and its id is returned as `redivision_job_id`; the project's own
+      write has already committed by then, so a failure to queue is reported as
+      a server error rather than rolling the edit back.
+    tags:
+      - Projects
+    parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/projects.yaml#/UpdateProjectRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Project updated
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/projects.yaml#/ProjectUpdateResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Project not found
+      '409':
+        description: A project with the same name already exists.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: deleteProject
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Delete project
+    description: |
+      Deletes the project with its providers, its caps, the spend recorded
+      against them, and its roster. A roster is not a reason to refuse, so there
+      is no force flag. Log rows keep the attribution they already carry.
+    tags:
+      - Projects
+    parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Project deleted
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/projects.yaml#/DeleteProjectResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Project not found
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+projects-members:
+  get:
+    operationId: listProjectMembers
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: List project members
+    description: |
+      Returns the roster with each member's caps, narrowed to what the caller's
+      data access permits. There is no pagination on this route.
+    tags:
+      - Projects
+    parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/projects.yaml#/ProjectMemberListResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Project not found
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  post:
+    operationId: addProjectMembers
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Add project members
+    description: |
+      Adds users to the roster. The call is create-only: a user already on the
+      roster keeps their existing membership and caps.
+
+      On a project with `split_policy: equal` the addition shrinks every
+      member's slice of every cap, so a rate limit that cannot be divided into
+      whole units for the resulting roster is refused before anything is
+      written, and the recalculation is queued and reported as
+      `redivision_job_id`.
+    tags:
+      - Projects
+    parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/projects.yaml#/AddProjectMembersRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '201':
+        description: Members added
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/projects.yaml#/AddProjectMembersResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Project not found
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+projects-member-by-id:
+  put:
+    operationId: updateProjectMember
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Update project member caps
+    description: |
+      Restates one member's caps in full: a source the body does not name loses
+      its cap, and an empty body clears every cap the member holds. The member's
+      identity is not editable.
+
+      Only available on a project with `split_policy: none`. Under an equal
+      split the division owns those rows, and the request is refused before the
+      body is read. `{member_id}` is the membership row id, and a member outside
+      the caller's data access reads as not found.
+    tags:
+      - Projects
+    parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: member_id
+        in: path
+        required: true
+        description: The membership row id, not the user id.
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/projects.yaml#/UpdateProjectMemberRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Member updated
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/projects.yaml#/ProjectMemberResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Project or member not found
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: removeProjectMember
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Remove project member
+    description: |
+      Removes a member from the roster and deletes the caps derived for them. On
+      a project with `split_policy: equal` this enlarges every remaining
+      member's slice, and the recalculation is queued and reported as
+      `redivision_job_id`.
+    tags:
+      - Projects
+    parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: member_id
+        in: path
+        required: true
+        description: The membership row id, not the user id.
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Member removed
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/projects.yaml#/RemoveProjectMemberResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Project or member not found
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+users-projects:
+  get:
+    operationId: listUserProjects
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: List a user's projects
+    description: |
+      Returns the projects the named user belongs to, intersected with the
+      projects the caller may see, so asking about a user reveals nothing the
+      caller could not already read. An unknown user returns an empty list
+      rather than a not-found error.
+
+      This listing is assembled without the per-model caps, the member shares
+      and the member display names; read a project directly for those.
+    tags:
+      - Projects
+    parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/projects.yaml#/ProjectsForUserResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

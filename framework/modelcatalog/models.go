@@ -377,8 +377,34 @@ func (mc *ModelCatalog) RefineModelForProvider(provider schemas.ModelProvider, m
 	switch provider {
 	case schemas.Groq, schemas.Replicate, schemas.Perplexity, schemas.OpenRouter:
 		return mc.refineNestedProviderModel(provider, model)
+	case schemas.Databricks:
+		return refineDatabricksModel(model), nil
 	}
 	return model, nil
+}
+
+// Mirrors Databricks model refinement:
+// - Catalog-qualified names (2+ dots) and `databricks-*` endpoints pass through.
+// - Other names get the `system.ai.` prefix.
+// - A single dot is treated as a version separator (e.g. `gpt-5.5`).
+//
+// Aliases and explicit `api_format` are handled by the provider and are not visible here.
+func refineDatabricksModel(model string) string {
+	const (
+		// defaultCatalogPrefix is the Unity Catalog prefix under which Databricks publishes
+		// its ready-to-use AI Gateway models.
+		defaultCatalogPrefix = "system.ai."
+		// modelServingEndpointPrefix is the naming convention for Databricks pay-per-token
+		// Foundation Model endpoints, which live on Model Serving and take a bare name.
+		modelServingEndpointPrefix = "databricks-"
+	)
+	if model == "" || strings.Count(model, ".") >= 2 {
+		return model
+	}
+	if strings.HasPrefix(strings.ToLower(model), modelServingEndpointPrefix) {
+		return model
+	}
+	return defaultCatalogPrefix + model
 }
 
 // refineNestedProviderModel resolves provider-native model slugs such as

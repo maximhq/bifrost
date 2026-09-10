@@ -23,6 +23,7 @@ import {
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdownMenu";
 import { DottedSeparator } from "@/components/ui/separator";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -30,6 +31,8 @@ import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { ProviderIconType, RenderProviderIcon, RoutingEngineUsedIcons } from "@/lib/constants/icons";
 import {
+	ComplexityTierColors,
+	getProviderLabel,
 	logAppDisplayName,
 	mapAppToClientApp,
 	mapUserAgentToApp,
@@ -39,29 +42,34 @@ import {
 	RoutingEngineUsedLabels,
 	Status,
 } from "@/lib/constants/logs";
-import { BatchRequestCounts, ContentBlock, LogEntry, OverheadBucket, ResponsesMessage } from "@/lib/types/logs";
-import { useGetUserAgentMappingsQuery } from "@/lib/store";
+import { useGetProvidersQuery, useGetUserAgentMappingsQuery } from "@/lib/store";
+import { COMPLEXITY_MECHANISM_LABELS } from "@/lib/types/complexityRouter";
+import { BatchRequestCounts, ContentBlock, LLMUsage, LogEntry, OverheadBucket, ResponsesMessage } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
+import { LOG_LEVEL_BADGE_CLASSES, meetsMinLogLevel, type LogLevel } from "@/lib/utils/logLevel";
 import { downloadAsJson } from "@/lib/utils/browser-download";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import { applyRedactionMapping, applyRedactionMappingToValue, hasRedactionMappingEntries } from "@/lib/utils/redaction";
 import { extractResponsesItemPayload, summarizeResponsesToolCall } from "@/lib/utils/responsesItems";
 import { isJson } from "@/lib/utils/validation";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
 import { addMilliseconds, format } from "date-fns";
 import { AlertCircle, ChevronDown, Clipboard, Copy, Download, Loader2, MoreVertical, Trash2, Wrench, X } from "lucide-react";
-import { useMemo, useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import BlockHeader from "../views/blockHeader";
 import CollapsibleBox from "../views/collapsibleBox";
 import ImageView from "../views/imageView";
 import LogChatMessageView, { LogChatFileBlockView } from "../views/logChatMessageView";
 import LogEntryDetailsView from "../views/logEntryDetailsView";
+import LogLevelTabs from "../views/logLevelTabs";
 import OCRView from "../views/ocrView";
 import PluginLogsView from "../views/pluginLogsView";
 import SpeechView from "../views/speechView";
 import TranscriptionView from "../views/transcriptionView";
 import VideoView from "../views/videoView";
+import { parseRoutingDecisionLine, resolveRawJsonNoticeState } from "./logDetailView.utils";
 
 // Full-precision cost for the detail view; per-request costs are often < $0.01,
 // where formatCost's 2-4 dp rounding would hide the value.
@@ -393,6 +401,28 @@ const batchRequestStates = (counts: BatchRequestCounts): [string, number][] => {
 	];
 };
 
+const formatExactNumber = (value: number) => value.toLocaleString("en-US");
+
+// Input tokens are normalized to include cache read/write tokens, so break the total down.
+const getInputTokensTooltip = (usage?: LLMUsage): string | undefined => {
+	const total = usage?.prompt_tokens ?? 0;
+	if (!total || !usage?.prompt_tokens_details) return undefined;
+	const cachedRead = usage?.prompt_tokens_details.cached_read_tokens ?? 0;
+	const cachedWrite = usage?.prompt_tokens_details.cached_write_tokens ?? 0;
+	const lines = ["Input tokens include cached tokens."];
+	if (cachedRead >= 0 || cachedWrite >= 0) {
+		lines.push(`Uncached input: ${formatExactNumber(total - cachedRead - cachedWrite)}`);
+	}
+	if (cachedRead >= 0) {
+		lines.push(`Cache read: ${formatExactNumber(cachedRead)}`);
+	}
+	if (cachedWrite >= 0) {
+		lines.push(`Cache write: ${formatExactNumber(cachedWrite)}`);
+	}
+	lines.push(`Input tokens: ${formatExactNumber(total)}`);
+	return lines.join("\n");
+};
+
 // Helper to detect passthrough operations
 const isPassthroughOperation = (object: string) => object === "passthrough" || object === "passthrough_stream";
 
@@ -500,8 +530,8 @@ function formatMicros(us: number): string {
 // names are grouped into a handful of user-facing categories: Serialization (JSON
 // parse/encode), Conversion (API schema translation), Plugins, Middleware (auth/access),
 // Key selection, Processing (internal request pipeline), Networking
-// (client<->gateway<->provider handling), Client delivery (SSE egress to the client), and Scheduling (the
-// residual goroutine-hop latency between phases). "View details" drills into the member
+// (client<->gateway<->provider handling), Client delivery (SSE egress to the client), and Miscellaneous
+// (small glue on no dedicated span plus the residual goroutine-hop latency between phases). "View details" drills into the member
 // spans inside each grouped category with their friendly labels. See OVERHEAD_LABELS /
 // OVERHEAD_BUCKET_CATEGORY / overheadCategoryKey for the mapping.
 type OverheadCategory = {
@@ -526,7 +556,7 @@ const OVERHEAD_CATEGORY_META: Record<string, { label: string; colorClass: string
 	processing: { label: "Processing", colorClass: "bg-teal-500/70" },
 	networking: { label: "Networking", colorClass: "bg-emerald-500/70" },
 	streaming: { label: "Client delivery", colorClass: "bg-red-500/70" },
-	scheduling: { label: "Scheduling", colorClass: "bg-slate-500/70" },
+	miscellaneous: { label: "Miscellaneous", colorClass: "bg-slate-500/70" },
 	other: { label: "Other", colorClass: "bg-muted-foreground/50" },
 };
 
@@ -558,8 +588,9 @@ const OVERHEAD_LABELS: Record<string, string> = {
 	"worker-handoff": "Worker handoff",
 	"queue-wait": "Queue wait",
 	"attribute-population": "Attribute population",
+	miscellaneous: "Uncaptured glue",
 	// Networking (client<->gateway<->provider handling)
-	"provider-internal": "Provider I/O",
+	"provider-internal": "Provider processing",
 	"transport-context": "Request context building",
 	"transport-response-headers": "Response headers",
 	"response-finalize": "Response read",
@@ -568,7 +599,7 @@ const OVERHEAD_LABELS: Record<string, string> = {
 	// Streaming relay
 	"stream-backpressure": "Client backpressure",
 	"stream-client-write": "Client write",
-	scheduling: "Scheduling",
+	scheduling: "Scheduling residual",
 };
 
 // Category assignment for buckets that aren't matched by a prefix rule below. Every
@@ -585,6 +616,7 @@ const OVERHEAD_BUCKET_CATEGORY: Record<string, string> = {
 	"worker-handoff": "processing",
 	"queue-wait": "processing",
 	"attribute-population": "processing",
+	miscellaneous: "miscellaneous",
 	"provider-internal": "networking",
 	"transport-context": "networking",
 	"transport-response-headers": "networking",
@@ -593,7 +625,7 @@ const OVERHEAD_BUCKET_CATEGORY: Record<string, string> = {
 	"credentials-fetch": "networking",
 	"stream-backpressure": "streaming",
 	"stream-client-write": "streaming",
-	scheduling: "scheduling",
+	scheduling: "miscellaneous",
 };
 
 // Raw backend spans that split one user-facing step into internals a reader doesn't care
@@ -829,47 +861,95 @@ const messageRoleLabel: Record<MessageRole, string> = {
 	tool: "Tool Result",
 };
 
+// deriveComplexityRouting returns the complexity tier / classification mechanism /
+// raw score behind a routing decision. Rows written since the structured columns
+// exist carry them directly; older rows fall back to parsing the prose routing
+// log lines ("Complexity: tier=X score=Y words=Z" / "Complexity analysis skipped").
+// REASONING only exists in that historical prose: the tier was merged into
+// COMPLEX, but old rows keep recording what the router actually decided.
+function deriveComplexityRouting(log: LogEntry): {
+	tier?: string;
+	mechanism?: string;
+	score?: number;
+} {
+	if (log.complexity_tier || log.complexity_mechanism || log.complexity_score !== undefined) {
+		return {
+			tier: log.complexity_tier,
+			mechanism: log.complexity_mechanism,
+			score: log.complexity_score,
+		};
+	}
+	const m = log.routing_engine_logs?.match(/Complexity: tier=(SIMPLE|MEDIUM|COMPLEX|REASONING) score=([0-9.]+)/);
+	if (m) {
+		return { tier: m[1], mechanism: "lexical", score: Number(m[2]) };
+	}
+	if (log.routing_engine_logs?.includes("Complexity analysis skipped")) {
+		return { mechanism: "skipped" };
+	}
+	return {};
+}
+
 function RoutingDecisionLogs({ logs }: { logs: string }) {
 	const { copy } = useCopyToClipboard({ successMessage: "Copied" });
+	const [minLevel, setMinLevel] = useState<LogLevel>("debug");
+	const lines = useMemo(
+		() =>
+			logs
+				.split("\n")
+				.filter((line) => line.trim())
+				.map(parseRoutingDecisionLine),
+		[logs],
+	);
+	// Rows written before the level was recorded carry none, so there is nothing to filter on.
+	const hasLevels = lines.some((line) => line.level !== null);
+	const visible = hasLevels ? lines.filter((line) => meetsMinLogLevel(line.level, minLevel)) : lines;
+
 	return (
 		<div className="w-full rounded-sm border">
-			<div className="flex items-center justify-between border-b py-2 pl-6">
+			<div className="flex items-center justify-between gap-3 border-b py-2 pl-6">
 				<div className="text-sm font-medium">Routing Decision Logs</div>
-				<button
-					type="button"
-					onClick={() => copy(logs)}
-					className="text-muted-foreground mx-2 flex h-6 items-center rounded px-1 py-1 hover:text-black dark:hover:text-white"
-				>
-					<Copy className="h-3 w-3" />
-				</button>
+				<div className="flex items-center gap-1">
+					{hasLevels && <LogLevelTabs value={minLevel} onChange={setMinLevel} testId="routing-logs-level-filter" />}
+					<button
+						type="button"
+						onClick={() => copy(logs)}
+						className="text-muted-foreground mx-2 flex h-6 items-center rounded px-1 py-1 hover:text-black dark:hover:text-white"
+					>
+						<Copy className="h-3 w-3" />
+					</button>
+				</div>
 			</div>
 			<div>
-				{logs
-					.split("\n")
-					.filter((l) => l.trim())
-					.map((line, i) => {
-						const m = line.match(/^\[(\d+)\]\s+\[([^\]]+)\]\s+-\s+(.*)$/);
-						const ts = m ? Number(m[1]) : null;
-						const scope = m ? m[2] : null;
-						const message = m ? m[3] : line;
-						return (
-							<div key={i} className="flex items-start gap-3 border-b px-4 py-1.5 font-mono text-xs last:border-b-0">
-								{ts != null ? <span className="text-muted-foreground shrink-0">{format(new Date(ts), "HH:mm:ss.SSS")}</span> : null}
-								{scope ? (
-									<span
-										className={cn(
-											"inline-block w-24 shrink-0 rounded px-1.5 py-0.5 text-center text-[10px] font-semibold uppercase",
-											RoutingEngineUsedColors[scope as keyof typeof RoutingEngineUsedColors] ??
-												"bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300",
-										)}
-									>
-										{RoutingEngineUsedLabels[scope as keyof typeof RoutingEngineUsedLabels] ?? scope}
-									</span>
-								) : null}
-								<span className="break-words whitespace-pre-wrap">{message}</span>
-							</div>
-						);
-					})}
+				{visible.length === 0 ? (
+					<div className="text-muted-foreground px-4 py-3 text-center text-xs">No routing logs at or above {minLevel}.</div>
+				) : (
+					visible.map((line, i) => (
+						<div key={i} className="flex items-start gap-3 border-b px-4 py-1.5 font-mono text-xs last:border-b-0">
+							{line.timestamp != null ? (
+								<span className="text-muted-foreground shrink-0">{format(new Date(line.timestamp), "HH:mm:ss.SSS")}</span>
+							) : null}
+							{line.engine ? (
+								<span
+									className={cn(
+										"inline-block w-24 shrink-0 rounded px-1.5 py-0.5 text-center text-[10px] font-semibold uppercase",
+										RoutingEngineUsedColors[line.engine as keyof typeof RoutingEngineUsedColors] ??
+											"bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300",
+									)}
+								>
+									{RoutingEngineUsedLabels[line.engine as keyof typeof RoutingEngineUsedLabels] ?? line.engine}
+								</span>
+							) : null}
+							{line.level ? (
+								<span
+									className={cn("shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase", LOG_LEVEL_BADGE_CLASSES[line.level])}
+								>
+									{line.level}
+								</span>
+							) : null}
+							<span className="break-words whitespace-pre-wrap">{line.message}</span>
+						</div>
+					))
+				)}
 			</div>
 		</div>
 	);
@@ -954,6 +1034,73 @@ interface LogDetailViewProps {
 	onClose?: () => void;
 	headerAction?: ReactNode;
 	onFilterByParentRequestId?: (parentRequestId: string) => void;
+	onFilterBySessionId?: (sessionId: string) => void;
+}
+
+// Explains an empty Raw JSON tab. Raw payloads are only persisted when the
+// provider's `store_raw_request_response` is on, and teams that turn it off for
+// storage reasons otherwise just see an unexplained blank tab. This reads the
+// provider's *current* setting, so it is phrased in the present tense — it says
+// why raw JSON is missing for this provider today, not what was configured when
+// the request ran. When the setting is on (or unreadable, e.g. the viewer has no
+// provider access) we fall back to the neutral copy, since the row may simply
+// have failed before reaching the provider. While the setting is still being
+// fetched we show neither message - see `resolveRawJsonNoticeState`.
+function RawJsonUnavailableNotice({ provider }: { provider: string }) {
+	const hasProvidersAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
+	const {
+		data: providers,
+		isLoading: isProvidersLoading,
+		isError: isProvidersError,
+	} = useGetProvidersQuery(undefined, { skip: !hasProvidersAccess });
+
+	const noticeState = useMemo(
+		() => resolveRawJsonNoticeState({ hasProvidersAccess, isProvidersLoading, isProvidersError, providers, provider }),
+		[hasProvidersAccess, isProvidersLoading, isProvidersError, providers, provider],
+	);
+
+	if (noticeState === "loading") {
+		return (
+			<div className="rounded-sm border border-dashed p-5">
+				<Skeleton className="mx-auto h-4 w-48" />
+			</div>
+		);
+	}
+
+	if (noticeState === "unknown") {
+		return <div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">No raw JSON available.</div>;
+	}
+
+	return (
+		<div className="text-muted-foreground space-y-3 rounded-sm border border-dashed p-5 text-sm">
+			<div className="text-foreground font-medium">Raw JSON storage is disabled by settings</div>
+			<p>
+				<span className="text-foreground font-medium">{getProviderLabel(provider)}</span> is configured not to persist raw request and
+				response payloads in log records, so there is nothing to show here. To start capturing them:
+			</p>
+			<ol className="ml-4 list-decimal space-y-1">
+				<li>
+					Open{" "}
+					<Link to="/workspace/providers" search={{ provider }} className="text-foreground font-medium underline underline-offset-2">
+						Providers → {getProviderLabel(provider)}
+					</Link>
+				</li>
+				<li>
+					Click the <span className="text-foreground font-medium">settings</span> icon to open the provider configuration
+				</li>
+				<li>
+					Go to the <span className="text-foreground font-medium">Debugging</span> tab
+				</li>
+				<li>
+					Turn on <span className="text-foreground font-medium">Store Raw Request/Response</span>
+				</li>
+			</ol>
+			<p className="text-xs">
+				This applies to new requests only, existing logs will not gain raw JSON. To capture raw payloads for a single request instead, send
+				the <code className="text-[11px]">x-bf-store-raw-request-response: true</code> header.
+			</p>
+		</div>
+	);
 }
 
 export function LogDetailView({
@@ -965,6 +1112,7 @@ export function LogDetailView({
 	onClose,
 	headerAction,
 	onFilterByParentRequestId,
+	onFilterBySessionId,
 }: LogDetailViewProps) {
 	const { copy: copyBody } = useCopyToClipboard({
 		successMessage: "Request body copied to clipboard",
@@ -1008,10 +1156,15 @@ export function LogDetailView({
 	const detectedAppIcon = log.app && detectedApp ? customAppIcons[log.app] || detectedApp.icon : detectedApp?.icon;
 	const detectedAppLabel = detectedApp ? logAppDisplayName(detectedApp, log.user_agent) : "";
 	const showTabs = !isContainer;
+	const complexityRouting = deriveComplexityRouting(log);
 	const isPassthrough = isPassthroughOperation(log.object);
 	const isRealtimeTurn = log.object === "realtime.turn";
 	const isBatch = isBatchOperation(log.object);
 	const batchDebug = log.batch_debug;
+	// Set on both the submission row and the aggregate cost row a settlement writes;
+	// only the latter carries accounting, which is what tells the two apart.
+	const videoDebug = log.video_debug;
+	const videoAccounting = videoDebug?.accounting;
 	const batchRawRequest = useMemo(() => {
 		if (!isBatch || !log.raw_request) return null;
 		try {
@@ -1040,14 +1193,14 @@ export function LogDetailView({
 					const contents = item?.request?.contents;
 					const messages = Array.isArray(contents)
 						? contents.map((c: any) => ({
-								role: c?.role === "model" ? "assistant" : c?.role || "user",
-								content: Array.isArray(c?.parts)
-									? c.parts
-											.filter((p: any) => p && typeof p.text === "string")
-											.map((p: any) => p.text)
-											.join("")
-									: "",
-							}))
+							role: c?.role === "model" ? "assistant" : c?.role || "user",
+							content: Array.isArray(c?.parts)
+								? c.parts
+									.filter((p: any) => p && typeof p.text === "string")
+									.map((p: any) => p.text)
+									.join("")
+								: "",
+						}))
 						: [];
 					return {
 						customId: typeof item?.metadata?.key === "string" && item.metadata.key ? item.metadata.key : `request-${index + 1}`,
@@ -1106,9 +1259,9 @@ export function LogDetailView({
 					const parts = candidate?.content?.parts;
 					const text = Array.isArray(parts)
 						? parts
-								.filter((p: any) => p && typeof p.text === "string")
-								.map((p: any) => p.text)
-								.join("")
+							.filter((p: any) => p && typeof p.text === "string")
+							.map((p: any) => p.text)
+							.join("")
 						: "";
 					const role = candidate?.content?.role === "model" ? "assistant" : candidate?.content?.role || "assistant";
 					message = { role, content: text };
@@ -1131,11 +1284,11 @@ export function LogDetailView({
 	}, [batchRawResponse]);
 	const passthroughParams = isPassthrough
 		? (log.params as {
-				method?: string;
-				path?: string;
-				raw_query?: string;
-				status_code?: number;
-			})
+			method?: string;
+			path?: string;
+			raw_query?: string;
+			status_code?: number;
+		})
 		: null;
 	// Only errors and passthrough requests carry a real HTTP status code; others have none.
 	// Non-HTTP errors (timeouts, network, marshal) default to 0; treat that as no status
@@ -1155,7 +1308,7 @@ export function LogDetailView({
 	if (declaredTools.length) {
 		try {
 			toolsParameter = JSON.stringify(declaredTools, null, 2);
-		} catch {}
+		} catch { }
 	}
 
 	const audioFormat = (log.params as any)?.audio?.format || (log.params as any)?.extra_params?.audio?.format || undefined;
@@ -1172,7 +1325,7 @@ export function LogDetailView({
 			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
 				return Object.values(parsed).reduce<number>((sum, v) => sum + (Array.isArray(v) ? v.length : 0), 0);
 			}
-		} catch {}
+		} catch { }
 		return 0;
 	})();
 
@@ -1357,6 +1510,17 @@ export function LogDetailView({
 									{batchDebug.status.replace(/_/g, " ")}
 								</Badge>
 							)}
+							{videoDebug?.status && (
+								<Badge
+									variant="outline"
+									className={cn(
+										"rounded-sm px-2 py-0.5 font-medium uppercase",
+										batchStatusBadgeStyles[videoDebug.status] ?? batchStatusBadgeDefault,
+									)}
+								>
+									{videoDebug.status.replace(/_/g, " ")}
+								</Badge>
+							)}
 						</div>
 						<div className="mt-3 flex items-center gap-2">
 							<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">Request</div>
@@ -1437,11 +1601,10 @@ export function LogDetailView({
 						}
 						sub={
 							log.token_usage
-								? `total ${formatCompactNumber(log.token_usage.total_tokens ?? 0)}${
-										log.token_usage.completion_tokens_details?.reasoning_tokens
-											? ` · reasoning ${formatCompactNumber(log.token_usage.completion_tokens_details.reasoning_tokens)}`
-											: ""
-									}`
+								? `total ${formatCompactNumber(log.token_usage.total_tokens ?? 0)}${log.token_usage.completion_tokens_details?.reasoning_tokens
+									? ` · reasoning ${formatCompactNumber(log.token_usage.completion_tokens_details.reasoning_tokens)}`
+									: ""
+								}`
 								: "—"
 						}
 						hasRightBorder
@@ -1547,6 +1710,9 @@ export function LogDetailView({
 							{!isContainer && log.server_side_fallback_model && (
 								<LogEntryDetailsView className="w-full" label="Served By (fallback)" value={log.server_side_fallback_model} />
 							)}
+							{!isContainer && log.served_model && (
+								<LogEntryDetailsView className="w-full" label="Served Model" value={log.served_model} />
+							)}
 							{detectedApp && (
 								<LogEntryDetailsView
 									className="w-full"
@@ -1634,6 +1800,34 @@ export function LogDetailView({
 										) : (
 											<TruncatedLabel className="block max-w-full min-w-0 font-normal" tooltipSide="top">
 												{log.parent_request_id}
+											</TruncatedLabel>
+										)
+									}
+								/>
+							)}
+							{log.session_id && (
+								<LogEntryDetailsView
+									className="w-full"
+									label="Session ID"
+									value={
+										onFilterBySessionId ? (
+											<Tooltip>
+												<TooltipTrigger asChild>
+													<button
+														type="button"
+														className="block max-w-full min-w-0 cursor-pointer truncate bg-transparent p-0 text-left font-mono font-normal text-blue-600 underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 dark:text-blue-400"
+														onClick={() => onFilterBySessionId(log.session_id as string)}
+													>
+														{log.session_id}
+													</button>
+												</TooltipTrigger>
+												<TooltipContent sideOffset={6} className="max-w-md break-all">
+													{log.session_id} · Filter this session
+												</TooltipContent>
+											</Tooltip>
+										) : (
+											<TruncatedLabel className="block max-w-full min-w-0 font-normal" tooltipSide="top">
+												{log.session_id}
 											</TruncatedLabel>
 										)
 									}
@@ -1752,6 +1946,22 @@ export function LogDetailView({
 									}
 								/>
 							)}
+							{log.project_id && (
+								<LogEntryDetailsView
+									className="w-full"
+									label="Project"
+									value={
+										<Link
+											to="/workspace/logs"
+											search={(prev) => ({ ...prev, offset: 0, selected_log: "", project_ids: [log.project_id!] })}
+											className="text-blue-600 hover:underline dark:text-blue-400"
+											data-testid={`logdetails-project-link-${log.project_id}`}
+										>
+											{log.project_name || log.project_id}
+										</Link>
+									}
+								/>
+							)}
 							{log.user_id && (
 								<LogEntryDetailsView
 									className="w-full"
@@ -1829,6 +2039,33 @@ export function LogDetailView({
 										</Link>
 									}
 								/>
+							)}
+							{complexityRouting.tier && (
+								<LogEntryDetailsView
+									className="w-full"
+									label="Complexity Tier"
+									value={
+										<Badge
+											className={cn(
+												"border-0 py-1 uppercase",
+												ComplexityTierColors[complexityRouting.tier as keyof typeof ComplexityTierColors] ?? "bg-gray-100 text-gray-800",
+											)}
+											data-testid="logdetails-complexity-tier-badge"
+										>
+											{complexityRouting.tier}
+										</Badge>
+									}
+								/>
+							)}
+							{complexityRouting.mechanism && (
+								<LogEntryDetailsView
+									className="w-full"
+									label="Complexity Mechanism"
+									value={COMPLEXITY_MECHANISM_LABELS[complexityRouting.mechanism] ?? complexityRouting.mechanism}
+								/>
+							)}
+							{complexityRouting.score !== undefined && (
+								<LogEntryDetailsView className="w-full" label="Complexity Score" value={complexityRouting.score.toFixed(2)} />
 							)}
 
 							{(log.params as any)?.audio && (
@@ -1933,7 +2170,12 @@ export function LogDetailView({
 							<div className="space-y-4">
 								<BlockHeader title="Tokens" />
 								<div className="grid w-full grid-cols-1 items-center justify-between gap-4 md:grid-cols-3">
-									<LogEntryDetailsView className="w-full" label="Input Tokens" value={log.token_usage?.prompt_tokens || "-"} />
+									<LogEntryDetailsView
+										className="w-full"
+										label="Input Tokens"
+										value={log.token_usage?.prompt_tokens || "-"}
+										tooltip={getInputTokensTooltip(log.token_usage)}
+									/>
 									<LogEntryDetailsView className="w-full" label="Output Tokens" value={log.token_usage?.completion_tokens || "-"} />
 									<LogEntryDetailsView className="w-full" label="Total Tokens" value={log.token_usage?.total_tokens || "-"} />
 									{(log.cost_breakdown?.input_cost ?? 0) > 0 && (
@@ -1953,7 +2195,17 @@ export function LogDetailView({
 											value={formatCostPrecise(log.cost_breakdown?.total_cost ?? log.cost)}
 										/>
 									)}
-									{/* Additional cost (guardrail / semantic cache / MCP) on its own row below. */}
+									{/* An async job settles onto a child row, so the request that started it
+									    has no cost of its own. Without this the detail view of a video
+									    generation reads as free while the list beside it shows the spend. */}
+									{log.cost == null && (log.children_cost ?? 0) > 0 && (
+										<LogEntryDetailsView
+											className="w-full"
+											label="Settled Cost"
+											value={formatCostPrecise(log.children_cost)}
+										/>
+									)}
+									{/* Additional cost (guardrail / semantic cache / routing / MCP) on its own row below. */}
 									{(log.cost_breakdown?.additional_cost ?? 0) > 0 && (
 										<LogEntryDetailsView
 											className="w-full md:col-start-1"
@@ -1980,6 +2232,13 @@ export function LogDetailView({
 											className="w-full"
 											label="MCP Cost"
 											value={formatCostPrecise(log.cost_breakdown?.additional_cost_details?.mcp_cost)}
+										/>
+									)}
+									{(log.cost_breakdown?.additional_cost_details?.routing_cost ?? 0) > 0 && (
+										<LogEntryDetailsView
+											className="w-full"
+											label="Routing Cost"
+											value={formatCostPrecise(log.cost_breakdown?.additional_cost_details?.routing_cost)}
 										/>
 									)}
 									{isRealtimeTurn && (
@@ -2167,6 +2426,43 @@ export function LogDetailView({
 								</>
 							)}
 
+							{videoDebug && (
+								<>
+									<DottedSeparator />
+									<div className="space-y-4">
+										<BlockHeader title="Video Details" />
+										{videoDebug.video_id && (
+											<LogEntryDetailsView
+												className="w-full"
+												label="Video ID"
+												value={
+													<span className="flex items-center gap-1">
+														<code className="font-mono text-xs">{videoDebug.video_id}</code>
+														<CopyInlineButton text={videoDebug.video_id} testId="logdetails-copy-video-id-button" />
+													</span>
+												}
+											/>
+										)}
+										{videoAccounting && (
+											<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
+												{videoAccounting.seconds != null && (
+													<LogEntryDetailsView className="w-full" label="Billed Seconds" value={String(videoAccounting.seconds)} />
+												)}
+												{videoAccounting.size && <LogEntryDetailsView className="w-full" label="Resolution" value={videoAccounting.size} />}
+												{videoAccounting.output_count != null && (
+													<LogEntryDetailsView className="w-full" label="Clips Billed" value={String(videoAccounting.output_count)} />
+												)}
+											</div>
+										)}
+										{videoAccounting?.incomplete && (
+											<p className="text-muted-foreground text-xs">
+												Priced with no published rate, or from dimensions the provider never confirmed, so this cost may be short.
+											</p>
+										)}
+									</div>
+								</>
+							)}
+
 							{log.cache_debug && (
 								<>
 									<DottedSeparator />
@@ -2301,6 +2597,48 @@ export function LogDetailView({
 											<LogEntryDetailsView className="w-full" label="Completion Tokens" value={call.completion_tokens ?? 0} />
 											<LogEntryDetailsView className="w-full" label="Total Tokens" value={call.total_tokens ?? 0} />
 											{call.reason && <LogEntryDetailsView className="w-full md:col-span-3" label="Reason" value={call.reason} />}
+										</div>
+									))}
+								</div>
+							</div>
+						</>
+					)}
+					{!isContainer && !isPassthrough && log.routing_metadata?.calls && log.routing_metadata.calls.length > 0 && (
+						<>
+							<DottedSeparator />
+							<div className="space-y-4">
+								<BlockHeader title="Routing Classification Details" />
+								<div className="space-y-4">
+									{log.routing_metadata.calls.map((call, index) => (
+										<div
+											key={`${call.provider_used ?? "routing"}-${call.model_used ?? "call"}-${index}`}
+											className={cn("grid w-full grid-cols-1 gap-4 md:grid-cols-3", index > 0 && "border-border border-t pt-4")}
+										>
+											<LogEntryDetailsView
+												className="w-full"
+												label="Mechanism"
+												value={
+													<Badge variant="secondary" className="uppercase">
+														{call.output_tokens != null ? "LLM Classification" : "Embedding"}
+													</Badge>
+												}
+											/>
+											{call.provider_used && (
+												<LogEntryDetailsView
+													className="w-full"
+													label="Provider"
+													value={
+														<Badge variant="secondary" className="uppercase">
+															{call.provider_used}
+														</Badge>
+													}
+												/>
+											)}
+											{call.model_used && <LogEntryDetailsView className="w-full" label="Model" value={call.model_used} />}
+											<LogEntryDetailsView className="w-full" label="Input Tokens" value={call.input_tokens ?? 0} />
+											{call.output_tokens != null && (
+												<LogEntryDetailsView className="w-full" label="Output Tokens" value={call.output_tokens} />
+											)}
 										</div>
 									))}
 								</div>
@@ -2574,7 +2912,8 @@ export function LogDetailView({
 							Content logging has been disabled for this request.
 						</div>
 					)}
-					<div className={cn("flex justify-end", log.content_hidden && "hidden")}>
+                    {/* Passthrough just renders the raw json, so there's nothing to filter */}
+					<div className={cn("flex justify-end", (log.content_hidden || isPassthrough) && "hidden")}>
 						<DropdownMenu>
 							<DropdownMenuTrigger asChild>
 								<button
@@ -2743,11 +3082,11 @@ export function LogDetailView({
 							<div className="bg-card rounded-sm border p-5">
 								{(visibleRoles.size < allRoles.length
 									? log.input_history?.filter((m) => {
-											if (!m) return false;
-											const mainRole = ((m.role as string) || "user") as MessageRole;
-											const hasReasoning = !!extractChatReasoning(m);
-											return visibleRoles.has(mainRole) || (hasReasoning && visibleRoles.has("reasoning"));
-										})
+										if (!m) return false;
+										const mainRole = ((m.role as string) || "user") as MessageRole;
+										const hasReasoning = !!extractChatReasoning(m);
+										return visibleRoles.has(mainRole) || (hasReasoning && visibleRoles.has("reasoning"));
+									})
 									: log.input_history?.filter(Boolean)
 								)?.flatMap((message, index) => {
 									const role = ((message.role as string) || "user") as MessageRole;
@@ -2997,11 +3336,11 @@ export function LogDetailView({
 													? msg.call_id
 													: Array.isArray(msg.tools)
 														? (() => {
-																const callable = flattenDeclaredTools(msg.tools).length;
-																return callable !== msg.tools.length
-																	? `${msg.type} · ${msg.tools.length} declarations · ${callable} callable tools`
-																	: `${msg.type} · ${msg.tools.length} tool${msg.tools.length === 1 ? "" : "s"}`;
-															})()
+															const callable = flattenDeclaredTools(msg.tools).length;
+															return callable !== msg.tools.length
+																? `${msg.type} · ${msg.tools.length} declarations · ${callable} callable tools`
+																: `${msg.type} · ${msg.tools.length} tool${msg.tools.length === 1 ? "" : "s"}`;
+														})()
 														: [msg.type, summarizeResponsesToolCall(msg, mapping)].filter(Boolean).join(" · ") || undefined;
 									}
 									const usePlainText = role === "user" || role === "assistant";
@@ -3047,7 +3386,11 @@ export function LogDetailView({
 												)
 											) : msg.output !== undefined ? (
 												<CollapsibleCode
-													text={typeof msg.output === "string" ? msg.output : JSON.stringify(msg.output, null, 2)}
+													text={
+														typeof msg.output === "string"
+															? applyRedactionMapping(msg.output, mapping)
+															: JSON.stringify(applyRedactionMappingToValue(msg.output, mapping), null, 2)
+													}
 													preview={3}
 												/>
 											) : Array.isArray(msg.tools) && msg.tools.length > 0 ? (
@@ -3373,7 +3716,7 @@ export function LogDetailView({
 						</>
 					)}
 					{!rawRequest && !rawResponse && !passthroughRequestBody && !passthroughResponseBody && (
-						<div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">No raw JSON available.</div>
+						<RawJsonUnavailableNotice provider={log.provider} />
 					)}
 				</TabsContent>
 			</Tabs>

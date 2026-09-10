@@ -167,13 +167,20 @@ func createPrediction(
 	}
 
 	// Parse response
+	ft, fh := providerUtils.StartPhaseSpan(ctx, "response-finalize")
 	body, decodeErr := providerUtils.CheckAndDecodeBody(resp)
 	if decodeErr != nil {
+		if ft != nil {
+			ft.EndSpan(fh, schemas.SpanStatusError, decodeErr.Error())
+		}
 		return nil, nil, latency, providerResponseHeaders, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, decodeErr)
+	}
+	if ft != nil {
+		ft.EndSpan(fh, schemas.SpanStatusOk, "")
 	}
 
 	var prediction ReplicatePredictionResponse
-	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &prediction, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, sendBackRawResponse))
+	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, body, &prediction, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, sendBackRawResponse))
 	if bifrostErr != nil {
 		return nil, nil, latency, providerResponseHeaders, bifrostErr
 	}
@@ -222,13 +229,20 @@ func getPrediction(
 	}
 
 	// Parse response
+	ft, fh := providerUtils.StartPhaseSpan(ctx, "response-finalize")
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
+		if ft != nil {
+			ft.EndSpan(fh, schemas.SpanStatusError, err.Error())
+		}
 		return nil, nil, providerResponseHeaders, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+	}
+	if ft != nil {
+		ft.EndSpan(fh, schemas.SpanStatusOk, "")
 	}
 
 	prediction := &ReplicatePredictionResponse{}
-	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, prediction, nil, false, sendBackRawResponse)
+	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, body, prediction, nil, false, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, nil, providerResponseHeaders, bifrostErr
 	}
@@ -2710,14 +2724,21 @@ func (provider *ReplicateProvider) VideoRetrieve(ctx *schemas.BifrostContext, ke
 	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 
+	ft, fh := providerUtils.StartPhaseSpan(ctx, "response-finalize")
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
+		if ft != nil {
+			ft.EndSpan(fh, schemas.SpanStatusError, err.Error())
+		}
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+	}
+	if ft != nil {
+		ft.EndSpan(fh, schemas.SpanStatusOk, "")
 	}
 
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 	var prediction ReplicatePredictionResponse
-	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &prediction, nil, false, sendBackRawResponse)
+	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, body, &prediction, nil, false, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}

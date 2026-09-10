@@ -1,0 +1,1858 @@
+package openai
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/schemas"
+)
+
+func TestOpenAIResponsesRequest_MarshalJSON_ReasoningMaxTokensAbsent(t *testing.T) {
+	tests := []struct {
+		name        string
+		request     *OpenAIResponsesRequest
+		description string
+	}{
+		{
+			name: "reasoning with MaxTokens set should omit max_tokens from output",
+			request: &OpenAIResponsesRequest{
+				Model: "gpt-4o",
+				Input: OpenAIResponsesRequestInput{
+					OpenAIResponsesRequestInputStr: schemas.Ptr("test input"),
+				},
+				ResponsesParameters: schemas.ResponsesParameters{
+					Reasoning: &schemas.ResponsesParametersReasoning{
+						Effort:    schemas.Ptr("high"),
+						MaxTokens: schemas.Ptr(1000),
+						Summary:   schemas.Ptr("detailed"),
+					},
+				},
+			},
+			description: "When Reasoning.MaxTokens is set, it should be absent from JSON output",
+		},
+		{
+			name: "reasoning with all fields set should omit only max_tokens",
+			request: &OpenAIResponsesRequest{
+				Model: "gpt-4o",
+				Input: OpenAIResponsesRequestInput{
+					OpenAIResponsesRequestInputStr: schemas.Ptr("test"),
+				},
+				ResponsesParameters: schemas.ResponsesParameters{
+					Reasoning: &schemas.ResponsesParametersReasoning{
+						Effort:          schemas.Ptr("medium"),
+						GenerateSummary: schemas.Ptr("auto"),
+						Summary:         schemas.Ptr("concise"),
+						MaxTokens:       schemas.Ptr(500),
+					},
+				},
+			},
+			description: "All reasoning fields except MaxTokens should be present in output",
+		},
+		{
+			name: "reasoning with nil MaxTokens should not include max_tokens",
+			request: &OpenAIResponsesRequest{
+				Model: "gpt-4o",
+				Input: OpenAIResponsesRequestInput{
+					OpenAIResponsesRequestInputStr: schemas.Ptr("test"),
+				},
+				ResponsesParameters: schemas.ResponsesParameters{
+					Reasoning: &schemas.ResponsesParametersReasoning{
+						Effort:    schemas.Ptr("low"),
+						MaxTokens: nil,
+					},
+				},
+			},
+			description: "When Reasoning.MaxTokens is nil, max_tokens should not appear in output",
+		},
+		{
+			name: "nil reasoning should not include reasoning field",
+			request: &OpenAIResponsesRequest{
+				Model: "gpt-4o",
+				Input: OpenAIResponsesRequestInput{
+					OpenAIResponsesRequestInputStr: schemas.Ptr("test"),
+				},
+				ResponsesParameters: schemas.ResponsesParameters{
+					Reasoning: nil,
+				},
+			},
+			description: "When Reasoning is nil, reasoning field should not appear in output",
+		},
+		{
+			name: "reasoning context and mode are preserved while max_tokens is dropped",
+			request: &OpenAIResponsesRequest{
+				Model: "gpt-5.6",
+				Input: OpenAIResponsesRequestInput{
+					OpenAIResponsesRequestInputStr: schemas.Ptr("test"),
+				},
+				ResponsesParameters: schemas.ResponsesParameters{
+					Reasoning: &schemas.ResponsesParametersReasoning{
+						Effort:    schemas.Ptr("max"),
+						Context:   schemas.Ptr("current_turn"),
+						Mode:      schemas.Ptr("pro"),
+						MaxTokens: schemas.Ptr(1000),
+					},
+				},
+			},
+			description: "reasoning.context and reasoning.mode should pass through to output",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jsonBytes, err := tt.request.MarshalJSON()
+			if err != nil {
+				t.Fatalf("Failed to marshal JSON: %v", err)
+			}
+
+			// Parse the JSON to check structure
+			var jsonMap map[string]interface{}
+			if err := sonic.Unmarshal(jsonBytes, &jsonMap); err != nil {
+				t.Fatalf("Failed to unmarshal marshaled JSON: %v", err)
+			}
+
+			// Check that reasoning.max_tokens is absent
+			if reasoning, ok := jsonMap["reasoning"].(map[string]interface{}); ok {
+				if maxTokens, exists := reasoning["max_tokens"]; exists {
+					t.Errorf("%s: reasoning.max_tokens should be absent from JSON output, but found: %v", tt.description, maxTokens)
+				}
+
+				// Verify other reasoning fields are present when they should be
+				if tt.request.Reasoning != nil {
+					if tt.request.Reasoning.Effort != nil {
+						if _, exists := reasoning["effort"]; !exists {
+							t.Error("reasoning.effort should be present in output")
+						}
+					}
+					if tt.request.Reasoning.Summary != nil {
+						if _, exists := reasoning["summary"]; !exists {
+							t.Error("reasoning.summary should be present in output")
+						}
+					}
+					if tt.request.Reasoning.GenerateSummary != nil {
+						if _, exists := reasoning["generate_summary"]; !exists {
+							t.Error("reasoning.generate_summary should be present in output")
+						}
+					}
+					if tt.request.Reasoning.Context != nil {
+						if got, exists := reasoning["context"]; !exists || got != *tt.request.Reasoning.Context {
+							t.Errorf("reasoning.context = %v, want %q", got, *tt.request.Reasoning.Context)
+						}
+					}
+					if tt.request.Reasoning.Mode != nil {
+						if got, exists := reasoning["mode"]; !exists || got != *tt.request.Reasoning.Mode {
+							t.Errorf("reasoning.mode = %v, want %q", got, *tt.request.Reasoning.Mode)
+						}
+					}
+				}
+			} else if tt.request.Reasoning != nil {
+				// If reasoning is set, it should appear in JSON (unless all fields are nil/omitted)
+				if tt.request.Reasoning.Effort != nil || tt.request.Reasoning.Summary != nil || tt.request.Reasoning.GenerateSummary != nil {
+					t.Error("reasoning field should be present in JSON when Reasoning is set with non-nil fields")
+				}
+			}
+		})
+	}
+}
+
+func TestNormalizeOpenAIReasoningEffort(t *testing.T) {
+	tests := []struct {
+		name     string
+		model    string
+		effort   string
+		expected string
+	}{
+		{"preserves minimal for gpt-5", "gpt-5", "minimal", "minimal"},
+		{"preserves minimal for gpt-5-mini", "gpt-5-mini", "minimal", "minimal"},
+		{"preserves minimal for gpt-5-nano", "gpt-5-nano", "minimal", "minimal"},
+		{"maps minimal to low for gpt-5.4", "gpt-5.4", "minimal", "low"},
+		{"maps minimal to low for gpt-5.2", "gpt-5.2", "minimal", "low"},
+		{"maps minimal to low for gpt-5.6", "gpt-5.6", "minimal", "low"},
+		{"maps minimal to low for o3", "o3", "minimal", "low"},
+		{"maps minimal to low for o1", "o1", "minimal", "low"},
+		{"maps minimal to low for o4", "o4", "minimal", "low"},
+		{"maps minimal to low for gpt-oss", "gpt-oss", "minimal", "low"},
+		{"gpt-5.6 keeps max", "gpt-5.6", "max", "max"},
+		{"gpt-6-astra keeps max", "gpt-6-astra", "max", "max"},
+		{"gpt-5.6 variant keeps max", "gpt-5.6-terra", "max", "max"},
+		{"gpt-5.6 keeps xhigh", "gpt-5.6", "xhigh", "xhigh"},
+		{"provider-prefixed gpt-5.6 keeps max", "openai/gpt-5.6", "max", "max"},
+		{"deepseek-v4 keeps max", "deepseek-v4", "max", "max"},
+		{"glm-5.2 keeps max", "glm-5.2", "max", "max"},
+		{"gpt-5.5 downgrades max to xhigh", "gpt-5.5", "max", "xhigh"},
+		{"gpt-5.2 downgrades max to xhigh", "gpt-5.2", "max", "xhigh"},
+		{"gpt-5.5 keeps xhigh", "gpt-5.5", "xhigh", "xhigh"},
+		{"gpt-5.1 downgrades max to high", "gpt-5.1", "max", "high"},
+		{"gpt-5.1 downgrades xhigh to high", "gpt-5.1", "xhigh", "high"},
+		{"standard effort passes through", "gpt-5.1", "medium", "medium"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			caps := schemas.ResolveModelCaps(schemas.OpenAI, tt.model)
+			if got := caps.NormalizeReasoningEffort(tt.effort, defaultEffortControl(tt.model)); got != tt.expected {
+				t.Errorf("model %q: NormalizeReasoningEffort(%q) = %q, want %q", tt.model, tt.effort, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestOpenAIResponsesRequest_MarshalJSON_InputStringForm(t *testing.T) {
+	tests := []struct {
+		name        string
+		request     *OpenAIResponsesRequest
+		expected    string
+		description string
+	}{
+		{
+			name: "input as string is correctly marshaled",
+			request: &OpenAIResponsesRequest{
+				Model: "gpt-4o",
+				Input: OpenAIResponsesRequestInput{
+					OpenAIResponsesRequestInputStr: schemas.Ptr("Hello, world!"),
+				},
+			},
+			expected:    "Hello, world!",
+			description: "Input field should be marshaled as a string when OpenAIResponsesRequestInputStr is set",
+		},
+		{
+			name: "input as empty string is correctly marshaled",
+			request: &OpenAIResponsesRequest{
+				Model: "gpt-4o",
+				Input: OpenAIResponsesRequestInput{
+					OpenAIResponsesRequestInputStr: schemas.Ptr(""),
+				},
+			},
+			expected:    "",
+			description: "Input field should be marshaled as empty string when set to empty string",
+		},
+		{
+			name: "input as string with special characters",
+			request: &OpenAIResponsesRequest{
+				Model: "gpt-4o",
+				Input: OpenAIResponsesRequestInput{
+					OpenAIResponsesRequestInputStr: schemas.Ptr(`{"key": "value"}`),
+				},
+			},
+			expected:    `{"key": "value"}`,
+			description: "Input field should correctly marshal strings with special characters",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jsonBytes, err := tt.request.MarshalJSON()
+			if err != nil {
+				t.Fatalf("Failed to marshal JSON: %v", err)
+			}
+
+			// Parse the JSON to check input field
+			var jsonMap map[string]interface{}
+			if err := sonic.Unmarshal(jsonBytes, &jsonMap); err != nil {
+				t.Fatalf("Failed to unmarshal marshaled JSON: %v", err)
+			}
+
+			// Check that input is a string
+			inputValue, exists := jsonMap["input"]
+			if !exists {
+				t.Fatalf("%s: input field should be present in JSON", tt.description)
+			}
+
+			inputStr, ok := inputValue.(string)
+			if !ok {
+				t.Errorf("%s: input field should be a string, got type %T", tt.description, inputValue)
+			}
+
+			if inputStr != tt.expected {
+				t.Errorf("%s: expected input to be %q, got %q", tt.description, tt.expected, inputStr)
+			}
+		})
+	}
+}
+
+func TestOpenAIResponsesRequest_MarshalJSON_InputArrayForm(t *testing.T) {
+	tests := []struct {
+		name        string
+		request     *OpenAIResponsesRequest
+		validate    func(t *testing.T, inputValue interface{})
+		description string
+	}{
+		{
+			name: "input as array is correctly marshaled",
+			request: &OpenAIResponsesRequest{
+				Model: "gpt-4o",
+				Input: OpenAIResponsesRequestInput{
+					OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+						{
+							Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+							Content: &schemas.ResponsesMessageContent{
+								ContentStr: schemas.Ptr("Hello"),
+							},
+						},
+					},
+				},
+			},
+			validate: func(t *testing.T, inputValue interface{}) {
+				inputArray, ok := inputValue.([]interface{})
+				if !ok {
+					t.Fatalf("Expected input to be an array, got type %T", inputValue)
+				}
+				if len(inputArray) != 1 {
+					t.Errorf("Expected 1 message in array, got %d", len(inputArray))
+				}
+			},
+			description: "Input field should be marshaled as an array when OpenAIResponsesRequestInputArray is set",
+		},
+		{
+			name: "input as empty array is correctly marshaled",
+			request: &OpenAIResponsesRequest{
+				Model: "gpt-4o",
+				Input: OpenAIResponsesRequestInput{
+					OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{},
+				},
+			},
+			validate: func(t *testing.T, inputValue interface{}) {
+				inputArray, ok := inputValue.([]interface{})
+				if !ok {
+					t.Fatalf("Expected input to be an array, got type %T", inputValue)
+				}
+				if len(inputArray) != 0 {
+					t.Errorf("Expected empty array, got %d elements", len(inputArray))
+				}
+			},
+			description: "Input field should be marshaled as empty array when set to empty array",
+		},
+		{
+			name: "input as array with multiple messages",
+			request: &OpenAIResponsesRequest{
+				Model: "gpt-4o",
+				Input: OpenAIResponsesRequestInput{
+					OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+						{
+							Role: schemas.Ptr(schemas.ResponsesInputMessageRoleSystem),
+							Content: &schemas.ResponsesMessageContent{
+								ContentStr: schemas.Ptr("You are a helpful assistant."),
+							},
+						},
+						{
+							Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+							Content: &schemas.ResponsesMessageContent{
+								ContentStr: schemas.Ptr("What is 2+2?"),
+							},
+						},
+					},
+				},
+			},
+			validate: func(t *testing.T, inputValue interface{}) {
+				inputArray, ok := inputValue.([]interface{})
+				if !ok {
+					t.Fatalf("Expected input to be an array, got type %T", inputValue)
+				}
+				if len(inputArray) != 2 {
+					t.Errorf("Expected 2 messages in array, got %d", len(inputArray))
+				}
+			},
+			description: "Input field should correctly marshal arrays with multiple messages",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jsonBytes, err := tt.request.MarshalJSON()
+			if err != nil {
+				t.Fatalf("Failed to marshal JSON: %v", err)
+			}
+
+			// Parse the JSON to check input field
+			var jsonMap map[string]interface{}
+			if err := sonic.Unmarshal(jsonBytes, &jsonMap); err != nil {
+				t.Fatalf("Failed to unmarshal marshaled JSON: %v", err)
+			}
+
+			// Check that input is present
+			inputValue, exists := jsonMap["input"]
+			if !exists {
+				t.Fatalf("%s: input field should be present in JSON", tt.description)
+			}
+
+			// Validate using the provided function
+			tt.validate(t, inputValue)
+		})
+	}
+}
+
+func TestToOpenAIResponsesRequest_FireworksPreservesNativeFields(t *testing.T) {
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Fireworks,
+		Model:    "accounts/fireworks/models/deepseek-v3p2",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: schemas.Ptr("hello"),
+				},
+			},
+		},
+		Params: &schemas.ResponsesParameters{
+			PreviousResponseID: schemas.Ptr("resp_previous"),
+			MaxToolCalls:       schemas.Ptr(2),
+			Store:              schemas.Ptr(true),
+		},
+	}
+
+	request := ToOpenAIResponsesRequest(nil, bifrostReq)
+	if request == nil {
+		t.Fatal("expected non-nil request")
+	}
+
+	jsonBytes, err := request.MarshalJSON()
+	if err != nil {
+		t.Fatalf("failed to marshal responses request: %v", err)
+	}
+
+	var jsonMap map[string]interface{}
+	if err := sonic.Unmarshal(jsonBytes, &jsonMap); err != nil {
+		t.Fatalf("failed to parse marshaled JSON: %v", err)
+	}
+
+	if got, ok := jsonMap["previous_response_id"].(string); !ok || got != "resp_previous" {
+		t.Fatalf("expected previous_response_id to be preserved, got %#v", jsonMap["previous_response_id"])
+	}
+	if got, ok := jsonMap["max_tool_calls"].(float64); !ok || got != 2 {
+		t.Fatalf("expected max_tool_calls to be preserved, got %#v", jsonMap["max_tool_calls"])
+	}
+	if got, ok := jsonMap["store"].(bool); !ok || !got {
+		t.Fatalf("expected store=true to be preserved, got %#v", jsonMap["store"])
+	}
+}
+
+func TestOpenAIResponsesRequest_MarshalJSON_FieldShadowingBehavior(t *testing.T) {
+	// This test verifies that the field shadowing pattern works correctly
+	// by ensuring that the aux struct properly shadows Input and Reasoning fields
+	t.Run("field shadowing preserves other fields", func(t *testing.T) {
+		request := &OpenAIResponsesRequest{
+			Model: "gpt-4o",
+			Input: OpenAIResponsesRequestInput{
+				OpenAIResponsesRequestInputStr: schemas.Ptr("test input"),
+			},
+			ResponsesParameters: schemas.ResponsesParameters{
+				MaxOutputTokens: schemas.Ptr(100),
+				Temperature:     schemas.Ptr(0.7),
+				Reasoning: &schemas.ResponsesParametersReasoning{
+					Effort:    schemas.Ptr("high"),
+					MaxTokens: schemas.Ptr(500), // This should be omitted
+					Summary:   schemas.Ptr("detailed"),
+				},
+			},
+			Stream:    schemas.Ptr(true),
+			Fallbacks: []string{"fallback1", "fallback2"},
+		}
+
+		jsonBytes, err := request.MarshalJSON()
+		if err != nil {
+			t.Fatalf("Failed to marshal JSON: %v", err)
+		}
+
+		var jsonMap map[string]interface{}
+		if err := sonic.Unmarshal(jsonBytes, &jsonMap); err != nil {
+			t.Fatalf("Failed to unmarshal marshaled JSON: %v", err)
+		}
+
+		// Verify base fields are present
+		if jsonMap["model"] != "gpt-4o" {
+			t.Errorf("Expected model to be 'gpt-4o', got %v", jsonMap["model"])
+		}
+
+		if jsonMap["stream"] != true {
+			t.Errorf("Expected stream to be true, got %v", jsonMap["stream"])
+		}
+
+		fallbacks, ok := jsonMap["fallbacks"].([]interface{})
+		if !ok || len(fallbacks) != 2 {
+			t.Errorf("Expected fallbacks to have 2 elements, got %v", jsonMap["fallbacks"])
+		}
+
+		// Verify ResponsesParameters fields are present
+		if jsonMap["max_output_tokens"] != float64(100) {
+			t.Errorf("Expected max_output_tokens to be 100, got %v", jsonMap["max_output_tokens"])
+		}
+
+		if jsonMap["temperature"] != 0.7 {
+			t.Errorf("Expected temperature to be 0.7, got %v", jsonMap["temperature"])
+		}
+
+		// Verify reasoning.max_tokens is absent
+		if reasoning, ok := jsonMap["reasoning"].(map[string]interface{}); ok {
+			if _, exists := reasoning["max_tokens"]; exists {
+				t.Error("reasoning.max_tokens should be absent from JSON output")
+			}
+			if reasoning["effort"] != "high" {
+				t.Errorf("Expected reasoning.effort to be 'high', got %v", reasoning["effort"])
+			}
+			if reasoning["summary"] != "detailed" {
+				t.Errorf("Expected reasoning.summary to be 'detailed', got %v", reasoning["summary"])
+			}
+		} else {
+			t.Error("reasoning field should be present in JSON")
+		}
+
+		// Verify input is correctly marshaled
+		if jsonMap["input"] != "test input" {
+			t.Errorf("Expected input to be 'test input', got %v", jsonMap["input"])
+		}
+	})
+}
+
+func TestOpenAIResponsesRequest_MarshalJSON_RoundTrip(t *testing.T) {
+	// Test that marshaling and unmarshaling preserves all fields except reasoning.max_tokens
+	t.Run("round trip preserves fields except reasoning.max_tokens", func(t *testing.T) {
+		original := &OpenAIResponsesRequest{
+			Model: "gpt-4o",
+			Input: OpenAIResponsesRequestInput{
+				OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+					{
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Content: &schemas.ResponsesMessageContent{
+							ContentStr: schemas.Ptr("Test message"),
+						},
+					},
+				},
+			},
+			ResponsesParameters: schemas.ResponsesParameters{
+				MaxOutputTokens: schemas.Ptr(200),
+				Temperature:     schemas.Ptr(0.8),
+				Reasoning: &schemas.ResponsesParametersReasoning{
+					Effort:    schemas.Ptr("medium"),
+					MaxTokens: schemas.Ptr(1000), // Should be omitted
+					Summary:   schemas.Ptr("auto"),
+				},
+			},
+			Stream: schemas.Ptr(false),
+		}
+
+		// Marshal
+		jsonBytes, err := original.MarshalJSON()
+		if err != nil {
+			t.Fatalf("Failed to marshal: %v", err)
+		}
+
+		// Verify reasoning.max_tokens is absent in the JSON string
+		jsonStr := string(jsonBytes)
+		if strings.Contains(jsonStr, `"max_tokens"`) {
+			// Check if it's inside reasoning object
+			if strings.Contains(jsonStr, `"reasoning"`) {
+				// Parse to verify it's not in reasoning
+				var jsonMap map[string]interface{}
+				if err := json.Unmarshal(jsonBytes, &jsonMap); err == nil {
+					if reasoning, ok := jsonMap["reasoning"].(map[string]interface{}); ok {
+						if _, exists := reasoning["max_tokens"]; exists {
+							t.Error("reasoning.max_tokens should not be present in marshaled JSON")
+						}
+					}
+				}
+			}
+		}
+
+		// Unmarshal back
+		var unmarshaled OpenAIResponsesRequest
+		if err := sonic.Unmarshal(jsonBytes, &unmarshaled); err != nil {
+			t.Fatalf("Failed to unmarshal: %v", err)
+		}
+
+		// Verify fields are preserved
+		if unmarshaled.Model != original.Model {
+			t.Errorf("Model not preserved: expected %q, got %q", original.Model, unmarshaled.Model)
+		}
+
+		if unmarshaled.Stream == nil || *unmarshaled.Stream != *original.Stream {
+			t.Error("Stream not preserved")
+		}
+
+		if unmarshaled.MaxOutputTokens == nil || *unmarshaled.MaxOutputTokens != *original.MaxOutputTokens {
+			t.Error("MaxOutputTokens not preserved")
+		}
+
+		if unmarshaled.Temperature == nil || *unmarshaled.Temperature != *original.Temperature {
+			t.Error("Temperature not preserved")
+		}
+
+		// Verify reasoning fields except MaxTokens
+		if unmarshaled.Reasoning == nil {
+			t.Fatal("Reasoning should be present")
+		}
+		if unmarshaled.Reasoning.Effort == nil || *unmarshaled.Reasoning.Effort != *original.Reasoning.Effort {
+			t.Error("Reasoning.Effort not preserved")
+		}
+		if unmarshaled.Reasoning.Summary == nil || *unmarshaled.Reasoning.Summary != *original.Reasoning.Summary {
+			t.Error("Reasoning.Summary not preserved")
+		}
+		// MaxTokens should be nil after unmarshaling (since it wasn't in JSON)
+		if unmarshaled.Reasoning.MaxTokens != nil {
+			t.Error("Reasoning.MaxTokens should be nil after unmarshaling (was omitted from JSON)")
+		}
+	})
+}
+
+// Regression test for multi-turn Anthropic tool_result with array-form content.
+// The OpenAI Responses API defines function_call_output.output as a string (see
+// https://platform.openai.com/docs/api-reference/responses/create). When an
+// Anthropic client sends a tool_result whose content is an array of text blocks,
+// Bifrost's Anthropic→Responses translator populates
+// ResponsesToolMessageOutputStruct.ResponsesFunctionToolCallOutputBlocks.
+// Historically, that array was marshaled verbatim onto the wire, which some
+// strict OpenAI-compat upstreams (e.g. Ollama Cloud) reject with an error like
+//
+//	json: cannot unmarshal array into Go struct field ResponsesFunctionCallOutput.output of type string
+//
+// The outgoing OpenAI Responses request must emit `output` as a string for
+// text-only tool outputs.
+func TestOpenAIResponsesRequestInput_MarshalJSON_FunctionCallOutputFlattensTextBlocksToString(t *testing.T) {
+	outputText := "line1"
+	callID := "toolu_abc123"
+	functionName := "read_file"
+
+	input := &OpenAIResponsesRequestInput{
+		OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+			{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: schemas.Ptr("Read /tmp/test.txt and tell me what it contains."),
+				},
+			},
+			{
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				Status: schemas.Ptr("completed"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:    schemas.Ptr(callID),
+					Name:      schemas.Ptr(functionName),
+					Arguments: schemas.Ptr(`{"path":"/tmp/test.txt"}`),
+				},
+			},
+			{
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				Status: schemas.Ptr("completed"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr(callID),
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+							{
+								Type: schemas.ResponsesInputMessageContentBlockTypeText,
+								Text: schemas.Ptr(outputText),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	jsonBytes, err := input.MarshalJSON()
+	if err != nil {
+		t.Fatalf("Failed to marshal OpenAIResponsesRequestInput: %v", err)
+	}
+
+	var messages []map[string]interface{}
+	if err := sonic.Unmarshal(jsonBytes, &messages); err != nil {
+		t.Fatalf("Failed to unmarshal marshaled input as array: %v\nraw=%s", err, string(jsonBytes))
+	}
+
+	var fcoMsg map[string]interface{}
+	for _, m := range messages {
+		if t, ok := m["type"].(string); ok && t == string(schemas.ResponsesMessageTypeFunctionCallOutput) {
+			fcoMsg = m
+			break
+		}
+	}
+	if fcoMsg == nil {
+		t.Fatalf("did not find function_call_output message in marshaled JSON: %s", string(jsonBytes))
+	}
+
+	outputVal, ok := fcoMsg["output"]
+	if !ok {
+		t.Fatalf("function_call_output message has no `output` field: %s", string(jsonBytes))
+	}
+
+	outputStr, isString := outputVal.(string)
+	if !isString {
+		t.Fatalf("function_call_output.output must be a string (OpenAI Responses API spec); got %T: %v\nraw=%s", outputVal, outputVal, string(jsonBytes))
+	}
+	if outputStr != outputText {
+		t.Fatalf("function_call_output.output mismatch: want %q, got %q", outputText, outputStr)
+	}
+}
+
+// Flattening must concatenate multiple text blocks with newline separators so
+// every character from the upstream tool response reaches the model.
+func TestOpenAIResponsesRequestInput_MarshalJSON_FunctionCallOutputConcatenatesMultipleTextBlocks(t *testing.T) {
+	callID := "toolu_multi"
+	input := &OpenAIResponsesRequestInput{
+		OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+			{
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				Status: schemas.Ptr("completed"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr(callID),
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+							{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("line1")},
+							{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("line2")},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	jsonBytes, err := input.MarshalJSON()
+	if err != nil {
+		t.Fatalf("Failed to marshal: %v", err)
+	}
+	var messages []map[string]interface{}
+	if err := sonic.Unmarshal(jsonBytes, &messages); err != nil {
+		t.Fatalf("Failed to unmarshal: %v\nraw=%s", err, string(jsonBytes))
+	}
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(messages))
+	}
+	got, ok := messages[0]["output"].(string)
+	if !ok {
+		t.Fatalf("output must be string, got %T", messages[0]["output"])
+	}
+	if want := "line1\nline2"; got != want {
+		t.Fatalf("flattened output mismatch: want %q, got %q", want, got)
+	}
+}
+
+// When the tool result contains a non-text block (e.g. an image), flattening is
+// unsafe — preserve the array form and let the upstream handle it. This keeps
+// the fix scoped to the common text-only case without dropping rich content.
+func TestOpenAIResponsesRequestInput_MarshalJSON_FunctionCallOutputPreservesNonTextBlocks(t *testing.T) {
+	callID := "toolu_with_image"
+	imageURL := "https://example.com/screenshot.png"
+	input := &OpenAIResponsesRequestInput{
+		OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+			{
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				Status: schemas.Ptr("completed"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr(callID),
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+							{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("here is the screenshot:")},
+							{
+								Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+								ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+									ImageURL: &imageURL,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	jsonBytes, err := input.MarshalJSON()
+	if err != nil {
+		t.Fatalf("Failed to marshal: %v", err)
+	}
+	var messages []map[string]interface{}
+	if err := sonic.Unmarshal(jsonBytes, &messages); err != nil {
+		t.Fatalf("Failed to unmarshal: %v\nraw=%s", err, string(jsonBytes))
+	}
+	if _, isString := messages[0]["output"].(string); isString {
+		t.Fatalf("non-text blocks must not be flattened to string; raw=%s", string(jsonBytes))
+	}
+}
+
+// TestOpenAIResponsesRequest_MarshalJSON_StripsAnthropicToolFlags ensures the
+// Responses serializer drops the four Anthropic-native tool flags
+// (defer_loading, allowed_callers, input_examples, eager_input_streaming)
+// along with CacheControl before forwarding to OpenAI — mirroring the Chat
+// path's behavior so Anthropic-flavored tools cannot 400 OpenAI via Responses.
+func TestOpenAIResponsesRequest_MarshalJSON_StripsAnthropicToolFlags(t *testing.T) {
+	req := &OpenAIResponsesRequest{
+		Model: "gpt-4o",
+		Input: OpenAIResponsesRequestInput{
+			OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+				{
+					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{
+						ContentStr: schemas.Ptr("hello"),
+					},
+				},
+			},
+		},
+		ResponsesParameters: schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{
+					Type:                schemas.ResponsesToolTypeFunction,
+					Name:                schemas.Ptr("lookup"),
+					Description:         schemas.Ptr("lookup something"),
+					CacheControl:        &schemas.CacheControl{Type: "ephemeral"},
+					DeferLoading:        schemas.Ptr(true),
+					AllowedCallers:      []string{"direct", "agent"},
+					EagerInputStreaming: schemas.Ptr(false),
+					InputExamples: []schemas.ChatToolInputExample{
+						{Input: json.RawMessage(`{"q":"hi"}`)},
+					},
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+				},
+				{
+					Type: schemas.ResponsesToolTypeCodeInterpreter,
+					ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{
+						Version: schemas.Ptr("code_execution_20260120"),
+					},
+				},
+			},
+		},
+	}
+
+	jsonBytes, err := req.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	raw := string(jsonBytes)
+
+	// None of the Anthropic-only tool keys must survive on the wire.
+	for _, key := range []string{`"cache_control"`, `"defer_loading"`, `"allowed_callers"`, `"input_examples"`, `"eager_input_streaming"`, `"code_execution_version"`} {
+		if strings.Contains(raw, key) {
+			t.Errorf("OpenAI Responses serializer must strip %s; raw=%s", key, raw)
+		}
+	}
+	// Function tool identity should be preserved.
+	if !strings.Contains(raw, `"name":"lookup"`) {
+		t.Errorf("tool identity lost after strip; raw=%s", raw)
+	}
+}
+
+// TestOpenAIResponsesRequest_MarshalJSON_DropsAnthropicOnlyToolTypes verifies
+// that Anthropic-only tool types (web_fetch, memory) are dropped entirely when
+// serializing for OpenAI Responses. Per OpenAI's OpenAPI spec the Responses
+// Tool discriminator union does not include web_fetch or memory, so forwarding
+// them would trigger a 400 schema-validation error. Mirrors the Chat path's
+// isAnthropicServerToolShape drop behavior.
+func TestOpenAIResponsesRequest_MarshalJSON_DropsAnthropicOnlyToolTypes(t *testing.T) {
+	req := &OpenAIResponsesRequest{
+		Model: "gpt-4o",
+		Input: OpenAIResponsesRequestInput{
+			OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+				{
+					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{
+						ContentStr: schemas.Ptr("hello"),
+					},
+				},
+			},
+		},
+		ResponsesParameters: schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				// Kept: function (OpenAI-native).
+				{
+					Type:                  schemas.ResponsesToolTypeFunction,
+					Name:                  schemas.Ptr("keeper_func"),
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+				},
+				// Dropped: web_fetch (Anthropic-only).
+				{
+					Type:                  schemas.ResponsesToolTypeWebFetch,
+					Name:                  schemas.Ptr("anthropic_webfetch"),
+					ResponsesToolWebFetch: &schemas.ResponsesToolWebFetch{},
+				},
+				// Kept: web_search (both support).
+				{
+					Type:                   schemas.ResponsesToolTypeWebSearch,
+					ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{},
+				},
+				// Dropped: memory (Anthropic-only).
+				{
+					Type: schemas.ResponsesToolTypeMemory,
+					Name: schemas.Ptr("anthropic_memory"),
+				},
+				// Kept: tool_search (both support per OpenAI OpenAPI spec).
+				{
+					Type: schemas.ResponsesToolTypeToolSearch,
+				},
+			},
+		},
+	}
+
+	jsonBytes, err := req.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	raw := string(jsonBytes)
+
+	// Dropped types must not appear on the wire.
+	for _, dropped := range []string{`"web_fetch"`, `"memory"`, `"anthropic_webfetch"`, `"anthropic_memory"`} {
+		if strings.Contains(raw, dropped) {
+			t.Errorf("Anthropic-only tool must be dropped; found %s in raw=%s", dropped, raw)
+		}
+	}
+	// Kept types must still appear.
+	for _, kept := range []string{`"function"`, `"web_search"`, `"tool_search"`, `"keeper_func"`} {
+		if !strings.Contains(raw, kept) {
+			t.Errorf("supported tool %s should be preserved; raw=%s", kept, raw)
+		}
+	}
+
+	// Confirm the tools array is present and has exactly 3 entries (2 dropped of 5).
+	var decoded struct {
+		Tools []map[string]interface{} `json:"tools"`
+	}
+	if err := json.Unmarshal(jsonBytes, &decoded); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if len(decoded.Tools) != 3 {
+		t.Errorf("expected 3 tools after drop (function, web_search, tool_search), got %d; tools=%+v", len(decoded.Tools), decoded.Tools)
+	}
+}
+
+// TestOpenAIResponsesRequest_MarshalJSON_KeepsAllWhenAllSupported verifies the
+// no-reshape fast path: if every tool is OpenAI-compatible with no
+// Anthropic-only flags, the tools slice passes through unchanged (no copy,
+// no drop).
+func TestOpenAIResponsesRequest_MarshalJSON_KeepsAllWhenAllSupported(t *testing.T) {
+	req := &OpenAIResponsesRequest{
+		Model: "gpt-4o",
+		Input: OpenAIResponsesRequestInput{
+			OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+				{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+				},
+			},
+		},
+		ResponsesParameters: schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("f"), ResponsesToolFunction: &schemas.ResponsesToolFunction{}},
+				{Type: schemas.ResponsesToolTypeWebSearch, ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{}},
+				{Type: schemas.ResponsesToolTypeCodeInterpreter, ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{}},
+			},
+		},
+	}
+
+	jsonBytes, err := req.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	var decoded struct {
+		Tools []map[string]interface{} `json:"tools"`
+	}
+	if err := json.Unmarshal(jsonBytes, &decoded); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if len(decoded.Tools) != 3 {
+		t.Errorf("expected 3 tools preserved, got %d", len(decoded.Tools))
+	}
+}
+
+// TestResponsesToolMessage_NamespaceRoundTrip verifies that the namespace field
+// on function_call items (returned by OpenAI when namespace tools are used) is
+// preserved through unmarshal → marshal without being dropped.
+func TestResponsesToolMessage_NamespaceRoundTrip(t *testing.T) {
+	raw := `{
+		"type": "function_call",
+		"id": "fc_abc123",
+		"call_id": "call_abc123",
+		"name": "get_app_state",
+		"namespace": "mcp__computer_use__",
+		"arguments": "{\"app\":\"Google Chrome\"}",
+		"status": "completed"
+	}`
+
+	var msg schemas.ResponsesMessage
+	if err := sonic.UnmarshalString(raw, &msg); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if msg.ResponsesToolMessage == nil {
+		t.Fatal("ResponsesToolMessage is nil after unmarshal")
+	}
+	if msg.ResponsesToolMessage.Namespace == nil {
+		t.Fatal("namespace field was dropped during unmarshal")
+	}
+	if *msg.ResponsesToolMessage.Namespace != "mcp__computer_use__" {
+		t.Fatalf("namespace mismatch: want %q, got %q", "mcp__computer_use__", *msg.ResponsesToolMessage.Namespace)
+	}
+
+	out, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if !strings.Contains(string(out), `"namespace":"mcp__computer_use__"`) {
+		t.Fatalf("namespace not in marshaled output: %s", string(out))
+	}
+}
+
+// TestOpenAIResponsesRequest_MarshalJSON_CompactionSummaryStripped verifies that the
+// "summary" field is removed from a compaction input item (OpenAI rejects it as an
+// unknown parameter) while a sibling reasoning item keeps its summary array intact.
+func TestOpenAIResponsesRequest_MarshalJSON_CompactionSummaryStripped(t *testing.T) {
+	enc := "gAAAA-encrypted"
+	compactionType := schemas.ResponsesMessageTypeCompaction
+	reasoningType := schemas.ResponsesMessageTypeReasoning
+
+	input := OpenAIResponsesRequestInput{
+		OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+			{
+				// Compaction item: encrypted_content rides the embedded ResponsesReasoning,
+				// which would otherwise re-emit summary:null. summary must be stripped.
+				Type:               &compactionType,
+				ResponsesReasoning: &schemas.ResponsesReasoning{Summary: nil, EncryptedContent: &enc},
+			},
+			{
+				// Reasoning item: summary (even empty []) is required by OpenAI and must survive.
+				Type:               &reasoningType,
+				ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}, EncryptedContent: &enc},
+			},
+		},
+	}
+
+	data, err := input.MarshalJSON()
+	if err != nil {
+		t.Fatalf("MarshalJSON returned error: %v", err)
+	}
+
+	var items []map[string]json.RawMessage
+	if err := json.Unmarshal(data, &items); err != nil {
+		t.Fatalf("failed to unmarshal serialized input: %v\n%s", err, string(data))
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items, got %d: %s", len(items), string(data))
+	}
+
+	// Compaction item (index 0) must NOT carry a summary key.
+	if _, exists := items[0]["summary"]; exists {
+		t.Errorf("compaction item should not contain a summary field, got: %s", string(data))
+	}
+	if _, exists := items[0]["encrypted_content"]; !exists {
+		t.Errorf("compaction item should retain encrypted_content, got: %s", string(data))
+	}
+
+	// Reasoning item (index 1) must retain its summary array.
+	rawSummary, exists := items[1]["summary"]
+	if !exists {
+		t.Errorf("reasoning item should retain its summary field, got: %s", string(data))
+	} else if string(rawSummary) != "[]" {
+		t.Errorf("reasoning item summary should be [], got: %s", string(rawSummary))
+	}
+}
+
+// TestOpenAICompactionRequest_MarshalJSON_Input guards against the `input` union
+// serializing as a JSON object (which /v1/responses/compact rejects with
+// "Invalid type for 'input': expected a string, but got an object instead").
+func TestOpenAICompactionRequest_MarshalJSON_Input(t *testing.T) {
+	tests := []struct {
+		name    string
+		request *OpenAICompactionRequest
+		assert  func(t *testing.T, m map[string]interface{})
+	}{
+		{
+			name: "empty input is omitted (previous_response_id-only compaction)",
+			request: &OpenAICompactionRequest{
+				Model:              "gpt-5",
+				PreviousResponseID: schemas.Ptr("resp_123"),
+			},
+			assert: func(t *testing.T, m map[string]interface{}) {
+				if v, ok := m["input"]; ok {
+					t.Errorf("input should be omitted when empty, got: %#v", v)
+				}
+			},
+		},
+		{
+			name: "string input serializes as a bare string",
+			request: &OpenAICompactionRequest{
+				Model: "gpt-5",
+				Input: OpenAIResponsesRequestInput{OpenAIResponsesRequestInputStr: schemas.Ptr("hello")},
+			},
+			assert: func(t *testing.T, m map[string]interface{}) {
+				if s, ok := m["input"].(string); !ok || s != "hello" {
+					t.Errorf("input should be the string %q, got: %#v", "hello", m["input"])
+				}
+			},
+		},
+		{
+			name: "array input serializes as an array",
+			request: &OpenAICompactionRequest{
+				Model: "gpt-5",
+				Input: OpenAIResponsesRequestInput{OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+				}}},
+			},
+			assert: func(t *testing.T, m map[string]interface{}) {
+				if _, ok := m["input"].([]interface{}); !ok {
+					t.Errorf("input should be an array, got: %#v", m["input"])
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jsonBytes, err := tt.request.MarshalJSON()
+			if err != nil {
+				t.Fatalf("MarshalJSON failed: %v", err)
+			}
+			var m map[string]interface{}
+			if err := sonic.Unmarshal(jsonBytes, &m); err != nil {
+				t.Fatalf("unmarshal failed: %v", err)
+			}
+			// The regression: input must never be a JSON object.
+			if obj, ok := m["input"].(map[string]interface{}); ok {
+				t.Fatalf("input serialized as an object (the bug): %v", obj)
+			}
+			tt.assert(t, m)
+		})
+	}
+}
+
+// TestEffortPredicatesAgainstCatalogIDs pins the three effort predicates against
+// model IDs as they actually appear in the datasheet. bareModelLower strips only
+// one leading segment, so region and vendor namespaces survive ("azure/eu/gpt-5.2"
+// → "eu/gpt-5.2"); the xhigh/max needles are matched as substrings for that
+// reason, while "minimal" needs a boundary check because "gpt-5" is a literal
+// prefix of every dot-revision that dropped it.
+func TestEffortPredicatesAgainstCatalogIDs(t *testing.T) {
+	cases := []struct {
+		model               string
+		minimal, xhigh, max bool
+	}{
+		// original trio: minimal only
+		{"gpt-5", true, false, false},
+		{"gpt-5-mini", true, false, false},
+		{"gpt-5-nano", true, false, false},
+		{"gpt-5-2025-08-07", true, false, false},
+		{"gpt-5-mini-2025-08-07", true, false, false},
+		{"azure/gpt-5", true, false, false},
+		{"azure/eu/gpt-5-2025-08-07", true, false, false},
+		{"databricks/databricks-gpt-5", true, false, false},
+		// trio variants that never had minimal
+		{"gpt-5-codex", false, false, false},
+		{"gpt-5-pro", false, false, false},
+		{"gpt-5-chat-latest", false, false, false},
+		{"gpt-5-search-api", false, false, false},
+		// dot-revisions: no minimal; xhigh from 5.2
+		{"gpt-5.1", false, false, false},
+		{"gpt-5.2", false, true, false},
+		{"azure/eu/gpt-5.2", false, true, false},
+		{"gmi/openai/gpt-5.2", false, true, false},
+		{"gpt-5.3-codex", false, true, false},
+		{"gpt-5.4", false, true, false},
+		{"gpt-5.6-terra", false, true, true},
+		{"openai.gpt-5.6-sol", false, true, true},
+		// non-gpt families
+		{"deepseek-v4-pro", false, false, true},
+		{"glm-5.2", false, false, true},
+		{"gpt-4o", false, false, false},
+	}
+	for _, c := range cases {
+		if got := acceptsMinimalEffort(c.model); got != c.minimal {
+			t.Errorf("minimal(%q) = %v, want %v", c.model, got, c.minimal)
+		}
+		if got := acceptsXHighEffort(c.model); got != c.xhigh {
+			t.Errorf("xhigh(%q) = %v, want %v", c.model, got, c.xhigh)
+		}
+		if got := acceptsMaxEffort(c.model); got != c.max {
+			t.Errorf("max(%q) = %v, want %v", c.model, got, c.max)
+		}
+	}
+}
+
+// TestToOpenAIResponsesRequest_OpenRouterCacheControlBreakpoint is the
+// Responses-path parallel of TestToOpenAIChatRequest_CacheControl_OpenRouterOnly
+// (added by the Chat-path fix in #4203). Regression test for #6290.
+//
+// OpenRouter does NOT expose Anthropic-style per-block cache_control through
+// /v1/responses. The documented Responses equivalent is prompt_cache_breakpoint
+// on an individual input_text block, which OpenRouter converts into a default
+// Anthropic cache_control breakpoint when the request routes to Claude:
+// https://openrouter.ai/docs/features/prompt-caching#anthropic-claude
+//
+// Both OpenRouterProvider.Responses and OpenRouterProvider.ResponsesStream build
+// their outbound body through ToOpenAIResponsesRequest + MarshalJSON, so
+// asserting on the marshalled body covers streaming and non-streaming alike.
+func TestToOpenAIResponsesRequest_OpenRouterCacheControlBreakpoint(t *testing.T) {
+	newBifrostReq := func(provider schemas.ModelProvider, model string) *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{
+			Provider: provider,
+			Model:    model,
+			Input: []schemas.ResponsesMessage{
+				{
+					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{
+						ContentBlocks: []schemas.ResponsesMessageContentBlock{
+							{
+								Type:         schemas.ResponsesInputMessageContentBlockTypeText,
+								Text:         schemas.Ptr("REUSABLE_PREFIX"),
+								CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
+							},
+							{
+								Type: schemas.ResponsesInputMessageContentBlockTypeText,
+								Text: schemas.Ptr("Reply with OK."),
+							},
+						},
+					},
+				},
+			},
+		}
+	}
+
+	// contentBlocks marshals the request and digs out input[0].content[] so the
+	// assertions read against the exact bytes that go on the wire.
+	contentBlocks := func(t *testing.T, bifrostReq *schemas.BifrostResponsesRequest) ([]any, string) {
+		t.Helper()
+		request := ToOpenAIResponsesRequest(nil, bifrostReq)
+		if request == nil {
+			t.Fatal("expected non-nil request")
+		}
+		jsonBytes, err := request.MarshalJSON()
+		if err != nil {
+			t.Fatalf("failed to marshal responses request: %v", err)
+		}
+		raw := string(jsonBytes)
+
+		var jsonMap map[string]any
+		if err := sonic.Unmarshal(jsonBytes, &jsonMap); err != nil {
+			t.Fatalf("failed to parse marshaled JSON: %v\nraw=%s", err, raw)
+		}
+		input, ok := jsonMap["input"].([]any)
+		if !ok || len(input) == 0 {
+			t.Fatalf("expected input array on the wire; raw=%s", raw)
+		}
+		msg, ok := input[0].(map[string]any)
+		if !ok {
+			t.Fatalf("expected input[0] to be an object; raw=%s", raw)
+		}
+		blocks, ok := msg["content"].([]any)
+		if !ok || len(blocks) != 2 {
+			t.Fatalf("expected 2 content blocks on input[0]; raw=%s", raw)
+		}
+		return blocks, raw
+	}
+
+	t.Run("openrouter converts cache_control to prompt_cache_breakpoint", func(t *testing.T) {
+		blocks, raw := contentBlocks(t, newBifrostReq(schemas.OpenRouter, "anthropic/claude-sonnet-4"))
+
+		marked, ok := blocks[0].(map[string]any)
+		if !ok {
+			t.Fatalf("expected content[0] to be an object; raw=%s", raw)
+		}
+
+		// The caching intent must survive in the form OpenRouter's Responses
+		// endpoint actually accepts.
+		bp, ok := marked["prompt_cache_breakpoint"].(map[string]any)
+		if !ok {
+			t.Fatalf("OpenRouter Responses: cache_control must be converted to prompt_cache_breakpoint on the marked text block; raw=%s", raw)
+		}
+		if mode, _ := bp["mode"].(string); mode != "explicit" {
+			t.Errorf("prompt_cache_breakpoint.mode = %q, want \"explicit\"; raw=%s", mode, raw)
+		}
+
+		// Per-block cache_control is not exposed through the Responses API, so
+		// it must not remain on the wire once translated.
+		if _, present := marked["cache_control"]; present {
+			t.Errorf("OpenRouter Responses: per-block cache_control must not be forwarded; raw=%s", raw)
+		}
+
+		// Only the marked block becomes a breakpoint; an unmarked block must
+		// not acquire one (that would move the cached prefix boundary).
+		unmarked, ok := blocks[1].(map[string]any)
+		if !ok {
+			t.Fatalf("expected content[1] to be an object; raw=%s", raw)
+		}
+		if _, present := unmarked["prompt_cache_breakpoint"]; present {
+			t.Errorf("unmarked block must not receive a prompt_cache_breakpoint; raw=%s", raw)
+		}
+	})
+
+	t.Run("openai still strips cache_control and adds no breakpoint", func(t *testing.T) {
+		blocks, raw := contentBlocks(t, newBifrostReq(schemas.OpenAI, "gpt-4o"))
+
+		for i, b := range blocks {
+			block, ok := b.(map[string]any)
+			if !ok {
+				t.Fatalf("expected content[%d] to be an object; raw=%s", i, raw)
+			}
+			if _, present := block["cache_control"]; present {
+				t.Errorf("OpenAI Responses: cache_control must still be stripped on content[%d]; raw=%s", i, raw)
+			}
+			if _, present := block["prompt_cache_breakpoint"]; present {
+				t.Errorf("OpenAI Responses: no prompt_cache_breakpoint may be synthesized on content[%d]; raw=%s", i, raw)
+			}
+		}
+	})
+}
+
+// openRouterCacheReq builds a single user message whose input_text blocks each
+// carry an Anthropic cache_control marker, one per entry in texts.
+func openRouterCacheReq(texts ...string) *schemas.BifrostResponsesRequest {
+	blocks := make([]schemas.ResponsesMessageContentBlock, 0, len(texts))
+	for _, text := range texts {
+		blocks = append(blocks, schemas.ResponsesMessageContentBlock{
+			Type:         schemas.ResponsesInputMessageContentBlockTypeText,
+			Text:         schemas.Ptr(text),
+			CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
+		})
+	}
+	return &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenRouter,
+		Model:    "anthropic/claude-sonnet-4",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentBlocks: blocks},
+			},
+		},
+	}
+}
+
+// breakpointModes returns the prompt_cache_breakpoint.mode of every block in
+// input[0].content, using "" for a block that carries no breakpoint.
+func breakpointModes(t *testing.T, bifrostReq *schemas.BifrostResponsesRequest) ([]string, string) {
+	t.Helper()
+	request := ToOpenAIResponsesRequest(nil, bifrostReq)
+	if request == nil {
+		t.Fatal("expected non-nil request")
+	}
+	jsonBytes, err := request.MarshalJSON()
+	if err != nil {
+		t.Fatalf("failed to marshal responses request: %v", err)
+	}
+	raw := string(jsonBytes)
+
+	var jsonMap map[string]any
+	if err := sonic.Unmarshal(jsonBytes, &jsonMap); err != nil {
+		t.Fatalf("failed to parse marshaled JSON: %v\nraw=%s", err, raw)
+	}
+	input, _ := jsonMap["input"].([]any)
+	if len(input) == 0 {
+		t.Fatalf("expected input array; raw=%s", raw)
+	}
+	msg, _ := input[0].(map[string]any)
+	blocks, _ := msg["content"].([]any)
+	modes := make([]string, 0, len(blocks))
+	for _, b := range blocks {
+		block, _ := b.(map[string]any)
+		bp, ok := block["prompt_cache_breakpoint"].(map[string]any)
+		if !ok {
+			modes = append(modes, "")
+			continue
+		}
+		mode, _ := bp["mode"].(string)
+		modes = append(modes, mode)
+	}
+	return modes, raw
+}
+
+// TestToOpenAIResponsesRequest_OpenRouterClampsCacheBreakpoints pins the clamp
+// that makes the #6290 fix safe to ship. OpenRouter turns each
+// prompt_cache_breakpoint into an Anthropic cache_control block, and Anthropic
+// rejects a request carrying more than four outright ("A maximum of 4 blocks
+// with cache_control may be provided. Found 5.") rather than degrading. Before
+// the fix, unconditional stripping hid that; converting every marker without a
+// clamp would turn today's silent cache miss into a hard upstream error.
+//
+// The earliest markers are the ones dropped: caching is cumulative up to each
+// breakpoint, so a later marker anchors a strictly longer prefix.
+func TestToOpenAIResponsesRequest_OpenRouterClampsCacheBreakpoints(t *testing.T) {
+	modes, raw := breakpointModes(t, openRouterCacheReq("p1", "p2", "p3", "p4", "p5"))
+	if len(modes) != 5 {
+		t.Fatalf("expected 5 content blocks, got %d; raw=%s", len(modes), raw)
+	}
+
+	want := []string{"", "explicit", "explicit", "explicit", "explicit"}
+	for i, wantMode := range want {
+		if modes[i] != wantMode {
+			t.Errorf("block %d breakpoint mode = %q, want %q (earliest marker must be the one dropped); raw=%s",
+				i, modes[i], wantMode, raw)
+		}
+	}
+}
+
+// TestToOpenAIResponsesRequest_OpenRouterRespectsCallerBreakpoints verifies the
+// conversion neither overwrites a breakpoint the caller set explicitly nor
+// spends budget the caller has already committed. A caller who fills the
+// four-breakpoint ceiling by hand gets their request forwarded as written; the
+// converter declines to push it over the edge.
+func TestToOpenAIResponsesRequest_OpenRouterRespectsCallerBreakpoints(t *testing.T) {
+	t.Run("caller breakpoint is not overwritten", func(t *testing.T) {
+		bifrostReq := openRouterCacheReq("p1", "p2")
+		// Caller marked the first block themselves, and also left a cache_control
+		// on it; the explicit breakpoint wins and is left untouched.
+		bifrostReq.Input[0].Content.ContentBlocks[0].PromptCacheBreakpoint = &schemas.PromptCacheBreakpoint{
+			Mode: schemas.Ptr(PromptCacheBreakpointModeExplicit),
+		}
+
+		modes, raw := breakpointModes(t, bifrostReq)
+		if len(modes) != 2 {
+			t.Fatalf("expected 2 content blocks, got %d; raw=%s", len(modes), raw)
+		}
+		for i, mode := range modes {
+			if mode != "explicit" {
+				t.Errorf("block %d breakpoint mode = %q, want \"explicit\"; raw=%s", i, mode, raw)
+			}
+		}
+	})
+
+	t.Run("caller-filled ceiling leaves no budget", func(t *testing.T) {
+		// Five blocks: the first four already carry caller breakpoints, so the
+		// fifth block's cache_control has no budget left and must not be
+		// converted. Converting it would make five, which Anthropic rejects.
+		bifrostReq := openRouterCacheReq("p1", "p2", "p3", "p4", "p5")
+		for i := 0; i < 4; i++ {
+			bifrostReq.Input[0].Content.ContentBlocks[i].CacheControl = nil
+			bifrostReq.Input[0].Content.ContentBlocks[i].PromptCacheBreakpoint = &schemas.PromptCacheBreakpoint{
+				Mode: schemas.Ptr(PromptCacheBreakpointModeExplicit),
+			}
+		}
+
+		modes, raw := breakpointModes(t, bifrostReq)
+		want := []string{"explicit", "explicit", "explicit", "explicit", ""}
+		for i, wantMode := range want {
+			if modes[i] != wantMode {
+				t.Errorf("block %d breakpoint mode = %q, want %q; raw=%s", i, modes[i], wantMode, raw)
+			}
+		}
+	})
+}
+
+// TestToOpenAIResponsesRequest_OpenRouterDoesNotMutateInput guards the
+// copy-on-write in applyOpenRouterCacheBreakpoints. The ResponsesMessage
+// Content pointer and its block array are shared with the caller's
+// BifrostResponsesRequest, which plugins and the fallback chain reuse. Writing a
+// breakpoint in place would leak an OpenRouter-only field into a retry against a
+// different provider.
+func TestToOpenAIResponsesRequest_OpenRouterDoesNotMutateInput(t *testing.T) {
+	bifrostReq := openRouterCacheReq("p1", "p2")
+
+	request := ToOpenAIResponsesRequest(nil, bifrostReq)
+	if request == nil {
+		t.Fatal("expected non-nil request")
+	}
+	if _, err := request.MarshalJSON(); err != nil {
+		t.Fatalf("failed to marshal responses request: %v", err)
+	}
+
+	for i, block := range bifrostReq.Input[0].Content.ContentBlocks {
+		if block.PromptCacheBreakpoint != nil {
+			t.Errorf("caller input block %d was mutated: prompt_cache_breakpoint written back onto the source request", i)
+		}
+		if block.CacheControl == nil {
+			t.Errorf("caller input block %d was mutated: cache_control removed from the source request", i)
+		}
+	}
+}
+
+// TestToOpenAIResponsesRequest_OpenRouterIgnoresNonEphemeralCacheControl pins the
+// type guard on the conversion. "ephemeral" is the only cache type Anthropic
+// defines, and nothing upstream of ToOpenAIResponsesRequest validates the field -
+// schemas.CacheControl.Type is a bare string with no allowed-value check. Without
+// the guard, a malformed marker such as {"cache_control": {}} would be upgraded
+// into a valid prompt_cache_breakpoint that the caller never asked for, and would
+// consume budget against the four-breakpoint ceiling.
+//
+// The Chat path forwards cache_control verbatim and lets upstream reject a bad
+// value; the Responses path must not be more permissive just because it rewrites
+// the field.
+func TestToOpenAIResponsesRequest_OpenRouterIgnoresNonEphemeralCacheControl(t *testing.T) {
+	cases := []struct {
+		name string
+		cc   *schemas.CacheControl
+		want string // expected prompt_cache_breakpoint.mode, "" for none
+	}{
+		{name: "empty type is not converted", cc: &schemas.CacheControl{}, want: ""},
+		{name: "unknown type is not converted", cc: &schemas.CacheControl{Type: "persistent"}, want: ""},
+		{name: "ephemeral type is converted", cc: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral}, want: "explicit"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bifrostReq := openRouterCacheReq("p1")
+			bifrostReq.Input[0].Content.ContentBlocks[0].CacheControl = tc.cc
+
+			modes, raw := breakpointModes(t, bifrostReq)
+			if len(modes) != 1 {
+				t.Fatalf("expected 1 content block, got %d; raw=%s", len(modes), raw)
+			}
+			if modes[0] != tc.want {
+				t.Errorf("breakpoint mode = %q, want %q for cache_control %+v; raw=%s",
+					modes[0], tc.want, tc.cc, raw)
+			}
+
+			// Whatever the type, the marker itself must never reach the wire:
+			// per-block cache_control is not exposed on OpenRouter Responses.
+			if strings.Contains(raw, "cache_control") {
+				t.Errorf("cache_control must not be forwarded regardless of type; raw=%s", raw)
+			}
+		})
+	}
+}
+
+// TestToOpenAIResponsesRequest_OpenRouterNonEphemeralDoesNotSpendClampBudget
+// verifies the type guard also keeps malformed markers from displacing valid
+// ones. Five blocks carry cache_control but only the last four are ephemeral, so
+// all four valid markers must survive - a naive nil-only guard would count the
+// malformed first block toward the ceiling and drop a real breakpoint.
+func TestToOpenAIResponsesRequest_OpenRouterNonEphemeralDoesNotSpendClampBudget(t *testing.T) {
+	bifrostReq := openRouterCacheReq("p1", "p2", "p3", "p4", "p5")
+	bifrostReq.Input[0].Content.ContentBlocks[0].CacheControl = &schemas.CacheControl{Type: "bogus"}
+
+	modes, raw := breakpointModes(t, bifrostReq)
+	want := []string{"", "explicit", "explicit", "explicit", "explicit"}
+	if len(modes) != len(want) {
+		t.Fatalf("expected %d content blocks, got %d; raw=%s", len(want), len(modes), raw)
+	}
+	for i, wantMode := range want {
+		if modes[i] != wantMode {
+			t.Errorf("block %d breakpoint mode = %q, want %q; raw=%s", i, modes[i], wantMode, raw)
+		}
+	}
+}
+
+// gpt56CacheReq builds a Responses request whose first input_text block carries an
+// Anthropic-style cache_control marker, with no prompt_cache_options of its own.
+func gpt56CacheReq(provider schemas.ModelProvider, model string) *schemas.BifrostResponsesRequest {
+	return &schemas.BifrostResponsesRequest{
+		Provider: provider,
+		Model:    model,
+		Input: []schemas.ResponsesMessage{{
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{
+					{
+						Type:         schemas.ResponsesInputMessageContentBlockTypeText,
+						Text:         schemas.Ptr("REUSABLE_PREFIX"),
+						CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
+					},
+					{
+						Type: schemas.ResponsesInputMessageContentBlockTypeText,
+						Text: schemas.Ptr("Reply with OK."),
+					},
+				},
+			},
+		}},
+	}
+}
+
+// marshalResponses returns the outbound body as a generic map plus the raw bytes.
+func marshalResponses(t *testing.T, bifrostReq *schemas.BifrostResponsesRequest) (map[string]any, string) {
+	t.Helper()
+	request := ToOpenAIResponsesRequest(nil, bifrostReq)
+	if request == nil {
+		t.Fatal("expected non-nil request")
+	}
+	jsonBytes, err := request.MarshalJSON()
+	if err != nil {
+		t.Fatalf("failed to marshal responses request: %v", err)
+	}
+	raw := string(jsonBytes)
+	var m map[string]any
+	if err := sonic.Unmarshal(jsonBytes, &m); err != nil {
+		t.Fatalf("failed to parse marshaled JSON: %v\nraw=%s", err, raw)
+	}
+	return m, raw
+}
+
+// firstBlock digs out input[0].content[idx].
+func firstBlock(t *testing.T, m map[string]any, idx int, raw string) map[string]any {
+	t.Helper()
+	input, ok := m["input"].([]any)
+	if !ok || len(input) == 0 {
+		t.Fatalf("expected input array; raw=%s", raw)
+	}
+	msg, _ := input[0].(map[string]any)
+	blocks, ok := msg["content"].([]any)
+	if !ok || idx >= len(blocks) {
+		t.Fatalf("expected content block %d; raw=%s", idx, raw)
+	}
+	block, _ := blocks[idx].(map[string]any)
+	return block
+}
+
+// TestToOpenAIResponsesRequest_GPT56CacheBreakpoint extends the #6290 OpenRouter
+// translation to the gpt-5.6 family (#6180). These models define
+// prompt_cache_breakpoint natively but default to IMPLICIT caching, which anchors the
+// breakpoint on the latest message - so an agent loop rewrites the whole growing
+// prompt every turn at the cache-write rate. Translating the marker is only half the
+// fix; prompt_cache_options.mode=explicit is what actually pins the prefix.
+func TestToOpenAIResponsesRequest_GPT56CacheBreakpoint(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+	}{
+		{"openai", schemas.OpenAI, "gpt-5.6-sol"},
+		{"azure", schemas.Azure, "eu/gpt-5.6-sol"},
+		{"bedrock mantle", schemas.BedrockMantle, "openai.gpt-5.6-terra"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, raw := marshalResponses(t, gpt56CacheReq(tc.provider, tc.model))
+
+			marked := firstBlock(t, m, 0, raw)
+			bp, ok := marked["prompt_cache_breakpoint"].(map[string]any)
+			if !ok {
+				t.Fatalf("cache_control must be translated to prompt_cache_breakpoint on gpt-5.6; raw=%s", raw)
+			}
+			if mode, _ := bp["mode"].(string); mode != "explicit" {
+				t.Errorf("prompt_cache_breakpoint.mode = %q, want \"explicit\"; raw=%s", mode, raw)
+			}
+			if _, present := marked["cache_control"]; present {
+				t.Errorf("cache_control must not be forwarded to an OpenAI-shaped endpoint; raw=%s", raw)
+			}
+
+			opts, ok := m["prompt_cache_options"].(map[string]any)
+			if !ok {
+				t.Fatalf("gpt-5.6 needs prompt_cache_options.mode=explicit; the block marker alone leaves implicit caching on. raw=%s", raw)
+			}
+			if mode, _ := opts["mode"].(string); mode != "explicit" {
+				t.Errorf("prompt_cache_options.mode = %q, want \"explicit\"; raw=%s", mode, raw)
+			}
+
+			unmarked := firstBlock(t, m, 1, raw)
+			if _, present := unmarked["prompt_cache_breakpoint"]; present {
+				t.Errorf("unmarked block must not receive a breakpoint; raw=%s", raw)
+			}
+		})
+	}
+}
+
+// TestToOpenAIResponsesRequest_PreGPT56Unaffected pins the negative. Earlier OpenAI
+// models have no prompt_cache_breakpoint field at all, so translating into it would
+// send an unknown key; the serializer's existing strip is the right behaviour there.
+func TestToOpenAIResponsesRequest_PreGPT56Unaffected(t *testing.T) {
+	for _, model := range []string{"gpt-4o", "gpt-5.5", "gpt-5"} {
+		t.Run(model, func(t *testing.T) {
+			m, raw := marshalResponses(t, gpt56CacheReq(schemas.OpenAI, model))
+
+			marked := firstBlock(t, m, 0, raw)
+			if _, present := marked["prompt_cache_breakpoint"]; present {
+				t.Errorf("%s predates prompt_cache_breakpoint; nothing may be synthesized. raw=%s", model, raw)
+			}
+			if _, present := marked["cache_control"]; present {
+				t.Errorf("cache_control must still be stripped for %s; raw=%s", model, raw)
+			}
+			if _, present := m["prompt_cache_options"]; present {
+				t.Errorf("%s must not gain prompt_cache_options; raw=%s", model, raw)
+			}
+		})
+	}
+}
+
+// TestToOpenAIResponsesRequest_GPT56RespectsCallerCacheOptions verifies Bifrost does
+// not overwrite a caller that already made a caching decision.
+func TestToOpenAIResponsesRequest_GPT56RespectsCallerCacheOptions(t *testing.T) {
+	req := gpt56CacheReq(schemas.OpenAI, "gpt-5.6-sol")
+	req.Params = &schemas.ResponsesParameters{
+		PromptCacheOptions: &schemas.PromptCacheOptions{
+			Mode: schemas.Ptr("implicit"),
+			TTL:  schemas.Ptr("30m"),
+		},
+	}
+
+	m, raw := marshalResponses(t, req)
+
+	opts, ok := m["prompt_cache_options"].(map[string]any)
+	if !ok {
+		t.Fatalf("caller's prompt_cache_options disappeared; raw=%s", raw)
+	}
+	if mode, _ := opts["mode"].(string); mode != "implicit" {
+		t.Errorf("caller's mode was overwritten: got %q, want \"implicit\"; raw=%s", mode, raw)
+	}
+	if ttl, _ := opts["ttl"].(string); ttl != "30m" {
+		t.Errorf("caller's ttl was lost: got %q; raw=%s", ttl, raw)
+	}
+}
+
+// TestToOpenAIResponsesRequest_GPT56NoBreakpointNoExplicitMode guards a footgun:
+// switching a request to explicit mode with no breakpoint anywhere opts it out of
+// caching entirely, which is strictly worse than the implicit default it replaced.
+func TestToOpenAIResponsesRequest_GPT56NoBreakpointNoExplicitMode(t *testing.T) {
+	req := gpt56CacheReq(schemas.OpenAI, "gpt-5.6-sol")
+	req.Input[0].Content.ContentBlocks[0].CacheControl = nil // nothing to translate
+
+	m, raw := marshalResponses(t, req)
+
+	if _, present := m["prompt_cache_options"]; present {
+		t.Errorf("explicit mode without a breakpoint disables caching outright; raw=%s", raw)
+	}
+}
+
+// TestToOpenAIResponsesRequest_GPT56MarkerTTLIsNotCarried pins the decision NOT to
+// translate a marker's TTL onto prompt_cache_options.ttl, which is a request-wide
+// field and not a per-block one.
+//
+// There is no valid value to carry. OpenAI documents that on prompt_cache_options.ttl
+// "The only supported value, 30m, is also the default"
+// (https://developers.openai.com/api/docs/guides/prompt-caching), while a cache_control
+// marker carries either nothing (5m) or "1h"
+// (https://platform.claude.com/docs/en/build-with-claude/prompt-caching). So "30m"
+// never arrives and would be inert if it did, and forwarding the "1h" that does arrive
+// would send a value OpenAI rejects, turning a working request into a 400.
+//
+// The mode must still be set: that is what pins the prefix, and it is unrelated to TTL.
+func TestToOpenAIResponsesRequest_GPT56MarkerTTLIsNotCarried(t *testing.T) {
+	req := gpt56CacheReq(schemas.OpenAI, "gpt-5.6-sol")
+	req.Input[0].Content.ContentBlocks[0].CacheControl = &schemas.CacheControl{
+		Type: schemas.CacheControlTypeEphemeral,
+		TTL:  schemas.Ptr("1h"),
+	}
+
+	m, raw := marshalResponses(t, req)
+
+	opts, ok := m["prompt_cache_options"].(map[string]any)
+	if !ok {
+		t.Fatalf("the explicit-mode option must still be set; raw=%s", raw)
+	}
+	if mode, _ := opts["mode"].(string); mode != "explicit" {
+		t.Errorf("prompt_cache_options.mode = %q, want \"explicit\"; raw=%s", mode, raw)
+	}
+	if ttl, present := opts["ttl"]; present {
+		t.Errorf("a marker TTL must not become prompt_cache_options.ttl (got %v); OpenAI accepts "+
+			"only \"30m\" there and rejects \"1h\"; raw=%s", ttl, raw)
+	}
+	if strings.Contains(raw, "\"ttl\"") {
+		t.Errorf("no ttl may reach an OpenAI-shaped endpoint from a cache_control marker; raw=%s", raw)
+	}
+}
+
+// TestToOpenAIResponsesRequest_CustomProviderResolvesBaseForCacheBreakpoints pins the
+// gate on the breakpoint translation to the BASE provider rather than the key the
+// request arrived under.
+//
+// A custom provider reports its own name. Matching the raw name against a switch that
+// only knows "openai"/"azure"/"bedrock_mantle"/"openrouter" sends every such request to
+// the default branch, where the serializer strips cache_control and puts nothing in its
+// place - so the caller's explicit breakpoint vanishes and the request silently drops
+// back to the implicit caching that #6180 exists to escape. Nothing in the response
+// says so; it is only visible on the wire.
+//
+// The failure is invisible to any test that names a standard provider, which is how it
+// survived: the injector (core/bifrost.go) and providers/utils both resolve the base
+// first, and this call site was the odd one out.
+func TestToOpenAIResponsesRequest_CustomProviderResolvesBaseForCacheBreakpoints(t *testing.T) {
+	newReq := func(provider schemas.ModelProvider) *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{
+			Provider: provider,
+			Model:    "gpt-5.6-sol",
+			Input: []schemas.ResponsesMessage{
+				{
+					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{
+						ContentBlocks: []schemas.ResponsesMessageContentBlock{
+							{
+								Type:         schemas.ResponsesInputMessageContentBlockTypeText,
+								Text:         schemas.Ptr("REUSABLE_PREFIX"),
+								CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
+							},
+							{
+								Type: schemas.ResponsesInputMessageContentBlockTypeText,
+								Text: schemas.Ptr("Reply with OK."),
+							},
+						},
+					},
+				},
+			},
+		}
+	}
+
+	// wire marshals the request and returns both the parsed body and the raw bytes, so
+	// a failure message shows exactly what the provider would have received.
+	wire := func(t *testing.T, ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostResponsesRequest) (map[string]any, string) {
+		t.Helper()
+		request := ToOpenAIResponsesRequest(ctx, bifrostReq)
+		if request == nil {
+			t.Fatal("expected non-nil request")
+		}
+		jsonBytes, err := request.MarshalJSON()
+		if err != nil {
+			t.Fatalf("failed to marshal responses request: %v", err)
+		}
+		raw := string(jsonBytes)
+		var jsonMap map[string]any
+		if err := sonic.Unmarshal(jsonBytes, &jsonMap); err != nil {
+			t.Fatalf("failed to parse marshaled JSON: %v\nraw=%s", err, raw)
+		}
+		return jsonMap, raw
+	}
+
+	markedBlock := func(t *testing.T, jsonMap map[string]any, raw string) map[string]any {
+		t.Helper()
+		input, ok := jsonMap["input"].([]any)
+		if !ok || len(input) == 0 {
+			t.Fatalf("expected input array on the wire; raw=%s", raw)
+		}
+		msg, ok := input[0].(map[string]any)
+		if !ok {
+			t.Fatalf("expected input[0] to be an object; raw=%s", raw)
+		}
+		blocks, ok := msg["content"].([]any)
+		if !ok || len(blocks) != 2 {
+			t.Fatalf("expected 2 content blocks on input[0]; raw=%s", raw)
+		}
+		block, ok := blocks[0].(map[string]any)
+		if !ok {
+			t.Fatalf("expected content[0] to be an object; raw=%s", raw)
+		}
+		return block
+	}
+
+	assertTranslated := func(t *testing.T, jsonMap map[string]any, raw string) {
+		t.Helper()
+		block := markedBlock(t, jsonMap, raw)
+		if _, present := block["cache_control"]; present {
+			t.Errorf("cache_control must never reach an OpenAI-shaped endpoint; raw=%s", raw)
+		}
+		bp, ok := block["prompt_cache_breakpoint"].(map[string]any)
+		if !ok {
+			t.Fatalf("cache_control must be translated to prompt_cache_breakpoint on the marked block; raw=%s", raw)
+		}
+		if mode, _ := bp["mode"].(string); mode != "explicit" {
+			t.Errorf("prompt_cache_breakpoint.mode = %q, want \"explicit\"; raw=%s", mode, raw)
+		}
+		// The block marker alone does not switch gpt-5.6 off implicit caching; without
+		// request-level explicit mode the breakpoint is inert and the win is lost.
+		opts, ok := jsonMap["prompt_cache_options"].(map[string]any)
+		if !ok {
+			t.Fatalf("gpt-5.6 needs request-level prompt_cache_options to honour the breakpoint; raw=%s", raw)
+		}
+		if mode, _ := opts["mode"].(string); mode != "explicit" {
+			t.Errorf("prompt_cache_options.mode = %q, want \"explicit\"; raw=%s", mode, raw)
+		}
+	}
+
+	t.Run("standard openai translates", func(t *testing.T) {
+		jsonMap, raw := wire(t, nil, newReq(schemas.OpenAI))
+		assertTranslated(t, jsonMap, raw)
+	})
+
+	t.Run("custom provider on an openai base translates identically", func(t *testing.T) {
+		ctx := schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline,
+			schemas.BifrostContextKeyBaseProviderType, schemas.OpenAI)
+		jsonMap, raw := wire(t, ctx, newReq(schemas.ModelProvider("openai_pc_auto")))
+		assertTranslated(t, jsonMap, raw)
+	})
+
+	t.Run("custom provider on an azure base translates identically", func(t *testing.T) {
+		ctx := schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline,
+			schemas.BifrostContextKeyBaseProviderType, schemas.Azure)
+		jsonMap, raw := wire(t, ctx, newReq(schemas.ModelProvider("azure_pc_auto")))
+		assertTranslated(t, jsonMap, raw)
+	})
+
+	// The resolution must not become a blanket "translate for everyone": a base that
+	// genuinely has no breakpoint field still gets the strip, which is correct there.
+	t.Run("a base without breakpoints is still left alone", func(t *testing.T) {
+		ctx := schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline,
+			schemas.BifrostContextKeyBaseProviderType, schemas.Anthropic)
+		jsonMap, raw := wire(t, ctx, newReq(schemas.ModelProvider("anthropic_pc_auto")))
+		block := markedBlock(t, jsonMap, raw)
+		if _, present := block["prompt_cache_breakpoint"]; present {
+			t.Errorf("an Anthropic-based provider must not gain a prompt_cache_breakpoint; raw=%s", raw)
+		}
+		if _, present := jsonMap["prompt_cache_options"]; present {
+			t.Errorf("an Anthropic-based provider must not gain prompt_cache_options; raw=%s", raw)
+		}
+	})
+}

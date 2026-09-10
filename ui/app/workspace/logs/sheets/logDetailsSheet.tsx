@@ -20,6 +20,7 @@ interface LogDetailSheetProps {
 	canReveal?: boolean;
 	onViewSession?: (sessionId: string, logId: string) => void;
 	onFilterByParentRequestId?: (parentRequestId: string) => void;
+	onFilterBySessionId?: (sessionId: string) => void;
 }
 
 export function LogDetailSheet({
@@ -33,6 +34,7 @@ export function LogDetailSheet({
 	canReveal = false,
 	onViewSession,
 	onFilterByParentRequestId,
+	onFilterBySessionId,
 }: LogDetailSheetProps) {
 	const [pollingInterval, setPollingInterval] = useState(0);
 	const {
@@ -87,6 +89,7 @@ export function LogDetailSheet({
 						canReveal={canReveal}
 						onClose={() => onOpenChange(false)}
 						onFilterByParentRequestId={onFilterByParentRequestId}
+						onFilterBySessionId={onFilterBySessionId}
 						headerAction={
 							<>
 								{displayLog.parent_request_id && onViewSession ? (

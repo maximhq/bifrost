@@ -401,6 +401,23 @@ type HTTPRequestTypeGetter func(ctx *fasthttp.RequestCtx) schemas.RequestType
 // ShortCircuit is a function that determines if the request should be short-circuited.
 type ShortCircuit func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) (bool, error)
 
+// AccessResolver narrows the provider fan-out of a models listing to what the request may reach:
+// a provider reachable only through a grant composed onto the request is asked, one the
+// composition removed is not. Without it, every configured provider is asked and governance drops
+// the ones the request may not use from the answer, so the upstream calls to them are spent for
+// nothing and their failures fill request logs with expected errors.
+//
+// Narrowing is the whole job, so an implementation must leave the fan-out it was given alone
+// whenever it cannot narrow: a request with nothing resolved (no key presented, or no governance
+// wired) is unrestricted, and so is a request nothing settled who it is, which is refused where
+// that matters and a listing is not that.
+//
+// Routes that list models take one of these the way the inference handler takes its models
+// manager, because both answer the same question about the same request.
+type AccessResolver interface {
+	NarrowListModelsProviders(bifrostCtx *schemas.BifrostContext)
+}
+
 // StreamConfig defines streaming-specific configuration for an integration
 //
 // SSE FORMAT BEHAVIOR:
@@ -557,6 +574,7 @@ type GenericRouter struct {
 	logger            schemas.Logger    // Logger for the router
 	largePayloadHook  LargePayloadHook  // Optional: enterprise hook for large payload detection
 	largeResponseHook LargeResponseHook // Optional: enterprise hook for large response scanning
+	accessResolver    AccessResolver    // What a request may reach, for the models listing. Nil lists as before.
 }
 
 type modelCatalogProvider interface {
@@ -579,10 +597,11 @@ func (g *GenericRouter) SetLargeResponseHook(hook LargeResponseHook) {
 
 // NewGenericRouter creates a new generic router with the given bifrost client and route configurations.
 // Each integration should create their own routes and pass them to this constructor.
-func NewGenericRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, routes []RouteConfig, passthroughCfg *PassthroughConfig, logger schemas.Logger) *GenericRouter {
+func NewGenericRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, routes []RouteConfig, passthroughCfg *PassthroughConfig, logger schemas.Logger) *GenericRouter {
 	return &GenericRouter{
 		client:         client,
 		handlerStore:   handlerStore,
+		accessResolver: accessResolver,
 		routes:         routes,
 		passthroughCfg: passthroughCfg,
 		logger:         logger,
@@ -968,6 +987,12 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		if bifrostReq.ListModelsRequest.Provider != "" {
 			listModelsResponse, bifrostErr = g.client.ListModelsRequest(bifrostCtx, bifrostReq.ListModelsRequest)
 		} else {
+			// Ask only the providers this request may reach, the same way the native models
+			// route does, instead of asking every configured provider for models that are
+			// dropped from the answer anyway.
+			if g.accessResolver != nil {
+				g.accessResolver.NarrowListModelsProviders(bifrostCtx)
+			}
 			listModelsResponse, bifrostErr = g.client.ListAllModels(bifrostCtx, bifrostReq.ListModelsRequest)
 		}
 
@@ -2820,13 +2845,15 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 		// AWS SDKs (e.g. Go SDK v2) don't silently drop an unmodeled `:event-type` -- they
 		// surface it to the caller as a typed union member (types.UnknownUnionMember). So
 		// Bedrock streams stay on purely reactive (write-failure-based) disconnect detection.
+		// An integration can opt out the same way by declaring lib.SSEHeartbeatNone (GenAI
+		// does: its official Python SDK rejects any SSE comment line).
 		var heartbeatDone chan struct{}
 		var heartbeatExited <-chan struct{}
-		if config.Type != RouteConfigTypeBedrock {
-			heartbeatFraming := lib.SSEHeartbeatBareCommentLine
-			if config.StreamConfig != nil {
-				heartbeatFraming = config.StreamConfig.HeartbeatFraming
-			}
+		heartbeatFraming := lib.SSEHeartbeatBareCommentLine
+		if config.StreamConfig != nil {
+			heartbeatFraming = config.StreamConfig.HeartbeatFraming
+		}
+		if config.Type != RouteConfigTypeBedrock && heartbeatFraming != lib.SSEHeartbeatNone {
 			sendHeartbeat := func() bool {
 				return reader.SendHeartbeatWithFraming(heartbeatFraming)
 			}
@@ -3227,7 +3254,22 @@ func extractPassthroughModel(path string, bodyModel string) string {
 	if model := extractModelFromPath(path); model != "" {
 		return model
 	}
-	return bodyModel
+	return normalizeResourceModel(bodyModel)
+}
+
+// normalizeResourceModel reduces a GenAI/Vertex model resource name
+// ("models/gemini-2.5-flash", "projects/{p}/locations/{l}/publishers/google/models/gemini-2.5-flash")
+// to its bare model id, which is what governance allowlists and key selection match on.
+// Slash-bearing ids that are not resource names (e.g. "openai/gpt-4o") pass through unchanged.
+func normalizeResourceModel(model string) string {
+	switch {
+	case strings.HasPrefix(model, "models/"), strings.HasPrefix(model, "tunedModels/"),
+		strings.HasPrefix(model, "projects/"), strings.HasPrefix(model, "publishers/"):
+		if extracted := extractModelFromPath(model); extracted != "" {
+			return extracted
+		}
+	}
+	return model
 }
 
 func extractModelFromPath(path string) string {
@@ -3343,7 +3385,7 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	resolvedModel := extractPassthroughModel(path, bodyModel)
 	provider := cfg.Provider
 	if cfg.ProviderDetector != nil {
-		provider = cfg.ProviderDetector(ctx, resolvedModel)
+		provider = cfg.ProviderDetector(ctx, bodyModel)
 	}
 	provider = getProviderFromHeader(ctx, provider)
 	isStreaming := strings.Contains(strings.ToLower(path), "stream") || bodyStream
@@ -3399,14 +3441,19 @@ func (g *GenericRouter) handlePassthroughNonStream(
 	ctx.Response.SetBody(resp.Body)
 }
 
-// passthroughHeartbeatEligible reports whether a resolved passthrough response
-// content-type is safe for the SSE-comment heartbeat. handlePassthroughStream proxies
-// raw upstream bytes 1:1, and content-type isn't always SSE -- e.g. Vertex/Gemini's
-// non-alt=sse mode returns an incrementally-delivered JSON array with
-// Content-Type: application/json. The media type is compared exactly (case-insensitively,
-// ignoring parameters like "; charset=utf-8") so lookalikes such as
-// "text/event-stream+json" or "text/event-streaming" aren't treated as SSE.
-func passthroughHeartbeatEligible(contentType string) bool {
+// passthroughHeartbeatEligible reports whether a passthrough stream is safe for the
+// SSE-comment heartbeat. handlePassthroughStream proxies raw upstream bytes 1:1, and
+// content-type isn't always SSE -- e.g. Vertex/Gemini's non-alt=sse mode returns an
+// incrementally-delivered JSON array with Content-Type: application/json. The media type is
+// compared exactly (case-insensitively, ignoring parameters like "; charset=utf-8") so
+// lookalikes such as "text/event-stream+json" or "text/event-streaming" aren't treated as
+// SSE. Gemini and Vertex are excluded even for real SSE: their official Python SDK
+// (google-genai, also used by LangChain) json.loads any non-"data:" line and aborts the
+// stream on a comment, see lib.SSEHeartbeatNone.
+func passthroughHeartbeatEligible(provider schemas.ModelProvider, contentType string) bool {
+	if provider == schemas.Gemini || provider == schemas.Vertex {
+		return false
+	}
 	mediaType, _, _ := strings.Cut(contentType, ";")
 	return strings.EqualFold(strings.TrimSpace(mediaType), "text/event-stream")
 }
@@ -3516,7 +3563,7 @@ func (g *GenericRouter) handlePassthroughStream(
 	// content-type is actually SSE.
 	var heartbeatDone chan struct{}
 	var heartbeatExited <-chan struct{}
-	if passthroughHeartbeatEligible(contentType) {
+	if passthroughHeartbeatEligible(provider, contentType) {
 		heartbeatDone, heartbeatExited = lib.StartSSEHeartbeat(lib.DefaultSSEHeartbeatInterval, reader.SendHeartbeat, cancel)
 	}
 

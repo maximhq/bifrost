@@ -1821,6 +1821,14 @@ const (
 	AnthropicStopReasonCompaction                 AnthropicStopReason = "compaction"
 )
 
+// MarshalJSON preserves Anthropic's required-null response contract for stop_reason.
+func (r AnthropicStopReason) MarshalJSON() ([]byte, error) {
+	if r == "" {
+		return []byte("null"), nil
+	}
+	return json.Marshal(string(r))
+}
+
 // AnthropicResponseContainer is the "container" object returned on responses
 // that used the code execution tool. The id can be passed back as the request
 // "container" to reuse the sandbox across turns.
@@ -1837,9 +1845,9 @@ type AnthropicMessageResponse struct {
 	Role         string                  `json:"role"`
 	Content      []AnthropicContentBlock `json:"content"`
 	Model        string                  `json:"model"`
-	StopReason   AnthropicStopReason     `json:"stop_reason,omitempty"`
+	StopReason   AnthropicStopReason     `json:"stop_reason"`
 	StopDetails  *AnthropicStopDetails   `json:"stop_details,omitempty"` // refusal detail; null for every stop_reason other than "refusal"
-	StopSequence *string                 `json:"stop_sequence,omitempty"`
+	StopSequence *string                 `json:"stop_sequence"`
 	Usage        *AnthropicUsage         `json:"usage,omitempty"`
 	// Container is the code-execution sandbox container, present on responses that
 	// used the code execution tool. Distinct from the request-side AnthropicContainer
@@ -2158,10 +2166,10 @@ type AnthropicFileResponse struct {
 	ID           string `json:"id"`
 	Type         string `json:"type"`
 	Filename     string `json:"filename"`
-	MimeType     string `json:"mime_type"`
+	MimeType     string `json:"mime_type,omitempty"`
 	SizeBytes    int64  `json:"size_bytes"`
 	CreatedAt    string `json:"created_at"`
-	Downloadable bool   `json:"downloadable"`
+	Downloadable *bool  `json:"downloadable,omitempty"`
 }
 
 // AnthropicFileListResponse represents the response from listing files.
@@ -2186,6 +2194,8 @@ func (r *AnthropicFileResponse) ToBifrostFileUploadResponse(latency time.Duratio
 		Bytes:          r.SizeBytes,
 		CreatedAt:      parseAnthropicFileTimestamp(r.CreatedAt),
 		Filename:       r.Filename,
+		ContentType:    r.MimeType,
+		Downloadable:   r.Downloadable,
 		Purpose:        schemas.FilePurposeBatch, // We hardcode as purpose is not supported by Anthropic
 		Status:         schemas.FileStatusProcessed,
 		StorageBackend: schemas.FileStorageAPI,
@@ -2213,6 +2223,8 @@ func (r *AnthropicFileResponse) ToBifrostFileRetrieveResponse(latency time.Durat
 		Bytes:          r.SizeBytes,
 		CreatedAt:      parseAnthropicFileTimestamp(r.CreatedAt),
 		Filename:       r.Filename,
+		ContentType:    r.MimeType,
+		Downloadable:   r.Downloadable,
 		Purpose:        schemas.FilePurposeBatch,
 		Status:         schemas.FileStatusProcessed,
 		StorageBackend: schemas.FileStorageAPI,

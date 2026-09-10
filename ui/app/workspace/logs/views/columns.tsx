@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import {
 	getProviderLabel,
@@ -84,6 +85,10 @@ function LogActionsMenu({ log, onDelete }: { log: LogEntry; onDelete: (log: LogE
 
 function getAssistantToolCallSummary(log?: LogEntry): string {
 	const toolCalls = log?.output_message?.tool_calls || [];
+	if (toolCalls.length === 0) {
+		// Hybrid list rows carry only the denormalized names; the full calls live in the offloaded payload.
+		return (log?.tool_call_names || []).join("\n");
+	}
 	return toolCalls
 		.map((toolCall) => {
 			const name = toolCall?.function?.name;
@@ -306,7 +311,9 @@ export const createColumns = (
 							<button
 								type="button"
 								data-testid="log-chain-expand-btn"
-								aria-label={isExpanded ? "Collapse fallback chain" : `Expand fallback chain (${childCount} attempts)`}
+								// Not always a fallback chain: a settled async job nests its cost row
+								// here too, and calling that an "attempt" misreads what it is.
+								aria-label={isExpanded ? "Collapse linked rows" : `Expand ${childCount} linked row${childCount === 1 ? "" : "s"}`}
 								aria-expanded={isExpanded}
 								className="text-muted-foreground hover:text-foreground absolute top-1/2 left-1/2 flex -translate-x-1/2 -translate-y-1/2 cursor-pointer items-center justify-center gap-1 rounded-sm transition-colors"
 								onClick={(event) => {
@@ -393,11 +400,13 @@ export const createColumns = (
 			cell: ({ row }) => {
 				const provider = row.original.provider as ProviderName | undefined;
 				const model = row.original.model || batchAccountingDisplay(row.original)?.model;
+				const canonicalModel = row.original.canonical_model_name;
+				const modelLabel = canonicalModel && canonicalModel !== model ? `${canonicalModel} (${model})` : model;
 				return (
 					<div className="flex min-w-0 items-center gap-2">
 						{provider ? <RenderProviderIcon provider={provider as ProviderIconType} size="xs" /> : null}
 						<div className="flex min-w-0 flex-col leading-tight">
-							<span className="truncate font-mono text-[12px]">{model || "N/A"}</span>
+							<TruncatedLabel className="font-mono text-[12px]">{modelLabel || "N/A"}</TruncatedLabel>
 							<span className="text-muted-foreground truncate text-[10.5px]">{provider ? getProviderLabel(provider) : "N/A"}</span>
 						</div>
 					</div>
@@ -511,6 +520,26 @@ export const createColumns = (
 							</Tooltip>
 						);
 					}
+					// A settled async job writes its cost to a child row rather than back
+					// onto the request, so the request itself has no cost of its own.
+					// children_cost is that rollup, computed per page.
+					const settledCost = row.original.children_cost;
+					if (settledCost != null && settledCost > 0) {
+						return (
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<div className="text-muted-foreground pl-4 font-mono text-sm tabular-nums">{formatCost(settledCost)}</div>
+								</TooltipTrigger>
+								{/* The expand chevron only exists in the grouped view, so pointing at
+								    it anywhere else sends people looking for a control that is not there. */}
+								<TooltipContent>
+									{groupedView
+										? "Settled after this request completed. Expand the row to see it."
+										: "Settled after this request completed, on its own row."}
+								</TooltipContent>
+							</Tooltip>
+						);
+					}
 					return <div className="pl-4 font-mono text-[12px]">N/A</div>;
 				}
 				return <div className="pl-4 font-mono text-sm tabular-nums">{formatCost(row.original.cost)}</div>;
@@ -529,7 +558,7 @@ export const createColumns = (
 					return <div className="font-mono text-xs">-</div>;
 				}
 				return (
-					<Badge variant="outline" className="font-mono text-[11px] py-0.5 px-1.5 uppercase">
+					<Badge variant="outline" className="px-1.5 py-0.5 font-mono text-[11px] uppercase">
 						{tier}
 					</Badge>
 				);
@@ -591,6 +620,12 @@ export const createColumns = (
 					id={row.original.business_unit_id}
 				/>
 			),
+		},
+		{
+			id: "project",
+			header: "Project",
+			size: 150,
+			cell: ({ row }) => <AttributionCell name={row.original.project_name} id={row.original.project_id} />,
 		},
 	];
 

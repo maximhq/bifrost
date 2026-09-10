@@ -22,13 +22,13 @@ This page is a concise reference for every top-level key in `config.json`. Click
 | `encryption_key` | string | Optional AES-256 key (derived via Argon2id). Accepts `env.VAR` prefix and is also read from `BIFROST_ENCRYPTION_KEY`. If omitted, data is stored in plaintext. | [Client](/deployment-guides/config-json/client#encryption-key) |
 | `client` | object | Worker pool, logging, CORS, auth enforcement, header filtering, MCP, compat shims | [Client](/deployment-guides/config-json/client) |
 | `providers` | object | LLM provider API keys, network settings, concurrency | [Providers](/deployment-guides/config-json/providers) |
-| `governance` | object | Admin auth, virtual keys, budgets, rate limits, routing rules, customers, teams | [Governance](/deployment-guides/config-json/governance) |
+| `governance` | object | Admin auth, virtual keys, budgets, rate limits, routing rules, customers, teams, roles and business units | [Governance](/deployment-guides/config-json/governance) |
 | `alerting` | object | Alert channels, CEL-based rules, history retention, and webhook network controls *(enterprise only)* | [Alerting](/deployment-guides/config-json/alerting) |
 | `guardrails_config` | object | Content moderation providers and CEL-based rules *(enterprise only)* | [Guardrails](/deployment-guides/config-json/guardrails) |
-| `access_profiles` | array | Access profile templates for enterprise RBAC/governance controls *(enterprise only)* | [Enterprise Governance](/enterprise/advanced-governance) |
+| `access_profiles` | array | Access profile templates for enterprise RBAC/governance controls *(enterprise only)* | [Access Profiles](/enterprise/access-profiles) |
 | `cluster_config` | object | Cluster mode settings: gossip, peers, and auto-discovery backends *(enterprise only)* | [Cluster](/deployment-guides/config-json/cluster) |
 | `config_store` | object | Configuration database backend - SQLite, PostgreSQL, or disabled (file-only mode) | [Storage](/deployment-guides/config-json/storage#config_store) |
-| `logs_store` | object | Request/response log database - SQLite, PostgreSQL + optional S3/GCS offload | [Storage](/deployment-guides/config-json/storage#logs_store) |
+| `logs_store` | object | Request/response log database - SQLite, PostgreSQL, ClickHouse + optional S3/GCS offload | [Storage](/deployment-guides/config-json/storage#logs_store) |
 | `vector_store` | object | Vector database for semantic cache - Weaviate, Redis, Qdrant, Pinecone, Valkey | [Storage](/deployment-guides/config-json/storage#vector_store) |
 | `plugins` | array | Opt-in plugins: `semantic_cache`, `otel`, `maxim`, `datadog`, custom | [Plugins](/deployment-guides/config-json/plugins) |
 | `framework` | object | Model pricing catalog URL and sync interval | [Framework](#framework) |
@@ -40,7 +40,7 @@ This page is a concise reference for every top-level key in `config.json`. Click
 
 ## `version`
 
-Controls how empty arrays in allow-list fields (`models`, `allowed_models`, `key_ids`, `tools_to_execute`) are interpreted:
+Controls how empty arrays in the allow-list fields of provider keys (`models`) and virtual keys (`allowed_models`, `key_ids`, `tools_to_execute`) are interpreted:
 
 | Value | Behaviour |
 |-------|-----------|
@@ -48,6 +48,8 @@ Controls how empty arrays in allow-list fields (`models`, `allowed_models`, `key
 | `1` *(v1.4.x compat)* | Empty array = **allow all** |
 
 Omitting `version` uses v2 semantics. Set `"version": 1` only if you are migrating from v1.4.x and need the old behaviour temporarily.
+
+Projects declared under `governance.projects` are not covered by this switch: their `key_ids` and `tools_to_execute` always treat an empty or omitted array as granting nothing, under either value.
 
 ---
 
@@ -85,6 +87,7 @@ Controls the worker pool, logging pipeline, security, and SDK shims. All fields 
 | `disable_content_logging` | boolean | `false` | Strip message content from logs |
 | `log_retention_days` | integer | `365` | Days to retain log entries |
 | `logging_headers` | array | `[]` | HTTP headers to capture in log metadata |
+| `hidden_request_types` | array | `[]` | Request types hidden from Logs and Dashboard reads; logs are still stored |
 | `enforce_auth_on_inference` | boolean | `false` | Require a virtual key on every `/v1/*` request |
 | `allowed_origins` | array | `["*"]` | CORS allowed origins |
 | `allow_direct_keys` | boolean | `false` | Let callers bypass the key pool with `x-bf-direct-key: true` + a raw provider key |
@@ -112,7 +115,7 @@ Full documentation: [Client Configuration](/deployment-guides/config-json/client
 
 Keyed by provider name. Each entry contains a `keys` array and optional `network_config`, `concurrency_and_buffer_size`, `proxy_config`.
 
-Supported provider keys: `openai`, `anthropic`, `azure`, `bedrock`, `vertex`, `gemini`, `mistral`, `groq`, `cohere`, `perplexity`, `xai`, `cerebras`, `deepseek`, `openrouter`, `nebius`, `fireworks`, `parasail`, `huggingface`, `replicate`, `ollama`, `vllm`, `sgl`, `elevenlabs`, `runway`.
+Supported provider keys: `anthropic`, `azure`, `bedrock`, `bedrock_mantle`, `cerebras`, `cohere`, `deepseek`, `gemini`, `groq`, `mistral`, `ollama`, `opencode-go`, `opencode-zen`, `openai`, `parasail`, `perplexity`, `sgl`, `vertex`, `openrouter`, `elevenlabs`, `huggingface`, `nebius`, `xai`, `replicate`, `vllm`, `runway`, `runware`, `fireworks`, `sarvam`, `wafer`, `databricks`.
 
 Full documentation: [Provider Setup](/deployment-guides/config-json/providers).
 
@@ -133,6 +136,7 @@ Seeds governance resources at startup. All sub-keys are optional arrays.
 | `routing_rules` | CEL-based dynamic provider/model routing |
 | `pricing_overrides` | Scoped per-model pricing overrides |
 | `model_configs` | Per-model rate limit and budget configurations |
+| `projects` | Projects: access gates and accounting scopes that requests opt into, with budgets divisible between members *(enterprise only)* |
 
 Full documentation: [Governance](/deployment-guides/config-json/governance).
 
@@ -186,6 +190,83 @@ Enterprise-only. Defines access profile templates that can later be attached to 
 
 ---
 
+## `governance.roles`
+
+Enterprise-only. Declares RBAC roles, the access profiles they grant, their data access scope, and their permissions.
+
+```json
+{
+  "governance": {
+    "roles": [
+      {
+        "name": "engineer",
+        "description": "Product engineers",
+        "dac": "team-data",
+        "entity_dac": { "PromptRepository": "all-data" },
+        "access_profiles": ["Engineering Baseline", "Opus Pilot"],
+        "permissions": [
+          { "resource": "VirtualKeys", "operation": "View" },
+          { "resource": "PromptRepository", "operation": "Create" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Role name. Identity field — renaming declares a different role. |
+| `description` | string | Optional free-text description. |
+| `dac` | string | Role-level [data access scope](/enterprise/data-access-control): `own-data`, `team-data`, or `all-data`. |
+| `entity_dac` | object | Per-resource scope overrides, keyed by resource name (same names as `permissions`, below). Resources not listed follow `dac`. Applied as a **full replace** — removing `entity_dac` clears every override on the next sync. |
+| `access_profiles` | string[] | Names of every [access profile](/enterprise/access-profiles) this role grants. A role grants **all** of them, and users with the role receive each one. |
+| `access_profile` | string | **Deprecated** — single-profile form, kept for existing files. Ignored whenever `access_profiles` is set. |
+| `permissions` | array | `{ resource, operation }` pairs granted to the role. Both values are case-sensitive — see below. |
+
+Resource and operation names must match Bifrost's own spelling exactly. Resources are PascalCase - `VirtualKeys`, `PromptRepository`, `Teams`, `Customers`, `BusinessUnits`, `AccessProfiles`, `Users`, `RBAC`, `APIKeys`, `Logs`, `AuditLogs`, `MCPGateway`, `RoutingRules`, `GuardrailsConfig`, and so on. Operations are normally `Create`, `View`, `Update`, and `Delete`; a few resources add their own, such as `Reveal` on `Logs`, `Download` on `AuditLogs`, and `CreateStandalone` on `VirtualKeys`.
+
+<Warning>
+  A permission Bifrost does not recognise is skipped with a warning in the startup logs, not
+  rejected. A misspelling like `virtual_keys` or `read` leaves the role without that permission
+  instead of failing the sync, so check the logs after editing this section.
+</Warning>
+
+The `access_profiles` list is the full set of profiles the role grants. On each sync Bifrost attaches any that are missing and removes any that are no longer listed, so editing the list is how you change what a role grants. Note that an explicit empty list (`"access_profiles": []`) means "grant nothing" and removes every profile from the role — leaving the field out entirely is different, and falls back to the deprecated `access_profile`.
+
+<Note>
+  Switching a role from `access_profile: "X"` to `access_profiles: ["X"]` is a no-op — Bifrost treats
+  the two as the same declaration, so nothing re-syncs on upgrade.
+</Note>
+
+---
+
+## `governance.business_units`
+
+Enterprise-only. Declares business unit **definitions** and their governance.
+
+```json
+{
+  "governance": {
+    "business_units": [
+      {
+        "id": "bu-platform",
+        "name": "Platform"
+      }
+    ]
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Stable identifier, referenced by other config rows. |
+| `name` | string | Display name. |
+
+This section defines business units, not who belongs to them. Members are users, and they are added by an admin or by your identity provider — not from `config.json`, which cannot reference users that do not exist yet at startup. See [User Provisioning](/enterprise/user-provisioning#business-unit-membership).
+
+---
+
 ## `cluster_config`
 
 Enterprise-only clustering settings for multi-node deployments.
@@ -209,7 +290,7 @@ Storage backends. Each has `enabled` (boolean), `type` (string), and `config` (o
 | Store | Types |
 |-------|-------|
 | `config_store` | `"sqlite"`, `"postgres"` |
-| `logs_store` | `"sqlite"`, `"postgres"` (+ optional `object_storage` for LLM and MCP logs) |
+| `logs_store` | `"sqlite"`, `"postgres"`, `"clickhouse"` (+ optional `object_storage` for LLM and MCP logs) |
 | `vector_store` | `"weaviate"`, `"redis"`, `"qdrant"`, `"pinecone"` (`"redis"` also covers Valkey-compatible endpoints) |
 
 Full documentation: [Storage](/deployment-guides/config-json/storage).
@@ -294,7 +375,8 @@ Common fields on each `client_configs` entry:
 | `is_ping_available` | boolean | Default `true`. Whether the MCP server supports a lightweight ping for health checks; `false` falls back to a full `listTools` call instead. |
 | `tool_sync_interval` | string \| integer | Per-client tool-list sync interval as a Go duration string in whole seconds (for example `"5m"` or `"90s"`), or a legacy non-negative integer in nanoseconds that is a whole number of seconds. `"0s"`/omitted falls back to the global `mcp.tool_sync_interval`. |
 | `tool_execution_timeout` | integer | Per-client tool execution timeout in seconds. `0`/omitted falls back to the global `client.mcp_tool_execution_timeout`. |
-| `allow_on_all_virtual_keys` | boolean | When `true`, every virtual key can use this client without an explicit allowlist entry. |
+| `allow_by_default` | boolean | When `true`, any caller can use this client without an explicit assignment, with all tools allowed. An explicit assignment for a caller takes precedence for that caller, including an empty tool list. |
+| `allow_on_all_virtual_keys` | boolean | Deprecated alias of `allow_by_default`, read only when `allow_by_default` is absent. |
 | `tls_config` | object | `{ "insecure_skip_verify": bool, "ca_cert_pem": string }` — skip TLS verification (development only) and/or trust a custom CA certificate for this client's connection. `ca_cert_pem` supports `env.VAR_NAME`. |
 
 Auth-type-specific fields:
@@ -316,6 +398,45 @@ The schema enforces these pairings: `oauth_config` is rejected on non-OAuth auth
 </Warning>
 
 Clients declared with `auth_type` in `{oauth, per_user_oauth, per_user_headers, token_exchange}` boot into a **`pending_verification`** state. The MCP Gateway UI surfaces an **Authorize** / **Verify** CTA on each pending row; one admin click runs the same verification flow the Web UI Create form uses, after which the client transitions to `healthy`. The same steps are scriptable via `POST /api/mcp/client/{id}/initiate-verification` (OAuth types), `POST /api/mcp/client/{id}/verify-headers` (per-user headers), or `POST /api/mcp/client/{id}/verify-exchange` (token exchange). Verified state is server-side and survives restarts and config re-syncs. Immutable fields (`auth_type`, `connection_type`, `connection_string`, `stdio_config`, `oauth_config`) cannot be changed after creation — file edits to them are ignored with a boot warning naming the fields, matching the update API; delete and re-declare the client to change them. See [MCP Auth](/mcp/auth/overview) and [Connections, States & Lifecycles](/mcp/connections).
+
+### `mcp.virtual_mcps`
+
+Virtual MCPs bundle tools from one or more `client_configs` into a single endpoint served at `/mcp/<endpoint_slug>` and attachable to virtual keys. Reconciled into the config store at load.
+
+```json
+{
+  "mcp": {
+    "virtual_mcps": [
+      {
+        "name": "Support Tools",
+        "endpoint_slug": "support-tools",
+        "enabled": true,
+        "tools": [
+          { "mcp_client_name": "zendesk", "tool_names": ["*"] },
+          { "mcp_client_name": "docs-search", "tool_names": ["query", "get_page"] }
+        ],
+        "virtual_key_ids": ["vk-support"]
+      }
+    ]
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | integer | Positive integer (>= 1). When set, the reconciler matches by this ID first and falls back to name when no stored vMCP has that ID; a name match keeps its existing stored ID |
+| `name` | string | Required. Display name (unique) |
+| `endpoint_slug` | string | Lowercase URL-safe kebab-case (pattern `^[a-z0-9]+(-[a-z0-9]+)*$`) path served at `/mcp/<endpoint_slug>`. Derived from the name when omitted; immutable after creation; unique across vMCPs and direct MCP clients |
+| `description` | string | Free text |
+| `enabled` | boolean | Defaults to `true`. A disabled vMCP is not served |
+| `tools` | array | Required, at least one entry. Each item needs `mcp_client_id` or `mcp_client_name`, plus `tool_names` (`["*"]` = all current and future tools, `[]` = none) |
+| `virtual_key_ids` | string[] | Virtual keys the vMCP is attached to |
+
+When `source_of_truth` is `config.json` and `mcp.virtual_mcps` is present, it is authoritative for vMCPs: any stored vMCP absent from it is removed, and an explicit `"virtual_mcps": []` prunes them all. Omitting `mcp.virtual_mcps` leaves stored vMCPs unchanged. In `split` mode the file creates and updates vMCPs but never prunes runtime-managed ones. See [Source of Truth](/deployment-guides/config-json/source-of-truth).
+
+<Note>
+`mcp.tool_groups` is the deprecated former name for this key, kept for backward compatibility. It carries legacy attachment arrays (`team_ids`, `customer_ids`, `user_ids`, `provider_names`, `api_key_ids`) and does not expose `endpoint_slug`. Prefer `mcp.virtual_mcps`; when both are present, `mcp.virtual_mcps` wins and `mcp.tool_groups` is ignored.
+</Note>
 
 ---
 

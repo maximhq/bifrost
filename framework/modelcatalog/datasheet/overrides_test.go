@@ -1044,3 +1044,29 @@ func TestPatchPricing_SizeAndQualityImageRates(t *testing.T) {
 	// Unpatched fields keep their base values.
 	assert.Equal(t, 0.133, *patched.OutputCostPerImageAbove1024x1024PixelsHighQuality)
 }
+
+func TestPatchPricing_VideoResolutionBandRates(t *testing.T) {
+	base := configstoreTables.TableModelPricing{
+		Model:                       "sora-2-pro",
+		Provider:                    "openai",
+		Mode:                        "video_generation",
+		OutputCostPerVideoPerSecond: bifrost.Ptr(0.30),
+	}
+
+	patched := patchPricing(base, Options{
+		OutputCostPerVideoPerSecond480p:  bifrost.Ptr(0.10),
+		OutputCostPerVideoPerSecond720p:  bifrost.Ptr(0.30),
+		OutputCostPerVideoPerSecond1024p: bifrost.Ptr(0.50),
+		OutputCostPerVideoPerSecond1080p: bifrost.Ptr(0.70),
+		OutputCostPerVideoPerSecond4k:    bifrost.Ptr(0.60),
+	})
+
+	assert.Equal(t, 0.10, *patched.OutputCostPerVideoPerSecond480p)
+	assert.Equal(t, 0.30, *patched.OutputCostPerVideoPerSecond720p)
+	assert.Equal(t, 0.50, *patched.OutputCostPerVideoPerSecond1024p)
+	assert.Equal(t, 0.70, *patched.OutputCostPerVideoPerSecond1080p)
+	assert.Equal(t, 0.60, *patched.OutputCostPerVideoPerSecond4k)
+
+	// Unpatched fields keep their base values.
+	assert.Equal(t, 0.30, *patched.OutputCostPerVideoPerSecond)
+}

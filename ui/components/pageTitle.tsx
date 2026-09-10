@@ -1,6 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hoverCard";
 import { useDescriptionSlot, useSetTopbarTitle } from "@/lib/contexts/topbarContext";
+import type { Breadcrumb } from "@/lib/contexts/topbarContext.utils";
 import { Info } from "lucide-react";
 import { createPortal } from "react-dom";
 
@@ -28,17 +29,37 @@ import { createPortal } from "react-dom";
  * `beta` marks the page as in beta, rendering a badge beside the title:
  *
  *   <PageTitle title="Alert Rules" beta>Create rules that…</PageTitle>
+ *
+ * `breadcrumbs` replaces the title with a trail for a page nested under
+ * another. Ancestor crumbs are muted and clickable; the last one is the
+ * current page and is never a link:
+ *
+ *   <PageTitle breadcrumbs={[{ label: "Webhooks", to: "/workspace/webhooks" }, { label: "Deliveries" }]} />
+ *
+ * It takes precedence over `title` when both are given.
  */
-export default function PageTitle({ title, beta, children }: { title?: string; beta?: boolean; children?: React.ReactNode }) {
-	useSetTopbarTitle(title);
+export default function PageTitle({
+	title,
+	beta,
+	breadcrumbs,
+	children,
+}: {
+	title?: string;
+	beta?: boolean;
+	breadcrumbs?: Breadcrumb[];
+	children?: React.ReactNode;
+}) {
+	useSetTopbarTitle(breadcrumbs?.length ? breadcrumbs : title);
 	const slot = useDescriptionSlot();
+	// The badge's label needs a name; with a trail that is the current page.
+	const label = title ?? breadcrumbs?.at(-1)?.label;
 
 	if (!slot || (!children && !beta)) return null;
 
 	return createPortal(
 		<>
 			{beta && (
-				<Badge className="shrink-0" aria-label={title ? `${title} is in beta` : "This page is in beta"}>
+				<Badge className="shrink-0" aria-label={label ? `${label} is in beta` : "This page is in beta"}>
 					Beta
 				</Badge>
 			)}

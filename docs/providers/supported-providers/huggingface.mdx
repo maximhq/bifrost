@@ -16,10 +16,11 @@ The Hugging Face provider implements custom logic for:
 
 ## Supported Inference Providers
 
-The Hugging Face provider supports routing to 20+ inference backends. Below is the current list of supported providers and their capabilities (as of December 2025):
+The Hugging Face provider supports routing to 19 inference backends. Below is the current list of supported providers and their capabilities (as of August 2026):
 
 | Provider | Chat | Embedding | Speech (TTS) | Transcription (ASR) | Image Generation | Image Generation (stream) | Image Edit | Image Edit (stream) |
 |----------|------|-----------|--------------|---------------------|------------------|---------------------------|------------|---------------------|
+| `baseten` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | `hf-inference` | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ |
 | `cerebras` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | `cohere` | ✅ | ❌  | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |

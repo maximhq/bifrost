@@ -353,11 +353,18 @@ type BedrockGuardContent struct {
 
 type BedrockReasoningContent struct {
 	ReasoningText *BedrockReasoningContentText `json:"reasoningText,omitempty"`
+
+	// Opaque reasoning blob used by OpenAI and xAI instead of ReasoningText.
+	// The two are mutually exclusive; see schemas.BedrockReasoningShape.
+	RedactedContent *string `json:"redactedContent,omitempty"`
 }
 
+// BedrockReasoningContentText is both the reasoningText block and the streaming
+// reasoning delta, which is why RedactedContent appears here too.
 type BedrockReasoningContentText struct {
-	Text      *string `json:"text,omitempty"`
-	Signature *string `json:"signature,omitempty"`
+	Text            *string `json:"text,omitempty"`
+	Signature       *string `json:"signature,omitempty"`
+	RedactedContent *string `json:"redactedContent,omitempty"`
 }
 
 // BedrockGuardContentText represents text content for guardrails

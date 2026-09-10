@@ -45,15 +45,17 @@ func forwardProviderHeadersFromContext(ctx *fasthttp.RequestCtx, bifrostCtx *sch
 
 // CompletionHandler manages HTTP requests for completion operations
 type CompletionHandler struct {
-	client *bifrost.Bifrost
-	config *lib.Config
+	modelsManager ModelsManager
+	client        *bifrost.Bifrost
+	config        *lib.Config
 }
 
 // NewInferenceHandler creates a new completion handler instance
-func NewInferenceHandler(client *bifrost.Bifrost, config *lib.Config) *CompletionHandler {
+func NewInferenceHandler(modelsManager ModelsManager, client *bifrost.Bifrost, config *lib.Config) *CompletionHandler {
 	return &CompletionHandler{
-		client: client,
-		config: config,
+		modelsManager: modelsManager,
+		client:        client,
+		config:        config,
 	}
 }
 
@@ -849,6 +851,17 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.DELETE("/v1/containers/{container_id}/files/{file_id}", lib.ChainMiddlewares(h.containerFileDelete, containerFileDeleteMW...))
 }
 
+// applyListModelsProviderFilter narrows the provider fan-out of a models listing to what the
+// request may reach. The rule belongs to whoever can answer what that is, shared with the
+// integration routes that list models; a handler wired without one leaves the fan-out alone,
+// because narrowing is an optimization over the answer and not the check that produces it.
+func (h *CompletionHandler) applyListModelsProviderFilter(bifrostCtx *schemas.BifrostContext) {
+	if h.modelsManager == nil {
+		return
+	}
+	h.modelsManager.NarrowListModelsProviders(bifrostCtx)
+}
+
 // listModels handles GET /v1/models - Process list models requests
 // If provider is not specified, lists all models from all configured providers
 func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
@@ -862,8 +875,8 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
-	if provider == "" && !h.applyListModelsVirtualKeyProviderFilter(ctx, bifrostCtx) {
-		return
+	if provider == "" {
+		h.applyListModelsProviderFilter(bifrostCtx)
 	}
 
 	var resp *schemas.BifrostListModelsResponse

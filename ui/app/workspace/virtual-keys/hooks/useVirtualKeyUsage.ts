@@ -4,6 +4,7 @@ import { useGetUserAccessProfilesQuery } from "@enterprise/lib/store/apis/access
 import { useGetVirtualKeyUsersQuery } from "@enterprise/lib/store/apis/virtualKeyUsersApi";
 import { UserAccessProfile } from "@enterprise/lib/types/accessProfile";
 import { User } from "@enterprise/lib/types/user";
+import { hasProfileRateLimit, resolveDisplayRateLimit } from "./useVirtualKeyUsage.utils";
 
 /**
  * When a VK is attached to users via an access profile, the governance plugin tracks usage on the
@@ -39,11 +40,12 @@ export function useVirtualKeyUsage(vk: VirtualKey | null | undefined): {
 	// Only treat the VK as AP-managed when an AP explicitly lists this VK in its virtual_key_ids.
 	// No fallback to "first active" / "first AP" — that misattributed budgets in multi-AP setups.
 	const managingProfile = vk ? userAPs.find((p) => p.virtual_key_ids?.includes(vk.id)) : undefined;
-	// The server-computed flag is the source of truth for "is this managed" — it does not
-	// depend on the RBAC-gated access-profile call. managingProfile still resolves the profile
-	// name/actions when the caller can view access profiles; without that permission the VK is
-	// still known to be managed (lock + notice), just without the profile name.
-	const isManagedByProfile = (vk?.is_access_profile_managed ?? false) || managingProfile !== undefined;
+	// The server-computed flag is the sole source of truth for "is this managed": the
+	// access-profile call above is RBAC-gated and 403s for callers without AccessProfiles:View,
+	// which used to leave the VK looking unmanaged (and editable) here. managingProfile is now
+	// display-only — it resolves the profile name/actions when the caller can view access
+	// profiles; without that permission the VK is still locked, just without the profile name.
+	const isManagedByProfile = vk?.is_access_profile_managed ?? false;
 
 	const displayBudgets: Budget[] | undefined = managingProfile
 		? (managingProfile.budgets ?? []).map((line) => ({
@@ -59,24 +61,16 @@ export function useVirtualKeyUsage(vk: VirtualKey | null | undefined): {
 		: vk?.budgets;
 
 	const apRL = managingProfile?.rate_limit;
-	const hasApRateLimit = !!(apRL && (apRL.token_max_limit != null || apRL.request_max_limit != null));
+	const hasApRateLimit = hasProfileRateLimit(apRL);
 	// When profile-managed, never fall back to raw VK rate limits (that would contradict the
-	// locked edit/delete UX). If the profile has no rate limit, displayRateLimit is undefined.
-	const displayRateLimit: RateLimit | undefined = managingProfile
-		? hasApRateLimit
-			? {
-					id: "",
-					token_max_limit: apRL?.token_max_limit,
-					token_reset_duration: apRL?.token_reset_duration,
-					token_current_usage: apRL?.token_current_usage ?? 0,
-					token_last_reset: apRL?.token_last_reset ?? "",
-					request_max_limit: apRL?.request_max_limit,
-					request_reset_duration: apRL?.request_reset_duration,
-					request_current_usage: apRL?.request_current_usage ?? 0,
-					request_last_reset: apRL?.request_last_reset ?? "",
-				}
-			: undefined
-		: vk?.rate_limit;
+	// locked edit/delete UX). If the profile has no rate limit - or the caller cannot see the
+	// profile at all - displayRateLimit is undefined. Keyed off the server flag, not
+	// managingProfile, for the same reason isManagedByProfile is: see resolveDisplayRateLimit.
+	const displayRateLimit: RateLimit | undefined = resolveDisplayRateLimit({
+		isManagedByProfile,
+		profileRateLimit: apRL,
+		vkRateLimit: vk?.rate_limit,
+	});
 
 	const isExhausted =
 		(displayBudgets?.some((b) => b.current_usage >= getEffectiveBudgetLimit(b)) ?? false) ||

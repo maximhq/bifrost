@@ -311,6 +311,9 @@ false
 {{- if hasKey .Values.bifrost.client.compat "shouldConvertParams" }}
 {{- $_ := set $compat "should_convert_params" .Values.bifrost.client.compat.shouldConvertParams }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client.compat "azureDeepseek" }}
+{{- $_ := set $compat "azure_deepseek" .Values.bifrost.client.compat.azureDeepseek }}
+{{- end }}
 {{- $_ := set $client "compat" $compat }}
 {{- end }}
 {{- if .Values.bifrost.client.prometheusLabels }}
@@ -365,6 +368,9 @@ false
 {{- if .Values.bifrost.client.loggingHeaders }}
 {{- $_ := set $client "logging_headers" .Values.bifrost.client.loggingHeaders }}
 {{- end }}
+{{- if .Values.storage.logsStore.hiddenRequestTypes }}
+{{- $_ := set $client "hidden_request_types" .Values.storage.logsStore.hiddenRequestTypes }}
+{{- end }}
 {{- if .Values.bifrost.client.whitelistedRoutes }}
 {{- $_ := set $client "whitelisted_routes" .Values.bifrost.client.whitelistedRoutes }}
 {{- end }}
@@ -385,6 +391,9 @@ false
 {{- end }}
 {{- if hasKey .Values.bifrost.client "hideDeletedVirtualKeysInFilters" }}
 {{- $_ := set $client "hide_deleted_virtual_keys_in_filters" .Values.bifrost.client.hideDeletedVirtualKeysInFilters }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client "vkRotationCooldown" }}
+{{- $_ := set $client "vk_rotation_cooldown" .Values.bifrost.client.vkRotationCooldown }}
 {{- end }}
 {{- if hasKey .Values.bifrost.client "mcpDisableAutoToolInject" }}
 {{- $_ := set $client "mcp_disable_auto_tool_inject" .Values.bifrost.client.mcpDisableAutoToolInject }}
@@ -581,6 +590,7 @@ false
 {{- $role := dict "name" .name }}
 {{- if .description }}{{- $_ := set $role "description" .description }}{{- end }}
 {{- if .dac }}{{- $_ := set $role "dac" .dac }}{{- end }}
+{{- if .entity_dac }}{{- $_ := set $role "entity_dac" .entity_dac }}{{- end }}
 {{- if .access_profile }}{{- $_ := set $role "access_profile" .access_profile }}{{- end }}
 {{- if .permissions }}{{- $_ := set $role "permissions" .permissions }}{{- end }}
 {{- $roles = append $roles $role }}
@@ -600,11 +610,15 @@ false
 {{- if hasKey . "access_profile_id" }}{{- $_ := set $vk "access_profile_id" .access_profile_id }}{{- end }}
 {{- if .rate_limit_id }}{{- $_ := set $vk "rate_limit_id" .rate_limit_id }}{{- end }}
 {{- if hasKey . "calendar_aligned" }}{{- $_ := set $vk "calendar_aligned" .calendar_aligned }}{{- end }}
+{{- if hasKey . "allow_all_providers" }}{{- $_ := set $vk "allow_all_providers" .allow_all_providers }}{{- end }}
 {{- if .provider_configs }}{{- $_ := set $vk "provider_configs" .provider_configs }}{{- end }}
 {{- if .mcp_configs }}{{- $_ := set $vk "mcp_configs" .mcp_configs }}{{- end }}
 {{- $vks = append $vks $vk }}
 {{- end }}
 {{- $_ := set $governance "virtual_keys" $vks }}
+{{- end }}
+{{- if hasKey .Values.bifrost.governance "projects" }}
+{{- $_ := set $governance "projects" (default (list) .Values.bifrost.governance.projects) }}
 {{- end }}
 {{- if .Values.bifrost.governance.routingRules }}
 {{- $_ := set $governance "routing_rules" .Values.bifrost.governance.routingRules }}
@@ -643,7 +657,7 @@ false
 {{- $_ := set $governance "auth_config" $authConfig }}
 {{- end }}
 {{- end }}
-{{- if or $governance.budgets $governance.rate_limits $governance.customers $governance.teams $governance.business_units $governance.roles $governance.virtual_keys $governance.routing_rules $governance.model_configs $governance.providers $governance.pricing_overrides $governance.complexity_analyzer_config $governance.auth_config }}
+{{- if or $governance.budgets $governance.rate_limits $governance.customers $governance.teams $governance.business_units $governance.roles $governance.virtual_keys (hasKey $governance "projects") $governance.routing_rules $governance.model_configs $governance.providers $governance.pricing_overrides $governance.complexity_analyzer_config $governance.auth_config }}
 {{- $_ := set $config "governance" $governance }}
 {{- end }}
 {{- end }}
@@ -773,9 +787,16 @@ false
 {{- $_ := set $config "cluster_config" $cluster }}
 {{- end }}
 {{- /* SCIM Config */ -}}
-{{- $scimValues := .Values.bifrost.scim }}
-{{- if and $scimValues $scimValues.enabled }}
-{{- $scim := dict "enabled" true }}
+{{- /* Rendered whenever bifrost.scim is declared at all — including enabled: false. Helm then
+       owns the section and a disable actually propagates; omitting scim_config from config.json
+       leaves the section unreconciled, so a previously enabled SCIM would stay enabled.
+       bifrost.scim has no default, so charts that never declare it emit nothing and leave
+       dashboard-configured SCIM alone. Gate on key presence, not truthiness: an empty or nil
+       map is falsy in Go templates, so `if .Values.bifrost.scim` would treat `scim: {}` as
+       undeclared and skip the section. */ -}}
+{{- if hasKey .Values.bifrost "scim" }}
+{{- $scimValues := default dict .Values.bifrost.scim }}
+{{- $scim := dict "enabled" (default false $scimValues.enabled) }}
 {{- if $scimValues.provider }}
 {{- $_ := set $scim "provider" $scimValues.provider }}
 {{- end }}
@@ -822,6 +843,7 @@ false
 {{- if hasKey . "query" }}{{- $_ := set $rule "query" .query }}{{- end }}
 {{- if .sampling_rate }}{{- $_ := set $rule "sampling_rate" .sampling_rate }}{{- end }}
 {{- if .timeout }}{{- $_ := set $rule "timeout" .timeout }}{{- end }}
+{{- if hasKey . "send_all_conversation_turns" }}{{- $_ := set $rule "send_all_conversation_turns" .send_all_conversation_turns }}{{- end }}
 {{- if hasKey . "max_turns_to_send" }}{{- $_ := set $rule "max_turns_to_send" .max_turns_to_send }}{{- end }}
 {{- if .evaluation_mode }}{{- $_ := set $rule "evaluation_mode" .evaluation_mode }}{{- end }}
 {{- if hasKey . "stream_replay_event_interval_ms" }}{{- $_ := set $rule "stream_replay_event_interval_ms" .stream_replay_event_interval_ms }}{{- end }}
@@ -1211,6 +1233,17 @@ false
 {{- $_ := set $pineconeConfig "index_host" .Values.vectorStore.pinecone.external.indexHost }}
 {{- end }}
 {{- $_ := set $vectorStore "config" $pineconeConfig }}
+{{- else if eq .Values.vectorStore.type "chromem" }}
+{{- $chromemConfig := dict }}
+{{- with .Values.vectorStore.chromem }}
+{{- if .path }}
+{{- $_ := set $chromemConfig "path" .path }}
+{{- end }}
+{{- if hasKey . "compress" }}
+{{- $_ := set $chromemConfig "compress" .compress }}
+{{- end }}
+{{- end }}
+{{- $_ := set $vectorStore "config" $chromemConfig }}
 {{- end }}
 {{- $_ := set $config "vector_store" $vectorStore }}
 {{- end }}
@@ -1315,8 +1348,16 @@ false
 {{- if $client.allowedExtraHeaders }}
 {{- $_ := set $cc "allowed_extra_headers" $client.allowedExtraHeaders }}
 {{- end }}
-{{- if hasKey $client "allowOnAllVirtualKeys" }}
+{{- /* allowByDefault supersedes allowOnAllVirtualKeys. Emit exactly one key so the backend's
+       ResolveAllowByDefault sees an unambiguous declaration: the current key when it is given,
+       otherwise the deprecated one passed through untranslated. */ -}}
+{{- if hasKey $client "allowByDefault" }}
+{{- $_ := set $cc "allow_by_default" $client.allowByDefault }}
+{{- else if hasKey $client "allowOnAllVirtualKeys" }}
 {{- $_ := set $cc "allow_on_all_virtual_keys" $client.allowOnAllVirtualKeys }}
+{{- end }}
+{{- if $client.endpointSlug }}
+{{- $_ := set $cc "endpoint_slug" $client.endpointSlug }}
 {{- end }}
 {{- /* Map tlsConfig -> tls_config (only for http/sse/websocket connection types) */ -}}
 {{- if and $client.tlsConfig (or (eq $client.connectionType "http") (eq $client.connectionType "sse") (eq $client.connectionType "websocket")) }}
@@ -1360,7 +1401,7 @@ false
 {{- if hasKey .Values.bifrost.mcp "toolSyncInterval" }}
 {{- $_ := set $mcpConfig "tool_sync_interval" .Values.bifrost.mcp.toolSyncInterval }}
 {{- end }}
-{{- if .Values.bifrost.mcp.toolGroups }}
+{{- if hasKey .Values.bifrost.mcp "toolGroups" }}
 {{- $toolGroups := list }}
 {{- range .Values.bifrost.mcp.toolGroups }}
 {{- $group := dict "name" .name }}
@@ -1387,6 +1428,30 @@ false
 {{- $toolGroups = append $toolGroups $group }}
 {{- end }}
 {{- $_ := set $mcpConfig "tool_groups" $toolGroups }}
+{{- end }}
+{{- if hasKey .Values.bifrost.mcp "virtualMcps" }}
+{{- $virtualMcps := list }}
+{{- range .Values.bifrost.mcp.virtualMcps }}
+{{- $vmcp := dict "name" .name }}
+{{- if .id }}{{- $_ := set $vmcp "id" .id }}{{- end }}
+{{- if .endpointSlug }}{{- $_ := set $vmcp "endpoint_slug" .endpointSlug }}{{- end }}
+{{- if hasKey . "enabled" }}{{- $_ := set $vmcp "enabled" .enabled }}{{- end }}
+{{- if .description }}{{- $_ := set $vmcp "description" .description }}{{- end }}
+{{- if .tools }}
+{{- $tools := list }}
+{{- range .tools }}
+{{- $tool := dict }}
+{{- if .mcpClientId }}{{- $_ := set $tool "mcp_client_id" .mcpClientId }}{{- end }}
+{{- if .mcpClientName }}{{- $_ := set $tool "mcp_client_name" .mcpClientName }}{{- end }}
+{{- if .toolNames }}{{- $_ := set $tool "tool_names" .toolNames }}{{- end }}
+{{- $tools = append $tools $tool }}
+{{- end }}
+{{- $_ := set $vmcp "tools" $tools }}
+{{- end }}
+{{- if .virtualKeyIds }}{{- $_ := set $vmcp "virtual_key_ids" .virtualKeyIds }}{{- end }}
+{{- $virtualMcps = append $virtualMcps $vmcp }}
+{{- end }}
+{{- $_ := set $mcpConfig "virtual_mcps" $virtualMcps }}
 {{- end }}
 {{- $_ := set $config "mcp" $mcpConfig }}
 {{- end }}
@@ -2173,60 +2238,65 @@ Call this template at the beginning of deployment/stateful templates
 {{/* Validate SCIM/SSO config when enabled */}}
 {{- $scimValidation := .Values.bifrost.scim }}
 {{- if and $scimValidation $scimValidation.enabled }}
-{{- if eq $scimValidation.provider "okta" }}
-{{- if not $scimValidation.config.issuerUrl }}
+{{- /* bifrost.scim has no chart default, so provider/config may be absent entirely — normalize
+       before comparing/indexing or the template dies on a nil rather than failing with the
+       actionable message below. */ -}}
+{{- $scimProvider := default "" $scimValidation.provider }}
+{{- $scimCfg := default dict $scimValidation.config }}
+{{- if eq $scimProvider "okta" }}
+{{- if not $scimCfg.issuerUrl }}
 {{- fail "ERROR: bifrost.scim.config.issuerUrl is required when SCIM provider is Okta. Example: https://your-domain.okta.com/oauth2/default" }}
 {{- end }}
-{{- if not $scimValidation.config.clientId }}
+{{- if not $scimCfg.clientId }}
 {{- fail "ERROR: bifrost.scim.config.clientId is required when SCIM provider is Okta." }}
 {{- end }}
-{{- if not $scimValidation.config.clientSecret }}
+{{- if not $scimCfg.clientSecret }}
 {{- fail "ERROR: bifrost.scim.config.clientSecret is required when SCIM provider is Okta." }}
 {{- end }}
 {{- end }}
-{{- if eq $scimValidation.provider "entra" }}
-{{- if not $scimValidation.config.tenantId }}
+{{- if eq $scimProvider "entra" }}
+{{- if not $scimCfg.tenantId }}
 {{- fail "ERROR: bifrost.scim.config.tenantId is required when SCIM provider is Entra (Azure AD)." }}
 {{- end }}
-{{- if not $scimValidation.config.clientId }}
+{{- if not $scimCfg.clientId }}
 {{- fail "ERROR: bifrost.scim.config.clientId is required when SCIM provider is Entra (Azure AD)." }}
 {{- end }}
 {{- end }}
-{{- if eq $scimValidation.provider "keycloak" }}
-{{- if not $scimValidation.config.serverUrl }}
+{{- if eq $scimProvider "keycloak" }}
+{{- if not $scimCfg.serverUrl }}
 {{- fail "ERROR: bifrost.scim.config.serverUrl is required when SCIM provider is Keycloak. Example: https://keycloak.company.com (must NOT include /realms/{realm})." }}
 {{- end }}
-{{- if not $scimValidation.config.realm }}
+{{- if not $scimCfg.realm }}
 {{- fail "ERROR: bifrost.scim.config.realm is required when SCIM provider is Keycloak." }}
 {{- end }}
-{{- if not $scimValidation.config.clientId }}
+{{- if not $scimCfg.clientId }}
 {{- fail "ERROR: bifrost.scim.config.clientId is required when SCIM provider is Keycloak." }}
 {{- end }}
-{{- if not $scimValidation.config.clientSecret }}
+{{- if not $scimCfg.clientSecret }}
 {{- fail "ERROR: bifrost.scim.config.clientSecret is required when SCIM provider is Keycloak." }}
 {{- end }}
 {{- end }}
-{{- if eq $scimValidation.provider "zitadel" }}
-{{- if not $scimValidation.config.domain }}
+{{- if eq $scimProvider "zitadel" }}
+{{- if not $scimCfg.domain }}
 {{- fail "ERROR: bifrost.scim.config.domain is required when SCIM provider is Zitadel. Example: my-instance.zitadel.cloud (no scheme)." }}
 {{- end }}
-{{- if not $scimValidation.config.clientId }}
+{{- if not $scimCfg.clientId }}
 {{- fail "ERROR: bifrost.scim.config.clientId is required when SCIM provider is Zitadel." }}
 {{- end }}
 {{- end }}
-{{- if eq $scimValidation.provider "google" }}
-{{- if not $scimValidation.config.domain }}
+{{- if eq $scimProvider "google" }}
+{{- if not $scimCfg.domain }}
 {{- fail "ERROR: bifrost.scim.config.domain is required when SCIM provider is Google Workspace. Example: company.com" }}
 {{- end }}
-{{- if not $scimValidation.config.clientId }}
+{{- if not $scimCfg.clientId }}
 {{- fail "ERROR: bifrost.scim.config.clientId is required when SCIM provider is Google Workspace." }}
 {{- end }}
 {{- end }}
-{{- if eq $scimValidation.provider "generic" }}
-{{- if not $scimValidation.config.issuerUrl }}
+{{- if eq $scimProvider "generic" }}
+{{- if not $scimCfg.issuerUrl }}
 {{- fail "ERROR: bifrost.scim.config.issuerUrl is required when SCIM provider is a generic OIDC provider. Example: https://idp.company.com" }}
 {{- end }}
-{{- if not $scimValidation.config.clientId }}
+{{- if not $scimCfg.clientId }}
 {{- fail "ERROR: bifrost.scim.config.clientId is required when SCIM provider is a generic OIDC provider." }}
 {{- end }}
 {{- end }}
@@ -2480,11 +2550,21 @@ Call this template at the beginning of deployment/stateful templates
 {{- end }}
 {{- if .Values.bifrost.mcp.toolGroups }}
 {{- range $idx, $group := .Values.bifrost.mcp.toolGroups }}
-{{- if not $group.name }}
+{{- if not (trim (default "" $group.name)) }}
 {{- fail (printf "ERROR: bifrost.mcp.toolGroups[%d].name is required." $idx) }}
 {{- end }}
 {{- if not $group.tools }}
 {{- fail (printf "ERROR: bifrost.mcp.toolGroups[%d].tools is required for group '%s'." $idx $group.name) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if .Values.bifrost.mcp.virtualMcps }}
+{{- range $idx, $vmcp := .Values.bifrost.mcp.virtualMcps }}
+{{- if not (trim (default "" $vmcp.name)) }}
+{{- fail (printf "ERROR: bifrost.mcp.virtualMcps[%d].name is required." $idx) }}
+{{- end }}
+{{- if not $vmcp.tools }}
+{{- fail (printf "ERROR: bifrost.mcp.virtualMcps[%d].tools is required for Virtual MCP '%s'." $idx $vmcp.name) }}
 {{- end }}
 {{- end }}
 {{- end }}

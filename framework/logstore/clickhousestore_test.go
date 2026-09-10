@@ -497,6 +497,11 @@ func TestClickHouseSearchAndStats(t *testing.T) {
 	models, err := store.GetDistinctModels(ctx, 10, "")
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{"gpt-4o", "claude-sonnet-4-5"}, models)
+
+	// ClickHouse LIKE is case-sensitive; the filterdata search must not be.
+	upper, err := store.GetDistinctModels(ctx, 10, "GPT")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"gpt-4o"}, upper)
 }
 
 func TestClickHouseDeleteLogs(t *testing.T) {

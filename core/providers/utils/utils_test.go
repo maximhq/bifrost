@@ -827,8 +827,8 @@ func TestDrainNonSSEStreamReader_SSEWithoutContentTypeStillReadable(t *testing.T
 	defer fasthttp.ReleaseResponse(resp)
 
 	body := []byte("event: response.created\n\ndata: {\"type\":\"response.completed\"}\n\n")
-	reader, drained := DrainNonSSEStreamReader(resp, bytes.NewReader(body))
-	if drained {
+	reader, nonSSE := DrainNonSSEStreamReader(resp, bytes.NewReader(body))
+	if nonSSE != nil {
 		t.Fatal("expected SSE-looking response without content type to remain readable")
 	}
 
@@ -853,8 +853,8 @@ func TestDrainNonSSEStreamReader_GzipSSEWithoutContentTypeStillReadable(t *testi
 	decompressed, releaseGzip := DecompressStreamBody(resp)
 	defer releaseGzip()
 
-	reader, drained := DrainNonSSEStreamReader(resp, decompressed)
-	if drained {
+	reader, nonSSE := DrainNonSSEStreamReader(resp, decompressed)
+	if nonSSE != nil {
 		t.Fatal("expected decompressed SSE-looking response without content type to remain readable")
 	}
 
@@ -872,8 +872,8 @@ func TestDrainNonSSEStreamReader_JSONWithoutContentTypeDrains(t *testing.T) {
 	defer fasthttp.ReleaseResponse(resp)
 
 	body := []byte(`{"error":"not stream"}`)
-	reader, drained := DrainNonSSEStreamReader(resp, bytes.NewReader(body))
-	if !drained {
+	reader, nonSSE := DrainNonSSEStreamReader(resp, bytes.NewReader(body))
+	if nonSSE == nil {
 		t.Fatal("expected JSON response without content type to be drained")
 	}
 	if reader != nil {
@@ -881,17 +881,23 @@ func TestDrainNonSSEStreamReader_JSONWithoutContentTypeDrains(t *testing.T) {
 	}
 }
 
-func TestDrainNonSSEStreamReader_UppercaseSSEPrefixDrains(t *testing.T) {
+func TestDrainNonSSEStreamReader_UppercaseSSEPrefixIsReadable(t *testing.T) {
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseResponse(resp)
 
+	// Case folding was added deliberately: an upstream that capitalises its field
+	// names still sends usable SSE, and discarding it lost a working stream.
 	body := []byte("DATA: {\"type\":\"response.completed\"}\n\n")
-	reader, drained := DrainNonSSEStreamReader(resp, bytes.NewReader(body))
-	if !drained {
-		t.Fatal("expected uppercase SSE-like prefix to be treated as non-SSE")
+	reader, nonSSE := DrainNonSSEStreamReader(resp, bytes.NewReader(body))
+	if nonSSE != nil {
+		t.Fatalf("expected uppercase SSE prefix to remain readable, drained as %v", nonSSE.Kind)
 	}
-	if reader != nil {
-		t.Fatal("expected drained response to return nil reader")
+	remaining, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("failed to read body: %v", err)
+	}
+	if string(remaining) != string(body) {
+		t.Fatalf("expected body %q, got %q", body, remaining)
 	}
 }
 
@@ -900,8 +906,8 @@ func TestDrainNonSSEStreamReader_ShortReadSSEPrefix(t *testing.T) {
 	defer fasthttp.ReleaseResponse(resp)
 
 	body := []byte("event: response.created\n\ndata: {}\n\n")
-	reader, drained := DrainNonSSEStreamReader(resp, &shortReadReader{data: body, chunkSize: 3})
-	if drained {
+	reader, nonSSE := DrainNonSSEStreamReader(resp, &shortReadReader{data: body, chunkSize: 3})
+	if nonSSE != nil {
 		t.Fatal("expected SSE stream with short-read prefix to remain readable")
 	}
 
@@ -911,6 +917,73 @@ func TestDrainNonSSEStreamReader_ShortReadSSEPrefix(t *testing.T) {
 	}
 	if string(remaining) != string(body) {
 		t.Fatalf("expected body %q, got %q", body, remaining)
+	}
+}
+
+// TestDrainNonSSEStreamReader_TrimmableOnlyFirstReadIsStillSSE covers an
+// upstream whose first read carries nothing but a UTF-8 BOM or leading
+// horizontal whitespace. hasSSEPrefix only inspects what Peek(1) happened to
+// buffer, so trimSSELeading emptied that window and the stream was written off
+// as non-SSE - draining a perfectly valid SSE body and reporting
+// StreamBodyNonSSE.
+func TestDrainNonSSEStreamReader_TrimmableOnlyFirstReadIsStillSSE(t *testing.T) {
+	tests := []struct {
+		name string
+		body []byte
+		// chunkSize 3 makes the first Read deliver exactly the trimmable bytes
+		// and nothing else, which is what an upstream flushing the BOM
+		// separately from the first field name looks like on the wire.
+		// chunkSize 1 goes further and splits the BOM itself: trimSSELeading
+		// cannot strip a 3-byte prefix it has only seen one byte of, so the
+		// window is neither empty nor conclusive and a single extra Peek is not
+		// enough to resolve it.
+		chunkSize int
+	}{
+		{
+			name:      "bom alone in the first read",
+			body:      append([]byte{0xEF, 0xBB, 0xBF}, []byte("data: {\"id\":\"1\"}\n\n")...),
+			chunkSize: 3,
+		},
+		{
+			name:      "whitespace alone in the first read",
+			body:      []byte("   data: {\"id\":\"1\"}\n\n"),
+			chunkSize: 3,
+		},
+		{
+			name:      "bom fragmented one byte at a time",
+			body:      append([]byte{0xEF, 0xBB, 0xBF}, []byte("data: {\"id\":\"1\"}\n\n")...),
+			chunkSize: 1,
+		},
+		{
+			name:      "bom then whitespace fragmented one byte at a time",
+			body:      append([]byte{0xEF, 0xBB, 0xBF}, []byte("  data: {\"id\":\"1\"}\n\n")...),
+			chunkSize: 1,
+		},
+		{
+			name:      "whitespace fragmented one byte at a time",
+			body:      []byte("   data: {\"id\":\"1\"}\n\n"),
+			chunkSize: 1,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := fasthttp.AcquireResponse()
+			defer fasthttp.ReleaseResponse(resp)
+
+			reader, nonSSE := DrainNonSSEStreamReader(resp, &shortReadReader{data: tc.body, chunkSize: tc.chunkSize})
+			if nonSSE != nil {
+				t.Fatalf("expected a readable SSE stream, got non-SSE verdict %v with sample %q", nonSSE.Kind, nonSSE.Sample)
+			}
+
+			remaining, err := io.ReadAll(reader)
+			if err != nil {
+				t.Fatalf("failed to read after the trimmable-prefix guard: %v", err)
+			}
+			if string(remaining) != string(tc.body) {
+				t.Fatalf("expected body %q, got %q", tc.body, remaining)
+			}
+		})
 	}
 }
 
@@ -942,11 +1015,11 @@ func TestDrainNonSSEStreamReader_TinyOpenSSEPrefixReturnsPromptly(t *testing.T) 
 				drained bool
 			}, 1)
 			go func() {
-				reader, drained := DrainNonSSEStreamReader(resp, pr)
+				reader, nonSSE := DrainNonSSEStreamReader(resp, pr)
 				result <- struct {
 					reader  io.Reader
 					drained bool
-				}{reader: reader, drained: drained}
+				}{reader: reader, drained: nonSSE != nil}
 			}()
 
 			var got struct {
@@ -1014,11 +1087,11 @@ func TestDrainNonSSEStreamReader_FragmentedFieldPrefixReturnsPromptly(t *testing
 				drained bool
 			}, 1)
 			go func() {
-				reader, drained := DrainNonSSEStreamReader(resp, pr)
+				reader, nonSSE := DrainNonSSEStreamReader(resp, pr)
 				result <- struct {
 					reader  io.Reader
 					drained bool
-				}{reader: reader, drained: drained}
+				}{reader: reader, drained: nonSSE != nil}
 			}()
 
 			var got struct {
@@ -1124,8 +1197,8 @@ func TestDrainNonSSEStreamReader_CodexNoContentType(t *testing.T) {
 	reader, releaseGzip := DecompressStreamBody(resp)
 	defer releaseGzip()
 
-	reader, drained := DrainNonSSEStreamReader(resp, reader)
-	if drained {
+	reader, nonSSE := DrainNonSSEStreamReader(resp, reader)
+	if nonSSE != nil {
 		t.Fatal("SSE body without Content-Type was drained — reproduces the original Codex hang")
 	}
 
@@ -2233,9 +2306,37 @@ func TestProviderSendsDoneMarker(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(string(tt.provider), func(t *testing.T) {
-			if got := ProviderSendsDoneMarker(tt.provider); got != tt.want {
+			if got := ProviderSendsDoneMarker(nil, tt.provider); got != tt.want {
 				t.Errorf("ProviderSendsDoneMarker(%s) = %v, want %v", tt.provider, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestProviderSendsDoneMarkerCustomProviderOptIn covers custom_provider_config.does_not_send_done_marker,
+// which core stamps on the context per attempt. An OpenAI-compatible upstream that ends its stream on
+// finish_reason without [DONE] otherwise keeps the read loop open for as long as it sends SSE heartbeats,
+// since heartbeat bytes reset the idle timeout without making semantic progress.
+func TestProviderSendsDoneMarkerCustomProviderOptIn(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	if !ProviderSendsDoneMarker(ctx, schemas.OpenAI) {
+		t.Fatal("without the opt-in, an OpenAI-based custom provider must still wait for [DONE]")
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyDoesNotSendDoneMarker, true)
+	if ProviderSendsDoneMarker(ctx, schemas.OpenAI) {
+		t.Error("opt-in must end the stream on finish_reason instead of waiting for [DONE]")
+	}
+	// The opt-in only ever ends the loop earlier; it can never make a provider that
+	// already terminates on finish_reason start waiting for a marker it never sends.
+	if ProviderSendsDoneMarker(ctx, schemas.Cerebras) {
+		t.Error("opt-in must not flip a provider that never sends [DONE] back to waiting for one")
+	}
+
+	// A fallback attempt onto a provider without the opt-in clears the key.
+	ctx.ClearValue(schemas.BifrostContextKeyDoesNotSendDoneMarker)
+	if !ProviderSendsDoneMarker(ctx, schemas.OpenAI) {
+		t.Error("cleared opt-in must fall back to the built-in provider default")
 	}
 }

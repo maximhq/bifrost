@@ -436,7 +436,7 @@ func (h *OAuth2IssuanceHandler) handleTokenRefresh(ctx *fasthttp.RequestCtx) {
 
 	// VK identity cutoff (refresh side): when virtual-key identity has been
 	// disabled, vk-mode grants must not refresh. Live /mcp requests are already
-	// rejected at request time (see getMCPServerForRequest); denying refresh here
+	// rejected at request time (see MCPServerHandler.authenticate); denying refresh here
 	// closes the second path so a disabled grant can neither be used nor renewed.
 	// Gated on user identity being available, identical to the consent flow's
 	// availableModes — so this can never fire where vk is still the offered path.

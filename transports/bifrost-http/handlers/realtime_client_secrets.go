@@ -182,12 +182,13 @@ func (h *RealtimeClientSecretsHandler) evaluateMintingGovernance(
 		return nil
 	}
 
-	_, bifrostErr := governancePlugin.EvaluateGovernanceRequest(bifrostCtx, &governance.EvaluationRequest{
-		VirtualKey: bifrost.GetStringFromContext(bifrostCtx, schemas.BifrostContextKeyVirtualKey),
-		Provider:   providerKey,
-		Model:      model,
-		UserID:     bifrost.GetStringFromContext(bifrostCtx, schemas.BifrostContextKeyUserID),
-	}, schemas.RealtimeRequest)
+	// The credential and the user the request was made as travel on the context, which is where
+	// evaluation reads them from, so naming them here would only be a second copy to keep in step.
+	_, bifrostErr := governancePlugin.Evaluate(bifrostCtx, &governance.EvaluationRequest{
+		RequestType: schemas.RealtimeRequest,
+		Provider:    providerKey,
+		Model:       model,
+	})
 	return bifrostErr
 }
 
@@ -390,16 +391,12 @@ func cacheRealtimeEphemeralKeyMapping(kv schemas.KVStore, body []byte, keyID str
 		return
 	}
 
-	payload, err := json.Marshal(realtimeEphemeralKeyMapping{
+	mapping := realtimeEphemeralKeyMapping{
 		KeyID:      strings.TrimSpace(keyID),
 		VirtualKey: strings.TrimSpace(virtualKey),
-	})
-	if err != nil {
-		logger.Warn("failed to encode realtime ephemeral key mapping for key_id=%s: %v", keyID, err)
-		return
 	}
 
-	if err := kv.SetWithTTL(buildRealtimeEphemeralKeyMappingKey(token), payload, ttl); err != nil {
+	if err := kv.SetWithTTL(buildRealtimeEphemeralKeyMappingKey(token), mapping, ttl); err != nil {
 		logger.Warn("failed to cache realtime ephemeral key mapping for key_id=%s: %v", keyID, err)
 	}
 }

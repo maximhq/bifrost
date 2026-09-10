@@ -27,7 +27,7 @@ export default function MCPServersPage() {
 			states: parseAsArrayOf(parseAsString).withDefault([]),
 			code_mode: parseAsArrayOf(parseAsString).withDefault([]),
 			status: parseAsArrayOf(parseAsString).withDefault([]),
-			only_all_vks: parseAsBoolean.withDefault(false),
+			only_allowed_by_default: parseAsBoolean.withDefault(false),
 			virtual_keys: parseAsArrayOf(parseAsString).withDefault([]),
 			offset: parseAsInteger.withDefault(0),
 		},
@@ -42,7 +42,7 @@ export default function MCPServersPage() {
 			states: urlState.states,
 			code_mode: urlState.code_mode,
 			status: urlState.status,
-			only_all_vks: urlState.only_all_vks,
+			only_allowed_by_default: urlState.only_allowed_by_default,
 			virtual_keys: urlState.virtual_keys,
 		}),
 		[
@@ -51,7 +51,7 @@ export default function MCPServersPage() {
 			urlState.states,
 			urlState.code_mode,
 			urlState.status,
-			urlState.only_all_vks,
+			urlState.only_allowed_by_default,
 			urlState.virtual_keys,
 		],
 	);
@@ -64,7 +64,7 @@ export default function MCPServersPage() {
 				states: newFilters.states,
 				code_mode: newFilters.code_mode,
 				status: newFilters.status,
-				only_all_vks: newFilters.only_all_vks,
+				only_allowed_by_default: newFilters.only_allowed_by_default,
 				virtual_keys: newFilters.virtual_keys,
 				offset: 0,
 			});
@@ -78,7 +78,7 @@ export default function MCPServersPage() {
 		filters.states.length > 0 ||
 		filters.code_mode.length > 0 ||
 		filters.status.length > 0 ||
-		filters.only_all_vks ||
+		filters.only_allowed_by_default ||
 		filters.virtual_keys.length > 0;
 
 	const {
@@ -96,7 +96,7 @@ export default function MCPServersPage() {
 			auth_type: filters.auth_types.length > 0 ? filters.auth_types.join(",") : undefined,
 			state: filters.states.length > 0 ? filters.states.join(",") : undefined,
 			virtual_keys: filters.virtual_keys.length > 0 ? filters.virtual_keys.join(",") : undefined,
-			all_virtual_keys: filters.only_all_vks || undefined,
+			allowed_by_default: filters.only_allowed_by_default || undefined,
 			code_mode: resolveBooleanFacet(filters.code_mode),
 			disabled: resolveBooleanFacet(filters.status),
 		},

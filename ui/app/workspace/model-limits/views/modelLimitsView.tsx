@@ -1,6 +1,7 @@
 import FullPageLoader from "@/components/fullPageLoader";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { getErrorMessage, useGetModelConfigsQuery, useGetProvidersQuery } from "@/lib/store";
+import { getModelLimitScopeFilterOptions } from "@/lib/registries/modelLimitScopes";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -19,6 +20,10 @@ export default function ModelLimitsView() {
 
 	const debouncedSearch = useDebouncedValue(search, 300);
 
+	// One filter option can cover several scope values, so send the whole group as
+	// a comma-separated list rather than the option's own value.
+	const scopeQueryValue = scope ? (getModelLimitScopeFilterOptions().find((o) => o.value === scope)?.scopes ?? [scope]).join(",") : "";
+
 	// Reset to first page when any filter changes
 	useEffect(() => {
 		setOffset(0);
@@ -35,7 +40,9 @@ export default function ModelLimitsView() {
 			limit: PAGE_SIZE,
 			offset,
 			search: debouncedSearch || undefined,
-			scope: scope || undefined,
+			// The filter option's value names one scope, but it may cover several (an
+			// enterprise access-profile row is still a user's limit) — send them all.
+			scope: scopeQueryValue || undefined,
 			provider: provider || undefined,
 		},
 		{

@@ -77,17 +77,18 @@ virtual-keys:
           default: false
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Successful response
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/governance.yaml#/ListVirtualKeysResponse'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/governance.yaml#/ListVirtualKeysResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
   post:
     operationId: createVirtualKey
@@ -100,20 +101,21 @@ virtual-keys:
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/governance.yaml#/CreateVirtualKeyRequest'
+            $ref: "../../schemas/management/governance.yaml#/CreateVirtualKeyRequest"
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Virtual key created successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/governance.yaml#/VirtualKeyResponse'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/governance.yaml#/VirtualKeyResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 virtual-keys-quota:
   get:
@@ -125,22 +127,31 @@ virtual-keys-quota:
       Each budget also carries the actual per-model usage for its current cycle.
       This is a self-service endpoint - no admin authentication required.
       The virtual key value itself (provided via header) is the credential.
+      During an active rotation grace window (client vk_rotation_cooldown), the
+      previous key value also authenticates until previous_value_expires_at.
+      An expired virtual key is rejected with 403; an inactive one still returns
+      its quota with is_active false.
     tags:
       - Governance
-    # Self-service: the virtual key value is the credential, accepted via the
-    # x-bf-vk / Authorization: Bearer / x-api-key headers. Not admin-protected.
+    # Self-service: the virtual key value is the credential. Registered without the
+    # admin middleware chain, so admin/session tokens and management API keys do NOT
+    # authenticate here - only a virtual key does. x-bf-vk is taken verbatim; the four
+    # fallback headers each require the sk-bf- prefix (see
+    # plugins/governance/utils.go ParseVirtualKeyFromFastHTTPRequest).
     security:
       - VirtualKeyAuth: []
-      - BearerAuth: []
-      - ApiKeyAuth: []
+      - VirtualKeyBearerAuth: []
+      - VirtualKeyApiKeyAuth: []
+      - VirtualKeyGoogleAuth: []
+      - VirtualKeyAzureAuth: []
     responses:
-      '200':
+      "200":
         description: Successful response
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/governance.yaml#/VirtualKeyQuotaResponse'
-      '401':
+              $ref: "../../schemas/management/governance.yaml#/VirtualKeyQuotaResponse"
+      "401":
         description: Missing or invalid virtual key
         content:
           application/json:
@@ -149,8 +160,17 @@ virtual-keys-quota:
               properties:
                 error:
                   type: string
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      "403":
+        description: Virtual key has expired
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                error:
+                  type: string
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 virtual-keys-by-id:
   get:
@@ -174,8 +194,9 @@ virtual-keys-by-id:
           default: false
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Successful response
         content:
           application/json:
@@ -185,15 +206,15 @@ virtual-keys-by-id:
                 - virtual_key
               properties:
                 virtual_key:
-                  $ref: '../../schemas/management/governance.yaml#/VirtualKey'
-      '404':
+                  $ref: "../../schemas/management/governance.yaml#/VirtualKey"
+      "404":
         description: Virtual key not found
         content:
           application/json:
             schema:
-              $ref: '../../schemas/inference/common.yaml#/BifrostError'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
   put:
     operationId: updateVirtualKey
@@ -213,26 +234,27 @@ virtual-keys-by-id:
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/governance.yaml#/UpdateVirtualKeyRequest'
+            $ref: "../../schemas/management/governance.yaml#/UpdateVirtualKeyRequest"
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Virtual key updated successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/governance.yaml#/VirtualKeyResponse'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '404':
+              $ref: "../../schemas/management/governance.yaml#/VirtualKeyResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "404":
         description: Virtual key not found
         content:
           application/json:
             schema:
-              $ref: '../../schemas/inference/common.yaml#/BifrostError'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
   delete:
     operationId: deleteVirtualKey
@@ -249,21 +271,65 @@ virtual-keys-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Virtual key deleted successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/MessageResponse'
-      '404':
+              $ref: "../../schemas/management/common.yaml#/MessageResponse"
+      "404":
         description: Virtual key not found
         content:
           application/json:
             schema:
-              $ref: '../../schemas/inference/common.yaml#/BifrostError'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
+
+virtual-keys-rotate-by-id:
+  post:
+    operationId: rotateVirtualKey
+    summary: Rotate virtual key
+    description: |
+      Generates a new credential value for the virtual key while leaving its configuration,
+      assignments, budgets, and rate limits unchanged. On the node handling the request, the
+      previous credential value is invalidated before a successful response is returned.
+
+      In a clustered deployment, peer invalidation is asynchronous. Until each peer processes the
+      cluster update and reloads the virtual key, that peer may continue to accept the previous
+      value. There is no fixed upper bound when a peer is unavailable, so wait for cluster
+      convergence before treating the previous credential as revoked cluster-wide.
+
+      The new credential is returned in `virtual_key.value`. Store it securely and update clients
+      that use the previous value.
+    tags:
+      - Governance
+    parameters:
+      - name: vk_id
+        in: path
+        required: true
+        description: Virtual key ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      "200":
+        description: Virtual key rotated successfully
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/governance.yaml#/VirtualKeyResponse"
+      "404":
+        description: Virtual key not found
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 virtual-keys-budget-override:
   put:
@@ -298,26 +364,27 @@ virtual-keys-budget-override:
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/governance.yaml#/BudgetOverrideRequest'
+            $ref: "../../schemas/management/governance.yaml#/BudgetOverrideRequest"
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Budget override applied successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/governance.yaml#/BudgetOverrideResponse'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '404':
+              $ref: "../../schemas/management/governance.yaml#/BudgetOverrideResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "404":
         description: Virtual key or budget not found
         content:
           application/json:
             schema:
-              $ref: '../../schemas/inference/common.yaml#/BifrostError'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
   delete:
     operationId: deleteVirtualKeyBudgetOverride
@@ -343,21 +410,138 @@ virtual-keys-budget-override:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Budget override removed successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/governance.yaml#/BudgetOverrideResponse'
-      '404':
+              $ref: "../../schemas/management/governance.yaml#/BudgetOverrideResponse"
+      "404":
         description: Virtual key or budget not found
         content:
           application/json:
             schema:
-              $ref: '../../schemas/inference/common.yaml#/BifrostError'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
+
+virtual-keys-rotate:
+  post:
+    operationId: bulkRotateVirtualKeys
+    summary: Rotate multiple virtual keys
+    description: Generates a new value for each listed virtual key. When the client vk_rotation_cooldown setting is non-zero, each retired value keeps authenticating until previous_value_expires_at; otherwise it stops working immediately.
+    tags:
+      - Governance
+    security:
+      - ManagementBearerAuth: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+              - ids
+            properties:
+              ids:
+                type: array
+                minItems: 1
+                description: IDs of the virtual keys to rotate (duplicates are ignored)
+                items:
+                  type: string
+    responses:
+      "200":
+        description: Virtual keys rotated (partial failures reported per ID in errors)
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - message
+                - virtual_keys
+              properties:
+                message:
+                  type: string
+                virtual_keys:
+                  type: array
+                  items:
+                    $ref: "../../schemas/management/governance.yaml#/VirtualKey"
+                errors:
+                  type: object
+                  description: Map of virtual key ID to failure reason for keys that could not be rotated
+                  additionalProperties:
+                    type: string
+      "400":
+        description: Invalid request (empty or missing IDs)
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+      "500":
+        description: All requested rotations failed; per-ID reasons are reported in errors
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - message
+                - virtual_keys
+                - errors
+              properties:
+                message:
+                  type: string
+                virtual_keys:
+                  type: array
+                  description: Always empty when every rotation failed
+                  items:
+                    $ref: "../../schemas/management/governance.yaml#/VirtualKey"
+                errors:
+                  type: object
+                  description: Map of virtual key ID to failure reason
+                  additionalProperties:
+                    type: string
+
+virtual-keys-by-id-rotate:
+  post:
+    operationId: rotateVirtualKey
+    summary: Rotate virtual key
+    description: Generates a new value for the virtual key. When the client vk_rotation_cooldown setting is non-zero, the retired value keeps authenticating until previous_value_expires_at; otherwise it stops working immediately.
+    tags:
+      - Governance
+    parameters:
+      - name: vk_id
+        in: path
+        required: true
+        description: Virtual key ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      "200":
+        description: Virtual key rotated successfully
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - message
+                - virtual_key
+              properties:
+                message:
+                  type: string
+                virtual_key:
+                  $ref: "../../schemas/management/governance.yaml#/VirtualKey"
+      "404":
+        description: Virtual key not found
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 # Teams CRUD
 
@@ -382,15 +566,16 @@ teams:
           default: false
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Successful response
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/governance.yaml#/ListTeamsResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/governance.yaml#/ListTeamsResponse"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
   post:
     operationId: createTeam
@@ -403,20 +588,21 @@ teams:
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/governance.yaml#/CreateTeamRequest'
+            $ref: "../../schemas/management/governance.yaml#/CreateTeamRequest"
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Team created successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/governance.yaml#/TeamResponse'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/governance.yaml#/TeamResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 teams-by-id:
   get:
@@ -440,8 +626,9 @@ teams-by-id:
           default: false
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Successful response
         content:
           application/json:
@@ -449,15 +636,15 @@ teams-by-id:
               type: object
               properties:
                 team:
-                  $ref: '../../schemas/management/governance.yaml#/Team'
-      '404':
+                  $ref: "../../schemas/management/governance.yaml#/Team"
+      "404":
         description: Team not found
         content:
           application/json:
             schema:
-              $ref: '../../schemas/inference/common.yaml#/BifrostError'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
   put:
     operationId: updateTeam
@@ -477,26 +664,27 @@ teams-by-id:
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/governance.yaml#/UpdateTeamRequest'
+            $ref: "../../schemas/management/governance.yaml#/UpdateTeamRequest"
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Team updated successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/governance.yaml#/TeamResponse'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '404':
+              $ref: "../../schemas/management/governance.yaml#/TeamResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "404":
         description: Team not found
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/common.yaml#/ErrorResponse"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
   delete:
     operationId: deleteTeam
@@ -513,21 +701,22 @@ teams-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Team deleted successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/MessageResponse'
-      '404':
+              $ref: "../../schemas/management/common.yaml#/MessageResponse"
+      "404":
         description: Team not found
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/common.yaml#/ErrorResponse"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 # Customers CRUD
 
@@ -547,15 +736,16 @@ customers:
           default: false
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Successful response
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/governance.yaml#/ListCustomersResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/governance.yaml#/ListCustomersResponse"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
   post:
     operationId: createCustomer
@@ -568,20 +758,21 @@ customers:
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/governance.yaml#/CreateCustomerRequest'
+            $ref: "../../schemas/management/governance.yaml#/CreateCustomerRequest"
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Customer created successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/governance.yaml#/CustomerResponse'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/governance.yaml#/CustomerResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 customers-by-id:
   get:
@@ -605,8 +796,9 @@ customers-by-id:
           default: false
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Successful response
         content:
           application/json:
@@ -614,15 +806,15 @@ customers-by-id:
               type: object
               properties:
                 customer:
-                  $ref: '../../schemas/management/governance.yaml#/Customer'
-      '404':
+                  $ref: "../../schemas/management/governance.yaml#/Customer"
+      "404":
         description: Customer not found
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/common.yaml#/ErrorResponse"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
   put:
     operationId: updateCustomer
@@ -642,26 +834,27 @@ customers-by-id:
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/governance.yaml#/UpdateCustomerRequest'
+            $ref: "../../schemas/management/governance.yaml#/UpdateCustomerRequest"
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Customer updated successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/governance.yaml#/CustomerResponse'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '404':
+              $ref: "../../schemas/management/governance.yaml#/CustomerResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "404":
         description: Customer not found
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/common.yaml#/ErrorResponse"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
   delete:
     operationId: deleteCustomer
@@ -678,21 +871,22 @@ customers-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Customer deleted successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/MessageResponse'
-      '404':
+              $ref: "../../schemas/management/common.yaml#/MessageResponse"
+      "404":
         description: Customer not found
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/common.yaml#/ErrorResponse"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 # Budgets and Rate Limits GET operations
 
@@ -712,15 +906,16 @@ budgets:
           default: false
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Successful response
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/governance.yaml#/ListBudgetsResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/governance.yaml#/ListBudgetsResponse"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 rate-limits:
   get:
@@ -738,15 +933,16 @@ rate-limits:
           default: false
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Successful response
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/governance.yaml#/ListRateLimitsResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/governance.yaml#/ListRateLimitsResponse"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 # Routing Rules CRUD
 
@@ -759,6 +955,7 @@ model-configs:
       - Governance
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     parameters:
       - name: limit
         in: query
@@ -779,10 +976,18 @@ model-configs:
           type: string
       - name: scope
         in: query
-        description: Filter by scope (`global`, `virtual_key`, or `user`; `user` is Enterprise only)
+        description: >-
+          Comma-separated scopes to filter by. `project`, `access_profile` and
+          the legacy `user` are Enterprise only.
         schema:
           type: string
-          enum: [global, virtual_key, user]
+      - name: scope_id
+        in: query
+        description: >-
+          Filter to one scope target, for example a project id. Pair it with
+          `scope`.
+        schema:
+          type: string
       - name: provider
         in: query
         description: Filter by provider name
@@ -795,19 +1000,25 @@ model-configs:
           type: boolean
           default: false
     responses:
-      '200':
+      "200":
         description: Successful response
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/governance.yaml#/ListModelConfigsResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/governance.yaml#/ListModelConfigsResponse"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
   post:
     operationId: createModelConfig
     summary: Create model config
-    description: Creates a new model configuration with budget and rate limit settings.
+    description: |
+      Creates a new model configuration with budget and rate limit settings.
+
+      `scope: "user"` is rejected with 403. It is retired as a creatable scope — per-model
+      budgets for a person are now declared on an access profile and materialize per user as
+      `access_profile`-scoped limits. Existing `user`-scoped rows keep working and stay editable
+      through the update endpoint.
     tags:
       - Governance
     requestBody:
@@ -815,20 +1026,29 @@ model-configs:
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/governance.yaml#/CreateModelConfigRequest'
+            $ref: "../../schemas/management/governance.yaml#/CreateModelConfigRequest"
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Model config created successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/governance.yaml#/ModelConfigResponse'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/governance.yaml#/ModelConfigResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "403":
+        description: |
+          The requested scope cannot be assigned to a new limit. Returned for
+          `scope: "user"`, which is retired in favour of access-profile per-model budgets.
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/common.yaml#/ErrorResponse"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 model-configs-by-id:
   get:
@@ -846,8 +1066,9 @@ model-configs-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Successful response
         content:
           application/json:
@@ -855,15 +1076,15 @@ model-configs-by-id:
               type: object
               properties:
                 model_config:
-                  $ref: '../../schemas/management/governance.yaml#/ModelConfig'
-      '404':
+                  $ref: "../../schemas/management/governance.yaml#/ModelConfig"
+      "404":
         description: Model config not found
         content:
           application/json:
             schema:
-              $ref: '../../schemas/inference/common.yaml#/BifrostError'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
   put:
     operationId: updateModelConfig
@@ -883,26 +1104,27 @@ model-configs-by-id:
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/governance.yaml#/UpdateModelConfigRequest'
+            $ref: "../../schemas/management/governance.yaml#/UpdateModelConfigRequest"
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Model config updated successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/governance.yaml#/ModelConfigResponse'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '404':
+              $ref: "../../schemas/management/governance.yaml#/ModelConfigResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "404":
         description: Model config not found
         content:
           application/json:
             schema:
-              $ref: '../../schemas/inference/common.yaml#/BifrostError'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
   delete:
     operationId: deleteModelConfig
@@ -919,21 +1141,22 @@ model-configs-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Model config deleted successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/MessageResponse'
-      '404':
+              $ref: "../../schemas/management/common.yaml#/MessageResponse"
+      "404":
         description: Model config not found
         content:
           application/json:
             schema:
-              $ref: '../../schemas/inference/common.yaml#/BifrostError'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 # Provider Governance
 
@@ -946,15 +1169,16 @@ provider-governance:
       - Governance
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Successful response
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/governance.yaml#/ListProviderGovernanceResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/governance.yaml#/ListProviderGovernanceResponse"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 provider-governance-by-name:
   put:
@@ -975,26 +1199,27 @@ provider-governance-by-name:
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/governance.yaml#/UpdateProviderGovernanceRequest'
+            $ref: "../../schemas/management/governance.yaml#/UpdateProviderGovernanceRequest"
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Provider governance updated successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/governance.yaml#/ProviderGovernanceResponse'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '404':
+              $ref: "../../schemas/management/governance.yaml#/ProviderGovernanceResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "404":
         description: Provider not found
         content:
           application/json:
             schema:
-              $ref: '../../schemas/inference/common.yaml#/BifrostError'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
   delete:
     operationId: deleteProviderGovernance
@@ -1011,21 +1236,22 @@ provider-governance-by-name:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Provider governance deleted successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/MessageResponse'
-      '404':
+              $ref: "../../schemas/management/common.yaml#/MessageResponse"
+      "404":
         description: Provider not found
         content:
           application/json:
             schema:
-              $ref: '../../schemas/inference/common.yaml#/BifrostError'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 # Pricing Overrides CRUD
 
 pricing-overrides:
@@ -1040,7 +1266,7 @@ pricing-overrides:
         in: query
         description: Filter by scope kind
         schema:
-          $ref: '../../schemas/management/governance.yaml#/PricingOverrideScopeKind'
+          $ref: "../../schemas/management/governance.yaml#/PricingOverrideScopeKind"
       - name: user_id
         in: query
         description: Filter by user ID (for user* scopes)
@@ -1080,15 +1306,16 @@ pricing-overrides:
           minimum: 0
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Successful response
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/governance.yaml#/ListPricingOverridesResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/governance.yaml#/ListPricingOverridesResponse"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
   post:
     operationId: createPricingOverride
@@ -1101,20 +1328,21 @@ pricing-overrides:
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/governance.yaml#/CreatePricingOverrideRequest'
+            $ref: "../../schemas/management/governance.yaml#/CreatePricingOverrideRequest"
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '201':
+      "201":
         description: Pricing override created successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/governance.yaml#/PricingOverrideResponse'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/governance.yaml#/PricingOverrideResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 pricing-overrides-by-id:
   put:
@@ -1135,26 +1363,27 @@ pricing-overrides-by-id:
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/governance.yaml#/UpdatePricingOverrideRequest'
+            $ref: "../../schemas/management/governance.yaml#/UpdatePricingOverrideRequest"
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Pricing override updated successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/governance.yaml#/PricingOverrideResponse'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '404':
+              $ref: "../../schemas/management/governance.yaml#/PricingOverrideResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "404":
         description: Pricing override not found
         content:
           application/json:
             schema:
-              $ref: '../../schemas/inference/common.yaml#/BifrostError'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
   delete:
     operationId: deletePricingOverride
@@ -1171,14 +1400,15 @@ pricing-overrides-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Pricing override deleted successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/MessageResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/common.yaml#/MessageResponse"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 # Complexity Analyzer Config

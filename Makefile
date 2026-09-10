@@ -34,18 +34,17 @@ USE_NODE = NVM_SH="$${NVM_DIR:-$$HOME/.nvm}/nvm.sh"; \
 	[ -s "$$NVM_SH" ] || NVM_SH="$$(brew --prefix nvm 2>/dev/null)/nvm.sh"; \
 	if [ -s "$$NVM_SH" ]; then . "$$NVM_SH" >/dev/null && nvm install >/dev/null 2>&1 && nvm use >/dev/null 2>&1; fi
 
-# Loads secrets into the current recipe shell. Infisical is the default source (Reads
-# USE_INFISICAL env var):
-#   USE_INFISICAL=0|n|N|no|NO|false|FALSE  -> source ./.env instead (explicit opt-out)
-#   anything else (including unset)        -> source secrets from Infisical (`infisical export --path <p>`)
+# Loads secrets into the current recipe shell. Reads USE_INFISICAL env var:
+#   USE_INFISICAL=1|y|Y|yes|YES|true|TRUE  -> source secrets from Infisical (`infisical export --path <p>`)
+#   anything else                          -> source ./.env
 # Honors INFISICAL_PATH (default /local) when sourcing from Infisical.
 # After invoking `$(EXPOSE_ENV);`, all subsequent commands inherit the secrets
 # - no per-command prefix needed.
 # Use as: `$(EXPOSE_ENV); <your command>`
 define EXPOSE_ENV
 	case "$$USE_INFISICAL" in \
-		0|n|N|no|NO|false|FALSE) USE_INFISICAL_RESOLVED=0 ;; \
-		*) USE_INFISICAL_RESOLVED=1 ;; \
+		1|y|Y|yes|YES|true|TRUE) USE_INFISICAL_RESOLVED=1 ;; \
+		*) USE_INFISICAL_RESOLVED=0 ;; \
 	esac; \
 	if [ "$$USE_INFISICAL_RESOLVED" = "1" ]; then \
 		if ! which infisical > /dev/null 2>&1; then \
@@ -68,7 +67,7 @@ define EXPOSE_ENV
 	fi
 endef
 
-.PHONY: all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed run-e2e-api format ui install-newman run-provider-harness-test smoke-provider-harness-test run-cli-harness-test cli-harness-report test-harness-runner-lib test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index install-microsocks socks5-proxy install-tinyproxy http-proxy
+.PHONY: all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed run-e2e-api format ui install-newman run-provider-harness-test smoke-provider-harness-test run-cli-harness-test cli-harness-report test-harness-runner-lib run-video-costing-test list-video-costing-cases test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index install-microsocks socks5-proxy install-tinyproxy http-proxy
 
 all: help
 
@@ -615,7 +614,7 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 		$(ECHO) "$(YELLOW)Attach your debugger to localhost:2345$(NC)"; \
 	fi; \
 	if [ -n "$(PROVIDER)" ]; then \
-		PROVIDER_TEST_NAME=$$($(ECHO) "$(PROVIDER)" | awk '{print toupper(substr($$0,1,1)) tolower(substr($$0,2))}' | sed 's/openai/OpenAI/i; s/openrouter/OpenRouter/i; s/sgl/SGL/i; s/xai/XAI/i; s/vllm/VLLM/i'); \
+		PROVIDER_TEST_NAME=$$($(ECHO) "$(PROVIDER)" | awk '{print toupper(substr($$0,1,1)) tolower(substr($$0,2))}' | sed 's/openai/OpenAI/i; s/openrouter/OpenRouter/i; s/sgl/SGL/i; s/xai/XAI/i; s/vllm/VLLM/i; s/githubcopilot/GithubCopilot/i'); \
 		if [ -n "$(TESTCASE)" ]; then \
 			CLEAN_TESTCASE="$(TESTCASE)"; \
 			CLEAN_TESTCASE=$${CLEAN_TESTCASE#Test$${PROVIDER_TEST_NAME}/}; \
@@ -1886,6 +1885,16 @@ test-harness-runner-lib: ## Run the provider-harness runner unit tests (tests/e2
 	if [ "$$RC" -ne 0 ]; then $(ECHO) "$(RED)harness runner lib tests failed$(NC)"; else $(ECHO) "$(GREEN)harness runner lib tests passed$(NC)"; fi; \
 	exit $$RC
 
+# Video bills at SETTLEMENT, minutes after the POST returns, so neither newman
+# (no way to wait for an out-of-band row) nor a Go test (no provider) can check
+# the figure. This runner does the whole submit -> poll -> settle -> assert loop.
+run-video-costing-test: ## Verify async video jobs bill correctly against real providers (Usage: make run-video-costing-test ARGS="--group Runware --seed-pricing"). Needs a running Bifrost with video provider keys.
+	@$(ECHO) "$(GREEN)Running video costing checks...$(NC)"
+	@$(USE_NODE); cd tests/e2e/api && node runners/run-video-costing.mjs $(ARGS)
+
+list-video-costing-cases: ## List the video costing cases and which checklist line each covers. No network, no Bifrost.
+	@$(USE_NODE); cd tests/e2e/api && node runners/run-video-costing.mjs --list
+
 # Named target rather than documentation telling people to type SMOKE=1: a smoke
 # set nobody can invoke in one word does not get used before a release.
 smoke-provider-harness-test: ## Run the curated ~100-request provider-harness smoke set (tests/e2e/api/collections/smoke-manifest.json). Same flags as run-provider-harness-test; equivalent to SMOKE=1.
@@ -1899,7 +1908,7 @@ NEWMAN_HTMLEXTRA_VERSION ?= 1.23.1
 # Every provider fork the harness knows how to run. Also the provider set the
 # status table lists, including the deferred cache-parity pass, so it lives in
 # one place rather than being restated per newman invocation.
-HARNESS_PROVIDERS := openai anthropic bedrock gemini vertex azure passthrough openrouter
+HARNESS_PROVIDERS := openai anthropic bedrock gemini vertex azure passthrough openrouter huggingface
 
 # Second parallelism axis. Each provider fork is sharded again by modality class so the run is not
 # bound by one provider's whole sequential item list: openai alone is ~1264 requests, and its
@@ -1970,14 +1979,14 @@ install-newman: ## Install newman + htmlextra reporter if not already installed 
 	@$(USE_NODE); npm list -g newman-reporter-htmlextra > /dev/null 2>&1 || ([ -n "$$CI" ] || $(ECHO) "$(YELLOW)Installing newman-reporter-htmlextra@$(NEWMAN_HTMLEXTRA_VERSION)...$(NC)"; npm install -g newman-reporter-htmlextra@$(NEWMAN_HTMLEXTRA_VERSION))
 	@[ -n "$$CI" ] || $(ECHO) "$(GREEN)Newman + htmlextra are ready$(NC)"
 
-run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost provider-harness Postman collection. HELP=1 prints full parameter docs. Filter via PROVIDER=openai|anthropic|bedrock|gemini|vertex|azure|passthrough|openrouter, FEATURE="<kw>" or FEATURE="<kw1>,<kw2>" (AND across substrings; matches request name/URL/body), RERUN_FAILED=1 (re-run only items that failed last run). INCLUDE_PREVIEW=1 to run [PREVIEW]-tagged account/region-scoped cases. SKIP_STREAM_CANCEL=1 skips stream cancellation probes. USE_INFISICAL=1 to source from Infisical (Usage: make run-provider-harness-test [HELP=1] [PROVIDER=anthropic] [FEATURE="web search"] [FEATURE="cross-cut,structured output"] [RERUN_FAILED=1] [INCLUDE_PREVIEW=1] [BASE_URL=...] [FOLDER="..."] [ENV_FILE=...] [VIEWER_PORT=8090] [CI=1])
+run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost provider-harness Postman collection. HELP=1 prints full parameter docs. Filter via PROVIDER=openai|anthropic|bedrock|gemini|vertex|azure|passthrough|openrouter|huggingface, FEATURE="<kw>" or FEATURE="<kw1>,<kw2>" (AND across substrings; matches request name/URL/body), RERUN_FAILED=1 (re-run only items that failed last run). INCLUDE_PREVIEW=1 to run [PREVIEW]-tagged account/region-scoped cases. SKIP_STREAM_CANCEL=1 skips stream cancellation probes. USE_INFISICAL=1 to source from Infisical (Usage: make run-provider-harness-test [HELP=1] [PROVIDER=anthropic] [FEATURE="web search"] [FEATURE="cross-cut,structured output"] [RERUN_FAILED=1] [INCLUDE_PREVIEW=1] [BASE_URL=...] [FOLDER="..."] [ENV_FILE=...] [VIEWER_PORT=8090] [CI=1])
 	@if [ -n "$(HELP)" ]; then \
 		printf '\n%s\n' "$(CYAN)run-provider-harness-test - Bifrost provider harness runner$(NC)"; \
 		printf '%s\n\n' "Runs the Bifrost provider-harness Postman collection through newman, with optional filtering."; \
 		printf '%s\n\n' "Includes §8 Criss-Cross: endpoint-shape × model-provider × modality matrix (chat, streaming, embeddings, audio, image gen, tools, vision, JSON, reasoning)."; \
 		printf '%s\n' "$(YELLOW)PARAMETERS$(NC)"; \
 		printf '  %-18s %s\n' "HELP=1"          "Print this help and exit (no Bifrost or network activity)."; \
-		printf '  %-18s %s\n' "PROVIDER=<name>" "Filter requests by provider. One of: openai, anthropic, bedrock, gemini, vertex, azure, passthrough, openrouter."; \
+		printf '  %-18s %s\n' "PROVIDER=<name>" "Filter requests by provider. One of: $(HARNESS_PROVIDERS)."; \
 		printf '  %-18s %s\n' ""                "  Matches via PROVIDER_KEYWORDS in tests/e2e/api/runners/filter-collection.mjs (loose name/body substring)."; \
 		printf '  %-18s %s\n' "FEATURE=\"<kw>\""  "Filter by case-insensitive keyword(s) against the full request JSON (name + URL + body + ancestor folder names)."; \
 		printf '  %-18s %s\n' ""                "  Single: FEATURE=\"web search\". Multi-keyword AND (comma-separated): FEATURE=\"cross-cut,structured output\"."; \
@@ -2001,12 +2010,12 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' "INCLUDE_PREVIEW=1" "Run [PREVIEW]-tagged requests (account/region-scoped: vector stores, cached content, MCP servers, preview-model deployments). Off by default."; \
 		printf '  %-18s %s\n' "INCLUDE_SKIP=1"   "Run [SKIP]-tagged criss-cross cells (provider+modality pairs that return NewUnsupportedOperationError by design, e.g., anthropic embeddings, bedrock audio). Off by default."; \
 		printf '  %-18s %s\n' "SMOKE=1"          "Run only the curated smoke set in tests/e2e/api/collections/smoke-manifest.json (~100 requests"; \
-		printf '  %-18s %s\n' ""                "  across all 8 providers) instead of the full ~1900-request sweep. SMOKE=<path> uses a different manifest."; \
+		printf '  %-18s %s\n' ""                "  across all $(words $(HARNESS_PROVIDERS)) providers) instead of the full ~1900-request sweep. SMOKE=<path> uses a different manifest."; \
 		printf '  %-18s %s\n' ""                "  Rows are matched by (folder, name) against the AUGMENTED collection, which is the only way to reach the"; \
 		printf '  %-18s %s\n' ""                "  generated cache-parity rows - they do not exist in provider-harness.json and cannot be tagged in place."; \
 		printf '  %-18s %s\n' ""                "  Forces the deferred cache-parity pass ON: a third of the smoke set is cache parity, and the default"; \
 		printf '  %-18s %s\n' ""                "  deferral only fires on an unfiltered run. Composes with PROVIDER; RERUN_FAILED wins and skips the defer."; \
-		printf '  %-18s %s\n' "PARALLEL=0"       "Disable per-provider parallelism (default: ON). When ON, forks one newman per provider (openai, anthropic, bedrock, gemini, vertex, azure) concurrently; reports merged into tmp/newman-report.json. The htmlextra report is only emitted in sequential mode (PARALLEL=0)."; \
+		printf '  %-18s %s\n' "PARALLEL=0"       "Disable per-provider parallelism (default: ON). When ON, forks one newman per provider ($(HARNESS_PROVIDERS)) concurrently; reports merged into tmp/newman-report.json. The htmlextra report is only emitted in sequential mode (PARALLEL=0)."; \
 		printf '  %-18s %s\n' "CLASS_SHARDS=0"  "Collapse the second parallelism axis. By default each provider fork is sharded again by modality"; \
 		printf '  %-18s %s\n' ""                "  class (streaming, tools, chat, reasoning, json, vision, other, audio, embeddings, image-gen) so the"; \
 		printf '  %-18s %s\n' ""                "  run is not bound by one provider's whole sequential list - openai alone is ~1264 requests and its"; \
@@ -2043,6 +2052,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' ""                "  Retry reports merge LAST, so a successful attempt supersedes its own failure in tmp/newman-report.json."; \
 		printf '  %-18s %s\n' "SHARD_LINES=0"  "Drop the per-shard completion lines (<shard> N total/pass/fail) and show only the provider table."; \
 		printf '  %-18s %s\n' "SKIP_STREAM_CANCEL=1" "Skip the post-Newman stream-abort probes that verify server-side cancellation on client disconnect."; \
+		printf '  %-18s %s\n' "HARNESS_SERVER_CWD" "Server working directory for relative logs_store SQLite paths (default: transports/bifrost-http, matching make dev). BIFROST_LOGS_DB_URL overrides config resolution."; \
 		printf '  %-18s %s\n' "DB_VERIFY=0"      "Disable the dbverify reporter (ON by default). When on, [Costing]/[Accounting] requests assert the logs DB cost matches the getbifrost.ai/datasheet-computed cost (resolves DB from APP_DIR/config.json or BIFROST_LOGS_DB_URL); skips gracefully if no logs DB is reachable."; \
 		printf '  %-18s %s\n' "USE_INFISICAL=1" "Source secrets from Infisical CLI ('infisical export --path /local --format dotenv') instead of .env."; \
 		printf '  %-18s %s\n' "VERTEX_GCS_BUCKET" "Env-sourced (.env/Infisical): GCS bucket for Vertex file ops (forwarded to Newman as vertexGcsBucket)."; \
@@ -2232,10 +2242,10 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	if [ "$(DB_VERIFY)" != "0" ] && [ "$$E2E_DEPS_READY" = "1" ]; then \
 		DBVERIFY_READY=1; \
 		DBVERIFY_REPORTER=",dbverify"; \
-		LOGS_DB_VAL="$${BIFROST_LOGS_DB_URL:-sqlite://$(CURDIR)/$$APP_DIR_VAL/logs.db}"; \
+		LOGS_DB_VAL="$$(node tests/e2e/api/lib/logs-db-url.js "$$APP_DIR_VAL/config.json" "$(or $(HARNESS_SERVER_CWD),$(CURDIR)/transports/bifrost-http)")"; \
 		export BIFROST_LOGS_DB_URL="$$LOGS_DB_VAL"; \
 		DBVERIFY_ARGS="--reporter-dbverify-config $$APP_DIR_VAL/config.json"; \
-		say "$(CYAN)dbverify reporter enabled (logs DB: $$LOGS_DB_VAL). Set DB_VERIFY=0 to disable.$(NC)"; \
+		say "$(CYAN)dbverify reporter enabled (logs DB resolved from configuration or BIFROST_LOGS_DB_URL). Set DB_VERIFY=0 to disable.$(NC)"; \
 	fi; \
 	TOKEN_PARITY_REPORTER=""; \
 	CACHE_PARITY_REPORTER=""; \
@@ -2331,6 +2341,14 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			exit 1; \
 		fi; \
 	fi; \
+	: "Rows that assert on extra_fields.raw_request send x-bf-send-back-raw-*; core ignores those"; \
+	: "headers unless client_config.allow_per_request_raw_override is on. The harness config.json"; \
+	: "already enables it for a gateway we start ourselves; an already-running one may not have it."; \
+	say "$(CYAN)Ensuring allow_per_request_raw_override is on (x-bf-send-back-raw-* headers)...$(NC)"; \
+	BIFROST_BASE_URL="$$BASE_URL_VAL" node tests/e2e/api/runners/set-raw-override-config.mjs enable || { \
+		say "$(RED)Could not enable allow_per_request_raw_override; raw_request assertions would fail. Set BIFROST_E2E_AUTH_HEADER if auth is on.$(NC)"; \
+		exit 1; \
+	}; \
 	say "$(CYAN)Augmenting provider harness with generated streaming/thinking cases...$(NC)"; \
 	: "VERTEX_ACCESS_TOKEN_VAL is exported so the token-parity matrix can skip the Vertex"; \
 	: "direct legs when gcloud could not mint a token, instead of emitting cells that post an"; \
@@ -2410,7 +2428,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		: > tmp/newman-cli.log; \
 		NEWMAN_EXIT=0; \
 	elif [ "$$PARALLEL_VAL" != "0" ] && [ -n "$$PARALLEL_VAL" ]; then \
-		say "$(CYAN)Parallel mode (default): forking one newman per provider (openai, anthropic, bedrock, gemini, vertex, azure, passthrough, openrouter) x modality class x sub-shard, slowest class first. Set PARALLEL=0 to disable, SUBSHARDS=0 to drop the sub-shard axis, CLASS_SHARDS=0 for one fork per provider.$(NC)"; \
+		say "$(CYAN)Parallel mode (default): forking one newman per provider ($(HARNESS_PROVIDERS)) x modality class x sub-shard, slowest class first. Set PARALLEL=0 to disable, SUBSHARDS=0 to drop the sub-shard axis, CLASS_SHARDS=0 for one fork per provider.$(NC)"; \
 		: "harness-filtered-*.json is cleaned here too, not just the reports. The monitor derives"; \
 		: "each provider's denominator by summing the leaves of every shard collection it finds in"; \
 		: "tmp/, so a previous run with a wider FEATURE/FOLDER scope leaves shard files this run"; \
@@ -2811,6 +2829,8 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		say "$(CYAN)Running stream cancellation probes...$(NC)"; \
 		$(USE_NODE); node tests/e2e/api/runners/run-stream-cancellation.mjs \
 			--base-url "$$BASE_URL_VAL" \
+			--config "$$APP_DIR_VAL/config.json" \
+			--server-working-dir "$(or $(HARNESS_SERVER_CWD),$(CURDIR)/transports/bifrost-http)" \
 			$(if $(PROVIDER),--provider "$(PROVIDER)",) \
 			--out tmp/stream-cancel-report.json > tmp/stream-cancel-cli.log 2>&1; \
 		STREAM_CANCEL_EXIT=$$?; \
