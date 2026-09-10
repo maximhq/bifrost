@@ -2,7 +2,7 @@ import { ModelMultiselect } from "@/components/ui/modelMultiselect";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { X } from "lucide-react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useState } from "react";
 import { ModelAccessChipLabel } from "./modelAccessChip";
 import { RegexPatternInput } from "./regexPatternInput";
 import { addPattern, type ModelAccessMode, modelAccessPlaceholder, resolveWildcardSelection } from "./utils";
@@ -76,24 +76,19 @@ export function ModelAccessSelector({
 	const invalid = rest["aria-invalid"];
 	const list = value ?? [];
 	const patternList = patterns ?? [];
-	// Open on the view that matches what is already configured, so a
-	// patterns-only rule is visible right away instead of hidden behind the toggle.
-	const [tab, setTab] = useState<EditorTab>(() => (patternList.length > 0 && list.length === 0 ? "regex" : "models"));
-	// A form that loads its record asynchronously mounts this empty and resets it later,
-	// after the initializer above has already run. Pick the view once more when the first
-	// real values land; after that the toggle belongs to the user and nothing moves it.
-	const settled = useRef(list.length > 0 || patternList.length > 0);
-	useEffect(() => {
-		if (settled.current || (list.length === 0 && patternList.length === 0)) return;
-		settled.current = true;
-		if (patternList.length > 0 && list.length === 0) setTab("regex");
-	}, [list.length, patternList.length]);
+	// Until the user picks a view, follow what is configured, so a patterns-only rule is
+	// visible right away instead of hidden behind the toggle. Deriving rather than storing
+	// it keeps that true for values that arrive after mount, which is the normal case for a
+	// form that loads its record asynchronously and resets afterwards. Once the user picks a
+	// view it is theirs, and nothing moves it again.
+	const [pickedTab, setPickedTab] = useState<EditorTab | null>(null);
+	const tab: EditorTab = pickedTab ?? (patternList.length > 0 && list.length === 0 ? "regex" : "models");
 	const hasWildcard = list.includes("*");
 
 	const removePattern = (pattern: string) => onPatternsChange(patternList.filter((p) => p !== pattern));
 
 	const toggle = (
-		<Tabs value={tab} onValueChange={(next) => setTab(next as EditorTab)} className="shrink-0">
+		<Tabs value={tab} onValueChange={(next) => setPickedTab(next as EditorTab)} className="shrink-0">
 			<TabsList aria-label="Model entry type" className="h-6 rounded-sm p-0.5" data-testid={testId ? `${testId}-mode` : undefined}>
 				<TabsTrigger
 					value="models"

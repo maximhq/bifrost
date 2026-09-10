@@ -2,7 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { Plus } from "lucide-react";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { validateModelRegex } from "./utils";
 
 interface RegexPatternInputProps {
@@ -27,6 +27,11 @@ export function RegexPatternInput({ onAdd, disabled, placeholder, inputId, ariaD
 	const [pattern, setPattern] = useState("");
 	const [error, setError] = useState<string | null>(null);
 	const testId = rest["data-testid"];
+	// The line under the input carries either the validator's message or the matching rules.
+	// Point the input at it so a screen reader reads the reason a pattern was refused, along
+	// with whatever the surrounding form field describes.
+	const hintId = `${useId()}-hint`;
+	const describedBy = [hintId, ariaDescribedBy].filter(Boolean).join(" ");
 
 	const commit = () => {
 		const trimmed = pattern.trim();
@@ -50,7 +55,7 @@ export function RegexPatternInput({ onAdd, disabled, placeholder, inputId, ariaD
 					disabled={disabled}
 					placeholder={placeholder ?? "^gpt-4.*"}
 					className={cn("h-9 font-mono text-sm", error && "border-destructive focus-visible:ring-destructive/30")}
-					aria-describedby={ariaDescribedBy}
+					aria-describedby={describedBy}
 					aria-invalid={!!error || ariaInvalid}
 					onChange={(e) => {
 						setPattern(e.target.value);
@@ -77,9 +82,13 @@ export function RegexPatternInput({ onAdd, disabled, placeholder, inputId, ariaD
 				</Button>
 			</div>
 			{error ? (
-				<p className="text-destructive text-xs">{error}</p>
+				<p id={hintId} role="alert" className="text-destructive text-xs">
+					{error}
+				</p>
 			) : (
-				<p className="text-muted-foreground text-xs">Matched against the model name and provider/model, case-insensitive, full match.</p>
+				<p id={hintId} className="text-muted-foreground text-xs">
+					Matched against the model name and provider/model, case-insensitive, full match.
+				</p>
 			)}
 		</div>
 	);

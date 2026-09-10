@@ -435,10 +435,15 @@ export const aliasConfigSchema = z.preprocess(
 
 // One allowed_models_patterns / blacklisted_models_patterns / models_patterns
 // entry: a raw RE2 pattern that must compile (mirrors the backend rule). The
-// exact lists next to them hold plain names and "*".
-export const modelPatternSchema = z.string().refine((pattern) => validateModelRegex(pattern) === null, {
-	message: "Invalid regex pattern",
-});
+// exact lists next to them hold plain names and "*". The pattern is trimmed
+// before it is validated and before it is submitted: the backend anchors what
+// it stores as "(?i)^(?:<pattern>)$", where kept padding would match nothing.
+export const modelPatternSchema = z
+	.string()
+	.trim()
+	.refine((pattern) => validateModelRegex(pattern) === null, {
+		message: "Invalid regex pattern",
+	});
 
 // Model provider key schema
 export const modelProviderKeySchema = z
