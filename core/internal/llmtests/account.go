@@ -139,6 +139,7 @@ type ComprehensiveTestConfig struct {
 	FileStorageConfig        *schemas.FileStorageConfig // Typed storage config for file operations (e.g., GCS bucket for Vertex)
 	DisableParallelFor       []string                   // Test scenarios to disable parallel execution for (e.g., "Transcription" for rate-limited APIs)
 	ExpectRawRequestResponse bool                       // When true, validate rawRequest/rawResponse in ExtraFields
+	SkipChatReasoning        bool                       // Model carries reasoning on the Responses surface only, so a chat stream has none to assert on
 	PassthroughModel         string                     // Model for passthrough API tests; defaults to ChatModel when empty
 	CompactionModel          string                     // Model for compaction tests; defaults to claude-sonnet-4-6
 	ExternalCompactionModel  string                     // Model for external compaction tests; defaults to gpt-4o

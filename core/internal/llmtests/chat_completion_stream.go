@@ -659,6 +659,11 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 				return
 			}
 
+			if testConfig.SkipChatReasoning {
+				t.Skip("Skipping ChatCompletionStreamWithReasoningValidated: model carries reasoning on the Responses surface only")
+				return
+			}
+
 			problemPrompt := "A farmer has 100 chickens and 50 cows. Each chicken lays 5 eggs per week, and each cow produces 20 liters of milk per day. If the farmer sells eggs for $0.25 each and milk for $1.50 per liter, and it costs $2 per week to feed each chicken and $15 per week to feed each cow, what is the farmer's weekly profit?"
 			if testConfig.Provider == schemas.Cerebras {
 				problemPrompt = "Hello how are you, can you search hackernews news regarding maxim ai for me? use your tools for this"

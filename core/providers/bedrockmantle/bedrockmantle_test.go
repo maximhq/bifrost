@@ -131,21 +131,35 @@ func TestBedrockMantleOpenAICompatible(t *testing.T) {
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.BedrockMantle, Model: "us-east-1/openai.gpt-5.6-sol"},
 		},
+		// Astra's chat stream carries no reasoning content to assert on — 120-136
+		// chunks with no reasoning indicators across ten attempts — while its
+		// Responses stream carries it. Same shape as the tools split below.
+		SkipChatReasoning: true,
 		Scenarios: llmtests.TestScenarios{
-			SimpleChat:                 true,
-			CompletionStream:           true,
-			MultiTurnConversation:      true,
-			ToolCalls:                  true,
-			ToolCallsStreaming:         true,
-			MultipleToolCalls:          true,
-			MultipleToolCallsStreaming: true,
-			End2EndToolCalling:         true,
-			AutomaticFunctionCall:      true,
-			CompleteEnd2End:            true,
-			EagerInputStreaming:        true,
-			StructuredOutputs:          true,
-			ImageBase64:                true,
-			Reasoning:                  true,
+			SimpleChat:            true,
+			CompletionStream:      true,
+			MultiTurnConversation: true,
+			CompleteEnd2End:       false,
+			StructuredOutputs:     true,
+			ImageBase64:           true,
+			Reasoning:             true,
+
+			// Astra rejects function tools on the chat surface and says so:
+			// "Function tools with reasoning_effort are not supported for
+			// gpt-6-astra in /v1/chat/completions. To use function tools, use
+			// /v1/responses." Its thinking is always on, so there is no
+			// effort-free chat request to fall back to. Every tool scenario drives
+			// the chat and Responses variants off one flag, so the Responses half
+			// (which passes) goes dark with them until a datasheet row marks the
+			// chat endpoint unsupported here and markForConversion routes these to
+			// /v1/responses.
+			ToolCalls:                  false,
+			ToolCallsStreaming:         false,
+			MultipleToolCalls:          false,
+			MultipleToolCallsStreaming: false,
+			End2EndToolCalling:         false,
+			AutomaticFunctionCall:      false,
+			EagerInputStreaming:        false,
 
 			// CountTokens lives on the native-Anthropic surface only.
 			CountTokens: false,
