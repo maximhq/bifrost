@@ -156,6 +156,8 @@ err := store.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 
 ## Migrations
 
-The ConfigStore includes a migration system to handle database schema changes between Bifrost versions. Migrations are automatically applied at startup, ensuring the database schema is always up-to-date. This process is managed by the `migrator` package and is transparent to the user.
+The ConfigStore includes a migration system to handle database schema changes between Bifrost versions. Migrations are automatically applied at startup, ensuring the database schema is always up-to-date. This process is managed by the `migrator` package and is transparent to the user. On PostgreSQL, an advisory lock serializes migrations across nodes so only one instance migrates at a time.
+
+For multi-replica deployments, migrations can instead be applied out of band: run Bifrost with `--migrate-only` (applies all migrations and exits) as a one-shot job, and start the server replicas with `--no-migrate` (skips migrations, failing fast if any are pending). See [Database migrations in multi-replica deployments](../../deployment-guides/k8s#database-migrations-in-multi-replica-deployments).
 
 The ConfigStore is a powerful and flexible component that provides the backbone for Bifrost's dynamic configuration capabilities. Its support for multiple backends and transactional operations makes it suitable for both small-scale and large-scale, production environments.

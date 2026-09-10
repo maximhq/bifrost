@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/migrator"
 	"github.com/maximhq/bifrost/framework/postgresconn"
 
 	"gorm.io/gorm"
@@ -113,7 +114,7 @@ func resolveMatViewRefreshInterval(raw string, logger schemas.Logger) time.Durat
 	}
 	d, err := time.ParseDuration(raw)
 	if err != nil {
-		logger.Warn(fmt.Sprintf("logstore: invalid matview_refresh_interval %q (%s); using default %s", raw, err, defaultMatViewRefreshInterval))
+		logger.Warn("logstore: invalid matview_refresh_interval %q (%v); using default %s", raw, err, defaultMatViewRefreshInterval)
 		return defaultMatViewRefreshInterval
 	}
 	if d <= 0 {
@@ -121,10 +122,10 @@ func resolveMatViewRefreshInterval(raw string, logger schemas.Logger) time.Durat
 		return 0
 	}
 	if d < minMatViewRefreshInterval {
-		logger.Warn(fmt.Sprintf("logstore: matview_refresh_interval %s is below floor %s; clamping to %s", d, minMatViewRefreshInterval, minMatViewRefreshInterval))
+		logger.Warn("logstore: matview_refresh_interval %s is below floor %s; clamping to %s", d, minMatViewRefreshInterval, minMatViewRefreshInterval)
 		return minMatViewRefreshInterval
 	}
-	logger.Info(fmt.Sprintf("logstore: matview refresh interval set to %s", d))
+	logger.Info("logstore: matview refresh interval set to %s", d)
 	return d
 }
 
@@ -229,11 +230,10 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 	refreshInterval := resolveMatViewRefreshInterval(config.MatViewRefreshInterval, logger)
 	d := &RDBLogStore{db: db, logger: logger, matViewMaintenanceDisabled: refreshInterval <= 0}
 
-	// Run all index builds sequentially in a single goroutine to prevent
-	// deadlocks from concurrent CREATE INDEX CONCURRENTLY on the same table.
-	// Each function is idempotent and acquires its own advisory lock for
-	// cross-node serialization. Running in a goroutine avoids blocking pod startup.
-	go func() {
+	// Run all index builds sequentially to prevent deadlocks from concurrent
+	// CREATE INDEX CONCURRENTLY on the same table. Each function is idempotent
+	// and the advisory lock serializes builds across cluster nodes.
+	runIndexMaintenance := func() {
 		if db.Dialector.Name() != "postgres" {
 			return
 		}
@@ -241,34 +241,52 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 		lock, err := acquireIndexLock(context.Background(), db, logger)
 		if err != nil {
 			// Lock is taken by another node, so we will skip the index build
+			logger.Warn("logstore: skipping index maintenance, could not acquire index lock: %v", err)
 			return
 		}
 		defer lock.release(context.Background())
 
 		if err := ensureMetadataGINIndex(context.Background(), lock.conn); err != nil {
-			logger.Warn(fmt.Sprintf("logstore: metadata GIN index build failed: %s (queries will still work without the index)", err))
+			logger.Warn("logstore: metadata GIN index build failed: %v (queries will still work without the index)", err)
 		} else {
 			logger.Info("logstore: metadata GIN index is ready")
 		}
 
 		if err := ensureMultiTeamBusinessUnitGINIndexes(context.Background(), lock.conn); err != nil {
-			logger.Warn(fmt.Sprintf("logstore: team/business-unit GIN index build failed: %s (filtering will still work without the index)", err))
+			logger.Warn("logstore: team/business-unit GIN index build failed: %v (filtering will still work without the index)", err)
 		} else {
 			logger.Info("logstore: team/business-unit GIN indexes are ready")
 		}
 
 		if err := ensureDashboardEnhancements(context.Background(), lock.conn); err != nil {
-			logger.Warn(fmt.Sprintf("logstore: dashboard enhancements failed: %s (dashboard will still work with partial data)", err))
+			logger.Warn("logstore: dashboard enhancements failed: %v (dashboard will still work with partial data)", err)
 		} else {
 			logger.Info("logstore: dashboard enhancements completed")
 		}
 
 		if err := ensurePerformanceIndexes(context.Background(), lock.conn, logger); err != nil {
-			logger.Warn(fmt.Sprintf("logstore: performance index build failed: %s (queries will still work without the indexes)", err))
+			logger.Warn("logstore: performance index build failed: %v (queries will still work without the indexes)", err)
 		} else {
 			logger.Info("logstore: performance indexes are ready")
 		}
-	}()
+	}
+
+	switch {
+	case migrator.MigrateOnly():
+		// One-shot migration job owns index maintenance: run it synchronously
+		// so the process doesn't exit mid-CREATE INDEX CONCURRENTLY (a killed
+		// build leaves an INVALID index behind for the next run to rebuild).
+		logger.Info("logstore: running index maintenance synchronously (--migrate-only)")
+		runIndexMaintenance()
+	case migrator.SkipStartupMigrations():
+		// Server pods started with --no-migrate leave index maintenance to the
+		// out-of-band --migrate-only job.
+		logger.Info("logstore: --no-migrate set; skipping index maintenance (owned by the --migrate-only job)")
+	default:
+		// Default single-process mode: build in the background so index work
+		// never blocks startup.
+		go runIndexMaintenance()
+	}
 
 	// Create materialized views and start periodic refresh for dashboard queries.
 	go func() {
