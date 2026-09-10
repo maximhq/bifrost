@@ -259,6 +259,32 @@ func TestResponsesToolUnmarshalNullFunctionWrapper(t *testing.T) {
 	assert.NotNil(t, tool.ResponsesToolFunction)
 }
 
+func TestResponsesToolRoundTripPreservesExplicitEmptyRequired(t *testing.T) {
+	const input = `{"type":"function","name":"run_tests","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"strict":true}`
+
+	var tool ResponsesTool
+	require.NoError(t, Unmarshal([]byte(input), &tool))
+	require.NotNil(t, tool.ResponsesToolFunction)
+	require.NotNil(t, tool.ResponsesToolFunction.Parameters)
+	require.NotNil(t, tool.ResponsesToolFunction.Parameters.Required,
+		"decoding must retain the distinction between an absent required field and an explicit empty array")
+	require.Empty(t, tool.ResponsesToolFunction.Parameters.Required)
+
+	out, err := MarshalSorted(tool)
+	require.NoError(t, err)
+	assert.Equal(t, input, string(out), "round-trip must preserve the strict tool schema exactly")
+
+	var roundTripped struct {
+		Parameters struct {
+			Required *[]string `json:"required"`
+		} `json:"parameters"`
+	}
+	require.NoError(t, Unmarshal(out, &roundTripped))
+	require.NotNil(t, roundTripped.Parameters.Required,
+		"marshalling must not drop an explicit required: [] from a strict zero-argument tool schema")
+	assert.Empty(t, *roundTripped.Parameters.Required)
+}
+
 // TestResponsesToolMarshalUnmarshalRoundTrip walks every tool type through
 // Unmarshal -> MarshalSorted and asserts the JSON is preserved. This is the
 // broadest guard on the decoder refactor: if any type's embedded struct stops

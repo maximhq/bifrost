@@ -418,17 +418,20 @@ func (om *OrderedMap) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// jsonSchemaPriority maps JSON Schema keywords to their preferred
-// serialization position. Keys present in this map are emitted first
-// (in the given order), followed by all remaining keys alphabetically.
-// This matches the optimal ordering for LLM tool schemas: the model
-// sees type and description before properties, constraints, etc.
-var jsonSchemaPriority = map[string]int{
-	"type":        0,
-	"description": 1,
-	"properties":  2,
-	"required":    3,
-}
+// jsonSchemaPriorityOrder lists JSON Schema keywords in their preferred
+// serialization position. Keys present in this list are emitted first,
+// followed by all remaining keys alphabetically. This matches the optimal
+// ordering for LLM tool schemas: the model sees type and description before
+// properties, constraints, etc.
+var jsonSchemaPriorityOrder = []string{"type", "description", "properties", "required"}
+
+var jsonSchemaPriority = func() map[string]int {
+	priority := make(map[string]int, len(jsonSchemaPriorityOrder))
+	for index, key := range jsonSchemaPriorityOrder {
+		priority[key] = index
+	}
+	return priority
+}()
 
 // SortKeys sorts the keys of this OrderedMap using JSON Schema priority
 // ordering (type, description, properties, required first), with remaining

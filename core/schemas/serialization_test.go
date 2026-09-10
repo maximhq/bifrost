@@ -1606,6 +1606,16 @@ func TestSonic_ToolFunctionParameters_DeepCopy_KeyOrderIndependent(t *testing.T)
 	assert.Equal(t, "$defs", copied.keyOrder.keys[0])
 }
 
+func TestSonic_ToolFunctionParameters_DeepCopy_PreservesExplicitEmptyRequired(t *testing.T) {
+	original := &ToolFunctionParameters{Required: []string{}}
+
+	copied := DeepCopyToolFunctionParameters(original)
+
+	require.NotNil(t, copied)
+	assert.NotNil(t, copied.Required, "an explicit empty required array must remain distinct from an absent required field")
+	assert.Empty(t, copied.Required)
+}
+
 // --- ChatPromptTokensDetails / ResponsesResponseInputTokens cached_tokens ---
 // Per the OpenAI spec, cached_tokens counts prompt tokens read from the cache. Cache
 // writes must not be folded in, or spec consumers price cache writes as cache reads.
