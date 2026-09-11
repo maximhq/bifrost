@@ -2510,10 +2510,16 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 	}
 
 	var responsesStructuredOutputTool *BedrockTool
+	if maxTokens := providerUtils.GetMaxOutputTokensOrDefault(caps.Provider(), caps.Model(), 0); maxTokens > 0 {
+		bedrockReq.InferenceConfig = &BedrockInferenceConfig{MaxTokens: schemas.Ptr(maxTokens)}
+	}
 
 	// Map basic parameters to inference config
 	if bifrostReq.Params != nil {
-		inferenceConfig := &BedrockInferenceConfig{}
+		inferenceConfig := bedrockReq.InferenceConfig
+		if inferenceConfig == nil {
+			inferenceConfig = &BedrockInferenceConfig{}
+		}
 
 		if bifrostReq.Params.MaxOutputTokens != nil {
 			inferenceConfig.MaxTokens = clampMaxTokens(ctx, bifrostReq.Params.MaxOutputTokens, caps)
