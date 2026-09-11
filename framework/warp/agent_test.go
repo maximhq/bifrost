@@ -639,8 +639,72 @@ func TestWarpSystemPromptAllowsAbsoluteDatesForNamedDays(t *testing.T) {
 	content := systemInstructions(&schemas.WarpConfig{})
 
 	require.Contains(t, content, "relative offsets like -24h, -7d or -30m")
-	require.Contains(t, content, "specific calendar date")
-	require.Contains(t, content, "RFC3339 timestamps for that date")
+	require.Contains(t, content, "a named date")
+	require.Contains(t, content, "RFC3339 timestamps")
+}
+
+// "Yesterday" is not "the last 24 hours" - a rolling window and a calendar day
+// only ever agree by coincidence - and "today" is not a rolling window at all.
+// Both used to fall under the same "use relative offsets" guidance as "last
+// week", which answers a different question than the one asked.
+func TestWarpSystemPromptDistinguishesCalendarDaysFromRollingWindows(t *testing.T) {
+	content := systemInstructions(&schemas.WarpConfig{})
+
+	require.Contains(t, content, `"today" means since local midnight, not the last 24 hours`)
+	require.Contains(t, content, `"yesterday" means the previous local calendar day, not 24-48 hours ago`)
+}
+
+// The offset has to actually reach the prompt text, in the sign and padding a
+// person would type, or the calendar-boundary guidance above has nothing to
+// compute against.
+func TestWarpSystemPromptCarriesUTCOffset(t *testing.T) {
+	original := Now
+	Now = func() time.Time { return time.Date(2026, 8, 17, 9, 30, 0, 0, time.UTC) }
+	defer func() { Now = original }()
+
+	t.Run("positive offset shifts the local time and is labeled", func(t *testing.T) {
+		content := systemInstructions(&schemas.WarpConfig{}, 330) // IST, UTC+05:30
+		require.Contains(t, content, "2026-08-17 15:00:00 (UTC+05:30)")
+	})
+
+	t.Run("negative offset shifts the local time and is labeled", func(t *testing.T) {
+		content := systemInstructions(&schemas.WarpConfig{}, -480) // PST, UTC-08:00
+		require.Contains(t, content, "2026-08-17 01:30:00 (UTC-08:00)")
+	})
+
+	t.Run("zero offset reads exactly as before this existed", func(t *testing.T) {
+		content := systemInstructions(&schemas.WarpConfig{}, 0)
+		require.Contains(t, content, "2026-08-17 09:30:00 (UTC).")
+		require.NotContains(t, content, "UTC+00:00")
+	})
+
+	t.Run("omitted offset defaults to UTC, same as zero", func(t *testing.T) {
+		content := systemInstructions(&schemas.WarpConfig{})
+		require.Contains(t, content, "2026-08-17 09:30:00 (UTC).")
+	})
+
+	t.Run("an out-of-range offset is not trusted", func(t *testing.T) {
+		content := systemInstructions(&schemas.WarpConfig{}, 100000)
+		require.Contains(t, content, "2026-08-17 09:30:00 (UTC).")
+	})
+}
+
+func TestWarpFormatUTCOffset(t *testing.T) {
+	require.Equal(t, "", formatUTCOffset(0))
+	require.Equal(t, "+05:30", formatUTCOffset(330))
+	require.Equal(t, "-08:00", formatUTCOffset(-480))
+	require.Equal(t, "+00:30", formatUTCOffset(30), "a sub-hour offset must still get the leading zero")
+	require.Equal(t, "+14:00", formatUTCOffset(maxUTCOffsetMinutes))
+	require.Equal(t, "-12:00", formatUTCOffset(minUTCOffsetMinutes))
+}
+
+func TestWarpSanitizeUTCOffsetMinutes(t *testing.T) {
+	require.Equal(t, 330, sanitizeUTCOffsetMinutes(330), "a real offset must pass through unchanged")
+	require.Equal(t, minUTCOffsetMinutes, sanitizeUTCOffsetMinutes(minUTCOffsetMinutes), "the real-world minimum is valid, not just inside it")
+	require.Equal(t, maxUTCOffsetMinutes, sanitizeUTCOffsetMinutes(maxUTCOffsetMinutes), "the real-world maximum is valid, not just inside it")
+	require.Equal(t, 0, sanitizeUTCOffsetMinutes(minUTCOffsetMinutes-1), "one minute past the real-world minimum is not a timezone")
+	require.Equal(t, 0, sanitizeUTCOffsetMinutes(maxUTCOffsetMinutes+1), "one minute past the real-world maximum is not a timezone")
+	require.Equal(t, 0, sanitizeUTCOffsetMinutes(100000), "wildly out of range must fall back to UTC, not clamp to the nearest bound")
 }
 
 // Warp's own traffic against Bifrost is itself logged and counted by

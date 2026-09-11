@@ -40,10 +40,11 @@ type Turn struct {
 	// it. The id alone cannot say so any more, since it is never empty here.
 	IsNew bool
 
-	question string
-	messages []schemas.ResponsesMessage
-	config   *schemas.WarpConfig
-	chat     ChatFunc
+	question         string
+	messages         []schemas.ResponsesMessage
+	config           *schemas.WarpConfig
+	chat             ChatFunc
+	utcOffsetMinutes int
 }
 
 // NewTurn validates a chat request and resolves the configuration and model
@@ -82,6 +83,10 @@ func (s *Service) NewTurn(ctx context.Context, request *ChatRequest, bodyBytes i
 		messages: messages,
 		config:   config,
 		chat:     chat,
+		// Sanitized here, once, since this is the one place a raw client value
+		// exists - everything downstream (NewAgent, systemInstructions) trusts
+		// what it's handed rather than re-validating.
+		utcOffsetMinutes: sanitizeUTCOffsetMinutes(request.UTCOffsetMinutes),
 	}, nil
 }
 
@@ -105,7 +110,7 @@ func (s *Service) RunTurn(ctx context.Context, turn *Turn, sink func(Event) bool
 	// The scope is read off the snapshotted context, same as the row-level
 	// queryscope, so it is a fact about who asked rather than anything the
 	// request body could claim.
-	agent := NewAgent(turn.chat, s.costFuncFor(turn.config), s.logs, ScopeFromContext(runCtx), turn.config, s.semantic)
+	agent := NewAgent(turn.chat, s.costFuncFor(turn.config), s.logs, ScopeFromContext(runCtx), turn.config, turn.utcOffsetMinutes, s.semantic)
 	events := make(chan Event, 16)
 	go agent.Run(runCtx, turn.messages, events)
 
