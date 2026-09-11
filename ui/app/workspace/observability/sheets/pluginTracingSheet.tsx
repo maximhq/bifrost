@@ -7,7 +7,7 @@ import { getErrorMessage, useGetLoadedPluginsQuery, useGetPluginQuery, useUpdate
 import { PluginSpanFilter } from "@/lib/types/config";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 
 interface PluginTracingSheetProps {
 	open: boolean;
@@ -128,7 +128,7 @@ export default function PluginTracingSheet({ open, onClose, pluginName, destinat
 				<SheetHeader className="flex flex-col items-start p-0">
 					<SheetTitle>{t("connectors.configurePluginTracing")}</SheetTitle>
 					<SheetDescription>
-						Choose which spans are exported to {destination}. Disabling a plugin removes its spans from traces without affecting execution.
+						{t("connectors.tracing.sheetDescription", { destination })}
 					</SheetDescription>
 				</SheetHeader>
 
@@ -163,13 +163,13 @@ export default function PluginTracingSheet({ open, onClose, pluginName, destinat
 							<>
 								<div className="border-t" />
 								<div>
-									<p className="text-muted-foreground mb-2 text-xs font-medium tracking-wide uppercase">Overhead</p>
+									<p className="text-muted-foreground mb-2 text-xs font-medium tracking-wide uppercase">
+										{t("connectors.tracing.overhead")}
+									</p>
 									<div className="flex items-center justify-between rounded-md border px-3 py-2.5">
 										<div className="flex flex-col">
-											<span className="text-sm">Overhead latency spans</span>
-											<span className="text-muted-foreground text-xs">
-												Internal timing spans (setup, key selection, pipeline phases). Off by default.
-											</span>
+											<span className="text-sm">{t("connectors.tracing.overheadLatencySpans")}</span>
+											<span className="text-muted-foreground text-xs">{t("connectors.tracing.overheadLatencySpansHelp")}</span>
 										</div>
 										<Switch
 											checked={exportOverheadSpans}
@@ -186,10 +186,15 @@ export default function PluginTracingSheet({ open, onClose, pluginName, destinat
 				<div className="flex flex-col gap-2 pt-4">
 					<Alert variant="info">
 						<AlertDescription>
-							<span>
-								If <strong className="inline">plugin_span_filter</strong> is set in the <strong className="inline">{pluginName}</strong>{" "}
-								plugin config in config.json, it takes precedence over these settings after restarting Bifrost.
-							</span>
+							<Trans
+								i18nKey="connectors.tracing.configJsonPrecedence"
+								ns="observability"
+								values={{ pluginName }}
+								components={{
+									filter: <strong className="inline" />,
+									plugin: <strong className="inline" />,
+								}}
+							/>
 						</AlertDescription>
 					</Alert>
 					<div className="flex justify-end gap-2 pt-2">
