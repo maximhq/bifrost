@@ -90,3 +90,74 @@ func (provider *BedrockProvider) runtimeResponsesStream(
 		postHookSpanFinalizer,
 	)
 }
+
+// runtimeChatCompletions handles non-streaming chat requests on bedrock-runtime's
+// OpenAI-compatible surface. Reached only when the operator opts in.
+func (provider *BedrockProvider) runtimeChatCompletions(
+	ctx *schemas.BifrostContext,
+	key schemas.Key,
+	request *schemas.BifrostChatRequest,
+) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	region := resolveBedrockRegion(ctx, key, request.Model)
+	url := runtimeOpenAIURL(bedrockEndpoints(key.BedrockKeyConfig), region, "chat/completions")
+
+	var signer providerUtils.BodySigner
+	if key.Value.GetValue() == "" {
+		signer = func(body []byte) (map[string]string, *schemas.BifrostError) {
+			return signOpenAIV4Headers(ctx, body, url, "application/json", key, region, provider.networkConfig.ExtraHeaders, bedrockSigningService)
+		}
+	}
+
+	return openai.HandleOpenAIChatCompletionRequest(
+		ctx,
+		provider.mantleClient,
+		url,
+		request,
+		openai.BearerAuthHeader(key),
+		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(),
+		nil,
+		nil,
+		signer,
+		provider.logger,
+	)
+}
+
+// runtimeChatCompletionsStream handles streaming chat requests on bedrock-runtime's
+// OpenAI-compatible surface.
+func (provider *BedrockProvider) runtimeChatCompletionsStream(
+	ctx *schemas.BifrostContext,
+	postHookRunner schemas.PostHookRunner,
+	postHookSpanFinalizer func(context.Context),
+	key schemas.Key,
+	request *schemas.BifrostChatRequest,
+) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	region := resolveBedrockRegion(ctx, key, request.Model)
+	url := runtimeOpenAIURL(bedrockEndpoints(key.BedrockKeyConfig), region, "chat/completions")
+
+	var signer providerUtils.BodySigner
+	if key.Value.GetValue() == "" {
+		signer = func(body []byte) (map[string]string, *schemas.BifrostError) {
+			return signOpenAIV4Headers(ctx, body, url, "text/event-stream", key, region, provider.networkConfig.ExtraHeaders, bedrockSigningService)
+		}
+	}
+
+	return openai.HandleOpenAIChatCompletionStreaming(
+		ctx, provider.mantleStreamingClient, url, request,
+		openai.BearerAuthHeader(key), provider.networkConfig.ExtraHeaders,
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(), postHookRunner,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		signer,
+		provider.logger,
+		postHookSpanFinalizer,
+	)
+}

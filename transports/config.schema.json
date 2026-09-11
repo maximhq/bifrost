@@ -4597,6 +4597,10 @@
                   "use_anthropic_endpoints": {
                     "type": "boolean",
                     "description": "Routes chat completions and responses requests through Anthropic-compatible endpoints."
+                  },
+                  "use_openai_endpoints": {
+                    "type": "boolean",
+                    "description": "Per-alias override of use_openai_endpoints."
                   }
                 },
                 "required": ["model_id"],
@@ -4728,6 +4732,10 @@
               },
               "required": ["region"],
               "additionalProperties": false
+            },
+            "use_openai_endpoints": {
+              "type": "boolean",
+              "description": "Routes chat completions and responses requests through Bedrock's OpenAI-compatible endpoints (/openai/v1) instead of Converse, for models that serve them. Converse is used for everything else. Bedrock Guardrails, performanceConfig and requestMetadata apply only on Converse: the OpenAI-compatible endpoints accept and ignore them."
             }
           }
         }
