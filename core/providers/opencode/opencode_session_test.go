@@ -145,7 +145,9 @@ func runOpencodeOp(t *testing.T, provider *opencodeProvider, ctx *schemas.Bifros
 
 // newOpencodeWireProvider starts a mock upstream and returns a provider
 // pointed at it plus a capture function the test can read after driving ops.
-func newOpencodeWireProvider(t *testing.T, newProvider func(*schemas.ProviderConfig) (*opencodeProvider, error)) (*opencodeProvider, func() []wireCapture) {
+// configMutate, when given, is applied to the provider config before the
+// provider is constructed (used to inject static ExtraHeaders).
+func newOpencodeWireProvider(t *testing.T, newProvider func(*schemas.ProviderConfig) (*opencodeProvider, error), configMutate ...func(*schemas.ProviderConfig)) (*opencodeProvider, func() []wireCapture) {
 	t.Helper()
 
 	var (
@@ -201,12 +203,16 @@ func newOpencodeWireProvider(t *testing.T, newProvider func(*schemas.ProviderCon
 	}))
 	t.Cleanup(server.Close)
 
-	provider, err := newProvider(&schemas.ProviderConfig{
+	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
 			BaseURL:                        server.URL,
 			DefaultRequestTimeoutInSeconds: 10,
 		},
-	})
+	}
+	if len(configMutate) > 0 && configMutate[0] != nil {
+		configMutate[0](config)
+	}
+	provider, err := newProvider(config)
 	if err != nil {
 		t.Fatalf("new provider: %v", err)
 	}
@@ -244,6 +250,7 @@ func TestOpencodeSessionHeaderOnWire(t *testing.T) {
 				wantHeaders      []string // per-op expectation, overrides wantHeader when set
 				wantUUID         bool
 				switchVirtualKey bool // re-set the virtual key to vk-2 for the second op
+				configMutate     func(*schemas.ProviderConfig)
 			}{
 				{
 					name: "client-sent header forwarded verbatim on every inference op",
@@ -321,11 +328,27 @@ func TestOpencodeSessionHeaderOnWire(t *testing.T) {
 					wantHeaders:      []string{"vk-1:shared-session", "vk-2:shared-session"},
 					switchVirtualKey: true,
 				},
+				{
+					name: "resolved session beats case-variant static config header",
+					ops:  []opencodeOp{opChat, opResponses, opChatStream, opResponsesStream},
+					configMutate: func(config *schemas.ProviderConfig) {
+						config.NetworkConfig.ExtraHeaders = map[string]string{
+							"X-Opencode-Session": "static-sess",
+							"Accept":             "application/json",
+						}
+					},
+					setupCtx: func(t *testing.T) *schemas.BifrostContext {
+						ctx := newOpencodeWireCtx(t, map[string]string{OpencodeSessionHeader: "client-sess-abc"})
+						ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "vk-1")
+						return ctx
+					},
+					wantHeader: "vk-1:client-sess-abc",
+				},
 			}
 
 			for _, tt := range tests {
 				t.Run(tt.name, func(t *testing.T) {
-					provider, captures := newOpencodeWireProvider(t, tc.newProvider)
+					provider, captures := newOpencodeWireProvider(t, tc.newProvider, tt.configMutate)
 					key := schemas.Key{Value: *schemas.NewSecretVar(wireTestAPIKey)}
 
 					for i, op := range tt.ops {

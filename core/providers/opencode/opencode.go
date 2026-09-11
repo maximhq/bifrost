@@ -89,7 +89,8 @@ func (p *opencodeProvider) GetProviderKey() schemas.ModelProvider {
 // resolved once per request and namespaced per virtual key (see
 // ResolveOpencodeSession), so every inference call — chat, responses,
 // and their streaming variants — carries the same upstream session identity,
-// keeping zen→go fallbacks and retries identical. ListModels intentionally does
+// keeping zen→go fallbacks and retries identical. The resolved header always
+// overrides case-variant static config values. ListModels intentionally does
 // not use this helper: the gateway only requires the header on inference calls.
 // Returns a fresh map; the shared config map is never mutated.
 func (p *opencodeProvider) inferenceExtraHeaders(ctx *schemas.BifrostContext) map[string]string {
@@ -102,6 +103,13 @@ func (p *opencodeProvider) inferenceExtraHeaders(ctx *schemas.BifrostContext) ma
 	// The resolved session always wins over a statically configured value: a
 	// static session would collapse every request onto one upstream
 	// conversation, defeating the per-request identity this feature provides.
+	// Drop any case-variant of the session header from the static config so
+	// the map carries exactly one key and the resolved value reaches the wire.
+	for k := range merged {
+		if strings.EqualFold(k, OpencodeSessionHeader) {
+			delete(merged, k)
+		}
+	}
 	merged[OpencodeSessionHeader] = session
 	return merged
 }
