@@ -4982,7 +4982,7 @@ func (bifrost *Bifrost) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, req
 			drainAndAttachPluginLogs(ctx)
 			if bifrostErr != nil {
 				bifrostErr.PopulateExtraFields(schemas.RealtimeRequest, provider, model, model)
-				return nil, bifrostErr
+				return resp, bifrostErr
 			} else if resp != nil {
 				resp.PopulateExtraFields(schemas.RealtimeRequest, provider, model, model)
 			}

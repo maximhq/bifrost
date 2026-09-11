@@ -1159,6 +1159,9 @@ export function LogDetailView({
 	const complexityRouting = deriveComplexityRouting(log);
 	const isPassthrough = isPassthroughOperation(log.object);
 	const isRealtimeTurn = log.object === "realtime.turn";
+	const isRealtimeTranscription =
+		isRealtimeTurn && log.metadata?.realtime_event_type === "conversation.item.input_audio_transcription.completed";
+	const audioSeconds = log.token_usage?.audio_seconds;
 	const isBatch = isBatchOperation(log.object);
 	const batchDebug = log.batch_debug;
 	// Set on both the submission row and the aggregate cost row a settlement writes;
@@ -1592,20 +1595,24 @@ export function LogDetailView({
 						hasRightBorder
 					/>
 					<HeroStat
-						label="Tokens in / out"
+						label={audioSeconds != null ? "Audio duration" : "Tokens in / out"}
 						mono
 						value={
-							log.token_usage
-								? `${formatCompactNumber(log.token_usage.prompt_tokens ?? 0)} / ${formatCompactNumber(log.token_usage.completion_tokens ?? 0)}`
-								: "—"
+							audioSeconds != null
+								? `${audioSeconds}s`
+								: log.token_usage
+									? `${formatCompactNumber(log.token_usage.prompt_tokens ?? 0)} / ${formatCompactNumber(log.token_usage.completion_tokens ?? 0)}`
+									: "—"
 						}
 						sub={
-							log.token_usage
-								? `total ${formatCompactNumber(log.token_usage.total_tokens ?? 0)}${log.token_usage.completion_tokens_details?.reasoning_tokens
-									? ` · reasoning ${formatCompactNumber(log.token_usage.completion_tokens_details.reasoning_tokens)}`
-									: ""
-								}`
-								: "—"
+							audioSeconds != null
+								? "duration billed"
+								: log.token_usage
+									? `total ${formatCompactNumber(log.token_usage.total_tokens ?? 0)}${log.token_usage.completion_tokens_details?.reasoning_tokens
+										? ` · reasoning ${formatCompactNumber(log.token_usage.completion_tokens_details.reasoning_tokens)}`
+										: ""
+									}`
+									: "—"
 						}
 						hasRightBorder
 					/>
@@ -1613,16 +1620,20 @@ export function LogDetailView({
 						label="Cost"
 						value={log.cost != null ? formatCost(log.cost) : "—"}
 						sub={
-							log.cost != null && log.token_usage?.total_tokens
-								? `≈ ${((log.cost / log.token_usage.total_tokens) * 1000).toFixed(6)}＄ per 1k`
-								: ""
+							log.cost != null && audioSeconds
+								? `≈ ${(log.cost / audioSeconds).toFixed(6)}＄ per second`
+								: log.cost != null && log.token_usage?.total_tokens
+									? `≈ ${((log.cost / log.token_usage.total_tokens) * 1000).toFixed(6)}＄ per 1k`
+									: ""
 						}
 						hasRightBorder
 					/>
 					{isRealtimeTurn ? (
 						<HeroStat
-							label="Voice"
-							value={log.metadata?.realtime_voice ? String(log.metadata.realtime_voice) : "\u2014"}
+							label={isRealtimeTranscription ? "Type" : "Voice"}
+							value={
+								isRealtimeTranscription ? "Transcription" : log.metadata?.realtime_voice ? String(log.metadata.realtime_voice) : "\u2014"
+							}
 							sub={log.metadata?.realtime_transport ? formatRealtimeTransport(log.metadata.realtime_transport) : ""}
 						/>
 					) : (

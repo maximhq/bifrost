@@ -501,6 +501,9 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 		}
 	}
 	requestType := extraFields.RequestType
+	if extraFields.PricingRequestType != "" {
+		requestType = extraFields.PricingRequestType
+	}
 
 	// A retrieve is a status read, not a generation. Providers that report the job's cost on the
 	// polled response (e.g. Runware, which echoes it on every getResponse once the task has
@@ -690,14 +693,29 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 
 	case result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil:
 		input.usage = responsesUsageToBifrostUsage(result.ResponsesResponse.Usage)
+		input.audioSeconds = input.usage.AudioSeconds
 		input.tier = tierFromResponse(result.ResponsesResponse.ServiceTier, result.ResponsesResponse.Speed, result.ResponsesResponse.InferenceGeo)
+		if details := result.ResponsesResponse.Usage.InputTokensDetails; details != nil {
+			input.audioTokenDetails = &schemas.TranscriptionUsageInputTokenDetails{
+				AudioTokens: details.AudioTokens,
+				TextTokens:  details.TextTokens,
+			}
+		}
 
 	case result.CompactionResponse != nil && result.CompactionResponse.Usage != nil:
 		input.usage = responsesUsageToBifrostUsage(result.CompactionResponse.Usage)
 
 	case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil && result.ResponsesStreamResponse.Response.Usage != nil:
-		input.usage = responsesUsageToBifrostUsage(result.ResponsesStreamResponse.Response.Usage)
-		input.tier = tierFromResponse(result.ResponsesStreamResponse.Response.ServiceTier, result.ResponsesStreamResponse.Response.Speed, result.ResponsesStreamResponse.Response.InferenceGeo)
+		response := result.ResponsesStreamResponse.Response
+		input.usage = responsesUsageToBifrostUsage(response.Usage)
+		input.audioSeconds = input.usage.AudioSeconds
+		input.tier = tierFromResponse(response.ServiceTier, response.Speed, response.InferenceGeo)
+		if details := response.Usage.InputTokensDetails; details != nil {
+			input.audioTokenDetails = &schemas.TranscriptionUsageInputTokenDetails{
+				AudioTokens: details.AudioTokens,
+				TextTokens:  details.TextTokens,
+			}
+		}
 
 	case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
 		input.usage = result.EmbeddingResponse.Usage
@@ -796,6 +814,7 @@ func responsesUsageToBifrostUsage(u *schemas.ResponsesResponseUsage) *schemas.Bi
 		PromptTokens:     u.InputTokens,
 		CompletionTokens: u.OutputTokens,
 		TotalTokens:      u.TotalTokens,
+		AudioSeconds:     u.AudioSeconds,
 		Cost:             u.Cost,
 	}
 	// Map token details for cache and search query pricing
@@ -829,7 +848,7 @@ func speechUsageToBifrostUsage(u *schemas.SpeechUsage) *schemas.BifrostLLMUsage 
 	}
 }
 
-func extractTranscriptionUsage(u *schemas.TranscriptionUsage) (*schemas.BifrostLLMUsage, *int, *schemas.TranscriptionUsageInputTokenDetails) {
+func extractTranscriptionUsage(u *schemas.TranscriptionUsage) (*schemas.BifrostLLMUsage, *float64, *schemas.TranscriptionUsageInputTokenDetails) {
 	usage := &schemas.BifrostLLMUsage{}
 	if u.InputTokens != nil {
 		usage.PromptTokens = *u.InputTokens
@@ -851,9 +870,10 @@ func extractTranscriptionUsage(u *schemas.TranscriptionUsage) (*schemas.BifrostL
 		}
 	}
 
-	var audioSeconds *int
+	var audioSeconds *float64
 	if u.Seconds != nil {
-		audioSeconds = new(int(*u.Seconds))
+		seconds := float64(*u.Seconds)
+		audioSeconds = &seconds
 	}
 
 	return usage, audioSeconds, audioTokenDetails
@@ -1233,7 +1253,7 @@ func newInputOutputCostWithDetails(inputCost, outputCost float64, inputDetails *
 // input text rather than per token. PromptTokens from usage is treated as the character count
 // since TTS providers report their billable unit in that field.
 // Output falls back to per-second duration when no audio token rate is configured.
-func computeSpeechCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *int, audioTextInputChars int, tier serviceTier) *schemas.BifrostCost {
+func computeSpeechCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *float64, audioTextInputChars int, tier serviceTier) *schemas.BifrostCost {
 	tierTokens := inputTierTokens(usage)
 
 	// Input: per-character rate takes precedence for TTS/audio models
@@ -1266,7 +1286,7 @@ func computeSpeechCost(pricing *configstoreTables.TableModelPricing, usage *sche
 // computeTranscriptionCost handles transcription (STT) requests.
 // Input is audio, output is text (CompletionTokens).
 // Input and output are calculated independently — tokens first, then per-second fallback.
-func computeTranscriptionCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *int, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails, tier serviceTier) *schemas.BifrostCost {
+func computeTranscriptionCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *float64, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails, tier serviceTier) *schemas.BifrostCost {
 	tierTokens := inputTierTokens(usage)
 
 	// Input: audio tokens/details first, then per-second fallback
@@ -1298,7 +1318,7 @@ func computeTranscriptionCost(pricing *configstoreTables.TableModelPricing, usag
 
 // computeAudioInputCost calculates input cost for audio: audio token details first,
 // then generic input tokens, then per-second duration fallback.
-func computeAudioInputCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *int, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails, totalTokens int, tier serviceTier) float64 {
+func computeAudioInputCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *float64, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails, totalTokens int, tier serviceTier) float64 {
 	// Audio token detail pricing (audio + text token breakdown)
 	if audioTokenDetails != nil && (audioTokenDetails.AudioTokens > 0 || audioTokenDetails.TextTokens > 0) {
 		return float64(audioTokenDetails.AudioTokens)*tieredAudioTokenInputRate(pricing, totalTokens, tier) +
@@ -1313,7 +1333,7 @@ func computeAudioInputCost(pricing *configstoreTables.TableModelPricing, usage *
 	// Per-second duration fallback
 	if audioSeconds != nil && *audioSeconds > 0 {
 		if rate := tieredAudioInputPerSecondRate(pricing, totalTokens); rate > 0 {
-			return float64(*audioSeconds) * rate
+			return *audioSeconds * rate
 		}
 	}
 
@@ -1322,7 +1342,7 @@ func computeAudioInputCost(pricing *configstoreTables.TableModelPricing, usage *
 
 // computeAudioOutputCost calculates output cost for audio: audio tokens first,
 // then generic output tokens, then per-second duration fallback.
-func computeAudioOutputCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *int, totalTokens int, tier serviceTier) float64 {
+func computeAudioOutputCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *float64, totalTokens int, tier serviceTier) float64 {
 	// Audio-specific output tokens
 	if usage != nil && usage.CompletionTokens > 0 {
 		return float64(usage.CompletionTokens) * tieredAudioTokenOutputRate(pricing, totalTokens, tier)
@@ -1331,7 +1351,7 @@ func computeAudioOutputCost(pricing *configstoreTables.TableModelPricing, usage 
 	// Per-second duration fallback
 	if audioSeconds != nil && *audioSeconds > 0 {
 		if pricing.OutputCostPerSecond != nil {
-			return float64(*audioSeconds) * *pricing.OutputCostPerSecond
+			return *audioSeconds * *pricing.OutputCostPerSecond
 		}
 	}
 
@@ -2424,7 +2444,8 @@ func passthroughUsageToCostInput(su *schemas.BifrostPassthroughUsage) costInput 
 		input.audioTextInputChars = su.AudioInputChars
 	}
 	if su.AudioSeconds != nil {
-		input.audioSeconds = su.AudioSeconds
+		seconds := float64(*su.AudioSeconds)
+		input.audioSeconds = &seconds
 	}
 	if su.AudioTokenDetails != nil {
 		input.audioTokenDetails = su.AudioTokenDetails

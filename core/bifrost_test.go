@@ -3104,6 +3104,44 @@ func (f *fakeRoutingPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schem
 	return resp, bifrostErr, nil
 }
 
+type postHookResponsePreservingPlugin struct {
+	fakeRoutingPlugin
+	block                 bool
+	seenResponseWithError bool
+}
+
+func (p *postHookResponsePreservingPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if p.block {
+		statusCode := 400
+		return resp, &schemas.BifrostError{
+			StatusCode: &statusCode,
+			Error:      &schemas.ErrorField{Message: "blocked"},
+		}, nil
+	}
+	p.seenResponseWithError = resp != nil && bifrostErr != nil
+	return resp, bifrostErr, nil
+}
+
+func TestRunPostLLMHooksPreservesProviderResponseWithGuardrailError(t *testing.T) {
+	t.Parallel()
+
+	observer := &postHookResponsePreservingPlugin{fakeRoutingPlugin: fakeRoutingPlugin{name: "observer"}}
+	guardrail := &postHookResponsePreservingPlugin{fakeRoutingPlugin: fakeRoutingPlugin{name: "guardrail"}, block: true}
+	pipeline := newRoutingCommitPipeline(observer, guardrail)
+	resp := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{Model: "gpt-4o-transcribe"}}
+
+	gotResp, gotErr := pipeline.RunPostLLMHooks(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), resp, nil, 2)
+	if gotResp != resp {
+		t.Fatalf("response = %#v, want original provider response", gotResp)
+	}
+	if gotErr == nil || gotErr.Error == nil || gotErr.Error.Message != "blocked" {
+		t.Fatalf("error = %#v, want guardrail block", gotErr)
+	}
+	if !observer.seenResponseWithError {
+		t.Fatal("downstream post-hook did not receive both the provider response and guardrail error")
+	}
+}
+
 func newRoutingCommitPipeline(plugins ...schemas.LLMPlugin) *PluginPipeline {
 	return &PluginPipeline{
 		logger:     NewDefaultLogger(schemas.LogLevelError),

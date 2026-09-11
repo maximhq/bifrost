@@ -429,6 +429,7 @@ export interface LLMUsage {
 	prompt_tokens: number;
 	completion_tokens: number;
 	total_tokens: number;
+	audio_seconds?: number;
 	prompt_tokens_details?: TokenDetails;
 	completion_tokens_details?: CompletionTokensDetails;
 }

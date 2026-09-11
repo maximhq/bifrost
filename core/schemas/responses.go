@@ -1297,15 +1297,16 @@ type ResponsesStopDetails struct {
 }
 
 type ResponsesResponseUsage struct {
-	Type                *string                        `json:"type,omitempty"`        // type field is sent by anthropic
-	Model               *string                        `json:"model,omitempty"`       // model that produced this (iteration) attempt; sent on iterations[] for Anthropic server-side fallback
-	InputTokens         int                            `json:"input_tokens"`          // Number of input tokens (prompt tokens + cached tokens)
-	InputTokensDetails  *ResponsesResponseInputTokens  `json:"input_tokens_details"`  // Detailed breakdown of input tokens
-	OutputTokens        int                            `json:"output_tokens"`         // Number of output tokens (completion tokens + reasoning tokens)
-	OutputTokensDetails *ResponsesResponseOutputTokens `json:"output_tokens_details"` // Detailed breakdown of output tokens	TotalTokens int `json:"total_tokens"` // Total number of tokens used
-	TotalTokens         int                            `json:"total_tokens"`          // Total number of tokens used
-	Cost                *BifrostCost                   `json:"cost,omitempty"`        // Only for the providers which support cost calculation
-	Iterations          []ResponsesResponseUsage       `json:"iterations,omitempty"`  // iterations field is sent by anthropic
+	Type                *string                        `json:"type,omitempty"`          // type field is sent by anthropic
+	Model               *string                        `json:"model,omitempty"`         // model that produced this (iteration) attempt; sent on iterations[] for Anthropic server-side fallback
+	InputTokens         int                            `json:"input_tokens"`            // Number of input tokens (prompt tokens + cached tokens)
+	InputTokensDetails  *ResponsesResponseInputTokens  `json:"input_tokens_details"`    // Detailed breakdown of input tokens
+	OutputTokens        int                            `json:"output_tokens"`           // Number of output tokens (completion tokens + reasoning tokens)
+	OutputTokensDetails *ResponsesResponseOutputTokens `json:"output_tokens_details"`   // Detailed breakdown of output tokens	TotalTokens int `json:"total_tokens"` // Total number of tokens used
+	TotalTokens         int                            `json:"total_tokens"`            // Total number of tokens used
+	AudioSeconds        *float64                       `json:"audio_seconds,omitempty"` // Duration-based audio usage when tokens are unavailable
+	Cost                *BifrostCost                   `json:"cost,omitempty"`          // Only for the providers which support cost calculation
+	Iterations          []ResponsesResponseUsage       `json:"iterations,omitempty"`    // iterations field is sent by anthropic
 
 	// xAI-specific usage fields
 	NumSourcesUsed             *int                                 `json:"num_sources_used,omitempty"`

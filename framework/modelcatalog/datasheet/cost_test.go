@@ -11,9 +11,183 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// ---------------------------------------------------------------------------
-// helpers
-// ---------------------------------------------------------------------------
+func TestCalculateCost_RealtimeTranscriptionPricingOverride(t *testing.T) {
+	pricing := configstoreTables.TableModelPricing{
+		Model:                  "gpt-4o-transcribe",
+		Provider:               "openai",
+		Mode:                   "audio_transcription",
+		InputCostPerToken:      bifrost.Ptr(0.0000025),
+		OutputCostPerToken:     bifrost.Ptr(0.00001),
+		InputCostPerAudioToken: bifrost.Ptr(0.0000025),
+	}
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(pricing.Model, pricing.Provider, pricing.Mode): pricing,
+	})
+	resp := &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			Usage: &schemas.ResponsesResponseUsage{
+				InputTokens:  29,
+				OutputTokens: 14,
+				TotalTokens:  43,
+				InputTokensDetails: &schemas.ResponsesResponseInputTokens{
+					AudioTokens: 28,
+					TextTokens:  1,
+				},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:        schemas.RealtimeRequest,
+				PricingRequestType: schemas.TranscriptionRequest,
+				RoutingInfo:        routingInfoFor(schemas.OpenAI, "gpt-4o-transcribe"),
+			},
+		},
+	}
+
+	breakdown := s.CalculateCostBreakdown(resp, nil)
+	require.NotNil(t, breakdown)
+	assert.InDelta(t, 0.0002125, breakdown.TotalCost, 1e-12)
+	assert.InDelta(t, 0.00007, breakdown.InputCostDetails.AudioCost, 1e-12)
+	assert.InDelta(t, 0.0000025, breakdown.InputCostDetails.TextCost, 1e-12)
+	assert.InDelta(t, 0.00014, breakdown.OutputCostDetails.TextCost, 1e-12)
+}
+
+func TestCalculateCost_RealtimeTranscriptionDurationPricing(t *testing.T) {
+	seconds := 3.4
+	pricing := configstoreTables.TableModelPricing{
+		Model:                      "whisper-1",
+		Provider:                   "openai",
+		Mode:                       "audio_transcription",
+		InputCostPerAudioPerSecond: bifrost.Ptr(0.0001),
+	}
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(pricing.Model, pricing.Provider, pricing.Mode): pricing,
+	})
+	resp := &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			Usage: &schemas.ResponsesResponseUsage{AudioSeconds: &seconds},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:        schemas.RealtimeRequest,
+				PricingRequestType: schemas.TranscriptionRequest,
+				RoutingInfo:        routingInfoFor(schemas.OpenAI, "whisper-1"),
+			},
+		},
+	}
+
+	breakdown := s.CalculateCostBreakdown(resp, nil)
+	require.NotNil(t, breakdown)
+	assert.InDelta(t, 0.00034, breakdown.TotalCost, 1e-12)
+	assert.InDelta(t, 0.00034, breakdown.InputCost, 1e-12)
+}
+
+func TestCalculateCost_RealtimeTranscriptionStreamDurationPricing(t *testing.T) {
+	seconds := 3.4
+	pricing := configstoreTables.TableModelPricing{
+		Model:                      "whisper-1",
+		Provider:                   "openai",
+		Mode:                       "audio_transcription",
+		InputCostPerAudioPerSecond: bifrost.Ptr(0.0001),
+	}
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(pricing.Model, pricing.Provider, pricing.Mode): pricing,
+	})
+	resp := &schemas.BifrostResponse{
+		ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Response: &schemas.BifrostResponsesResponse{
+				Usage: &schemas.ResponsesResponseUsage{AudioSeconds: &seconds},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:        schemas.RealtimeRequest,
+				PricingRequestType: schemas.TranscriptionRequest,
+				RoutingInfo:        routingInfoFor(schemas.OpenAI, "whisper-1"),
+			},
+		},
+	}
+
+	breakdown := s.CalculateCostBreakdown(resp, nil)
+	require.NotNil(t, breakdown)
+	assert.InDelta(t, 0.00034, breakdown.TotalCost, 1e-12)
+	assert.InDelta(t, 0.00034, breakdown.InputCost, 1e-12)
+}
+
+func TestCalculateCost_RealtimeTranscriptionStreamSplitTokenPricing(t *testing.T) {
+	pricing := configstoreTables.TableModelPricing{
+		Model:                  "gpt-4o-transcribe",
+		Provider:               "openai",
+		Mode:                   "audio_transcription",
+		InputCostPerToken:      bifrost.Ptr(0.0000025),
+		OutputCostPerToken:     bifrost.Ptr(0.00001),
+		InputCostPerAudioToken: bifrost.Ptr(0.0000025),
+	}
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(pricing.Model, pricing.Provider, pricing.Mode): pricing,
+	})
+	resp := &schemas.BifrostResponse{
+		ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Response: &schemas.BifrostResponsesResponse{
+				Usage: &schemas.ResponsesResponseUsage{
+					InputTokens:  29,
+					OutputTokens: 14,
+					TotalTokens:  43,
+					InputTokensDetails: &schemas.ResponsesResponseInputTokens{
+						AudioTokens: 28,
+						TextTokens:  1,
+					},
+				},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:        schemas.RealtimeRequest,
+				PricingRequestType: schemas.TranscriptionRequest,
+				RoutingInfo:        routingInfoFor(schemas.OpenAI, "gpt-4o-transcribe"),
+			},
+		},
+	}
+
+	breakdown := s.CalculateCostBreakdown(resp, nil)
+	require.NotNil(t, breakdown)
+	assert.InDelta(t, 0.0002125, breakdown.TotalCost, 1e-12)
+	assert.InDelta(t, 0.00007, breakdown.InputCostDetails.AudioCost, 1e-12)
+	assert.InDelta(t, 0.0000025, breakdown.InputCostDetails.TextCost, 1e-12)
+	assert.InDelta(t, 0.00014, breakdown.OutputCostDetails.TextCost, 1e-12)
+}
+
+func TestCalculateCost_NormalRealtimeDoesNotUseTranscriptionPricing(t *testing.T) {
+	pricing := configstoreTables.TableModelPricing{
+		Model:              "gpt-realtime",
+		Provider:           "openai",
+		Mode:               "responses",
+		InputCostPerToken:  bifrost.Ptr(0.000005),
+		OutputCostPerToken: bifrost.Ptr(0.00002),
+	}
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(pricing.Model, pricing.Provider, pricing.Mode): pricing,
+	})
+	resp := &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			Usage: &schemas.ResponsesResponseUsage{InputTokens: 29, OutputTokens: 14, TotalTokens: 43},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.RealtimeRequest,
+				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-realtime"),
+			},
+		},
+	}
+
+	assert.InDelta(t, 0.000425, s.CalculateCost(resp, nil), 1e-12)
+}
+
+func TestCalculateCost_RealtimeTranscriptionMissingPricingIsNonFatal(t *testing.T) {
+	s := testStoreWithPricing(nil)
+	resp := &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			Usage: &schemas.ResponsesResponseUsage{InputTokens: 29, OutputTokens: 14, TotalTokens: 43},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:        schemas.RealtimeRequest,
+				PricingRequestType: schemas.TranscriptionRequest,
+				RoutingInfo:        routingInfoFor(schemas.OpenAI, "unknown-transcription-model"),
+			},
+		},
+	}
+
+	assert.Nil(t, s.CalculateCostBreakdown(resp, nil))
+}
 
 // chatPricing returns a TableModelPricing with the given per-token rates.
 func chatPricing(input, output float64) configstoreTables.TableModelPricing {
@@ -124,11 +298,11 @@ func computeRerankCostTotal(pricing *configstoreTables.TableModelPricing, usage 
 	return bcTotal(computeRerankCost(pricing, usage, tier))
 }
 
-func computeSpeechCostTotal(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *int, audioTextInputChars int, tier serviceTier) float64 {
+func computeSpeechCostTotal(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *float64, audioTextInputChars int, tier serviceTier) float64 {
 	return bcTotal(computeSpeechCost(pricing, usage, audioSeconds, audioTextInputChars, tier))
 }
 
-func computeTranscriptionCostTotal(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *int, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails, tier serviceTier) float64 {
+func computeTranscriptionCostTotal(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *float64, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails, tier serviceTier) float64 {
 	return bcTotal(computeTranscriptionCost(pricing, usage, audioSeconds, audioTokenDetails, tier))
 }
 
@@ -1259,7 +1433,7 @@ func TestComputeSpeechCost_TokensPreferredOverDuration(t *testing.T) {
 		OutputCostPerToken:  bifrost.Ptr(0.00001),
 		OutputCostPerSecond: bifrost.Ptr(0.00025),
 	}
-	seconds := 60
+	seconds := 60.0
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     100,
 		CompletionTokens: 200,
@@ -1280,7 +1454,7 @@ func TestComputeSpeechCost_OutputFallsBackToPerSecond(t *testing.T) {
 		OutputCostPerToken:  bifrost.Ptr(0.000002),
 		OutputCostPerSecond: bifrost.Ptr(0.0001),
 	}
-	seconds := 120
+	seconds := 120.0
 	usage := &schemas.BifrostLLMUsage{PromptTokens: 500}
 	cost := computeSpeechCostTotal(&p, usage, &seconds, 0, serviceTier{})
 	// Input: 500 * $0.000001 = $0.0005
@@ -1351,7 +1525,7 @@ func TestComputeTranscriptionCost_DurationBased(t *testing.T) {
 		OutputCostPerToken: bifrost.Ptr(0.0),
 		InputCostPerSecond: bifrost.Ptr(0.00010278),
 	}
-	seconds := 300 // 5 minutes
+	seconds := 300.0 // 5 minutes
 	cost := computeTranscriptionCostTotal(&p, nil, &seconds, nil, serviceTier{})
 	// 300 * 0.00010278 = 0.030834
 	assert.InDelta(t, 0.030834, cost, 1e-9)
@@ -1415,7 +1589,7 @@ func TestComputeTranscriptionCost_TokenDetailsPreferredOverDuration(t *testing.T
 		InputCostPerAudioPerSecond: bifrost.Ptr(0.0001),
 		InputCostPerAudioToken:     bifrost.Ptr(0.00001),
 	}
-	seconds := 60
+	seconds := 60.0
 	audioDetails := &schemas.TranscriptionUsageInputTokenDetails{
 		AudioTokens: 5000,
 		TextTokens:  1000,
@@ -1436,7 +1610,7 @@ func TestComputeTranscriptionCost_DurationFallbackWhenNoTokens(t *testing.T) {
 		OutputCostPerToken:         bifrost.Ptr(0.000015),
 		InputCostPerAudioPerSecond: bifrost.Ptr(0.0001),
 	}
-	seconds := 60
+	seconds := 60.0
 	usage := &schemas.BifrostLLMUsage{
 		CompletionTokens: 200,
 		TotalTokens:      200,
