@@ -69,8 +69,26 @@ Routing rules evaluate CEL expressions with these available variables:
 ```cel
 model          // Requested model (string)
 provider       // Current provider (string)
-request_type   // Request type (chat_completion, embedding, batch, image_generation, moderation, transcription, translation)
+request_type   // Request type (chat_completion, responses, embedding, count_tokens, image_generation, etc.)
 ```
+
+`request_type` uses Bifrost's normalized request type string. Streaming routes are distinct values with a `_stream` suffix, such as `chat_completion_stream`, `responses_stream`, and `transcription_stream`.
+
+Common values include:
+
+| Value | Typical route |
+|---|---|
+| `chat_completion` | `/v1/chat/completions` |
+| `chat_completion_stream` | Streaming chat completions |
+| `responses` | `/v1/responses` |
+| `responses_stream` | Streaming responses |
+| `embedding` | `/v1/embeddings` |
+| `count_tokens` | Token count routes such as `/v1/responses/input_tokens` or `/anthropic/v1/messages/count_tokens` |
+| `rerank` | `/v1/rerank` |
+| `ocr` | `/v1/ocr` |
+| `image_generation` | `/v1/images/generations` |
+| `speech` | `/v1/audio/speech` |
+| `transcription` | `/v1/audio/transcriptions` |
 
 #### Headers & Parameters
 ```cel
@@ -569,7 +587,48 @@ Route to cheaper provider when budget is exhausted:
 }
 ```
 
-### Use Case 3: Team-Specific Routing
+### Use Case 3: Keep Token Counting on the Primary Provider
+
+`count_tokens` requests include the prompt content and return only a token count. If a generation rule has fallbacks, a failed primary provider can cause the token-count request to be sent to a fallback provider, which may disclose the prompt to a different provider and return a count for a different tokenizer.
+
+Use a sibling rule for `count_tokens` with no fallbacks, and exclude `count_tokens` from the generation rule:
+
+```json
+{
+  "governance": {
+    "routing_rules": [
+      {
+        "id": "gpt4o-token-count",
+        "name": "GPT-4o Token Count",
+        "enabled": true,
+        "cel_expression": "model == \"gpt-4o\" && request_type == \"count_tokens\"",
+        "targets": [
+          { "provider": "openai", "model": "gpt-4o", "weight": 1 }
+        ],
+        "fallbacks": [],
+        "scope": "global",
+        "priority": 0
+      },
+      {
+        "id": "gpt4o-generation",
+        "name": "GPT-4o Generation",
+        "enabled": true,
+        "cel_expression": "model == \"gpt-4o\" && request_type != \"count_tokens\"",
+        "targets": [
+          { "provider": "openai", "model": "gpt-4o", "weight": 1 }
+        ],
+        "fallbacks": ["azure/gpt-4o"],
+        "scope": "global",
+        "priority": 1
+      }
+    ]
+  }
+}
+```
+
+With this pattern, generation traffic can still fail over, while token-counting traffic either uses the primary provider or returns the primary provider error.
+
+### Use Case 4: Team-Specific Routing
 
 Route team-specific requests to their preferred provider:
 
@@ -587,7 +646,7 @@ Route team-specific requests to their preferred provider:
 }
 ```
 
-### Use Case 4: Complex Multi-Condition Routing
+### Use Case 5: Complex Multi-Condition Routing
 
 Combine multiple criteria for sophisticated routing:
 
@@ -604,7 +663,7 @@ Combine multiple criteria for sophisticated routing:
 }
 ```
 
-### Use Case 5: Probabilistic A/B Testing
+### Use Case 6: Probabilistic A/B Testing
 
 Split traffic across providers or models by weight for canary deployments or cost optimization:
 
@@ -623,7 +682,7 @@ Split traffic across providers or models by weight for canary deployments or cos
 
 Each request matching this rule has a 70% chance of going to OpenAI and a 30% chance of going to Groq. Weights must always sum to 1.
 
-### Use Case 6: Regional Routing
+### Use Case 7: Regional Routing
 
 Route based on region headers:
 
