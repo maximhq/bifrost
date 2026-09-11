@@ -145436,6 +145436,158 @@
           }
         }
       ]
+    },
+    {
+      "name": "77. OpenAI Retry-After (#6971)",
+      "description": "Local fixture regression for core retry scheduling. Follow runners/retry-after-fixture.md and set retryAfterFixture=1. The fixture returns 429 with Retry-After, then rejects any early retry with 400. Cases cover delta-seconds, HTTP-date, streaming startup, and a hint exceeding retry_backoff_max. Do not skip 429/400 as infrastructure noise: those statuses are the behavior under test.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('retryAfterFixture') !== '1') { pm.execution.skipRequest(); }"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "OpenAI retry-after-test-model seconds - #6971",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('OpenAI Retry-After seconds - #6971', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, body).to.equal(200);",
+                  "  pm.expect(body).not.to.include('retry-before-retry-after');",
+                  "  pm.expect(pm.response.json().choices[0].message.content, body).to.equal('hello');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/retry-after-seconds\",\"messages\":[{\"role\":\"user\",\"content\":\"{{$guid}}\"}],\"stream\":false}"
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "OpenAI retry-after-test-model HTTP date - #6971",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('OpenAI Retry-After HTTP date - #6971', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, body).to.equal(200);",
+                  "  pm.expect(body).not.to.include('retry-before-retry-after');",
+                  "  pm.expect(pm.response.json().choices[0].message.content, body).to.equal('hello');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/retry-after-date\",\"messages\":[{\"role\":\"user\",\"content\":\"{{$guid}}\"}],\"stream\":false}"
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "OpenAI retry-after-test-model streaming - #6971",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('OpenAI Retry-After streaming - #6971', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, body).to.equal(200);",
+                  "  pm.expect(body).not.to.include('retry-before-retry-after');",
+                  "  pm.expect(pm.response.headers.get('Content-Type')).to.include('text/event-stream');",
+                  "  pm.expect(body).to.include('hello');",
+                  "  pm.expect(body).to.include('[DONE]');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/retry-after-seconds\",\"messages\":[{\"role\":\"user\",\"content\":\"{{$guid}}\"}],\"stream\":true}"
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "OpenAI retry-after-test-model backoff cap - #6971",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('OpenAI Retry-After backoff cap - #6971', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, body).to.equal(429);",
+                  "  pm.expect(body).not.to.include('retry-before-retry-after');",
+                  "  pm.expect(pm.response.headers.get('Retry-After')).to.equal('60');",
+                  "  pm.expect(body).to.include('fixture rate limit');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/retry-after-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"{{$guid}}\"}],\"stream\":false}"
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        }
+      ]
     }
   ]
 }
