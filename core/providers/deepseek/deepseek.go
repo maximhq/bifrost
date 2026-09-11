@@ -232,6 +232,7 @@ func (provider *DeepSeekProvider) ChatCompletion(ctx *schemas.BifrostContext, ke
 			request,
 			anthropic.AnthropicRequestBuildConfig{
 				Provider:                  schemas.DeepSeek,
+				BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
 				ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 				ShouldSendBackRawResponse: provider.sendBackRawResponse,
 			},
@@ -331,6 +332,8 @@ func (provider *DeepSeekProvider) Responses(ctx *schemas.BifrostContext, key sch
 			request,
 			anthropic.AnthropicRequestBuildConfig{
 				Provider:                  schemas.DeepSeek,
+				ValidateTools:             true,
+				BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
 				ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 				ShouldSendBackRawResponse: provider.sendBackRawResponse,
 			},
@@ -356,6 +359,7 @@ func (provider *DeepSeekProvider) ResponsesStream(ctx *schemas.BifrostContext, p
 	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
 		jsonData, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
 			Provider:                  schemas.DeepSeek,
+			ValidateTools:             true,
 			IsStreaming:               true,
 			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 			ShouldSendBackRawResponse: provider.sendBackRawResponse,
@@ -553,6 +557,7 @@ func (provider *DeepSeekProvider) CountTokens(ctx *schemas.BifrostContext, key s
 		request,
 		anthropic.AnthropicRequestBuildConfig{
 			Provider:                  schemas.DeepSeek,
+			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
 			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 			ShouldSendBackRawResponse: provider.sendBackRawResponse,
 		},
