@@ -110,17 +110,23 @@ const FilterSchema = `{
     "end_time": {"type": "string", "description": "RFC3339 timestamp. Defaults to now."},
     "providers": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "e.g. openai, anthropic, bedrock."},
     "models": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
-    "status": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "success or error."},
+    "status": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "success, error, or cancelled."},
+    "stop_reasons": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "e.g. stop, length, content_filter, tool_calls. Call describe_filter_space to see which actually occur."},
+    "objects": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Request type, e.g. chat_completion, embedding, speech, transcription, image_generation, video_generation. Use this to exclude non-chat traffic - embeddings, speech, and image/video generation have their own cost and latency shape and otherwise get averaged in with chat requests."},
     "virtual_key_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
     "team_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
     "customer_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
     "user_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
     "business_unit_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
+    "project_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
     "apps": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
     "min_latency": {"type": "number", "description": "Milliseconds."},
     "max_latency": {"type": "number", "description": "Milliseconds."},
+    "min_tokens": {"type": "integer", "description": "Total tokens on the request."},
+    "max_tokens": {"type": "integer", "description": "Total tokens on the request."},
     "min_cost": {"type": "number"},
     "max_cost": {"type": "number"},
+    "cache_hit_types": {"type": "array", "items": {"type": "string", "enum": ["direct", "semantic"]}, "minItems": 1, "maxItems": 50, "description": "Local-cache hit type: direct (exact match) or semantic (fuzzy match)."},
     "content_search": {"type": "string", "minLength": 1, "maxLength": 500, "description": "Substring match against request and response content. Omit the field rather than sending an empty string."},
     "scope": {"type": "string", "enum": ["caller", "all"], "description": "Whose traffic. Omitting it defaults to the caller's own traffic only when the caller is identified; when nobody is identified there is no default and the query is bounded only by that deployment's access rules, so ask whose traffic is meant first. Use \"all\" when the question is explicitly about everyone's - it widens the question, not the permission, so results are still limited to what the caller may see."}
   }
@@ -140,10 +146,11 @@ func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, e
 
 	known := map[string]bool{
 		"start_time": true, "end_time": true, "providers": true, "models": true,
-		"status": true, "virtual_key_ids": true, "team_ids": true, "customer_ids": true,
-		"user_ids": true, "business_unit_ids": true, "apps": true, "min_latency": true,
-		"max_latency": true, "min_cost": true, "max_cost": true, "content_search": true,
-		"scope": true,
+		"status": true, "stop_reasons": true, "objects": true, "virtual_key_ids": true,
+		"team_ids": true, "customer_ids": true, "user_ids": true, "business_unit_ids": true,
+		"project_ids": true, "apps": true, "min_latency": true, "max_latency": true,
+		"min_tokens": true, "max_tokens": true, "min_cost": true, "max_cost": true,
+		"cache_hit_types": true, "content_search": true, "scope": true,
 	}
 	unknown := []string{}
 	for key := range raw {
@@ -153,7 +160,7 @@ func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, e
 	}
 	if len(unknown) > 0 {
 		sort.Strings(unknown)
-		return nil, fmt.Errorf("unknown filter fields: %s. Supported fields are: start_time, end_time, providers, models, status, virtual_key_ids, team_ids, customer_ids, user_ids, business_unit_ids, apps, min_latency, max_latency, min_cost, max_cost, content_search, scope", strings.Join(unknown, ", "))
+		return nil, fmt.Errorf("unknown filter fields: %s. Supported fields are: start_time, end_time, providers, models, status, stop_reasons, objects, virtual_key_ids, team_ids, customer_ids, user_ids, business_unit_ids, project_ids, apps, min_latency, max_latency, min_tokens, max_tokens, min_cost, max_cost, cache_hit_types, content_search, scope", strings.Join(unknown, ", "))
 	}
 
 	// Presence is checked here, not left to parseTime: indexing a map gives nil
@@ -189,11 +196,17 @@ func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, e
 	}
 	filters.StartTime, filters.EndTime = start, end
 
+	// HEAD's validating field readers are kept over the replayed side's silent
+	// coercions: a filter that rejects a malformed value is the whole point of
+	// parseFilters, and the new fields this commit adds get the same treatment
+	// rather than a second, laxer path alongside it.
 	for key, target := range map[string]*[]string{
 		"providers": &filters.Providers, "models": &filters.Models, "status": &filters.Status,
+		"stop_reasons": &filters.StopReasons, "objects": &filters.Objects,
 		"virtual_key_ids": &filters.VirtualKeyIDs, "team_ids": &filters.TeamIDs,
 		"customer_ids": &filters.CustomerIDs, "user_ids": &filters.UserIDs,
-		"business_unit_ids": &filters.BusinessUnitIDs, "apps": &filters.Apps,
+		"business_unit_ids": &filters.BusinessUnitIDs, "project_ids": &filters.ProjectIDs,
+		"apps": &filters.Apps, "cache_hit_types": &filters.CacheHitTypes,
 	} {
 		values, err := stringSliceField(raw, key)
 		if err != nil {
@@ -206,6 +219,15 @@ func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, e
 		"min_cost": &filters.MinCost, "max_cost": &filters.MaxCost,
 	} {
 		value, err := floatField(raw, key)
+		if err != nil {
+			return nil, err
+		}
+		*target = value
+	}
+	for key, target := range map[string]**int{
+		"min_tokens": &filters.MinTokens, "max_tokens": &filters.MaxTokens,
+	} {
+		value, err := intPtrChecked(raw[key], key)
 		if err != nil {
 			return nil, err
 		}
@@ -402,6 +424,41 @@ func floatPtr(value any) *float64 {
 		return nil
 	}
 	return &number
+}
+
+// intPtr reads an optional JSON number into an int pointer. JSON numbers
+// decode as float64 regardless of the schema's declared type, so this takes
+// the same path as floatPtr rather than a type assertion to int.
+func intPtr(value any) *int {
+	number, ok := value.(float64)
+	if !ok {
+		return nil
+	}
+	result := int(number)
+	return &result
+}
+
+// intPtrChecked reads an optional JSON number into an int pointer, rejecting
+// values that don't round-trip cleanly into a platform int. Unlike intPtr,
+// which silently truncates, this is for filters that feed a log-store
+// comparison directly: a fractional or out-of-range bound truncated to some
+// other int would query on a threshold the caller never asked for, and
+// neither the model nor the reader would know.
+func intPtrChecked(value any, field string) (*int, error) {
+	if value == nil {
+		return nil, nil
+	}
+	number, ok := value.(float64)
+	if !ok {
+		return nil, fmt.Errorf("%s must be an integer", field)
+	}
+	if number != math.Trunc(number) {
+		return nil, fmt.Errorf("%s must be an integer, got %v", field, number)
+	}
+	if number < float64(math.MinInt) || number > float64(math.MaxInt) {
+		return nil, fmt.Errorf("%s is out of range: %v", field, number)
+	}
+	return intPtr(value), nil
 }
 
 // intArg reads an optional bounded integer.
@@ -755,8 +812,7 @@ func buildToolsFor(searcher *SemanticSearcher) []Tool {
 		countLogsTool(),
 		getLogDetailTool(),
 		queryMetricsTool(),
-		queryUsersTool(),
-		queryVirtualKeysTool(),
+		queryUsageByTool(),
 		queryModelsTool(),
 		describeFilterSpaceTool(),
 		describeScopeTool(),

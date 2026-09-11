@@ -10,8 +10,17 @@ export function formatCost(value: number): string {
 	return "$0.00";
 }
 
-export function TrendBadge({ value, positiveIsGood = true, isNew = false }: { value: number; positiveIsGood?: boolean; isNew?: boolean }) {
-	if (isNew) {
+export function TrendBadge({
+	value,
+	positiveIsGood = true,
+	isNew = false,
+}: {
+	value: number | null;
+	positiveIsGood?: boolean;
+	isNew?: boolean;
+}) {
+	// null: the previous period had none of this metric, so there is no percentage.
+	if (isNew || value === null) {
 		return <span className="inline-flex items-center gap-0.5 text-xs font-medium text-blue-600 dark:text-blue-400">new</span>;
 	}
 

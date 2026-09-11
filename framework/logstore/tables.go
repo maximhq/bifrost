@@ -2393,13 +2393,16 @@ type ModelRankingEntry struct {
 }
 
 // ModelRankingTrend represents the percentage change compared to the previous period.
+// TokensTrend and CostTrend are nil when the previous period had none of that
+// metric but this one does - there is no percentage to report, and 0 would
+// claim the metric held steady.
 type ModelRankingTrend struct {
-	HasPreviousPeriod bool    `json:"has_previous_period"`
-	RequestsTrend     float64 `json:"requests_trend"`
-	TokensTrend       float64 `json:"tokens_trend"`
-	CostTrend         float64 `json:"cost_trend"`
-	LatencyTrend      float64 `json:"latency_trend"`
-	ThroughputTrend   float64 `json:"throughput_trend"`
+	HasPreviousPeriod bool     `json:"has_previous_period"`
+	RequestsTrend     float64  `json:"requests_trend"`
+	TokensTrend       *float64 `json:"tokens_trend"`
+	CostTrend         *float64 `json:"cost_trend"`
+	LatencyTrend      float64  `json:"latency_trend"`
+	ThroughputTrend   float64  `json:"throughput_trend"`
 }
 
 // ModelRankingWithTrend combines ranking entry with trend data.
@@ -2422,11 +2425,12 @@ type UserRankingEntry struct {
 }
 
 // UserRankingTrend represents the percentage change compared to the previous period.
+// TokensTrend and CostTrend follow ModelRankingTrend's nil convention.
 type UserRankingTrend struct {
-	HasPreviousPeriod bool    `json:"has_previous_period"`
-	RequestsTrend     float64 `json:"requests_trend"`
-	TokensTrend       float64 `json:"tokens_trend"`
-	CostTrend         float64 `json:"cost_trend"`
+	HasPreviousPeriod bool     `json:"has_previous_period"`
+	RequestsTrend     float64  `json:"requests_trend"`
+	TokensTrend       *float64 `json:"tokens_trend"`
+	CostTrend         *float64 `json:"cost_trend"`
 }
 
 // UserRankingWithTrend combines ranking entry with trend data.
@@ -2495,11 +2499,13 @@ type DimensionRankingEntry struct {
 	TotalCost     float64 `json:"total_cost"`
 }
 
+// DimensionRankingTrend follows ModelRankingTrend's nil convention for
+// TokensTrend and CostTrend.
 type DimensionRankingTrend struct {
-	HasPreviousPeriod bool    `json:"has_previous_period"`
-	RequestsTrend     float64 `json:"requests_trend"`
-	TokensTrend       float64 `json:"tokens_trend"`
-	CostTrend         float64 `json:"cost_trend"`
+	HasPreviousPeriod bool     `json:"has_previous_period"`
+	RequestsTrend     float64  `json:"requests_trend"`
+	TokensTrend       *float64 `json:"tokens_trend"`
+	CostTrend         *float64 `json:"cost_trend"`
 }
 
 type DimensionRankingWithTrend struct {
