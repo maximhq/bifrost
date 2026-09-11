@@ -754,3 +754,184 @@ func TestFinalizeResponseWithLargeDetection_GzipClassifiedByDecompressedSize(t *
 		t.Fatalf("decompressed body: got %d bytes, want %d", len(got), len(plain))
 	}
 }
+
+// closingUpstream accepts connections, reads the request once, then closes the
+// socket without sending a single response byte: the shape of Failover Bench
+// S05 ("TCP reset before headers") and of any upstream that dies mid-request.
+type closingUpstream struct {
+	ln       net.Listener
+	accepted atomic.Int32
+}
+
+func newClosingUpstream(t *testing.T) *closingUpstream {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &closingUpstream{ln: ln}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			s.accepted.Add(1)
+			go func() {
+				buf := make([]byte, 64*1024)
+				_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+				_, _ = conn.Read(buf)
+				_ = conn.Close()
+			}()
+		}
+	}()
+	t.Cleanup(func() { ln.Close() })
+	return s
+}
+
+func (s *closingUpstream) URL() string { return "http://" + s.ln.Addr().String() }
+
+// TestContextTransport_FreshDialCloseBeforeHeadersNotRetried is a regression
+// test for issue #7035. fasthttp's RetryIfErr hook (StaleConnectionRetryIfErr)
+// exists to walk past pooled keep-alive sockets the upstream already closed. A
+// socket dialed for this very request and then closed before any response byte
+// is not stale, it is the upstream failing; fasthttp must not retry it on its
+// own, so that Bifrost's max_retries stays the only retry budget.
+func TestContextTransport_FreshDialCloseBeforeHeadersNotRetried(t *testing.T) {
+	upstream := newClosingUpstream(t)
+
+	base := &fasthttp.Client{ReadTimeout: 2 * time.Second, WriteTimeout: 2 * time.Second}
+	ConfigureDialer(base, true)
+	stream := BuildStreamingClient(base)
+
+	req, resp := newSilentStreamingRequest(upstream.URL())
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	if err := DoStreamingRequest(context.Background(), stream, req, resp); err == nil {
+		t.Fatal("DoStreamingRequest succeeded against an upstream that never answers")
+	}
+	if got := upstream.accepted.Load(); got != 1 {
+		t.Fatalf("upstream accepted %d connection(s) for one request, want 1: fasthttp retried a fresh dial on its own (issue #7035)", got)
+	}
+}
+
+// TestContextTransport_PooledStaleConnStillRetried guards what the fresh-dial
+// rule must not take away (issue #4496): a request that lands on a pooled
+// keep-alive socket the upstream has since closed is retried by fasthttp on a
+// new socket, transparently to the caller.
+func TestContextTransport_PooledStaleConnStillRetried(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	var accepted atomic.Int32
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			n := accepted.Add(1)
+			go func() {
+				defer conn.Close()
+				br := bufio.NewReader(conn)
+				for {
+					httpReq, err := http.ReadRequest(br)
+					if err != nil {
+						return
+					}
+					_, _ = io.Copy(io.Discard, httpReq.Body)
+					_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}")
+					if n == 1 {
+						// The upstream's keep-alive expires while the client still
+						// holds the socket in its pool.
+						time.Sleep(50 * time.Millisecond)
+						return
+					}
+				}
+			}()
+		}
+	}()
+
+	client := ConfigureDialer(&fasthttp.Client{ReadTimeout: 2 * time.Second, WriteTimeout: 2 * time.Second}, true)
+	target := "http://" + ln.Addr().String()
+	for i := 1; i <= 2; i++ {
+		req, resp := newSilentStreamingRequest(target)
+		if err := client.Do(req, resp); err != nil {
+			t.Fatalf("request %d failed: %v (upstream accepted %d)", i, err, accepted.Load())
+		}
+		if resp.StatusCode() != http.StatusOK {
+			t.Fatalf("request %d status = %d, want 200", i, resp.StatusCode())
+		}
+		fasthttp.ReleaseRequest(req)
+		fasthttp.ReleaseResponse(resp)
+		if i == 1 {
+			time.Sleep(150 * time.Millisecond)
+		}
+	}
+	if got := accepted.Load(); got != 2 {
+		t.Fatalf("upstream accepted %d connection(s), want 2 (pooled socket found dead, one redial)", got)
+	}
+}
+
+// TestContextTransport_PooledConnTruncatedBodyNotRetried: once a status line
+// has been parsed the upstream has processed the request, so a body that is
+// cut short must surface as an error rather than replay the POST on a new
+// socket. The stale-connection walk is for sockets that fail before any
+// response byte.
+func TestContextTransport_PooledConnTruncatedBodyNotRetried(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	var requests atomic.Int32
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				br := bufio.NewReader(conn)
+				for {
+					httpReq, err := http.ReadRequest(br)
+					if err != nil {
+						return
+					}
+					_, _ = io.Copy(io.Discard, httpReq.Body)
+					if requests.Add(1) == 2 {
+						// Headers promise 100 bytes; the socket dies after two.
+						_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{}")
+						return
+					}
+					_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}")
+				}
+			}()
+		}
+	}()
+
+	client := ConfigureDialer(&fasthttp.Client{ReadTimeout: 2 * time.Second, WriteTimeout: 2 * time.Second}, true)
+	target := "http://" + ln.Addr().String()
+
+	req, resp := newSilentStreamingRequest(target)
+	if err := client.Do(req, resp); err != nil {
+		t.Fatalf("first request failed: %v", err)
+	}
+	fasthttp.ReleaseRequest(req)
+	fasthttp.ReleaseResponse(resp)
+
+	req, resp = newSilentStreamingRequest(target)
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+	err = client.Do(req, resp)
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("upstream served %d request(s), want 2: the truncated response was replayed on a new socket (err=%v)", got, err)
+	}
+	if err == nil {
+		t.Fatal("second request succeeded despite a truncated body")
+	}
+}

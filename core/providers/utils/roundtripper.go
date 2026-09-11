@@ -105,10 +105,13 @@ var errTooManyInterimResponses = errors.New("too many 1xx interim responses")
 // watcher could close a socket that is about to be pooled.
 var testHookBeforeConnRelease func()
 
-// RoundTrip implements fasthttp.RoundTripper. The retry flag follows the default
-// transport: true for failures before the response headers were parsed (the
-// server has not processed the request, or the pooled connection was stale),
-// except ErrBodyTooLarge which would only repeat.
+// RoundTrip implements fasthttp.RoundTripper. The retry flag is true only for a
+// failure before the response headers were parsed on a connection reused from
+// the pool: the upstream may have closed it while idle, and RetryIfErr
+// (network.StaleConnectionRetryIfErr) walks past such sockets. The same failure
+// on a socket dialed for this request is the upstream failing, so it is
+// reported without a fasthttp-level retry and counts against Bifrost's own
+// max_retries (maximhq/bifrost#7035). ErrBodyTooLarge never retries.
 func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Request, resp *fasthttp.Response) (retry bool, err error) {
 	ctx := lookupRequestContext(req)
 	if ctxErr := ctx.Err(); ctxErr != nil {
@@ -123,13 +126,19 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 	}
 	conn := cc.Conn()
 	resp.ParseNetConn(conn)
+	// fasthttp stamps lastUseTime only when a connection is returned to the
+	// pool, so a zero value means this socket was dialed for this request.
+	reused := !cc.LastUseTime().IsZero()
+	retryOn := func(err error) bool {
+		return reused && !errors.Is(err, fasthttp.ErrBodyTooLarge)
+	}
 
 	watcher := startCancelWatcher(ctx, conn)
 	defer watcher.stop()
 
 	if err = conn.SetWriteDeadline(deadlineFor(hc.WriteTimeout, ctx)); err != nil {
 		hc.CloseConn(cc)
-		return true, err
+		return retryOn(err), watcher.classify(err)
 	}
 
 	resetConnection := false
@@ -149,12 +158,14 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 	hc.ReleaseWriter(bw)
 	if err != nil {
 		hc.CloseConn(cc)
-		return true, watcher.classify(err)
+		return retryOn(err), watcher.classify(err)
 	}
 
+	// Setting a deadline fails with "use of closed network connection" when the
+	// watcher closed the socket a moment ago; classify turns that into ctx.Err().
 	if err = conn.SetReadDeadline(deadlineFor(hc.ReadTimeout, ctx)); err != nil {
 		hc.CloseConn(cc)
-		return true, err
+		return retryOn(err), watcher.classify(err)
 	}
 
 	if customSkipBody || req.Header.IsHead() {
@@ -167,13 +178,24 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 	br := hc.AcquireReader(conn)
 
 	if !resp.StreamBody {
-		// Buffered body: identical to the default transport. The read deadline
-		// covers the whole response, which is what a unary call wants.
-		err = resp.ReadLimitBody(br, hc.MaxResponseBodySize)
+		// Buffered body: the read deadline covers the whole response, which is
+		// what a unary call wants. Headers and body are read as two steps so a
+		// failure can be told apart by whether the upstream ever answered: a
+		// failure before the status line is parsed is what the stale keep-alive
+		// walk (RetryIfErr) exists for, while a body cut short after it means the
+		// upstream has processed the request, so the POST surfaces as an error
+		// and is never replayed on a new socket.
+		resp.ResetBody()
+		if err = readResponseHeaders(resp, br); err != nil {
+			hc.ReleaseReader(br)
+			hc.CloseConn(cc)
+			return retryOn(err), watcher.classify(err)
+		}
+		err = readBufferedBody(resp, br, hc.MaxResponseBodySize)
 		hc.ReleaseReader(br)
 		if err != nil {
 			hc.CloseConn(cc)
-			return err != fasthttp.ErrBodyTooLarge, watcher.classify(err)
+			return false, watcher.classify(err)
 		}
 		// The watcher must not outlive our ownership of the socket: once the
 		// connection is pooled, a late cancellation would close a connection
@@ -199,7 +221,7 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 	if err = readResponseHeaders(resp, br); err != nil {
 		hc.ReleaseReader(br)
 		hc.CloseConn(cc)
-		return err != fasthttp.ErrBodyTooLarge, watcher.classify(err)
+		return retryOn(err), watcher.classify(err)
 	}
 
 	// Headers are in: the header wait is over. From here on the body is bounded
@@ -271,6 +293,29 @@ func readResponseHeaders(resp *fasthttp.Response, br *bufio.Reader) error {
 			return err
 		}
 	}
+}
+
+// readBufferedBody mirrors the body half of Response.ReadLimitBody (fasthttp
+// v1.74.0 http.go:1657-1673) once readResponseHeaders has parsed the headers:
+// bodies that HTTP forbids are skipped, and a chunked body's trailer is consumed
+// so a keep-alive connection is left aligned for reuse.
+func readBufferedBody(resp *fasthttp.Response, br *bufio.Reader, maxBodySize int) error {
+	status := resp.Header.StatusCode()
+	if resp.SkipBody || status == fasthttp.StatusNoContent || status == fasthttp.StatusNotModified || (status >= 100 && status <= 199) {
+		return nil
+	}
+	if err := resp.ReadBody(br, maxBodySize); err != nil {
+		return err
+	}
+	if resp.Header.ContentLength() == -1 {
+		if err := resp.Header.ReadTrailer(br); err != nil {
+			if errors.Is(err, io.EOF) {
+				return io.ErrUnexpectedEOF
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 // newStreamBodyReader builds the body decoder for a streamed response from its
