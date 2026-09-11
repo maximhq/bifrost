@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/maximhq/bifrost/framework/logstore"
 )
@@ -13,6 +14,29 @@ import (
 // Each flow is one tool over the logstore read surface; they all take the same
 // filter object, which is what lets one parser and one scope path serve every
 // one of them.
+
+// formatWindow renders a window the way every tool result reports it: an
+// absolute UTC instant, regardless of whether the caller passed a relative
+// offset, an absolute date, or nothing.
+func formatWindow(start, end time.Time) map[string]string {
+	return map[string]string{
+		"start": start.UTC().Format("2006-01-02T15:04:05Z"),
+		"end":   end.UTC().Format("2006-01-02T15:04:05Z"),
+	}
+}
+
+// resolvedWindow reports the absolute window filters actually resolved to.
+//
+// The system prompt requires every answer with numbers to end with an
+// absolute-time provenance block, but "-7d" only becomes an absolute instant
+// inside parseFilters - the model was never told that instant anywhere else,
+// which meant reconstructing it by hand from the current-time reference at
+// the bottom of the prompt, the exact kind of arithmetic that produces a
+// subtly wrong footer. Every flow that resolves a window reports it back
+// here so the model copies rather than recomputes it.
+func resolvedWindow(filters *logstore.SearchFilters) map[string]string {
+	return formatWindow(*filters.StartTime, *filters.EndTime)
+}
 
 // ---------------------------------------------------------------- flow 1: logs
 
@@ -52,6 +76,7 @@ func semanticSearchLogsTool() Tool {
 				"threshold": result.Threshold,
 				"scope":     scopeNote(filters, deps.scope),
 				"logs_link": logsViewLink(filters),
+				"window":    resolvedWindow(filters),
 			}
 			if result.Returned == 0 {
 				// Four bare fields read as "search is useless here", and the
@@ -118,6 +143,7 @@ func queryLogsTool() Tool {
 				"total_matching": result.Pagination.TotalCount,
 				"scope":          scopeNote(filters, deps.scope),
 				"logs_link":      logsViewLink(filters),
+				"window":         resolvedWindow(filters),
 			}, nil
 		},
 	}
@@ -192,6 +218,7 @@ func countLogsTool() Tool {
 				"average_latency_ms": stats.AverageLatency,
 				"scope":              scopeNote(filters, deps.scope),
 				"logs_link":          logsViewLink(filters),
+				"window":             resolvedWindow(filters),
 			}
 			// The advice travels with the number rather than living only in the
 			// prompt: this is the moment the decision gets made, and the threshold
@@ -219,8 +246,8 @@ func queryMetricsTool() Tool {
 	return Tool{
 		name: "query_metrics",
 		description: "Aggregate statistics and time series over requests: totals, cost, tokens, latency percentiles, throughput. " +
-			"This is the cheapest way to answer 'how much', 'how many' and 'is it getting worse'. Series are returned summarized (total, mean, min, max, first, last) rather than bucket by bucket. " +
-			"group_by supports 'none' and 'provider' only. " +
+			"This is the cheapest way to answer 'how much', 'how many' and 'is it getting worse'. Without group_by, each series is reduced to one summary per field (total, mean, min, max, first, last) rather than bucket by bucket - total is omitted for a field summing cannot describe, like a percentile. " +
+			"group_by supports 'none' and 'provider' only. With 'provider', series stay as coarse buckets instead of a summary, since collapsing away the per-provider split would defeat the reason to group by it in the first place. " +
 			"Set compare_to_previous with metrics including summary to answer 'is it up or down vs last period' in this one call, instead of calling this twice with a shifted window.",
 		schemaJSON: `{
   "type": "object",
@@ -255,18 +282,26 @@ func queryMetricsTool() Tool {
 				return nil, fmt.Errorf("compare_to_previous requires metrics to include \"summary\"")
 			}
 
+			// Every non-grouped series below is reduced to a seriesSummary and the
+			// buckets discarded, so a finer bucket only improves the summary's
+			// fidelity - it costs nothing in result size. The per-provider path
+			// returns its buckets raw (see the byProvider branches), so it keeps
+			// the coarse bucket size that path has always needed to stay bounded.
 			bucket, err := bucketSize(filters)
 			if err != nil {
 				return nil, err
+			}
+			var providerBucket int64
+			if byProvider {
+				if providerBucket, err = coarseBucketSize(filters); err != nil {
+					return nil, err
+				}
 			}
 
 			out := map[string]any{
 				"scope":     scopeNote(filters, deps.scope),
 				"logs_link": logsViewLink(filters),
-				"window": map[string]string{
-					"start": filters.StartTime.UTC().Format("2006-01-02T15:04:05Z"),
-					"end":   filters.EndTime.UTC().Format("2006-01-02T15:04:05Z"),
-				},
+				"window":    resolvedWindow(filters),
 			}
 			for _, metric := range metrics {
 				switch metric {
@@ -288,10 +323,10 @@ func queryMetricsTool() Tool {
 					if err != nil {
 						return nil, fmt.Errorf("request histogram failed: %w", err)
 					}
-					out["requests"] = result
+					out["requests"] = summarizeRequestsHistogram(result)
 				case "tokens":
 					if byProvider {
-						result, err := deps.logManager.GetProviderTokenHistogram(ctx, filters, bucket)
+						result, err := deps.logManager.GetProviderTokenHistogram(ctx, filters, providerBucket)
 						if err != nil {
 							return nil, fmt.Errorf("token histogram failed: %w", err)
 						}
@@ -302,10 +337,10 @@ func queryMetricsTool() Tool {
 					if err != nil {
 						return nil, fmt.Errorf("token histogram failed: %w", err)
 					}
-					out["tokens"] = result
+					out["tokens"] = summarizeTokensHistogram(result)
 				case "cost":
 					if byProvider {
-						result, err := deps.logManager.GetProviderCostHistogram(ctx, filters, bucket)
+						result, err := deps.logManager.GetProviderCostHistogram(ctx, filters, providerBucket)
 						if err != nil {
 							return nil, fmt.Errorf("cost histogram failed: %w", err)
 						}
@@ -316,10 +351,10 @@ func queryMetricsTool() Tool {
 					if err != nil {
 						return nil, fmt.Errorf("cost histogram failed: %w", err)
 					}
-					out["cost"] = result
+					out["cost"] = summarizeCostHistogram(result)
 				case "latency":
 					if byProvider {
-						result, err := deps.logManager.GetProviderLatencyHistogram(ctx, filters, bucket)
+						result, err := deps.logManager.GetProviderLatencyHistogram(ctx, filters, providerBucket)
 						if err != nil {
 							return nil, fmt.Errorf("latency histogram failed: %w", err)
 						}
@@ -330,10 +365,10 @@ func queryMetricsTool() Tool {
 					if err != nil {
 						return nil, fmt.Errorf("latency histogram failed: %w", err)
 					}
-					out["latency"] = result
+					out["latency"] = summarizeLatencyHistogram(result)
 				case "throughput":
 					if byProvider {
-						result, err := deps.logManager.GetProviderThroughputHistogram(ctx, filters, bucket)
+						result, err := deps.logManager.GetProviderThroughputHistogram(ctx, filters, providerBucket)
 						if err != nil {
 							return nil, fmt.Errorf("throughput histogram failed: %w", err)
 						}
@@ -344,7 +379,7 @@ func queryMetricsTool() Tool {
 					if err != nil {
 						return nil, fmt.Errorf("throughput histogram failed: %w", err)
 					}
-					out["throughput"] = result
+					out["throughput"] = summarizeThroughputHistogram(result)
 				default:
 					return nil, fmt.Errorf("unknown metric %q; supported: summary, requests, tokens, cost, latency, throughput", metric)
 				}
@@ -379,10 +414,7 @@ func previousPeriodTrend(ctx context.Context, deps *ToolDeps, filters *logstore.
 		"requests_trend":      0.0,
 		"tokens_trend":        0.0,
 		"cost_trend":          0.0,
-		"window": map[string]string{
-			"start": prevStart.UTC().Format("2006-01-02T15:04:05Z"),
-			"end":   prevEnd.UTC().Format("2006-01-02T15:04:05Z"),
-		},
+		"window":              formatWindow(prevStart, prevEnd),
 	}
 	if previous.TotalRequests > 0 {
 		trend["requests_trend"] = pctChange(float64(previous.TotalRequests), float64(current.TotalRequests))
@@ -400,6 +432,163 @@ func pctChange(old, new float64) float64 {
 		return 0
 	}
 	return (new - old) / old * 100
+}
+
+// seriesSummary reduces a numeric series to its shape rather than its detail:
+// the same handful of numbers whether the window was an hour or a month,
+// which is what actually makes query_metrics cheap regardless of range - the
+// tool's own description has claimed this since it was written, but nothing
+// executed it; a full-resolution bucket array was returned instead, and nothing
+// stopped that array from being the thing that blew the result-size budget.
+//
+// Total is a pointer, omitted from JSON when nil, because it is only a real
+// number for an additive field (a request count, a token count). Summing a
+// percentile or a rate across buckets is not a total, it is nonsense with a
+// unit on it, so summarizeSeries is never asked to compute one for those.
+type seriesSummary struct {
+	Total *float64 `json:"total,omitempty"`
+	Mean  float64  `json:"mean"`
+	Min   float64  `json:"min"`
+	Max   float64  `json:"max"`
+	First float64  `json:"first"`
+	Last  float64  `json:"last"`
+}
+
+func summarizeSeries(values []float64, additive bool) seriesSummary {
+	if len(values) == 0 {
+		return seriesSummary{}
+	}
+	sum, min, max := 0.0, values[0], values[0]
+	for _, v := range values {
+		sum += v
+		if v < min {
+			min = v
+		}
+		if v > max {
+			max = v
+		}
+	}
+	summary := seriesSummary{
+		Mean:  sum / float64(len(values)),
+		Min:   min,
+		Max:   max,
+		First: values[0],
+		Last:  values[len(values)-1],
+	}
+	if additive {
+		summary.Total = &sum
+	}
+	return summary
+}
+
+// summarizeRequestsHistogram, summarizeTokensHistogram, summarizeCostHistogram,
+// summarizeLatencyHistogram and summarizeThroughputHistogram each reduce one
+// histogram type's buckets to a seriesSummary per field, plus how many raw
+// buckets fed it - so the model can still tell a summary built from 3 points
+// apart from one built from 200. bucket_size_seconds travels alongside for the
+// same reason: the shape is legible without it, but the sampling isn't.
+func summarizeRequestsHistogram(result *logstore.HistogramResult) map[string]any {
+	n := len(result.Buckets)
+	count := make([]float64, n)
+	success := make([]float64, n)
+	errored := make([]float64, n)
+	cancelled := make([]float64, n)
+	for i, b := range result.Buckets {
+		count[i], success[i], errored[i], cancelled[i] = float64(b.Count), float64(b.Success), float64(b.Error), float64(b.Cancelled)
+	}
+	return map[string]any{
+		"count":               summarizeSeries(count, true),
+		"success":             summarizeSeries(success, true),
+		"error":               summarizeSeries(errored, true),
+		"cancelled":           summarizeSeries(cancelled, true),
+		"buckets":             n,
+		"bucket_size_seconds": result.BucketSizeSeconds,
+	}
+}
+
+func summarizeTokensHistogram(result *logstore.TokenHistogramResult) map[string]any {
+	n := len(result.Buckets)
+	prompt := make([]float64, n)
+	completion := make([]float64, n)
+	total := make([]float64, n)
+	cachedRead := make([]float64, n)
+	for i, b := range result.Buckets {
+		prompt[i], completion[i], total[i], cachedRead[i] = float64(b.PromptTokens), float64(b.CompletionTokens), float64(b.TotalTokens), float64(b.CachedReadTokens)
+	}
+	return map[string]any{
+		"prompt_tokens":       summarizeSeries(prompt, true),
+		"completion_tokens":   summarizeSeries(completion, true),
+		"total_tokens":        summarizeSeries(total, true),
+		"cached_read_tokens":  summarizeSeries(cachedRead, true),
+		"buckets":             n,
+		"bucket_size_seconds": result.BucketSizeSeconds,
+	}
+}
+
+// summarizeCostHistogram drops the per-bucket by_model breakdown rather than
+// summarizing it: a per-model series-of-series is exactly the kind of nested
+// detail a shape-only summary exists to avoid, and the top-level model list is
+// already cheap and already returned separately.
+func summarizeCostHistogram(result *logstore.CostHistogramResult) map[string]any {
+	n := len(result.Buckets)
+	cost := make([]float64, n)
+	for i, b := range result.Buckets {
+		cost[i] = b.TotalCost
+	}
+	return map[string]any{
+		"total_cost":          summarizeSeries(cost, true),
+		"models":              result.Models,
+		"buckets":             n,
+		"bucket_size_seconds": result.BucketSizeSeconds,
+	}
+}
+
+func summarizeLatencyHistogram(result *logstore.LatencyHistogramResult) map[string]any {
+	n := len(result.Buckets)
+	avgLatency := make([]float64, n)
+	p90Latency := make([]float64, n)
+	p95Latency := make([]float64, n)
+	p99Latency := make([]float64, n)
+	avgOverhead := make([]float64, n)
+	p90Overhead := make([]float64, n)
+	p95Overhead := make([]float64, n)
+	p99Overhead := make([]float64, n)
+	totalRequests := make([]float64, n)
+	for i, b := range result.Buckets {
+		avgLatency[i], p90Latency[i], p95Latency[i], p99Latency[i] = b.AvgLatency, b.P90Latency, b.P95Latency, b.P99Latency
+		avgOverhead[i], p90Overhead[i], p95Overhead[i], p99Overhead[i] = b.AvgOverhead, b.P90Overhead, b.P95Overhead, b.P99Overhead
+		totalRequests[i] = float64(b.TotalRequests)
+	}
+	return map[string]any{
+		"avg_latency":         summarizeSeries(avgLatency, false),
+		"p90_latency":         summarizeSeries(p90Latency, false),
+		"p95_latency":         summarizeSeries(p95Latency, false),
+		"p99_latency":         summarizeSeries(p99Latency, false),
+		"avg_overhead":        summarizeSeries(avgOverhead, false),
+		"p90_overhead":        summarizeSeries(p90Overhead, false),
+		"p95_overhead":        summarizeSeries(p95Overhead, false),
+		"p99_overhead":        summarizeSeries(p99Overhead, false),
+		"total_requests":      summarizeSeries(totalRequests, true),
+		"buckets":             n,
+		"bucket_size_seconds": result.BucketSizeSeconds,
+	}
+}
+
+func summarizeThroughputHistogram(result *logstore.ThroughputHistogramResult) map[string]any {
+	n := len(result.Buckets)
+	tokensPerSecond := make([]float64, n)
+	completionTokens := make([]float64, n)
+	totalRequests := make([]float64, n)
+	for i, b := range result.Buckets {
+		tokensPerSecond[i], completionTokens[i], totalRequests[i] = b.TokensPerSecond, float64(b.TotalCompletionTokens), float64(b.TotalRequests)
+	}
+	return map[string]any{
+		"tokens_per_second":       summarizeSeries(tokensPerSecond, false),
+		"total_completion_tokens": summarizeSeries(completionTokens, true),
+		"total_requests":          summarizeSeries(totalRequests, true),
+		"buckets":                 n,
+		"bucket_size_seconds":     result.BucketSizeSeconds,
+	}
 }
 
 // ---------------------------------------------------------- flow 3: rankings
@@ -467,7 +656,12 @@ func queryUsageByTool() Tool {
 			if err != nil {
 				return nil, fmt.Errorf("%s rankings failed: %w", dimension, err)
 			}
-			return map[string]any{"rankings": result, "scope": scopeNote(filters, deps.scope), "logs_link": logsViewLink(filters)}, nil
+			return map[string]any{
+				"rankings":  result,
+				"scope":     scopeNote(filters, deps.scope),
+				"logs_link": logsViewLink(filters),
+				"window":    resolvedWindow(filters),
+			}, nil
 		},
 	}
 }
@@ -525,7 +719,12 @@ func queryModelsTool() Tool {
 			if err != nil {
 				return nil, fmt.Errorf("model rankings failed: %w", err)
 			}
-			out := map[string]any{"models": rankings, "scope": scopeNote(filters, deps.scope), "logs_link": logsViewLink(filters)}
+			out := map[string]any{
+				"models":    rankings,
+				"scope":     scopeNote(filters, deps.scope),
+				"logs_link": logsViewLink(filters),
+				"window":    resolvedWindow(filters),
+			}
 
 			if boolArg(args, "include_performance") {
 				// A coarse bucket on purpose. The dashboard's bucket size is chosen for

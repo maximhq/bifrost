@@ -267,6 +267,18 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 		if finalStep {
 			params = &schemas.ResponsesParameters{Instructions: &finalInstructions}
 		}
+		// Both unset by default, same as before either existed: an operator who
+		// has not configured one gets the provider's own default, not a value
+		// Warp picked for them. Applied to every step, including the answer-only
+		// final one - a reasoning model changing mode mid-loop, or a deployment
+		// running warmer for the finding step than the summarizing one, is not
+		// something either field is configured per-step to express here.
+		if a.config.Temperature != nil {
+			params.Temperature = a.config.Temperature
+		}
+		if a.config.ReasoningEffort != "" {
+			params.Reasoning = &schemas.ResponsesParametersReasoning{Effort: new(a.config.ReasoningEffort)}
+		}
 
 		response, bifrostErr := a.chat(ctx, &schemas.BifrostResponsesRequest{
 			// The wire protocol, not the provider that serves the request: the
