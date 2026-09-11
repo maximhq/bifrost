@@ -368,16 +368,19 @@ curl -X POST "https://your-bifrost-instance.com/api/governance/virtual-keys" \
   -d '{
     "name": "marketing-team-vk",
     "description": "Marketing team virtual key with provider-specific limits",
+    "calendar_aligned": true,
     "provider_configs": [
       {
         "provider": "openai",
         "weight": 0.7,
         "allowed_models": ["gpt-4", "gpt-3.5-turbo"],
-        "budget": {
-          "max_limit": 500.00,
-          "reset_duration": "1M",
-          "calendar_aligned": true
-        },
+        "key_ids": ["*"],
+        "budgets": [
+          {
+            "max_limit": 500.00,
+            "reset_duration": "1M"
+          }
+        ],
         "rate_limit": {
           "token_max_limit": 1000000,
           "token_reset_duration": "1h",
@@ -389,10 +392,13 @@ curl -X POST "https://your-bifrost-instance.com/api/governance/virtual-keys" \
         "provider": "anthropic",
         "weight": 0.3,
         "allowed_models": ["claude-3-opus", "claude-3-sonnet"],
-        "budget": {
-          "max_limit": 200.00,
-          "reset_duration": "1M"
-        },
+        "key_ids": ["*"],
+        "budgets": [
+          {
+            "max_limit": 200.00,
+            "reset_duration": "1M"
+          }
+        ],
         "rate_limit": {
           "token_max_limit": 500000,
           "token_reset_duration": "1h",
@@ -401,16 +407,17 @@ curl -X POST "https://your-bifrost-instance.com/api/governance/virtual-keys" \
         }
       }
     ],
-    "budget": {
-      "max_limit": 1000.00,
-      "reset_duration": "1M",
-      "calendar_aligned": true
-    },
+    "budgets": [
+      {
+        "max_limit": 1000.00,
+        "reset_duration": "1M"
+      }
+    ],
     "is_active": true
   }'
 ```
 
-Use `calendar_aligned` only with `d` / `w` / `M` / `Y` reset durations (see [Calendar-aligned budgets](#calendar-aligned-budgets)).
+Calendar alignment affects only `d` / `w` / `M` / `Q` / `Y` reset durations (see [Calendar-aligned budgets](#calendar-aligned-budgets)); sub-day windows remain rolling. The virtual-key-level setting applies to its direct budgets, provider-config budgets, and rate limits.
 
 ### Update Provider Configuration
 
@@ -423,10 +430,14 @@ curl -X PUT "https://your-bifrost-instance.com/api/governance/virtual-keys/{vk_i
         "id": 1,
         "provider": "openai",
         "weight": 0.8,
-        "budget": {
-          "max_limit": 600.00,
-          "reset_duration": "1M"
-        },
+        "allowed_models": ["gpt-4", "gpt-3.5-turbo"],
+        "key_ids": ["*"],
+        "budgets": [
+          {
+            "max_limit": 600.00,
+            "reset_duration": "1M"
+          }
+        ],
         "rate_limit": {
           "token_max_limit": 1200000,
           "token_reset_duration": "1h"
@@ -445,20 +456,23 @@ curl -X PUT "https://your-bifrost-instance.com/api/governance/virtual-keys/{vk_i
     "id": "vk_123",
     "name": "marketing-team-vk",
     "value": "vk_abc123def456",
+    "calendar_aligned": true,
     "provider_configs": [
       {
         "id": 1,
         "provider": "openai",
         "weight": 0.7,
         "allowed_models": ["gpt-4", "gpt-3.5-turbo"],
-        "budget": {
-          "id": "budget_789",
-          "max_limit": 500.00,
-          "current_usage": 0.00,
-          "reset_duration": "1M",
-          "calendar_aligned": true,
-          "last_reset": "2024-01-01T00:00:00Z"
-        },
+        "allow_all_keys": true,
+        "budgets": [
+          {
+            "id": "budget_789",
+            "max_limit": 500.00,
+            "current_usage": 0.00,
+            "reset_duration": "1M",
+            "last_reset": "2024-01-01T00:00:00Z"
+          }
+        ],
         "rate_limit": {
           "id": "rate_limit_456",
           "token_max_limit": 1000000,
@@ -470,6 +484,15 @@ curl -X PUT "https://your-bifrost-instance.com/api/governance/virtual-keys/{vk_i
           "request_reset_duration": "1h",
           "request_last_reset": "2024-01-01T00:00:00Z"
         }
+      }
+    ],
+    "budgets": [
+      {
+        "id": "budget_vk_123",
+        "max_limit": 1000.00,
+        "current_usage": 0.00,
+        "reset_duration": "1M",
+        "last_reset": "2024-01-01T00:00:00Z"
       }
     ]
   }
@@ -483,11 +506,14 @@ curl -X PUT "https://your-bifrost-instance.com/api/governance/virtual-keys/{vk_i
 | `provider` | string | AI provider name (e.g., "openai", "anthropic") |
 | `weight` | float | Load balancing weight (0.0-1.0) |
 | `allowed_models` | array | Specific models allowed for this provider |
-| `budget.max_limit` | float | Maximum spend in USD |
-| `budget.reset_duration` | string | Reset period (e.g., "1h", "1d", "1M") |
-| `budget.calendar_aligned` | boolean | When true, resets at calendar boundaries in UTC (requires `d`/`w`/`M`/`Y` durations) |
+| `key_ids` | array | Provider API key IDs allowed for this config. `["*"]` allows all; empty or omitted denies all |
+| `calendar_aligned` | boolean | Virtual-key-level setting. When true, all supported budget and rate-limit windows owned by the virtual key reset at calendar boundaries in UTC |
+| `budgets[].max_limit` | float | Maximum spend in USD |
+| `budgets[].reset_duration` | string | Reset period (e.g., "1h", "1d", "1M") |
 | `rate_limit.token_max_limit` | integer | Maximum tokens per period |
 | `rate_limit.request_max_limit` | integer | Maximum requests per period |
+
+Virtual Key and provider-config budgets use the `budgets` array in both requests and responses. The pre-v1.5.0 singular `budget` and `budget_id` fields are not part of these request schemas. See [Create virtual key](/api-reference/governance/create-virtual-key) and [Update virtual key](/api-reference/governance/update-virtual-key) for the complete schema.
 
 </Tab>
 <Tab title="config.json">
@@ -505,6 +531,7 @@ Configure provider-level governance through Bifrost's configuration file for dec
         "name": "development-team-vk",
         "description": "Development team with multi-provider setup",
         "is_active": true,
+        "calendar_aligned": true,
         "rate_limit_id": "rl-vk-dev",
         "provider_configs": [
           {
@@ -512,6 +539,7 @@ Configure provider-level governance through Bifrost's configuration file for dec
             "provider": "openai",
             "weight": 0.6,
             "allowed_models": ["gpt-4", "gpt-3.5-turbo"],
+            "key_ids": ["*"],
             "rate_limit_id": "rl-pc-openai"
           },
           {
@@ -519,6 +547,7 @@ Configure provider-level governance through Bifrost's configuration file for dec
             "provider": "anthropic",
             "weight": 0.4,
             "allowed_models": ["claude-3-opus", "claude-3-sonnet"],
+            "key_ids": ["*"],
             "rate_limit_id": "rl-pc-anthropic"
           }
         ]
@@ -529,8 +558,7 @@ Configure provider-level governance through Bifrost's configuration file for dec
         "id": "budget-vk-dev",
         "virtual_key_id": "vk-dev-001",
         "max_limit": 2000.00,
-        "reset_duration": "1M",
-        "calendar_aligned": true
+        "reset_duration": "1M"
       },
       {
         "id": "budget-pc-openai",
@@ -572,7 +600,7 @@ Configure provider-level governance through Bifrost's configuration file for dec
 }
 ```
 
-Budgets and rate limits live as **separate top-level arrays** inside `governance`. Virtual keys and provider configs reference them by id (`rate_limit_id`) or are referenced back (`virtual_key_id` / `provider_config_id` on each `budgets[]` entry). Optional `calendar_aligned` on each `budget` matches the HTTP API and [calendar-aligned behavior](#calendar-aligned-budgets).
+Budgets and rate limits live as **separate top-level arrays** inside `governance`. Virtual keys and provider configs reference them by id (`rate_limit_id`) or are referenced back (`virtual_key_id` / `provider_config_id` on each `budgets[]` entry). Set optional `calendar_aligned` on the owning virtual key—not on individual budget or rate-limit entries—to enable [calendar-aligned behavior](#calendar-aligned-budgets) for all of its supported reset windows.
 
 ### Advanced Configuration Examples
 
@@ -585,8 +613,8 @@ Budgets and rate limits live as **separate top-level arrays** inside `governance
         "id": "vk-cost-opt",
         "name": "cost-optimized-vk",
         "provider_configs": [
-          {"id": 10, "provider": "openai-gpt-3.5", "weight": 0.8, "rate_limit_id": "rl-cheap"},
-          {"id": 11, "provider": "openai-gpt-4",   "weight": 0.2, "rate_limit_id": "rl-premium"}
+          {"id": 10, "provider": "openai-gpt-3.5", "allowed_models": ["*"], "key_ids": ["*"], "weight": 0.8, "rate_limit_id": "rl-cheap"},
+          {"id": 11, "provider": "openai-gpt-4",   "allowed_models": ["*"], "key_ids": ["*"], "weight": 0.2, "rate_limit_id": "rl-premium"}
         ]
       }
     ],
@@ -611,9 +639,9 @@ Budgets and rate limits live as **separate top-level arrays** inside `governance
         "id": "vk-prod-hv",
         "name": "production-high-volume-vk",
         "provider_configs": [
-          {"id": 20, "provider": "openai",       "weight": 0.5, "rate_limit_id": "rl-openai"},
-          {"id": 21, "provider": "anthropic",    "weight": 0.3, "rate_limit_id": "rl-anthropic"},
-          {"id": 22, "provider": "azure-openai", "weight": 0.2, "rate_limit_id": "rl-azure"}
+          {"id": 20, "provider": "openai",       "allowed_models": ["*"], "key_ids": ["*"], "weight": 0.5, "rate_limit_id": "rl-openai"},
+          {"id": 21, "provider": "anthropic",    "allowed_models": ["*"], "key_ids": ["*"], "weight": 0.3, "rate_limit_id": "rl-anthropic"},
+          {"id": 22, "provider": "azure-openai", "allowed_models": ["*"], "key_ids": ["*"], "weight": 0.2, "rate_limit_id": "rl-azure"}
         ]
       }
     ],
@@ -654,8 +682,8 @@ A virtual key configured with multiple providers and different budget allocation
         "id": "vk-mkt",
         "name": "marketing-team-vk",
         "provider_configs": [
-          {"id": 30, "provider": "openai",    "weight": 0.7},
-          {"id": 31, "provider": "anthropic", "weight": 0.3}
+          {"id": 30, "provider": "openai",    "allowed_models": ["*"], "key_ids": ["*"], "weight": 0.7},
+          {"id": 31, "provider": "anthropic", "allowed_models": ["*"], "key_ids": ["*"], "weight": 0.3}
         ]
       }
     ],
@@ -685,8 +713,8 @@ Different rate limits based on provider capabilities:
         "id": "vk-hv",
         "name": "high-volume-vk",
         "provider_configs": [
-          {"id": 40, "provider": "openai",    "rate_limit_id": "rl-openai"},
-          {"id": 41, "provider": "anthropic", "rate_limit_id": "rl-anthropic"}
+          {"id": 40, "provider": "openai",    "allowed_models": ["*"], "key_ids": ["*"], "rate_limit_id": "rl-openai"},
+          {"id": 41, "provider": "anthropic", "allowed_models": ["*"], "key_ids": ["*"], "rate_limit_id": "rl-anthropic"}
         ]
       }
     ],
@@ -715,8 +743,8 @@ Provider configurations with budget-based failover:
         "id": "vk-cost",
         "name": "cost-optimized-vk",
         "provider_configs": [
-          {"id": 50, "provider": "openai-cheap",   "weight": 1.0},
-          {"id": 51, "provider": "openai-premium", "weight": 0.0, "rate_limit_id": "rl-premium"}
+          {"id": 50, "provider": "openai-cheap",   "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0},
+          {"id": 51, "provider": "openai-premium", "allowed_models": ["*"], "key_ids": ["*"], "weight": 0.0, "rate_limit_id": "rl-premium"}
         ]
       }
     ],

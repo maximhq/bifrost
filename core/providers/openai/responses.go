@@ -60,6 +60,51 @@ var ProviderFeatures = map[schemas.ModelProvider]ResponsesFeatureSupport{
 	schemas.BedrockMantle: {AdditionalToolsItem: false, ContextManagement: false},
 }
 
+// reservedToolNamespaces lists the namespace-tool names a provider keeps for
+// its own server-side tools. Bedrock rejects a user-defined namespace with one
+// of these names outright on both the bedrock-mantle and bedrock-runtime
+// Responses endpoints: "Invalid Value: 'tools.namespace'. User-defined namespace
+// 'web' collides with an existing tool namespace." (HTTP 400). Codex registers a
+// client-side "web" namespace (web.run) whenever it believes it is talking to
+// OpenAI, which is the case when Bifrost is configured through openai_base_url.
+// Live-verified against openai.gpt-5.6-luna on 2026-09-09.
+var reservedToolNamespaces = map[schemas.ModelProvider]map[string]bool{
+	schemas.Bedrock:       {"web": true, "image_gen": true, "browser": true, "python": true},
+	schemas.BedrockMantle: {"web": true, "image_gen": true, "browser": true, "python": true},
+}
+
+// dropReservedNamespaceTools returns a copy of tools without the namespace tools
+// the provider reserves. A dropped "web" namespace is Codex's client-side web.run
+// tool, which only executes against OpenAI's search endpoint anyway. When
+// substituteWebSearch is set (bedrock-mantle, which hosts web search) and the
+// caller sent no web_search tool, the hosted tool is appended with
+// external_web_access=false, matching what Codex sends to non-OpenAI providers and
+// what AWS documents for Codex on Mantle
+// (https://docs.aws.amazon.com/bedrock/latest/userguide/web-search.html).
+func dropReservedNamespaceTools(tools []schemas.ResponsesTool, reserved map[string]bool, substituteWebSearch bool) []schemas.ResponsesTool {
+	out := make([]schemas.ResponsesTool, 0, len(tools)+1)
+	droppedWeb, hasWebSearch := false, false
+	for _, tool := range tools {
+		if tool.Type == schemas.ResponsesToolTypeWebSearch {
+			hasWebSearch = true
+		}
+		if tool.Type == schemas.ResponsesToolTypeNamespace && tool.Name != nil && reserved[*tool.Name] {
+			if *tool.Name == "web" {
+				droppedWeb = true
+			}
+			continue
+		}
+		out = append(out, tool)
+	}
+	if substituteWebSearch && droppedWeb && !hasWebSearch {
+		out = append(out, schemas.ResponsesTool{
+			Type:                   schemas.ResponsesToolTypeWebSearch,
+			ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{ExternalWebAccess: new(false)},
+		})
+	}
+	return out
+}
+
 // supportsAdditionalToolsItem reports whether provider accepts codex
 // additional_tools input items. Unlisted providers are assumed to.
 func supportsAdditionalToolsItem(provider schemas.ModelProvider) bool {
@@ -606,6 +651,17 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	// normalization below so hoisted function tools get the same treatment.
 	if len(hoistedTools) > 0 {
 		req.Tools = append(append(make([]schemas.ResponsesTool, 0, len(req.Tools)+len(hoistedTools)), req.Tools...), hoistedTools...)
+	}
+
+	// Drop namespace tools the provider reserves; they are a hard 400. Runs after
+	// the hoist so additional_tools namespaces get the same treatment, and before
+	// filterUnsupportedTools so a substituted web_search goes through its copy path.
+	// Match on the base provider: a custom provider built on bedrock reports its own
+	// key, which the map does not know, so the reserved namespace would reach AWS.
+	toolProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
+	if reserved := reservedToolNamespaces[toolProvider]; len(reserved) > 0 && len(req.Tools) > 0 {
+		substitute := toolProvider == schemas.BedrockMantle && caps.SupportsWebSearch(true)
+		req.Tools = dropReservedNamespaceTools(req.Tools, reserved, substitute)
 	}
 
 	// Normalize function tool parameters for deterministic JSON serialization, and

@@ -2,7 +2,7 @@ module github.com/maximhq/bifrost/examples/plugins/hello-world
 
 go 1.27.0
 
-require github.com/maximhq/bifrost/core v1.8.3
+require github.com/maximhq/bifrost/core v1.8.6
 
 require (
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
@@ -31,6 +31,7 @@ require (
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	golang.org/x/arch v0.23.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/tools v0.48.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

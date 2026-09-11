@@ -1877,8 +1877,23 @@
                     "enum": ["own-data", "team-data", "all-data"],
                     "default": "all-data"
                   },
+                  "entity_dac": {
+                    "type": "object",
+                    "description": "Per-entity DAC overrides keyed by resource name. Each entry narrows or widens the role's global dac for that one entity; unlisted entities follow dac. Resources accepting an override as of this chart release: Logs, MCPLogs, AuditLogs, VirtualKeys, Users, Teams, Customers, BusinessUnits, RBAC, APIKeys, AccessProfiles, PromptRepository, RoutingRules, GuardrailsConfig, MCPGateway, VirtualMCPs, Projects. Names are not enumerated here so a resource added by a newer Bifrost works without a chart upgrade; an unrecognised name is logged and skipped at startup. Config is authoritative - the role's whole override set is replaced on each sync, and omitting entity_dac clears it.",
+                    "additionalProperties": {
+                      "type": "string",
+                      "enum": ["own-data", "team-data", "all-data"]
+                    }
+                  },
                   "access_profile": {
                     "type": "string"
+                  },
+                  "access_profiles": {
+                    "type": "array",
+                    "description": "Names of all access profiles granted by this role. When present, this field takes precedence over access_profile; an empty list removes all profile grants.",
+                    "items": {
+                      "type": "string"
+                    }
                   },
                   "permissions": {
                     "type": "array",

@@ -20,6 +20,7 @@ Bifrost provides request options that control behavior, enable features, and pas
 | `BifrostContextKeySendBackRawRequest`      | `x-bf-send-back-raw-request`                         | `bool`                | Include raw provider request in the response                                                                                          |
 | `BifrostContextKeySendBackRawResponse`     | `x-bf-send-back-raw-response`                        | `bool`                | Include raw provider response in the response                                                                                         |
 | `BifrostContextKeyStoreRawRequestResponse` | `x-bf-store-raw-request-response`                    | `bool`                | Persist raw request/response in log records                                                                                           |
+| `BifrostContextKeyPromptCacheAutoInject`   | `x-bf-prompt-cache-auto-inject`                      | `bool`                | Per-request override of the provider's `prompt_cache.auto_inject`; only honored when the provider has a `prompt_cache` block configured |
 | `BifrostContextKeyDisableContentLogging`   | `x-bf-disable-content-logging`                       | `bool`                | Per-request override for content logging; only honored when `allow_per_request_content_storage_override` is enabled in logging config |
 | `BifrostContextKeyPassthroughExtraParams`  | `x-bf-passthrough-extra-params`                      | `bool`                | Enable passthrough for extra parameters                                                                                               |
 | `BifrostContextKeyExtraHeaders`            | `x-bf-eh-*`                                          | `map[string][]string` | Custom headers forwarded to provider                                                                                                  |
@@ -549,6 +550,47 @@ Input: messages,
 
 `x-bf-store-raw-request-response` and `x-bf-send-back-raw-*` are orthogonal - you can enable any combination. Enabling store does not send data back to the caller; enabling send-back does not persist data in logs. Enable both to do both.
 </Note>
+
+### Prompt Cache Auto-Inject
+
+**Context Key:** `BifrostContextKeyPromptCacheAutoInject`
+**Header:** `x-bf-prompt-cache-auto-inject`
+**Type:** `bool` (header values: `"true"` or `"false"`)
+**Required:** No
+
+Flip the provider's `prompt_cache.auto_inject` setting for this request only. Send `"true"` to inject a cache breakpoint on a request to a provider that has it off, or `"false"` to leave a request untouched when the provider has it on. The model capability gate still applies, so a marker is never forced onto a model that cannot use one.
+
+<Note>
+The override only takes effect on a provider that already has a `prompt_cache` block configured. A provider with no block has expressed no opinion, and a request header cannot spend a cache marker on the operator's behalf. Configure `"prompt_cache": {"auto_inject": false}` on the provider if you want callers to opt in per request. Only `auto_inject` is overridable; the TTL and injection points stay a config-level decision. See [Prompt caching](/features/prompt-caching).
+</Note>
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-prompt-cache-auto-inject: true' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "anthropic/claude-sonnet-4-5",
+    "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+
+</Tab>
+<Tab title="Go SDK">
+```go
+ctx := context.Background()
+ctx = context.WithValue(ctx, schemas.BifrostContextKeyPromptCacheAutoInject, true)
+
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
+	Provider: schemas.Anthropic,
+	Model:    "claude-sonnet-4-5",
+	Input:    messages,
+})
+```
+
+</Tab>
+</Tabs>
 
 ### Disable Content Logging (Per-Request)
 

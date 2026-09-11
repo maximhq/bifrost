@@ -1,3 +1,0 @@
-- feat: route Azure DeepSeek Responses requests from coding harnesses to chat completions, fall back for models without a Responses endpoint, and gate it on the `compat.azure_deepseek` toggle (#6326, #6737)
-- feat: log every dropped parameter and request-type conversion as a structured per-request entry (#6634)
-- feat: persist the served model from the provider response (#6693)

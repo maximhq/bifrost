@@ -2341,6 +2341,14 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			exit 1; \
 		fi; \
 	fi; \
+	: "Rows that assert on extra_fields.raw_request send x-bf-send-back-raw-*; core ignores those"; \
+	: "headers unless client_config.allow_per_request_raw_override is on. The harness config.json"; \
+	: "already enables it for a gateway we start ourselves; an already-running one may not have it."; \
+	say "$(CYAN)Ensuring allow_per_request_raw_override is on (x-bf-send-back-raw-* headers)...$(NC)"; \
+	BIFROST_BASE_URL="$$BASE_URL_VAL" node tests/e2e/api/runners/set-raw-override-config.mjs enable || { \
+		say "$(RED)Could not enable allow_per_request_raw_override; raw_request assertions would fail. Set BIFROST_E2E_AUTH_HEADER if auth is on.$(NC)"; \
+		exit 1; \
+	}; \
 	say "$(CYAN)Augmenting provider harness with generated streaming/thinking cases...$(NC)"; \
 	: "VERTEX_ACCESS_TOKEN_VAL is exported so the token-parity matrix can skip the Vertex"; \
 	: "direct legs when gcloud could not mint a token, instead of emitting cells that post an"; \
