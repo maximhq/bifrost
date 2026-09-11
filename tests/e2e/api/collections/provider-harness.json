@@ -256,6 +256,46 @@
           "      pm.expect(__v, 'missing ' + __h + ' on ' + __p).to.be.a('string').and.to.have.length.above(0);",
           "    });",
           "  });",
+          "})();",
+          "// Streaming terminator contract for OpenAI-shaped completion streams (#7065).",
+          "// Bifrost writes a single `data: [DONE]` as the LAST frame of every successful",
+          "// /chat/completions and /completions SSE response, native and /openai drop-in,",
+          "// after any usage-only chunk (stream_options.include_usage) and after the",
+          "// post-hooks. A stream that ended on an error frame deliberately gets no marker,",
+          "// so the check stands down when a frame carries a top-level `error`.",
+          "// Responses, Anthropic, GenAI, Bedrock and image streams terminate differently",
+          "// and are not covered here.",
+          "(function () {",
+          "  if (pm.response.code !== 200) { return; }",
+          "  var __sct = (pm.response.headers.get('content-type') || '');",
+          "  if (__sct.indexOf('text/event-stream') === -1) { return; }",
+          "  var __su = (pm.request && pm.request.url && pm.request.url.toString()) || '';",
+          "  var __sp = __su.split('?')[0];",
+          "  if (!(/\\/chat\\/completions$/.test(__sp) || /\\/completions$/.test(__sp))) { return; }",
+          "  var __lines = (pm.response.text() || '').split('\\n');",
+          "  var __frames = 0, __doneAt = -1, __doneCount = 0, __lastUsageAt = -1, __errorAt = -1, __afterDone = 0;",
+          "  for (var __i = 0; __i < __lines.length; __i++) {",
+          "    var __l = __lines[__i];",
+          "    if (__l.indexOf('data:') !== 0) { continue; }",
+          "    __frames++;",
+          "    var __payload = __l.slice(5).replace(/^\\s+/, '');",
+          "    if (__payload === '[DONE]') { __doneCount++; if (__doneAt === -1) { __doneAt = __frames; } continue; }",
+          "    if (__doneAt !== -1) { __afterDone++; }",
+          "    var __chunk = null;",
+          "    try { __chunk = JSON.parse(__payload); } catch (e) { continue; }",
+          "    if (__chunk && typeof __chunk === 'object') {",
+          "      if (__chunk.error && __errorAt === -1) { __errorAt = __frames; }",
+          "      if (__chunk.usage && typeof __chunk.usage === 'object') { __lastUsageAt = __frames; }",
+          "    }",
+          "  }",
+          "  if (__errorAt !== -1) { return; }",
+          "  pm.test('SSE stream ends with a single [DONE] after any usage frame - #7065', function () {",
+          "    pm.expect(__doneCount, 'expected exactly one [DONE] frame, got ' + __doneCount + ' across ' + __frames + ' frames').to.equal(1);",
+          "    pm.expect(__afterDone, __afterDone + ' data frame(s) arrived after [DONE]; clients stop reading at the marker, so they are lost').to.equal(0);",
+          "    if (__lastUsageAt !== -1) {",
+          "      pm.expect(__doneAt, 'usage frame at ' + __lastUsageAt + ' must precede [DONE] at ' + __doneAt).to.be.above(__lastUsageAt);",
+          "    }",
+          "  });",
           "})();"
         ]
       }
@@ -147200,6 +147240,160 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"model\": \"bedrock/us.amazon.nova-lite-v1:0\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word OK.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "78. Bedrock Mantle chat streaming keeps the trailing usage chunk after finish_reason (#7065 / PR #7076)",
+      "description": "Regression coverage for PR #7076 (fixes #7065). Bedrock Mantle's OpenAI-compatible chat streaming surface sends the finish_reason chunk, then, when stream_options.include_usage is set, a usage-only chunk with choices: [], then [DONE]. ProviderSendsDoneMarker answered false for bedrock and bedrock_mantle, so the shared streaming loop treated finish_reason as terminal and never read the usage chunk: streamed token counts and cost were silently dropped. The fix lists both providers as [DONE] senders. Both cases send include_usage and assert that a usage object with prompt/completion/total tokens above zero reaches the client AFTER the finish_reason chunk. The bedrock/ row pins the legacy in-provider Mantle route (an OpenAI-family model under the bedrock key still hits the Mantle host and sees the same wire order); the bedrock_mantle/ row pins the dedicated provider. Before this folder no Mantle streaming case asserted usage values.",
+      "item": [
+        {
+          "name": "bedrock/openai.gpt-5.6-sol /v1/chat/completions streaming with include_usage keeps the trailing usage chunk after finish_reason (legacy Mantle route) - #7065",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('bedrock legacy Mantle route gpt-5.6-sol: stream completes with [DONE] - #7065', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'stream request failed: ' + body.slice(0, 600)).to.equal(200);",
+                  "  pm.expect(body, 'expected SSE frames').to.include('data:');",
+                  "  pm.expect(body, 'expected the [DONE] terminator').to.include('data: [DONE]');",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var lines = (pm.response.text() || '').split('\\n');",
+                  "var finishIndex = -1, usageIndex = -1, doneIndex = -1, usage = null, seen = 0;",
+                  "for (var i = 0; i < lines.length; i++) {",
+                  "  var line = lines[i];",
+                  "  if (line.indexOf('data: ') !== 0) { continue; }",
+            "  if (line === 'data: [DONE]') { seen++; if (doneIndex === -1) { doneIndex = seen; } continue; }",
+                  "  var chunk;",
+                  "  try { chunk = JSON.parse(line.slice(6)); } catch (e) { continue; }",
+                  "  seen++;",
+                  "  var choices = chunk.choices || [];",
+                  "  for (var c = 0; c < choices.length; c++) { if (choices[c].finish_reason && finishIndex === -1) { finishIndex = seen; } }",
+                  "  if (chunk.usage && typeof chunk.usage === 'object') { usageIndex = seen; usage = chunk.usage; }",
+                  "}",
+                  "pm.test('bedrock legacy Mantle route gpt-5.6-sol: trailing usage chunk carries token counts - #7065', function () {",
+                  "  pm.expect(finishIndex, 'expected a chunk with finish_reason').to.be.above(0);",
+                  "  pm.expect(usage, 'no chunk carried a usage object; the stream loop stopped at finish_reason (pre-#7065 behavior)').to.not.equal(null);",
+                  "  pm.expect(usage.prompt_tokens, 'usage: ' + JSON.stringify(usage)).to.be.above(0);",
+                  "  pm.expect(usage.completion_tokens, 'usage: ' + JSON.stringify(usage)).to.be.above(0);",
+                  "  pm.expect(usage.total_tokens, 'usage: ' + JSON.stringify(usage)).to.be.above(0);",
+                  "  pm.expect(usageIndex, 'usage chunk must arrive after the finish_reason chunk (finish=' + finishIndex + ', usage=' + usageIndex + ')').to.be.above(finishIndex);",
+            "  pm.expect(doneIndex, 'expected exactly one [DONE] frame after the usage chunk (usage=' + usageIndex + ', done=' + doneIndex + ')').to.be.above(usageIndex);",
+            "  pm.expect(seen, '[DONE] must be the last frame; frames after it are invisible to clients (done=' + doneIndex + ', frames=' + seen + ')').to.equal(doneIndex);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/openai.gpt-5.6-sol\",\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  },\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word OK.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "bedrock_mantle/openai.gpt-5.6-sol /v1/chat/completions streaming with include_usage keeps the trailing usage chunk after finish_reason - #7065",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('bedrock_mantle gpt-5.6-sol: stream completes with [DONE] - #7065', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'stream request failed: ' + body.slice(0, 600)).to.equal(200);",
+                  "  pm.expect(body, 'expected SSE frames').to.include('data:');",
+                  "  pm.expect(body, 'expected the [DONE] terminator').to.include('data: [DONE]');",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var lines = (pm.response.text() || '').split('\\n');",
+                  "var finishIndex = -1, usageIndex = -1, doneIndex = -1, usage = null, seen = 0;",
+                  "for (var i = 0; i < lines.length; i++) {",
+                  "  var line = lines[i];",
+                  "  if (line.indexOf('data: ') !== 0) { continue; }",
+            "  if (line === 'data: [DONE]') { seen++; if (doneIndex === -1) { doneIndex = seen; } continue; }",
+                  "  var chunk;",
+                  "  try { chunk = JSON.parse(line.slice(6)); } catch (e) { continue; }",
+                  "  seen++;",
+                  "  var choices = chunk.choices || [];",
+                  "  for (var c = 0; c < choices.length; c++) { if (choices[c].finish_reason && finishIndex === -1) { finishIndex = seen; } }",
+                  "  if (chunk.usage && typeof chunk.usage === 'object') { usageIndex = seen; usage = chunk.usage; }",
+                  "}",
+                  "pm.test('bedrock_mantle gpt-5.6-sol: trailing usage chunk carries token counts - #7065', function () {",
+                  "  pm.expect(finishIndex, 'expected a chunk with finish_reason').to.be.above(0);",
+                  "  pm.expect(usage, 'no chunk carried a usage object; the stream loop stopped at finish_reason (pre-#7065 behavior)').to.not.equal(null);",
+                  "  pm.expect(usage.prompt_tokens, 'usage: ' + JSON.stringify(usage)).to.be.above(0);",
+                  "  pm.expect(usage.completion_tokens, 'usage: ' + JSON.stringify(usage)).to.be.above(0);",
+                  "  pm.expect(usage.total_tokens, 'usage: ' + JSON.stringify(usage)).to.be.above(0);",
+                  "  pm.expect(usageIndex, 'usage chunk must arrive after the finish_reason chunk (finish=' + finishIndex + ', usage=' + usageIndex + ')').to.be.above(finishIndex);",
+            "  pm.expect(doneIndex, 'expected exactly one [DONE] frame after the usage chunk (usage=' + usageIndex + ', done=' + doneIndex + ')').to.be.above(usageIndex);",
+            "  pm.expect(seen, '[DONE] must be the last frame; frames after it are invisible to clients (done=' + doneIndex + ', frames=' + seen + ')').to.equal(doneIndex);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-5.6-sol\",\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  },\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word OK.\"\n    }\n  ]\n}",
               "options": {
                 "raw": {
                   "language": "json"

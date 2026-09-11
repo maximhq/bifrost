@@ -2289,10 +2289,12 @@ func TestProviderSendsDoneMarker(t *testing.T) {
 		// Providers that don't send a [DONE] marker; stream ends on finish_reason.
 		{schemas.Cerebras, false},
 		{schemas.Perplexity, false},
-		{schemas.Bedrock, false},
-		{schemas.BedrockMantle, false},
 		// Providers that do send a [DONE] marker.
 		{schemas.OpenAI, true},
+		// Bedrock Mantle sends [DONE] and, with include_usage, a usage-only chunk after
+		// finish_reason. schemas.Bedrock only reaches this loop via the legacy Mantle route.
+		{schemas.Bedrock, true},
+		{schemas.BedrockMantle, true},
 		{schemas.Azure, true},
 		{schemas.Anthropic, true},
 		{schemas.Groq, true},
