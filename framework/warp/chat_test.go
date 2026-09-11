@@ -143,6 +143,25 @@ func TestWarpNewTurnMapsRequestProblems(t *testing.T) {
 	require.ErrorIs(t, err, ErrUnavailable)
 }
 
+// NewTurn is the one place a raw client-sent offset exists; everything
+// downstream trusts what it produces, so the sanitizing has to happen here.
+func TestWarpNewTurnSanitizesUTCOffset(t *testing.T) {
+	service := chatService(&scriptedModel{}, &fakeLogReader{})
+	message := []ChatMessage{{Role: "user", Content: "x"}}
+
+	turn, err := service.NewTurn(context.Background(), &ChatRequest{Messages: message, UTCOffsetMinutes: 330}, 10)
+	require.NoError(t, err)
+	require.Equal(t, 330, turn.utcOffsetMinutes)
+
+	turn, err = service.NewTurn(context.Background(), &ChatRequest{Messages: message, UTCOffsetMinutes: 100000}, 10)
+	require.NoError(t, err)
+	require.Equal(t, 0, turn.utcOffsetMinutes, "an out-of-range offset must fall back to UTC, not ride through unchecked")
+
+	turn, err = service.NewTurn(context.Background(), &ChatRequest{Messages: message}, 10)
+	require.NoError(t, err)
+	require.Equal(t, 0, turn.utcOffsetMinutes, "an omitted offset must default to UTC")
+}
+
 // Without a log reader there is nothing to research, so the service must say
 // so up front rather than register a chat route that always fails.
 func TestWarpCanChatRequiresLogReader(t *testing.T) {

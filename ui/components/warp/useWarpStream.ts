@@ -137,6 +137,12 @@ export function useWarpStream({ onTurnComplete }: UseWarpStreamOptions): UseWarp
 						// server to open a thread rather than append to one.
 						conversation_id: conversationRef.current || undefined,
 						stream: true,
+						// Minutes east of UTC (e.g. +330 for IST), sent every turn rather
+						// than once per thread - a laptop can cross timezones mid
+						// conversation, and this is what lets the server resolve "today"
+						// against the asker's actual calendar day instead of a bare UTC
+						// clock.
+						utc_offset_minutes: -new Date().getTimezoneOffset(),
 					}),
 				});
 

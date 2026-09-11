@@ -19,6 +19,14 @@ type ChatRequest struct {
 	// Stream selects the transport, not the behaviour. Both paths run the same
 	// loop; only the sink differs.
 	Stream *bool `json:"stream,omitempty"`
+	// UTCOffsetMinutes is the asker's local UTC offset in minutes east of UTC
+	// (e.g. +330 for IST), read from the browser. It is what lets the model
+	// resolve a calendar concept - "today", "on sept 3rd" - against the
+	// asker's actual day rather than the server's bare UTC clock. Zero and
+	// "not sent" are indistinguishable and both mean UTC, which is the
+	// correct fallback either way. An out-of-range value is not trusted; see
+	// sanitizeUTCOffsetMinutes.
+	UTCOffsetMinutes int `json:"utc_offset_minutes,omitempty"`
 }
 
 type ChatMessage struct {

@@ -3,6 +3,7 @@ package warp
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -24,7 +25,7 @@ How to work:
 - Use semantic_search_logs when the question is about what conversations meant, discussed, requested, or answered. It searches the meaning of logged user and assistant text. Use query_logs, count_logs, and query_metrics for exact fields, counts, totals, rankings, latency, cost, and trends.
 - If you are unsure a model name, virtual key or app exists, call describe_filter_space first. Filtering on a guessed name returns an empty result that looks like a real finding, and reporting "zero requests" when the real answer is "you typed the wrong name" is a serious error.
 - Your own queries against this deployment are themselves logged, as app "Warp". count_logs and query_metrics include them like any other traffic; semantic_search_logs does not, since a question you asked yourself is not a conversation to search. On a busy deployment this is noise; on a quiet one, or a total scoped narrowly enough, it can be a real share of the number. Mention it when it might matter, and filter it out with apps if it does (everything except "Warp" gets there fastest by naming the apps you do want, via describe_filter_space).
-- Time ranges accept relative offsets like -24h, -7d or -30m - use those for a phrase like "last week" or "yesterday" rather than computing a matching absolute date yourself. For a specific calendar date ("on sept 3rd", "since August 1st"), pass start_time and end_time as RFC3339 timestamps for that date, using the current time below to resolve the year.
+- Time ranges accept relative offsets like -24h, -7d or -30m - use those for a rolling window: "the last 24 hours", "the last 7 days". A calendar concept is a different claim and a relative offset cannot express it: "today" means since local midnight, not the last 24 hours, and "yesterday" means the previous local calendar day, not 24-48 hours ago. For "today", "yesterday", "this week", or a named date ("on sept 3rd", "since August 1st"), compute absolute start_time and end_time as RFC3339 timestamps at the right calendar boundary, in the UTC offset given with the current time below - not UTC itself unless the offset is zero.
 - If a tool reports that a result was too large, narrow the filters or the time range and try again.
 - Before listing individual requests, call count_logs. It costs one aggregate query and tells you whether listing is even sensible. If the count is large, answer from aggregates where you can. A sorted top-N - "slowest requests", "most expensive calls" - is answered with one query_logs call using sort_by and limit regardless of how large the count is; that is not the same as paging through the full set, and count_logs will not tell you otherwise. If you genuinely need rows beyond what a single sorted call returns, split the window into at most three slices and handle them one at a time - never page through a large set looking for something an aggregate or a sorted call could have told you.
 - For questions about what people ask about, what conversations are about, or which topics are most common, there is no aggregate that answers them. Take one bounded sample: one query_logs call with include_content and limit 25, or one semantic_search_logs call per theme you want to check. Summarise the themes you see and say it is a sample. Do not slice the window and list slice after slice.
@@ -76,17 +77,68 @@ When you cannot answer:
 
 - Offer the link only for things you genuinely cannot reach. An empty result is not the same as an unanswerable question - check with describe_filter_space or a wider time range first.`
 
+// Real-world UTC offsets run from UTC-12:00 (Baker Island) to UTC+14:00
+// (Line Islands). A client-sent value outside that range is not a timezone,
+// it is bad input from a broken or hostile client, so it is ignored rather
+// than trusted - the model falls back to reasoning in UTC, same as before
+// this existed, rather than computing calendar boundaries against a
+// nonsensical offset.
+const (
+	minUTCOffsetMinutes = -12 * 60
+	maxUTCOffsetMinutes = 14 * 60
+)
+
+// sanitizeUTCOffsetMinutes rejects an out-of-range offset to zero (UTC)
+// rather than clamping it to the nearest valid bound - a clamped-but-wrong
+// offset would compute a plausible-looking but incorrect calendar boundary,
+// which is worse than plainly falling back to UTC.
+func sanitizeUTCOffsetMinutes(minutes int) int {
+	if minutes < minUTCOffsetMinutes || minutes > maxUTCOffsetMinutes {
+		return 0
+	}
+	return minutes
+}
+
+// formatUTCOffset renders a UTC offset the way a person would type it
+// ("+05:30", "-08:00"). Zero is the empty string, so callers that write
+// "(UTC" + formatUTCOffset(0) + ")" get plain "(UTC)" rather than "(UTC+00:00)".
+func formatUTCOffset(minutes int) string {
+	if minutes == 0 {
+		return ""
+	}
+	sign := "+"
+	if minutes < 0 {
+		sign = "-"
+		minutes = -minutes
+	}
+	return fmt.Sprintf("%s%02d:%02d", sign, minutes/60, minutes%60)
+}
+
 // systemInstructions builds the system prompt, appending the operator's suffix.
 //
 // The suffix is additive only. An operator can teach Warp local vocabulary, but
 // cannot remove the instructions above - which matters because those are what
 // keep it from inventing numbers, and a deployment-level setting is not the
 // place to switch that off by accident.
-func systemInstructions(config *schemas.WarpConfig) string {
+//
+// utcOffsetMinutes is the asker's local UTC offset, minutes east of UTC, and is
+// variadic only so the many callers that do not care about it - most of the
+// tests in this package - are not forced to pass zero explicitly. At most the
+// first value is used; the same pattern NewAgent already uses for semantic.
+func systemInstructions(config *schemas.WarpConfig, utcOffsetMinutes ...int) string {
+	offset := 0
+	if len(utcOffsetMinutes) > 0 {
+		offset = sanitizeUTCOffsetMinutes(utcOffsetMinutes[0])
+	}
+	// Shifting the instant by the offset and formatting the result gives the
+	// asker's local wall-clock digits directly - there is no need for a
+	// time.Location or tzdata lookup for a bare numeric offset.
+	local := Now().Add(time.Duration(offset) * time.Minute)
+
 	var builder strings.Builder
 	builder.WriteString(SystemPrompt)
 	builder.WriteString(QuestionGuidance)
-	builder.WriteString(fmt.Sprintf("\n\nThe current time is %s (UTC).", Now().Format("2006-01-02 15:04:05")))
+	builder.WriteString(fmt.Sprintf("\n\nThe current time is %s (UTC%s).", local.Format("2006-01-02 15:04:05"), formatUTCOffset(offset)))
 	if config != nil && strings.TrimSpace(config.SystemPromptSuffix) != "" {
 		builder.WriteString("\n\nDeployment-specific notes from the operator:\n")
 		builder.WriteString(strings.TrimSpace(config.SystemPromptSuffix))
