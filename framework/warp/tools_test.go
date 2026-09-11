@@ -27,7 +27,19 @@ type fakeLogReader struct {
 	rankingDimension logstore.RankingDimension
 
 	histogramBucket int64
-	statsCalled     bool
+	// Canned histogram responses. Nil means "empty result, zero buckets" -
+	// enough for tests that only care about a call reaching the store, not
+	// about what came back.
+	histogramResult                   *logstore.HistogramResult
+	latencyHistogramResult            *logstore.LatencyHistogramResult
+	tokenHistogramResult              *logstore.TokenHistogramResult
+	costHistogramResult               *logstore.CostHistogramResult
+	throughputHistogramResult         *logstore.ThroughputHistogramResult
+	providerLatencyHistogramResult    *logstore.ProviderLatencyHistogramResult
+	providerTokenHistogramResult      *logstore.ProviderTokenHistogramResult
+	providerCostHistogramResult       *logstore.ProviderCostHistogramResult
+	providerThroughputHistogramResult *logstore.ProviderThroughputHistogramResult
+	statsCalled                       bool
 	// Distinct-value lookups, the cheap path describe_scope takes.
 	availableTeams         []KeyPair
 	availableCustomers     []KeyPair
@@ -81,10 +93,85 @@ func (f *fakeLogReader) GetStats(ctx context.Context, filters *logstore.SearchFi
 	return &logstore.SearchStats{}, nil
 }
 
+func (f *fakeLogReader) GetHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.HistogramResult, error) {
+	f.sawContext = ctx
+	f.histogramBucket = bucketSizeSeconds
+	if f.histogramResult != nil {
+		return f.histogramResult, nil
+	}
+	return &logstore.HistogramResult{}, nil
+}
+
+func (f *fakeLogReader) GetLatencyHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.LatencyHistogramResult, error) {
+	f.sawContext = ctx
+	f.histogramBucket = bucketSizeSeconds
+	if f.latencyHistogramResult != nil {
+		return f.latencyHistogramResult, nil
+	}
+	return &logstore.LatencyHistogramResult{}, nil
+}
+
+func (f *fakeLogReader) GetTokenHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.TokenHistogramResult, error) {
+	f.sawContext = ctx
+	f.histogramBucket = bucketSizeSeconds
+	if f.tokenHistogramResult != nil {
+		return f.tokenHistogramResult, nil
+	}
+	return &logstore.TokenHistogramResult{}, nil
+}
+
 func (f *fakeLogReader) GetCostHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.CostHistogramResult, error) {
 	f.sawContext = ctx
 	f.histogramBucket = bucketSizeSeconds
+	if f.costHistogramResult != nil {
+		return f.costHistogramResult, nil
+	}
 	return &logstore.CostHistogramResult{}, nil
+}
+
+func (f *fakeLogReader) GetThroughputHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ThroughputHistogramResult, error) {
+	f.sawContext = ctx
+	f.histogramBucket = bucketSizeSeconds
+	if f.throughputHistogramResult != nil {
+		return f.throughputHistogramResult, nil
+	}
+	return &logstore.ThroughputHistogramResult{}, nil
+}
+
+func (f *fakeLogReader) GetProviderLatencyHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderLatencyHistogramResult, error) {
+	f.sawContext = ctx
+	f.histogramBucket = bucketSizeSeconds
+	if f.providerLatencyHistogramResult != nil {
+		return f.providerLatencyHistogramResult, nil
+	}
+	return &logstore.ProviderLatencyHistogramResult{}, nil
+}
+
+func (f *fakeLogReader) GetProviderTokenHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderTokenHistogramResult, error) {
+	f.sawContext = ctx
+	f.histogramBucket = bucketSizeSeconds
+	if f.providerTokenHistogramResult != nil {
+		return f.providerTokenHistogramResult, nil
+	}
+	return &logstore.ProviderTokenHistogramResult{}, nil
+}
+
+func (f *fakeLogReader) GetProviderCostHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderCostHistogramResult, error) {
+	f.sawContext = ctx
+	f.histogramBucket = bucketSizeSeconds
+	if f.providerCostHistogramResult != nil {
+		return f.providerCostHistogramResult, nil
+	}
+	return &logstore.ProviderCostHistogramResult{}, nil
+}
+
+func (f *fakeLogReader) GetProviderThroughputHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderThroughputHistogramResult, error) {
+	f.sawContext = ctx
+	f.histogramBucket = bucketSizeSeconds
+	if f.providerThroughputHistogramResult != nil {
+		return f.providerThroughputHistogramResult, nil
+	}
+	return &logstore.ProviderThroughputHistogramResult{}, nil
 }
 
 func (f *fakeLogReader) GetAvailableTeams(context.Context, int, string) ([]KeyPair, error) {
@@ -479,6 +566,164 @@ func TestWarpMetricsRejectsTooManyBuckets(t *testing.T) {
 	}
 }
 
+// The concrete failure this fixes: query_metrics's own description promised a
+// summary, but every series was returned bucket by bucket. A 12-hour latency
+// series (72 buckets at the 10-minute size that window gets, 9 numeric fields
+// each) serializes to about 18KB - over MaxToolResultBytes - so the result was
+// discarded and the model retried, on exactly the query the tool is supposed
+// to make cheap.
+func TestWarpMetricsLatencySummaryStaysUnderBudgetFor12HourWindow(t *testing.T) {
+	const bucketCount = 72 // 12h at the 10-minute bucket size that window resolves to
+	buckets := make([]logstore.LatencyHistogramBucket, bucketCount)
+	for i := range buckets {
+		buckets[i] = logstore.LatencyHistogramBucket{
+			Timestamp: time.Now(), AvgLatency: 234.567, P90Latency: 450.123, P95Latency: 600.345, P99Latency: 890.123,
+			AvgOverhead: 12.345, P90Overhead: 23.456, P95Overhead: 34.567, P99Overhead: 45.678, TotalRequests: 142,
+		}
+	}
+	fake := &fakeLogReader{latencyHistogramResult: &logstore.LatencyHistogramResult{Buckets: buckets, BucketSizeSeconds: 600}}
+
+	result, err := runTool(t, "query_metrics", &ToolDeps{logManager: fake}, map[string]any{
+		"filters": map[string]any{"start_time": "-12h"},
+		"metrics": []any{"latency"},
+	})
+	require.NoError(t, err)
+
+	// bound is what the agent loop actually applies before a result reaches the
+	// model (see boundToolResult); the fix is only real if it fits under that.
+	bound := boundToolResult(result)
+	require.Less(t, len(bound), MaxToolResultBytes)
+	require.NotContains(t, bound, "result too large", "the old bucket-by-bucket payload would have been discarded here")
+
+	latency, ok := result.(map[string]any)["latency"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, bucketCount, latency["buckets"], "the bucket count travels with the summary even though the buckets themselves do not")
+	avg, ok := latency["avg_latency"].(seriesSummary)
+	require.True(t, ok)
+	require.InDelta(t, 234.567, avg.Mean, 0.001)
+	require.Nil(t, avg.Total, "a percentile-style field must not carry a meaningless sum")
+}
+
+// requests, tokens and total_requests are additive - a total is a real number
+// for them - which the fields above are not. Small, hand-checkable series so
+// the reduction math itself is verified, not just that it runs.
+func TestWarpMetricsSummarizesRequestsHistogram(t *testing.T) {
+	fake := &fakeLogReader{histogramResult: &logstore.HistogramResult{
+		Buckets: []logstore.HistogramBucket{
+			{Count: 10, Success: 9, Error: 1},
+			{Count: 20, Success: 18, Error: 2},
+			{Count: 30, Success: 27, Error: 3},
+		},
+		BucketSizeSeconds: 600,
+	}}
+	result, err := runTool(t, "query_metrics", &ToolDeps{logManager: fake}, map[string]any{
+		"filters": map[string]any{}, "metrics": []any{"requests"},
+	})
+	require.NoError(t, err)
+
+	requests := result.(map[string]any)["requests"].(map[string]any)
+	count := requests["count"].(seriesSummary)
+	require.NotNil(t, count.Total)
+	require.InDelta(t, 60, *count.Total, 0.001)
+	require.InDelta(t, 20, count.Mean, 0.001)
+	require.InDelta(t, 10, count.Min, 0.001)
+	require.InDelta(t, 30, count.Max, 0.001)
+	require.InDelta(t, 10, count.First, 0.001)
+	require.InDelta(t, 30, count.Last, 0.001)
+}
+
+func TestWarpMetricsSummarizesTokensHistogram(t *testing.T) {
+	fake := &fakeLogReader{tokenHistogramResult: &logstore.TokenHistogramResult{
+		Buckets: []logstore.TokenHistogramBucket{
+			{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150},
+			{PromptTokens: 200, CompletionTokens: 100, TotalTokens: 300},
+		},
+	}}
+	result, err := runTool(t, "query_metrics", &ToolDeps{logManager: fake}, map[string]any{
+		"filters": map[string]any{}, "metrics": []any{"tokens"},
+	})
+	require.NoError(t, err)
+
+	tokens := result.(map[string]any)["tokens"].(map[string]any)
+	total := tokens["total_tokens"].(seriesSummary)
+	require.NotNil(t, total.Total)
+	require.InDelta(t, 450, *total.Total, 0.001)
+}
+
+// The per-bucket by_model breakdown is dropped rather than summarized - a
+// per-model series-of-series is exactly the nested detail this exists to
+// avoid - but the top-level model list, already cheap, must survive.
+func TestWarpMetricsSummarizesCostHistogramKeepsModelList(t *testing.T) {
+	fake := &fakeLogReader{costHistogramResult: &logstore.CostHistogramResult{
+		Buckets: []logstore.CostHistogramBucket{
+			{TotalCost: 1.5, ByModel: map[string]float64{"gpt-4o": 1.5}},
+			{TotalCost: 2.5, ByModel: map[string]float64{"gpt-4o": 2.5}},
+		},
+		Models: []string{"gpt-4o"},
+	}}
+	result, err := runTool(t, "query_metrics", &ToolDeps{logManager: fake}, map[string]any{
+		"filters": map[string]any{}, "metrics": []any{"cost"},
+	})
+	require.NoError(t, err)
+
+	cost := result.(map[string]any)["cost"].(map[string]any)
+	total := cost["total_cost"].(seriesSummary)
+	require.InDelta(t, 4.0, *total.Total, 0.001)
+	require.Equal(t, []string{"gpt-4o"}, cost["models"])
+	require.NotContains(t, cost, "by_model", "a per-bucket, per-model series is the exact nested detail a summary must not reintroduce")
+}
+
+func TestWarpMetricsSummarizesThroughputHistogram(t *testing.T) {
+	fake := &fakeLogReader{throughputHistogramResult: &logstore.ThroughputHistogramResult{
+		Buckets: []logstore.ThroughputHistogramBucket{
+			{TokensPerSecond: 10, TotalCompletionTokens: 100, TotalRequests: 5},
+			{TokensPerSecond: 20, TotalCompletionTokens: 200, TotalRequests: 10},
+		},
+	}}
+	result, err := runTool(t, "query_metrics", &ToolDeps{logManager: fake}, map[string]any{
+		"filters": map[string]any{}, "metrics": []any{"throughput"},
+	})
+	require.NoError(t, err)
+
+	throughput := result.(map[string]any)["throughput"].(map[string]any)
+	tps := throughput["tokens_per_second"].(seriesSummary)
+	require.Nil(t, tps.Total, "a rate is not additive across buckets")
+	require.InDelta(t, 15, tps.Mean, 0.001)
+	totalRequests := throughput["total_requests"].(seriesSummary)
+	require.NotNil(t, totalRequests.Total)
+	require.InDelta(t, 15, *totalRequests.Total, 0.001)
+}
+
+// group_by=provider stays as raw buckets rather than a summary - collapsing
+// the per-provider split away would defeat the reason to group by it - but it
+// still has to use the same coarse bucket size query_model_performance's
+// include_performance path already uses, or it inherits the same overflow
+// this whole fix exists to close.
+func TestWarpMetricsProviderGroupedStaysRawWithCoarseBuckets(t *testing.T) {
+	previous := Now
+	Now = func() time.Time { return time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC) }
+	defer func() { Now = previous }()
+
+	fake := &fakeLogReader{providerLatencyHistogramResult: &logstore.ProviderLatencyHistogramResult{
+		Buckets:   []logstore.ProviderLatencyHistogramBucket{{ByProvider: map[string]logstore.ProviderLatencyStats{"openai": {AvgLatency: 100}}}},
+		Providers: []string{"openai"},
+	}}
+	result, err := runTool(t, "query_metrics", &ToolDeps{logManager: fake}, map[string]any{
+		"filters":  map[string]any{"start_time": "-24h"},
+		"metrics":  []any{"latency"},
+		"group_by": "provider",
+	})
+	require.NoError(t, err)
+
+	latency, ok := result.(map[string]any)["latency"].(*logstore.ProviderLatencyHistogramResult)
+	require.True(t, ok, "the provider-grouped path must return the raw result, not a summary")
+	require.Equal(t, []string{"openai"}, latency.Providers)
+
+	coarse, err := coarseBucketSize(&logstore.SearchFilters{StartTime: new(Now().Add(-24 * time.Hour)), EndTime: new(Now())})
+	require.NoError(t, err)
+	require.Equal(t, coarse, fake.histogramBucket, "group_by=provider must use the coarse bucket size, not the fine one the summarized path can afford")
+}
+
 // The scope lives on the context. If an executor ever swaps in a fresh context
 // the store stops filtering rows and every caller sees the whole deployment.
 func TestWarpToolsPassCallerContextToStore(t *testing.T) {
@@ -544,6 +789,38 @@ func TestWarpListingsCarryDashboardLinks(t *testing.T) {
 	counted, err := runTool(t, "count_logs", &ToolDeps{logManager: fake}, map[string]any{"filters": map[string]any{"providers": []any{"gemini"}}})
 	require.NoError(t, err)
 	require.Contains(t, counted.(map[string]any)["logs_link"], "providers=gemini")
+}
+
+// The warp-scope provenance block the prompt requires needs an absolute
+// window on every answer with numbers, but only query_metrics used to report
+// one - every other flow resolved a window internally (to filter rows) and
+// then threw it away, leaving the model to recompute "-7d" as an absolute
+// date from the current-time reference by hand. Every flow that resolves a
+// window now reports it back, in the same format, so there is nothing left to
+// recompute.
+func TestWarpToolsReportResolvedWindow(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	oldNow := Now
+	Now = func() time.Time { return now }
+	defer func() { Now = oldNow }()
+	wantWindow := map[string]string{"start": "2026-08-28T12:00:00Z", "end": "2026-09-04T12:00:00Z"} // "-7d"
+
+	cases := []struct {
+		tool string
+		args map[string]any
+	}{
+		{"query_logs", map[string]any{"filters": map[string]any{"start_time": "-7d"}}},
+		{"count_logs", map[string]any{"filters": map[string]any{"start_time": "-7d"}}},
+		{"query_usage_by", map[string]any{"dimension": "user", "filters": map[string]any{"start_time": "-7d"}}},
+		{"query_model_performance", map[string]any{"filters": map[string]any{"start_time": "-7d"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.tool, func(t *testing.T) {
+			result, err := runTool(t, tc.tool, &ToolDeps{logManager: &fakeLogReader{}}, tc.args)
+			require.NoError(t, err)
+			require.Equal(t, wantWindow, result.(map[string]any)["window"], "%s must report the absolute window it resolved -7d to", tc.tool)
+		})
+	}
 }
 
 // describe_scope precedes most metric questions, so it has to be cheap. It

@@ -140,6 +140,73 @@ func TestWarpValidateConfigInputRejectsIterationsAboveCeiling(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidConfig)
 }
 
+// nil is the unset state and must never be rejected - it is the default every
+// deployment already had before Temperature existed. 0 is a real value (fully
+// deterministic) and has to be accepted too, not treated as "not set".
+func TestWarpValidateConfigInputAcceptsNilAndZeroTemperature(t *testing.T) {
+	input := validWarpConfigInput()
+	input.Temperature = nil
+	require.NoError(t, ValidateConfigInput(input))
+
+	zero := 0.0
+	input.Temperature = &zero
+	require.NoError(t, ValidateConfigInput(input))
+}
+
+func TestWarpValidateConfigInputRejectsOutOfRangeTemperature(t *testing.T) {
+	for name, value := range map[string]float64{"negative": -0.1, "above ceiling": 2.1} {
+		input := validWarpConfigInput()
+		input.Temperature = &value
+		err := ValidateConfigInput(input)
+		require.ErrorIs(t, err, ErrInvalidConfig, name)
+	}
+}
+
+func TestWarpValidateConfigInputRejectsUnknownReasoningEffort(t *testing.T) {
+	input := validWarpConfigInput()
+	input.ReasoningEffort = "extreme"
+	err := ValidateConfigInput(input)
+	require.ErrorIs(t, err, ErrInvalidConfig)
+}
+
+func TestWarpValidateConfigInputAcceptsEveryKnownReasoningEffort(t *testing.T) {
+	for _, effort := range schemas.WarpReasoningEfforts {
+		input := validWarpConfigInput()
+		input.ReasoningEffort = effort
+		require.NoError(t, ValidateConfigInput(input), effort)
+	}
+}
+
+// Temperature is a pointer specifically so 0 round-trips distinctly from
+// "never configured" - this proves the whole path (input -> row -> view)
+// actually preserves that distinction rather than collapsing it somewhere.
+func TestWarpSaveConfigRoundTripsExplicitZeroTemperature(t *testing.T) {
+	store := &recordingStore{}
+	input := validWarpConfigInput()
+	zero := 0.0
+	input.Temperature = &zero
+	input.ReasoningEffort = "low"
+
+	view, err := newTestService(store).SaveConfig(context.Background(), input)
+	require.NoError(t, err)
+	require.NotNil(t, store.upserted[0].Temperature)
+	require.Equal(t, 0.0, *store.upserted[0].Temperature)
+	require.Equal(t, "low", store.upserted[0].ReasoningEffort)
+	require.NotNil(t, view.Temperature)
+	require.Equal(t, 0.0, *view.Temperature)
+	require.Equal(t, "low", view.ReasoningEffort)
+}
+
+func TestWarpSaveConfigLeavesTemperatureAndReasoningEffortUnsetByDefault(t *testing.T) {
+	store := &recordingStore{}
+	view, err := newTestService(store).SaveConfig(context.Background(), validWarpConfigInput())
+	require.NoError(t, err)
+	require.Nil(t, store.upserted[0].Temperature)
+	require.Empty(t, store.upserted[0].ReasoningEffort)
+	require.Nil(t, view.Temperature)
+	require.Empty(t, view.ReasoningEffort)
+}
+
 // Config is what the chat path calls. It must refuse a disabled or incomplete
 // config rather than handing back something half-usable.
 func TestWarpConfigRejectsUnusableConfigs(t *testing.T) {

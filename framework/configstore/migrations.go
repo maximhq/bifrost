@@ -495,6 +495,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_warp_conversation_tables"}, run: migrationAddWarpConversationTables},
 	{IDs: []string{"add_warp_log_embedding_columns"}, run: migrationAddWarpLogEmbeddingColumns},
 	{IDs: []string{"add_warp_message_outcome_columns"}, run: migrationAddWarpMessageOutcomeColumns},
+	{IDs: []string{"add_warp_temperature_reasoning_columns"}, run: migrationAddWarpTemperatureReasoningColumns},
 }
 
 // warpMessageOutcomeColumns are the per-message outcome fields added after the
@@ -552,6 +553,25 @@ func migrationAddWarpLogEmbeddingColumns(ctx context.Context, db *gorm.DB, logge
 		},
 		Rollback: func(*gorm.DB) error {
 			return fmt.Errorf("%s is non-rollbackable: dropping embedding configuration would lose operator settings", migrationName)
+		},
+	})
+}
+
+// migrationAddWarpTemperatureReasoningColumns adds the temperature and
+// reasoning_effort columns, so an operator can override the model's sampling
+// behavior instead of Warp silently running every deployment at whatever
+// default the provider happens to apply.
+func migrationAddWarpTemperatureReasoningColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_warp_temperature_reasoning_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).AutoMigrate(&tables.TableWarpConfig{})
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping a configured temperature or reasoning effort would lose operator settings", migrationName)
 		},
 	})
 }

@@ -183,9 +183,25 @@ export function useWarpStream({ onTurnComplete }: UseWarpStreamOptions): UseWarp
 			} finally {
 				setIsStreaming(false);
 				abortRef.current = null;
+				// A turn that ended by asking usually carries no narration text - Warp
+				// is told to ask about one thing and stop - so falling back to the
+				// question itself is what the server already does when it persists
+				// this same turn (see recordTurn in history.go). Without this, the
+				// turn's content stays empty: the next request's history filters it
+				// out entirely (see the messages mapping earlier in this function on
+				// the next send()), and the model sees
+				// its own answer arrive with no question in between - two bare user
+				// turns, and no way to tell what it had asked.
+				//
+				// The cast is a TypeScript control-flow quirk, not a real type gap:
+				// `posed` is reassigned inside applyEvent, a closure invoked from the
+				// try block above, and TS narrows it to `never` in this finally block
+				// as a result - asserting the declared type back is the standard,
+				// compile-time-only fix.
+				const content = text || (posed as WarpQuestion | null)?.question || "";
 				onTurnComplete({
 					role: "assistant",
-					content: text,
+					content,
 					toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
 					error: terminalError ?? undefined,
 					partial: partial || undefined,
