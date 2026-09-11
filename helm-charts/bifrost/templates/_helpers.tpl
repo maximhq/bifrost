@@ -591,7 +591,11 @@ false
 {{- if .description }}{{- $_ := set $role "description" .description }}{{- end }}
 {{- if .dac }}{{- $_ := set $role "dac" .dac }}{{- end }}
 {{- if .entity_dac }}{{- $_ := set $role "entity_dac" .entity_dac }}{{- end }}
-{{- if .access_profile }}{{- $_ := set $role "access_profile" .access_profile }}{{- end }}
+{{- if hasKey . "access_profiles" }}
+{{- $_ := set $role "access_profiles" .access_profiles }}
+{{- else if .access_profile }}
+{{- $_ := set $role "access_profile" .access_profile }}
+{{- end }}
 {{- if .permissions }}{{- $_ := set $role "permissions" .permissions }}{{- end }}
 {{- $roles = append $roles $role }}
 {{- end }}

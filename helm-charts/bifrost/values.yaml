@@ -880,7 +880,8 @@ bifrost:
       #   # GuardrailsConfig, MCPGateway, VirtualMCPs, Projects.
       #   entity_dac:
       #     VirtualKeys: "own-data"  # team-data everywhere else, but only their own keys
-      #   access_profile: "analyst-profile"  # Optional: name of an access_profile to attach
+      #   access_profiles:                    # Optional: names of all access profiles to grant
+      #     - "analyst-profile"              # Takes precedence over deprecated access_profile
       #   permissions:
       #     - resource: "Logs"
       #       operation: "View"
