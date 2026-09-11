@@ -111,12 +111,14 @@ type ChatFunc func(ctx context.Context, req *schemas.BifrostResponsesRequest) (*
 type CostFunc func(usage *schemas.BifrostLLMUsage) float64
 
 type Agent struct {
-	chat          ChatFunc
-	cost          CostFunc
-	tools         []Tool
-	deps          *ToolDeps
-	config        *schemas.WarpConfig
-	maxIterations int
+	chat             ChatFunc
+	cost             CostFunc
+	tools            []Tool
+	deps             *ToolDeps
+	config           *schemas.WarpConfig
+	maxIterations    int
+	utcOffsetMinutes int
+	timezone         string
 	// questionsAsked is how many clarifying questions this thread has already
 	// had in a row. Run stops after each one, but the next request builds a new
 	// agent - so the count has to arrive with the conversation or nothing caps
@@ -130,23 +132,31 @@ type Agent struct {
 // in: a caller that could swap the tools could also widen what Warp is able to
 // read, and the whole read surface is meant to be reviewable from LogReader
 // alone. What a caller does supply is the inference function, the pricing
-// function, and the scope - the three things that genuinely vary per request.
+// function, the scope, and the asker's UTC offset - the things that genuinely
+// vary per request.
 //
 // scope comes from the caller because it must be lifted off the request context
 // before the agent's goroutine starts. queryscope treats a missing scope as no
 // restriction, so reading it late returns the whole deployment to whoever asked.
-func NewAgent(chat ChatFunc, cost CostFunc, logs LogReader, scope Scope, config *schemas.WarpConfig, semantic ...*SemanticSearcher) *Agent {
+//
+// utcOffsetMinutes and timezone are already sanitized by the caller (see
+// sanitizeUTCOffsetMinutes and sanitizeTimezone); this constructor trusts them
+// rather than re-validating, since Turn is the one place a raw client value
+// exists.
+func NewAgent(chat ChatFunc, cost CostFunc, logs LogReader, scope Scope, config *schemas.WarpConfig, utcOffsetMinutes int, timezone string, semantic ...*SemanticSearcher) *Agent {
 	var searcher *SemanticSearcher
 	if len(semantic) > 0 {
 		searcher = semantic[0]
 	}
 	return &Agent{
-		chat:          chat,
-		cost:          cost,
-		tools:         buildToolsFor(searcher),
-		deps:          &ToolDeps{logManager: logs, semantic: searcher, scope: scope},
-		config:        config,
-		maxIterations: config.EffectiveMaxIterations(),
+		chat:             chat,
+		cost:             cost,
+		tools:            buildToolsFor(searcher),
+		deps:             &ToolDeps{logManager: logs, semantic: searcher, scope: scope},
+		config:           config,
+		maxIterations:    config.EffectiveMaxIterations(),
+		utcOffsetMinutes: utcOffsetMinutes,
+		timezone:         timezone,
 	}
 }
 
@@ -376,7 +386,7 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 	// system item. The Responses API models instructions as a property of the
 	// request, not a turn in the transcript, and keeping it out of Input means the
 	// history bound below counts only real turns.
-	instructions := systemInstructions(a.config, a.deps != nil && a.deps.semantic != nil)
+	instructions := systemInstructions(a.config, a.deps != nil && a.deps.semantic != nil, timeContext{timezone: a.timezone, utcOffsetMinutes: a.utcOffsetMinutes})
 	finalInstructions := instructions + finalStepInstructions
 	conversation := append([]schemas.ResponsesMessage{}, messages...)
 	var usage *schemas.BifrostLLMUsage

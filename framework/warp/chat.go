@@ -65,8 +65,10 @@ type Turn struct {
 	// logs and semantic are snapshotted with chat so the three cannot drift
 	// mid-turn: the searcher holds its own reference to a reader, and a mismatched
 	// pair searches one backend and hydrates from another.
-	logs     LogReader
-	semantic *SemanticSearcher
+	logs             LogReader
+	semantic         *SemanticSearcher
+	utcOffsetMinutes int
+	timezone         string
 }
 
 // NewTurn validates a chat request and resolves the configuration and model
@@ -122,6 +124,11 @@ func (s *Service) NewTurn(ctx context.Context, request *ChatRequest, bodyBytes i
 		chat:           chat,
 		logs:           logs,
 		semantic:       semantic,
+		// Sanitized here, once, since this is the one place a raw client value
+		// exists - everything downstream (NewAgent, systemInstructions) trusts
+		// what it's handed rather than re-validating.
+		utcOffsetMinutes: sanitizeUTCOffsetMinutes(request.UTCOffsetMinutes),
+		timezone:         sanitizeTimezone(request.Timezone),
 	}, nil
 }
 
@@ -149,7 +156,7 @@ func (s *Service) RunTurn(ctx context.Context, turn *Turn, sink func(Event) bool
 	// searcher were snapshotted together at NewTurn, so a SetLogReader landing
 	// mid-turn cannot leave the agent searching one backend while it hydrates
 	// details from another - or hand it a nil reader it will dereference.
-	agent := NewAgent(turn.chat, s.costFuncFor(turn.config), turn.logs, ScopeFromContext(runCtx), turn.config, turn.semantic)
+	agent := NewAgent(turn.chat, s.costFuncFor(turn.config), turn.logs, ScopeFromContext(runCtx), turn.config, turn.utcOffsetMinutes, turn.timezone, turn.semantic)
 	agent.questionsAsked = turn.questionsAsked
 	events := make(chan Event, 16)
 	go agent.Run(runCtx, turn.messages, events)
