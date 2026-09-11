@@ -823,12 +823,11 @@ export const ProviderIcons = {
 
 		return (
 			<img
-				src="/images/zro.svg"
+				src={theme === "dark" ? "/images/zro-light.png" : "/images/zro-dark.svg"}
 				alt="Zro"
 				width={resolvedSize}
 				height={resolvedSize}
 				className={className}
-				style={{ filter: theme === "dark" ? "invert(1)" : undefined }}
 			/>
 		);
 	},
