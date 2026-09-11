@@ -3727,8 +3727,11 @@ func ProviderSendsDoneMarker(ctx *schemas.BifrostContext, providerName schemas.M
 		}
 	}
 	switch providerName {
-	case schemas.Cerebras, schemas.Perplexity, schemas.Bedrock, schemas.BedrockMantle:
-		// Cerebras, Perplexity, Bedrock and Bedrock mantle don't send [DONE] marker, ends stream after finish_reason
+	case schemas.Cerebras, schemas.Perplexity:
+		// Cerebras and Perplexity don't send [DONE] marker, ends stream after finish_reason.
+		// Bedrock Mantle (the bedrock_mantle provider and the legacy Mantle route under the
+		// bedrock key) does send [DONE]. With include_usage it sends the usage-only chunk after
+		// the finish_reason chunk, so breaking on finish_reason drops usage and cost (#7065).
 		return false
 	default:
 		// Default to expecting [DONE] marker for safety

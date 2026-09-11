@@ -559,6 +559,10 @@ Only `framework/vectorstore` needs any of this. Every other framework package pa
 
 Before writing a fix, add (or extend) a test that reproduces the bug and confirm it fails for the expected reason — a wrong assertion, not a compile error or an unrelated panic. Only then implement the fix, and confirm the same test now passes. For bugs reachable through `make run-provider-harness-test`, add the harness regression case (see `.claude/skills/harness-test-writer/SKILL.md`) alongside Go-level tests: Go tests give a fast, free red/green loop while coding; the harness case is the live end-to-end pin, expected red pre-fix and green post-fix, validated structurally (`augment-provider-harness.mjs` / `filter-collection.mjs`) without needing a live paid run during development.
 
+### Add tests to existing test files, never new ones
+
+Do not create a new `_test.go` file for a package that already has one. Put the test in the existing file that covers the same code: `<name>_test.go` next to `<name>.go`, or the topical file that already exists (`chat_test.go`, `counttokens_test.go`). One test file per bug or feature scatters a package's tests across many small files and makes it hard to find what already covers a source file. Create a new test file only for a source file that has no test file yet, and name it after that source file.
+
 ### Every `core/` change ships with a provider-harness case
 
 Any change under `core/` that a client can observe on the wire must land together with a case in `tests/e2e/api/collections/provider-harness.json` (see `.claude/skills/harness-test-writer/SKILL.md`). This covers new features and refactors, not only bug fixes — the rule in the previous section is the narrower instance of this one.
