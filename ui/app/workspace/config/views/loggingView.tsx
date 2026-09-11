@@ -11,6 +11,7 @@ import { CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
 import { parseArrayFromText } from "@/lib/utils/array";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 const requestTypeLabel = (requestType: string): string =>
@@ -32,6 +33,7 @@ const sameRequestTypes = (a: string[] | undefined, b: string[] | undefined): boo
 };
 
 export default function LoggingView() {
+	const { t } = useTranslation("config");
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
 	const { data: bifrostConfig, isLoading: isConfigLoading, isError: isConfigError } = useGetCoreConfigQuery({ fromDB: true });
 	const config = bifrostConfig?.client_config;
@@ -78,40 +80,39 @@ export default function LoggingView() {
 
 	const handleSave = useCallback(async () => {
 		if (!bifrostConfig) {
-			toast.error("Configuration not loaded");
+			toast.error(t("configNotLoaded"));
 			return;
 		}
 
 		// Validate log retention days
 		if (localConfig.log_retention_days < 1) {
-			toast.error("Log retention days must be at least 1 day");
+			toast.error(t("logging.toastRetentionMin"));
 			return;
 		}
 
 		try {
 			await updateCoreConfig({ ...bifrostConfig, client_config: localConfig }).unwrap();
-			toast.success("Logging configuration updated successfully.");
+			toast.success(t("logging.toastSaved"));
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
-	}, [bifrostConfig, localConfig, updateCoreConfig]);
+	}, [bifrostConfig, localConfig, t, updateCoreConfig]);
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4 px-4 py-6 md:px-0">
-			<PageTitle title="Logs Settings">Configure logging settings for requests and responses.</PageTitle>
+			<PageTitle title={t("logging.title")}>{t("logging.description")}</PageTitle>
 
 			<div className="space-y-4">
-				{/* Enable Logs */}
 				<div>
 					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<label htmlFor="enable-logging" className="text-sm font-medium">
-								Enable Logs
+								{t("logging.enableLogs")}
 							</label>
 							<p className="text-muted-foreground text-sm">
-								Enable logging of requests and responses to a SQL database. This can add 40-60mb of overhead to the system memory.
+								{t("logging.enableLogsHelp")}
 								{!bifrostConfig?.is_logs_connected && (
-									<span className="text-destructive font-medium"> Requires logs store to be configured and enabled in config.json.</span>
+									<span className="text-destructive font-medium"> {t("logging.requiresStore")}</span>
 								)}
 							</p>
 						</div>
@@ -133,17 +134,16 @@ export default function LoggingView() {
 				<div className="min-w-0 space-y-3 rounded-sm border p-4" data-testid="workspace-hidden-request-types">
 					<div className="space-y-0.5">
 						<Label htmlFor="hidden-request-types" className="text-sm font-medium">
-							Hidden Request Types
+							{t("logging.hiddenRequestTypes")}
 						</Label>
 						<p className="text-muted-foreground text-sm">
-							Selected request types are still logged but excluded from Logs and Dashboard views, including counts, charts and filter
-							options. Streaming and non-streaming types are separate. Leave empty to show every request type. Takes effect on the next
-							request, no restart needed. Can also be set with <code className="text-xs">client.hidden_request_types</code> in config.json.
+							{t("logging.hiddenRequestTypesHelp")}{" "}
+							<code className="text-xs">client.hidden_request_types</code> {t("logging.inConfigJson")}
 						</p>
 					</div>
 					{isConfigError ? (
 						<p className="text-destructive text-sm" role="alert">
-							Unable to load hidden request types.
+							{t("logging.hiddenRequestTypesLoadError")}
 						</p>
 					) : (
 						<MultiSelect
@@ -153,8 +153,8 @@ export default function LoggingView() {
 							defaultValue={localConfig.hidden_request_types || []}
 							resetOnDefaultValueChange
 							onValueChange={(values) => handleConfigChange("hidden_request_types", values)}
-							placeholder={isConfigLoading ? "Loading configuration…" : "All request types are visible"}
-							emptyIndicator="No request types found."
+							placeholder={isConfigLoading ? t("logging.loadingConfiguration") : t("logging.allRequestTypesVisible")}
+							emptyIndicator={t("logging.noRequestTypes")}
 							disabled={!bifrostConfig || !hasSettingsUpdateAccess}
 							maxCount={6}
 							className="border-input text-foreground hover:bg-accent hover:text-accent-foreground min-h-9 rounded-sm bg-transparent font-normal"
@@ -168,14 +168,9 @@ export default function LoggingView() {
 						<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 							<div className="space-y-0.5">
 								<label htmlFor="disable-content-logging" className="text-sm font-medium">
-									Disable Content Logging
+									{t("logging.disableContentLogging")}
 								</label>
-								<p className="text-muted-foreground text-sm">
-									When enabled, only usage metadata (latency, cost, token count, status, routing IDs, etc.) is logged. Request/response
-									content (messages, params, tool calls, and any raw provider bytes) is dropped from log records, even when{" "}
-									<code className="text-xs">store_raw_request_response</code> is on. Raw-byte send-back to callers via{" "}
-									<code className="text-xs">send_back_raw_*</code> is unaffected.
-								</p>
+								<p className="text-muted-foreground text-sm">{t("logging.disableContentLoggingHelp")}</p>
 							</div>
 							<Switch
 								id="disable-content-logging"
@@ -187,24 +182,16 @@ export default function LoggingView() {
 					</div>
 				)}
 
-				{/* Retain Content in Object Storage - Only show when logging is enabled */}
 				{localConfig.enable_logging && bifrostConfig?.is_logs_connected && (
 					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<label htmlFor="retain-content-in-object-storage" className="text-sm font-medium">
-								Retain Content in Object Storage
+								{t("logging.retainContent")}
 							</label>
 							<p className="text-muted-foreground text-sm">
-								When enabled, requests with content logging disabled (via the global setting above or the{" "}
-								<code className="text-xs">x-bf-disable-content-logging</code> header) still have their full content offloaded to object
-								storage, but the content is never shown in logs: the database row stays metadata-only and the UI/API never fetch the payload
-								back. Content is then only readable with direct access to the storage bucket. When disabled, content for such requests is
-								dropped entirely (current behavior).
+								{t("logging.retainContentHelp")}
 								{!bifrostConfig?.is_object_storage_connected && (
-									<span className="text-destructive font-medium">
-										{" "}
-										Requires object storage to be configured on the logs store in config.json.
-									</span>
+									<span className="text-destructive font-medium"> {t("logging.requiresObjectStorage")}</span>
 								)}
 							</p>
 						</div>
@@ -223,21 +210,14 @@ export default function LoggingView() {
 					</div>
 				)}
 
-				{/* Allow Per-Request Content Storage Override - Only show when logging is enabled */}
 				{localConfig.enable_logging && bifrostConfig?.is_logs_connected && (
 					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<label htmlFor="allow-per-request-content-storage-override" className="text-sm font-medium">
-								Allow Per-Request Content Storage Override
+								{t("logging.allowContentOverride")}
 							</label>
 							<p className="text-muted-foreground text-sm">
-								When enabled, individual requests can override the global content logging setting using the{" "}
-								<code className="text-xs">x-bf-disable-content-logging</code> header or context key, and can opt-in to persisting raw
-								provider bytes in logs using the <code className="text-xs">x-bf-store-raw-request-response</code> header. Raw-byte storage
-								requires content logging to be on, either globally, or via{" "}
-								<code className="text-xs">x-bf-disable-content-logging: false</code> on the same request. If content logging is off, raw
-								bytes are dropped from the log record even when <code className="text-xs">x-bf-store-raw-request-response: true</code>. Does
-								not control sending raw bytes back to callers; see Allow Per-Request Raw Override.
+								{t("logging.allowContentOverrideHelp", { setting: t("logging.allowRawOverride") })}
 							</p>
 						</div>
 						<Switch
@@ -254,13 +234,10 @@ export default function LoggingView() {
 				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
 						<label htmlFor="allow-per-request-raw-override" className="text-sm font-medium">
-							Allow Per-Request Raw Override
+							{t("logging.allowRawOverride")}
 						</label>
 						<p className="text-muted-foreground text-sm">
-							When enabled, individual requests can send raw provider request/response bytes back to the caller using the{" "}
-							<code className="text-xs">x-bf-send-back-raw-request</code> and <code className="text-xs">x-bf-send-back-raw-response</code>{" "}
-							headers. Does not affect log storage; raw-byte persistence in logs is controlled by Allow Per-Request Content Storage
-							Override.
+							{t("logging.allowRawOverrideHelp", { setting: t("logging.allowContentOverride") })}
 						</p>
 					</div>
 					<Switch
@@ -272,16 +249,13 @@ export default function LoggingView() {
 					/>
 				</div>
 
-				{/* Log Retention Days */}
 				{localConfig.enable_logging && bifrostConfig?.is_logs_connected && (
 					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<Label htmlFor="log-retention-days" className="text-sm font-medium">
-								Log Retention Days
+								{t("logging.logRetentionDays")}
 							</Label>
-							<p className="text-muted-foreground text-sm">
-								Number of days to retain logs in the database. Minimum is 1 day. Older logs will be automatically deleted.
-							</p>
+							<p className="text-muted-foreground text-sm">{t("logging.logRetentionDaysHelp")}</p>
 						</div>
 						<Input
 							id="log-retention-days"
@@ -300,11 +274,9 @@ export default function LoggingView() {
 				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
 						<label htmlFor="hide-deleted-virtual-keys-in-filters" className="text-sm font-medium">
-							Do Not Show Deleted VirtualKeys In Filters
+							{t("logging.hideDeletedVks")}
 						</label>
-						<p className="text-muted-foreground text-sm">
-							When enabled, deleted virtual keys are excluded from Virtual Keys filter options in Logs, Dashboard, and MCP Logs.
-						</p>
+						<p className="text-muted-foreground text-sm">{t("logging.hideDeletedVksHelp")}</p>
 					</div>
 					<Switch
 						id="hide-deleted-virtual-keys-in-filters"
@@ -315,24 +287,17 @@ export default function LoggingView() {
 					/>
 				</div>
 
-				{/* Logging Headers */}
 				{localConfig.enable_logging && bifrostConfig?.is_logs_connected && (
 					<div className="space-y-2 rounded-sm border p-4">
 						<label htmlFor="logging-headers" className="text-sm font-medium">
-							Logging Headers
+							{t("logging.loggingHeaders")}
 						</label>
-						<p className="text-muted-foreground text-sm">
-							Comma-separated list of request headers to capture in log metadata. Supports exact names and wildcard patterns (e.g.{" "}
-							<code className="text-xs">x-custom-*</code> captures all headers with that prefix, <code className="text-xs">*</code> logs all
-							headers; note that <code className="text-xs">*</code> will capture sensitive headers like Authorization). Values are extracted
-							from incoming requests and stored in the metadata field of log entries. Headers with the{" "}
-							<code className="text-xs">x-bf-lh-</code> prefix are always captured automatically.
-						</p>
+						<p className="text-muted-foreground text-sm">{t("logging.loggingHeadersHelp")}</p>
 						<Textarea
 							id="logging-headers"
 							data-testid="workspace-logging-headers-textarea"
 							className="h-24"
-							placeholder="X-Tenant-ID, X-Request-Source, x-custom-*"
+							placeholder={t("logging.loggingHeadersPlaceholder")}
 							value={loggingHeadersText}
 							onChange={(e) => handleLoggingHeadersChange(e.target.value)}
 						/>
@@ -342,7 +307,7 @@ export default function LoggingView() {
 
 			<div className="flex justify-end pt-2">
 				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
-					{isLoading ? "Saving..." : "Save Changes"}
+					{isLoading ? t("saving") : t("saveChanges")}
 				</Button>
 			</div>
 		</div>
@@ -350,5 +315,6 @@ export default function LoggingView() {
 }
 
 const RestartWarning = () => {
-	return <div className="text-muted-foreground mt-2 pl-4 text-xs font-semibold">Need to restart Bifrost to apply changes.</div>;
+	const { t } = useTranslation("config");
+	return <div className="text-muted-foreground mt-2 pl-4 text-xs font-semibold">{t("restartWarning")}</div>;
 };

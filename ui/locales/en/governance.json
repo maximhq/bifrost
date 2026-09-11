@@ -1,0 +1,176 @@
+{
+	"contactUs": {
+		"readMore": "Read more",
+		"readMoreAria": "Read more about this feature (opens in new tab)",
+		"bookDemo": "Book a demo",
+		"bookDemoAria": "Book a demo (opens Calendly in new tab)"
+	},
+	"customers": {
+		"title": "Customers",
+		"description": "Manage customer accounts with their own teams, budgets, and access controls.",
+		"emptyTitle": "Customers have their own teams, budgets, and access controls",
+		"emptyDescription": "Create customer accounts to manage multi-tenant usage, assign teams, and set spending and rate limits per customer.",
+		"add": "Add Customer",
+		"addAria": "Add your first customer",
+		"readMoreAria": "Read more about customers (opens in new tab)",
+		"searchPlaceholder": "Search by name...",
+		"searchAria": "Search customers by name",
+		"noMatch": "No matching customers found.",
+		"deleteTitle": "Delete Customer",
+		"deleteDescription": "Are you sure you want to delete \"{{name}}\"? This will also delete all associated teams and unassign any virtual keys. This action cannot be undone.",
+		"deleting": "Deleting...",
+		"deleted": "Customer deleted successfully",
+		"loadFailed": "Failed to load customers: {{message}}",
+		"loadGovernanceFailed": "Failed to load governance data.",
+		"columns": {
+			"name": "Name",
+			"teams": "Teams",
+			"budget": "Budget",
+			"rateLimit": "Rate Limit",
+			"virtualKeys": "Virtual Keys"
+		},
+		"actions": {
+			"edit": "Edit",
+			"delete": "Delete",
+			"viewLogs": "View logs"
+		},
+		"limitReached": "Limit Reached"
+	},
+	"teams": {
+		"title": "Teams",
+		"description": "Organize users into teams with shared budgets and access controls.",
+		"emptyTitle": "Teams organize users with shared budgets and access",
+		"emptyDescription": "Create teams to group users, assign customer accounts, and set budgets and rate limits at the team level.",
+		"add": "Add Team",
+		"addAria": "Add your first team",
+		"readMoreAria": "Read more about teams (opens in new tab)",
+		"searchPlaceholder": "Search by name...",
+		"searchAria": "Search teams by name",
+		"noMatch": "No matching teams found.",
+		"deleteTitle": "Delete Team",
+		"deleteDescription": "Are you sure you want to delete \"{{name}}\"? This will also unassign any virtual keys from this team. This action cannot be undone.",
+		"deleting": "Deleting...",
+		"deleted": "Team deleted successfully",
+		"unknownCustomer": "Unknown Customer",
+		"loadFailed": "Failed to load teams: {{message}}",
+		"columns": {
+			"name": "Name",
+			"customer": "Customer",
+			"budget": "Budget",
+			"rateLimit": "Rate Limit",
+			"virtualKeys": "Virtual Keys"
+		},
+		"actions": {
+			"edit": "Edit",
+			"delete": "Delete",
+			"viewLogs": "View logs"
+		},
+		"limitReached": "Limit Reached"
+	},
+	"virtualKeys": {
+		"loadFailed": "Failed to load virtual keys: {{message}}"
+	},
+	"plugins": {
+		"title": "Plugins",
+		"emptyTitle": "Custom plugins extend Bifrost with your own business logic",
+		"emptyDescription": "Build and deploy plugins for custom integrations, workflow automation, and AI governance.",
+		"installNew": "Install New Plugin",
+		"installNewAria": "Create your first plugin",
+		"editSequence": "Edit Plugin Sequence",
+		"readMoreAria": "Read more about custom plugins (opens in new tab)",
+		"backToPlugins": "Plugins",
+		"configuration": "Plugin Configuration",
+		"name": "Name",
+		"nameLabel": "Plugin name",
+		"nameHelp": "The name of the plugin",
+		"path": "Path",
+		"pathLabel": "Plugin path",
+		"pathHelp": "The file system path to the plugin",
+		"enabled": "Enabled",
+		"enabledHelp": "Enable or disable this plugin",
+		"configJson": "Configuration (JSON)",
+		"configJsonHelp": "Plugin configuration in JSON format",
+		"addConfiguration": "Add Configuration",
+		"logs": "Logs",
+		"types": "Types",
+		"remove": "Remove",
+		"reset": "Reset",
+		"deletePlugin": "Delete Plugin",
+		"noPluginSelected": "No plugin selected",
+		"invalidJson": "Invalid JSON in configuration",
+		"formErrors": "Please fix the form errors before submitting",
+		"nameRequired": "Name is required",
+		"saveChanges": "Save Changes",
+		"saving": "Saving...",
+		"updated": "Plugin updated successfully",
+		"deleted": "Plugin deleted successfully",
+		"updateFailed": "Failed to update plugin"
+	},
+	"webhooks": {
+		"title": "Webhooks",
+		"description": "Register endpoints to receive signed notifications when async inference jobs complete or fail. Pass the endpoint's name in the x-bf-async-webhook header when submitting a job.",
+		"emptyTitle": "Get notified when async jobs finish",
+		"emptyDescription": "Register webhook endpoints and Bifrost will send a signed notification whenever an async inference job completes or fails, so you don't have to poll for results.",
+		"addEndpoint": "Add Endpoint",
+		"addEndpointEmpty": "Add Webhook Endpoint",
+		"actionsAria": "Webhook actions",
+		"noMatch": "No matching webhook endpoints found.",
+		"loadFailed": "Failed to load webhook endpoints.",
+		"columns": {
+			"name": "Name",
+			"url": "URL",
+			"events": "Events",
+			"enabled": "Enabled"
+		},
+		"actions": {
+			"edit": "Edit",
+			"rotateSecret": "Rotate secret",
+			"delete": "Delete",
+			"rotate": "Rotate",
+			"retry": "Retry"
+		},
+		"deleteTitle": "Delete webhook endpoint",
+		"deleteDescription": "Are you sure you want to delete {{name}}? This cannot be undone.",
+		"rotateTitle": "Rotate signing secret",
+		"rotateDescription": "The current secret for {{name}} will stop working immediately. Copy the new secret before closing this dialog.",
+		"deleted": "Webhook endpoint deleted successfully",
+		"rotated": "Signing secret rotated successfully",
+		"enabledSuccess": "Endpoint enabled successfully",
+		"disabledSuccess": "Endpoint disabled successfully",
+		"testDelivered": "Test delivered, receiver answered {{code}}",
+		"testFailed": "Test failed: {{error}}",
+		"testRejected": "Test rejected, receiver answered {{code}}"
+	},
+	"alerting": {
+		"channelsUnlockTitle": "Unlock alerting channels for proactive monitoring",
+		"channelsUnlockDescription": "This feature is a part of the Bifrost enterprise license. Configure Slack, PagerDuty, OpsGenie, and webhook alerts to stay ahead of budget and performance issues.",
+		"rulesUnlockTitle": "Unlock alerting rules for proactive monitoring",
+		"rulesUnlockDescription": "This feature is a part of the Bifrost enterprise license. Define alerting rules to catch budget, latency, and degradation issues before they become incidents.",
+		"historyUnlockTitle": "Unlock alerting history for proactive monitoring",
+		"historyUnlockDescription": "This feature is a part of the Bifrost enterprise license. Review alert delivery outcomes, failures, and resolution events in one place."
+	},
+	"guardrails": {
+		"unlockTitle": "Unlock guardrails for better security",
+		"unlockDescription": "This feature is a part of the Bifrost enterprise license. We would love to know more about your use case and how we can help you."
+	},
+	"auditLogs": {
+		"unlockTitle": "Unlock audit logs for better compliance",
+		"unlockDescription": "This feature is a part of the Bifrost enterprise license. We would love to know more about your use case and how we can help you."
+	},
+	"rbac": {
+		"unlockTitle": "Unlock roles and permissions for better security",
+		"unlockDescription": "This feature is a part of the Bifrost enterprise license. We would love to know more about your use case and how we can help you."
+	},
+	"accessProfiles": {
+		"unlockTitle": "Unlock access profiles for better performance",
+		"unlockDescription": "This feature is a part of the Bifrost enterprise license. Create access profiles to control access to your resources."
+	},
+	"users": {
+		"unlockTitle": "Unlock users & user governance",
+		"unlockDescription": "Manage users, set per-user budgets and rate limits, and control access with enterprise-grade governance. This feature is part of the Bifrost enterprise license."
+	},
+	"businessUnits": {
+		"unlockTitle": "Unlock business units & advanced governance",
+		"unlockDescription": "Manage users, business units with our enterprise-grade governance. This feature is part of the Bifrost enterprise license."
+	}
+}

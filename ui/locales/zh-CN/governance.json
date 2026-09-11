@@ -1,0 +1,176 @@
+{
+	"contactUs": {
+		"readMore": "了解更多",
+		"readMoreAria": "了解此功能详情（在新标签页打开）",
+		"bookDemo": "预约演示",
+		"bookDemoAria": "预约演示（在新标签页打开 Calendly）"
+	},
+	"customers": {
+		"title": "客户",
+		"description": "管理拥有独立团队、预算与访问控制的客户账户。",
+		"emptyTitle": "客户拥有独立的团队、预算与访问控制",
+		"emptyDescription": "创建客户账户以管理多租户用量、分配团队，并为每位客户设置支出与速率限制。",
+		"add": "添加客户",
+		"addAria": "添加你的第一个客户",
+		"readMoreAria": "了解客户功能（在新标签页打开）",
+		"searchPlaceholder": "按名称搜索…",
+		"searchAria": "按名称搜索客户",
+		"noMatch": "没有匹配的客户。",
+		"deleteTitle": "删除客户",
+		"deleteDescription": "确定要删除「{{name}}」吗？这也会删除所有关联团队并解除虚拟密钥分配。此操作无法撤销。",
+		"deleting": "删除中…",
+		"deleted": "客户已成功删除",
+		"loadFailed": "加载客户失败：{{message}}",
+		"loadGovernanceFailed": "加载治理数据失败。",
+		"columns": {
+			"name": "名称",
+			"teams": "团队",
+			"budget": "预算",
+			"rateLimit": "速率限制",
+			"virtualKeys": "虚拟密钥"
+		},
+		"actions": {
+			"edit": "编辑",
+			"delete": "删除",
+			"viewLogs": "查看日志"
+		},
+		"limitReached": "已达上限"
+	},
+	"teams": {
+		"title": "团队",
+		"description": "将用户组织到共享预算与访问控制的团队中。",
+		"emptyTitle": "团队以共享预算与访问权限组织用户",
+		"emptyDescription": "创建团队以分组用户、分配客户账户，并在团队层级设置预算与速率限制。",
+		"add": "添加团队",
+		"addAria": "添加你的第一个团队",
+		"readMoreAria": "了解团队功能（在新标签页打开）",
+		"searchPlaceholder": "按名称搜索…",
+		"searchAria": "按名称搜索团队",
+		"noMatch": "没有匹配的团队。",
+		"deleteTitle": "删除团队",
+		"deleteDescription": "确定要删除「{{name}}」吗？这也会解除该团队上的虚拟密钥分配。此操作无法撤销。",
+		"deleting": "删除中…",
+		"deleted": "团队已成功删除",
+		"unknownCustomer": "未知客户",
+		"loadFailed": "加载团队失败：{{message}}",
+		"columns": {
+			"name": "名称",
+			"customer": "客户",
+			"budget": "预算",
+			"rateLimit": "速率限制",
+			"virtualKeys": "虚拟密钥"
+		},
+		"actions": {
+			"edit": "编辑",
+			"delete": "删除",
+			"viewLogs": "查看日志"
+		},
+		"limitReached": "已达上限"
+	},
+	"virtualKeys": {
+		"loadFailed": "加载虚拟密钥失败：{{message}}"
+	},
+	"plugins": {
+		"title": "插件",
+		"emptyTitle": "自定义插件用你的业务逻辑扩展 Bifrost",
+		"emptyDescription": "构建并部署插件，用于自定义集成、工作流自动化与 AI 治理。",
+		"installNew": "安装新插件",
+		"installNewAria": "创建你的第一个插件",
+		"editSequence": "编辑插件顺序",
+		"readMoreAria": "了解自定义插件（在新标签页打开）",
+		"backToPlugins": "插件",
+		"configuration": "插件配置",
+		"name": "名称",
+		"nameLabel": "插件名称",
+		"nameHelp": "插件的名称",
+		"path": "路径",
+		"pathLabel": "插件路径",
+		"pathHelp": "插件的文件系统路径",
+		"enabled": "已启用",
+		"enabledHelp": "启用或禁用此插件",
+		"configJson": "配置（JSON）",
+		"configJsonHelp": "JSON 格式的插件配置",
+		"addConfiguration": "添加配置",
+		"logs": "日志",
+		"types": "类型",
+		"remove": "移除",
+		"reset": "重置",
+		"deletePlugin": "删除插件",
+		"noPluginSelected": "未选择插件",
+		"invalidJson": "配置中的 JSON 无效",
+		"formErrors": "请先修复表单错误再提交",
+		"nameRequired": "名称为必填项",
+		"saveChanges": "保存更改",
+		"saving": "保存中…",
+		"updated": "插件已成功更新",
+		"deleted": "插件已成功删除",
+		"updateFailed": "更新插件失败"
+	},
+	"webhooks": {
+		"title": "Webhook",
+		"description": "注册端点以在异步推理任务完成或失败时接收已签名通知。提交任务时在 x-bf-async-webhook 请求头中传入端点名称。",
+		"emptyTitle": "在异步任务完成时收到通知",
+		"emptyDescription": "注册 webhook 端点后，Bifrost 会在异步推理任务完成或失败时发送已签名通知，无需轮询结果。",
+		"addEndpoint": "添加端点",
+		"addEndpointEmpty": "添加 Webhook 端点",
+		"actionsAria": "Webhook 操作",
+		"noMatch": "没有匹配的 webhook 端点。",
+		"loadFailed": "加载 webhook 端点失败。",
+		"columns": {
+			"name": "名称",
+			"url": "URL",
+			"events": "事件",
+			"enabled": "已启用"
+		},
+		"actions": {
+			"edit": "编辑",
+			"rotateSecret": "轮换密钥",
+			"delete": "删除",
+			"rotate": "轮换",
+			"retry": "重试"
+		},
+		"deleteTitle": "删除 webhook 端点",
+		"deleteDescription": "确定要删除 {{name}} 吗？此操作无法撤销。",
+		"rotateTitle": "轮换签名密钥",
+		"rotateDescription": "{{name}} 的当前密钥将立即失效。请在关闭此对话框前复制新密钥。",
+		"deleted": "Webhook 端点已成功删除",
+		"rotated": "签名密钥已成功轮换",
+		"enabledSuccess": "端点已启用",
+		"disabledSuccess": "端点已禁用",
+		"testDelivered": "测试已送达，接收方返回 {{code}}",
+		"testFailed": "测试失败：{{error}}",
+		"testRejected": "测试被拒绝，接收方返回 {{code}}"
+	},
+	"alerting": {
+		"channelsUnlockTitle": "解锁告警渠道以主动监控",
+		"channelsUnlockDescription": "此功能属于 Bifrost 企业版许可。配置 Slack、PagerDuty、OpsGenie 与 webhook 告警，提前应对预算与性能问题。",
+		"rulesUnlockTitle": "解锁告警规则以主动监控",
+		"rulesUnlockDescription": "此功能属于 Bifrost 企业版许可。定义告警规则，在预算、延迟与降级问题演变成事故前及时发现。",
+		"historyUnlockTitle": "解锁告警历史以主动监控",
+		"historyUnlockDescription": "此功能属于 Bifrost 企业版许可。在同一处查看告警投递结果、失败与解决事件。"
+	},
+	"guardrails": {
+		"unlockTitle": "解锁护栏以提升安全",
+		"unlockDescription": "此功能属于 Bifrost 企业版许可。我们希望了解你的用例，以及我们能如何提供帮助。"
+	},
+	"auditLogs": {
+		"unlockTitle": "解锁审计日志以提升合规",
+		"unlockDescription": "此功能属于 Bifrost 企业版许可。我们希望了解你的用例，以及我们能如何提供帮助。"
+	},
+	"rbac": {
+		"unlockTitle": "解锁角色与权限以提升安全",
+		"unlockDescription": "此功能属于 Bifrost 企业版许可。我们希望了解你的用例，以及我们能如何提供帮助。"
+	},
+	"accessProfiles": {
+		"unlockTitle": "解锁访问配置以提升管控",
+		"unlockDescription": "此功能属于 Bifrost 企业版许可。创建访问配置以控制对资源的访问。"
+	},
+	"users": {
+		"unlockTitle": "解锁用户与用户治理",
+		"unlockDescription": "管理用户、设置每用户预算与速率限制，并以企业级治理控制访问。此功能属于 Bifrost 企业版许可。"
+	},
+	"businessUnits": {
+		"unlockTitle": "解锁业务单元与高级治理",
+		"unlockDescription": "通过企业级治理管理用户与业务单元。此功能属于 Bifrost 企业版许可。"
+	}
+}

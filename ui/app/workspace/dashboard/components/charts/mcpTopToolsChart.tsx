@@ -4,6 +4,7 @@ import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import { formatCost, getModelColor } from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
+import { NoChartData } from "./noChartData";
 
 interface MCPTopToolsChartProps {
 	data: MCPTopToolsResponse | null;
@@ -42,7 +43,7 @@ function MCPTopToolsChartImpl({ data }: MCPTopToolsChartProps) {
 	}, [data]);
 
 	if (!data?.tools || chartData.length === 0) {
-		return <div className="text-muted-foreground flex h-full items-center justify-center text-sm">No data available</div>;
+		return <NoChartData />;
 	}
 
 	return (
