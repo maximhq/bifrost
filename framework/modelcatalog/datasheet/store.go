@@ -56,11 +56,12 @@ type Store struct {
 
 	// Canonical pricing state, protected by mu. Read paths take RLock and
 	// return defensive copies of any slice/map they expose.
-	mu                     sync.RWMutex
-	pricingData            map[string]configstoreTables.TableModelPricing // model|provider|mode → row
-	baseModelIndex         map[string]string                              // model → canonical base name
-	supportedResponseTypes map[string][]string                            // model → [chat_completion, responses, …]
-	supportedParams        map[string][]string                            // model → [temperature, top_p, …]
+	mu                      sync.RWMutex
+	pricingData             map[string]configstoreTables.TableModelPricing // model|provider|mode → row
+	baseModelIndex          map[string]string                              // model → canonical base name
+	supportedResponseTypes  map[string][]string                            // model → [chat_completion, responses, …]
+	modelParameterProviders map[string]schemas.ModelProvider               // model → provider declared by model-parameters
+	supportedParams         map[string][]string                            // model → [temperature, top_p, …]
 
 	// onModelParametersApplied fires after a model-parameters reload lands, so
 	// caches built from the previous sheet can be dropped.
@@ -94,17 +95,18 @@ type Store struct {
 func New(configStore configstore.ConfigStore, logger schemas.Logger, cfg Config) *Store {
 	cfg = cfg.resolved()
 	return &Store{
-		configStore:            configStore,
-		logger:                 logger,
-		pricingData:            make(map[string]configstoreTables.TableModelPricing),
-		baseModelIndex:         make(map[string]string),
-		supportedResponseTypes: make(map[string][]string),
-		supportedParams:        make(map[string][]string),
-		datasheetByProvider:    make(map[schemas.ModelProvider][]string),
-		deprecatedByProvider:   make(map[schemas.ModelProvider][]string),
-		url:                    cfg.URL,
-		modelParametersURL:     cfg.ModelParametersURL,
-		syncInterval:           cfg.SyncInterval,
+		configStore:             configStore,
+		logger:                  logger,
+		pricingData:             make(map[string]configstoreTables.TableModelPricing),
+		baseModelIndex:          make(map[string]string),
+		supportedResponseTypes:  make(map[string][]string),
+		modelParameterProviders: make(map[string]schemas.ModelProvider),
+		supportedParams:         make(map[string][]string),
+		datasheetByProvider:     make(map[schemas.ModelProvider][]string),
+		deprecatedByProvider:    make(map[schemas.ModelProvider][]string),
+		url:                     cfg.URL,
+		modelParametersURL:      cfg.ModelParametersURL,
+		syncInterval:            cfg.SyncInterval,
 	}
 }
 
@@ -332,6 +334,35 @@ func (s *Store) IsRequestTypeSupported(model string, requestType schemas.Request
 	return ok && slices.Contains(outputs, string(requestType))
 }
 
+// GetSupportedRequestTypes returns the normalized request types declared for
+// a runtime (provider, model) pair by the model-parameters datasheet.
+// Equivalent model identifiers are tried in the same deterministic order as
+// ResolveModelParameters, but rows declared for another provider are skipped.
+// The returned slice is a defensive copy and may be mutated by the caller.
+func (s *Store) GetSupportedRequestTypes(provider schemas.ModelProvider, model string) []schemas.RequestType {
+	provider = schemas.ModelProvider(normalizeProvider(string(provider)))
+	candidates := s.modelParameterCandidates(model)
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, candidate := range candidates {
+		if declaredProvider := s.modelParameterProviders[candidate]; declaredProvider == "" || declaredProvider != provider {
+			continue
+		}
+		outputs := s.supportedResponseTypes[candidate]
+		if len(outputs) == 0 {
+			continue
+		}
+		requestTypes := make([]schemas.RequestType, len(outputs))
+		for i, output := range outputs {
+			requestTypes[i] = schemas.RequestType(output)
+		}
+		slices.Sort(requestTypes)
+		return requestTypes
+	}
+	return nil
+}
+
 // GetSupportedParameters returns the list of OpenAI-compatible parameter
 // names a model accepts (e.g. temperature, top_p, tools). nil for unknown.
 func (s *Store) GetSupportedParameters(model string) []string {
@@ -438,13 +469,14 @@ func NewTestStore(baseModelIndex map[string]string) *Store {
 		baseModelIndex = make(map[string]string)
 	}
 	return &Store{
-		logger:                 bifrost.NewNoOpLogger(),
-		pricingData:            make(map[string]configstoreTables.TableModelPricing),
-		baseModelIndex:         baseModelIndex,
-		supportedResponseTypes: make(map[string][]string),
-		supportedParams:        make(map[string][]string),
-		datasheetByProvider:    make(map[schemas.ModelProvider][]string),
-		deprecatedByProvider:   make(map[schemas.ModelProvider][]string),
+		logger:                  bifrost.NewNoOpLogger(),
+		pricingData:             make(map[string]configstoreTables.TableModelPricing),
+		baseModelIndex:          baseModelIndex,
+		supportedResponseTypes:  make(map[string][]string),
+		modelParameterProviders: make(map[string]schemas.ModelProvider),
+		supportedParams:         make(map[string][]string),
+		datasheetByProvider:     make(map[schemas.ModelProvider][]string),
+		deprecatedByProvider:    make(map[schemas.ModelProvider][]string),
 	}
 }
 
