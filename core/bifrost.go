@@ -6124,6 +6124,7 @@ func executeRequestWithRetries[T any](
 	model string,
 	req *schemas.BifrostRequest,
 	logger schemas.Logger,
+	streamAttemptCancel ...context.CancelFunc,
 ) (result T, bifrostError *schemas.BifrostError) {
 	var attempts int
 	checkAzurePreamble := providerKey == schemas.Azure && IsStreamRequestType(requestType)
@@ -6448,6 +6449,12 @@ func executeRequestWithRetries[T any](
 		emptyStream := false
 		if bifrostError == nil {
 			if streamChan, ok := any(result).(chan *schemas.BifrostStreamChunk); ok {
+				var throughputGuard *schemas.StreamThroughputGuardConfig
+				switch requestType {
+				case schemas.TextCompletionStreamRequest, schemas.ChatCompletionStreamRequest,
+					schemas.ResponsesStreamRequest, schemas.ResponsesRetrieveStreamRequest:
+					throughputGuard = config.NetworkConfig.StreamThroughputGuard
+				}
 				var (
 					checkedStream chan *schemas.BifrostStreamChunk
 					drainDone     <-chan struct{}
@@ -6458,10 +6465,21 @@ func executeRequestWithRetries[T any](
 					checkedStream, drainDone, firstChunkErr = providerUtils.CheckStreamPreambleForError(
 						ctx, requestID, streamChan, azure.IsStreamPreamble,
 					)
+					if firstChunkErr == nil && checkedStream != nil && throughputGuard != nil {
+						// The probe drains the replayed stream on rejection, which lets the
+						// preamble drain above complete, so drainDone stays the outer one.
+						checkedStream, _, firstChunkErr = providerUtils.CheckFirstStreamChunkForError(ctx, checkedStream, throughputGuard)
+					}
 				} else {
-					checkedStream, drainDone, firstChunkErr = providerUtils.CheckFirstStreamChunkForError(ctx, streamChan)
+					checkedStream, drainDone, firstChunkErr = providerUtils.CheckFirstStreamChunkForError(ctx, streamChan, throughputGuard)
 				}
 				if firstChunkErr != nil {
+					throughputGuardRejected := firstChunkErr.Error != nil && firstChunkErr.Error.Code != nil &&
+						(*firstChunkErr.Error.Code == schemas.ErrCodeStreamThroughputBelowMinimum ||
+							*firstChunkErr.Error.Code == schemas.ErrCodeStreamThroughputProbeBufferExceeded)
+					if throughputGuardRejected && len(streamAttemptCancel) > 0 && streamAttemptCancel[0] != nil {
+						streamAttemptCancel[0]()
+					}
 					<-drainDone
 					// The dead stream's teardown (ReleaseStreamingResponse) claimed the
 					// connection_closed flag on the shared context. That claim is scoped
@@ -6470,6 +6488,10 @@ func executeRequestWithRetries[T any](
 					// closed and fail every read with ErrStreamClosed.
 					ctx.ClearValue(schemas.BifrostContextKeyConnectionClosed)
 					bifrostError = firstChunkErr
+					if throughputGuardRejected {
+						logger.Warn("stream throughput guard rejected %s/%s: %s", providerKey, model, firstChunkErr.Error.Message)
+						ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelWarn, fmt.Sprintf("Stream throughput guard rejected %s/%s before output was committed", providerKey, model))
+					}
 				} else if checkedStream == nil {
 					// Empty stream (zero chunks before close — includes the large-payload
 					// passthrough placeholder). Substitute a closed, non-nil channel:
@@ -7109,6 +7131,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		// goroutines' defers — passed via the postHookSpanFinalizer parameter directly to
 		// handleProviderStreamRequest, never via the shared req.Context.
 		var lastAttemptFinalizer func(context.Context)
+		var currentStreamAttemptCancel context.CancelFunc
 
 		// Execute request with retries. For streaming, the plugin pipeline,
 		// postHookRunner, and finalizer are allocated per-attempt inside the
@@ -7118,6 +7141,8 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		// returned to the pool via its deferred finalizer.
 		if IsStreamRequestType(req.RequestType) {
 			stream, bifrostError = executeRequestWithRetries(req.Context, config, func(k schemas.Key) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+				attemptCtx, cancelAttempt := schemas.NewBifrostContextWithSharedValues(req.Context)
+				currentStreamAttemptCancel = cancelAttempt
 				if aliasConfig := k.Aliases.ResolveConfig(originalModelRequested); aliasConfig != nil {
 					resolvedModel = aliasConfig.ModelID
 					req.Context.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: originalModelRequested, Config: aliasConfig})
@@ -7208,18 +7233,27 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 						bifrost.releasePluginPipeline(pipeline)
 					})
 				}
-				lastAttemptFinalizer = postHookSpanFinalizer
-				streamCh, streamErr := bifrost.handleProviderStreamRequest(provider, config, req, k, postHookRunner, postHookSpanFinalizer)
+				attemptFinalizer := func(ctx context.Context) {
+					postHookSpanFinalizer(ctx)
+					cancelAttempt()
+				}
+				lastAttemptFinalizer = attemptFinalizer
+				streamCh, streamErr := bifrost.handleProviderStreamRequest(attemptCtx, provider, config, req, k, postHookRunner, attemptFinalizer)
 				// If stream setup failed before any provider goroutine started,
 				// no deferred finalizer will run — release the pipeline directly
 				// so a retry doesn't inherit a leaked pool entry.
 				if streamErr != nil && streamCh == nil {
+					cancelAttempt()
 					finalizerOnce.Do(func() {
 						bifrost.releasePluginPipeline(pipeline)
 					})
 				}
 				return streamCh, streamErr
-			}, keyProvider, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger)
+			}, keyProvider, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger, func() {
+				if currentStreamAttemptCancel != nil {
+					currentStreamAttemptCancel()
+				}
+			})
 		} else {
 			result, bifrostError = executeRequestWithRetries(req.Context, config, func(k schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
 				if aliasConfig := k.Aliases.ResolveConfig(originalModelRequested); aliasConfig != nil {
@@ -7836,51 +7870,51 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 }
 
 // handleProviderStreamRequest handles the stream request to the provider based on the request type
-func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, config *schemas.ProviderConfig, req *ChannelMessage, key schemas.Key, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context)) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (bifrost *Bifrost) handleProviderStreamRequest(ctx *schemas.BifrostContext, provider schemas.Provider, config *schemas.ProviderConfig, req *ChannelMessage, key schemas.Key, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context)) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	switch req.RequestType {
 	case schemas.TextCompletionStreamRequest:
-		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ChatCompletionRequest {
+		if changeType, ok := ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ChatCompletionRequest {
 			chatRequest := req.BifrostRequest.TextCompletionRequest.ToBifrostChatRequest()
 			if chatRequest != nil {
-				return provider.ChatCompletionStream(req.Context, wrapConvertedStreamPostHookRunner(postHookRunner, schemas.ChatCompletionRequest), postHookSpanFinalizer, key, promptCacheChatRequest(req.Context, config, provider.GetProviderKey(), chatRequest))
+				return provider.ChatCompletionStream(ctx, wrapConvertedStreamPostHookRunner(postHookRunner, schemas.ChatCompletionRequest), postHookSpanFinalizer, key, promptCacheChatRequest(ctx, config, provider.GetProviderKey(), chatRequest))
 			}
 		}
-		return provider.TextCompletionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.TextCompletionRequest)
+		return provider.TextCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.TextCompletionRequest)
 	case schemas.ChatCompletionStreamRequest:
-		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ResponsesRequest {
+		if changeType, ok := ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ResponsesRequest {
 			responsesRequest := req.BifrostRequest.ChatRequest.ToResponsesRequest()
 			if responsesRequest != nil {
-				return provider.ResponsesStream(req.Context, wrapConvertedStreamPostHookRunner(postHookRunner, schemas.ResponsesRequest), postHookSpanFinalizer, key, promptCacheResponsesRequest(req.Context, config, provider.GetProviderKey(), responsesRequest))
+				return provider.ResponsesStream(ctx, wrapConvertedStreamPostHookRunner(postHookRunner, schemas.ResponsesRequest), postHookSpanFinalizer, key, promptCacheResponsesRequest(ctx, config, provider.GetProviderKey(), responsesRequest))
 			}
 		}
-		return provider.ChatCompletionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, promptCacheChatRequest(req.Context, config, provider.GetProviderKey(), req.BifrostRequest.ChatRequest))
+		return provider.ChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, promptCacheChatRequest(ctx, config, provider.GetProviderKey(), req.BifrostRequest.ChatRequest))
 	case schemas.ResponsesStreamRequest:
-		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ChatCompletionRequest {
+		if changeType, ok := ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ChatCompletionRequest {
 			chatRequest := req.BifrostRequest.ResponsesRequest.ToChatRequest()
 			if chatRequest != nil {
 				// The providers' chat streaming handler re-assembles Responses events from the
 				// chat chunks when this flag is set, so the caller still gets a Responses stream.
-				req.Context.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
-				return provider.ChatCompletionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, chatRequest)
+				ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
+				return provider.ChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, chatRequest)
 			}
 		}
-		return provider.ResponsesStream(req.Context, postHookRunner, postHookSpanFinalizer, key, promptCacheResponsesRequest(req.Context, config, provider.GetProviderKey(), req.BifrostRequest.ResponsesRequest))
+		return provider.ResponsesStream(ctx, postHookRunner, postHookSpanFinalizer, key, promptCacheResponsesRequest(ctx, config, provider.GetProviderKey(), req.BifrostRequest.ResponsesRequest))
 	case schemas.ResponsesRetrieveStreamRequest:
 		lifecycle, ok := provider.(schemas.ResponsesLifecycleProvider)
 		if !ok {
 			return nil, providerUtils.NewUnsupportedOperationError(schemas.ResponsesRetrieveStreamRequest, provider.GetProviderKey())
 		}
-		return lifecycle.ResponsesRetrieveStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ResponsesRetrieveRequest)
+		return lifecycle.ResponsesRetrieveStream(ctx, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ResponsesRetrieveRequest)
 	case schemas.SpeechStreamRequest:
-		return provider.SpeechStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.SpeechRequest)
+		return provider.SpeechStream(ctx, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.SpeechRequest)
 	case schemas.TranscriptionStreamRequest:
-		return provider.TranscriptionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.TranscriptionRequest)
+		return provider.TranscriptionStream(ctx, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.TranscriptionRequest)
 	case schemas.ImageGenerationStreamRequest:
-		return provider.ImageGenerationStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ImageGenerationRequest)
+		return provider.ImageGenerationStream(ctx, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ImageGenerationRequest)
 	case schemas.ImageEditStreamRequest:
-		return provider.ImageEditStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ImageEditRequest)
+		return provider.ImageEditStream(ctx, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ImageEditRequest)
 	case schemas.PassthroughStreamRequest:
-		return provider.PassthroughStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.PassthroughRequest)
+		return provider.PassthroughStream(ctx, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.PassthroughRequest)
 	default:
 		_, model, _ := req.BifrostRequest.GetRequestFields()
 		return nil, &schemas.BifrostError{
@@ -8387,6 +8421,7 @@ func flushPluginLogs(ctx *schemas.BifrostContext) {
 // drainAndAttachPluginLogs drains accumulated plugin logs from the BifrostContext
 // and attaches them to the trace for later retrieval by observability plugins.
 func drainAndAttachPluginLogs(ctx *schemas.BifrostContext) {
+	ctx = ctx.Root()
 	if !ctx.HasPluginLogs() {
 		return
 	}
