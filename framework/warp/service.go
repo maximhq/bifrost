@@ -42,6 +42,11 @@ type Service struct {
 	// nothing to read there, so chat is reported unavailable rather than
 	// registered and always failing.
 	logs LogReader
+	// governance is nil when the config store does not implement
+	// GovernanceReader. Unlike logs, this is not fatal to CanChat - it only
+	// narrows describe_virtual_key to reporting itself unavailable, the same
+	// pattern semantic search already uses for its own optional dependency.
+	governance GovernanceReader
 	// client owns Warp's dedicated Bifrost instance. It exists only when there is
 	// something to read; tests replace chatOverride instead, so the loop can be
 	// driven by a scripted model.
@@ -113,6 +118,14 @@ func WithConfigStore(store configstore.WarpStore) Option {
 	return func(s *Service) { s.store = store }
 }
 
+// WithGovernanceReader sets describe_virtual_key's dependency directly, the
+// same test seam as WithConfigStore - a double built to satisfy WarpStore
+// alone has no reason to also implement every method GovernanceReader would
+// otherwise be narrowed from.
+func WithGovernanceReader(reader GovernanceReader) Option {
+	return func(s *Service) { s.governance = reader }
+}
+
 // NewService builds a Service over the deployment's config store. A store that
 // does not implement WarpStore is supported: the service then reports
 // ErrUnavailable from every configuration call.
@@ -122,6 +135,7 @@ func NewService(store configstore.ConfigStore, opts ...Option) *Service {
 		service.store, _ = store.(configstore.WarpStore)
 		service.conversations, _ = store.(configstore.WarpConversationStore)
 		service.backfillJobs, _ = store.(BackfillJobStore)
+		service.governance, _ = store.(GovernanceReader)
 	}
 	for _, opt := range opts {
 		opt(service)

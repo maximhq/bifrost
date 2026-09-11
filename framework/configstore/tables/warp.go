@@ -32,6 +32,12 @@ type TableWarpConfig struct {
 
 	SystemPromptSuffix *string `gorm:"type:text" json:"system_prompt_suffix,omitempty"`
 
+	// Temperature is nil when unconfigured, not 0 - 0 is a real, deterministic
+	// value an operator can choose, and a non-pointer column could not tell
+	// that apart from "never set".
+	Temperature     *float64 `gorm:"default:null" json:"temperature,omitempty"`
+	ReasoningEffort string   `gorm:"type:varchar(32)" json:"reasoning_effort,omitempty"`
+
 	EmbeddingProvider               string  `gorm:"type:varchar(64)" json:"embedding_provider"`
 	EmbeddingModel                  string  `gorm:"type:varchar(255)" json:"embedding_model"`
 	EmbeddingAPIKeyID               string  `gorm:"type:varchar(255)" json:"embedding_api_key_id,omitempty"`

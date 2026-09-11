@@ -6,6 +6,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -75,6 +76,12 @@ type ToolDeps struct {
 	// named no scope of its own; it is not an access control, which queryscope
 	// already applies inside the store.
 	scope Scope
+	// governance is nil on a deployment whose config store does not implement
+	// GovernanceReader (or was never given one) - the same optional-dependency
+	// shape as semantic. describe_virtual_key is the only tool that reaches it,
+	// and reports itself unavailable rather than the caller getting a nil-
+	// pointer panic.
+	governance GovernanceReader
 }
 
 // Tool pairs a model-facing declaration with its executor.
@@ -295,7 +302,17 @@ func intPtrChecked(value any, field string) (*int, error) {
 	if number != math.Trunc(number) {
 		return nil, fmt.Errorf("%s must be an integer, got %v", field, number)
 	}
-	if number < float64(math.MinInt) || number > float64(math.MaxInt) {
+	// float64(math.MaxInt) is not actually math.MaxInt: math.MaxInt (2^63-1)
+	// has more significant bits than float64's 53-bit mantissa can hold at
+	// that magnitude, so it rounds up to the nearest representable value,
+	// 2^63 - one past the largest int64 there is. A `>` check against that
+	// rounded value would let 2^63 itself through as "in range", and
+	// int(2^63) is then a conversion the Go spec leaves implementation-
+	// defined, not a clean round-trip. -float64(math.MinInt) names the same
+	// 2^63 boundary but from the side that *is* exact (math.MinInt is a
+	// power of two), so >= against it is what actually excludes the first
+	// value int cannot represent.
+	if number < float64(math.MinInt) || number >= -float64(math.MinInt) {
 		return nil, fmt.Errorf("%s is out of range: %v", field, number)
 	}
 	return intPtr(value), nil
@@ -474,10 +491,11 @@ func logContent(entry *logstore.Log) string {
 // uses so Warp's numbers line up with the charts a user is looking at. It then
 // widens further if the range would still produce too many buckets.
 func bucketSize(filters *logstore.SearchFilters) (int64, error) {
+	// Every caller reaches this through filterArg -> parseFilters, which always
+	// defaults both bounds before returning - so unlike DefaultBucketSize
+	// itself (a shared helper other callers do use with a possibly-nil bound),
+	// StartTime/EndTime are never nil here.
 	bucket := logstore.DefaultBucketSize(filters.StartTime, filters.EndTime)
-	if filters.StartTime == nil || filters.EndTime == nil {
-		return bucket, nil
-	}
 	span := filters.EndTime.Sub(*filters.StartTime).Seconds()
 	if bucket > 0 && span/float64(bucket) > MaxHistogramBuckets {
 		return 0, fmt.Errorf("the requested time range produces more than %d buckets; use a shorter range", MaxHistogramBuckets)
@@ -493,9 +511,8 @@ func bucketSize(filters *logstore.SearchFilters) (int64, error) {
 // the model retries, which is how one question turned into four identical
 // queries in the logs.
 func coarseBucketSize(filters *logstore.SearchFilters) (int64, error) {
-	if filters.StartTime == nil || filters.EndTime == nil {
-		return logstore.DefaultBucketSize(filters.StartTime, filters.EndTime), nil
-	}
+	// See the same note on bucketSize above: every caller reaches this through
+	// filterArg -> parseFilters, so both bounds are always set here.
 	span := filters.EndTime.Sub(*filters.StartTime).Seconds()
 	if span <= 0 {
 		return 0, fmt.Errorf("the time range is empty")
@@ -520,9 +537,30 @@ func buildTools() []Tool {
 		queryUsageByTool(),
 		queryModelsTool(),
 		describeFilterSpaceTool(),
-		describeScopeTool(),
+		describeVirtualKeyTool(),
 		askUserToolDef(),
 	}
+}
+
+// staticDeclaredTools memoizes responsesTools(buildTools()) - Warp's tool set
+// is fixed at compile time, so every one of its JSON schemas was otherwise
+// being re-parsed with sonic on every single turn for no reason: buildTools()
+// never varies by request, deployment config, or caller. The parsed result is
+// read-only from every call site (folded straight into an outgoing request's
+// Params.Tools), so sharing one slice across concurrent turns is safe.
+var (
+	staticToolsOnce     sync.Once
+	staticDeclaredTools []schemas.ResponsesTool
+	staticToolsErr      error
+)
+
+// declaredStaticTools returns Warp's fixed tool declarations, parsing them
+// once on first use rather than on every turn.
+func declaredStaticTools() ([]schemas.ResponsesTool, error) {
+	staticToolsOnce.Do(func() {
+		staticDeclaredTools, staticToolsErr = responsesTools(buildTools())
+	})
+	return staticDeclaredTools, staticToolsErr
 }
 
 // ChatTools converts the tool set into provider-facing declarations.

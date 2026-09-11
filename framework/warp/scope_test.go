@@ -88,19 +88,19 @@ func TestWarpFilterArgKeepsExplicitScope(t *testing.T) {
 }
 
 // The model cannot report a scope it was never told about, so every result
-// carries a note describing what it covers.
+// carries a tag describing what it covers. The tag is compact on purpose -
+// the prompt carries the phrasing advice once, not repeated per result - so
+// this only has to prove the right one of the three comes back, not that a
+// sentence explaining it does.
 func TestWarpScopeNoteDescribesWhatTheResultCovers(t *testing.T) {
 	scope := Scope{HasIdentity: true, UserID: "user-7"}
 
-	require.Contains(t,
-		scopeNote(&logstore.SearchFilters{UserIDs: []string{"user-7"}}, scope),
-		"person asking")
-	require.Contains(t,
-		scopeNote(&logstore.SearchFilters{TeamIDs: []string{"team-1"}}, scope),
-		"named in the filters")
-	require.Contains(t,
-		scopeNote(&logstore.SearchFilters{}, Scope{}),
-		"whole deployment")
+	require.Equal(t, "self",
+		scopeNote(&logstore.SearchFilters{UserIDs: []string{"user-7"}}, scope))
+	require.Equal(t, "named",
+		scopeNote(&logstore.SearchFilters{TeamIDs: []string{"team-1"}}, scope))
+	require.Equal(t, "all",
+		scopeNote(&logstore.SearchFilters{}, Scope{}))
 }
 
 // Every scoped flow must return the note, or the instruction to report scope
@@ -130,7 +130,7 @@ func TestWarpFlowsReportScope(t *testing.T) {
 // The prompt has to actually carry the rules, or the mechanism is inert.
 func TestWarpSystemPromptExplainsScoping(t *testing.T) {
 	content := systemInstructions(&schemas.WarpConfig{})
-	require.Contains(t, content, "describe_scope")
+	require.Contains(t, content, "describe_filter_space")
 	require.Contains(t, content, "their own traffic is the default")
 	require.Contains(t, content, "Ask which team, customer or business unit is meant")
 }

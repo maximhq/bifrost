@@ -1,4 +1,11 @@
-import { parseWarpFrame, splitWarpFrames, type WarpEvent, type WarpQuestion, type WarpUsage, isPartialAnswer } from "@/components/warp/warpStream.utils";
+import {
+	parseWarpFrame,
+	splitWarpFrames,
+	type WarpEvent,
+	type WarpQuestion,
+	type WarpUsage,
+	isPartialAnswer,
+} from "@/components/warp/warpStream.utils";
 import type { WarpTurn, WarpTurnToolCall } from "@/lib/contexts/warpContext";
 import { getApiBaseUrl } from "@/lib/utils/port";
 import { useCallback, useRef, useState } from "react";
@@ -14,7 +21,11 @@ interface UseWarpStreamResult {
 	/** Tool calls made during the in-flight answer, in order. */
 	streamingToolCalls: WarpTurnToolCall[];
 	isStreaming: boolean;
-	/** Terminal error for the in-flight turn, if it failed. */
+	/**
+	 * Terminal error from the most recently finished turn, if it failed. Reset
+	 * to null at the start of every send, so it never outlives the turn it
+	 * belongs to.
+	 */
 	error: string | null;
 	/** Set when Warp ended its turn by asking something. */
 	question: WarpQuestion | null;
@@ -188,21 +199,60 @@ export function useWarpStream({ onTurnComplete }: UseWarpStreamOptions): UseWarp
 					terminalError = caught instanceof Error ? caught.message : "Warp request failed";
 				}
 			} finally {
-				setIsStreaming(false);
-				abortRef.current = null;
-				onTurnComplete({
-					role: "assistant",
-					content: text,
-					toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-					error: terminalError ?? undefined,
-					partial: partial || undefined,
-					// Recorded on the turn so a reopened thread shows the question that
-					// was asked, not just the gap where an answer would be.
-					question: posed ?? undefined,
-					usage,
-				});
-				setStreamingText("");
-				setStreamingToolCalls([]);
+				// abortRef.current is this request's own identity for as long as it
+				// is still the active one - stop() nulls it and a newer send()
+				// overwrites it with its own controller, both synchronously, before
+				// either does anything else (see stop() and the top of this
+				// function). If it no longer points at controller, something newer
+				// already took over - a fresh send(), an explicit stop(), a switch
+				// to a different conversation - and this request lost the race.
+				// Finalizing here regardless would touch state that belongs to
+				// whatever request or conversation is current now: a partial answer
+				// this request happened to stream before losing, an aborted-request
+				// error, or a turn appended onto a conversation that was already
+				// replaced or cleared out from under it. A plain `if` rather than an
+				// early return, since returning from a finally block silently
+				// discards whatever the try/catch above was doing.
+				if (abortRef.current === controller) {
+					setIsStreaming(false);
+					setError(terminalError);
+					abortRef.current = null;
+					// A turn that ended by asking usually carries no narration text - Warp
+					// is told to ask about one thing and stop - so falling back to the
+					// question itself is what the server already does when it persists
+					// this same turn (see recordTurn in history.go). Without this, the
+					// turn's content stays empty: the next request's history filters it
+					// out entirely (see the messages mapping earlier in this function on
+					// the next send()), and the model sees
+					// its own answer arrive with no question in between - two bare user
+					// turns, and no way to tell what it had asked.
+					//
+					// The cast is a TypeScript control-flow quirk, not a real type gap:
+					// `posed` is reassigned inside applyEvent, a closure invoked from the
+					// try block above, and TS narrows it to `never` in this finally block
+					// as a result - asserting the declared type back is the standard,
+					// compile-time-only fix.
+					//
+					// Whitespace-only text falls back the same as empty text: a model that
+					// streamed nothing but a stray space or newline before asking has still
+					// carried no real narration, and treating that as "real" text would skip
+					// the question fallback above for the same empty-turn failure it exists
+					// to prevent.
+					const content = text.trim() !== "" ? text : ((posed as WarpQuestion | null)?.question ?? "");
+					onTurnComplete({
+						role: "assistant",
+						content,
+						toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+						error: terminalError ?? undefined,
+						partial: partial || undefined,
+						// Recorded on the turn so a reopened thread shows the question that
+						// was asked, not just the gap where an answer would be.
+						question: posed ?? undefined,
+						usage,
+					});
+					setStreamingText("");
+					setStreamingToolCalls([]);
+				}
 			}
 		},
 		[onTurnComplete, stop],
@@ -218,5 +268,16 @@ export function useWarpStream({ onTurnComplete }: UseWarpStreamOptions): UseWarp
 		conversationRef.current = id;
 	}, []);
 
-	return { streamingText, streamingToolCalls, isStreaming, error, question, clearQuestion, send, stop, resetConversation, openConversation };
+	return {
+		streamingText,
+		streamingToolCalls,
+		isStreaming,
+		error,
+		question,
+		clearQuestion,
+		send,
+		stop,
+		resetConversation,
+		openConversation,
+	};
 }

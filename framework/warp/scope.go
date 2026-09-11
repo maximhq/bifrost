@@ -2,7 +2,6 @@ package warp
 
 import (
 	"context"
-	"sync"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
@@ -78,91 +77,26 @@ func filtersNameAScope(filters *logstore.SearchFilters) bool {
 		len(filters.VirtualKeyIDs) > 0
 }
 
-// scopeNote describes, in one line, what a result actually covers.
+// scopeNote reports which of three shapes a result's scope takes: "self"
+// (defaulted to the person asking), "named" (whatever the filters specified),
+// or "all" (the whole deployment).
 //
-// Returned alongside every scoped result so the model can say so in its answer.
-// A number whose scope is invisible is the failure this whole mechanism exists
-// to prevent, and the model cannot report a scope it was never told about.
+// Returned alongside every scoped result so the model can say so in its
+// answer - a number whose scope is invisible is the failure this whole
+// mechanism exists to prevent. It is a compact tag rather than a sentence on
+// purpose: the system prompt already spells out what each of the three means
+// and how to phrase it, so restating that advice on every single result would
+// be the same paragraph paid for again on every call - and it compounds,
+// since a result stays in the replayed conversation for the rest of the loop,
+// not just the step it was returned on.
 func scopeNote(filters *logstore.SearchFilters, scope Scope) string {
 	switch {
 	case len(filters.UserIDs) == 1 && scope.HasIdentity && filters.UserIDs[0] == scope.UserID:
-		return "Scoped to the person asking. Say so in your answer, and mention that a team, customer or business unit can be named to widen it."
+		return "self"
 	case filtersNameAScope(filters):
-		return "Scoped to the dimensions named in the filters. State which ones in your answer."
+		return "named"
 	default:
-		return "Covers the whole deployment - every user, team and customer. Say so plainly, because it is rarely what someone means by 'we'."
-	}
-}
-
-// describeScopeTool lets Warp find out who is asking and what it could
-// narrow to, so it can ask a specific question rather than a vague one.
-func describeScopeTool() Tool {
-	return Tool{
-		name: "describe_scope",
-		description: "Report who is asking and which teams, customers, business units and virtual keys exist. " +
-			"Call this first when a question about usage, spend or performance does not say whose traffic it means. " +
-			"With a known user, their own traffic is the default. Without one there is no default, so ask which team, customer or business unit is meant before querying.",
-		schemaJSON: `{"type": "object", "properties": {}}`,
-		execute: func(ctx context.Context, deps *ToolDeps, _ map[string]any) (any, error) {
-			const limit = 50
-			out := map[string]any{
-				"caller_is_identified": deps.scope.HasIdentity,
-				"default_scope": func() string {
-					if deps.scope.HasIdentity {
-						return "the person asking"
-					}
-					return "none - ask which team, customer or business unit is meant"
-				}(),
-			}
-			if deps.scope.HasIdentity {
-				out["caller_user_id"] = deps.scope.UserID
-			}
-
-			// Dimensions come from logged traffic, so they list what actually
-			// exists rather than what is merely configured. A team with no requests
-			// cannot be the answer to a usage question anyway.
-			//
-			// These are the distinct-value lookups the Logs filter bar uses: one
-			// indexed DISTINCT each. The rankings that used to stand here rank by
-			// spend, which nothing downstream needs, and on the enterprise
-			// hierarchy path fan every row out through JSON-array columns - tens
-			// of seconds on a large table before Warp could even ask its question.
-			//
-			// The four run concurrently. Each is a scan of the log table, and on a
-			// large SQLite file with cold pages that is I/O-bound, so running them
-			// one after another paid the disk four times over.
-			lookups := []struct {
-				key    string
-				lookup func(context.Context, int, string) ([]KeyPair, error)
-			}{
-				{"virtual_keys", deps.logManager.GetAvailableVirtualKeys},
-				{"teams", deps.logManager.GetAvailableTeams},
-				{"customers", deps.logManager.GetAvailableCustomers},
-				{"business_units", deps.logManager.GetAvailableBusinessUnits},
-			}
-			results := make([][]KeyPair, len(lookups))
-			errs := make([]error, len(lookups))
-			var wg sync.WaitGroup
-			for index, entry := range lookups {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					results[index], errs[index] = entry.lookup(ctx, limit, "")
-				}()
-			}
-			wg.Wait()
-			for index, entry := range lookups {
-				if errs[index] != nil {
-					return nil, errs[index]
-				}
-				if entry.key == "virtual_keys" {
-					out[entry.key] = results[index]
-					continue
-				}
-				out[entry.key] = keyPairLabels(results[index])
-			}
-			return out, nil
-		},
+		return "all"
 	}
 }
 

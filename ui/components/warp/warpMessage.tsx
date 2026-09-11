@@ -3,7 +3,7 @@ import type { WarpTurn, WarpTurnToolCall } from "@/lib/contexts/warpContext";
 import { cn } from "@/lib/utils";
 import { useNavigate } from "@tanstack/react-router";
 import { AlertTriangle, Brain, Check, ChevronDown, Info, Loader2 } from "lucide-react";
-import { lazy, Suspense, useState, type AnchorHTMLAttributes } from "react";
+import { lazy, memo, Suspense, useState, type AnchorHTMLAttributes } from "react";
 
 // Shiki is heavy and most Warp answers are prose, so the renderer is loaded on
 // demand. This mirrors how the prompt playground handles the same component.
@@ -17,8 +17,14 @@ const LazyMarkdown = lazy(() => import("@/components/ui/markdown").then((module)
  * horizontal room the panel does not have - at 400px a right-aligned bubble
  * capped at 85% wraps a one-line question onto three - and the alternation was
  * carrying information the border already carries.
+ *
+ * Memoized because WarpPanel re-renders on every streamed token (its own
+ * useWarpStream state lives at that level), and turn/isLatest are otherwise
+ * unchanged for every completed message in between - without this, a long
+ * transcript re-runs every past turn's markdown/regex parsing once per token
+ * of the answer currently streaming in below it.
  */
-export function WarpMessage({ turn, isLatest }: { turn: WarpTurn; isLatest?: boolean }) {
+export const WarpMessage = memo(function WarpMessage({ turn, isLatest }: { turn: WarpTurn; isLatest?: boolean }) {
 	// Only the newest turn animates. Turns are keyed by index, so appending never
 	// remounts the ones above - but reopening the panel mounts them all at once,
 	// and a transcript where every message flies in at the same time reads as a
@@ -70,7 +76,7 @@ export function WarpMessage({ turn, isLatest }: { turn: WarpTurn; isLatest?: boo
 			{turn.error && <WarpTurnError error={turn.error} />}
 		</div>
 	);
-}
+});
 
 /**
  * The answer as it streams in.
@@ -89,10 +95,7 @@ export function WarpStreamingMessage({
 	isStreaming: boolean;
 }) {
 	return (
-		<div
-			className="min-w-0 space-y-2 [&_pre]:overflow-x-auto [&_table]:w-full [&_table]:min-w-full"
-			data-testid="warp-message-streaming"
-		>
+		<div className="min-w-0 space-y-2 [&_pre]:overflow-x-auto [&_table]:w-full [&_table]:min-w-full" data-testid="warp-message-streaming">
 			{toolCalls.length > 0 && <WarpToolCallList calls={toolCalls} />}
 			{text ? (
 				<Suspense fallback={<div className="text-muted-foreground text-sm">{text}</div>}>
@@ -138,8 +141,14 @@ function WarpToolCallList({ calls }: { calls: WarpTurnToolCall[] }) {
  * query running four times for no reason. The message says which - a result
  * that was too large reads very differently from a filter that did not exist,
  * and only one of them is worth changing the question over.
+ *
+ * Memoized: useWarpStream's tool_call_end handler only replaces the one call
+ * object that finished (`toolCalls.map((c) => c.id === id ? {...} : c)`), so
+ * every other row's `call` prop keeps its old reference on that update - this
+ * is what lets memo actually skip them instead of re-rendering the whole list
+ * on every tool call that finishes during a multi-tool step.
  */
-function WarpToolCallRow({ call }: { call: WarpTurnToolCall }) {
+const WarpToolCallRow = memo(function WarpToolCallRow({ call }: { call: WarpTurnToolCall }) {
 	const [expanded, setExpanded] = useState(false);
 	const canExpand = !!call.failed && !!call.error;
 
@@ -172,7 +181,7 @@ function WarpToolCallRow({ call }: { call: WarpTurnToolCall }) {
 			)}
 		</li>
 	);
-}
+});
 
 /**
  * A link inside an answer.
@@ -272,13 +281,16 @@ function WarpAnswer({ content }: { content: string }) {
  */
 function WarpPartialNote() {
 	return (
-		<div className="border-amber-500/30 bg-amber-500/5 flex items-start gap-2 rounded-md border p-2.5 text-xs" data-testid="warp-partial-answer">
+		<div
+			className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-2.5 text-xs"
+			data-testid="warp-partial-answer"
+		>
 			<Info className="mt-0.5 size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
 			<div className="space-y-0.5">
 				<p className="font-medium">Partial answer</p>
 				<p className="text-muted-foreground">
-					Warp used all of its research steps before it finished checking. This is what it found so far, and it says what it could not confirm. A
-					narrower question usually completes.
+					Warp used all of its research steps before it finished checking. This is what it found so far, and it says what it could not
+					confirm. A narrower question usually completes.
 				</p>
 			</div>
 		</div>

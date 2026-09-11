@@ -495,6 +495,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_warp_conversation_tables"}, run: migrationAddWarpConversationTables},
 	{IDs: []string{"add_warp_log_embedding_columns"}, run: migrationAddWarpLogEmbeddingColumns},
 	{IDs: []string{"add_warp_message_outcome_columns"}, run: migrationAddWarpMessageOutcomeColumns},
+	{IDs: []string{"add_warp_temperature_reasoning_columns"}, run: migrationAddWarpTemperatureReasoningColumns},
 }
 
 // warpMessageOutcomeColumns are the per-message outcome fields added after the
@@ -541,6 +542,19 @@ func migrationAddWarpMessageOutcomeColumns(ctx context.Context, db *gorm.DB, log
 	})
 }
 
+// warpLogEmbeddingColumns are the semantic-search configuration columns added
+// so Warp can embed and search stored logs.
+var warpLogEmbeddingColumns = []string{
+	"embedding_provider",
+	"embedding_model",
+	"embedding_api_key_id",
+	"embedding_dimension",
+	"log_vector_store_namespace",
+	"semantic_search_threshold",
+	"semantic_search_limit",
+	"retired_log_vector_store_namespaces",
+}
+
 func migrationAddWarpLogEmbeddingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_warp_log_embedding_columns"
 	logger.Info("[configstore] starting migration %s", migrationName)
@@ -548,10 +562,56 @@ func migrationAddWarpLogEmbeddingColumns(ctx context.Context, db *gorm.DB, logge
 	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
-			return tx.WithContext(ctx).AutoMigrate(&tables.TableWarpConfig{})
+			tx = tx.WithContext(ctx)
+			// AutoMigrate on the full model re-verifies every column, index and
+			// association TableWarpConfig has ever grown, not just the ones this
+			// migration is meant to add - the wrong blast radius for a step that
+			// applied migration IDs and never re-runs. Adding just the intended
+			// columns is what every other column-only migration in this file does.
+			for _, column := range warpLogEmbeddingColumns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableWarpConfig{}, column); err != nil {
+					return fmt.Errorf("add %s column: %w", column, err)
+				}
+			}
+			return nil
 		},
 		Rollback: func(*gorm.DB) error {
 			return fmt.Errorf("%s is non-rollbackable: dropping embedding configuration would lose operator settings", migrationName)
+		},
+	})
+}
+
+// warpTemperatureReasoningColumns are the sampling-override columns added so
+// an operator can override the model's sampling behavior instead of Warp
+// silently running every deployment at whatever default the provider applies.
+var warpTemperatureReasoningColumns = []string{
+	"temperature",
+	"reasoning_effort",
+}
+
+// migrationAddWarpTemperatureReasoningColumns adds the temperature and
+// reasoning_effort columns, so an operator can override the model's sampling
+// behavior instead of Warp silently running every deployment at whatever
+// default the provider happens to apply.
+func migrationAddWarpTemperatureReasoningColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_warp_temperature_reasoning_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// Same reasoning as migrationAddWarpLogEmbeddingColumns above: only the
+			// two columns this migration owns, not a full-model AutoMigrate.
+			for _, column := range warpTemperatureReasoningColumns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableWarpConfig{}, column); err != nil {
+					return fmt.Errorf("add %s column: %w", column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping a configured temperature or reasoning effort would lose operator settings", migrationName)
 		},
 	})
 }

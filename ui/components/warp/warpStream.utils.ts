@@ -129,7 +129,7 @@ const WARP_TOOL_LABELS: Record<string, { running: string; done: string }> = {
 	query_usage_by: { running: "Ranking usage", done: "Ranked usage" },
 	query_model_performance: { running: "Comparing models and providers", done: "Compared models and providers" },
 	describe_filter_space: { running: "Checking available values", done: "Checked available values" },
-	describe_scope: { running: "Validating scope", done: "Validated scope" },
+	describe_virtual_key: { running: "Checking virtual key limits", done: "Checked virtual key limits" },
 	ask_user: { running: "Asking a question", done: "Asked a question" },
 };
 
@@ -234,9 +234,17 @@ export function isTypingInto(target: { tagName: string; value?: string } | null 
  * what stops two queued messages from being sent back to back - after the
  * first is dequeued the panel is still idle for a render, and an idle check
  * would fire again before the request had a chance to start streaming.
+ *
+ * lastTurnFailed holds it back. A queued follow-up was written expecting the
+ * turn ahead of it to have actually answered - auto-firing it onto a
+ * conversation whose last turn just errored sends it against a thread that
+ * never got the context it was a follow-up to, and shows a bare "Thinking"
+ * directly under an error card with nothing explaining why Warp is trying
+ * again. The message stays visible in the queued list either way, so nothing
+ * is lost - it just is not sent until the person looks at it.
  */
-export function shouldDrainQueue(wasStreaming: boolean, isStreaming: boolean, queued: number): boolean {
-	return wasStreaming && !isStreaming && queued > 0;
+export function shouldDrainQueue(wasStreaming: boolean, isStreaming: boolean, queued: number, lastTurnFailed: boolean): boolean {
+	return wasStreaming && !isStreaming && queued > 0 && !lastTurnFailed;
 }
 
 /** The finish reason the server sends when Warp answered on its last research step. */
