@@ -1070,3 +1070,65 @@ func TestPatchPricing_VideoResolutionBandRates(t *testing.T) {
 	// Unpatched fields keep their base values.
 	assert.Equal(t, 0.30, *patched.OutputCostPerVideoPerSecond)
 }
+
+// TestPatchPricing_TimeOfDayFields covers the two peak/off-peak fields. The
+// multiplier rides the *float64 loop; PeakHours is patched separately because
+// it is a struct pointer, so both paths need pinning.
+func TestPatchPricing_TimeOfDayFields(t *testing.T) {
+	baseSchedule := &configstoreTables.PeakHoursSchedule{
+		Timezone: "UTC",
+		Windows: []configstoreTables.PeakHoursWindow{
+			{Days: []int{1, 2, 3, 4, 5}, Start: "01:00", End: "04:00"},
+		},
+	}
+	base := configstoreTables.TableModelPricing{
+		Model:                 "deepseek-v4-flash",
+		Provider:              "deepseek",
+		Mode:                  "chat",
+		OffPeakCostMultiplier: bifrost.Ptr(0.5),
+		PeakHours:             baseSchedule,
+	}
+
+	t.Run("both fields overridden", func(t *testing.T) {
+		newSchedule := &configstoreTables.PeakHoursSchedule{
+			Timezone: "Asia/Shanghai",
+			Windows: []configstoreTables.PeakHoursWindow{
+				{Days: []int{0, 6}, Start: "09:00", End: "18:00"},
+			},
+		}
+		patched := patchPricing(base, Options{
+			OffPeakCostMultiplier: bifrost.Ptr(0.75),
+			PeakHours:             newSchedule,
+		})
+		require.NotNil(t, patched.OffPeakCostMultiplier)
+		assert.Equal(t, 0.75, *patched.OffPeakCostMultiplier)
+		require.NotNil(t, patched.PeakHours)
+		assert.Equal(t, "Asia/Shanghai", patched.PeakHours.Timezone)
+		assert.Len(t, patched.PeakHours.Windows, 1)
+	})
+
+	t.Run("multiplier only keeps the datasheet schedule", func(t *testing.T) {
+		patched := patchPricing(base, Options{OffPeakCostMultiplier: bifrost.Ptr(0.9)})
+		require.NotNil(t, patched.OffPeakCostMultiplier)
+		assert.Equal(t, 0.9, *patched.OffPeakCostMultiplier)
+		require.NotNil(t, patched.PeakHours)
+		assert.Equal(t, "UTC", patched.PeakHours.Timezone)
+	})
+
+	t.Run("empty override leaves both intact", func(t *testing.T) {
+		patched := patchPricing(base, Options{})
+		require.NotNil(t, patched.OffPeakCostMultiplier)
+		assert.Equal(t, 0.5, *patched.OffPeakCostMultiplier)
+		require.NotNil(t, patched.PeakHours)
+		assert.Equal(t, "UTC", patched.PeakHours.Timezone)
+	})
+
+	t.Run("base is not mutated", func(t *testing.T) {
+		_ = patchPricing(base, Options{
+			OffPeakCostMultiplier: bifrost.Ptr(0.1),
+			PeakHours:             &configstoreTables.PeakHoursSchedule{Timezone: "UTC"},
+		})
+		assert.Equal(t, 0.5, *base.OffPeakCostMultiplier)
+		assert.Same(t, baseSchedule, base.PeakHours)
+	})
+}
