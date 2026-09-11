@@ -799,6 +799,15 @@ curl -X POST http://localhost:8080/api/mcp/client/{id}/reconnect
 Reconnect returns `400` for any per-call client — a shared client running per-call ([`needs_session_stickiness`](./connections#two-independent-axes) false/omitted) as well as any per-user auth type — since none of them hold a shared upstream connection to re-establish. Also `400` for clients in `pending_verification` — complete the admin verification instead.
 </Note>
 
+**Refresh a client's tools:**
+```bash
+curl -X POST http://localhost:8080/api/mcp/client/{id}/refresh-tools
+```
+
+<Note>
+Different job from reconnect: this re-discovers the client's **tool list** from its upstream server instead of recycling the connection, so it applies to every client type — including the per-call ones reconnect returns `400` for. Use it when an upstream server's tools changed and you don't want to wait for the next periodic sync. See [Manual Tool Refresh](#manual-tool-refresh).
+</Note>
+
 **Edit client configuration:**
 ```bash
 curl -X PUT http://localhost:8080/api/mcp/client/{id} \
@@ -1027,6 +1036,56 @@ Manual reconnection also uses the retry logic for robustness. Not applicable (`4
 err := client.ReconnectMCPClient("filesystem")
 if err != nil {
     log.Printf("Reconnection failed after retries: %v", err)
+}
+```
+
+</Tab>
+</Tabs>
+
+### Manual Tool Refresh
+
+Reconnecting recycles a *connection*. If what actually changed is the upstream server's **tool set** — a tool added, removed, or re-described — the connection is fine and there is nothing to reconnect; the tool list is simply stale until the next periodic sync, up to `tool_sync_interval` (10 minutes by default).
+
+Refresh it on demand instead:
+
+<Tabs>
+<Tab title="Gateway API">
+
+```bash
+curl -X POST http://localhost:8080/api/mcp/client/{id}/refresh-tools
+```
+
+```json
+{
+  "status": "success",
+  "message": "MCP client tools refreshed successfully",
+  "tool_count": 12
+}
+```
+
+Unlike reconnect, this applies to **every** client type. A sticky client is re-listed over its live connection. A per-call server-level client re-resolves its own configured credential and runs a one-shot connect, `tools/list`, disconnect cycle; a per-user client (`per_user_oauth`, `per_user_headers`, `token_exchange`) runs the same cycle using its retained admin discovery credential. For the per-call and per-user clients alike it is the only on-demand refresh path.
+
+The freshly discovered set is persisted and the hosted `/mcp` surface is re-synced automatically, exactly as for a periodic sync. Rediscovering an unchanged tool set writes nothing.
+
+<Note>
+Returns `400` when the client is in a state where discovery is meaningless: `disabled` (enable it first), `needs_reauth` (reauthorize it first), or `pending_verification` (complete the one-time admin verification instead — refreshing a client awaiting that flow would bypass it). Returns `404` if no client is registered under that ID.
+</Note>
+
+</Tab>
+<Tab title="Web UI">
+
+Open the actions menu (**⋯**) on any row under **MCP Servers** and choose **Refresh tools**. The toast reports how many tools the client is serving afterwards.
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+// Re-discover this client's tools now, rather than at the next periodic sync
+count, err := client.RefreshMCPClientTools(ctx, "filesystem")
+if err != nil {
+    log.Printf("Tool refresh failed: %v", err)
+} else {
+    log.Printf("filesystem is now serving %d tools", count)
 }
 ```
 
