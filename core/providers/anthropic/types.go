@@ -343,6 +343,60 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		InterleavedThinking:    true,
 		ServiceTier:            true,
 	},
+	// Fireworks' Anthropic-compatible Messages endpoint (cite: FW-compat,
+	// https://docs.fireworks.ai/tools-sdks/anthropic-compatibility), reached
+	// through the use_anthropic_endpoints key/alias toggle.
+	//
+	// FW-compat's "Unsupported features" list is the source for every cell here:
+	//   - "Server-side execution of tool families such as code execution,
+	//     memory, web fetch, and web search is not supported" -> WebSearch,
+	//     WebFetch, CodeExecution, Memory off. Forwarding one is a hard 400:
+	//     'tools: server-side web search ("web_search_20250305") is not
+	//     supported on this endpoint'.
+	//   - "Fields such as caller and container are not supported" ->
+	//     ContainerBasic off (caller is not a flag; allowed_callers rides
+	//     AdvancedToolUse below).
+	//   - "eager_input_streaming, cache_control, allowed_callers, and
+	//     input_examples are not supported" -> EagerInputStreaming,
+	//     AdvancedToolUse, InputExamples off. PromptCachingScope is off too,
+	//     though note Bifrost only strips cache_control.scope, so the rest of
+	//     cache_control still reaches an endpoint that rejects it.
+	//   - "The output_config.speed option is not supported yet" -> FastMode off.
+	//   - inference_geo is documented as deprecated there -> InferenceGeo off.
+	//
+	// ToolSearch is ON despite server-side tool search being unsupported:
+	// FW-compat carves it out with "Tool search discovery and deferred tool
+	// loading are supported", translating "the client-side tool-search
+	// discovery and deferred-loading wire format only" and covering "both
+	// Anthropic-native tool_search_tool_* tool names and clients that name
+	// their discovery tool ToolSearch". This flag gates the tool type and
+	// tool.defer_loading together, so turning it off would break a pattern the
+	// endpoint implements. ServiceTier is ON per FW-compat's service_tier:
+	// "priority".
+	//
+	// Everything not named above is undocumented on FW-compat and stays off,
+	// fail-closed, matching how this map already treats undocumented Vertex and
+	// Bedrock features. Function tools, tool_choice and thinking are never gated
+	// here and keep working. Per-model overrides go through the capability
+	// datasheet; beta headers stay controllable through
+	// network_config.beta_header_overrides.
+	schemas.Fireworks: {
+		ToolSearch:  true,
+		ServiceTier: true,
+	},
+	// Self-hosted vLLM and SGLang, reached through the same toggle.
+	//
+	// Neither project documents Anthropic server or client tools on its
+	// /v1/messages surface, so unlike Fireworks above these cells are
+	// fail-closed inference rather than citation. Supporting evidence:
+	// SGLang's own report that the endpoint rejects built-in web_search_*
+	// tools (sgl-project/sglang#22655), and vLLM's Anthropic layer being an
+	// adapter onto an OpenAI ChatCompletionRequest, a shape with no
+	// representation for Anthropic server tools. Revisit per project if either
+	// starts documenting support; a single deployment can already opt back in
+	// through the capability datasheet.
+	schemas.VLLM: {},
+	schemas.SGL:  {},
 }
 
 // ==================== REQUEST TYPES ====================
