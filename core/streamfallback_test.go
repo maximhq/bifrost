@@ -3,9 +3,11 @@ package bifrost
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -336,5 +338,128 @@ func TestStreamRetryAfterFirstChunkError(t *testing.T) {
 	}
 	if content != "hello" {
 		t.Fatalf("retried stream content = %q, want %q", content, "hello")
+	}
+}
+
+// Regression test for https://github.com/maximhq/bifrost/issues/7034.
+//
+// The primary accepts the TCP connection and never sends response headers
+// (Failover Bench scenario S06). default_request_timeout_in_seconds must bound
+// that wait so the streaming attempt fails with a 504, and the request's
+// fallback must then be used. Before the fix the streaming client had no read
+// timeout and the provider worker stayed pinned in client.Do until the upstream
+// itself closed the socket; the fallback was never attempted.
+func TestStreamFallbackAfterSilentPrimaryHeaderTimeout(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	var (
+		primaryHits atomic.Int32
+		connsMu     sync.Mutex
+		conns       []net.Conn
+	)
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			primaryHits.Add(1)
+			connsMu.Lock()
+			conns = append(conns, conn)
+			connsMu.Unlock()
+			go func() {
+				// Consume the request, never answer.
+				buf := make([]byte, 4096)
+				for {
+					if _, err := conn.Read(buf); err != nil {
+						return
+					}
+				}
+			}()
+		}
+	}()
+
+	var fallbackHits atomic.Int32
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackHits.Add(1)
+		anthropicMessagesHandler()(w, r)
+	}))
+	defer fallback.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, "http://"+ln.Addr().String())
+	account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, fallback.URL)
+	// The reporter's config: 2 retries and a short request timeout. The timeout
+	// must apply to the header wait, and a header timeout goes straight to the
+	// fallback (504 RequestTimedOut is not retried).
+	account.configs[schemas.OpenAI].NetworkConfig.DefaultRequestTimeoutInSeconds = 1
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 2
+	account.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "primary-key", Value: *schemas.NewSecretVar("sk-primary"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{
+		{ID: "fallback-key", Value: *schemas.NewSecretVar("sk-fallback"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	client := newStreamTestClient(t, account)
+	// Registered after newStreamTestClient so it runs BEFORE client.Shutdown
+	// (cleanups are LIFO): closing the silent sockets is what lets a worker that
+	// is still pinned in client.Do (the pre-fix behaviour) exit, otherwise
+	// Shutdown would wait on it forever.
+	t.Cleanup(func() {
+		ln.Close()
+		connsMu.Lock()
+		defer connsMu.Unlock()
+		for _, c := range conns {
+			c.Close()
+		}
+	})
+
+	type outcome struct {
+		stream chan *schemas.BifrostStreamChunk
+		err    *schemas.BifrostError
+	}
+	outcomes := make(chan outcome, 1)
+	start := time.Now()
+	go func() {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+		stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o-mini",
+			Input: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+			},
+			Fallbacks: []schemas.Fallback{{Provider: schemas.Anthropic, Model: "claude-3-5-haiku-20241022"}},
+		})
+		outcomes <- outcome{stream: stream, err: bifrostErr}
+	}()
+
+	var got outcome
+	select {
+	case got = <-outcomes:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("silent primary never timed out: no stream and no error after 10s (primary hit %d time(s), fallback hit %d time(s)); issue #7034", primaryHits.Load(), fallbackHits.Load())
+	}
+	elapsed := time.Since(start)
+	if got.err != nil {
+		t.Fatalf("fallback stream failed after %v (primary hit %d, fallback hit %d): %s", elapsed, primaryHits.Load(), fallbackHits.Load(), got.err.Error.Message)
+	}
+	content, errs := drainChatStream(got.stream)
+	if hits := fallbackHits.Load(); hits != 1 {
+		t.Fatalf("fallback server hits = %d, want 1", hits)
+	}
+	if len(errs) > 0 {
+		t.Fatalf("fallback stream emitted error chunks: %v", errs)
+	}
+	if content != "hello" {
+		t.Fatalf("fallback stream content = %q, want %q", content, "hello")
+	}
+	if elapsed < 900*time.Millisecond {
+		t.Fatalf("fallback answered after %v, before the 1s request timeout could have fired", elapsed)
+	}
+	if elapsed > 6*time.Second {
+		t.Fatalf("fallback answered after %v, want roughly the 1s request timeout", elapsed)
 	}
 }

@@ -354,10 +354,11 @@ func SetErrorLatency(bifrostErr *schemas.BifrostError, latency time.Duration) *s
 // MakeRequestWithContextFollowRedirects. It runs do() in a goroutine and handles
 // context cancellation, latency tracking, and error classification uniformly.
 //
-// IMPORTANT: This function does NOT truly cancel the underlying fasthttp network request if the
-// context is done. The fasthttp client call will continue in its goroutine until it completes
-// or times out based on its own settings. This function merely stops *waiting* for the
-// fasthttp call and returns an error related to the context.
+// Cancellation reaches the socket: the callers bind ctx to the request
+// (bindRequestContext) and the client's contextTransport closes the upstream
+// connection when ctx ends, so the fasthttp call in the goroutine returns
+// promptly instead of running on until its own ReadTimeout. This function
+// still returns as soon as ctx is done rather than waiting for that.
 //
 // The wait function MUST be called (typically via defer) before releasing the request or
 // response objects. On the normal path it is a no-op. On the context-cancellation path it
@@ -457,14 +458,25 @@ func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration,
 // path it blocks until the background client.Do goroutine finishes, preventing a data race
 // between the still-running goroutine and the caller's release of req/resp.
 func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) (time.Duration, *schemas.BifrostError, func()) {
-	latency, bifrostErr, wait := makeRequestWithDoFunc(ctx, func() error { return client.Do(req, resp) })
+	// Bound to the goroutine that runs client.Do: the binding must outlive a
+	// ctx-cancelled return of makeRequestWithDoFunc and be gone before the
+	// caller's wait() returns, since req is pooled.
+	unbind := bindRequestContext(req, ctx)
+	latency, bifrostErr, wait := makeRequestWithDoFunc(ctx, func() error {
+		defer unbind()
+		return client.Do(req, resp)
+	})
 	return latency, bifrostErr, wait
 }
 
 // MakeRequestWithContextFollowRedirects is like MakeRequestWithContext but follows up to
 // maxRedirects HTTP redirects automatically (equivalent to curl's -L flag).
 func MakeRequestWithContextFollowRedirects(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response, maxRedirects int) (time.Duration, *schemas.BifrostError, func()) {
-	latency, bifrostErr, wait := makeRequestWithDoFunc(ctx, func() error { return client.DoRedirects(req, resp, maxRedirects) })
+	unbind := bindRequestContext(req, ctx)
+	latency, bifrostErr, wait := makeRequestWithDoFunc(ctx, func() error {
+		defer unbind()
+		return client.DoRedirects(req, resp, maxRedirects)
+	})
 	return latency, bifrostErr, wait
 }
 
@@ -477,11 +489,21 @@ func MakeRequestWithContextFollowRedirects(ctx context.Context, client *fasthttp
 // is measured separately, inside idleTimeoutReader.Read. Both are needed;
 // counting only one attributes the other to Bifrost.
 //
+// The wait for headers is bounded: ctx is bound to req for the duration of the
+// call, and the client's contextTransport applies the client's ReadTimeout
+// (default_request_timeout_in_seconds) and the ctx deadline to the header wait,
+// closes the socket when ctx is cancelled, and lifts the deadline once headers
+// arrive so the body is governed only by the stream idle timeout
+// (maximhq/bifrost#7034). A silent upstream therefore fails with
+// fasthttp.ErrTimeout instead of pinning the worker until it closes.
+//
 // Returns client.Do's error untouched so callers keep their own error
 // classification and latency bookkeeping.
 func DoStreamingRequest(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) error {
+	unbind := bindRequestContext(req, ctx)
 	startTime := time.Now()
 	err := client.Do(req, resp)
+	unbind()
 	schemas.AddUpstreamLatency(ctx, time.Since(startTime))
 	return err
 }
@@ -551,6 +573,11 @@ func ConfigureRetry(client *fasthttp.Client) *fasthttp.Client {
 func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthttp.Client {
 	// Configure stale-connection retry policy
 	client.RetryIfErr = network.StaleConnectionRetryIfErr
+
+	// Every Bifrost client goes through the context-aware transport: it applies
+	// the client's timeouts to the header phase only on streamed responses and
+	// closes the socket when the request context ends (see roundtripper.go).
+	client.Transport = NewContextTransport()
 
 	existingDial := client.Dial
 	existingDialTimeout := client.DialTimeout
@@ -1450,9 +1477,18 @@ func CloneFastHTTPClientConfig(base *fasthttp.Client) *fasthttp.Client {
 }
 
 // BuildStreamingClient returns a fasthttp.Client suitable for long-lived SSE
-// or EventStream responses. It clones base's dialer/proxy/TLS/pool settings,
-// then clears Read/Write timeouts so fasthttp does not pre-empt a healthy
-// stream. StreamResponseBody is forced on.
+// or EventStream responses. It clones base's dialer/proxy/TLS/pool settings and
+// forces StreamResponseBody on.
+//
+// ReadTimeout and WriteTimeout are kept from base (default_request_timeout_in_seconds).
+// On a streaming client they bound only dial, TLS handshake, request write and
+// the wait for response headers: contextTransport clears the socket deadline as
+// soon as headers are parsed, so a healthy stream is never pre-empted, while an
+// upstream that accepts the connection and never answers fails with
+// fasthttp.ErrTimeout instead of hanging (maximhq/bifrost#7034). Streaming
+// clients must be driven through DoStreamingRequest, which binds the request
+// context the transport honors; a bare client.Do gets the same header bound but
+// no cancellation.
 //
 // MaxConnDuration is deliberately preserved. It is checked once per request
 // before the request is written (fasthttp client.go:3110) and only sets
@@ -1466,15 +1502,12 @@ func CloneFastHTTPClientConfig(base *fasthttp.Client) *fasthttp.Client {
 //
 // Per-chunk idle detection is enforced at the application layer via
 // NewIdleTimeoutReader (see GetStreamIdleTimeout / StreamIdleTimeoutInSeconds).
-// The initial TCP/TLS dial still honors the base client's ReadTimeout because
-// the Dial closure installed by ConfigureDialer reads client.ReadTimeout from
-// the base client pointer captured at ConfigureDialer call time — cloning copies
-// that closure verbatim, so zeroing the clone's ReadTimeout does not affect dial.
 func BuildStreamingClient(base *fasthttp.Client) *fasthttp.Client {
 	c := CloneFastHTTPClientConfig(base)
-	c.ReadTimeout = 0
-	c.WriteTimeout = 0
 	c.StreamResponseBody = true
+	if c.Transport == nil {
+		c.Transport = NewContextTransport()
+	}
 	return c
 }
 
