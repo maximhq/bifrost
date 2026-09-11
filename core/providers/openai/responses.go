@@ -609,6 +609,21 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				req.ResponsesParameters.Reasoning.Summary = nil
 			}
 
+			// Bedrock's OpenAI-compatible surfaces accept only "auto". They answer
+			// "concise" and "detailed" with a 400 ("Unsupported parameter:
+			// 'reasoning.summary' is not supported with the ... model") even though the
+			// schema advertises all three, on both bedrock-runtime and bedrock-mantle.
+			// The Anthropic converter pins "detailed" for every Claude Code request, so
+			// without this each such session fails on its first message. Narrow to a
+			// summary the target can serve rather than dropping it: the caller asked to
+			// see reasoning, and "auto" is the only way to say yes here.
+			if summary := req.ResponsesParameters.Reasoning.Summary; summary != nil && *summary != "auto" {
+				switch schemas.ResolveBaseProvider(ctx, bifrostReq.Provider) {
+				case schemas.Bedrock, schemas.BedrockMantle:
+					req.ResponsesParameters.Reasoning.Summary = schemas.Ptr("auto")
+				}
+			}
+
 			// Handle xAI-specific parameter filtering
 			// Strip reasoning_effort only for the models known to reject it; current-generation
 			// models (grok-4.5, grok-4.6, grok-4.20-*) accept it.

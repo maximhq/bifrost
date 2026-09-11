@@ -182,7 +182,7 @@ Sources:
 - [x] Tool config (`toolConfig: { tools: [{ toolSpec: { name, inputSchema } }] }`)
 - [ ] **Streaming** (`POST /model/{modelId}/converse-stream`)
 - [ ] **Vision** (`content: [{ image: { format, source: { bytes } } }]`)
-- [~] **Document input** (`content: [{ document: { format, name, source: { bytes } } }]`) — the converter into this block is covered by folder 42 (#5472: OpenAI `type:"file"` / Responses `input_file` document uploads via `/v1/chat/completions` and `/v1/responses`, xlsx/docx/csv/pdf/txt + `file_url`). A native Converse-shaped `document` block posted directly at `/bedrock/model/{id}/converse` is still uncovered.
+- [x] **Document input** (`content: [{ document: { format, name, source: { bytes } } }]`) — the converter into this block is covered by folder 42 (#5472: OpenAI `type:"file"` / Responses `input_file` document uploads via `/v1/chat/completions` and `/v1/responses`, xlsx/docx/csv/pdf/txt + `file_url`). A native Converse-shaped `document` block posted directly at `/bedrock/model/{id}/converse` is covered by folder 77 (#7072), which also pins text-format documents (txt/md/csv/html) across every ingress - they shipped as a bare `source.text` and 400d.
 - [ ] **Video input** (`content: [{ video: { format, source } }]`)
 - [ ] **Tool result** (`content: [{ toolResult: { toolUseId, content, status } }]`)
 - [ ] **Stop sequences** (`inferenceConfig: { stopSequences: [...] }`)
