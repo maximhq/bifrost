@@ -1244,6 +1244,28 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 			)}
 			{isBedrock && (
 				<div className="space-y-4">
+					<FormField
+						control={control}
+						name="key.use_openai_endpoints"
+						render={({ field }) => (
+							<FormItem className="flex flex-row items-center justify-between rounded-sm border p-2">
+								<div className="space-y-1.5">
+									<FormLabel htmlFor="use-openai-endpoints-switch">Use OpenAI Endpoints</FormLabel>
+									<FormDescription>
+										Routes requests through Bedrock&apos;s OpenAI-compatible endpoints instead of Converse.
+									</FormDescription>
+								</div>
+								<FormControl>
+									<Switch
+										id="use-openai-endpoints-switch"
+										data-testid="key-switch-bedrock-use-openai-endpoints"
+										checked={field.value ?? false}
+										onCheckedChange={field.onChange}
+									/>
+								</FormControl>
+							</FormItem>
+						)}
+					/>
 					<Separator className="my-6" />
 					<div className="space-y-2">
 						<FormLabel>Authentication Method</FormLabel>

@@ -153,7 +153,9 @@ const maxResponsesCacheBreakpoints = 4
 // per-block cache_control through /v1/responses and converts a breakpoint back into
 // an Anthropic one (#6290). OpenAI defined the field for gpt-5.6, where it pairs with
 // request-level prompt_cache_options; Azure and Bedrock Mantle serve the same models
-// through the same wire format, so they inherit it (#6180).
+// through the same wire format, so they inherit it (#6180). Bedrock is listed for the
+// same reason: its OpenAI-compatible surfaces on both hosts speak that wire format, and
+// a request there reports the bedrock key rather than bedrock_mantle.
 //
 // Everything else either accepts cache_control directly or caches implicitly, and for
 // those the serializer's existing strip is the correct behaviour.
@@ -161,7 +163,7 @@ func responsesUsesPromptCacheBreakpoints(provider schemas.ModelProvider, model s
 	switch provider {
 	case schemas.OpenRouter:
 		return true
-	case schemas.OpenAI, schemas.Azure, schemas.BedrockMantle:
+	case schemas.OpenAI, schemas.Azure, schemas.BedrockMantle, schemas.Bedrock:
 		return schemas.IsGPT56Model(model)
 	default:
 		return false
@@ -195,7 +197,7 @@ func responsesHasPromptCacheBreakpoint(messages []schemas.ResponsesMessage) bool
 // that off; mode=explicit does. OpenRouter has no equivalent field and needs none.
 func responsesUsesPromptCacheOptions(provider schemas.ModelProvider, model string) bool {
 	switch provider {
-	case schemas.OpenAI, schemas.Azure, schemas.BedrockMantle:
+	case schemas.OpenAI, schemas.Azure, schemas.BedrockMantle, schemas.Bedrock:
 		return schemas.IsGPT56Model(model)
 	default:
 		return false

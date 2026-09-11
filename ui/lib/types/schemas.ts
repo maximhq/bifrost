@@ -421,6 +421,7 @@ const aliasConfigObjectSchema = z.object({
 	// Replicate overrides
 	use_deployments_endpoint: z.boolean().optional(),
 	use_anthropic_endpoints: z.boolean().optional(),
+	use_openai_endpoints: z.boolean().optional(),
 });
 
 // The Go server emits the legacy string wire shape (`{"my-alias": "model-id"}`)
@@ -470,6 +471,7 @@ export const modelProviderKeySchema = z
 		github_copilot_key_config: githubCopilotKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),
 		use_anthropic_endpoints: z.boolean().optional(),
+		use_openai_endpoints: z.boolean().optional(),
 		enabled: z.boolean().optional(),
 	})
 	.refine(
