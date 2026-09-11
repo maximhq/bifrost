@@ -594,3 +594,106 @@ func TestIsAIPResourceID(t *testing.T) {
 		}
 	}
 }
+
+// Nothing is published for bedrock_apis on the runtime row yet, so family
+// detection is what actually gates the OpenAI-compatible Responses surface
+// today. AWS 404s every other family there.
+func TestRuntimeServesResponsesFamilyFallback(t *testing.T) {
+	cases := []struct {
+		model string
+		want  bool
+	}{
+		{"us.openai.gpt-5.6-terra", true},
+		{"global.openai.gpt-5.6-luna", true},
+		{"global.xai.grok-4.6", true},
+		{"us.anthropic.claude-sonnet-4-6", false},
+		{"us.deepseek.r1-v1:0", false},
+		{"amazon.nova-pro-v1:0", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			ctx := surfaceTestCtx()
+			surface := resolveBedrockSurface(ctx, schemas.Key{}, tc.model)
+			if got := runtimeServesResponses(ctx, surface, tc.model); got != tc.want {
+				t.Errorf("runtimeServesResponses(%q) = %v, want %v", tc.model, got, tc.want)
+			}
+		})
+	}
+}
+
+// A published runtime row is authoritative in both directions: it can divert a
+// model family detection would not, and hold back one it would.
+func TestRuntimeServesResponsesDatasheetWinsOverFamily(t *testing.T) {
+	installCaps(t, map[schemas.ModelProvider]map[string][]schemas.BedrockAPI{
+		schemas.Bedrock: {
+			// Converse-only despite being OpenAI family.
+			"us.openai.gpt-5.6-terra": {schemas.BedrockAPIConverse},
+			// Serves Responses despite not being a family we would divert.
+			"us.anthropic.claude-sonnet-4-6": {schemas.BedrockAPIConverse, schemas.BedrockAPIResponses},
+		},
+	})
+	cases := []struct {
+		model string
+		want  bool
+	}{
+		{"us.openai.gpt-5.6-terra", false},
+		{"us.anthropic.claude-sonnet-4-6", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			ctx := surfaceTestCtx()
+			surface := resolveBedrockSurface(ctx, schemas.Key{}, tc.model)
+			if got := runtimeServesResponses(ctx, surface, tc.model); got != tc.want {
+				t.Errorf("runtimeServesResponses(%q) = %v, want %v", tc.model, got, tc.want)
+			}
+		})
+	}
+}
+
+// An application inference profile is Converse-only. The wire id carries no
+// family, so without the guard the alias chain would resolve it to an OpenAI
+// name and divert a request AWS cannot serve.
+func TestRuntimeServesResponsesNeverDivertsApplicationProfile(t *testing.T) {
+	ctx := withAlias("my-gpt", "3dnkdwuaalc7", appProfileARN)
+	name := "gpt-5.6-luna"
+	schemas.GetResolvedAlias(ctx).Config.ModelName = &name
+
+	surface := resolveBedrockSurface(ctx, keyWithARN(appProfileARN), "3dnkdwuaalc7")
+	if surface.reason != reasonApplicationProfile {
+		t.Fatalf("precondition: reason = %q, want %q", surface.reason, reasonApplicationProfile)
+	}
+	if runtimeServesResponses(ctx, surface, "3dnkdwuaalc7") {
+		t.Error("an application inference profile must stay on Converse")
+	}
+}
+
+// Mantle has its own Responses path; the runtime surface must never claim it.
+func TestRuntimeServesResponsesIgnoresMantleSurface(t *testing.T) {
+	ctx := surfaceTestCtx()
+	surface := resolveBedrockSurface(ctx, schemas.Key{}, "openai.gpt-5.6-terra")
+	if !surface.isMantle() {
+		t.Fatalf("precondition: bare id should route to mantle, got %q", surface.host)
+	}
+	if runtimeServesResponses(ctx, surface, "openai.gpt-5.6-terra") {
+		t.Error("a mantle-bound request must not divert to the runtime surface")
+	}
+}
+
+// The gate reads the canonical name, so an alias whose wire id carries no family
+// still diverts.
+func TestRuntimeServesResponsesResolvesAliasedModel(t *testing.T) {
+	ctx := withAlias("my-gpt", "us.openai.gpt-5.6-terra", "")
+	name := "gpt-5.6-terra"
+	schemas.GetResolvedAlias(ctx).Config.ModelName = &name
+
+	surface := resolveBedrockSurface(ctx, schemas.Key{}, "us.openai.gpt-5.6-terra")
+	if !runtimeServesResponses(ctx, surface, "us.openai.gpt-5.6-terra") {
+		t.Error("aliased OpenAI model must divert to the runtime Responses surface")
+	}
+}
+
+func TestRuntimeOpenAIURL(t *testing.T) {
+	if got := runtimeOpenAIURL(nil, "us-east-1", "responses"); got != "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1/responses" {
+		t.Errorf("runtimeOpenAIURL = %q", got)
+	}
+}
