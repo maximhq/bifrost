@@ -463,6 +463,9 @@
         "wafer": {
           "$ref": "#/$defs/provider"
         },
+        "zro": {
+          "$ref": "#/$defs/provider"
+        },
         "vllm": {
           "$ref": "#/$defs/provider_with_vllm_config"
         },
@@ -8641,7 +8644,8 @@
             "runware",
             "fireworks",
             "sarvam",
-            "wafer"
+            "wafer",
+            "zro"
           ],
           "description": "Base provider type to extend"
         },
