@@ -1756,7 +1756,10 @@ func (r *BifrostMCPResponse) PopulateExtraFields(mcpRequestType MCPRequestType, 
 // BifrostResponseExtraFields contains additional fields in a response.
 type BifrostResponseExtraFields struct {
 	RequestType RequestType `json:"request_type"`
-	RoutingInfo RoutingInfo `json:"routing_info"`
+	// PricingRequestType selects a catalog mode without changing the request type
+	// exposed to plugins and logs.
+	PricingRequestType RequestType `json:"pricing_request_type,omitempty"`
+	RoutingInfo        RoutingInfo `json:"routing_info"`
 	// Deprecated: use RoutingInfo.Provider. Still populated for backward
 	// compatibility; new consumers should read from RoutingInfo.
 	Provider ModelProvider `json:"provider,omitempty"`

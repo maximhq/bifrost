@@ -47,7 +47,7 @@ func (s testHandlerStore) GetMCPExternalClientURL() string                  { re
 func TestResolveRealtimeSDPTarget_BaseRouteRequiresProviderPrefix(t *testing.T) {
 	var ctx fasthttp.RequestCtx
 	cfg := &lib.Config{}
-	_, _, _, err := resolveRealtimeSDPTarget(&ctx, cfg, "/v1/realtime", []byte(`{"model":"gpt-4o-realtime-preview"}`))
+	_, _, _, _, err := resolveRealtimeSDPTarget(&ctx, cfg, "/v1/realtime", []byte(`{"model":"gpt-4o-realtime-preview"}`))
 	if err == nil {
 		t.Fatal("expected provider/model validation error")
 	}
@@ -59,9 +59,12 @@ func TestResolveRealtimeSDPTarget_BaseRouteRequiresProviderPrefix(t *testing.T) 
 func TestResolveRealtimeSDPTarget_BaseRouteNormalizesModel(t *testing.T) {
 	var ctx fasthttp.RequestCtx
 	cfg := &lib.Config{}
-	provider, model, normalized, err := resolveRealtimeSDPTarget(&ctx, cfg, "/v1/realtime", []byte(`{"model":"openai/gpt-4o-realtime-preview","voice":"alloy"}`))
+	provider, model, normalized, transcriptionSession, err := resolveRealtimeSDPTarget(&ctx, cfg, "/v1/realtime", []byte(`{"model":"openai/gpt-4o-realtime-preview","voice":"alloy"}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if transcriptionSession {
+		t.Fatal("normal realtime session was classified as transcription")
 	}
 	if provider != schemas.OpenAI {
 		t.Fatalf("expected provider %s, got %s", schemas.OpenAI, provider)
@@ -86,9 +89,12 @@ func TestResolveRealtimeSDPTarget_BaseRouteNormalizesModel(t *testing.T) {
 func TestResolveRealtimeSDPTarget_OpenAIRouteDefaultsProvider(t *testing.T) {
 	var ctx fasthttp.RequestCtx
 	cfg := &lib.Config{}
-	provider, model, _, err := resolveRealtimeSDPTarget(&ctx, cfg, "/openai/v1/realtime", []byte(`{"model":"gpt-4o-realtime-preview"}`))
+	provider, model, _, transcriptionSession, err := resolveRealtimeSDPTarget(&ctx, cfg, "/openai/v1/realtime", []byte(`{"model":"gpt-4o-realtime-preview"}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if transcriptionSession {
+		t.Fatal("normal OpenAI realtime session was classified as transcription")
 	}
 	if provider != schemas.OpenAI {
 		t.Fatalf("expected provider %s, got %s", schemas.OpenAI, provider)
@@ -105,9 +111,12 @@ func TestParseCallsWebRTCRequest_RawSDPKeepsGARoute(t *testing.T) {
 	ctx.Request.Header.SetContentType("application/sdp")
 	ctx.Request.SetBodyString("v=0\r\n")
 
-	sdpOffer, provider, model, session, err := parseCallsWebRTCRequest(&ctx, &lib.Config{})
+	sdpOffer, provider, model, session, transcriptionSession, err := parseCallsWebRTCRequest(&ctx, &lib.Config{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if transcriptionSession {
+		t.Fatal("raw SDP request was classified as transcription")
 	}
 	if sdpOffer != "v=0\r\n" {
 		t.Fatalf("unexpected sdp offer: %q", sdpOffer)
@@ -120,6 +129,92 @@ func TestParseCallsWebRTCRequest_RawSDPKeepsGARoute(t *testing.T) {
 	}
 	if session != nil {
 		t.Fatalf("expected nil session for raw SDP /calls request, got %s", string(session))
+	}
+}
+
+func TestResolveRealtimeSDPTargetDedicatedTranscription(t *testing.T) {
+	t.Parallel()
+
+	var ctx fasthttp.RequestCtx
+	provider, model, normalized, transcriptionSession, err := resolveRealtimeSDPTarget(
+		&ctx, &lib.Config{}, "/v1/realtime/calls",
+		[]byte(`{"audio":{"input":{"transcription":{"model":"openai/gpt-4o-transcribe","language":"en"}}}}`),
+	)
+	if err != nil {
+		t.Fatalf("resolveRealtimeSDPTarget() error = %v", err)
+	}
+	if !transcriptionSession {
+		t.Fatal("expected dedicated transcription classification")
+	}
+	if provider != schemas.OpenAI || model != "gpt-4o-transcribe" {
+		t.Fatalf("target = %s/%s, want openai/gpt-4o-transcribe", provider, model)
+	}
+
+	var session map[string]any
+	if err := json.Unmarshal(normalized, &session); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if session["type"] != "transcription" {
+		t.Fatalf("session.type = %v, want transcription", session["type"])
+	}
+	if _, ok := session["model"]; ok {
+		t.Fatal("dedicated transcription session must not gain a root model")
+	}
+	transcription := session["audio"].(map[string]any)["input"].(map[string]any)["transcription"].(map[string]any)
+	if transcription["model"] != "openai/gpt-4o-transcribe" || transcription["language"] != "en" {
+		t.Fatalf("transcription = %#v, want original routing model and sibling fields", transcription)
+	}
+}
+
+func TestResolveRealtimeSDPTargetRootModelPreservesNormalRealtime(t *testing.T) {
+	t.Parallel()
+
+	var ctx fasthttp.RequestCtx
+	_, model, normalized, transcriptionSession, err := resolveRealtimeSDPTarget(
+		&ctx, &lib.Config{}, "/v1/realtime/calls",
+		[]byte(`{"model":"openai/gpt-realtime","audio":{"input":{"transcription":{"model":"openai/whisper-1"}}}}`),
+	)
+	if err != nil {
+		t.Fatalf("resolveRealtimeSDPTarget() error = %v", err)
+	}
+	if transcriptionSession {
+		t.Fatal("normal realtime with optional input transcription was classified as dedicated transcription")
+	}
+	if model != "gpt-realtime" {
+		t.Fatalf("routing model = %q, want gpt-realtime", model)
+	}
+
+	var session map[string]any
+	if err := json.Unmarshal(normalized, &session); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	transcription := session["audio"].(map[string]any)["input"].(map[string]any)["transcription"].(map[string]any)
+	if transcription["model"] != "whisper-1" {
+		t.Fatalf("nested transcription model = %v, want whisper-1", transcription["model"])
+	}
+}
+
+func TestPinRealtimeSDPTranscriptionModelPreservesSession(t *testing.T) {
+	t.Parallel()
+
+	normalized, err := pinRealtimeSDPTranscriptionModel(
+		[]byte(`{"type":"transcription","audio":{"input":{"format":{"type":"audio/pcm","rate":24000},"transcription":{"model":"openai/transcription-alias","language":"en"}}}}`),
+		"gpt-4o-transcribe",
+	)
+	if err != nil {
+		t.Fatalf("pinRealtimeSDPTranscriptionModel() error = %v", err)
+	}
+	var session map[string]any
+	if err := json.Unmarshal(normalized, &session); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	input := session["audio"].(map[string]any)["input"].(map[string]any)
+	transcription := input["transcription"].(map[string]any)
+	if transcription["model"] != "gpt-4o-transcribe" || transcription["language"] != "en" {
+		t.Fatalf("transcription = %#v, want alias-resolved model and preserved language", transcription)
+	}
+	if input["format"] == nil {
+		t.Fatal("input format was not preserved")
 	}
 }
 

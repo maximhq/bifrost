@@ -362,7 +362,7 @@ type serviceTier struct {
 type costInput struct {
 	usage               *schemas.BifrostLLMUsage
 	audioTextInputChars int
-	audioSeconds        *int
+	audioSeconds        *float64
 	audioTokenDetails   *schemas.TranscriptionUsageInputTokenDetails
 	imageUsage          *schemas.ImageUsage
 	imageSize           string // e.g. "1024x1024", used for per-pixel pricing

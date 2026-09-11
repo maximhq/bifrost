@@ -2134,8 +2134,6 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	entry.MetadataParsed = mergeRealtimeMetadata(entry.MetadataParsed, ctx)
 	entry.RoutingEngineLogs = routingEngineLogs
 
-	// Branch based on response type to populate output-specific fields
-
 	// Path A: Error with nil result
 	if result == nil && bifrostErr != nil {
 		entry.Status = logStatusForError(bifrostErr)
@@ -2298,6 +2296,13 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		// surfaced — backfill from bifrostErr.ExtraFields.RawRequest if present.
 		if requestType == schemas.RealtimeRequest {
 			applyRealtimeRawRequestBackfill(entry, bifrostErr.ExtraFields.RawRequest, contentLoggingEnabled, shouldStoreRaw)
+			// A guardrail can block delivery after the provider completed the
+			// turn. The completed response survives alongside the error; keep
+			// the error status but retain the billed output, usage, and raw
+			// payloads so logs and accounting reflect the provider work.
+			if result != nil {
+				p.applyRealtimeOutputToEntry(entry, result, shouldStoreRaw, contentLoggingEnabled)
+			}
 		}
 	} else if result != nil {
 		entry.Status = logStatusSuccess

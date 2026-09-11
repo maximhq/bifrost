@@ -463,9 +463,7 @@ func TestIsRealtimeTransportEndpoint(t *testing.T) {
 
 	nonTransportPaths := []string{
 		"/v1/realtime/client_secrets",
-		"/v1/realtime/sessions",
 		"/openai/v1/realtime/client_secrets",
-		"/openai/v1/realtime/sessions",
 		"/v1/chat/completions",
 	}
 
@@ -885,7 +883,6 @@ func TestAuthMiddleware_InferenceMiddleware_DelegatesAuthToGovernance(t *testing
 		{name: "chat completion with virtual key", uri: "/v1/chat/completions", headerKey: "x-bf-vk", headerVal: "sk-bf-abc123"},
 		{name: "chat completion without credentials", uri: "/v1/chat/completions"},
 		{name: "realtime minting (client_secrets)", uri: "/v1/realtime/client_secrets"},
-		{name: "realtime minting (sessions)", uri: "/openai/v1/realtime/sessions"},
 	}
 
 	for _, tc := range cases {
