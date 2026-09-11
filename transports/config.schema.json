@@ -892,6 +892,13 @@
                 "type": "string",
                 "description": "Name of the access profile (defined in access_profiles) to attach as the default for this role. Changing this field triggers a re-sync on next startup. Leave unset to let the dashboard manage the assignment."
               },
+              "access_profiles": {
+                "type": "array",
+                "description": "Names of all access profiles granted by this role. When present, this field takes precedence over access_profile; an empty list removes all profile grants.",
+                "items": {
+                  "type": "string"
+                }
+              },
               "permissions": {
                 "type": "array",
                 "description": "List of resource+operation permission pairs to grant to this role",
