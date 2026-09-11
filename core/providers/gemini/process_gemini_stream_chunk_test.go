@@ -126,6 +126,9 @@ func TestProcessGeminiStreamChunkMergesArrayObjects(t *testing.T) {
 	if got := len(response.Candidates[0].Content.Parts); got != 2 {
 		t.Fatalf("merged parts = %d, want 2", got)
 	}
+	if got := response.Candidates[0].Content.Parts[0].Text; got != "first" {
+		t.Fatalf("merged first part = %q, want %q", got, "first")
+	}
 	if got := response.Candidates[0].Content.Parts[1].Text; got != "second" {
 		t.Fatalf("merged second part = %q, want %q", got, "second")
 	}
