@@ -818,21 +818,18 @@ export const ProviderIcons = {
 			</svg>
 		);
 	},
-	zro: ({ size = "md", className = "" }: IconProps) => {
+	zro: ({ size = "md", className = "", theme }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 
 		return (
-			<svg
+			<img
+				src="/images/zro.svg"
+				alt="Zro"
 				width={resolvedSize}
 				height={resolvedSize}
-				viewBox="0 0 24 24"
-				fill="none"
-				xmlns="http://www.w3.org/2000/svg"
 				className={className}
-			>
-				<title>Zro</title>
-				<path d="M5 4h14v3L10 17h9v3H5v-3l9-10H5V4Z" fill="currentColor" />
-			</svg>
+				style={{ filter: theme === "dark" ? "invert(1)" : undefined }}
+			/>
 		);
 	},
 	databricks: ({ size = "md", className = "" }: IconProps) => {
