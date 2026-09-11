@@ -4,10 +4,15 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/internal/llmtests"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
@@ -1000,6 +1005,12 @@ func TestBifrostToBedrockRequestConversion(t *testing.T) {
 				}
 			} else {
 				require.NoError(t, err)
+				if tt.expected.InferenceConfig == nil {
+					tt.expected.InferenceConfig = &bedrock.BedrockInferenceConfig{}
+				}
+				if tt.expected.InferenceConfig.MaxTokens == nil {
+					tt.expected.InferenceConfig.MaxTokens = schemas.Ptr(4096)
+				}
 				assertBedrockRequestEqual(t, tt.expected, actual)
 			}
 		})
@@ -7617,4 +7628,232 @@ func TestBedrockImageS3URIWithoutExtensionErrors(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot determine image format")
+}
+
+// TestDefaultOutputTokens verifies omitted limits use model capacity without replacing explicit limits.
+func TestDefaultOutputTokens(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for _, test := range []struct {
+		name  string
+		model string
+		limit *int
+		want  int
+	}{
+		{name: "known", model: "us.anthropic.claude-sonnet-5", want: 128000},
+		{name: "explicit", model: "us.anthropic.claude-sonnet-5", limit: schemas.Ptr(512), want: 512},
+		{name: "unknown", model: "unknown-model"},
+	} {
+		for _, emptyParams := range []bool{false, true} {
+			t.Run(test.name+"/"+map[bool]string{false: "nil", true: "params"}[emptyParams], func(t *testing.T) {
+				chat := &schemas.BifrostChatRequest{
+					Provider: schemas.Bedrock,
+					Model:    test.model,
+					Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+				}
+				responses := &schemas.BifrostResponsesRequest{Provider: schemas.Bedrock, Model: test.model}
+				if emptyParams || test.limit != nil {
+					chat.Params = &schemas.ChatParameters{MaxCompletionTokens: test.limit}
+					responses.Params = &schemas.ResponsesParameters{MaxOutputTokens: test.limit}
+				}
+				convertedChat, err := bedrock.ToBedrockChatCompletionRequest(ctx, chat)
+				require.NoError(t, err)
+				convertedResponses, err := bedrock.ToBedrockResponsesRequest(ctx, responses)
+				require.NoError(t, err)
+				for name, converted := range map[string]*bedrock.BedrockConverseRequest{"chat": convertedChat, "responses": convertedResponses} {
+					got := 0
+					if converted.InferenceConfig != nil && converted.InferenceConfig.MaxTokens != nil {
+						got = *converted.InferenceConfig.MaxTokens
+					}
+					assert.Equalf(t, test.want, got, "%s max tokens", name)
+				}
+			})
+		}
+	}
+}
+
+// TestDefaultOutputTokensCapabilities verifies catalog limits override static defaults and Nova exclusions survive.
+func TestDefaultOutputTokensCapabilities(t *testing.T) {
+	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if provider == schemas.Bedrock {
+			return &schemas.ModelCapabilities{MaxOutputTokens: schemas.Ptr(32000)}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for _, model := range []string{"us.anthropic.claude-sonnet-5", "custom-model", "us.amazon.nova-pro-v1:0"} {
+		t.Run(model, func(t *testing.T) {
+			chat := &schemas.BifrostChatRequest{
+				Provider: schemas.Bedrock,
+				Model:    model,
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+				Params:   &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr("high")}},
+			}
+			responses := &schemas.BifrostResponsesRequest{Provider: schemas.Bedrock, Model: model, Params: &schemas.ResponsesParameters{Reasoning: &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("high")}}}
+			convertedChat, err := bedrock.ToBedrockChatCompletionRequest(ctx, chat)
+			require.NoError(t, err)
+			convertedResponses, err := bedrock.ToBedrockResponsesRequest(ctx, responses)
+			require.NoError(t, err)
+			for name, converted := range map[string]*bedrock.BedrockConverseRequest{"chat": convertedChat, "responses": convertedResponses} {
+				if model == "us.amazon.nova-pro-v1:0" {
+					if converted.InferenceConfig != nil && converted.InferenceConfig.MaxTokens != nil {
+						t.Errorf("%s high Nova reasoning must omit max tokens", name)
+					}
+				} else if converted.InferenceConfig == nil || converted.InferenceConfig.MaxTokens == nil || *converted.InferenceConfig.MaxTokens != 32000 {
+					t.Errorf("%s did not use catalog max tokens", name)
+				}
+			}
+			require.Nil(t, chat.Params.MaxCompletionTokens, "conversion mutated chat token limit")
+			require.Nil(t, responses.Params.MaxOutputTokens, "conversion mutated responses token limit")
+		})
+	}
+}
+
+// Wire-level reproduction of issue #7074.
+//
+// Claude Code talks to Bifrost on the Anthropic-native ingress (`POST /anthropic/v1/messages`)
+// with a `bedrock/openai.gpt-oss-120b` model. The request is converted Anthropic -> Bifrost
+// Responses and, because gpt-oss is a Mantle-only model, forwarded as-is to the Bedrock Mantle
+// OpenAI-compatible `/v1/responses` endpoint.
+//
+// On the second turn the client replays the prior assistant message. The Bedrock-only "grouped"
+// ingress converter (ConvertAnthropicMessagesToBifrostMessages with keepToolsGrouped=true) used
+// to emit two shapes that are not valid Responses input items under the official OpenAI types
+// (openai-python `ResponseInputParam`), which strict Mantle validators enforce:
+//
+//   - user / system text parts were tagged `output_text`; an input message may only carry
+//     `input_text` / `input_image` / `input_file` parts
+//     (https://developers.openai.com/api/reference/resources/responses/methods/create)
+//   - the replayed assistant message had an `id` but no `status`; `ResponseOutputMessageParam`
+//     requires `id`, `role`, `status`, `type` and `content`
+//     (https://github.com/openai/openai-python/blob/main/src/openai/types/responses/response_output_message_param.py)
+//
+// The upstream validator rejected the whole request:
+//
+//	655 validation errors for ResponsesRequest ...
+//	input.list[...].6.EasyInputMessageParam.content.list[...].0.ResponseInputTextParam.type
+//	  Input should be 'input_text' [type=literal_error, input_value='output_text', input_type=str]
+//
+// The same conversation converted through the non-grouped converter (every other provider,
+// including bedrock_mantle) already produced the valid shapes, so this test pins the Bedrock
+// path to the same contract.
+func TestAnthropicIngressMantleReplayUsesResponsesInputShapes(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		captured []byte
+	)
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		mu.Lock()
+		captured = body
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":1,"status":"completed",` +
+			`"model":"openai.gpt-oss-120b","output":[{"type":"message","id":"msg_1","status":"completed",` +
+			`"role":"assistant","content":[{"type":"output_text","text":"4","annotations":[]}]}],` +
+			`"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`))
+	}))
+	defer ts.Close()
+
+	config := &schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{
+			DefaultRequestTimeoutInSeconds: 5,
+			InsecureSkipVerify:             true,
+			AllowPrivateNetwork:            true,
+		},
+	}
+	config.CheckAndSetDefaults()
+	provider, err := bedrock.NewBedrockProvider(config, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	require.NoError(t, err)
+
+	// Bearer value: no SigV4 signer. The Mantle host override points at the local server.
+	key := schemas.Key{
+		Value: *schemas.NewSecretVar("test-bearer"),
+		BedrockKeyConfig: &schemas.BedrockKeyConfig{
+			Region:    schemas.NewSecretVar("eu-west-1"),
+			Endpoints: &schemas.BedrockEndpoints{Mantle: schemas.NewSecretVar(strings.TrimPrefix(ts.URL, "https://"))},
+		},
+	}
+
+	// The reporter's scenario: Claude Code's second message in a session. The first turn's
+	// assistant reply is replayed as history.
+	ingressBody := `{
+		"model": "bedrock/openai.gpt-oss-120b",
+		"max_tokens": 1024,
+		"system": [{"type": "text", "text": "You are Claude Code."}],
+		"messages": [
+			{"role": "user", "content": [{"type": "text", "text": "hello"}]},
+			{"role": "assistant", "content": [{"type": "text", "text": "Hello! How can I help you today?"}]},
+			{"role": "user", "content": [{"type": "text", "text": "what is 2+2"}]}
+		]
+	}`
+	var ingressReq anthropic.AnthropicMessageRequest
+	require.NoError(t, json.Unmarshal([]byte(ingressBody), &ingressReq))
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq := ingressReq.ToBifrostResponsesRequest(ctx)
+	require.NotNil(t, bifrostReq)
+	require.Equal(t, schemas.Bedrock, bifrostReq.Provider)
+
+	_, bifrostErr := provider.Responses(ctx, key, bifrostReq)
+	require.Nil(t, bifrostErr, "request must reach the Mantle endpoint: %+v", bifrostErr)
+
+	mu.Lock()
+	body := captured
+	mu.Unlock()
+	require.NotEmpty(t, body, "the provider must have sent a body to the Mantle endpoint")
+
+	var wire struct {
+		Input []struct {
+			Type    *string         `json:"type"`
+			Role    *string         `json:"role"`
+			Status  *string         `json:"status"`
+			Content json.RawMessage `json:"content"`
+		} `json:"input"`
+	}
+	require.NoError(t, json.Unmarshal(body, &wire))
+	require.Len(t, wire.Input, 4, "system + user + assistant + user, got: %s", body)
+
+	sawAssistant := false
+	for i, item := range wire.Input {
+		if len(item.Content) == 0 || item.Content[0] != '[' {
+			continue // string content is valid for any role
+		}
+		var parts []struct {
+			Type string `json:"type"`
+		}
+		require.NoErrorf(t, json.Unmarshal(item.Content, &parts), "input[%d].content", i)
+		require.NotNilf(t, item.Role, "input[%d] message item must carry a role", i)
+
+		if *item.Role != "assistant" {
+			for j, part := range parts {
+				assert.Equalf(t, "input_text", part.Type,
+					"input[%d].content[%d]: a %s message is a Responses input message and may only carry input_* parts (got %q)",
+					i, j, *item.Role, part.Type)
+			}
+			continue
+		}
+
+		sawAssistant = true
+		for j, part := range parts {
+			assert.Equalf(t, "output_text", part.Type, "input[%d].content[%d]: replayed assistant text stays output_text", i, j)
+		}
+		if assert.NotNilf(t, item.Status,
+			"input[%d]: an assistant output message item requires `status` (ResponseOutputMessageParam), got item: %s", i, mustItem(body, i)) {
+			assert.Equalf(t, "completed", *item.Status, "input[%d].status", i)
+		}
+	}
+	require.True(t, sawAssistant, "fixture must include a replayed assistant message")
+}
+
+// mustItem returns the raw JSON of input[i] for failure messages.
+func mustItem(body []byte, i int) string {
+	var wire struct {
+		Input []json.RawMessage `json:"input"`
+	}
+	if err := json.Unmarshal(body, &wire); err != nil || i >= len(wire.Input) {
+		return "<unavailable>"
+	}
+	return string(wire.Input[i])
 }
