@@ -3,6 +3,9 @@ package mcp
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"sync"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -122,16 +125,20 @@ func TestEnableClient_NilExecutionConfig_ReturnsErrorNotPanic(t *testing.T) {
 	assert.Nil(t, state.ExecutionConfig)
 }
 
-// TestEnableClient_ConnectFailure_ParksDisabledAndKeepsRetrying is the
+// TestEnableClient_ConnectFailure_ParksDisabledAndStaysEnableable is the
 // end-to-end companion to TestIsEnableable: it drives the real enable path
 // with a dial that fails and pins every claim the failure branch's comment
 // makes — the ErrMCPEnableConnectFailed sentinel callers match on to keep
-// their persisted disabled=false, the un-disabled ExecutionConfig, the state
-// parked back at Disabled (not Unstable, which would wedge every retry), and
-// the connection checker left running so the client can still come up on its
-// own.
-func TestEnableClient_ConnectFailure_ParksDisabledAndKeepsRetrying(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, genericFailureCredStore{}, nil, nil)
+// their persisted disabled=false, the un-disabled ExecutionConfig, and the
+// state parked back at Disabled (not Unstable, which would wedge every retry).
+//
+// Note what is NOT claimed: a checker is registered, but performCheck stops it
+// on its first tick rather than dialling a Disabled client, so nothing retries
+// this dial automatically. Recovery is the admin enabling again, which the
+// Disabled parking state exists to keep possible.
+func TestEnableClient_ConnectFailure_ParksDisabledAndStaysEnableable(t *testing.T) {
+	cred := &countingFailureCredStore{}
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, cred, nil, nil)
 	defer m.checkerManager.StopAll()
 
 	config := newSharedOAuthClientConfig("client-enable-dial-fails")
@@ -160,9 +167,74 @@ func TestEnableClient_ConnectFailure_ParksDisabledAndKeepsRetrying(t *testing.T)
 	assert.True(t, isEnableable(&state), "the entry must remain enableable, not wedged")
 
 	m.checkerManager.mu.RLock()
-	_, checking := m.checkerManager.checkers[config.ID]
+	checker, checking := m.checkerManager.checkers[config.ID]
 	m.checkerManager.mu.RUnlock()
-	assert.True(t, checking, "a connection checker must be left retrying the dial in the background")
+	require.True(t, checking, "a checker is registered for the NeedsReauth case this branch shares")
+
+	// The claim above is that this checker does not retry the dial, so assert
+	// it rather than describing it. Driving performCheck directly keeps that
+	// deterministic: waiting out the real first tick would add seconds and
+	// still only observe the same call.
+	dialsBeforeTick := cred.calls()
+	require.Equal(t, 1, dialsBeforeTick, "the enable itself dialled exactly once")
+
+	next, onSteady := checker.performCheck()
+
+	// Two assertions, because neither covers the other. The dial counter catches
+	// a redial made on this goroutine; the self-stop below is what rules out an
+	// async one, since a checker that has stopped never ticks again and this
+	// branch's only reconnect path is a goroutine the counter would race.
+	//
+	// reconnectingClients is deliberately not used: EnableClient took the same
+	// exclusive-op slot for its own dial, and a finished op is left in the map
+	// on purpose, so an entry there says nothing about the checker.
+	assert.Equal(t, dialsBeforeTick, cred.calls(),
+		"a Disabled client must not be redialled by its checker: recovery here is the admin enabling again")
+
+	checker.mu.Lock()
+	running := checker.isRunning
+	checker.mu.Unlock()
+	assert.False(t, running, "the checker stops itself on that first tick rather than staying armed")
+	assert.True(t, onSteady, "and leaves the relaxed cadence behind it")
+	assert.Equal(t, checker.healthyInterval, next)
+}
+
+// countingFailureCredStore is genericFailureCredStore with a dial counter, so a
+// test can assert that no *further* dial happened rather than only that the
+// first one failed. Kept local: genericFailureCredStore is shared by other
+// tests that have no reason to carry a counter.
+type countingFailureCredStore struct {
+	mu sync.Mutex
+	n  int
+}
+
+func (c *countingFailureCredStore) calls() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.n
+}
+
+func (c *countingFailureCredStore) ConnectionHeaders(_ *schemas.BifrostContext, _ *schemas.MCPClientConfig) (http.Header, error) {
+	c.mu.Lock()
+	c.n++
+	c.mu.Unlock()
+	return nil, fmt.Errorf("connection refused")
+}
+
+func (c *countingFailureCredStore) RequestHeaders(_ *schemas.BifrostContext, _ *schemas.MCPClientConfig) (http.Header, error) {
+	return http.Header{}, nil
+}
+
+func (c *countingFailureCredStore) RequiresPerCallConnection(_ *schemas.MCPClientConfig) bool {
+	return false
+}
+
+func (c *countingFailureCredStore) ForceRefresh(_ *schemas.BifrostContext, _ *schemas.MCPClientConfig) error {
+	return nil
+}
+
+func (c *countingFailureCredStore) AdminConnectionHeaders(_ context.Context, _ *schemas.MCPClientConfig) (http.Header, error) {
+	return nil, fmt.Errorf("not implemented")
 }
 
 // TestEnableClient_ConnectFailure_PreservesNeedsReauth covers the one state
