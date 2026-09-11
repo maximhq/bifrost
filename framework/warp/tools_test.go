@@ -36,7 +36,15 @@ type fakeLogReader struct {
 	// statsCalls counts them, so a test can assert how many of a turn's tool
 	// calls actually reached the store rather than only that one did.
 	statsCalls int
-	sawContext context.Context
+	// statsFiltersSeen records the filters passed to each GetStats call in
+	// order, so a test can tell a current-period call from a previous-period
+	// one apart by the window each carried.
+	statsFiltersSeen []*logstore.SearchFilters
+	// statsResponses, when set, is returned one per call in order instead of
+	// the zero-value default - the shape compare_to_previous needs to script
+	// a current period distinct from a previous one.
+	statsResponses []*logstore.SearchStats
+	sawContext     context.Context
 }
 
 func (f *fakeLogReader) Search(ctx context.Context, filters *logstore.SearchFilters, pagination *logstore.PaginationOptions) (*logstore.SearchResult, error) {
@@ -63,6 +71,12 @@ func (f *fakeLogReader) GetModelRankings(ctx context.Context, filters *logstore.
 func (f *fakeLogReader) GetStats(ctx context.Context, filters *logstore.SearchFilters) (*logstore.SearchStats, error) {
 	f.sawContext = ctx
 	f.statsCalled = true
+	f.statsFiltersSeen = append(f.statsFiltersSeen, filters)
+	if len(f.statsResponses) > f.statsCalls {
+		resp := f.statsResponses[f.statsCalls]
+		f.statsCalls++
+		return resp, nil
+	}
 	f.statsCalls++
 	return &logstore.SearchStats{}, nil
 }
@@ -134,9 +148,10 @@ func TestWarpRankingClampsLimit(t *testing.T) {
 	fake := &fakeLogReader{}
 	deps := &ToolDeps{logManager: fake}
 
-	_, err := runTool(t, "query_virtual_key_usage", deps, map[string]any{
-		"filters": map[string]any{},
-		"limit":   float64(9999),
+	_, err := runTool(t, "query_usage_by", deps, map[string]any{
+		"dimension": "virtual_key",
+		"filters":   map[string]any{},
+		"limit":     float64(9999),
 	})
 	require.NoError(t, err)
 	require.NotNil(t, fake.rankingFilters.RankingLimit)
@@ -144,13 +159,31 @@ func TestWarpRankingClampsLimit(t *testing.T) {
 	require.Equal(t, logstore.RankingDimensionVirtualKey, fake.rankingDimension)
 }
 
-func TestWarpUserFlowUsesUserDimension(t *testing.T) {
+func TestWarpUsageByFlowUsesRequestedDimension(t *testing.T) {
+	for _, dim := range []logstore.RankingDimension{
+		logstore.RankingDimensionUser, logstore.RankingDimensionVirtualKey, logstore.RankingDimensionTeam,
+		logstore.RankingDimensionCustomer, logstore.RankingDimensionBusinessUnit, logstore.RankingDimensionProject,
+		logstore.RankingDimensionApp, logstore.RankingDimensionUserAgent,
+	} {
+		t.Run(string(dim), func(t *testing.T) {
+			fake := &fakeLogReader{}
+			_, err := runTool(t, "query_usage_by", &ToolDeps{logManager: fake}, map[string]any{
+				"dimension": string(dim),
+				"filters":   map[string]any{},
+			})
+			require.NoError(t, err)
+			require.Equal(t, dim, fake.rankingDimension)
+		})
+	}
+}
+
+func TestWarpUsageByRejectsUnknownDimension(t *testing.T) {
 	fake := &fakeLogReader{}
-	_, err := runTool(t, "query_user_usage", &ToolDeps{logManager: fake}, map[string]any{
-		"filters": map[string]any{},
+	_, err := runTool(t, "query_usage_by", &ToolDeps{logManager: fake}, map[string]any{
+		"dimension": "region",
+		"filters":   map[string]any{},
 	})
-	require.NoError(t, err)
-	require.Equal(t, logstore.RankingDimensionUser, fake.rankingDimension)
+	require.ErrorContains(t, err, `unknown dimension "region"`)
 }
 
 // A dropped filter answers a different question than the one asked, and neither
@@ -163,6 +196,48 @@ func TestWarpRejectsUnknownFilterField(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unknown filter fields: provider")
 	require.Nil(t, fake.searchFilters, "the query must not run with a silently dropped filter")
+}
+
+// Every field the FilterSchema declares must actually reach SearchFilters, or
+// the model is offered a knob that silently does nothing.
+func TestWarpFilterAcceptsPreviouslyMissingFields(t *testing.T) {
+	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	filters, err := parseFilters(map[string]any{
+		"stop_reasons":    []any{"length", "content_filter"},
+		"objects":         []any{"embedding"},
+		"project_ids":     []any{"proj-1"},
+		"min_tokens":      float64(10),
+		"max_tokens":      float64(5000),
+		"cache_hit_types": []any{"semantic"},
+	}, now)
+	require.NoError(t, err)
+	require.Equal(t, []string{"length", "content_filter"}, filters.StopReasons)
+	require.Equal(t, []string{"embedding"}, filters.Objects)
+	require.Equal(t, []string{"proj-1"}, filters.ProjectIDs)
+	require.NotNil(t, filters.MinTokens)
+	require.Equal(t, 10, *filters.MinTokens)
+	require.NotNil(t, filters.MaxTokens)
+	require.Equal(t, 5000, *filters.MaxTokens)
+	require.Equal(t, []string{"semantic"}, filters.CacheHitTypes)
+}
+
+// describe_filter_space already surfaces stop_reasons as a discoverable
+// value; filtering on one must not then be rejected as unknown.
+func TestWarpStopReasonsFilterIsNotRejectedAsUnknown(t *testing.T) {
+	fake := &fakeLogReader{}
+	_, err := runTool(t, "query_logs", &ToolDeps{logManager: fake}, map[string]any{
+		"filters": map[string]any{"stop_reasons": []any{"length"}},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"length"}, fake.searchFilters.StopReasons)
+}
+
+// A question naming a project is naming a scope, same as team, customer or
+// business unit - it must not be silently widened to the caller's own traffic.
+func TestWarpProjectFilterCountsAsANamedScope(t *testing.T) {
+	filters := &logstore.SearchFilters{ProjectIDs: []string{"proj-1"}}
+	applyScope(filters, Scope{HasIdentity: true, UserID: "user-7"})
+	require.Empty(t, filters.UserIDs, "naming a project must not also narrow to the caller")
 }
 
 func TestWarpFilterTimeParsing(t *testing.T) {
@@ -326,6 +401,64 @@ func TestWarpMetricsSummaryUsesStats(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.True(t, fake.statsCalled)
+}
+
+// compare_to_previous exists so "is it up or down vs last period" costs one
+// call instead of two - the model calling query_metrics itself with a shifted
+// window. Prove the tool does that shifted call internally and returns a
+// trend rather than requiring the caller to.
+func TestWarpMetricsComparesToPreviousPeriod(t *testing.T) {
+	fake := &fakeLogReader{statsResponses: []*logstore.SearchStats{
+		{TotalRequests: 200, TotalTokens: 20000, TotalCost: 40}, // current period
+		{TotalRequests: 100, TotalTokens: 10000, TotalCost: 20}, // previous period
+	}}
+	result, err := runTool(t, "query_metrics", &ToolDeps{logManager: fake}, map[string]any{
+		"filters":             map[string]any{"start_time": "-7d"},
+		"metrics":             []any{"summary"},
+		"compare_to_previous": true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, 2, fake.statsCalls, "one call for the window asked about, one for the period before it")
+
+	out := result.(map[string]any)
+	trend := out["previous_period"].(map[string]any)
+	require.Equal(t, true, trend["has_previous_period"])
+	require.InDelta(t, 100.0, trend["requests_trend"], 0.001) // 100 -> 200 requests
+	require.InDelta(t, 100.0, trend["tokens_trend"], 0.001)
+	require.InDelta(t, 100.0, trend["cost_trend"], 0.001)
+
+	// The previous-period query must be shifted, not a repeat of the same window.
+	require.Len(t, fake.statsFiltersSeen, 2)
+	current, previous := fake.statsFiltersSeen[0], fake.statsFiltersSeen[1]
+	require.True(t, previous.EndTime.Equal(*current.StartTime), "previous period must end where the current one starts")
+	require.Equal(t, current.EndTime.Sub(*current.StartTime), previous.EndTime.Sub(*previous.StartTime), "previous period must be the same length")
+}
+
+func TestWarpMetricsCompareToPreviousRequiresSummary(t *testing.T) {
+	_, err := runTool(t, "query_metrics", &ToolDeps{logManager: &fakeLogReader{}}, map[string]any{
+		"filters":             map[string]any{},
+		"metrics":             []any{"cost"},
+		"compare_to_previous": true,
+	})
+	require.ErrorContains(t, err, `compare_to_previous requires metrics to include "summary"`)
+}
+
+// A previous period with no traffic at all is a real answer ("nothing to
+// compare against"), not a divide-by-zero.
+func TestWarpMetricsCompareToPreviousHandlesEmptyPreviousPeriod(t *testing.T) {
+	fake := &fakeLogReader{statsResponses: []*logstore.SearchStats{
+		{TotalRequests: 50},
+		{TotalRequests: 0},
+	}}
+	result, err := runTool(t, "query_metrics", &ToolDeps{logManager: fake}, map[string]any{
+		"filters":             map[string]any{},
+		"metrics":             []any{"summary"},
+		"compare_to_previous": true,
+	})
+	require.NoError(t, err)
+	trend := result.(map[string]any)["previous_period"].(map[string]any)
+	require.Equal(t, false, trend["has_previous_period"])
+	require.Equal(t, 0.0, trend["requests_trend"])
 }
 
 // An over-long window must be rejected with advice rather than silently
