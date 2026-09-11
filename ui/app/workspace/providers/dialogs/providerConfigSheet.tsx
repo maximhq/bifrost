@@ -65,7 +65,7 @@ const availableTabs = (
 	}
 	tabs.push({
 		id: "prompt-cache",
-		label: "Prompt Caching",
+		label: t("providers.promptCaching"),
 	});
 	tabs.push({
 		id: "debugging",
@@ -116,7 +116,7 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 							<div className="flex items-center">
 								<Provider provider={provider.name} size={24} className="mt-0" />
 							</div>
-							Provider configuration
+							{t("providers.configurationTitle")}
 						</div>
 					</SheetTitle>
 				</SheetHeader>

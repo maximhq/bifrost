@@ -278,11 +278,9 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 										<div className="flex items-center justify-between space-x-2 rounded-lg border p-3">
 											<div className="space-y-0.5">
 												<label htmlFor="does-not-send-done-marker" className="text-sm font-medium">
-													Does Not Send [DONE] Marker?
+													{t("providers.doesNotSendDoneMarker")}
 												</label>
-												<p className="text-muted-foreground text-sm">
-													Whether the provider ends streams on finish_reason without sending a [DONE] marker
-												</p>
+												<p className="text-muted-foreground text-sm">{t("providers.doesNotSendDoneMarkerHelp")}</p>
 											</div>
 											<Switch
 												id="does-not-send-done-marker"
