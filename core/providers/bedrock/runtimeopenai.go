@@ -27,6 +27,7 @@ func (provider *BedrockProvider) runtimeResponses(
 ) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	region := resolveBedrockRegion(ctx, key, request.Model)
 	url := runtimeOpenAIURL(bedrockEndpoints(key.BedrockKeyConfig), region, "responses")
+	_, request.Model = parseBedrockRegionAndModel(request.Model)
 
 	// SigV4 (empty key value): sign the exact body the handler builds via a signer closure.
 	// Bearer (key has a value): no signer; auth flows through the Authorization header.
@@ -66,6 +67,7 @@ func (provider *BedrockProvider) runtimeResponsesStream(
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	region := resolveBedrockRegion(ctx, key, request.Model)
 	url := runtimeOpenAIURL(bedrockEndpoints(key.BedrockKeyConfig), region, "responses")
+	_, request.Model = parseBedrockRegionAndModel(request.Model)
 
 	var signer providerUtils.BodySigner
 	if key.Value.GetValue() == "" {
@@ -100,6 +102,7 @@ func (provider *BedrockProvider) runtimeChatCompletions(
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	region := resolveBedrockRegion(ctx, key, request.Model)
 	url := runtimeOpenAIURL(bedrockEndpoints(key.BedrockKeyConfig), region, "chat/completions")
+	_, request.Model = parseBedrockRegionAndModel(request.Model)
 
 	var signer providerUtils.BodySigner
 	if key.Value.GetValue() == "" {
@@ -136,6 +139,7 @@ func (provider *BedrockProvider) runtimeChatCompletionsStream(
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	region := resolveBedrockRegion(ctx, key, request.Model)
 	url := runtimeOpenAIURL(bedrockEndpoints(key.BedrockKeyConfig), region, "chat/completions")
+	_, request.Model = parseBedrockRegionAndModel(request.Model)
 
 	var signer providerUtils.BodySigner
 	if key.Value.GetValue() == "" {
