@@ -216,7 +216,20 @@ func (h *ProviderHandler) listProviders(ctx *fasthttp.RequestCtx) {
 	var providers map[schemas.ModelProvider]configstore.ProviderConfig
 	if h.dbStore != nil {
 		var err error
-		providers, err = h.dbStore.GetProvidersConfig(ctx)
+		// Config-store work runs on a context of this handler's own, never on the
+		// *fasthttp.RequestCtx. A RequestCtx is only valid for the duration of the
+		// handler: fasthttp clears its user values and hands it back to a pool as
+		// soon as the top handler returns, and RequestCtx.Done() returns the
+		// process-wide Server.done channel. database/sql keeps the context it is
+		// given past the call — it watches Done() on a goroutine of its own — so
+		// it would read a RequestCtx fasthttp has already taken back. No deadline
+		// is added on top: the RequestCtx carried none either, and a store call
+		// cancelled halfway leaves the client and the persisted config out of
+		// step. Cancelling on return is what keeps the watcher from outliving the
+		// handler. Every storeCtx below is this same pattern.
+		storeCtx, storeCancel := context.WithCancel(context.Background())
+		defer storeCancel()
+		providers, err = h.dbStore.GetProvidersConfig(storeCtx)
 		if err != nil {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get providers: %v", err))
 			return
@@ -270,7 +283,9 @@ func (h *ProviderHandler) getProvider(ctx *fasthttp.RequestCtx) {
 
 	var config *configstore.ProviderConfig
 	if h.dbStore != nil {
-		config, err = h.dbStore.GetProviderConfig(ctx, provider)
+		storeCtx, storeCancel := context.WithCancel(context.Background())
+		defer storeCancel()
+		config, err = h.dbStore.GetProviderConfig(storeCtx, provider)
 		if err != nil {
 			if errors.Is(err, configstore.ErrNotFound) {
 				SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err))
@@ -394,7 +409,9 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Add provider to store (env vars will be processed by store)
-	if err := h.inMemoryStore.AddProvider(ctx, payload.Provider, config); err != nil {
+	storeCtx, storeCancel := context.WithCancel(context.Background())
+	defer storeCancel()
+	if err := h.inMemoryStore.AddProvider(storeCtx, payload.Provider, config); err != nil {
 		logger.Warn("Failed to add provider %s: %v", payload.Provider, err)
 		if errors.Is(err, lib.ErrAlreadyExists) {
 			SendError(ctx, fasthttp.StatusConflict, err.Error())
@@ -607,6 +624,10 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		config.StoreRawRequestResponse = *payload.StoreRawRequestResponse
 	}
 
+	// One context covers this handler's store work, add and update alike.
+	storeCtx, storeCancel := context.WithCancel(context.Background())
+	defer storeCancel()
+
 	// Add provider to store if it doesn't exist (upsert behavior)
 	if _, err := h.inMemoryStore.GetProviderConfigRaw(provider); err != nil {
 		if !errors.Is(err, lib.ErrNotFound) {
@@ -615,7 +636,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		// Adding the provider to store
-		if err := h.inMemoryStore.AddProvider(ctx, provider, config); err != nil {
+		if err := h.inMemoryStore.AddProvider(storeCtx, provider, config); err != nil {
 			// In an upsert flow, "already exists" is not fatal — the provider may have been
 			// added concurrently or exist in the DB from a previous failed attempt.
 			if !errors.Is(err, lib.ErrAlreadyExists) {
@@ -628,7 +649,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Update provider config in store (env vars will be processed by store)
-	if err := h.inMemoryStore.UpdateProviderConfig(ctx, provider, config); err != nil {
+	if err := h.inMemoryStore.UpdateProviderConfig(storeCtx, provider, config); err != nil {
 		logger.Warn("Failed to update provider %s: %v", provider, err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to update provider: %v", err))
 		return
@@ -693,7 +714,9 @@ func (h *ProviderHandler) deleteProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.modelsManager.RemoveProvider(ctx, provider); err != nil {
+	storeCtx, storeCancel := context.WithCancel(context.Background())
+	defer storeCancel()
+	if err := h.modelsManager.RemoveProvider(storeCtx, provider); err != nil {
 		logger.Warn("Failed to delete models for provider %s: %v", provider, err)
 	}
 
@@ -1221,10 +1244,12 @@ func (h *ProviderHandler) getModelParameters(ctx *fasthttp.RequestCtx) {
 	// exact-match miss.
 	var params *tables.TableModelParameters
 	var err error
+	storeCtx, storeCancel := context.WithCancel(context.Background())
+	defer storeCancel()
 	if h.inMemoryStore != nil && h.inMemoryStore.ModelCatalog != nil {
-		params, err = h.inMemoryStore.ModelCatalog.ResolveModelParameters(ctx, modelParam)
+		params, err = h.inMemoryStore.ModelCatalog.ResolveModelParameters(storeCtx, modelParam)
 	} else {
-		params, err = h.dbStore.GetModelParametersByModel(ctx, modelParam)
+		params, err = h.dbStore.GetModelParametersByModel(storeCtx, modelParam)
 	}
 	if err == nil && params == nil {
 		err = configstore.ErrNotFound
@@ -1539,7 +1564,9 @@ func (h *ProviderHandler) upsertModelCatalogEntries(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
-	if err := h.modelsManager.UpsertModelPricingAttributes(ctx, payload); err != nil {
+	storeCtx, storeCancel := context.WithCancel(context.Background())
+	defer storeCancel()
+	if err := h.modelsManager.UpsertModelPricingAttributes(storeCtx, payload); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to upsert catalog entries: %v", err))
 		return
 	}
