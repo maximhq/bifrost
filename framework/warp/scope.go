@@ -74,6 +74,7 @@ func filtersNameAScope(filters *logstore.SearchFilters) bool {
 		len(filters.TeamIDs) > 0 ||
 		len(filters.CustomerIDs) > 0 ||
 		len(filters.BusinessUnitIDs) > 0 ||
+		len(filters.ProjectIDs) > 0 ||
 		len(filters.VirtualKeyIDs) > 0
 }
 

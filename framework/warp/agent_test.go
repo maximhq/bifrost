@@ -619,6 +619,60 @@ func TestWarpSystemPromptGuidesTopicQuestionsAndForbidsRepeats(t *testing.T) {
 	require.Contains(t, content, "Never call a tool again with the same arguments")
 }
 
+// count_logs used to tell the model to split a large window into slices
+// unconditionally, which blocked the one-call shape a sorted top-N actually
+// needs ("slowest requests yesterday" is one query_logs call with sort_by and
+// limit, regardless of how many rows match). The prompt has to carve that case
+// out explicitly, or the model narrows or slices a query that never needed it.
+func TestWarpSystemPromptAllowsSortedTopNRegardlessOfCount(t *testing.T) {
+	content := systemInstructions(&schemas.WarpConfig{})
+
+	require.Contains(t, content, "sort_by and limit regardless of how large the count is")
+	require.Contains(t, content, "not the same as paging through the full set")
+}
+
+// Relative offsets ("-7d") cannot express a specific calendar date ("on sept
+// 3rd"), so a blanket "do not compute absolute dates" leaves the model with no
+// legal way to answer a dated question. The prompt has to say when each form
+// applies rather than banning one of them outright.
+func TestWarpSystemPromptAllowsAbsoluteDatesForNamedDays(t *testing.T) {
+	content := systemInstructions(&schemas.WarpConfig{})
+
+	require.Contains(t, content, "relative offsets like -24h, -7d or -30m")
+	require.Contains(t, content, "specific calendar date")
+	require.Contains(t, content, "RFC3339 timestamps for that date")
+}
+
+// Warp's own traffic against Bifrost is itself logged and counted by
+// count_logs/query_metrics, unlike semantic_search_logs which excludes it. The
+// model cannot account for or disclose a skew it is never told exists.
+func TestWarpSystemPromptNamesItsOwnTrafficInAggregates(t *testing.T) {
+	content := systemInstructions(&schemas.WarpConfig{})
+
+	require.Contains(t, content, `app "Warp"`)
+	require.Contains(t, content, "semantic_search_logs does not")
+}
+
+// The loop allows up to four tool calls per step (MaxToolCallsPerTurn), but
+// nothing told the model that - so independent lookups ran one iteration at a
+// time and multi-part questions burned the step budget serially.
+func TestWarpSystemPromptDescribesParallelToolCalls(t *testing.T) {
+	content := systemInstructions(&schemas.WarpConfig{})
+
+	require.Contains(t, content, "Up to four tool calls can run in a single step")
+	require.Contains(t, content, "not a limited number of calls per step")
+}
+
+// Ranking and query_metrics results already carry a trend against the prior
+// period, but the prompt never said so - so the model spent a second call
+// reconstructing a comparison it already had the answer to.
+func TestWarpSystemPromptNamesExistingTrendFields(t *testing.T) {
+	content := systemInstructions(&schemas.WarpConfig{})
+
+	require.Contains(t, content, "has_previous_period, requests_trend, tokens_trend, cost_trend")
+	require.Contains(t, content, "compare_to_previous")
+}
+
 // The links only help if the model uses them. The prompt has to name the two
 // fields and forbid inventing URLs of its own.
 func TestWarpSystemPromptRequiresDashboardLinks(t *testing.T) {
