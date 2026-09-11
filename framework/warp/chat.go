@@ -47,10 +47,12 @@ type Turn struct {
 	// questionRole is the role the final request message actually carried.
 	// NewTurn accepts an assistant turn there, and history has to file it under
 	// the role it arrived with rather than assuming "user".
-	questionRole string
-	messages     []schemas.ResponsesMessage
-	config       *schemas.WarpConfig
-	chat         ChatFunc
+	questionRole     string
+	messages         []schemas.ResponsesMessage
+	config           *schemas.WarpConfig
+	chat             ChatFunc
+	utcOffsetMinutes int
+	timezone         string
 }
 
 // NewTurn validates a chat request and resolves the configuration and model
@@ -91,6 +93,11 @@ func (s *Service) NewTurn(ctx context.Context, request *ChatRequest, bodyBytes i
 		messages:       messages,
 		config:         config,
 		chat:           chat,
+		// Sanitized here, once, since this is the one place a raw client value
+		// exists - everything downstream (NewAgent, systemInstructions) trusts
+		// what it's handed rather than re-validating.
+		utcOffsetMinutes: sanitizeUTCOffsetMinutes(request.UTCOffsetMinutes),
+		timezone:         sanitizeTimezone(request.Timezone),
 	}, nil
 }
 
@@ -116,7 +123,7 @@ func (s *Service) RunTurn(ctx context.Context, turn *Turn, sink func(Event) bool
 	// request body could claim.
 	// One snapshot, so the agent's reader and searcher are the same generation.
 	logs, semantic := s.researchDeps()
-	agent := NewAgent(turn.chat, s.costFuncFor(turn.config), logs, ScopeFromContext(runCtx), turn.config, semantic)
+	agent := NewAgent(turn.chat, s.costFuncFor(turn.config), logs, ScopeFromContext(runCtx), turn.config, turn.utcOffsetMinutes, turn.timezone, semantic)
 	agent.questionsAsked = turn.questionsAsked
 	events := make(chan Event, 16)
 	go agent.Run(runCtx, turn.messages, events)

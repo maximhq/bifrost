@@ -19,6 +19,23 @@ type ChatRequest struct {
 	// Stream selects the transport, not the behaviour. Both paths run the same
 	// loop; only the sink differs.
 	Stream *bool `json:"stream,omitempty"`
+	// Timezone is the asker's IANA zone identifier (e.g. "Asia/Kolkata"), read
+	// from the browser. A named date ("on sept 3rd") needs the zone's identity,
+	// not a snapshot of the current offset: daylight saving can put that date
+	// at a different offset than right now, so this - not UTCOffsetMinutes -
+	// is what a named-date query is resolved against. Empty and invalid are
+	// indistinguishable and both fall back to UTCOffsetMinutes alone; see
+	// sanitizeTimezone.
+	Timezone string `json:"timezone,omitempty"`
+	// UTCOffsetMinutes is the asker's local UTC offset in minutes east of UTC
+	// (e.g. +330 for IST) right now, read from the browser. It only labels the
+	// "current time is ..." line - Timezone above is what a named date is
+	// resolved against, since a single numeric offset cannot account for
+	// daylight saving on a different date. Zero and "not sent" are
+	// indistinguishable and both mean UTC, which is the correct fallback
+	// either way. An out-of-range value is not trusted; see
+	// sanitizeUTCOffsetMinutes.
+	UTCOffsetMinutes int `json:"utc_offset_minutes,omitempty"`
 }
 
 type ChatMessage struct {
