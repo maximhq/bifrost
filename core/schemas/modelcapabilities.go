@@ -277,6 +277,14 @@ type ModelCapabilities struct {
 	// Absent or unrecognised falls back to the caller's family detection.
 	BedrockReasoningShape BedrockReasoningShape `json:"bedrock_reasoning_shape,omitempty"`
 
+	// Base path Bedrock Mantle serves this model's OpenAI-compatible APIs on.
+	// Mantle answers a model on exactly one of its two paths and 400s on the
+	// other ("isn't supported on this route"), so a new closed generation that
+	// nothing names falls through to the wrong one.
+	//
+	// Absent or unrecognised falls back to the caller's family detection.
+	BedrockMantleBasePath BedrockMantleBasePath `json:"bedrock_mantle_base_path,omitempty"`
+
 	// Whether this model verifies the signature on every reasoningText block it
 	// is handed back on Bedrock Converse. Claude does: a thinking block with no
 	// signature is rejected in every serialisation (field absent gives
@@ -345,6 +353,31 @@ var BedrockReasoningShapeValues = []BedrockReasoningShape{
 // IsValid reports whether s is a shape this binary knows how to emit.
 func (s BedrockReasoningShape) IsValid() bool {
 	return slices.Contains(BedrockReasoningShapeValues, s)
+}
+
+// BedrockMantleBasePath names the URL base path Bedrock Mantle serves a model's
+// OpenAI-compatible APIs on. The two are mutually exclusive: the open-weight
+// families answer on the bare path and the closed frontier ones on "openai/v1".
+type BedrockMantleBasePath string
+
+const (
+	// https://bedrock-mantle.{region}.api.aws/v1/... — gpt-oss, Gemma 3.
+	BedrockMantleBasePathV1 BedrockMantleBasePath = "v1"
+
+	// https://bedrock-mantle.{region}.api.aws/openai/v1/... — closed gpt-5.x and
+	// gpt-6.x, Gemma 4, Grok.
+	BedrockMantleBasePathOpenAIV1 BedrockMantleBasePath = "openai/v1"
+)
+
+// BedrockMantleBasePathValues lists every recognised BedrockMantleBasePath.
+var BedrockMantleBasePathValues = []BedrockMantleBasePath{
+	BedrockMantleBasePathV1,
+	BedrockMantleBasePathOpenAIV1,
+}
+
+// IsValid reports whether p is a base path this binary knows how to build.
+func (p BedrockMantleBasePath) IsValid() bool {
+	return slices.Contains(BedrockMantleBasePathValues, p)
 }
 
 // ModelParameterDescriptor is one entry of the datasheet's model_parameters

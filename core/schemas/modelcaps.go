@@ -622,6 +622,16 @@ func (c ModelCaps) BedrockReasoningShape(fallback BedrockReasoningShape) Bedrock
 	return fallback
 }
 
+// BedrockMantleBasePath reports the URL base path Bedrock Mantle serves this
+// model's OpenAI-compatible APIs on. Falls back to the caller's name-based answer
+// when the row says nothing or publishes a value this binary does not recognise.
+func (c ModelCaps) BedrockMantleBasePath(fallback BedrockMantleBasePath) BedrockMantleBasePath {
+	if c.record != nil && c.record.BedrockMantleBasePath.IsValid() {
+		return c.record.BedrockMantleBasePath
+	}
+	return fallback
+}
+
 // BedrockRequiresSignedReasoning reports whether the (provider, model) pair
 // verifies reasoning signatures on Converse, so an unsigned reasoningText block
 // cannot be replayed to it. Falls back to the caller's name-based answer when
