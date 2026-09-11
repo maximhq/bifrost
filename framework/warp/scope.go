@@ -2,9 +2,6 @@ package warp
 
 import (
 	"context"
-	"fmt"
-	"strings"
-	"sync"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
@@ -55,69 +52,21 @@ func ScopeFromContext(ctx context.Context) Scope {
 // one of them is taken as deliberate and left alone - narrowing "how did team X
 // do?" to the asker's own traffic would answer a question nobody asked, and the
 // answer would look right.
-func applyScope(filters *logstore.SearchFilters, scope Scope, mode ScopeMode) {
-	if filters == nil || !scope.HasIdentity {
-		return
-	}
-	// An explicit request for the whole deployment is a different question from
-	// one that simply did not say, and the two were indistinguishable while both
-	// arrived as an empty filter. Row-level queryscope still bounds what "all"
-	// can return, so this widens the question, never the permission.
-	if mode == ScopeModeAll {
-		return
-	}
-	// Checked before the named-dimension bail-out. An explicit "caller" is a
-	// deliberate statement about whose traffic is meant, so it has to apply even
-	// when a dimension is also named - the store writes UserIDs and each
-	// dimension as separate WHERE clauses, so the two intersect, which is
-	// exactly what "my traffic in that team" means. Returning early made
-	// scope:"caller" with team_ids a team-wide answer reported as the caller's
-	// own, which is the one shape of wrong answer that reads as right.
-	if mode == ScopeModeCaller {
-		filters.UserIDs = []string{scope.UserID}
+//
+// all is an explicit scope: "all" on the filter object. It is a different
+// question from one that simply named nothing, and the two are
+// indistinguishable once both arrive as an empty filter, so it has to be
+// carried here rather than inferred. It widens the question, never the
+// permission: the store still applies the caller's queryscope, so "all" is
+// everything the caller may see.
+func applyScope(filters *logstore.SearchFilters, scope Scope, all bool) {
+	if filters == nil || !scope.HasIdentity || all {
 		return
 	}
 	if filtersNameAScope(filters) {
 		return
 	}
 	filters.UserIDs = []string{scope.UserID}
-}
-
-// ScopeMode is how the model said whose traffic it means.
-type ScopeMode string
-
-const (
-	// ScopeModeUnset is an omitted scope: the caller default applies.
-	ScopeModeUnset ScopeMode = ""
-	// ScopeModeCaller asks for the caller's own traffic, explicitly.
-	ScopeModeCaller ScopeMode = "caller"
-	// ScopeModeAll asks for the whole deployment, as far as the caller is
-	// permitted to see it.
-	ScopeModeAll ScopeMode = "all"
-)
-
-// ParseScopeMode reads the scope marker off a filter object.
-//
-// An unrecognised value is rejected rather than read as the default: guessing
-// would answer a different question than the one asked, and the answer would
-// look right.
-func ParseScopeMode(raw any) (ScopeMode, error) {
-	if raw == nil {
-		return ScopeModeUnset, nil
-	}
-	value, ok := raw.(string)
-	if !ok {
-		return "", fmt.Errorf("scope must be a string, one of %q or %q", ScopeModeCaller, ScopeModeAll)
-	}
-	switch ScopeMode(strings.TrimSpace(value)) {
-	case ScopeModeUnset:
-		return ScopeModeUnset, nil
-	case ScopeModeCaller:
-		return ScopeModeCaller, nil
-	case ScopeModeAll:
-		return ScopeModeAll, nil
-	}
-	return "", fmt.Errorf("unknown scope %q. Use %q for the caller's own traffic or %q for the whole deployment", value, ScopeModeCaller, ScopeModeAll)
 }
 
 // filtersNameAScope reports whether the model asked about a particular
@@ -135,103 +84,36 @@ func filtersNameAScope(filters *logstore.SearchFilters) bool {
 		len(filters.VirtualKeyIDs) > 0
 }
 
-// scopeNote describes, in one line, what a result actually covers.
+// scopeNote reports which of three shapes a result's scope takes: "self"
+// (defaulted to the person asking), "named" (whatever the filters specified),
+// or "all" (the whole deployment).
 //
-// Returned alongside every scoped result so the model can say so in its answer.
-// A number whose scope is invisible is the failure this whole mechanism exists
-// to prevent, and the model cannot report a scope it was never told about.
+// Returned alongside every scoped result so the model can say so in its
+// answer - a number whose scope is invisible is the failure this whole
+// mechanism exists to prevent. It is a compact tag rather than a sentence on
+// purpose: the system prompt already spells out what each of the three means
+// and how to phrase it, so restating that advice on every single result would
+// be the same paragraph paid for again on every call - and it compounds,
+// since a result stays in the replayed conversation for the rest of the loop,
+// not just the step it was returned on.
 func scopeNote(filters *logstore.SearchFilters, scope Scope) string {
 	switch {
 	// Only when the caller is the whole story. parseFilters fills each dimension
 	// independently, so a filter can carry the caller's own id and a team as
-	// well - and calling that "the person asking" tells the model to describe
-	// something narrower than the query covers, which is the exact failure this
-	// note exists to prevent.
+	// well - and calling that "self" tells the model the answer is narrower
+	// than the query covers, which is the exact failure this note prevents.
 	case len(filters.UserIDs) == 1 && scope.HasIdentity && filters.UserIDs[0] == scope.UserID &&
 		len(filters.TeamIDs) == 0 && len(filters.CustomerIDs) == 0 &&
-		len(filters.BusinessUnitIDs) == 0 && len(filters.VirtualKeyIDs) == 0:
-		return "Scoped to the person asking. Say so in your answer, and mention that a team, customer or business unit can be named to widen it."
+		len(filters.BusinessUnitIDs) == 0 && len(filters.ProjectIDs) == 0 &&
+		len(filters.VirtualKeyIDs) == 0:
+		return "self"
 	case filtersNameAScope(filters):
-		return "Scoped to the dimensions named in the filters. State which ones in your answer."
+		return "named"
 	default:
-		// Not "the whole deployment": ScopedDB still applies the caller's
-		// queryscope, so this is everything they are permitted to see and no more.
-		// Claiming deployment-wide coverage would put an assertion in the answer
-		// that the data behind it does not support.
-		return "Covers all traffic the caller is permitted to see - every user, team and customer within their access. Say so plainly, because it is rarely what someone means by 'we'."
-	}
-}
-
-// describeScopeTool lets Warp find out who is asking and what it could
-// narrow to, so it can ask a specific question rather than a vague one.
-func describeScopeTool() Tool {
-	return Tool{
-		name: "describe_scope",
-		description: "Report who is asking and which teams, customers, business units and virtual keys exist. " +
-			"Call this first when a question about usage, spend or performance does not say whose traffic it means. " +
-			"With a known user, their own traffic is the default. Without one there is no default, so ask which team, customer or business unit is meant before querying.",
-		schemaJSON: `{"type": "object", "properties": {}}`,
-		execute: func(ctx context.Context, deps *ToolDeps, _ map[string]any) (any, error) {
-			const limit = 50
-			out := map[string]any{
-				"caller_is_identified": deps.scope.HasIdentity,
-				"default_scope": func() string {
-					if deps.scope.HasIdentity {
-						return "the person asking"
-					}
-					return "none - ask which team, customer or business unit is meant"
-				}(),
-			}
-			// Deliberately not caller_user_id. This payload goes to the configured
-			// model, which is usually a third-party provider, and the id is only
-			// ever used server-side by applyScope - so sending it is identity data
-			// leaving the deployment in exchange for nothing the model can use.
-
-			// Dimensions come from logged traffic, so they list what actually
-			// exists rather than what is merely configured. A team with no requests
-			// cannot be the answer to a usage question anyway.
-			//
-			// These are the distinct-value lookups the Logs filter bar uses: one
-			// indexed DISTINCT each. The rankings that used to stand here rank by
-			// spend, which nothing downstream needs, and on the enterprise
-			// hierarchy path fan every row out through JSON-array columns - tens
-			// of seconds on a large table before Warp could even ask its question.
-			//
-			// The four run concurrently. Each is a scan of the log table, and on a
-			// large SQLite file with cold pages that is I/O-bound, so running them
-			// one after another paid the disk four times over.
-			lookups := []struct {
-				key    string
-				lookup func(context.Context, int, string) ([]KeyPair, error)
-			}{
-				{"virtual_keys", deps.logManager.GetAvailableVirtualKeys},
-				{"teams", deps.logManager.GetAvailableTeams},
-				{"customers", deps.logManager.GetAvailableCustomers},
-				{"business_units", deps.logManager.GetAvailableBusinessUnits},
-			}
-			results := make([][]KeyPair, len(lookups))
-			errs := make([]error, len(lookups))
-			var wg sync.WaitGroup
-			for index, entry := range lookups {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					results[index], errs[index] = entry.lookup(ctx, limit, "")
-				}()
-			}
-			wg.Wait()
-			for index, entry := range lookups {
-				if errs[index] != nil {
-					return nil, errs[index]
-				}
-				if entry.key == "virtual_keys" {
-					out[entry.key] = results[index]
-					continue
-				}
-				out[entry.key] = keyPairLabels(results[index])
-			}
-			return out, nil
-		},
+		// "all" is the tag; the prompt spells out that ScopedDB still applies the
+		// caller's queryscope, so it means everything they may see, not the whole
+		// deployment.
+		return "all"
 	}
 }
 

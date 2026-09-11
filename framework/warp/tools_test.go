@@ -30,12 +30,34 @@ type fakeLogReader struct {
 	rankingDimension logstore.RankingDimension
 
 	histogramBucket int64
-	statsCalled     bool
-	// Distinct-value lookups, the cheap path describe_scope takes.
+	// Canned histogram responses. Nil means "empty result, zero buckets" -
+	// enough for tests that only care about a call reaching the store, not
+	// about what came back.
+	histogramResult                   *logstore.HistogramResult
+	latencyHistogramResult            *logstore.LatencyHistogramResult
+	tokenHistogramResult              *logstore.TokenHistogramResult
+	costHistogramResult               *logstore.CostHistogramResult
+	throughputHistogramResult         *logstore.ThroughputHistogramResult
+	providerLatencyHistogramResult    *logstore.ProviderLatencyHistogramResult
+	providerTokenHistogramResult      *logstore.ProviderTokenHistogramResult
+	providerCostHistogramResult       *logstore.ProviderCostHistogramResult
+	providerThroughputHistogramResult *logstore.ProviderThroughputHistogramResult
+	statsCalled                       bool
+	// Distinct-value lookups, the cheap path describe_filter_space takes.
 	availableTeams         []KeyPair
 	availableCustomers     []KeyPair
 	availableBusinessUnits []KeyPair
 	availableVirtualKeys   []KeyPair
+	availableModels        []string
+	availableApps          []string
+	availableStopReasons   []string
+	// Each records the query string its own lookup was called with - a
+	// distinct field per method rather than one shared slice, since the four
+	// org-hierarchy lookups run concurrently and a shared field would race.
+	teamsQuerySeen         string
+	customersQuerySeen     string
+	businessUnitsQuerySeen string
+	virtualKeysQuerySeen   string
 	// statsCalls counts them, so a test can assert how many of a turn's tool
 	// calls actually reached the store rather than only that one did.
 	statsCalls int
@@ -87,23 +109,111 @@ func (f *fakeLogReader) GetStats(ctx context.Context, filters *logstore.SearchFi
 	return &logstore.SearchStats{}, nil
 }
 
+func (f *fakeLogReader) GetHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.HistogramResult, error) {
+	f.sawContext = ctx
+	f.histogramBucket = bucketSizeSeconds
+	if f.histogramResult != nil {
+		return f.histogramResult, nil
+	}
+	return &logstore.HistogramResult{}, nil
+}
+
+func (f *fakeLogReader) GetLatencyHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.LatencyHistogramResult, error) {
+	f.sawContext = ctx
+	f.histogramBucket = bucketSizeSeconds
+	if f.latencyHistogramResult != nil {
+		return f.latencyHistogramResult, nil
+	}
+	return &logstore.LatencyHistogramResult{}, nil
+}
+
+func (f *fakeLogReader) GetTokenHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.TokenHistogramResult, error) {
+	f.sawContext = ctx
+	f.histogramBucket = bucketSizeSeconds
+	if f.tokenHistogramResult != nil {
+		return f.tokenHistogramResult, nil
+	}
+	return &logstore.TokenHistogramResult{}, nil
+}
+
 func (f *fakeLogReader) GetCostHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.CostHistogramResult, error) {
 	f.sawContext = ctx
 	f.histogramBucket = bucketSizeSeconds
+	if f.costHistogramResult != nil {
+		return f.costHistogramResult, nil
+	}
 	return &logstore.CostHistogramResult{}, nil
 }
 
-func (f *fakeLogReader) GetAvailableTeams(context.Context, int, string) ([]KeyPair, error) {
+func (f *fakeLogReader) GetThroughputHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ThroughputHistogramResult, error) {
+	f.sawContext = ctx
+	f.histogramBucket = bucketSizeSeconds
+	if f.throughputHistogramResult != nil {
+		return f.throughputHistogramResult, nil
+	}
+	return &logstore.ThroughputHistogramResult{}, nil
+}
+
+func (f *fakeLogReader) GetProviderLatencyHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderLatencyHistogramResult, error) {
+	f.sawContext = ctx
+	f.histogramBucket = bucketSizeSeconds
+	if f.providerLatencyHistogramResult != nil {
+		return f.providerLatencyHistogramResult, nil
+	}
+	return &logstore.ProviderLatencyHistogramResult{}, nil
+}
+
+func (f *fakeLogReader) GetProviderTokenHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderTokenHistogramResult, error) {
+	f.sawContext = ctx
+	f.histogramBucket = bucketSizeSeconds
+	if f.providerTokenHistogramResult != nil {
+		return f.providerTokenHistogramResult, nil
+	}
+	return &logstore.ProviderTokenHistogramResult{}, nil
+}
+
+func (f *fakeLogReader) GetProviderCostHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderCostHistogramResult, error) {
+	f.sawContext = ctx
+	f.histogramBucket = bucketSizeSeconds
+	if f.providerCostHistogramResult != nil {
+		return f.providerCostHistogramResult, nil
+	}
+	return &logstore.ProviderCostHistogramResult{}, nil
+}
+
+func (f *fakeLogReader) GetProviderThroughputHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderThroughputHistogramResult, error) {
+	f.sawContext = ctx
+	f.histogramBucket = bucketSizeSeconds
+	if f.providerThroughputHistogramResult != nil {
+		return f.providerThroughputHistogramResult, nil
+	}
+	return &logstore.ProviderThroughputHistogramResult{}, nil
+}
+
+func (f *fakeLogReader) GetAvailableTeams(_ context.Context, _ int, query string) ([]KeyPair, error) {
+	f.teamsQuerySeen = query
 	return f.availableTeams, nil
 }
-func (f *fakeLogReader) GetAvailableCustomers(context.Context, int, string) ([]KeyPair, error) {
+func (f *fakeLogReader) GetAvailableCustomers(_ context.Context, _ int, query string) ([]KeyPair, error) {
+	f.customersQuerySeen = query
 	return f.availableCustomers, nil
 }
-func (f *fakeLogReader) GetAvailableBusinessUnits(context.Context, int, string) ([]KeyPair, error) {
+func (f *fakeLogReader) GetAvailableBusinessUnits(_ context.Context, _ int, query string) ([]KeyPair, error) {
+	f.businessUnitsQuerySeen = query
 	return f.availableBusinessUnits, nil
 }
-func (f *fakeLogReader) GetAvailableVirtualKeys(context.Context, int, string) ([]KeyPair, error) {
+func (f *fakeLogReader) GetAvailableVirtualKeys(_ context.Context, _ int, query string) ([]KeyPair, error) {
+	f.virtualKeysQuerySeen = query
 	return f.availableVirtualKeys, nil
+}
+func (f *fakeLogReader) GetAvailableModels(_ context.Context, _ int, _ string) ([]string, error) {
+	return f.availableModels, nil
+}
+func (f *fakeLogReader) GetAvailableApps(_ context.Context, _ int, _ string) ([]string, error) {
+	return f.availableApps, nil
+}
+func (f *fakeLogReader) GetAvailableStopReasons(_ context.Context, _ int, _ string) ([]string, error) {
+	return f.availableStopReasons, nil
 }
 
 func runTool(t *testing.T, name string, deps *ToolDeps, args map[string]any) (any, error) {
@@ -144,6 +254,46 @@ func TestWarpToolSchemasAreValid(t *testing.T) {
 		require.NotNil(t, tool.ResponsesToolFunction.Parameters)
 		require.Equal(t, "object", tool.ResponsesToolFunction.Parameters.Type)
 	}
+}
+
+// declaredTools is what Agent.Run actually calls - each set has to agree with
+// a fresh responsesTools(buildToolsFor(...)) parse, and repeated calls have to
+// return the same result, or the memoization would be observable as a bug
+// instead of the pure optimization it is meant to be.
+func TestWarpDeclaredToolsMatchesFreshParse(t *testing.T) {
+	for _, semantic := range []bool{false, true} {
+		var searcher *SemanticSearcher
+		if semantic {
+			searcher = &SemanticSearcher{}
+		}
+		fresh, err := responsesTools(buildToolsFor(searcher))
+		require.NoError(t, err)
+
+		cached, err := declaredTools(semantic)
+		require.NoError(t, err)
+		require.Equal(t, fresh, cached, "semantic=%v", semantic)
+
+		again, err := declaredTools(semantic)
+		require.NoError(t, err)
+		require.Same(t, &cached[0], &again[0], "repeated calls must reuse the same backing array, not re-parse")
+	}
+}
+
+// The prompt tells the model semantic_search_logs exists whenever a searcher
+// is configured, so the declarations sent with the request have to carry it -
+// and must not carry it otherwise.
+func TestWarpDeclaredToolsFollowSemanticAvailability(t *testing.T) {
+	declaredNames := func(semantic bool) []string {
+		tools, err := declaredTools(semantic)
+		require.NoError(t, err)
+		names := make([]string, 0, len(tools))
+		for _, tool := range tools {
+			names = append(names, *tool.Name)
+		}
+		return names
+	}
+	require.Contains(t, declaredNames(true), SemanticSearchToolName)
+	require.NotContains(t, declaredNames(false), SemanticSearchToolName)
 }
 
 // The cap protects the context window, so it has to hold regardless of what the
@@ -256,6 +406,22 @@ func TestWarpFilterRejectsInvalidTokenBounds(t *testing.T) {
 		_, err := parseFilters(map[string]any{"max_tokens": math.MaxFloat64}, now)
 		require.ErrorContains(t, err, "max_tokens is out of range")
 	})
+
+	// float64(-math.MinInt) is 2^63 - the first magnitude float64 cannot
+	// distinguish from math.MaxInt (2^63-1), since 2^63-1 is not exactly
+	// representable and rounds up to it. A `>` check against float64(math.MaxInt)
+	// would let this exact value through and then convert it with int(),
+	// which the Go spec leaves implementation-defined for a value int64
+	// cannot hold - so this must be rejected, on both bounds.
+	t.Run("min_tokens at the first float64 value int cannot represent", func(t *testing.T) {
+		_, err := parseFilters(map[string]any{"min_tokens": float64(-math.MinInt)}, now)
+		require.ErrorContains(t, err, "min_tokens is out of range")
+	})
+
+	t.Run("max_tokens at the first float64 value int cannot represent", func(t *testing.T) {
+		_, err := parseFilters(map[string]any{"max_tokens": float64(-math.MinInt)}, now)
+		require.ErrorContains(t, err, "max_tokens is out of range")
+	})
 }
 
 // describe_filter_space already surfaces stop_reasons as a discoverable
@@ -273,7 +439,7 @@ func TestWarpStopReasonsFilterIsNotRejectedAsUnknown(t *testing.T) {
 // business unit - it must not be silently widened to the caller's own traffic.
 func TestWarpProjectFilterCountsAsANamedScope(t *testing.T) {
 	filters := &logstore.SearchFilters{ProjectIDs: []string{"proj-1"}}
-	applyScope(filters, Scope{HasIdentity: true, UserID: "user-7"}, ScopeModeUnset)
+	applyScope(filters, Scope{HasIdentity: true, UserID: "user-7"}, false)
 	require.Empty(t, filters.UserIDs, "naming a project must not also narrow to the caller")
 }
 
@@ -474,7 +640,7 @@ func TestWarpMetricsComparesToPreviousPeriod(t *testing.T) {
 	// in both periods.
 	require.True(t, previous.EndTime.Before(*current.StartTime), "previous period must not share the boundary instant")
 	require.True(t, previous.EndTime.Equal(current.StartTime.Add(-time.Microsecond)), "and must stop one stored tick short of it")
-	require.Equal(t, current.StartTime.UTC().Format("2006-01-02T15:04:05Z"), trend["window"].(map[string]string)["end"], "the reported window still ends at the current start")
+	require.Equal(t, current.StartTime.UTC().Format(time.RFC3339Nano), trend["window"].(map[string]string)["end"], "the reported window still ends at the current start")
 }
 
 // A previous period with requests but no tokens or cost gives the current
@@ -588,6 +754,231 @@ func TestWarpMetricsRejectsTooManyBuckets(t *testing.T) {
 		"metrics": []any{"cost"},
 	})
 	require.NoError(t, err, "a 47h window is 47 hourly buckets and must be accepted")
+
+	// The ceiling is about buckets, so it must not reach a request that builds
+	// none: a summary over the same over-long range is one aggregate query.
+	fake := &fakeLogReader{}
+	_, err = runTool(t, "query_metrics", &ToolDeps{logManager: fake}, map[string]any{
+		"filters": map[string]any{"start_time": "2000-01-01T00:00:00Z", "end_time": "2026-08-17T00:00:00Z"},
+		"metrics": []any{"summary"},
+	})
+	require.NoError(t, err, "a summary-only request builds no buckets and must not hit the bucket ceiling")
+	require.True(t, fake.statsCalled)
+}
+
+// The store pads idle time slots with zero-valued buckets. Those are gaps, not
+// requests that took 0ms: fed into the latency series they dragged min to 0,
+// reported first/last as 0 whenever the window started or ended quiet, and
+// diluted the percentile means. Request counts are additive, so they keep the
+// gaps.
+func TestWarpLatencySummarySkipsEmptyBuckets(t *testing.T) {
+	summary := summarizeLatencyHistogram(&logstore.LatencyHistogramResult{BucketSizeSeconds: 600, Buckets: []logstore.LatencyHistogramBucket{
+		{},
+		{AvgLatency: 100, P90Latency: 200, P95Latency: 300, P99Latency: 400, AvgOverhead: 10, P90Overhead: 20, P95Overhead: 30, P99Overhead: 40, TotalRequests: 1},
+		{},
+		{AvgLatency: 300, P90Latency: 400, P95Latency: 500, P99Latency: 600, AvgOverhead: 30, P90Overhead: 40, P95Overhead: 50, P99Overhead: 60, TotalRequests: 3},
+		{},
+	}})
+	require.Equal(t, seriesSummary{Mean: 250, Min: 100, Max: 300, First: 100, Last: 300}, summary["avg_latency"])
+	require.Equal(t, seriesSummary{Mean: 300, Min: 200, Max: 400, First: 200, Last: 400}, summary["p90_latency"])
+	require.Equal(t, seriesSummary{Mean: 500, Min: 400, Max: 600, First: 400, Last: 600}, summary["p99_latency"])
+	require.Equal(t, seriesSummary{Mean: 25, Min: 10, Max: 30, First: 10, Last: 30}, summary["avg_overhead"])
+	require.Equal(t, seriesSummary{Mean: 40, Min: 30, Max: 50, First: 30, Last: 50}, summary["p95_overhead"])
+	total := 4.0
+	require.Equal(t, seriesSummary{Total: &total, Mean: 0.8, Min: 0, Max: 3, First: 0, Last: 0}, summary["total_requests"], "idle buckets are real zero-request counts")
+	require.Equal(t, 5, summary["buckets"])
+}
+
+// Same gap-padding as latency: an idle bucket's 0 tokens/sec is no traffic, not
+// a stalled stream, so it must not drag the throughput min/mean/first/last to
+// 0. Token and request counts are additive and keep every bucket.
+func TestWarpThroughputSummarySkipsEmptyBuckets(t *testing.T) {
+	summary := summarizeThroughputHistogram(&logstore.ThroughputHistogramResult{BucketSizeSeconds: 600, Buckets: []logstore.ThroughputHistogramBucket{
+		{},
+		{TokensPerSecond: 40, TotalCompletionTokens: 400, TotalRequests: 1},
+		{},
+		{TokensPerSecond: 80, TotalCompletionTokens: 800, TotalRequests: 3},
+		{},
+	}})
+	require.Equal(t, seriesSummary{Mean: 60, Min: 40, Max: 80, First: 40, Last: 80}, summary["tokens_per_second"])
+	tokens, requests := 1200.0, 4.0
+	require.Equal(t, seriesSummary{Total: &tokens, Mean: 240, Min: 0, Max: 800, First: 0, Last: 0}, summary["total_completion_tokens"], "idle buckets are real zero-token counts")
+	require.Equal(t, seriesSummary{Total: &requests, Mean: 0.8, Min: 0, Max: 3, First: 0, Last: 0}, summary["total_requests"], "idle buckets are real zero-request counts")
+	require.Equal(t, 5, summary["buckets"])
+}
+
+// The concrete failure this fixes: query_metrics's own description promised a
+// summary, but every series was returned bucket by bucket. A 12-hour latency
+// series (72 buckets at the 10-minute size that window gets, 9 numeric fields
+// each) serializes to about 18KB - over MaxToolResultBytes - so the result was
+// discarded and the model retried, on exactly the query the tool is supposed
+// to make cheap.
+func TestWarpMetricsLatencySummaryStaysUnderBudgetFor12HourWindow(t *testing.T) {
+	const bucketCount = 72 // 12h at the 10-minute bucket size that window resolves to
+	buckets := make([]logstore.LatencyHistogramBucket, bucketCount)
+	for i := range buckets {
+		buckets[i] = logstore.LatencyHistogramBucket{
+			Timestamp: time.Now(), AvgLatency: 234.567, P90Latency: 450.123, P95Latency: 600.345, P99Latency: 890.123,
+			AvgOverhead: 12.345, P90Overhead: 23.456, P95Overhead: 34.567, P99Overhead: 45.678, TotalRequests: 142,
+		}
+	}
+	fake := &fakeLogReader{latencyHistogramResult: &logstore.LatencyHistogramResult{Buckets: buckets, BucketSizeSeconds: 600}}
+
+	result, err := runTool(t, "query_metrics", &ToolDeps{logManager: fake}, map[string]any{
+		"filters": map[string]any{"start_time": "-12h"},
+		"metrics": []any{"latency"},
+	})
+	require.NoError(t, err)
+
+	// bound is what the agent loop actually applies before a result reaches the
+	// model (see boundToolResult); the fix is only real if it fits under that.
+	bound := boundToolResult(result)
+	require.Less(t, len(bound), MaxToolResultBytes)
+	require.NotContains(t, bound, "result too large", "the old bucket-by-bucket payload would have been discarded here")
+
+	latency, ok := result.(map[string]any)["latency"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, bucketCount, latency["buckets"], "the bucket count travels with the summary even though the buckets themselves do not")
+	avg, ok := latency["avg_latency"].(seriesSummary)
+	require.True(t, ok)
+	require.InDelta(t, 234.567, avg.Mean, 0.001)
+	require.Nil(t, avg.Total, "a percentile-style field must not carry a meaningless sum")
+}
+
+// requests, tokens and total_requests are additive - a total is a real number
+// for them - which the fields above are not. Small, hand-checkable series so
+// the reduction math itself is verified, not just that it runs.
+func TestWarpMetricsSummarizesRequestsHistogram(t *testing.T) {
+	fake := &fakeLogReader{histogramResult: &logstore.HistogramResult{
+		Buckets: []logstore.HistogramBucket{
+			{Count: 10, Success: 9, Error: 1},
+			{Count: 20, Success: 18, Error: 2},
+			{Count: 30, Success: 27, Error: 3},
+		},
+		BucketSizeSeconds: 600,
+	}}
+	result, err := runTool(t, "query_metrics", &ToolDeps{logManager: fake}, map[string]any{
+		"filters": map[string]any{}, "metrics": []any{"requests"},
+	})
+	require.NoError(t, err)
+
+	requests := result.(map[string]any)["requests"].(map[string]any)
+	count := requests["count"].(seriesSummary)
+	require.NotNil(t, count.Total)
+	require.InDelta(t, 60, *count.Total, 0.001)
+	require.InDelta(t, 20, count.Mean, 0.001)
+	require.InDelta(t, 10, count.Min, 0.001)
+	require.InDelta(t, 30, count.Max, 0.001)
+	require.InDelta(t, 10, count.First, 0.001)
+	require.InDelta(t, 30, count.Last, 0.001)
+}
+
+func TestWarpMetricsSummarizesTokensHistogram(t *testing.T) {
+	fake := &fakeLogReader{tokenHistogramResult: &logstore.TokenHistogramResult{
+		Buckets: []logstore.TokenHistogramBucket{
+			{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150},
+			{PromptTokens: 200, CompletionTokens: 100, TotalTokens: 300},
+		},
+	}}
+	result, err := runTool(t, "query_metrics", &ToolDeps{logManager: fake}, map[string]any{
+		"filters": map[string]any{}, "metrics": []any{"tokens"},
+	})
+	require.NoError(t, err)
+
+	tokens := result.(map[string]any)["tokens"].(map[string]any)
+	total := tokens["total_tokens"].(seriesSummary)
+	require.NotNil(t, total.Total)
+	require.InDelta(t, 450, *total.Total, 0.001)
+}
+
+// The per-bucket by_model breakdown is dropped rather than summarized - a
+// per-model series-of-series is exactly the nested detail this exists to
+// avoid - but the top-level model list, already cheap, must survive.
+func TestWarpMetricsSummarizesCostHistogramKeepsModelList(t *testing.T) {
+	fake := &fakeLogReader{costHistogramResult: &logstore.CostHistogramResult{
+		Buckets: []logstore.CostHistogramBucket{
+			{TotalCost: 1.5, ByModel: map[string]float64{"gpt-4o": 1.5}},
+			{TotalCost: 2.5, ByModel: map[string]float64{"gpt-4o": 2.5}},
+		},
+		Models: []string{"gpt-4o"},
+	}}
+	result, err := runTool(t, "query_metrics", &ToolDeps{logManager: fake}, map[string]any{
+		"filters": map[string]any{}, "metrics": []any{"cost"},
+	})
+	require.NoError(t, err)
+
+	cost := result.(map[string]any)["cost"].(map[string]any)
+	total := cost["total_cost"].(seriesSummary)
+	require.InDelta(t, 4.0, *total.Total, 0.001)
+	require.Equal(t, []string{"gpt-4o"}, cost["models"])
+	require.NotContains(t, cost, "by_model", "a per-bucket, per-model series is the exact nested detail a summary must not reintroduce")
+}
+
+func TestWarpMetricsSummarizesThroughputHistogram(t *testing.T) {
+	fake := &fakeLogReader{throughputHistogramResult: &logstore.ThroughputHistogramResult{
+		Buckets: []logstore.ThroughputHistogramBucket{
+			{TokensPerSecond: 10, TotalCompletionTokens: 100, TotalRequests: 5},
+			{TokensPerSecond: 20, TotalCompletionTokens: 200, TotalRequests: 10},
+		},
+	}}
+	result, err := runTool(t, "query_metrics", &ToolDeps{logManager: fake}, map[string]any{
+		"filters": map[string]any{}, "metrics": []any{"throughput"},
+	})
+	require.NoError(t, err)
+
+	throughput := result.(map[string]any)["throughput"].(map[string]any)
+	tps := throughput["tokens_per_second"].(seriesSummary)
+	require.Nil(t, tps.Total, "a rate is not additive across buckets")
+	require.InDelta(t, 15, tps.Mean, 0.001)
+	totalRequests := throughput["total_requests"].(seriesSummary)
+	require.NotNil(t, totalRequests.Total)
+	require.InDelta(t, 15, *totalRequests.Total, 0.001)
+}
+
+// group_by=provider stays as raw buckets rather than a summary - collapsing
+// the per-provider split away would defeat the reason to group by it - but it
+// still has to use the same coarse bucket size query_model_performance's
+// include_performance path already uses, or it inherits the same overflow
+// this whole fix exists to close.
+func TestWarpMetricsProviderGroupedStaysRawWithCoarseBuckets(t *testing.T) {
+	previous := Now
+	Now = func() time.Time { return time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC) }
+	defer func() { Now = previous }()
+
+	fake := &fakeLogReader{providerLatencyHistogramResult: &logstore.ProviderLatencyHistogramResult{
+		Buckets:   []logstore.ProviderLatencyHistogramBucket{{ByProvider: map[string]logstore.ProviderLatencyStats{"openai": {AvgLatency: 100}}}},
+		Providers: []string{"openai"},
+	}}
+	result, err := runTool(t, "query_metrics", &ToolDeps{logManager: fake}, map[string]any{
+		"filters":  map[string]any{"start_time": "-24h"},
+		"metrics":  []any{"latency"},
+		"group_by": "provider",
+	})
+	require.NoError(t, err)
+
+	latency, ok := result.(map[string]any)["latency"].(*logstore.ProviderLatencyHistogramResult)
+	require.True(t, ok, "the provider-grouped path must return the raw result, not a summary")
+	require.Equal(t, []string{"openai"}, latency.Providers)
+
+	coarse, err := coarseBucketSize(&logstore.SearchFilters{StartTime: new(Now().Add(-24 * time.Hour)), EndTime: new(Now())})
+	require.NoError(t, err)
+	require.Equal(t, coarse, fake.histogramBucket, "group_by=provider must use the coarse bucket size, not the fine one the summarized path can afford")
+}
+
+// "requests" has no GetProvider*Histogram counterpart, unlike every other
+// metric. Silently falling back to the ungrouped histogram would answer a
+// different question than "requests per provider" and look identical to a
+// real breakdown, so the combination must be rejected instead.
+func TestWarpMetricsRequestsRejectsProviderGrouping(t *testing.T) {
+	fake := &fakeLogReader{}
+	_, err := runTool(t, "query_metrics", &ToolDeps{logManager: fake}, map[string]any{
+		"filters":  map[string]any{"start_time": "-24h"},
+		"metrics":  []any{"requests"},
+		"group_by": "provider",
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `"requests"`)
+	require.Zero(t, fake.histogramBucket, "the rejected combination must not run any query")
 }
 
 // The scope lives on the context. If an executor ever swaps in a fresh context
@@ -680,6 +1071,13 @@ func TestWarpDescribeFilterSpaceDescriptionMatchesResult(t *testing.T) {
 		"virtual_keys": "virtual keys",
 		"apps":         "apps",
 		"stop_reasons": "stop reasons",
+		// The merged tool also answers "who is asking and what could they mean",
+		// so the hierarchy it enumerates is advertised the same way.
+		"teams":                "teams",
+		"customers":            "customers",
+		"business_units":       "business units",
+		"caller_is_identified": "who is asking",
+		"default_scope":        "who is asking",
 	}
 	for key := range returned {
 		phrase, known := names[key]
@@ -715,6 +1113,15 @@ func (f *fakeFilterSpaceReader) GetAvailableApps(context.Context, int, string) (
 }
 func (f *fakeFilterSpaceReader) GetAvailableStopReasons(context.Context, int, string) ([]string, error) {
 	return []string{"stop"}, nil
+}
+func (f *fakeFilterSpaceReader) GetAvailableTeams(context.Context, int, string) ([]KeyPair, error) {
+	return []KeyPair{{ID: "team-1", Name: "Team One"}}, nil
+}
+func (f *fakeFilterSpaceReader) GetAvailableCustomers(context.Context, int, string) ([]KeyPair, error) {
+	return []KeyPair{{ID: "cust-1", Name: "Customer One"}}, nil
+}
+func (f *fakeFilterSpaceReader) GetAvailableBusinessUnits(context.Context, int, string) ([]KeyPair, error) {
+	return []KeyPair{{ID: "bu-1", Name: "Unit One"}}, nil
 }
 func (f *fakeFilterSpaceReader) GetAvailableVirtualKeys(context.Context, int, string) ([]KeyPair, error) {
 	return []KeyPair{{ID: "vk-1", Name: "default"}}, nil
@@ -804,15 +1211,6 @@ func TestWarpMetricsRejectsUnsupportedProviderGrouping(t *testing.T) {
 		"filters": map[string]any{}, "metrics": []any{"cost"}, "group_by": "none",
 	})
 	require.NoError(t, err)
-}
-
-// GetProviderCostHistogram lets the provider-grouped path actually run.
-// LogReaderStub embeds a nil LogReader, so every method it does not override
-// panics - which is why the grouped branch was previously only ever asserted on
-// its rejection, never on its success.
-func (f *fakeLogReader) GetProviderCostHistogram(_ context.Context, _ *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderCostHistogramResult, error) {
-	f.histogramBucket = bucketSizeSeconds
-	return &logstore.ProviderCostHistogramResult{}, nil
 }
 
 // The declared schema is advertised to the model, not enforced on the way back:
@@ -1108,94 +1506,6 @@ func (f *fakeFilterSpaceReader) GetDimensionRankings(context.Context, *logstore.
 	return &logstore.DimensionRankingResult{}, nil
 }
 
-// describe_scope's result goes to the configured model, which is frequently a
-// third-party provider. The model needs to know *whether* the caller is
-// identified so it can decide whether to ask whose traffic is meant; the stable
-// id itself is only ever used server-side by applyScope, so sending it is
-// identity data leaving the deployment for no benefit.
-func TestWarpDescribeScopeDoesNotLeakCallerUserID(t *testing.T) {
-	tool, ok := toolByName(buildTools(), "describe_scope")
-	require.True(t, ok)
-
-	deps := &ToolDeps{logManager: &fakeLogReader{}, scope: Scope{HasIdentity: true, UserID: "u-secret-42"}}
-	result, err := tool.execute(context.Background(), deps, map[string]any{})
-	require.NoError(t, err)
-
-	out := result.(map[string]any)
-	require.Equal(t, true, out["caller_is_identified"], "the model still needs to know an identity exists")
-	require.NotContains(t, out, "caller_user_id", "the caller's stable id must not reach the model")
-
-	encoded := boundToolResult(out)
-	require.NotContains(t, encoded, "u-secret-42", "the id must not reach the model by any key")
-}
-
-// An identified caller who asks about everyone's traffic gets narrowed to their
-// own, because "named no scope" and "explicitly asked for all" were the same
-// empty filter. The two have to be distinguishable, and row-level queryscope
-// still bounds what "all" can actually return.
-func TestWarpFilterScopeAllBypassesCallerDefault(t *testing.T) {
-	caller := Scope{HasIdentity: true, UserID: "u-1"}
-	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
-
-	// Omitted: the caller default still applies, which is the safe reading of a
-	// question that did not say whose traffic it meant.
-	defaulted, err := filterArg(map[string]any{"filters": map[string]any{}}, now, caller)
-	require.NoError(t, err)
-	require.Equal(t, []string{"u-1"}, defaulted.UserIDs)
-
-	// Explicit: the caller asked about the whole deployment and must get it.
-	all, err := filterArg(map[string]any{"filters": map[string]any{"scope": "all"}}, now, caller)
-	require.NoError(t, err)
-	require.Empty(t, all.UserIDs, `scope "all" must not be narrowed back to the caller`)
-
-	// Explicit caller scope stays explicit.
-	mine, err := filterArg(map[string]any{"filters": map[string]any{"scope": "caller"}}, now, caller)
-	require.NoError(t, err)
-	require.Equal(t, []string{"u-1"}, mine.UserIDs)
-
-	// A named dimension still wins over the default, unchanged.
-	named, err := filterArg(map[string]any{"filters": map[string]any{"team_ids": []any{"t-1"}}}, now, caller)
-	require.NoError(t, err)
-	require.Empty(t, named.UserIDs)
-	require.Equal(t, []string{"t-1"}, named.TeamIDs)
-
-	// An unrecognised value is rejected rather than silently read as "caller":
-	// guessing here would answer a different question than the one asked.
-	_, err = filterArg(map[string]any{"filters": map[string]any{"scope": "everyone"}}, now, caller)
-	require.ErrorContains(t, err, "scope")
-}
-
-// Two things the explicit scope marker got wrong.
-//
-// "caller" without a caller is not a scope at all: applyScope returns early
-// without an identity, so the query runs with no traffic dimension and - where
-// no queryscope is set - covers everything. Silently answering a different
-// question than the one asked is the failure this whole mechanism exists to
-// prevent, so it is refused.
-//
-// And "all" is not the whole deployment: ScopedDB still applies the caller's
-// queryscope, so the result is only what they are permitted to see. Telling the
-// model otherwise puts a claim in the answer that the data does not support.
-func TestWarpScopeMarkerTellsTheTruthAboutCoverage(t *testing.T) {
-	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
-
-	anonymous := Scope{}
-	_, err := filterArg(map[string]any{"filters": map[string]any{"scope": "caller"}}, now, anonymous)
-	require.Error(t, err, `"caller" with no caller identity must be refused, not answered deployment-wide`)
-	require.ErrorContains(t, err, "caller")
-
-	// Omitted is still fine for an anonymous caller - that is the OSS path, and
-	// queryscope (where present) is what bounds it.
-	_, err = filterArg(map[string]any{"filters": map[string]any{}}, now, anonymous)
-	require.NoError(t, err)
-
-	// The note must not promise more than the row filter allows.
-	note := scopeNote(&logstore.SearchFilters{}, Scope{HasIdentity: true, UserID: "u-1"})
-	require.NotContains(t, note, "whole deployment",
-		"queryscope still limits the rows, so the note must not claim deployment-wide coverage")
-	require.Contains(t, note, "permitted")
-}
-
 // The caller-only note must only be used when the caller is the whole story.
 //
 // parseFilters fills each dimension independently, so a filter can carry the
@@ -1206,18 +1516,18 @@ func TestWarpScopeNoteNamesEveryDimension(t *testing.T) {
 	caller := Scope{HasIdentity: true, UserID: "u-1"}
 
 	onlyCaller := &logstore.SearchFilters{UserIDs: []string{"u-1"}}
-	require.Contains(t, scopeNote(onlyCaller, caller), "the person asking")
+	require.Equal(t, "self", scopeNote(onlyCaller, caller))
 
 	for name, filters := range map[string]*logstore.SearchFilters{
 		"with a team":          {UserIDs: []string{"u-1"}, TeamIDs: []string{"team-1"}},
 		"with a customer":      {UserIDs: []string{"u-1"}, CustomerIDs: []string{"cust-1"}},
 		"with a business unit": {UserIDs: []string{"u-1"}, BusinessUnitIDs: []string{"bu-1"}},
 		"with a virtual key":   {UserIDs: []string{"u-1"}, VirtualKeyIDs: []string{"vk-1"}},
+		"with a project":       {UserIDs: []string{"u-1"}, ProjectIDs: []string{"proj-1"}},
 	} {
-		note := scopeNote(filters, caller)
-		require.NotContains(t, note, "the person asking",
-			"%s: the caller is not the only dimension, so the note must not claim they are", name)
-		require.Contains(t, note, "dimensions named in the filters", name)
+		// Not "self": the caller is one of several dimensions here, and reporting
+		// it as caller-only tells the model the answer is narrower than the query.
+		require.Equal(t, "named", scopeNote(filters, caller), name)
 	}
 }
 
@@ -1241,54 +1551,8 @@ func TestWarpDimensionRankingShapeStaysFlat(t *testing.T) {
 	require.NoError(t, sonic.Unmarshal(encoded, &shape))
 
 	require.Contains(t, shape, "rankings")
-	require.IsType(t, []any{}, shape["rankings"], "rankings must be the list itself, not a nested object")
-	require.Contains(t, shape, "dimension", "the dimension must stay top-level")
 	require.Contains(t, shape, "scope", "the scope note rides alongside, not instead of, the result")
-}
-
-// An explicit "caller" scope must be applied, even alongside a named dimension.
-//
-// applyScope returned early whenever any dimension was named, so
-// scope:"caller" plus team_ids became a team-wide query with the caller
-// dropped. The store applies UserIDs and each dimension as separate WHERE
-// clauses, so the two intersect - which is what "my traffic in that team"
-// means, and what the mode documents. Dropping the user filter answers about
-// everyone in the team while the model reports it as the caller's own.
-func TestWarpCallerScopeIntersectsNamedDimensions(t *testing.T) {
-	caller := Scope{HasIdentity: true, UserID: "u-1"}
-	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
-
-	for name, dimension := range map[string]map[string]any{
-		"team":          {"team_ids": []any{"team-1"}},
-		"customer":      {"customer_ids": []any{"cust-1"}},
-		"business unit": {"business_unit_ids": []any{"bu-1"}},
-		"virtual key":   {"virtual_key_ids": []any{"vk-1"}},
-	} {
-		raw := map[string]any{"scope": "caller"}
-		for key, value := range dimension {
-			raw[key] = value
-		}
-		filters, err := filterArg(map[string]any{"filters": raw}, now, caller)
-		require.NoError(t, err, name)
-		require.Equal(t, []string{"u-1"}, filters.UserIDs,
-			"%s: an explicit caller scope must survive alongside the named dimension", name)
-	}
-
-	// The named dimension must still stand on its own when no scope is given -
-	// narrowing "how did team X do?" to the asker would answer a different
-	// question.
-	filters, err := filterArg(map[string]any{
-		"filters": map[string]any{"team_ids": []any{"team-1"}},
-	}, now, caller)
-	require.NoError(t, err)
-	require.Empty(t, filters.UserIDs, "an unscoped question about a team is about the team")
-
-	// And "all" still widens.
-	filters, err = filterArg(map[string]any{
-		"filters": map[string]any{"scope": "all", "team_ids": []any{"team-1"}},
-	}, now, caller)
-	require.NoError(t, err)
-	require.Empty(t, filters.UserIDs)
+	require.Contains(t, shape, "window", "the resolved window rides alongside too")
 }
 
 // The prompt tells the model to say when it is looking at a sample rather than
@@ -1375,18 +1639,50 @@ func TestWarpListingsCarryDashboardLinks(t *testing.T) {
 	require.Contains(t, counted.(map[string]any)["logs_link"], "providers=gemini")
 }
 
-// describe_scope precedes most metric questions, so it has to be cheap. It
-// used to rank three dimensions over 30 days, which on the enterprise path
-// fans each row out through JSON-array columns - tens of seconds on a large
-// log table, all to learn which names exist. The distinct lookups the Logs
-// filter bar uses answer that in milliseconds.
-func TestWarpDescribeScopeUsesDistinctLookups(t *testing.T) {
+// The warp-scope provenance block the prompt requires needs an absolute
+// window on every answer with numbers, but only query_metrics used to report
+// one - every other flow resolved a window internally (to filter rows) and
+// then threw it away, leaving the model to recompute "-7d" as an absolute
+// date from the current-time reference by hand. Every flow that resolves a
+// window now reports it back, in the same format, so there is nothing left to
+// recompute.
+func TestWarpToolsReportResolvedWindow(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	oldNow := Now
+	Now = func() time.Time { return now }
+	defer func() { Now = oldNow }()
+	wantWindow := map[string]string{"start": "2026-08-28T12:00:00Z", "end": "2026-09-04T12:00:00Z"} // "-7d"
+
+	cases := []struct {
+		tool string
+		args map[string]any
+	}{
+		{"query_logs", map[string]any{"filters": map[string]any{"start_time": "-7d"}}},
+		{"count_logs", map[string]any{"filters": map[string]any{"start_time": "-7d"}}},
+		{"query_usage_by", map[string]any{"dimension": "user", "filters": map[string]any{"start_time": "-7d"}}},
+		{"query_model_performance", map[string]any{"filters": map[string]any{"start_time": "-7d"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.tool, func(t *testing.T) {
+			result, err := runTool(t, tc.tool, &ToolDeps{logManager: &fakeLogReader{}}, tc.args)
+			require.NoError(t, err)
+			require.Equal(t, wantWindow, result.(map[string]any)["window"], "%s must report the absolute window it resolved -7d to", tc.tool)
+		})
+	}
+}
+
+// describe_filter_space precedes most metric questions, so it has to be
+// cheap. The org-hierarchy dimensions used to be ranked over 30 days, which on
+// the enterprise path fans each row out through JSON-array columns - tens of
+// seconds on a large log table, all to learn which names exist. The distinct
+// lookups the Logs filter bar uses answer that in milliseconds.
+func TestWarpDescribeFilterSpaceUsesDistinctLookups(t *testing.T) {
 	fake := &fakeLogReader{
 		availableTeams:       []KeyPair{{ID: "t1", Name: "Payments"}, {ID: "t2", Name: ""}},
 		availableCustomers:   []KeyPair{{ID: "c1", Name: "Acme"}},
 		availableVirtualKeys: []KeyPair{{ID: "vk1", Name: "prod"}},
 	}
-	result, err := runTool(t, "describe_scope", &ToolDeps{logManager: fake, scope: Scope{}}, map[string]any{})
+	result, err := runTool(t, "describe_filter_space", &ToolDeps{logManager: fake, scope: Scope{}}, map[string]any{})
 	require.NoError(t, err)
 	out := result.(map[string]any)
 	require.Equal(t, []string{"Payments (t1)", "t2"}, out["teams"])
@@ -1394,4 +1690,60 @@ func TestWarpDescribeScopeUsesDistinctLookups(t *testing.T) {
 	require.Equal(t, []string{}, out["business_units"])
 	require.Equal(t, []KeyPair{{ID: "vk1", Name: "prod"}}, out["virtual_keys"])
 	require.Empty(t, fake.rankingDimension, "no ranking query may run for a name lookup")
+}
+
+// This tool used to be two - describe_scope and describe_filter_space - that
+// each independently fetched virtual keys. Merged, there is exactly one
+// GetAvailableVirtualKeys call and one result carrying everything either half
+// used to answer on its own: caller identity, org-hierarchy names, and the
+// plain filter-value lists.
+func TestWarpDescribeFilterSpaceMergesScopeAndFilterValues(t *testing.T) {
+	fake := &fakeLogReader{
+		availableModels:      []string{"gpt-4o"},
+		availableApps:        []string{"cli"},
+		availableStopReasons: []string{"stop", "length"},
+		availableTeams:       []KeyPair{{ID: "t1", Name: "Payments"}},
+	}
+	result, err := runTool(t, "describe_filter_space", &ToolDeps{logManager: fake, scope: Scope{HasIdentity: true, UserID: "user-7"}}, map[string]any{})
+	require.NoError(t, err)
+	out := result.(map[string]any)
+
+	// The describe_scope half.
+	require.Equal(t, true, out["caller_is_identified"])
+	require.Equal(t, "the person asking", out["default_scope"])
+	require.Equal(t, "user-7", out["caller_user_id"])
+	require.Equal(t, []string{"Payments (t1)"}, out["teams"])
+
+	// The describe_filter_space half.
+	require.Equal(t, []string{"gpt-4o"}, out["models"])
+	require.Equal(t, []string{"cli"}, out["apps"])
+	require.Equal(t, []string{"stop", "length"}, out["stop_reasons"])
+}
+
+func TestWarpDescribeFilterSpaceDefaultScopeWhenUnidentified(t *testing.T) {
+	// Not runTool: it defaults an empty Scope to an identified caller as a
+	// convenience for the majority of tests, which is exactly the case this one
+	// needs to observe, so the tool is executed directly.
+	tool, ok := toolByName(buildTools(), "describe_filter_space")
+	require.True(t, ok)
+	result, err := tool.execute(context.Background(), &ToolDeps{logManager: &fakeLogReader{}, scope: Scope{}}, map[string]any{})
+	require.NoError(t, err)
+	out := result.(map[string]any)
+	require.Equal(t, false, out["caller_is_identified"])
+	require.Contains(t, out["default_scope"], "ask which team, customer or business unit is meant")
+	require.NotContains(t, out, "caller_user_id")
+}
+
+// describe_scope used to hardcode "" for the org-hierarchy lookups
+// regardless of what the model passed, which was a real gap once the tools
+// merged and search became meaningful across all of them. Every lookup - not
+// just models/apps/stop_reasons - must see the same search string now.
+func TestWarpDescribeFilterSpaceSearchReachesEveryLookup(t *testing.T) {
+	fake := &fakeLogReader{}
+	_, err := runTool(t, "describe_filter_space", &ToolDeps{logManager: fake}, map[string]any{"search": "pay"})
+	require.NoError(t, err)
+	require.Equal(t, "pay", fake.teamsQuerySeen)
+	require.Equal(t, "pay", fake.customersQuerySeen)
+	require.Equal(t, "pay", fake.businessUnitsQuerySeen)
+	require.Equal(t, "pay", fake.virtualKeysQuerySeen)
 }

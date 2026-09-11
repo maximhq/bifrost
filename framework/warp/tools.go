@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -85,6 +86,12 @@ type ToolDeps struct {
 	// named no scope of its own; it is not an access control, which queryscope
 	// already applies inside the store.
 	scope Scope
+	// governance is nil on a deployment whose config store does not implement
+	// GovernanceReader (or was never given one) - the same optional-dependency
+	// shape as semantic. describe_virtual_key is the only tool that reaches it,
+	// and reports itself unavailable rather than the caller getting a nil-
+	// pointer panic.
+	governance GovernanceReader
 }
 
 // Tool pairs a model-facing declaration with its executor.
@@ -126,9 +133,9 @@ const FilterSchema = `{
     "max_tokens": {"type": "integer", "description": "Total tokens on the request."},
     "min_cost": {"type": "number"},
     "max_cost": {"type": "number"},
-    "cache_hit_types": {"type": "array", "items": {"type": "string", "enum": ["direct", "semantic"]}, "minItems": 1, "maxItems": 50, "description": "Local-cache hit type: direct (exact match) or semantic (fuzzy match)."},
+    "cache_hit_types": {"type": "array", "items": {"type": "string", "enum": ["direct", "semantic"]}, "minItems": 1, "description": "Local-cache hit type: direct (exact match) or semantic (fuzzy match)."},
     "content_search": {"type": "string", "minLength": 1, "maxLength": 500, "description": "Substring match against request and response content. Omit the field rather than sending an empty string."},
-    "scope": {"type": "string", "enum": ["caller", "all"], "description": "Whose traffic. Omitting it defaults to the caller's own traffic only when the caller is identified; when nobody is identified there is no default and the query is bounded only by that deployment's access rules, so ask whose traffic is meant first. Use \"all\" when the question is explicitly about everyone's - it widens the question, not the permission, so results are still limited to what the caller may see."}
+    "scope": {"type": "string", "enum": ["all"], "description": "Set to \"all\" when the question is explicitly about everyone's traffic. Without it, an identified caller with no team, customer, business unit, project, user or virtual key named is scoped to their own traffic. It widens the question, not the permission: results are still limited to what the caller may see."}
   }
 }`
 
@@ -160,7 +167,7 @@ func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, e
 	}
 	if len(unknown) > 0 {
 		sort.Strings(unknown)
-		return nil, fmt.Errorf("unknown filter fields: %s. Supported fields are: start_time, end_time, providers, models, status, stop_reasons, objects, virtual_key_ids, team_ids, customer_ids, user_ids, business_unit_ids, project_ids, apps, min_latency, max_latency, min_tokens, max_tokens, min_cost, max_cost, cache_hit_types, content_search, scope", strings.Join(unknown, ", "))
+		return nil, fmt.Errorf("unknown filter fields: %s. Supported fields are: start_time, end_time, providers, models, status, stop_reasons, objects, virtual_key_ids, team_ids, customer_ids, user_ids, business_unit_ids, project_ids, apps, min_latency, max_latency, min_tokens, max_tokens, min_cost, max_cost, cache_hit_types, content_search", strings.Join(unknown, ", "))
 	}
 
 	// Presence is checked here, not left to parseTime: indexing a map gives nil
@@ -455,7 +462,17 @@ func intPtrChecked(value any, field string) (*int, error) {
 	if number != math.Trunc(number) {
 		return nil, fmt.Errorf("%s must be an integer, got %v", field, number)
 	}
-	if number < float64(math.MinInt) || number > float64(math.MaxInt) {
+	// float64(math.MaxInt) is not actually math.MaxInt: math.MaxInt (2^63-1)
+	// has more significant bits than float64's 53-bit mantissa can hold at
+	// that magnitude, so it rounds up to the nearest representable value,
+	// 2^63 - one past the largest int64 there is. A `>` check against that
+	// rounded value would let 2^63 itself through as "in range", and
+	// int(2^63) is then a conversion the Go spec leaves implementation-
+	// defined, not a clean round-trip. -float64(math.MinInt) names the same
+	// 2^63 boundary but from the side that *is* exact (math.MinInt is a
+	// power of two), so >= against it is what actually excludes the first
+	// value int cannot represent.
+	if number < float64(math.MinInt) || number >= -float64(math.MinInt) {
 		return nil, fmt.Errorf("%s is out of range: %v", field, number)
 	}
 	return intPtr(value), nil
@@ -541,22 +558,27 @@ func filterArg(args map[string]any, now time.Time, scope Scope) (*logstore.Searc
 	if parseErr != nil {
 		return nil, parseErr
 	}
-	// Read before the filters are handed on: an explicit "all" is a different
-	// question from one that simply named no scope, and only the marker can tell
-	// them apart.
-	mode, err := ParseScopeMode(raw["scope"])
+	all, err := scopeAllArg(raw)
 	if err != nil {
 		return nil, err
 	}
-	// "caller" needs a caller. Without an identity applyScope adds no user
-	// filter, so the query would run with no traffic dimension at all and - on a
-	// deployment with no queryscope - answer about everyone while claiming to be
-	// scoped to the person asking.
-	if mode == ScopeModeCaller && !scope.HasIdentity {
-		return nil, fmt.Errorf("cannot scope to the caller: this deployment has no user identity. Name a team, customer or business unit, or use scope \"all\"")
-	}
-	applyScope(filters, scope, mode)
+	applyScope(filters, scope, all)
 	return filters, nil
+}
+
+// scopeAllArg reads the filter object's scope marker. "all" is the only value;
+// anything else is rejected rather than read as the default, because guessing
+// would answer a different question than the one asked and look right doing it.
+func scopeAllArg(raw map[string]any) (bool, error) {
+	value, present := raw["scope"]
+	if !present {
+		return false, nil
+	}
+	text, ok := value.(string)
+	if !ok || strings.TrimSpace(text) != "all" {
+		return false, fmt.Errorf(`scope must be "all" when given; omit it for the default`)
+	}
+	return true, nil
 }
 
 // enumArg reads a string argument that the schema declares as an enum.
@@ -756,10 +778,11 @@ func logContent(entry *logstore.Log) string {
 // uses so Warp's numbers line up with the charts a user is looking at. It then
 // widens further if the range would still produce too many buckets.
 func bucketSize(filters *logstore.SearchFilters) (int64, error) {
+	// Every caller reaches this through filterArg -> parseFilters, which always
+	// defaults both bounds before returning - so unlike DefaultBucketSize
+	// itself (a shared helper other callers do use with a possibly-nil bound),
+	// StartTime/EndTime are never nil here.
 	bucket := logstore.DefaultBucketSize(filters.StartTime, filters.EndTime)
-	if filters.StartTime == nil || filters.EndTime == nil {
-		return bucket, nil
-	}
 	span := filters.EndTime.Sub(*filters.StartTime).Seconds()
 	if bucket > 0 && span/float64(bucket) > MaxHistogramBuckets {
 		return 0, fmt.Errorf("the requested time range produces more than %d buckets; use a shorter range", MaxHistogramBuckets)
@@ -775,9 +798,8 @@ func bucketSize(filters *logstore.SearchFilters) (int64, error) {
 // the model retries, which is how one question turned into four identical
 // queries in the logs.
 func coarseBucketSize(filters *logstore.SearchFilters) (int64, error) {
-	if filters.StartTime == nil || filters.EndTime == nil {
-		return logstore.DefaultBucketSize(filters.StartTime, filters.EndTime), nil
-	}
+	// See the same note on bucketSize above: every caller reaches this through
+	// filterArg -> parseFilters, so both bounds are always set here.
 	span := filters.EndTime.Sub(*filters.StartTime).Seconds()
 	if span <= 0 {
 		return 0, fmt.Errorf("the time range is empty")
@@ -815,10 +837,41 @@ func buildToolsFor(searcher *SemanticSearcher) []Tool {
 		queryUsageByTool(),
 		queryModelsTool(),
 		describeFilterSpaceTool(),
-		describeScopeTool(),
+		describeVirtualKeyTool(),
 		askUserToolDef(),
 	)
 	return tools
+}
+
+// declaredToolSets memoizes responsesTools(buildToolsFor(...)) - Warp's tool
+// set is fixed at compile time apart from whether semantic_search_logs is
+// offered, so every one of its JSON schemas was otherwise being re-parsed with
+// sonic on every single turn for no reason. One set per availability: sharing
+// a single set would either hide semantic_search_logs from a deployment that
+// has it or declare it to one that does not. The parsed result is read-only
+// from every call site (folded straight into an outgoing request's
+// Params.Tools), so sharing a slice across concurrent turns is safe.
+var declaredToolSets [2]struct {
+	once  sync.Once
+	tools []schemas.ResponsesTool
+	err   error
+}
+
+// declaredTools returns Warp's tool declarations for a deployment with or
+// without semantic search, parsing each set once on first use rather than on
+// every turn.
+func declaredTools(semantic bool) ([]schemas.ResponsesTool, error) {
+	index, searcher := 0, (*SemanticSearcher)(nil)
+	if semantic {
+		// buildToolsFor only checks for presence; the tool itself reads the
+		// searcher from ToolDeps at execution time.
+		index, searcher = 1, &SemanticSearcher{}
+	}
+	set := &declaredToolSets[index]
+	set.once.Do(func() {
+		set.tools, set.err = responsesTools(buildToolsFor(searcher))
+	})
+	return set.tools, set.err
 }
 
 // ChatTools converts the tool set into provider-facing declarations.

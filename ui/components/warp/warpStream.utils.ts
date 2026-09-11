@@ -226,7 +226,7 @@ const WARP_TOOL_LABELS: Record<string, { running: string; done: string }> = {
 	query_usage_by: { running: "Ranking usage", done: "Ranked usage" },
 	query_model_performance: { running: "Comparing models and providers", done: "Compared models and providers" },
 	describe_filter_space: { running: "Checking available values", done: "Checked available values" },
-	describe_scope: { running: "Validating scope", done: "Validated scope" },
+	describe_virtual_key: { running: "Checking virtual key limits", done: "Checked virtual key limits" },
 	ask_user: { running: "Asking a question", done: "Asked a question" },
 };
 
@@ -377,12 +377,32 @@ export const WARP_COMPOSER_TESTID = "warp-composer-input";
  * what stops two queued messages from being sent back to back - after the
  * first is dequeued the panel is still idle for a render, and an idle check
  * would fire again before the request had a chance to start streaming.
+ *
+ * questionPending holds it back too. A question ends streaming like any other
+ * terminal frame, so without the gate the next queued follow-up was sent as
+ * the answer to a clarification it has nothing to do with - Warp asks "which
+ * provider?" and receives "what did this cost last week".
+ *
+ * lastTurnFailed holds it back. A queued follow-up was written expecting the
+ * turn ahead of it to have actually answered - auto-firing it onto a
+ * conversation whose last turn just errored sends it against a thread that
+ * never got the context it was a follow-up to, and shows a bare "Thinking"
+ * directly under an error card with nothing explaining why Warp is trying
+ * again. The message stays visible in the queued list either way, so nothing
+ * is lost - it just is not sent until the person looks at it.
  */
-export function shouldDrainQueue(wasStreaming: boolean, isStreaming: boolean, queued: number, questionPending = false): boolean {
+export function shouldDrainQueue(
+	wasStreaming: boolean,
+	isStreaming: boolean,
+	queued: number,
+	questionPending = false,
+	lastTurnFailed = false,
+): boolean {
 	// A question also ends streaming. Draining into it made the next queued
 	// follow-up the answer to a clarification it has nothing to do with - Warp
 	// asks "which provider?" and receives "what did this cost last week".
 	if (questionPending) return false;
+	if (lastTurnFailed) return false;
 	return wasStreaming && !isStreaming && queued > 0;
 }
 

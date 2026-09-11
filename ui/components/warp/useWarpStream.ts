@@ -25,7 +25,11 @@ interface UseWarpStreamResult {
 	/** Tool calls made during the in-flight answer, in order. */
 	streamingToolCalls: WarpTurnToolCall[];
 	isStreaming: boolean;
-	/** Terminal error for the in-flight turn, if it failed. */
+	/**
+	 * Terminal error from the most recently finished turn, if it failed. Reset
+	 * to null at the start of every send, so it never outlives the turn it
+	 * belongs to.
+	 */
 	error: string | null;
 	/** Set when Warp ended its turn by asking something. */
 	question: WarpQuestion | null;
@@ -311,6 +315,13 @@ export function useWarpStream({ onTurnComplete }: UseWarpStreamOptions): UseWarp
 				// A superseded request must leave the live one alone: no clearing its
 				// controller, no flipping its streaming flag, and above all no
 				// committing an abandoned turn into a transcript that has moved on.
+				// The guard is the request id rather than a comparison against
+				// abortRef.current: discard() and the unmount effect both bump the id
+				// before aborting, precisely so every later guard on the request sees
+				// a stale id and declines to write, and a controller comparison cannot
+				// see either of those exits. A plain `if` rather than an early return,
+				// since returning from a finally block silently discards whatever the
+				// try/catch above was doing.
 				if (isCurrent()) {
 					setIsStreaming(false);
 					abortRef.current = null;
@@ -320,9 +331,31 @@ export function useWarpStream({ onTurnComplete }: UseWarpStreamOptions): UseWarp
 					// path only, for the same reason everything else here is: a
 					// superseded request must not write into state the live one owns.
 					setError(terminalError);
+					// A turn that ended by asking usually carries no narration text - Warp
+					// is told to ask about one thing and stop - so falling back to the
+					// question itself is what the server already does when it persists
+					// this same turn (see recordTurn in history.go). Without this, the
+					// turn's content stays empty: the next request's history filters it
+					// out entirely (see the messages mapping earlier in this function on
+					// the next send()), and the model sees
+					// its own answer arrive with no question in between - two bare user
+					// turns, and no way to tell what it had asked.
+					//
+					// The cast is a TypeScript control-flow quirk, not a real type gap:
+					// `posed` is reassigned inside applyEvent, a closure invoked from the
+					// try block above, and TS narrows it to `never` in this finally block
+					// as a result - asserting the declared type back is the standard,
+					// compile-time-only fix.
+					//
+					// Whitespace-only text falls back the same as empty text: a model that
+					// streamed nothing but a stray space or newline before asking has still
+					// carried no real narration, and treating that as "real" text would skip
+					// the question fallback above for the same empty-turn failure it exists
+					// to prevent.
+					const content = text.trim() !== "" ? text : ((posed as WarpQuestion | null)?.question ?? "");
 					onTurnComplete({
 						role: "assistant",
-						content: text,
+						content,
 						toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
 						error: terminalError ?? undefined,
 						partial: partial || undefined,

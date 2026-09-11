@@ -109,8 +109,13 @@ func TestSemanticSearchToolAppliesDefaultCallerScope(t *testing.T) {
 	})
 	require.NoError(t, err)
 	response := result.(map[string]any)
-	require.Contains(t, response["scope"], "person asking")
+	require.Equal(t, "self", response["scope"])
 	require.Contains(t, vectors.queries, vectorstore.Query{Field: "user_id", Operator: vectorstore.QueryOperatorEqual, Value: userID})
+	// The provenance footer the prompt requires needs an absolute window on
+	// every result, not just query_metrics's - otherwise the model has to
+	// recompute one from the current-time reference, which is exactly the
+	// arithmetic the prompt separately tells it not to do.
+	require.NotEmpty(t, response["window"])
 }
 
 // A filter naming two providers was dropped entirely, because the scalar helper

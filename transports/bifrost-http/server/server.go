@@ -2474,13 +2474,17 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		s.Config.NotificationPublisher = s.NotificationService.Publish
 		s.NotificationService.Start(s.Ctx)
 	}
-	// Rebuilt unconditionally rather than behind a nil check: Bootstrap constructs
-	// Warp before plugins load, so the instance it made has no log manager and
-	// would never register the chat route. This is the first point where the
-	// logging plugin is known, so this is where the real service is made.
+	// This is the first point in Bootstrap where the logging plugin - and so
+	// the log manager Warp's chat route needs - is known, which is why Warp is
+	// built here rather than earlier.
 	//
-	// A nil log manager here is a supported deployment (logging disabled), not a
-	// failure - Warp then serves only its config routes.
+	// A nil log manager here is a supported deployment (logging disabled), not
+	// a failure - Warp then serves only its config routes.
+	//
+	// The nil check stays even though nothing builds a prior instance today:
+	// RegisterAPIRoutes has exactly one caller now, but if that ever changes -
+	// a config or plugin reload re-running it - this must not leak the
+	// previous instance's subscriptions and worker pool.
 	if s.WarpHandler != nil {
 		s.WarpHandler.Shutdown()
 	}
@@ -2785,10 +2789,16 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	s.NotificationService = handlers.NewNotificationService(s.Config.ConfigStore, s.WebSocketHandler)
 	s.Config.NotificationPublisher = s.NotificationService.Publish
 	s.NotificationService.Start(s.Ctx)
-	// Bootstrap runs before plugins load and before the log store is opened, so
-	// Warp gets its config routes here and its chat and history routes later in
-	// RegisterAPIRoutes once both are known.
-	s.WarpHandler = handlers.NewWarpHandler(s.Config.ConfigStore, nil, s.Client, nil, s.Config.VectorStore, nil, s.Config.ModelCatalog, logger)
+	// Warp is built once, in RegisterAPIRoutes below (called from this same
+	// Bootstrap, before it returns): that is the first point the logging
+	// plugin - and so the log manager Warp's chat route needs - is known.
+	// Building one here too used to seem necessary so the config routes would
+	// exist early, but RegisterRoutes is only ever called once, later, on
+	// whichever handler is current then - so a handler built here never
+	// serves a request or gets its routes registered before being replaced.
+	// It still cost a full warp.NewService (its own dedicated Bifrost
+	// instance and worker pool) that was immediately shut down again a few
+	// lines into RegisterAPIRoutes, on every boot.
 	// Initializing plugin loader. Allowlist entries are validated now - a malformed entry
 	// fails server startup rather than silently no-oping, since this is security-relaxing
 	// config for SSRF protection on custom plugin downloads.

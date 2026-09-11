@@ -83,6 +83,7 @@ export default function WarpPanel() {
 		streamingText,
 		streamingToolCalls,
 		isStreaming,
+		error,
 		question,
 		clearQuestion,
 		send,
@@ -108,21 +109,24 @@ export default function WarpPanel() {
 
 	// The index chip. Polled faster while a backfill is running, because that is
 	// the only time the number moves; otherwise a slow heartbeat is enough to
-	// notice a vector store going away.
+	// notice a vector store going away. One subscription with a state-driven
+	// interval, rather than two overlapping subscriptions relying on RTK Query
+	// coalescing them down to the faster of the two - same effective polling,
+	// without a reader having to know that coalescing rule to see why.
+	const [indexPollMs, setIndexPollMs] = useState(30000);
 	const { data: indexStatus, isError: isIndexStatusError } = useGetWarpLogIndexStatusQuery(undefined, {
 		skip: !isConfigured,
-		pollingInterval: 30000,
+		pollingInterval: indexPollMs,
 	});
-	const { data: liveIndexStatus, isError: isLiveIndexStatusError } = useGetWarpLogIndexStatusQuery(undefined, {
-		skip: !isConfigured || indexStatus?.state !== "indexing",
-		pollingInterval: 5000,
-	});
-	const indexChip = liveIndexStatus ?? indexStatus;
+	useEffect(() => {
+		setIndexPollMs(indexStatus?.state === "indexing" ? 5000 : 30000);
+	}, [indexStatus?.state]);
+	const indexChip = indexStatus;
 	// The chip is the only place that says whether semantic search is usable, so
 	// a failed status request must not simply remove it - a silently absent chip
 	// reads as "everything is fine". The settings view does not cover this
 	// either; it polls the backfill status through a different query.
-	const indexStatusUnavailable = !indexChip && (isIndexStatusError || isLiveIndexStatusError);
+	const indexStatusUnavailable = !indexChip && isIndexStatusError;
 
 	// Messages typed while an answer is streaming. Sent one per finished turn,
 	// in order, so a follow-up asked mid-answer is neither dropped nor fired
@@ -160,7 +164,7 @@ export default function WarpPanel() {
 		// still pending when the load finishes and the queue drains then instead of
 		// being swallowed.
 		if (isOpeningStored) return;
-		const drain = shouldDrainQueue(wasStreaming.current, isStreaming, queue.length, question !== null);
+		const drain = shouldDrainQueue(wasStreaming.current, isStreaming, queue.length, question !== null, !!error);
 		wasStreaming.current = isStreaming;
 		if (!drain) return;
 		const [next, ...rest] = queue;
@@ -168,9 +172,9 @@ export default function WarpPanel() {
 		askRef.current?.(next);
 		// question is a dependency because it gates the drain: the queue has to be
 		// re-examined when a clarification is answered, not only when a turn ends.
-		// isOpeningStored is a dependency so the queue is re-examined once the load
-		// settles, either way.
-	}, [isStreaming, queue, question, isOpeningStored]);
+		// error gates it for the same reason. isOpeningStored is a dependency so the
+		// queue is re-examined once the load settles, either way.
+	}, [isStreaming, queue, question, error, isOpeningStored]);
 
 	if (!warp) return null;
 
@@ -236,6 +240,18 @@ export default function WarpPanel() {
 		void send(history, text);
 	};
 	askRef.current = ask;
+
+	// shouldDrainQueue deliberately refuses to auto-fire a queued follow-up
+	// right behind a failed turn - see its own comment - which otherwise leaves
+	// a queue that fails once stuck forever, since nothing else sends it. This
+	// is the explicit way out: the same "send the next one" step the effect
+	// above takes automatically, offered as a button once an error is showing.
+	const resumeQueue = () => {
+		const [next, ...rest] = queue;
+		if (next === undefined) return;
+		setQueue(rest);
+		askRef.current?.(next);
+	};
 
 	return (
 		// No chrome of its own: WarpDock supplies the surface, so the panel is just
@@ -416,27 +432,39 @@ export default function WarpPanel() {
 								)}
 								{isStreaming && <WarpStreamingMessage text={streamingText} toolCalls={streamingToolCalls} isStreaming={isStreaming} />}
 								{queue.length > 0 && (
-									<ul className="space-y-2" data-testid="warp-queued">
-										{queue.map((text, index) => (
-											<li
-												key={`${index}-${text}`}
-												className="flex items-start gap-2 rounded-md border border-dashed px-3 py-2 text-sm"
-												data-testid="warp-queued-item"
-											>
-												<span className="text-muted-foreground min-w-0 flex-1 whitespace-pre-wrap">{text}</span>
-												<span className="text-muted-foreground shrink-0 text-[10px] tracking-wide uppercase">Queued</span>
-												<button
-													type="button"
-													aria-label="Remove queued message"
-													data-testid="warp-queued-remove"
-													onClick={() => setQueue((current) => current.filter((_, position) => position !== index))}
-													className="text-muted-foreground hover:text-foreground shrink-0 cursor-pointer"
+									<div className="space-y-2">
+										{/* A failed turn stops the queue from auto-draining (see
+										    shouldDrainQueue) so a follow-up cannot fire straight into
+										    another broken request. Without this, that queue has no
+										    other way to move again - each item's own control only
+										    removes it. */}
+										{error && (
+											<Button type="button" size="sm" variant="outline" data-testid="warp-resume-queue" onClick={resumeQueue}>
+												Resume queued messages
+											</Button>
+										)}
+										<ul className="space-y-2" data-testid="warp-queued">
+											{queue.map((text, index) => (
+												<li
+													key={`${index}-${text}`}
+													className="flex items-start gap-2 rounded-md border border-dashed px-3 py-2 text-sm"
+													data-testid="warp-queued-item"
 												>
-													<X className="size-3" />
-												</button>
-											</li>
-										))}
-									</ul>
+													<span className="text-muted-foreground min-w-0 flex-1 whitespace-pre-wrap">{text}</span>
+													<span className="text-muted-foreground shrink-0 text-[10px] tracking-wide uppercase">Queued</span>
+													<button
+														type="button"
+														aria-label="Remove queued message"
+														data-testid="warp-queued-remove"
+														onClick={() => setQueue((current) => current.filter((_, position) => position !== index))}
+														className="text-muted-foreground hover:text-foreground shrink-0 cursor-pointer"
+													>
+														<X className="size-3" />
+													</button>
+												</li>
+											))}
+										</ul>
+									</div>
 								)}
 							</div>
 						</ScrollArea>

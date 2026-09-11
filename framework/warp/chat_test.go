@@ -79,10 +79,25 @@ func TestWarpRunTurnBufferedAndStreamedAgree(t *testing.T) {
 		return true
 	})
 
-	require.Equal(t, fromBuffer, fromStream)
-	require.Equal(t, fromStream, replay.result(), "the sink must see every event the fold saw")
+	// DurationMs is a real wall-clock measurement of the same near-instant
+	// fake call, taken independently on each side - it was never going to
+	// match to the millisecond, and comparing it is not what this test is
+	// for. Everything else about the two transports' output must agree
+	// exactly.
+	require.Equal(t, normalizeToolCallDurations(fromBuffer), normalizeToolCallDurations(fromStream))
+	require.Equal(t, normalizeToolCallDurations(fromStream), normalizeToolCallDurations(replay.result()), "the sink must see every event the fold saw")
 	require.Equal(t, "42 requests.", fromBuffer.Answer)
 	require.Len(t, fromBuffer.ToolCalls, 1)
+}
+
+func normalizeToolCallDurations(response ChatResponse) ChatResponse {
+	normalized := make([]ChatToolCall, len(response.ToolCalls))
+	for i, call := range response.ToolCalls {
+		call.DurationMs = 0
+		normalized[i] = call
+	}
+	response.ToolCalls = normalized
+	return response
 }
 
 // A sink that refuses an event is a client that went away. The loop must stop
