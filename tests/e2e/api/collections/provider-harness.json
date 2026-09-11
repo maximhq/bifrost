@@ -146989,6 +146989,238 @@
           ]
         }
       ]
+    },
+    {
+      "name": "80. Anthropic-ingress replay to Bedrock Mantle Responses: input_text tags + assistant status (#7074 / PR #7075)",
+      "description": "Regression coverage for PR #7075 (fixes #7074). Claude Code talks to Bifrost through the Anthropic Messages drop-in (/anthropic/v1/messages). On turn 2 it replays the prior assistant turn, and Bifrost converts that history into Responses input items for an OpenAI-family model on Bedrock Mantle. The Bedrock-grouped ingress converter tagged user/system text blocks as output_text (only input_text is valid on an input item) and omitted the required status on replayed assistant message items, so Mantle's strict OpenAI-compatible validator rejected the whole request with hundreds of errors (\"Input should be 'input_text'\", \"status Field required\"). Turn 1 always worked, which is why the single-turn matrix rows never caught it. The fix tags input blocks input_text and stamps status: completed on every replayed assistant message item (text, string content, image, document, container_upload). The same PR also populates Bedrock inferenceConfig.maxTokens from the model's known output capacity when the caller sends no max_tokens; the raw_request case pins that on Converse. Model choice: openai.gpt-5.6-sol is the OpenAI-family model this collection already runs on Mantle's Responses path (folder 33); openai.gpt-oss-120b is the issue's exact model on the bedrock key (Mantle-routed), and a 403 on it skips via the infra guard.",
+      "item": [
+        {
+          "name": "bedrock_mantle/openai.gpt-5.6-sol /anthropic/v1/messages turn-2 replays assistant history without input_text/status 400 - #7074",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }\n// 400 is deliberately NOT skipped: it is the #7074 failure signature (Mantle's Responses validator rejecting replayed history).",
+                  "pm.test('bedrock_mantle gpt-5.6-sol non-streaming: replayed assistant history is accepted - #7074', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'pre-fix input_text/output_text mistag resurfaced').to.not.include(\"Input should be 'input_text'\");",
+                  "  pm.expect(body, 'pre-fix Responses validation storm resurfaced').to.not.include('validation errors for ResponsesRequest');",
+                  "  pm.expect(body, 'pre-fix missing assistant status resurfaced').to.not.include('status\\\\n    Field required');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body.slice(0, 600)).to.be.below(400);",
+                  "  var json = pm.response.json() || {};",
+                  "  pm.expect(json.content, 'expected an Anthropic content array').to.be.an('array');",
+                  "  pm.expect(json.content.length, 'expected at least one content block').to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-5.6-sol\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"Hello! How can I help you today?\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word OK.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "bedrock_mantle/openai.gpt-5.6-sol /anthropic/v1/messages streaming turn-2 replays assistant history without input_text/status 400 - #7074",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }\n// 400 is deliberately NOT skipped: it is the #7074 failure signature (Mantle's Responses validator rejecting replayed history).",
+                  "pm.test('bedrock_mantle gpt-5.6-sol streaming: replayed assistant history is accepted - #7074', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'pre-fix input_text/output_text mistag resurfaced').to.not.include(\"Input should be 'input_text'\");",
+                  "  pm.expect(body, 'pre-fix Responses validation storm resurfaced').to.not.include('validation errors for ResponsesRequest');",
+                  "  pm.expect(body, 'pre-fix missing assistant status resurfaced').to.not.include('status\\\\n    Field required');",
+                  "  pm.expect(pm.response.code, 'stream request failed: ' + body.slice(0, 600)).to.equal(200);",
+                  "  pm.expect(body, 'expected Anthropic SSE frames').to.include('event:');",
+                  "  pm.expect(body, 'expected the stream to reach message_stop').to.include('message_stop');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-5.6-sol\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"Hello! How can I help you today?\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word OK.\"\n    }\n  ],\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "bedrock/openai.gpt-oss-120b /anthropic/v1/messages turn-2 replays assistant history (issue model, bedrock key routed to Mantle) - #7074",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }\n// 400 is deliberately NOT skipped: it is the #7074 failure signature (Mantle's Responses validator rejecting replayed history).",
+                  "pm.test('bedrock gpt-oss-120b non-streaming: replayed assistant history is accepted - #7074', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'pre-fix input_text/output_text mistag resurfaced').to.not.include(\"Input should be 'input_text'\");",
+                  "  pm.expect(body, 'pre-fix Responses validation storm resurfaced').to.not.include('validation errors for ResponsesRequest');",
+                  "  pm.expect(body, 'pre-fix missing assistant status resurfaced').to.not.include('status\\\\n    Field required');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body.slice(0, 600)).to.be.below(400);",
+                  "  var json = pm.response.json() || {};",
+                  "  pm.expect(json.content, 'expected an Anthropic content array').to.be.an('array');",
+                  "  pm.expect(json.content.length, 'expected at least one content block').to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/openai.gpt-oss-120b\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"Hello! How can I help you today?\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word OK.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "bedrock/us.amazon.nova-lite-v1:0 /v1/chat/completions without max_tokens populates inferenceConfig.maxTokens (raw_request) - #7074",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('bedrock nova-lite chat without max_tokens: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var ef = body.extra_fields || {};",
+                  "var rr = ef.raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('bedrock nova-lite chat without max_tokens: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var ic = rr.inferenceConfig || {};",
+                  "pm.test('bedrock nova-lite chat without max_tokens: inferenceConfig.maxTokens defaulted from model capacity - #7074', function () {",
+                  "  pm.expect(ic.maxTokens, 'inferenceConfig: ' + JSON.stringify(ic)).to.be.a('number');",
+                  "  pm.expect(ic.maxTokens, 'maxTokens must be populated when the caller omits max_tokens').to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/us.amazon.nova-lite-v1:0\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word OK.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

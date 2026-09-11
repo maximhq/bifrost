@@ -520,13 +520,20 @@ func bedrockAliasToolUseID(id string) string {
 
 // convertParameters handles parameter conversion
 func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest, bedrockReq *BedrockConverseRequest, caps schemas.ModelCaps) error {
-	// Parameters are optional - if not provided, just skip conversion
 	if bifrostReq.Params == nil {
+		if maxTokens := providerUtils.GetMaxOutputTokensOrDefault(caps.Provider(), caps.Model(), 0); maxTokens > 0 {
+			bedrockReq.InferenceConfig = &BedrockInferenceConfig{MaxTokens: schemas.Ptr(maxTokens)}
+		}
 		return nil
 	}
 
 	// Convert inference config
 	if inferenceConfig := convertInferenceConfig(bifrostReq.Params, caps); inferenceConfig != nil {
+		if inferenceConfig.MaxTokens == nil {
+			if maxTokens := providerUtils.GetMaxOutputTokensOrDefault(caps.Provider(), caps.Model(), 0); maxTokens > 0 {
+				inferenceConfig.MaxTokens = schemas.Ptr(maxTokens)
+			}
+		}
 		inferenceConfig.MaxTokens = clampMaxTokens(ctx, inferenceConfig.MaxTokens, caps)
 		bedrockReq.InferenceConfig = inferenceConfig
 	}
