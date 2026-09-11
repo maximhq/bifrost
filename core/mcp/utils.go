@@ -387,6 +387,42 @@ func isAuthFailureErrorText(errStr string) bool {
 	return false
 }
 
+// deadSessionErrorSubstrings is what "the upstream has abandoned this MCP
+// session" looks like by the time it reaches a CallTool error. Like
+// isAuthFailureErrorText above, substring matching on flattened text is the
+// only option: mcp-go collapses HTTP status codes and its own sentinels into a
+// plain error string before any call site sees them.
+//
+// The spec's signal is HTTP 404 on a request carrying Mcp-Session-Id, which
+// mcp-go turns into ErrSessionTerminated ("session terminated (404). need to
+// re-initialize"), so the first two entries cover every compliant server. The
+// rest are wordings real servers use when they answer a dead session with
+// something other than a 404.
+//
+// Deliberately narrow. Generic transport failures (connection refused, broken
+// pipe, 5xx) are left out even though a reconnect would sometimes help: they
+// are already retried by ToolCallRetryConfig, the periodic connection checker
+// repairs the ones a reconnect can fix, and a false positive here costs a
+// needless session swap plus one extra attempt at the tool.
+var deadSessionErrorSubstrings = []string{
+	"session terminated", "need to re-initialize",
+	"expect initialize request", "session not found",
+	"invalid session", "unknown session", "no transport found for session",
+}
+
+// isDeadSessionErrorText reports whether a raw upstream tool-call error says
+// the MCP session behind the connection is gone. Retrying over the same
+// connection cannot fix that; only a fresh one can.
+func isDeadSessionErrorText(errStr string) bool {
+	lower := strings.ToLower(errStr)
+	for _, needle := range deadSessionErrorSubstrings {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
+}
+
 // ExecuteWithRetry executes a function with exponential backoff retry logic.
 // Only retries on transient errors; permanent errors (auth, config) fail immediately.
 // It returns the error from the last attempt if all retries fail.
