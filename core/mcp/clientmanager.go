@@ -457,6 +457,187 @@ func (m *MCPManager) ReconnectClient(id string) (retErr error) {
 	return nil
 }
 
+// writeBackDiscoveredTools installs a freshly discovered tool set on clientID
+// and fires the tools-change callback when the set genuinely changed. Every
+// discovery path that is not itself a connect (the periodic checker, and
+// RefreshClientTools) writes through here, so they share one staleness rule:
+// connGeneration is the value captured before discovery started, and a
+// mismatch means a reconnect swapped in a different connection meanwhile —
+// these results describe a connection that is no longer installed, so they are
+// dropped rather than clobbering the fresh one.
+//
+// Deliberately does not touch State: the connection checker is the sole
+// authority over Healthy/Unstable/NeedsReauth (see ClientConnectionChecker's
+// doc comment), and a write-back is not a state transition.
+//
+// Returns whether the write actually landed.
+func (m *MCPManager) writeBackDiscoveredTools(clientID string, connGeneration uint64, newTools map[string]schemas.ChatTool, newMapping map[string]string) bool {
+	// Precompute serialized JSON before the lock (see precomputeToolSerialization),
+	// so per-request logging/marshal reuse the bytes and the manager mutex isn't
+	// held across N marshals.
+	precomputeToolSerialization(newTools)
+
+	m.mu.Lock()
+	clientState, exists := m.clientMap[clientID]
+	if !exists {
+		m.mu.Unlock()
+		return false
+	}
+	if clientState.ConnGeneration != connGeneration {
+		m.mu.Unlock()
+		m.logger.Debug("%s Skipping tool write-back for %s: connection was replaced during discovery", MCPLogPrefix, clientID)
+		return false
+	}
+	clientState.ToolMap = newTools
+	clientState.ToolNameMapping = newMapping
+	fire := m.toolsChangedCallback(clientState, clientID, newTools, newMapping)
+	m.mu.Unlock()
+
+	// Fired outside the lock — see toolsChangeCallback's field doc. This is
+	// what persists the new set to the DB and re-syncs the hosted /mcp
+	// surface. Gated on genuine content change: the periodic checker reaches
+	// here on every tick, and most ticks rediscover identical tools.
+	if fire != nil {
+		fire()
+	}
+	return true
+}
+
+// installedToolCount reports how many tools clientID is currently serving.
+// Used when a discovery is dropped as stale: the caller's own result describes
+// a tool set that was never installed, so the live map is the honest answer.
+func (m *MCPManager) installedToolCount(clientID string) int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if clientState, ok := m.clientMap[clientID]; ok {
+		return len(clientState.ToolMap)
+	}
+	return 0
+}
+
+// RefreshClientTools re-discovers clientID's tools from its upstream server
+// now, instead of waiting for the connection checker's next steady-state tick
+// (ResolveToolSyncInterval — 10 minutes by default). It is the operator's
+// answer to "I just changed this MCP server, pick it up", and the only such
+// mechanism that applies to per-call clients: ReconnectClient rejects those
+// outright, since they hold no persistent connection to re-establish.
+//
+// Three shapes, mirroring the connection checker's own branches:
+//   - Live connection (sticky client): tools/list over it.
+//   - Per-call client: an ephemeral connect-discover-close cycle via
+//     performAdminToolDiscovery.
+//   - Sticky client whose connection is currently down: a reconnect, which
+//     discovers as part of the dial.
+//
+// Returns the number of tools the client is serving after the refresh.
+//
+// Does not change the client's State — that stays the connection checker's
+// sole authority, so a failed refresh reports an error to the caller without
+// marking the client Unstable behind their back. The reconnect branch is the
+// exception, and only because connectToMCPClient owns that transition anyway.
+func (m *MCPManager) RefreshClientTools(ctx context.Context, clientID string) (int, error) {
+	if ctx == nil {
+		ctx = m.ctx
+	}
+
+	m.mu.RLock()
+	clientState, exists := m.clientMap[clientID]
+	var (
+		conn           *client.Client
+		config         *schemas.MCPClientConfig
+		connGeneration uint64
+		state          schemas.MCPConnectionState
+	)
+	if exists && clientState != nil {
+		conn = clientState.Conn
+		config = clientState.ExecutionConfig
+		connGeneration = clientState.ConnGeneration
+		state = clientState.State
+	}
+	m.mu.RUnlock()
+
+	if !exists {
+		return 0, fmt.Errorf("mcp client %s: %w", clientID, schemas.ErrMCPClientNotFound)
+	}
+	if config == nil {
+		return 0, fmt.Errorf("mcp client %s has no execution config to discover with", clientID)
+	}
+	switch state {
+	case schemas.MCPConnectionStateDisabled:
+		// A disabled client has no workers and no connection; discovering for
+		// it would install tools nothing can execute.
+		return 0, fmt.Errorf("cannot refresh tools for a disabled MCP client, enable the client first: %w", schemas.ErrMCPRefreshNotApplicable)
+	case schemas.MCPConnectionStateNeedsReauth:
+		// The credential is confirmed dead, so every discovery shape below
+		// would fail on auth. Say so plainly instead of surfacing a raw 401.
+		return 0, fmt.Errorf("mcp client %s needs reauthorization before its tools can be refreshed: %w", config.Name, schemas.ErrMCPRefreshNotApplicable)
+	}
+	// A client still awaiting its one-time admin flow must not be refreshed,
+	// and the reason is stronger than "it would fail": for token_exchange it
+	// would SUCCEED. That auth type resolves its own client-credentials token,
+	// so discovery needs no admin at all — and because awaitsAdminVerification
+	// reads DiscoveredTools == nil as the pending signal for it, a successful
+	// refresh would persist tools through the tools-change callback and quietly
+	// promote the client out of pending_verification for good, taking the
+	// Verify CTA with it. Checked against the config rather than State alone
+	// for the same reason EnableClient does: State is the thing automatic
+	// paths keep losing, the config predicate is the durable truth.
+	if awaitsAdminVerification(config) || state == schemas.MCPConnectionStatePendingVerification {
+		return 0, fmt.Errorf("mcp client %s is awaiting admin verification, complete that instead of refreshing its tools: %w", config.Name, schemas.ErrMCPRefreshNotApplicable)
+	}
+
+	switch {
+	case conn != nil:
+		// Marked as a check for the same reason the periodic checker marks its
+		// own list_tools (see ClientConnectionChecker.markAsCheck): this is
+		// Bifrost's own maintenance traffic, not a caller's inference request,
+		// and plugins gate on that distinction.
+		attemptCtx, cancel := context.WithTimeout(ctx, ConnectionCheckTimeout)
+		defer cancel()
+		bfCtx := schemas.NewBifrostContext(attemptCtx, schemas.NoDeadline)
+		bfCtx.SetValue(schemas.BifrostContextKeyMCPHealthCheckRequest, true)
+
+		tools, mapping, err := m.runListToolsWithHooks(bfCtx, conn, config.Name)
+		if err != nil {
+			return 0, fmt.Errorf("failed to list tools for MCP client %s: %w", config.Name, err)
+		}
+		if !m.writeBackDiscoveredTools(clientID, connGeneration, tools, mapping) {
+			// Dropped as stale: a reconnect swapped the connection while this
+			// list was in flight, so these tools were never installed and the
+			// client is still serving whatever that reconnect discovered.
+			return m.installedToolCount(clientID), nil
+		}
+		return len(tools), nil
+
+	case m.credStore.RequiresPerCallConnection(config):
+		// Same ephemeral cycle the checker's per-call branch runs; it dials,
+		// lists, and closes, so there is no connection to keep or reuse.
+		attemptCtx, cancel := context.WithTimeout(ctx, ConnectionCheckTimeout)
+		defer cancel()
+
+		tools, mapping, err := m.performAdminToolDiscovery(attemptCtx, config)
+		if err != nil {
+			return 0, fmt.Errorf("failed to discover tools for MCP client %s: %w", config.Name, err)
+		}
+		if !m.writeBackDiscoveredTools(clientID, connGeneration, tools, mapping) {
+			// Same staleness guard as the live branch above.
+			return m.installedToolCount(clientID), nil
+		}
+		return len(tools), nil
+
+	default:
+		// Sticky client with no live connection (still Unstable from an
+		// earlier failed connect, say). Discovery is part of the dial, so a
+		// successful reconnect has already installed the fresh tools —
+		// including firing the tools-change callback — by the time this
+		// returns.
+		if err := m.ReconnectClient(clientID); err != nil {
+			return 0, fmt.Errorf("failed to refresh tools for MCP client %s: %w", config.Name, err)
+		}
+		return m.installedToolCount(clientID), nil
+	}
+}
+
 // AddClient adds a new MCP client to the manager.
 // It validates the client configuration and establishes a connection.
 // If connection fails, the client entry is retained in Disconnected state and

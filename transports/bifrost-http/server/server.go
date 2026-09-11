@@ -165,6 +165,10 @@ type ServerCallbacks interface {
 	// together.
 	RequiresPerCallConnection(config *schemas.MCPClientConfig) bool
 	ReconnectMCPClient(ctx context.Context, id string) error
+	// RefreshMCPClientTools re-discovers a client's tools from its upstream
+	// server on demand and reports how many it serves afterwards. Unlike
+	// ReconnectMCPClient it applies to per-call clients too.
+	RefreshMCPClientTools(ctx context.Context, id string) (int, error)
 	// CloseAndMarkNeedsReauth closes a shared client's live upstream
 	// connection and flips it to needs_reauth, without attempting a new
 	// dial. Used after OAuth credential rotation.
@@ -367,6 +371,19 @@ func (s *BifrostHTTPServer) ReconnectMCPClient(ctx context.Context, id string) e
 		logger.Warn("failed to sync MCP servers after adding client: %v", err)
 	}
 	return nil
+}
+
+// RefreshMCPClientTools re-discovers an MCP client's tools from its upstream
+// server on demand, so an operator who has just changed that server does not
+// have to wait out the connection checker's tool-sync interval (10 minutes by
+// default) or restart the gateway. Applies to every client type, including
+// the per-call ones ReconnectMCPClient rejects.
+//
+// The discovery itself persists the new tool set and re-syncs the hosted
+// /mcp surface through the tools-change callback, exactly like every other
+// discovery path, so there is nothing to sync here.
+func (s *BifrostHTTPServer) RefreshMCPClientTools(ctx context.Context, id string) (int, error) {
+	return s.Client.RefreshMCPClientTools(ctx, id)
 }
 
 // UpdateMCPClient updates an MCP client in the in-memory store
