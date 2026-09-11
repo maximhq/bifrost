@@ -347,6 +347,11 @@ bifrost:
   #       # use_anthropic_endpoints: false  # deepseek/fireworks/vllm/sgl keys only: route chat completions
   #                                         # and responses through Anthropic-compatible endpoints (also
   #                                         # settable per-alias alongside use_deployments_endpoint)
+  #       # use_openai_endpoints: false     # bedrock keys only: route chat completions and responses
+  #                                         # through Bedrock's OpenAI-compatible endpoints (/openai/v1)
+  #                                         # instead of Converse, for models that serve them. Guardrails,
+  #                                         # performanceConfig and requestMetadata apply only on Converse
+  #                                         # (also settable per-alias)
   #     - name: "secondary-key"
   #       value: "env.OPENAI_KEY"     # Reference to environment variable
   #       weight: 1
