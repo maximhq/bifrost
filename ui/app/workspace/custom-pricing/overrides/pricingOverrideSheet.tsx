@@ -19,7 +19,6 @@ import {
 	CreatePricingOverrideRequest,
 	PricingOverride,
 	PricingOverrideMatchType,
-	PricingOverridePatch,
 	PricingOverrideScopeKind,
 } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
@@ -41,37 +40,18 @@ export {
 	REQUEST_TYPE_GROUPS,
 	REQUEST_TYPE_OPTIONS,
 } from "./pricingFields";
-export type { FieldErrors, PricingFieldKey } from "./pricingFields";
-import { fieldLabelByKey, patchKeys, PRICING_FIELDS, REQUEST_TYPE_GROUPS, REQUEST_TYPE_OPTIONS } from "./pricingFields";
-import type { FieldErrors, PricingFieldKey } from "./pricingFields";
-
-type ScopeRoot = "global" | "virtual_key" | "user";
-
-export interface FormState {
-	name: string;
-	scopeRoot: ScopeRoot;
-	userID: string;
-	virtualKeyID: string;
-	providerID: string;
-	providerKeyID: string;
-	matchType: PricingOverrideMatchType;
-	pattern: string;
-	requestTypes: RequestType[];
-	pricingValues: Partial<Record<PricingFieldKey, string>>;
-}
-
-export const defaultFormState: FormState = {
-	name: "",
-	scopeRoot: "global",
-	userID: "",
-	virtualKeyID: "",
-	providerID: "",
-	providerKeyID: "",
-	matchType: "exact",
-	pattern: "",
-	requestTypes: [],
-	pricingValues: {},
-};
+export { buildPatchFromForm, defaultFormState } from "./pricingFields";
+export type { FieldErrors, FormState, PricingFieldKey, ScopeRoot } from "./pricingFields";
+import {
+	buildPatchFromForm,
+	defaultFormState,
+	fieldLabelByKey,
+	patchKeys,
+	PRICING_FIELDS,
+	REQUEST_TYPE_GROUPS,
+	REQUEST_TYPE_OPTIONS,
+} from "./pricingFields";
+import type { FieldErrors, FormState, PricingFieldKey, ScopeRoot } from "./pricingFields";
 
 export function patternError(matchType: PricingOverrideMatchType, pattern: string): string | undefined {
 	const trimmed = pattern.trim();
@@ -85,28 +65,6 @@ export function patternError(matchType: PricingOverrideMatchType, pattern: strin
 		if (!trimmed.endsWith("*")) return "Wildcard supports prefix-only trailing *";
 	}
 	return undefined;
-}
-
-export function buildPatchFromForm(form: FormState): { patch: PricingOverridePatch; errors: FieldErrors } {
-	const errors: FieldErrors = {};
-	const patch: PricingOverridePatch = {};
-
-	for (const key of patchKeys) {
-		const raw = form.pricingValues[key];
-		if (raw == null || raw.trim() === "") continue;
-		const parsed = Number(raw);
-		if (!Number.isFinite(parsed)) {
-			errors[key] = "Must be a number";
-			continue;
-		}
-		if (parsed < 0) {
-			errors[key] = "Must be >= 0";
-			continue;
-		}
-		(patch as Record<string, number>)[key] = parsed;
-	}
-
-	return { patch, errors };
 }
 
 function toFormState(override: PricingOverride): FormState {

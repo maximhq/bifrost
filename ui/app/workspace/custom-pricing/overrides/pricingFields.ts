@@ -1,3 +1,6 @@
+import type { RequestType } from "@/lib/types/config";
+import type { PricingOverrideMatchType, PricingOverridePatch } from "@/lib/types/governance";
+
 // Shared pricing-field metadata for override editing and display.
 //
 // Extracted from pricingOverrideSheet.tsx so read-only consumers (e.g. the
@@ -716,3 +719,60 @@ export const fieldLabelByKey = Object.fromEntries(PRICING_FIELDS.map((field) => 
 export const patchKeys = PRICING_FIELDS.map((field) => field.key) as PricingFieldKey[];
 
 export type FieldErrors = Partial<Record<PricingFieldKey | "name" | "scope" | "pattern" | "patch", string>>;
+
+// ---------------------------------------------------------------------------
+// Override form state
+//
+// Lives here rather than in pricingOverrideSheet.tsx so the patch-building
+// logic can be unit tested without pulling the sheet's React tree in.
+// ---------------------------------------------------------------------------
+
+export type ScopeRoot = "global" | "virtual_key" | "user";
+
+export interface FormState {
+	name: string;
+	scopeRoot: ScopeRoot;
+	userID: string;
+	virtualKeyID: string;
+	providerID: string;
+	providerKeyID: string;
+	matchType: PricingOverrideMatchType;
+	pattern: string;
+	requestTypes: RequestType[];
+	pricingValues: Partial<Record<PricingFieldKey, string>>;
+}
+
+export const defaultFormState: FormState = {
+	name: "",
+	scopeRoot: "global",
+	userID: "",
+	virtualKeyID: "",
+	providerID: "",
+	providerKeyID: "",
+	matchType: "exact",
+	pattern: "",
+	requestTypes: [],
+	pricingValues: {},
+};
+
+export function buildPatchFromForm(form: FormState): { patch: PricingOverridePatch; errors: FieldErrors } {
+	const errors: FieldErrors = {};
+	const patch: PricingOverridePatch = {};
+
+	for (const key of patchKeys) {
+		const raw = form.pricingValues[key];
+		if (raw == null || raw.trim() === "") continue;
+		const parsed = Number(raw);
+		if (!Number.isFinite(parsed)) {
+			errors[key] = "Must be a number";
+			continue;
+		}
+		if (parsed < 0) {
+			errors[key] = "Must be >= 0";
+			continue;
+		}
+		(patch as Record<string, number>)[key] = parsed;
+	}
+
+	return { patch, errors };
+}
