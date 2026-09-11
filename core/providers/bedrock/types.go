@@ -283,7 +283,7 @@ type BedrockDocumentSource struct {
 // See: https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_DocumentSource.html
 type BedrockDocumentSourceData struct {
 	Bytes      *string            `json:"bytes,omitempty"`      // Base64-encoded document bytes
-	Text       *string            `json:"text,omitempty"`       // Plain text content
+	Text       *string            `json:"text,omitempty"`       // Plain text content; Converse rejects it unless the block enables citations
 	S3Location *BedrockS3Location `json:"s3Location,omitempty"` // Optional: S3 location (model-dependent support)
 }
 
