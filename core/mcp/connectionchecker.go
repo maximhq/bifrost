@@ -270,6 +270,11 @@ func (c *ClientConnectionChecker) performCheck() (time.Duration, bool) {
 		if c.checkLiveConnection(conn, clientName, connGeneration) {
 			return steady, true
 		}
+		// The connection that just failed is still installed on the entry, so
+		// this is the only place that can repair it: every later tick would
+		// otherwise re-probe the same dead session, and the Conn == nil
+		// branch below is unreachable while a connection is installed.
+		c.reconnectAfterFailedCheck(clientName, connGeneration)
 		return UnstableConnectionCheckInterval, false
 	case c.manager.credStore.RequiresPerCallConnection(config):
 		if c.checkPerCall(config, connGeneration) {
@@ -290,6 +295,38 @@ func (c *ClientConnectionChecker) performCheck() (time.Duration, bool) {
 		}()
 		return UnstableConnectionCheckInterval, false
 	}
+}
+
+// reconnectAfterFailedCheck starts the background reconnect a failed live
+// check owes, under the same staleness guard setState and writeBackTools
+// apply: a check that began before a reconnect swapped in a fresh connection
+// can only have proved the replaced one dead, and must not tear down its
+// successor. Disabled and NeedsReauth are authoritative here for the same
+// reason setState refuses to overwrite them, and are checked separately from
+// the generation because neither DisableClient nor CloseAndMarkNeedsReauth
+// bumps ConnGeneration when it clears the connection.
+//
+// "Already in progress" (another trigger, e.g. the reactive per-request path,
+// beat this tick to it) is expected and fine to ignore: ReconnectClient
+// dedupes concurrent attempts per client through its own exclusive-op guard,
+// and whichever attempt finishes is authoritative.
+func (c *ClientConnectionChecker) reconnectAfterFailedCheck(clientName string, connGeneration uint64) {
+	c.manager.mu.RLock()
+	clientState, exists := c.manager.clientMap[c.clientID]
+	stale := !exists ||
+		clientState.ConnGeneration != connGeneration ||
+		clientState.State == schemas.MCPConnectionStateDisabled ||
+		clientState.State == schemas.MCPConnectionStateNeedsReauth
+	c.manager.mu.RUnlock()
+	if stale {
+		c.logger.Debug("%s Skipping reconnect for %s: the connection was replaced during the check, or the client is no longer reconnectable", MCPLogPrefix, clientName)
+		return
+	}
+	go func() {
+		if err := c.manager.ReconnectClient(c.clientID); err != nil {
+			c.logger.Debug("%s Connection checker's reconnect attempt for %s did not complete: %v", MCPLogPrefix, clientName, err)
+		}
+	}()
 }
 
 // checkLiveConnection runs ping (if supported) + list_tools over an
