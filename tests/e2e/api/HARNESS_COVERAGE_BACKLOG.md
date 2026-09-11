@@ -242,7 +242,7 @@ Normalized embeddings remain available through `/v1/embeddings`, `/openai/v1/emb
 - [x] **Usage backfill from `X-Amzn-Bedrock-Input-Token-Count`** (Cohere embed omits usage from the body; #3917) - folder 53.B7
 - [ ] **Titan G1** (`amazon.titan-embed-text-v1`) - `inputText` only, no `dimensions`/`normalize`; sending either is expected to be rejected
 - [ ] **Titan multimodal** (`amazon.titan-embed-image-v1`) - `inputImage` is not mapped by `ToBedrockTitanEmbeddingRequest` at all
-- [ ] **Cohere v4 multimodal** (`images` data-URI array, `inputs` interleaved text+image blocks) - the typed fields exist on `BedrockCohereEmbeddingRequest` but nothing populates them: the Cohere dialect converter drops both, and a JSON body yields `[]interface{}`, which misses the `v.([]string)` assertion in `ToBedrockCohereEmbeddingRequest`
+- [x] **Cohere v4 multimodal** (`images` data-URI array, `inputs` interleaved text+image blocks) - `ToBedrockCohereEmbeddingRequest` now builds `inputs[]` from multimodal content parts - folder 76.F1
 - [ ] **Cohere v3** (`cohere.embed-english-v3`) - fixed 1024 dims, `truncate` is `NONE|START|END` on v3 versus `NONE|LEFT|RIGHT` on v4, so the shared converter cannot validate the enum
 - [ ] **`truncate` / `max_tokens` passthrough** to Cohere on Bedrock
 - [ ] **Drop-in routes with parameters** - §8.3.I/§8.3.J send a bare single string to `/openai/v1/embeddings` and `:embedContent`; neither carries `dimensions`, `encoding_format` or any extra param
