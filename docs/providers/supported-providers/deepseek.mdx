@@ -152,6 +152,12 @@ To override this per-alias (for example, on a virtual key's model config), set `
 </Tab>
 </Tabs>
 
+### Server tool support
+
+DeepSeek's Anthropic-compatible endpoint serves `web_search`, so that tool is forwarded and works as it does on the Claude API.
+
+The remaining Anthropic server and client tools run on Anthropic-operated infrastructure and do not exist here: `web_fetch`, `code_execution`, `computer`, `bash`, `memory`, `text_editor`, `tool_search` and `mcp_toolset`. Bifrost drops those from the request rather than letting DeepSeek reject the whole call. Your own function tools are never affected.
+
 ---
 
 # 1. Chat Completions
