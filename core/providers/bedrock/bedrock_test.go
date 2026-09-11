@@ -11,11 +11,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/internal/llmtests"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -7856,4 +7858,138 @@ func mustItem(body []byte, i int) string {
 		return "<unavailable>"
 	}
 	return string(wire.Input[i])
+}
+
+// The deprecated in-provider Mantle routing under the "bedrock" key hits the same
+// bedrock-mantle host as the bedrock_mantle provider, so it sees the same wire order:
+// finish_reason with usage null, then a `choices: []` usage-only chunk, then
+// `data: [DONE]`. Bedrock's Converse streaming never goes through the OpenAI-compatible
+// loop, so listing schemas.Bedrock as "does not send [DONE]" only ever affects this
+// route, where it drops the trailing usage exactly as in issue #7065.
+func TestBedrockLegacyMantleSendsDoneMarker(t *testing.T) {
+	require.True(t, providerUtils.ProviderSendsDoneMarker(nil, schemas.Bedrock),
+		"the bedrock key's Mantle route sends [DONE]; breaking on finish_reason drops the trailing usage chunk")
+}
+
+func legacyMantleChatStreamServer(t *testing.T) (*httptest.Server, func() []byte) {
+	t.Helper()
+	var (
+		mu       sync.Mutex
+		captured []byte
+	)
+	const body = `data: {"choices":[{"delta":{"content":"Semantic search matches meaning.","role":"assistant"},"finish_reason":null,"index":0}],"created":1,"id":"chatcmpl-mantle","model":"openai.gpt-5.5","object":"chat.completion.chunk","usage":null}` + "\n\n" +
+		`data: {"choices":[{"delta":{},"finish_reason":"stop","index":0}],"created":1,"id":"chatcmpl-mantle","model":"openai.gpt-5.5","object":"chat.completion.chunk","usage":null}` + "\n\n" +
+		`data: {"choices":[],"created":1,"id":"chatcmpl-mantle","model":"openai.gpt-5.5","object":"chat.completion.chunk","usage":{"completion_tokens":29,"prompt_tokens":13,"total_tokens":42}}` + "\n\n" +
+		"data: [DONE]\n\n"
+
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("reading request body: %v", err)
+		}
+		mu.Lock()
+		captured = reqBody
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("test server ResponseWriter is not an http.Flusher")
+			return
+		}
+		for _, event := range strings.SplitAfter(body, "\n\n") {
+			if event == "" {
+				continue
+			}
+			if _, err := w.Write([]byte(event)); err != nil {
+				t.Errorf("writing SSE event: %v", err)
+				return
+			}
+			flusher.Flush()
+		}
+	}))
+	return ts, func() []byte {
+		mu.Lock()
+		defer mu.Unlock()
+		return captured
+	}
+}
+
+func TestBedrockLegacyMantleChatStreamKeepsTrailingUsage(t *testing.T) {
+	ts, requestBody := legacyMantleChatStreamServer(t)
+	defer ts.Close()
+
+	config := &schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{
+			DefaultRequestTimeoutInSeconds: 5,
+			StreamIdleTimeoutInSeconds:     2,
+			InsecureSkipVerify:             true,
+			AllowPrivateNetwork:            true,
+		},
+	}
+	config.CheckAndSetDefaults()
+	provider, err := bedrock.NewBedrockProvider(config, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	require.NoError(t, err)
+
+	// Bearer value: no SigV4 signer. The Mantle host override points at the local server.
+	key := schemas.Key{
+		Value: *schemas.NewSecretVar("test-bearer"),
+		BedrockKeyConfig: &schemas.BedrockKeyConfig{
+			Region:    schemas.NewSecretVar("us-east-1"),
+			Endpoints: &schemas.BedrockEndpoints{Mantle: schemas.NewSecretVar(strings.TrimPrefix(ts.URL, "https://"))},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+
+	passthrough := func(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return resp, bifrostErr
+	}
+	stream, bifrostErr := provider.ChatCompletionStream(ctx, passthrough, nil, key, &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    "openai.gpt-5.5",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Explain semantic search in one sentence.")},
+		}},
+	})
+	require.Nil(t, bifrostErr, "stream setup failed: %+v", bifrostErr)
+
+	var chunks []*schemas.BifrostStreamChunk
+	timeout := time.NewTimer(20 * time.Second)
+	defer timeout.Stop()
+collect:
+	for {
+		select {
+		case chunk, ok := <-stream:
+			if !ok {
+				break collect
+			}
+			if chunk != nil {
+				chunks = append(chunks, chunk)
+			}
+		case <-timeout.C:
+			t.Fatal("timed out waiting for the provider stream to close")
+		}
+	}
+
+	require.Contains(t, string(requestBody()), `"stream_options":{"include_usage":true}`,
+		"Bifrost must ask Mantle for the trailing usage chunk")
+
+	require.NotEmpty(t, chunks, "expected chunks from a well-formed stream")
+	for i, chunk := range chunks {
+		require.Nil(t, chunk.BifrostError, "chunk %d unexpectedly carried an error", i)
+	}
+	final := chunks[len(chunks)-1].BifrostChatResponse
+	require.NotNil(t, final, "expected a synthesized final chat chunk")
+	require.Len(t, final.Choices, 1)
+	require.NotNil(t, final.Choices[0].FinishReason)
+	require.Equal(t, "stop", *final.Choices[0].FinishReason)
+
+	require.NotNil(t, final.Usage, "final chunk must carry the usage Mantle sent after finish_reason")
+	require.Equal(t, 13, final.Usage.PromptTokens, "prompt_tokens")
+	require.Equal(t, 29, final.Usage.CompletionTokens, "completion_tokens")
+	require.Equal(t, 42, final.Usage.TotalTokens, "total_tokens")
 }

@@ -248,7 +248,7 @@ func TestChatStreamDoneWithoutFinishReasonIsNotTruncated(t *testing.T) {
 }
 
 // finish_reason alone is terminal too — providers listed as not sending [DONE]
-// (Cerebras, Perplexity, HuggingFace, Bedrock mantle) rely on exactly this.
+// (Cerebras, Perplexity) rely on exactly this.
 func TestChatStreamFinishReasonWithoutDoneIsNotTruncated(t *testing.T) {
 	stop := "stop"
 	server := completeSSEServer(t, chatChunk("hello", nil)+chatChunk("", &stop))
