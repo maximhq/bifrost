@@ -1087,6 +1087,14 @@ bifrost:
   #   enabled: true
   #   # Provider: okta, entra, keycloak, zitadel, google, sailpoint, generic
   #   provider: ""
+  #   # Private IP/CIDR allowlist for SSRF-guarded outbound discovery (Enterprise): lets the
+  #   # generic provider's "Discover endpoints"/"Discover claims" reach a self-hosted IdP on an
+  #   # internal network. Declaring this key makes Helm own the whole list — it replaces whatever
+  #   # is stored, and an explicit `trustedNetworks: []` clears dashboard-added ranges. Omit the
+  #   # key to leave them alone.
+  #   trustedNetworks:
+  #     - cidr: "10.20.0.0/16"          # bare IPs are treated as a single host; hostnames are rejected
+  #       description: "On-prem Keycloak"
   #   config: {}
       # Okta configuration:
       # issuerUrl: "https://your-domain.okta.com/oauth2/default"

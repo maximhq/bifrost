@@ -2801,6 +2801,25 @@
             "config": {
               "type": "object",
               "description": "Provider-specific configuration"
+            },
+            "trustedNetworks": {
+              "type": "array",
+              "description": "Private IP/CIDR allowlist the SSRF guard consults before outbound discovery calls, so a self-hosted IdP on an internal network can be reached. Declaring this key makes Helm own the whole list; an explicit empty array clears dashboard-added ranges. Renders into scim_config.trusted_networks.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "cidr": {
+                    "type": "string",
+                    "description": "IP or CIDR range to trust (e.g. 10.20.0.0/16). A bare IP is a single host; hostnames are not accepted."
+                  },
+                  "description": {
+                    "type": "string",
+                    "description": "Optional admin-facing label for this range"
+                  }
+                },
+                "required": ["cidr"],
+                "additionalProperties": false
+              }
             }
           },
           "required": ["enabled"],
