@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -172,7 +171,7 @@ func newOpencodeWireProvider(t *testing.T, newProvider func(*schemas.ProviderCon
 		captures = append(captures, wireCapture{
 			method:          r.Method,
 			path:            r.URL.Path,
-			opencodeSession: r.Header.Get(network.OpencodeSessionHeader),
+			opencodeSession: r.Header.Get(OpencodeSessionHeader),
 		})
 		mu.Unlock()
 
@@ -250,7 +249,7 @@ func TestOpencodeSessionHeaderOnWire(t *testing.T) {
 					name: "client-sent header forwarded verbatim on every inference op",
 					ops:  []opencodeOp{opChat, opResponses, opChatStream, opResponsesStream},
 					setupCtx: func(t *testing.T) *schemas.BifrostContext {
-						ctx := newOpencodeWireCtx(t, map[string]string{network.OpencodeSessionHeader: "client-sess-abc"})
+						ctx := newOpencodeWireCtx(t, map[string]string{OpencodeSessionHeader: "client-sess-abc"})
 						ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "vk-1")
 						return ctx
 					},
@@ -293,7 +292,7 @@ func TestOpencodeSessionHeaderOnWire(t *testing.T) {
 					name: "poisoned client header never reaches the wire; fallback applies",
 					ops:  []opencodeOp{opChat, opResponses},
 					setupCtx: func(t *testing.T) *schemas.BifrostContext {
-						ctx := newOpencodeWireCtx(t, map[string]string{network.OpencodeSessionHeader: "evil\r\nInjected: x"})
+						ctx := newOpencodeWireCtx(t, map[string]string{OpencodeSessionHeader: "evil\r\nInjected: x"})
 						ctx.SetValue(schemas.BifrostContextKeySessionID, "bf-sess-123")
 						ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "vk-1")
 						return ctx
@@ -304,7 +303,7 @@ func TestOpencodeSessionHeaderOnWire(t *testing.T) {
 					name: "poisoned client header without fallback synthesizes a UUID",
 					ops:  []opencodeOp{opChat},
 					setupCtx: func(t *testing.T) *schemas.BifrostContext {
-						ctx := newOpencodeWireCtx(t, map[string]string{network.OpencodeSessionHeader: "abc\x01def"})
+						ctx := newOpencodeWireCtx(t, map[string]string{OpencodeSessionHeader: "abc\x01def"})
 						ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "vk-1")
 						return ctx
 					},
@@ -315,7 +314,7 @@ func TestOpencodeSessionHeaderOnWire(t *testing.T) {
 					name: "sessions from different virtual keys do not collide",
 					ops:  []opencodeOp{opChat, opChat},
 					setupCtx: func(t *testing.T) *schemas.BifrostContext {
-						ctx := newOpencodeWireCtx(t, map[string]string{network.OpencodeSessionHeader: "shared-session"})
+						ctx := newOpencodeWireCtx(t, map[string]string{OpencodeSessionHeader: "shared-session"})
 						ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "vk-1")
 						return ctx
 					},
@@ -381,7 +380,7 @@ func TestOpencodeSessionHeaderNotOnListModels(t *testing.T) {
 	provider, captures := newOpencodeWireProvider(t, func(config *schemas.ProviderConfig) (*opencodeProvider, error) {
 		return NewOpencodeGoProvider(config, nil)
 	})
-	ctx := newOpencodeWireCtx(t, map[string]string{network.OpencodeSessionHeader: "client-sess-abc"})
+	ctx := newOpencodeWireCtx(t, map[string]string{OpencodeSessionHeader: "client-sess-abc"})
 	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "vk-1")
 
 	runOpencodeOp(t, provider, ctx, schemas.Key{Value: *schemas.NewSecretVar(wireTestAPIKey)}, opListModels)
@@ -418,7 +417,7 @@ func TestOpencodeSessionHeaderNeverLeaksToOtherProviders(t *testing.T) {
 			return
 		}
 		mu.Lock()
-		seenSessions = append(seenSessions, r.Header.Get(network.OpencodeSessionHeader))
+		seenSessions = append(seenSessions, r.Header.Get(OpencodeSessionHeader))
 		mu.Unlock()
 
 		w.Header().Set("Content-Type", "application/json")
@@ -436,7 +435,7 @@ func TestOpencodeSessionHeaderNeverLeaksToOtherProviders(t *testing.T) {
 	// The client sent x-opencode-session AND a session id; neither may leak.
 	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{network.OpencodeSessionHeader: "client-sess-abc"})
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{OpencodeSessionHeader: "client-sess-abc"})
 	ctx.SetValue(schemas.BifrostContextKeySessionID, "bf-sess-123")
 	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "vk-1")
 

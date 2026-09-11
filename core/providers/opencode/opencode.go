@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -88,13 +87,13 @@ func (p *opencodeProvider) GetProviderKey() schemas.ModelProvider {
 // inferenceExtraHeaders returns the static network-config extra headers merged
 // with the resolved x-opencode-session header for this request. The session is
 // resolved once per request and namespaced per virtual key (see
-// network.ResolveOpencodeSession), so every inference call — chat, responses,
+// ResolveOpencodeSession), so every inference call — chat, responses,
 // and their streaming variants — carries the same upstream session identity,
 // keeping zen→go fallbacks and retries identical. ListModels intentionally does
 // not use this helper: the gateway only requires the header on inference calls.
 // Returns a fresh map; the shared config map is never mutated.
 func (p *opencodeProvider) inferenceExtraHeaders(ctx *schemas.BifrostContext) map[string]string {
-	session := network.ResolveOpencodeSession(ctx)
+	session := ResolveOpencodeSession(ctx)
 	if session == "" {
 		return p.networkConfig.ExtraHeaders
 	}
@@ -103,7 +102,7 @@ func (p *opencodeProvider) inferenceExtraHeaders(ctx *schemas.BifrostContext) ma
 	// The resolved session always wins over a statically configured value: a
 	// static session would collapse every request onto one upstream
 	// conversation, defeating the per-request identity this feature provides.
-	merged[network.OpencodeSessionHeader] = session
+	merged[OpencodeSessionHeader] = session
 	return merged
 }
 
