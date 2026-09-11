@@ -1789,8 +1789,12 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 		return nil, err
 	}
 
-	if provider.routesToMantle(ctx, key, request.Model) {
+	surface := provider.resolveSurface(ctx, key, request.Model)
+	if surface.isMantle() {
 		return provider.mantleResponses(ctx, key, request)
+	}
+	if runtimeServesResponses(ctx, surface, request.Model) {
+		return provider.runtimeResponses(ctx, key, request)
 	}
 
 	// Use Bedrock Converse API for all other models
@@ -1875,8 +1879,12 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 		return nil, err
 	}
 
-	if provider.routesToMantle(ctx, key, request.Model) {
+	surface := provider.resolveSurface(ctx, key, request.Model)
+	if surface.isMantle() {
 		return provider.mantleResponsesStream(ctx, postHookRunner, postHookSpanFinalizer, key, request)
+	}
+	if runtimeServesResponses(ctx, surface, request.Model) {
+		return provider.runtimeResponsesStream(ctx, postHookRunner, postHookSpanFinalizer, key, request)
 	}
 
 	// Use Bedrock Converse streaming API for all other models

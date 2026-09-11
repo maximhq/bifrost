@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -168,11 +169,38 @@ func resolveBedrockSurface(ctx *schemas.BifrostContext, key schemas.Key, model s
 	return bedrockSurface{host: bedrockServiceRuntime, reason: reasonModelFamilyFallback}
 }
 
-// routesToMantle resolves the surface and logs the deciding rule.
-func (provider *BedrockProvider) routesToMantle(ctx *schemas.BifrostContext, key schemas.Key, model string) bool {
+// runtimeServesResponses reports whether a runtime-bound Responses request should use
+// bedrock-runtime's OpenAI-compatible /openai/v1/responses surface instead of Converse.
+//
+// Converse holds no conversation state and has no previous_response_id, so it silently
+// drops the reference: a stateful client sends only the new turn and the model never sees
+// the rest. With tools that fails outright, since the tool result arrives with its toolUse
+// left behind in state. The OpenAI surface both reads and mints response ids.
+//
+// The datasheet decides when it publishes a runtime row; otherwise family detection, since
+// AWS 404s every other family on this path ("doesn't support this API").
+func runtimeServesResponses(ctx *schemas.BifrostContext, surface bedrockSurface, model string) bool {
+	// An application inference profile is Converse-only, so it must never divert.
+	if surface.isMantle() || surface.reason == reasonApplicationProfile {
+		return false
+	}
+	canonical := schemas.ResolveCanonicalModel(ctx, model)
+	if apis := schemas.ResolveModelCaps(schemas.Bedrock, canonical).BedrockAPIs(); len(apis) > 0 {
+		return slices.Contains(apis, schemas.BedrockAPIResponses)
+	}
+	return schemas.IsOpenAIModelFamily(ctx, canonical) || schemas.IsGrokModel(canonical)
+}
+
+// resolveSurface resolves the surface and logs the deciding rule.
+func (provider *BedrockProvider) resolveSurface(ctx *schemas.BifrostContext, key schemas.Key, model string) bedrockSurface {
 	surface := resolveBedrockSurface(ctx, key, model)
 	if provider.logger != nil {
 		provider.logger.Debug("bedrock: model %q routed to %s (%s)", model, surface.host, surface.reason)
 	}
-	return surface.isMantle()
+	return surface
+}
+
+// routesToMantle resolves the surface and logs the deciding rule.
+func (provider *BedrockProvider) routesToMantle(ctx *schemas.BifrostContext, key schemas.Key, model string) bool {
+	return provider.resolveSurface(ctx, key, model).isMantle()
 }

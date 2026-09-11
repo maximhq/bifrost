@@ -79,6 +79,21 @@ func SignMantleV4Headers(
 	region string,
 	extraHeaders map[string]string,
 ) (map[string]string, *schemas.BifrostError) {
+	return signOpenAIV4Headers(ctx, jsonData, requestURL, accept, key, region, extraHeaders, bedrockMantleSigningService)
+}
+
+// signOpenAIV4Headers is SignMantleV4Headers parameterised by signing service, so the
+// same OpenAI-compatible surface can be signed on bedrock-runtime ("bedrock") as on
+// mantle ("bedrock-mantle"). The two endpoints require different credential scopes.
+func signOpenAIV4Headers(
+	ctx *schemas.BifrostContext,
+	jsonData []byte,
+	requestURL, accept string,
+	key schemas.Key,
+	region string,
+	extraHeaders map[string]string,
+	signingService string,
+) (map[string]string, *schemas.BifrostError) {
 	method := http.MethodPost
 	if jsonData == nil {
 		method = http.MethodGet
@@ -113,7 +128,7 @@ func SignMantleV4Headers(
 			RoleSessionName: key.BedrockMantleKeyConfig.RoleSessionName,
 		}
 	}
-	if bifrostErr := signAWSRequest(ctx, req, keyCfg, region, bedrockMantleSigningService); bifrostErr != nil {
+	if bifrostErr := signAWSRequest(ctx, req, keyCfg, region, signingService); bifrostErr != nil {
 		return nil, bifrostErr
 	}
 	// Return the headers exactly as signed: signAWSRequest defaults an empty Accept/Content-Type
