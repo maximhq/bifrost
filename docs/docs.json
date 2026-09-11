@@ -350,7 +350,8 @@
                       "integrations/guardrails/grayswan",
                       "integrations/guardrails/patronus-ai",
                       "integrations/guardrails/checkpoint",
-                      "integrations/guardrails/repello-argus"
+                      "integrations/guardrails/repello-argus",
+                      "integrations/guardrails/singulr-ai"
                     ]
                   }
                 ]
@@ -603,7 +604,8 @@
               "integrations/guardrails/grayswan",
               "integrations/guardrails/patronus-ai",
               "integrations/guardrails/checkpoint",
-              "integrations/guardrails/repello-argus"
+              "integrations/guardrails/repello-argus",
+              "integrations/guardrails/singulr-ai"
             ]
           },
           {
