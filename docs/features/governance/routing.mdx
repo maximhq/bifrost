@@ -92,11 +92,13 @@ Weights are automatically normalized to a sum 1.0 based on the weights of all pr
     {
       "provider": "openai",
       "allowed_models": ["*"],  // Allow all - uses Model Catalog for validation
+      "key_ids": ["*"],
       "weight": 0.5
     },
     {
       "provider": "anthropic",
       "allowed_models": ["*"],  // Allow all - uses Model Catalog for validation
+      "key_ids": ["*"],
       "weight": 0.5
     }
   ]
@@ -170,11 +172,13 @@ curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id} \
       {
         "provider": "openai",
         "allowed_models": ["gpt-4o", "gpt-4o-mini"],
+        "key_ids": ["*"],
         "weight": 0.2
       },
       {
         "provider": "azure",
         "allowed_models": ["gpt-4o"],
+        "key_ids": ["*"],
         "weight": 0.8
       }
     ]
@@ -195,11 +199,13 @@ curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id} \
           {
             "provider": "openai",
             "allowed_models": ["gpt-4o", "gpt-4o-mini"],
+            "key_ids": ["*"],
             "weight": 0.2
           },
           {
             "provider": "azure",
             "allowed_models": ["gpt-4o"],
+            "key_ids": ["*"],
             "weight": 0.8
           }
         ]
@@ -280,9 +286,17 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id} \
   -H "Content-Type: application/json" \
   -d '{
-    "key_ids": ["key-prod-001"]
+    "provider_configs": [
+      {
+        "provider": "openai",
+        "allowed_models": ["*"],
+        "key_ids": ["key-prod-001"]
+      }
+    ]
   }'
 ```
+
+`key_ids` is scoped to a provider config; it is not a top-level Virtual Key field. Send `["*"]` to allow every key for that provider, or a list of key IDs to restrict selection. An empty or omitted `key_ids` denies all keys.
 
 </Tab>
 

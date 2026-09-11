@@ -591,7 +591,11 @@ false
 {{- if .description }}{{- $_ := set $role "description" .description }}{{- end }}
 {{- if .dac }}{{- $_ := set $role "dac" .dac }}{{- end }}
 {{- if .entity_dac }}{{- $_ := set $role "entity_dac" .entity_dac }}{{- end }}
-{{- if .access_profile }}{{- $_ := set $role "access_profile" .access_profile }}{{- end }}
+{{- if hasKey . "access_profiles" }}
+{{- $_ := set $role "access_profiles" .access_profiles }}
+{{- else if .access_profile }}
+{{- $_ := set $role "access_profile" .access_profile }}
+{{- end }}
 {{- if .permissions }}{{- $_ := set $role "permissions" .permissions }}{{- end }}
 {{- $roles = append $roles $role }}
 {{- end }}
@@ -802,6 +806,11 @@ false
 {{- end }}
 {{- if $scimValues.config }}
 {{- $_ := set $scim "config" $scimValues.config }}
+{{- end }}
+{{- /* Gate on key presence, not truthiness: an explicit empty list means "clear the stored
+       allowlist" and must still render, while an undeclared key leaves it untouched. */ -}}
+{{- if hasKey $scimValues "trustedNetworks" }}
+{{- $_ := set $scim "trusted_networks" (default (list) $scimValues.trustedNetworks) }}
 {{- end }}
 {{- $_ := set $config "scim_config" $scim }}
 {{- end }}
