@@ -366,13 +366,11 @@ func materializeBedrockDocument(
 			return nil, fmt.Errorf("unsupported Bedrock document format %q", *fileType)
 		}
 	}
-	dataURLIsText := false
 	if isDataURL {
 		dataURLFormat, sourceIsText, matched := bedrockDocumentFormat(dataURLMediaType)
 		if !matched && !isOpaqueBedrockDocumentType(dataURLMediaType) {
 			return nil, fmt.Errorf("unsupported Bedrock document format %q", dataURLMediaType)
 		}
-		dataURLIsText = sourceIsText
 		if format == "" && matched {
 			format, isText = dataURLFormat, sourceIsText
 		}
@@ -432,16 +430,7 @@ func materializeBedrockDocument(
 
 	if isDataURL {
 		if dataURLIsBase64 {
-			if dataURLIsText {
-				decoded, err := base64.StdEncoding.DecodeString(dataURLPayload)
-				if err != nil {
-					return nil, fmt.Errorf("invalid base64 document data URL: %w", err)
-				}
-				text := string(decoded)
-				document.Source.Text = &text
-			} else {
-				document.Source.Bytes = &dataURLPayload
-			}
+			document.Source.Bytes = &dataURLPayload
 			return document, nil
 		}
 
@@ -449,17 +438,15 @@ func materializeBedrockDocument(
 		if err != nil {
 			return nil, fmt.Errorf("invalid percent-encoded document data URL payload: %w", err)
 		}
-		if dataURLIsText {
-			document.Source.Text = &decoded
-		} else {
-			encoded := base64.StdEncoding.EncodeToString([]byte(decoded))
-			document.Source.Bytes = &encoded
-		}
+		encoded := base64.StdEncoding.EncodeToString([]byte(decoded))
+		document.Source.Bytes = &encoded
 		return document, nil
 	}
 
+	// Text file_data arrives as literal text; binary file_data is already base64.
 	if isText {
-		document.Source.Text = fileData
+		encoded := base64.StdEncoding.EncodeToString([]byte(*fileData))
+		document.Source.Bytes = &encoded
 	} else {
 		document.Source.Bytes = fileData
 	}
