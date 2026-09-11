@@ -68,26 +68,29 @@ curl -X POST http://localhost:8080/api/governance/virtual-keys \
       {
         "provider": "openai",
         "weight": 0.5,
-        "allowed_models": ["gpt-4o-mini"]
+        "allowed_models": ["gpt-4o-mini"],
+        "key_ids": ["8c52039e-38c6-48b2-8016-0bd884b7befb"]
       },
       {
         "provider": "anthropic",
         "weight": 0.5,
-        "allowed_models": ["claude-3-sonnet-20240229"]
+        "allowed_models": ["claude-3-sonnet-20240229"],
+        "key_ids": ["*"]
       }
     ],
     "team_id": "team-eng-001",
-    "budget": {
-      "max_limit": 100.00,
-      "reset_duration": "1M"
-    },
+    "budgets": [
+      {
+        "max_limit": 100.00,
+        "reset_duration": "1M"
+      }
+    ],
     "rate_limit": {
       "token_max_limit": 10000,
       "token_reset_duration": "1h",
       "request_max_limit": 100,
       "request_reset_duration": "1m"
     },
-    "key_ids": ["8c52039e-38c6-48b2-8016-0bd884b7befb"],
     "is_active": true
   }'
 ```
@@ -103,26 +106,31 @@ curl -X POST http://localhost:8080/api/governance/virtual-keys \
       {
         "provider": "openai",
         "weight": 0.5,
-        "allowed_models": ["gpt-4o"]
+        "allowed_models": ["gpt-4o"],
+        "key_ids": ["*"]
       },
       {
         "provider": "anthropic",
         "weight": 0.5,
-        "allowed_models": ["claude-3-opus-20240229"]
+        "allowed_models": ["claude-3-opus-20240229"],
+        "key_ids": ["*"]
       }
     ],
     "customer_id": "customer-acme-corp",
-    "budget": {
-      "max_limit": 500.00,
-      "reset_duration": "1M"
-    },
+    "budgets": [
+      {
+        "max_limit": 500.00,
+        "reset_duration": "1M"
+      }
+    ],
     "is_active": true
   }'
 ```
 
 > **Note**: 
 > - `team_id` and `customer_id` are mutually exclusive - a VK can only belong to one team OR one customer, not both.
-> - `key_ids` restricts the VK to only use those specific provider API keys. Use `["*"]` to allow access to all available keys. An empty array `[]` or omitting the field entirely denies all keys.
+> - `key_ids` belongs inside each `provider_configs` entry and restricts that provider to the listed API key IDs. Use `["*"]` to allow all keys for that provider. An empty array `[]` or an omitted field denies all keys.
+> - `budgets` is always an array, both at the Virtual Key level and inside a provider config. The old singular `budget` and `budget_id` request fields are ignored. See the [v1.5.0 migration guide](/migration-guides/v1.5.0#breaking-change-6-virtual-key-budget-changed-to-multi-budget-budgets) for the before-and-after shapes.
 
 **Update Virtual Key:**
 ```bash
@@ -130,12 +138,16 @@ curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id} \
   -H "Content-Type: application/json" \
   -d '{
     "description": "Updated description",
-    "budget": {
-      "max_limit": 150.00,
-      "reset_duration": "1M"
-    }
+    "budgets": [
+      {
+        "max_limit": 150.00,
+        "reset_duration": "1M"
+      }
+    ]
   }'
 ```
+
+See [Create virtual key](/api-reference/governance/create-virtual-key) and [Update virtual key](/api-reference/governance/update-virtual-key) for the complete request and response schemas.
 
 **Get Virtual Keys:**
 ```bash
@@ -177,7 +189,8 @@ curl -X DELETE http://localhost:8080/api/governance/virtual-keys/{vk_id}
           {
             "provider": "anthropic",
             "weight": 0.5,
-            "allowed_models": ["claude-3-sonnet-20240229"]
+            "allowed_models": ["claude-3-sonnet-20240229"],
+            "key_ids": ["*"]
           }
         ],
         "team_id": "team-eng-001",
@@ -193,12 +206,14 @@ curl -X DELETE http://localhost:8080/api/governance/virtual-keys/{vk_id}
           {
             "provider": "openai",
             "weight": 0.5,
-            "allowed_models": ["gpt-4o"]
+            "allowed_models": ["gpt-4o"],
+            "key_ids": ["*"]
           },
           {
             "provider": "anthropic",
             "weight": 0.5,
-            "allowed_models": ["claude-3-opus-20240229"]
+            "allowed_models": ["claude-3-opus-20240229"],
+            "key_ids": ["*"]
           }
         ],
         "customer_id": "customer-acme-corp"
@@ -759,10 +774,10 @@ Timestamps must be RFC3339 and in the future; otherwise the API returns `400`. O
 **Expired key rejection:**
 ```json
 {
-  "type": "virtual_key_blocked",
+  "type": "access_blocked",
   "status_code": 403,
   "error": {
-    "message": "Virtual key has expired"
+    "message": "virtual key has expired"
   }
 }
 ```
@@ -898,52 +913,42 @@ curl -X PUT http://localhost:8080/api/config \
 
 ### Error Responses
 
-- Virtual Key Not Found (400)
+`type` is a **top-level** field, beside `status_code`, and `error` carries only the
+message. A client branching on the refusal reads `type`, not `error.type`.
+
+- Authentication Required (401), when no credential was presented and virtual keys are mandatory
 ```json
 {
+  "type": "virtual_key_required",
+  "status_code": 401,
   "error": {
-    "type": "virtual_key_required",
-    "message": "virtual key is missing in headers"
+    "message": "virtual key is required. Provide a virtual key via the x-bf-vk header."
   }
 }
 ```
 
-- Virtual Key Blocked (403)
+- Inactive or Expired (403), when the credential is real but may not be used
 ```json
 {
+  "type": "access_blocked",
+  "status_code": 403,
   "error": {
-    "type": "virtual_key_blocked", 
-    "message": "Virtual key is inactive"
+    "message": "virtual key is inactive"
   }
 }
 ```
 
-- Rate Limit Exceeded (429)
-```json
-{
-  "error": {
-    "type": "rate_limited",
-    "message": "Rate limits exceeded: [token limit exceeded (1500/1000, resets every 1h)]"
-  }
-}
-```
+  A key that is both inactive and expired reports `is inactive`: the check runs in that
+  order and answers on the first that matches. The same type and shape covers an expired
+  key (`virtual key has expired`) and an access profile that is inactive or expired.
 
-- Token Limit Exceeded (429)
+- Rate Limit Exceeded (429): `rate_limited`, or `token_limited` / `request_limited` for the dimension that ran out
 ```json
 {
+  "type": "token_limited",
+  "status_code": 429,
   "error": {
-    "type": "token_limited",
-    "message": "Rate limits exceeded: [token limit exceeded (1500/1000, resets every 1h)]"
-  }
-}
-```
-
-- Request Limit Exceeded (429)
-```json
-{
-  "error": {
-    "type": "request_limited", 
-    "message": "Rate limits exceeded: [request limit exceeded (101/100, resets every 1m)]"
+    "message": "Rate limit exceeded: rate limit violated for vk_model_config * : [token limit exceeded (1500/1000, resets every 1h)]"
   }
 }
 ```
@@ -951,19 +956,24 @@ curl -X PUT http://localhost:8080/api/config \
 - Budget Exceeded (402)
 ```json
 {
+  "type": "budget_exceeded",
+  "status_code": 402,
   "error": {
-    "type": "budget_exceeded",
-    "message": "Budget exceeded: VK budget exceeded: 105.50 > 100.00 dollars"
+    "message": "Budget exceeded: vk_model_config * budget exceeded: 105.5000 >= 100.0000 dollars"
   }
 }
 ```
 
+  The name after the holder kind is what ran out, so a refusal says which tier stopped the
+  request rather than only that something did.
+
 - Model Not Allowed (403)
 ```json
 {
+  "type": "model_blocked",
+  "status_code": 403,
   "error": {
-    "type": "model_blocked",
-    "message": "Model 'gpt-4o' is not allowed for this virtual key"
+    "message": "Model 'gpt-4o' is not allowed for virtual key 'my-key'"
   }
 }
 ```
@@ -971,9 +981,21 @@ curl -X PUT http://localhost:8080/api/config \
 - Provider Not Allowed (403)
 ```json
 {
+  "type": "provider_blocked",
+  "status_code": 403,
   "error": {
-    "type": "provider_blocked",
-    "message": "Provider 'anthropic' is not allowed for this virtual key"
+    "message": "Provider 'anthropic' is not allowed for virtual key 'my-key'"
+  }
+}
+```
+
+- MCP Tool Not Allowed (403)
+```json
+{
+  "type": "mcp_tool_blocked",
+  "status_code": 403,
+  "error": {
+    "message": "MCP tool 'filesystem-write_file' is not allowed for virtual key 'my-key'"
   }
 }
 ```

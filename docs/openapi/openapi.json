@@ -39085,16 +39085,64 @@
                                 "name": {
                                   "type": "string",
                                   "description": "Team name"
-                                },
-                                "business_unit_id": {
+                                }
+                              }
+                            }
+                          },
+                          "business_units": {
+                            "type": "array",
+                            "description": "Business units the user belongs to. Membership is many-to-many and belongs to the user, so this is the authoritative list; manage it under `/api/governance/business-units/{business_unit_id}/users`.\n",
+                            "items": {
+                              "type": "object",
+                              "description": "A business unit the user belongs to.",
+                              "properties": {
+                                "id": {
                                   "type": "string",
-                                  "nullable": true,
-                                  "description": "Business unit ID associated with this team (if any)"
+                                  "description": "Business unit ID"
                                 },
-                                "business_unit_name": {
+                                "name": {
                                   "type": "string",
-                                  "nullable": true,
-                                  "description": "Business unit name associated with this team (if any)"
+                                  "description": "Business unit name"
+                                }
+                              }
+                            }
+                          },
+                          "access_profiles": {
+                            "type": "array",
+                            "description": "Every access profile the user holds, one per assignment source. All of them are enforced — their budgets, rate limits, and provider access combine.\n",
+                            "items": {
+                              "type": "object",
+                              "nullable": true,
+                              "description": "Active or fallback user access profile, if assigned.",
+                              "properties": {
+                                "id": {
+                                  "type": "integer"
+                                },
+                                "user_id": {
+                                  "type": "string"
+                                },
+                                "parent_profile_id": {
+                                  "type": "integer",
+                                  "nullable": true
+                                },
+                                "name": {
+                                  "type": "string"
+                                },
+                                "is_active": {
+                                  "type": "boolean"
+                                },
+                                "expires_at": {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "nullable": true
+                                },
+                                "created_at": {
+                                  "type": "string",
+                                  "format": "date-time"
+                                },
+                                "updated_at": {
+                                  "type": "string",
+                                  "format": "date-time"
                                 }
                               }
                             }
@@ -39102,7 +39150,7 @@
                           "access_profile": {
                             "type": "object",
                             "nullable": true,
-                            "description": "Active or fallback user access profile, if assigned.",
+                            "description": "Deprecated. A single-value summary of the highest-precedence profile (`attribute_mapping` > `role_default` > `manual`), kept for clients written before a user could hold several. It grants nothing on its own — read `access_profiles` instead.\n",
                             "properties": {
                               "id": {
                                 "type": "integer"
@@ -39291,16 +39339,64 @@
                               "name": {
                                 "type": "string",
                                 "description": "Team name"
-                              },
-                              "business_unit_id": {
+                              }
+                            }
+                          }
+                        },
+                        "business_units": {
+                          "type": "array",
+                          "description": "Business units the user belongs to. Membership is many-to-many and belongs to the user, so this is the authoritative list; manage it under `/api/governance/business-units/{business_unit_id}/users`.\n",
+                          "items": {
+                            "type": "object",
+                            "description": "A business unit the user belongs to.",
+                            "properties": {
+                              "id": {
                                 "type": "string",
-                                "nullable": true,
-                                "description": "Business unit ID associated with this team (if any)"
+                                "description": "Business unit ID"
                               },
-                              "business_unit_name": {
+                              "name": {
                                 "type": "string",
-                                "nullable": true,
-                                "description": "Business unit name associated with this team (if any)"
+                                "description": "Business unit name"
+                              }
+                            }
+                          }
+                        },
+                        "access_profiles": {
+                          "type": "array",
+                          "description": "Every access profile the user holds, one per assignment source. All of them are enforced — their budgets, rate limits, and provider access combine.\n",
+                          "items": {
+                            "type": "object",
+                            "nullable": true,
+                            "description": "Active or fallback user access profile, if assigned.",
+                            "properties": {
+                              "id": {
+                                "type": "integer"
+                              },
+                              "user_id": {
+                                "type": "string"
+                              },
+                              "parent_profile_id": {
+                                "type": "integer",
+                                "nullable": true
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "is_active": {
+                                "type": "boolean"
+                              },
+                              "expires_at": {
+                                "type": "string",
+                                "format": "date-time",
+                                "nullable": true
+                              },
+                              "created_at": {
+                                "type": "string",
+                                "format": "date-time"
+                              },
+                              "updated_at": {
+                                "type": "string",
+                                "format": "date-time"
                               }
                             }
                           }
@@ -39308,7 +39404,7 @@
                         "access_profile": {
                           "type": "object",
                           "nullable": true,
-                          "description": "Active or fallback user access profile, if assigned.",
+                          "description": "Deprecated. A single-value summary of the highest-precedence profile (`attribute_mapping` > `role_default` > `manual`), kept for clients written before a user could hold several. It grants nothing on its own — read `access_profiles` instead.\n",
                           "properties": {
                             "id": {
                               "type": "integer"
@@ -39480,16 +39576,64 @@
                           "name": {
                             "type": "string",
                             "description": "Team name"
-                          },
-                          "business_unit_id": {
+                          }
+                        }
+                      }
+                    },
+                    "business_units": {
+                      "type": "array",
+                      "description": "Business units the user belongs to. Membership is many-to-many and belongs to the user, so this is the authoritative list; manage it under `/api/governance/business-units/{business_unit_id}/users`.\n",
+                      "items": {
+                        "type": "object",
+                        "description": "A business unit the user belongs to.",
+                        "properties": {
+                          "id": {
                             "type": "string",
-                            "nullable": true,
-                            "description": "Business unit ID associated with this team (if any)"
+                            "description": "Business unit ID"
                           },
-                          "business_unit_name": {
+                          "name": {
                             "type": "string",
-                            "nullable": true,
-                            "description": "Business unit name associated with this team (if any)"
+                            "description": "Business unit name"
+                          }
+                        }
+                      }
+                    },
+                    "access_profiles": {
+                      "type": "array",
+                      "description": "Every access profile the user holds, one per assignment source. All of them are enforced — their budgets, rate limits, and provider access combine.\n",
+                      "items": {
+                        "type": "object",
+                        "nullable": true,
+                        "description": "Active or fallback user access profile, if assigned.",
+                        "properties": {
+                          "id": {
+                            "type": "integer"
+                          },
+                          "user_id": {
+                            "type": "string"
+                          },
+                          "parent_profile_id": {
+                            "type": "integer",
+                            "nullable": true
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "is_active": {
+                            "type": "boolean"
+                          },
+                          "expires_at": {
+                            "type": "string",
+                            "format": "date-time",
+                            "nullable": true
+                          },
+                          "created_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "updated_at": {
+                            "type": "string",
+                            "format": "date-time"
                           }
                         }
                       }
@@ -39497,7 +39641,7 @@
                     "access_profile": {
                       "type": "object",
                       "nullable": true,
-                      "description": "Active or fallback user access profile, if assigned.",
+                      "description": "Deprecated. A single-value summary of the highest-precedence profile (`attribute_mapping` > `role_default` > `manual`), kept for clients written before a user could hold several. It grants nothing on its own — read `access_profiles` instead.\n",
                       "properties": {
                         "id": {
                           "type": "integer"
@@ -39710,6 +39854,63 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ManagementErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/governance/users/me/vk-creation-policy": {
+      "get": {
+        "operationId": "getMyVirtualKeyCreationPolicy",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
+        },
+        "summary": "Get the calling user's virtual-key creation policy",
+        "description": "Resolves the access profile that would govern a virtual key the **calling** user creates,\nreturning its name or none. Whether governance applies at all is decided separately from the\n`VirtualKeys:CreateStandalone` permission (see `/api/governance/users/me/permissions`); this\nendpoint only resolves the profile, and the create form combines the two.\n\nSelf-scoped: it always describes the caller and takes no user ID. Returns\n`{\"has_access_profile\": false}` when the caller has no per-user identity (local admin) or holds\nno active access profile. When several of their profiles qualify, the highest-ranked one governs.\n",
+        "tags": [
+          "Users",
+          "Virtual Keys"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Virtual-key creation policy for the calling user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "has_access_profile"
+                  ],
+                  "properties": {
+                    "has_access_profile": {
+                      "type": "boolean",
+                      "description": "Whether the caller holds an access profile that would govern keys they create."
+                    },
+                    "profile_name": {
+                      "type": "string",
+                      "description": "Name of the governing access profile. Present only when `has_access_profile` is true."
+                    }
+                  }
                 }
               }
             }
@@ -40156,16 +40357,64 @@
                               "name": {
                                 "type": "string",
                                 "description": "Team name"
-                              },
-                              "business_unit_id": {
+                              }
+                            }
+                          }
+                        },
+                        "business_units": {
+                          "type": "array",
+                          "description": "Business units the user belongs to. Membership is many-to-many and belongs to the user, so this is the authoritative list; manage it under `/api/governance/business-units/{business_unit_id}/users`.\n",
+                          "items": {
+                            "type": "object",
+                            "description": "A business unit the user belongs to.",
+                            "properties": {
+                              "id": {
                                 "type": "string",
-                                "nullable": true,
-                                "description": "Business unit ID associated with this team (if any)"
+                                "description": "Business unit ID"
                               },
-                              "business_unit_name": {
+                              "name": {
                                 "type": "string",
-                                "nullable": true,
-                                "description": "Business unit name associated with this team (if any)"
+                                "description": "Business unit name"
+                              }
+                            }
+                          }
+                        },
+                        "access_profiles": {
+                          "type": "array",
+                          "description": "Every access profile the user holds, one per assignment source. All of them are enforced — their budgets, rate limits, and provider access combine.\n",
+                          "items": {
+                            "type": "object",
+                            "nullable": true,
+                            "description": "Active or fallback user access profile, if assigned.",
+                            "properties": {
+                              "id": {
+                                "type": "integer"
+                              },
+                              "user_id": {
+                                "type": "string"
+                              },
+                              "parent_profile_id": {
+                                "type": "integer",
+                                "nullable": true
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "is_active": {
+                                "type": "boolean"
+                              },
+                              "expires_at": {
+                                "type": "string",
+                                "format": "date-time",
+                                "nullable": true
+                              },
+                              "created_at": {
+                                "type": "string",
+                                "format": "date-time"
+                              },
+                              "updated_at": {
+                                "type": "string",
+                                "format": "date-time"
                               }
                             }
                           }
@@ -40173,7 +40422,7 @@
                         "access_profile": {
                           "type": "object",
                           "nullable": true,
-                          "description": "Active or fallback user access profile, if assigned.",
+                          "description": "Deprecated. A single-value summary of the highest-precedence profile (`attribute_mapping` > `role_default` > `manual`), kept for clients written before a user could hold several. It grants nothing on its own — read `access_profiles` instead.\n",
                           "properties": {
                             "id": {
                               "type": "integer"
@@ -40391,16 +40640,64 @@
                               "name": {
                                 "type": "string",
                                 "description": "Team name"
-                              },
-                              "business_unit_id": {
+                              }
+                            }
+                          }
+                        },
+                        "business_units": {
+                          "type": "array",
+                          "description": "Business units the user belongs to. Membership is many-to-many and belongs to the user, so this is the authoritative list; manage it under `/api/governance/business-units/{business_unit_id}/users`.\n",
+                          "items": {
+                            "type": "object",
+                            "description": "A business unit the user belongs to.",
+                            "properties": {
+                              "id": {
                                 "type": "string",
-                                "nullable": true,
-                                "description": "Business unit ID associated with this team (if any)"
+                                "description": "Business unit ID"
                               },
-                              "business_unit_name": {
+                              "name": {
                                 "type": "string",
-                                "nullable": true,
-                                "description": "Business unit name associated with this team (if any)"
+                                "description": "Business unit name"
+                              }
+                            }
+                          }
+                        },
+                        "access_profiles": {
+                          "type": "array",
+                          "description": "Every access profile the user holds, one per assignment source. All of them are enforced — their budgets, rate limits, and provider access combine.\n",
+                          "items": {
+                            "type": "object",
+                            "nullable": true,
+                            "description": "Active or fallback user access profile, if assigned.",
+                            "properties": {
+                              "id": {
+                                "type": "integer"
+                              },
+                              "user_id": {
+                                "type": "string"
+                              },
+                              "parent_profile_id": {
+                                "type": "integer",
+                                "nullable": true
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "is_active": {
+                                "type": "boolean"
+                              },
+                              "expires_at": {
+                                "type": "string",
+                                "format": "date-time",
+                                "nullable": true
+                              },
+                              "created_at": {
+                                "type": "string",
+                                "format": "date-time"
+                              },
+                              "updated_at": {
+                                "type": "string",
+                                "format": "date-time"
                               }
                             }
                           }
@@ -40408,7 +40705,7 @@
                         "access_profile": {
                           "type": "object",
                           "nullable": true,
-                          "description": "Active or fallback user access profile, if assigned.",
+                          "description": "Deprecated. A single-value summary of the highest-precedence profile (`attribute_mapping` > `role_default` > `manual`), kept for clients written before a user could hold several. It grants nothing on its own — read `access_profiles` instead.\n",
                           "properties": {
                             "id": {
                               "type": "integer"
@@ -40554,6 +40851,7 @@
           "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
         },
         "summary": "List virtual keys available to a user",
+        "description": "Returns every virtual key assigned to the user, independent of access profiles, so\ndirectly-assigned standalone keys are visible alongside profile-issued ones.\n",
         "tags": [
           "Users",
           "Virtual Keys"
@@ -40588,10 +40886,117 @@
                       "type": "array",
                       "items": {
                         "type": "object",
-                        "additionalProperties": true
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "value": {
+                            "type": "string"
+                          },
+                          "is_access_profile_managed": {
+                            "type": "boolean",
+                            "description": "True when an access profile governs this key, in which case its policy is edit-locked and changed by editing and propagating the profile.\n"
+                          }
+                        }
                       }
                     }
                   }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "addUserVirtualKey",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
+        },
+        "summary": "Mint an extra virtual key for a user",
+        "description": "Issues an additional virtual key for the user.\n\nVirtual keys are scoped to the **user**, not to any one access profile: what a request may\ndo with the key is read from whichever of the user's active profiles grants it, and each of\nthose profiles is a separate routing candidate the request may be served by. The user must\ntherefore hold at least one access profile — the request returns 404 otherwise — but the key\nis not tied to the profile that happened to be current when it was minted, and it survives\nthat profile being detached as long as the user still holds another.\n",
+        "tags": [
+          "Users",
+          "Virtual Keys"
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Virtual key created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "virtual_key": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "value": {
+                          "type": "string",
+                          "description": "The generated virtual key secret. Shown only once on creation."
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "User has no access profiles"
+          },
+          "409": {
+            "description": "A virtual key with this name already exists"
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
                 }
               }
             }
@@ -40813,16 +41218,64 @@
                           "name": {
                             "type": "string",
                             "description": "Team name"
-                          },
-                          "business_unit_id": {
+                          }
+                        }
+                      }
+                    },
+                    "business_units": {
+                      "type": "array",
+                      "description": "Business units the user belongs to. Membership is many-to-many and belongs to the user, so this is the authoritative list; manage it under `/api/governance/business-units/{business_unit_id}/users`.\n",
+                      "items": {
+                        "type": "object",
+                        "description": "A business unit the user belongs to.",
+                        "properties": {
+                          "id": {
                             "type": "string",
-                            "nullable": true,
-                            "description": "Business unit ID associated with this team (if any)"
+                            "description": "Business unit ID"
                           },
-                          "business_unit_name": {
+                          "name": {
                             "type": "string",
-                            "nullable": true,
-                            "description": "Business unit name associated with this team (if any)"
+                            "description": "Business unit name"
+                          }
+                        }
+                      }
+                    },
+                    "access_profiles": {
+                      "type": "array",
+                      "description": "Every access profile the user holds, one per assignment source. All of them are enforced — their budgets, rate limits, and provider access combine.\n",
+                      "items": {
+                        "type": "object",
+                        "nullable": true,
+                        "description": "Active or fallback user access profile, if assigned.",
+                        "properties": {
+                          "id": {
+                            "type": "integer"
+                          },
+                          "user_id": {
+                            "type": "string"
+                          },
+                          "parent_profile_id": {
+                            "type": "integer",
+                            "nullable": true
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "is_active": {
+                            "type": "boolean"
+                          },
+                          "expires_at": {
+                            "type": "string",
+                            "format": "date-time",
+                            "nullable": true
+                          },
+                          "created_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "updated_at": {
+                            "type": "string",
+                            "format": "date-time"
                           }
                         }
                       }
@@ -40830,7 +41283,7 @@
                     "access_profile": {
                       "type": "object",
                       "nullable": true,
-                      "description": "Active or fallback user access profile, if assigned.",
+                      "description": "Deprecated. A single-value summary of the highest-precedence profile (`attribute_mapping` > `role_default` > `manual`), kept for clients written before a user could hold several. It grants nothing on its own — read `access_profiles` instead.\n",
                       "properties": {
                         "id": {
                           "type": "integer"
@@ -46516,11 +46969,7 @@
       "get": {
         "operationId": "getVirtualKeyQuota",
         "summary": "Get virtual key quota",
-<<<<<<< HEAD
         "description": "Returns the overall budget and rate limit quota for the authenticated virtual key,\nas well as per-provider and per-model budgets and rate limits (with current usage).\nEach budget also carries the actual per-model usage for its current cycle.\nThis is a self-service endpoint - no admin authentication required.\nThe virtual key value itself (provided via header) is the credential.\nDuring an active rotation grace window (client vk_rotation_cooldown), the\nprevious key value also authenticates until previous_value_expires_at.\nAn expired virtual key is rejected with 403; an inactive one still returns\nits quota with is_active false.\n",
-=======
-        "description": "Returns the overall budget and rate limit quota for the authenticated virtual key,\nas well as per-provider and per-model budgets and rate limits (with current usage).\nEach budget also carries the actual per-model usage for its current cycle.\nThis is a self-service endpoint - no admin authentication required. The virtual key\nvalue itself is the credential, sent as `x-bf-vk` (any value) or, with the `sk-bf-`\nprefix required, as `Authorization: Bearer`, `x-api-key`, `x-goog-api-key` or `api-key`.\nAdmin/session tokens and management API keys do not authenticate here.\n",
->>>>>>> main
         "tags": [
           "Governance"
         ],
@@ -46815,7 +47264,7 @@
       "post": {
         "operationId": "rotateVirtualKey",
         "summary": "Rotate virtual key",
-        "description": "Generates a new credential value for the virtual key while leaving its configuration,\nassignments, budgets, and rate limits unchanged. On the node handling the request, the\nprevious credential value is invalidated before a successful response is returned.\n\nIn a clustered deployment, peer invalidation is asynchronous. Until each peer processes the\ncluster update and reloads the virtual key, that peer may continue to accept the previous\nvalue. There is no fixed upper bound when a peer is unavailable, so wait for cluster\nconvergence before treating the previous credential as revoked cluster-wide.\n\nThe new credential is returned in `virtual_key.value`. Store it securely and update clients\nthat use the previous value.\n",
+        "description": "Generates a new value for the virtual key. When the client vk_rotation_cooldown setting is non-zero, the retired value keeps authenticating until previous_value_expires_at; otherwise it stops working immediately.",
         "tags": [
           "Governance"
         ],
@@ -46841,7 +47290,19 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/VirtualKeyResponse"
+                  "type": "object",
+                  "required": [
+                    "message",
+                    "virtual_key"
+                  ],
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "virtual_key": {
+                      "$ref": "#/components/schemas/VirtualKey"
+                    }
+                  }
                 }
               }
             }
@@ -47134,16 +47595,64 @@
                                 "name": {
                                   "type": "string",
                                   "description": "Team name"
-                                },
-                                "business_unit_id": {
+                                }
+                              }
+                            }
+                          },
+                          "business_units": {
+                            "type": "array",
+                            "description": "Business units the user belongs to. Membership is many-to-many and belongs to the user, so this is the authoritative list; manage it under `/api/governance/business-units/{business_unit_id}/users`.\n",
+                            "items": {
+                              "type": "object",
+                              "description": "A business unit the user belongs to.",
+                              "properties": {
+                                "id": {
                                   "type": "string",
-                                  "nullable": true,
-                                  "description": "Business unit ID associated with this team (if any)"
+                                  "description": "Business unit ID"
                                 },
-                                "business_unit_name": {
+                                "name": {
                                   "type": "string",
-                                  "nullable": true,
-                                  "description": "Business unit name associated with this team (if any)"
+                                  "description": "Business unit name"
+                                }
+                              }
+                            }
+                          },
+                          "access_profiles": {
+                            "type": "array",
+                            "description": "Every access profile the user holds, one per assignment source. All of them are enforced — their budgets, rate limits, and provider access combine.\n",
+                            "items": {
+                              "type": "object",
+                              "nullable": true,
+                              "description": "Active or fallback user access profile, if assigned.",
+                              "properties": {
+                                "id": {
+                                  "type": "integer"
+                                },
+                                "user_id": {
+                                  "type": "string"
+                                },
+                                "parent_profile_id": {
+                                  "type": "integer",
+                                  "nullable": true
+                                },
+                                "name": {
+                                  "type": "string"
+                                },
+                                "is_active": {
+                                  "type": "boolean"
+                                },
+                                "expires_at": {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "nullable": true
+                                },
+                                "created_at": {
+                                  "type": "string",
+                                  "format": "date-time"
+                                },
+                                "updated_at": {
+                                  "type": "string",
+                                  "format": "date-time"
                                 }
                               }
                             }
@@ -47151,7 +47660,7 @@
                           "access_profile": {
                             "type": "object",
                             "nullable": true,
-                            "description": "Active or fallback user access profile, if assigned.",
+                            "description": "Deprecated. A single-value summary of the highest-precedence profile (`attribute_mapping` > `role_default` > `manual`), kept for clients written before a user could hold several. It grants nothing on its own — read `access_profiles` instead.\n",
                             "properties": {
                               "id": {
                                 "type": "integer"
@@ -47430,76 +47939,6 @@
                       }
                     }
                   }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/governance/virtual-keys/{vk_id}/rotate": {
-      "post": {
-        "operationId": "rotateVirtualKey",
-        "summary": "Rotate virtual key",
-        "description": "Generates a new value for the virtual key. When the client vk_rotation_cooldown setting is non-zero, the retired value keeps authenticating until previous_value_expires_at; otherwise it stops working immediately.",
-        "tags": [
-          "Governance"
-        ],
-        "parameters": [
-          {
-            "name": "vk_id",
-            "in": "path",
-            "required": true,
-            "description": "Virtual key ID",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "security": [
-          {
-            "ManagementBearerAuth": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Virtual key rotated successfully",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "message",
-                    "virtual_key"
-                  ],
-                  "properties": {
-                    "message": {
-                      "type": "string"
-                    },
-                    "virtual_key": {
-                      "$ref": "#/components/schemas/VirtualKey"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Virtual key not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
                 }
               }
             }
@@ -48471,7 +48910,7 @@
           "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
         },
         "summary": "List business units",
-        "description": "Returns a paginated list of business units, each with its team count.",
+        "description": "Returns a paginated list of business units, each with its user count.",
         "tags": [
           "Governance"
         ],
@@ -48542,8 +48981,9 @@
                           "name": {
                             "type": "string"
                           },
-                          "team_count": {
-                            "type": "integer"
+                          "user_count": {
+                            "type": "integer",
+                            "description": "Number of users that belong to this business unit."
                           },
                           "customer_count": {
                             "type": "integer"
@@ -48691,7 +49131,7 @@
           "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
         },
         "summary": "Get business unit",
-        "description": "Returns a specific business unit by ID, including governance and team count.",
+        "description": "Returns a specific business unit by ID, including governance and user count.",
         "tags": [
           "Governance"
         ],
@@ -48721,7 +49161,7 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "description": "Single business unit with governance and team count",
+                  "description": "Single business unit with governance and user count",
                   "properties": {
                     "id": {
                       "type": "string"
@@ -48729,8 +49169,9 @@
                     "name": {
                       "type": "string"
                     },
-                    "team_count": {
-                      "type": "integer"
+                    "user_count": {
+                      "type": "integer",
+                      "description": "Number of users that belong to this business unit."
                     },
                     "budget": {
                       "$ref": "#/components/schemas/Budget"
@@ -48895,7 +49336,7 @@
           "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
         },
         "summary": "Delete business unit",
-        "description": "Deletes a business unit. Any teams assigned to it are atomically unassigned\nas part of the deletion.\n",
+        "description": "Deletes a business unit. Every user membership of it is atomically removed as part of the\ndeletion, and each affected user's governance is refreshed so the business unit stops\napplying to their requests.\n",
         "tags": [
           "Governance"
         ],
@@ -48952,17 +49393,17 @@
         }
       }
     },
-    "/api/governance/business-units/{business_unit_id}/teams": {
+    "/api/governance/business-units/{business_unit_id}/users": {
       "get": {
-        "operationId": "listBusinessUnitTeams",
+        "operationId": "listBusinessUnitUsers",
         "x-mint": {
           "metadata": {
             "tag": "Enterprise"
           },
           "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
         },
-        "summary": "List business unit teams",
-        "description": "Returns a paginated list of teams assigned to the business unit.",
+        "summary": "List business unit users",
+        "description": "Returns a paginated list of users that belong to the business unit, each with the\nprovenance of its membership edge so a caller can tell an admin assignment apart from\nan identity-provider-synced one.\n",
         "tags": [
           "Governance"
         ],
@@ -48989,7 +49430,7 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Maximum number of teams to return (max 100)",
+            "description": "Maximum number of users to return (max 100)",
             "schema": {
               "type": "integer",
               "minimum": 1,
@@ -49000,7 +49441,7 @@
           {
             "name": "search",
             "in": "query",
-            "description": "Case-insensitive search by team name",
+            "description": "Case-insensitive search by user name or email",
             "schema": {
               "type": "string"
             }
@@ -49021,16 +49462,16 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "description": "Paginated list of teams assigned to a business unit",
+                  "description": "Paginated list of users that belong to a business unit",
                   "required": [
-                    "teams",
+                    "users",
                     "count",
                     "total_count",
                     "limit",
                     "offset"
                   ],
                   "properties": {
-                    "teams": {
+                    "users": {
                       "type": "array",
                       "items": {
                         "type": "object",
@@ -49040,6 +49481,13 @@
                           },
                           "name": {
                             "type": "string"
+                          },
+                          "email": {
+                            "type": "string"
+                          },
+                          "source": {
+                            "type": "string",
+                            "description": "Provenance of this user's membership edge. `manual` means an admin or `config.json` assigned it and no claims sync will clear it; the synced values (`scim_user_attribute`, `scim_group_attribute`, `attribute_mapping`, `scim`) mean an identity provider owns it. Empty on legacy unstamped edges, which are treated as synced.\n"
                           }
                         }
                       }
@@ -49084,15 +49532,15 @@
         }
       },
       "post": {
-        "operationId": "assignTeamToBusinessUnit",
+        "operationId": "assignUserToBusinessUnit",
         "x-mint": {
           "metadata": {
             "tag": "Enterprise"
           },
           "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
         },
-        "summary": "Assign team to business unit",
-        "description": "Assigns an existing team to the business unit. Returns 409 if the team is\nalready assigned to a different business unit.\n",
+        "summary": "Assign user to business unit",
+        "description": "Assigns an existing user to the business unit. Membership is many-to-many, so a user may\nbelong to several business units and there is no conflict to reject.\n",
         "tags": [
           "Governance"
         ],
@@ -49113,12 +49561,12 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "description": "Request to assign a team to a business unit",
+                "description": "Request to assign a user to a business unit",
                 "required": [
-                  "team_id"
+                  "user_id"
                 ],
                 "properties": {
-                  "team_id": {
+                  "user_id": {
                     "type": "string"
                   }
                 }
@@ -49136,7 +49584,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Team assigned to business unit",
+            "description": "User assigned to business unit",
             "content": {
               "application/json": {
                 "schema": {
@@ -49156,17 +49604,7 @@
             }
           },
           "404": {
-            "description": "Business unit or team not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManagementErrorResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Team is already assigned to another business unit",
+            "description": "Business unit or user not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -49188,17 +49626,17 @@
         }
       }
     },
-    "/api/governance/business-units/{business_unit_id}/teams/{team_id}": {
+    "/api/governance/business-units/{business_unit_id}/users/{user_id}": {
       "delete": {
-        "operationId": "removeTeamFromBusinessUnit",
+        "operationId": "removeUserFromBusinessUnit",
         "x-mint": {
           "metadata": {
             "tag": "Enterprise"
           },
           "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
         },
-        "summary": "Remove team from business unit",
-        "description": "Unassigns a team from the business unit.",
+        "summary": "Remove user from business unit",
+        "description": "Removes a user's membership of the business unit.",
         "tags": [
           "Governance"
         ],
@@ -49213,10 +49651,10 @@
             }
           },
           {
-            "name": "team_id",
+            "name": "user_id",
             "in": "path",
             "required": true,
-            "description": "Team ID",
+            "description": "User ID",
             "schema": {
               "type": "string"
             }
@@ -49232,7 +49670,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Team removed from business unit",
+            "description": "User removed from business unit",
             "content": {
               "application/json": {
                 "schema": {
@@ -49252,7 +49690,7 @@
             }
           },
           "404": {
-            "description": "Business unit or team not found",
+            "description": "Membership not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -50093,7 +50531,7 @@
       "post": {
         "operationId": "createModelConfig",
         "summary": "Create model config",
-        "description": "Creates a new model configuration with budget and rate limit settings.",
+        "description": "Creates a new model configuration with budget and rate limit settings.\n\n`scope: \"user\"` is rejected with 403. It is retired as a creatable scope — per-model\nbudgets for a person are now declared on an access profile and materialize per user as\n`access_profile`-scoped limits. Existing `user`-scoped rows keep working and stay editable\nthrough the update endpoint.\n",
         "tags": [
           "Governance"
         ],
@@ -50132,6 +50570,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The requested scope cannot be assigned to a new limit. Returned for\n`scope: \"user\"`, which is retired in favour of access-profile per-model budgets.\n",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
                 }
               }
             }
@@ -52078,6 +52526,39 @@
                           "calendar_aligned": {
                             "type": "boolean"
                           },
+                          "allow_all_providers": {
+                            "type": "boolean",
+                            "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
+                          },
+                          "auto_rotation_interval": {
+                            "type": "integer",
+                            "format": "int64",
+                            "description": "Interval between automatic rotations of the profile's managed virtual keys, in nanoseconds. 0 means automatic rotation is off."
+                          },
+                          "next_rotation_at": {
+                            "oneOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "When the next scheduled rotation is due. Absent while automatic rotation is off."
+                          },
+                          "last_rotation_at": {
+                            "oneOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "When the last scheduled rotation run finished."
+                          },
                           "mcp_tool_groups": {
                             "type": "array",
                             "items": {
@@ -52453,6 +52934,43 @@
                   "calendar_aligned": {
                     "type": "boolean"
                   },
+                  "allow_all_providers": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
+                  },
+                  "auto_rotation_interval": {
+                    "oneOf": [
+                      {
+                        "type": "string",
+                        "description": "Rotation interval as a day count (\"30d\") or a Go duration (\"12h\", \"720h\"). Must resolve to between 1h and 365d. \"\" disables rotation.",
+                        "pattern": "^$|^[0-9]+d$|^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+                        "example": "30d"
+                      },
+                      {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "Rotation interval in nanoseconds. 0 disables rotation; otherwise between 1h (3600000000000) and 365d (31536000000000000).",
+                        "oneOf": [
+                          {
+                            "const": 0
+                          },
+                          {
+                            "minimum": 3600000000000,
+                            "maximum": 31536000000000000
+                          }
+                        ],
+                        "example": 2592000000000000
+                      }
+                    ],
+                    "description": "Schedule automatic rotation of the profile's managed virtual keys. Accepts a day count (\"30d\"), a Go duration (\"12h\"), or integer nanoseconds. Between 1h and 365d; omit, \"\" or 0 to leave it off.",
+                    "example": "30d"
+                  },
+                  "next_rotation_at": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "Optional first rotation time; must be in the future and requires auto_rotation_interval. Defaults to now + interval."
+                  },
                   "mcp_tool_groups": {
                     "type": "array",
                     "items": {
@@ -52798,6 +53316,39 @@
                         },
                         "calendar_aligned": {
                           "type": "boolean"
+                        },
+                        "allow_all_providers": {
+                          "type": "boolean",
+                          "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
+                        },
+                        "auto_rotation_interval": {
+                          "type": "integer",
+                          "format": "int64",
+                          "description": "Interval between automatic rotations of the profile's managed virtual keys, in nanoseconds. 0 means automatic rotation is off."
+                        },
+                        "next_rotation_at": {
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the next scheduled rotation is due. Absent while automatic rotation is off."
+                        },
+                        "last_rotation_at": {
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the last scheduled rotation run finished."
                         },
                         "mcp_tool_groups": {
                           "type": "array",
@@ -53205,6 +53756,39 @@
                         },
                         "calendar_aligned": {
                           "type": "boolean"
+                        },
+                        "allow_all_providers": {
+                          "type": "boolean",
+                          "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
+                        },
+                        "auto_rotation_interval": {
+                          "type": "integer",
+                          "format": "int64",
+                          "description": "Interval between automatic rotations of the profile's managed virtual keys, in nanoseconds. 0 means automatic rotation is off."
+                        },
+                        "next_rotation_at": {
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the next scheduled rotation is due. Absent while automatic rotation is off."
+                        },
+                        "last_rotation_at": {
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the last scheduled rotation run finished."
                         },
                         "mcp_tool_groups": {
                           "type": "array",
@@ -53616,6 +54200,52 @@
                     "type": "boolean",
                     "nullable": true
                   },
+                  "allow_all_providers": {
+                    "type": "boolean",
+                    "nullable": true,
+                    "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false, provider-wide access is disabled and access is deny-by-default via provider_configs. Omit to leave unchanged."
+                  },
+                  "auto_rotation_interval": {
+                    "oneOf": [
+                      {
+                        "type": "string",
+                        "description": "Rotation interval as a day count (\"30d\") or a Go duration (\"12h\", \"720h\"). Must resolve to between 1h and 365d. \"\" disables rotation.",
+                        "pattern": "^$|^[0-9]+d$|^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+                        "example": "30d"
+                      },
+                      {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "Rotation interval in nanoseconds. 0 disables rotation; otherwise between 1h (3600000000000) and 365d (31536000000000000).",
+                        "oneOf": [
+                          {
+                            "const": 0
+                          },
+                          {
+                            "minimum": 3600000000000,
+                            "maximum": 31536000000000000
+                          }
+                        ],
+                        "example": 2592000000000000
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Replace the rotation schedule (\"30d\", \"12h\" or nanoseconds); \"\" or 0 turns it off. Omit to leave the schedule unchanged."
+                  },
+                  "next_rotation_at": {
+                    "oneOf": [
+                      {
+                        "type": "string",
+                        "format": "date-time"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Override the next rotation time (must be in the future). null clears it, which is only valid when the interval is off. Omit to keep the existing schedule; a changed interval re-anchors it to now + interval."
+                  },
                   "mcp_tool_groups": {
                     "type": "array",
                     "items": {
@@ -53961,6 +54591,39 @@
                         },
                         "calendar_aligned": {
                           "type": "boolean"
+                        },
+                        "allow_all_providers": {
+                          "type": "boolean",
+                          "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
+                        },
+                        "auto_rotation_interval": {
+                          "type": "integer",
+                          "format": "int64",
+                          "description": "Interval between automatic rotations of the profile's managed virtual keys, in nanoseconds. 0 means automatic rotation is off."
+                        },
+                        "next_rotation_at": {
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the next scheduled rotation is due. Absent while automatic rotation is off."
+                        },
+                        "last_rotation_at": {
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the last scheduled rotation run finished."
                         },
                         "mcp_tool_groups": {
                           "type": "array",
@@ -54436,6 +55099,39 @@
                         "calendar_aligned": {
                           "type": "boolean"
                         },
+                        "allow_all_providers": {
+                          "type": "boolean",
+                          "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
+                        },
+                        "auto_rotation_interval": {
+                          "type": "integer",
+                          "format": "int64",
+                          "description": "Interval between automatic rotations of the profile's managed virtual keys, in nanoseconds. 0 means automatic rotation is off."
+                        },
+                        "next_rotation_at": {
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the next scheduled rotation is due. Absent while automatic rotation is off."
+                        },
+                        "last_rotation_at": {
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the last scheduled rotation run finished."
+                        },
                         "mcp_tool_groups": {
                           "type": "array",
                           "items": {
@@ -54831,6 +55527,39 @@
                         },
                         "calendar_aligned": {
                           "type": "boolean"
+                        },
+                        "allow_all_providers": {
+                          "type": "boolean",
+                          "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
+                        },
+                        "auto_rotation_interval": {
+                          "type": "integer",
+                          "format": "int64",
+                          "description": "Interval between automatic rotations of the profile's managed virtual keys, in nanoseconds. 0 means automatic rotation is off."
+                        },
+                        "next_rotation_at": {
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the next scheduled rotation is due. Absent while automatic rotation is off."
+                        },
+                        "last_rotation_at": {
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the last scheduled rotation run finished."
                         },
                         "mcp_tool_groups": {
                           "type": "array",
@@ -55248,6 +55977,39 @@
                         },
                         "calendar_aligned": {
                           "type": "boolean"
+                        },
+                        "allow_all_providers": {
+                          "type": "boolean",
+                          "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
+                        },
+                        "auto_rotation_interval": {
+                          "type": "integer",
+                          "format": "int64",
+                          "description": "Interval between automatic rotations of the profile's managed virtual keys, in nanoseconds. 0 means automatic rotation is off."
+                        },
+                        "next_rotation_at": {
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the next scheduled rotation is due. Absent while automatic rotation is off."
+                        },
+                        "last_rotation_at": {
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the last scheduled rotation run finished."
                         },
                         "mcp_tool_groups": {
                           "type": "array",
@@ -56478,13 +57240,17 @@
     "/api/governance/users/{user_id}/access-profiles/{profile_id}/virtual-keys": {
       "post": {
         "operationId": "addUserAccessProfileVirtualKey",
+        "deprecated": true,
+        "x-bifrost-successor": "/api/governance/users/{user_id}/virtual-keys",
+        "x-bifrost-removal": "following-major-release",
         "x-mint": {
           "metadata": {
-            "tag": "Enterprise"
+            "tag": "Removing soon"
           },
-          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
+          "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/governance/users/{user_id}/virtual-keys` instead.\n</Warning>\n<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n<Warning>\n  **Deprecated.** Use [`POST /api/governance/users/{user_id}/virtual-keys`](/api-reference/governance/mint-an-extra-virtual-key-for-a-user)\n  instead. This path still works and behaves identically, but will be removed in a future major release.\n</Warning>\n"
         },
-        "summary": "Add an extra virtual key under a user's access profile",
+        "summary": "Add an extra virtual key under a user's access profile (deprecated) (deprecated path)",
+        "description": "Issues an additional virtual key for the user. \n\nVirtual keys are scoped to the **user**, not to one access profile: what a request may do with\nthe key is resolved at request time from whichever of the user's active profiles grant it. So\n`profile_id` is ignored — the key minted is the same whichever profile is named, and it is not\nbound to that profile or removed with it. The user must hold at least one access profile.\n",
         "tags": [
           "Access Profiles"
         ],
@@ -56501,6 +57267,7 @@
             "name": "profile_id",
             "in": "path",
             "required": true,
+            "description": "Ignored. Kept so the path shape stays valid for existing clients; keys are user-scoped, so any value produces the same result.\n",
             "schema": {
               "type": "integer"
             }
@@ -56560,8 +57327,28 @@
               }
             }
           },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
           "404": {
-            "description": "User access profile not found"
+            "description": "User has no access profiles",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A virtual key with this name already exists"
           },
           "500": {
             "description": "Internal server error",
@@ -56784,6 +57571,11 @@
                             "type": "boolean",
                             "default": false,
                             "description": "Snaps every window the project holds, including each member's derived slice, onto calendar boundaries instead of running from creation."
+                          },
+                          "allow_all_providers": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. Listed providers keep their own model, key, budget, and rate-limit rules."
                           },
                           "budgets": {
                             "type": "array",
@@ -57823,6 +58615,11 @@
                     "type": "boolean",
                     "default": false
                   },
+                  "allow_all_providers": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. Listed providers keep their own model, key, budget, and rate-limit rules."
+                  },
                   "budgets": {
                     "type": "array",
                     "items": {
@@ -58475,6 +59272,11 @@
                           "type": "boolean",
                           "default": false,
                           "description": "Snaps every window the project holds, including each member's derived slice, onto calendar boundaries instead of running from creation."
+                        },
+                        "allow_all_providers": {
+                          "type": "boolean",
+                          "default": false,
+                          "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. Listed providers keep their own model, key, budget, and rate-limit rules."
                         },
                         "budgets": {
                           "type": "array",
@@ -59525,6 +60327,11 @@
                           "default": false,
                           "description": "Snaps every window the project holds, including each member's derived slice, onto calendar boundaries instead of running from creation."
                         },
+                        "allow_all_providers": {
+                          "type": "boolean",
+                          "default": false,
+                          "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. Listed providers keep their own model, key, budget, and rate-limit rules."
+                        },
                         "budgets": {
                           "type": "array",
                           "nullable": true,
@@ -60553,6 +61360,10 @@
                   "calendar_aligned": {
                     "type": "boolean"
                   },
+                  "allow_all_providers": {
+                    "type": "boolean",
+                    "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. Listed providers keep their own model, key, budget, and rate-limit rules. Omit to leave unchanged."
+                  },
                   "budgets": {
                     "type": "array",
                     "nullable": true,
@@ -61220,6 +62031,11 @@
                           "type": "boolean",
                           "default": false,
                           "description": "Snaps every window the project holds, including each member's derived slice, onto calendar boundaries instead of running from creation."
+                        },
+                        "allow_all_providers": {
+                          "type": "boolean",
+                          "default": false,
+                          "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. Listed providers keep their own model, key, budget, and rate-limit rules."
                         },
                         "budgets": {
                           "type": "array",
@@ -63947,6 +64763,11 @@
                             "default": false,
                             "description": "Snaps every window the project holds, including each member's derived slice, onto calendar boundaries instead of running from creation."
                           },
+                          "allow_all_providers": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. Listed providers keep their own model, key, budget, and rate-limit rules."
+                          },
                           "budgets": {
                             "type": "array",
                             "nullable": true,
@@ -64996,16 +65817,64 @@
                                 "name": {
                                   "type": "string",
                                   "description": "Team name"
-                                },
-                                "business_unit_id": {
+                                }
+                              }
+                            }
+                          },
+                          "business_units": {
+                            "type": "array",
+                            "description": "Business units the user belongs to. Membership is many-to-many and belongs to the user, so this is the authoritative list; manage it under `/api/governance/business-units/{business_unit_id}/users`.\n",
+                            "items": {
+                              "type": "object",
+                              "description": "A business unit the user belongs to.",
+                              "properties": {
+                                "id": {
                                   "type": "string",
-                                  "nullable": true,
-                                  "description": "Business unit ID associated with this team (if any)"
+                                  "description": "Business unit ID"
                                 },
-                                "business_unit_name": {
+                                "name": {
                                   "type": "string",
-                                  "nullable": true,
-                                  "description": "Business unit name associated with this team (if any)"
+                                  "description": "Business unit name"
+                                }
+                              }
+                            }
+                          },
+                          "access_profiles": {
+                            "type": "array",
+                            "description": "Every access profile the user holds, one per assignment source. All of them are enforced — their budgets, rate limits, and provider access combine.\n",
+                            "items": {
+                              "type": "object",
+                              "nullable": true,
+                              "description": "Active or fallback user access profile, if assigned.",
+                              "properties": {
+                                "id": {
+                                  "type": "integer"
+                                },
+                                "user_id": {
+                                  "type": "string"
+                                },
+                                "parent_profile_id": {
+                                  "type": "integer",
+                                  "nullable": true
+                                },
+                                "name": {
+                                  "type": "string"
+                                },
+                                "is_active": {
+                                  "type": "boolean"
+                                },
+                                "expires_at": {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "nullable": true
+                                },
+                                "created_at": {
+                                  "type": "string",
+                                  "format": "date-time"
+                                },
+                                "updated_at": {
+                                  "type": "string",
+                                  "format": "date-time"
                                 }
                               }
                             }
@@ -65013,7 +65882,7 @@
                           "access_profile": {
                             "type": "object",
                             "nullable": true,
-                            "description": "Active or fallback user access profile, if assigned.",
+                            "description": "Deprecated. A single-value summary of the highest-precedence profile (`attribute_mapping` > `role_default` > `manual`), kept for clients written before a user could hold several. It grants nothing on its own — read `access_profiles` instead.\n",
                             "properties": {
                               "id": {
                                 "type": "integer"
@@ -66531,16 +67400,64 @@
                                 "name": {
                                   "type": "string",
                                   "description": "Team name"
-                                },
-                                "business_unit_id": {
+                                }
+                              }
+                            }
+                          },
+                          "business_units": {
+                            "type": "array",
+                            "description": "Business units the user belongs to. Membership is many-to-many and belongs to the user, so this is the authoritative list; manage it under `/api/governance/business-units/{business_unit_id}/users`.\n",
+                            "items": {
+                              "type": "object",
+                              "description": "A business unit the user belongs to.",
+                              "properties": {
+                                "id": {
                                   "type": "string",
-                                  "nullable": true,
-                                  "description": "Business unit ID associated with this team (if any)"
+                                  "description": "Business unit ID"
                                 },
-                                "business_unit_name": {
+                                "name": {
                                   "type": "string",
-                                  "nullable": true,
-                                  "description": "Business unit name associated with this team (if any)"
+                                  "description": "Business unit name"
+                                }
+                              }
+                            }
+                          },
+                          "access_profiles": {
+                            "type": "array",
+                            "description": "Every access profile the user holds, one per assignment source. All of them are enforced — their budgets, rate limits, and provider access combine.\n",
+                            "items": {
+                              "type": "object",
+                              "nullable": true,
+                              "description": "Active or fallback user access profile, if assigned.",
+                              "properties": {
+                                "id": {
+                                  "type": "integer"
+                                },
+                                "user_id": {
+                                  "type": "string"
+                                },
+                                "parent_profile_id": {
+                                  "type": "integer",
+                                  "nullable": true
+                                },
+                                "name": {
+                                  "type": "string"
+                                },
+                                "is_active": {
+                                  "type": "boolean"
+                                },
+                                "expires_at": {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "nullable": true
+                                },
+                                "created_at": {
+                                  "type": "string",
+                                  "format": "date-time"
+                                },
+                                "updated_at": {
+                                  "type": "string",
+                                  "format": "date-time"
                                 }
                               }
                             }
@@ -66548,7 +67465,7 @@
                           "access_profile": {
                             "type": "object",
                             "nullable": true,
-                            "description": "Active or fallback user access profile, if assigned.",
+                            "description": "Deprecated. A single-value summary of the highest-precedence profile (`attribute_mapping` > `role_default` > `manual`), kept for clients written before a user could hold several. It grants nothing on its own — read `access_profiles` instead.\n",
                             "properties": {
                               "id": {
                                 "type": "integer"
@@ -66739,16 +67656,64 @@
                               "name": {
                                 "type": "string",
                                 "description": "Team name"
-                              },
-                              "business_unit_id": {
+                              }
+                            }
+                          }
+                        },
+                        "business_units": {
+                          "type": "array",
+                          "description": "Business units the user belongs to. Membership is many-to-many and belongs to the user, so this is the authoritative list; manage it under `/api/governance/business-units/{business_unit_id}/users`.\n",
+                          "items": {
+                            "type": "object",
+                            "description": "A business unit the user belongs to.",
+                            "properties": {
+                              "id": {
                                 "type": "string",
-                                "nullable": true,
-                                "description": "Business unit ID associated with this team (if any)"
+                                "description": "Business unit ID"
                               },
-                              "business_unit_name": {
+                              "name": {
                                 "type": "string",
-                                "nullable": true,
-                                "description": "Business unit name associated with this team (if any)"
+                                "description": "Business unit name"
+                              }
+                            }
+                          }
+                        },
+                        "access_profiles": {
+                          "type": "array",
+                          "description": "Every access profile the user holds, one per assignment source. All of them are enforced — their budgets, rate limits, and provider access combine.\n",
+                          "items": {
+                            "type": "object",
+                            "nullable": true,
+                            "description": "Active or fallback user access profile, if assigned.",
+                            "properties": {
+                              "id": {
+                                "type": "integer"
+                              },
+                              "user_id": {
+                                "type": "string"
+                              },
+                              "parent_profile_id": {
+                                "type": "integer",
+                                "nullable": true
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "is_active": {
+                                "type": "boolean"
+                              },
+                              "expires_at": {
+                                "type": "string",
+                                "format": "date-time",
+                                "nullable": true
+                              },
+                              "created_at": {
+                                "type": "string",
+                                "format": "date-time"
+                              },
+                              "updated_at": {
+                                "type": "string",
+                                "format": "date-time"
                               }
                             }
                           }
@@ -66756,7 +67721,7 @@
                         "access_profile": {
                           "type": "object",
                           "nullable": true,
-                          "description": "Active or fallback user access profile, if assigned.",
+                          "description": "Deprecated. A single-value summary of the highest-precedence profile (`attribute_mapping` > `role_default` > `manual`), kept for clients written before a user could hold several. It grants nothing on its own — read `access_profiles` instead.\n",
                           "properties": {
                             "id": {
                               "type": "integer"
@@ -66931,16 +67896,64 @@
                           "name": {
                             "type": "string",
                             "description": "Team name"
-                          },
-                          "business_unit_id": {
+                          }
+                        }
+                      }
+                    },
+                    "business_units": {
+                      "type": "array",
+                      "description": "Business units the user belongs to. Membership is many-to-many and belongs to the user, so this is the authoritative list; manage it under `/api/governance/business-units/{business_unit_id}/users`.\n",
+                      "items": {
+                        "type": "object",
+                        "description": "A business unit the user belongs to.",
+                        "properties": {
+                          "id": {
                             "type": "string",
-                            "nullable": true,
-                            "description": "Business unit ID associated with this team (if any)"
+                            "description": "Business unit ID"
                           },
-                          "business_unit_name": {
+                          "name": {
                             "type": "string",
-                            "nullable": true,
-                            "description": "Business unit name associated with this team (if any)"
+                            "description": "Business unit name"
+                          }
+                        }
+                      }
+                    },
+                    "access_profiles": {
+                      "type": "array",
+                      "description": "Every access profile the user holds, one per assignment source. All of them are enforced — their budgets, rate limits, and provider access combine.\n",
+                      "items": {
+                        "type": "object",
+                        "nullable": true,
+                        "description": "Active or fallback user access profile, if assigned.",
+                        "properties": {
+                          "id": {
+                            "type": "integer"
+                          },
+                          "user_id": {
+                            "type": "string"
+                          },
+                          "parent_profile_id": {
+                            "type": "integer",
+                            "nullable": true
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "is_active": {
+                            "type": "boolean"
+                          },
+                          "expires_at": {
+                            "type": "string",
+                            "format": "date-time",
+                            "nullable": true
+                          },
+                          "created_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "updated_at": {
+                            "type": "string",
+                            "format": "date-time"
                           }
                         }
                       }
@@ -66948,7 +67961,7 @@
                     "access_profile": {
                       "type": "object",
                       "nullable": true,
-                      "description": "Active or fallback user access profile, if assigned.",
+                      "description": "Deprecated. A single-value summary of the highest-precedence profile (`attribute_mapping` > `role_default` > `manual`), kept for clients written before a user could hold several. It grants nothing on its own — read `access_profiles` instead.\n",
                       "properties": {
                         "id": {
                           "type": "integer"
@@ -67705,16 +68718,64 @@
                           "name": {
                             "type": "string",
                             "description": "Team name"
-                          },
-                          "business_unit_id": {
+                          }
+                        }
+                      }
+                    },
+                    "business_units": {
+                      "type": "array",
+                      "description": "Business units the user belongs to. Membership is many-to-many and belongs to the user, so this is the authoritative list; manage it under `/api/governance/business-units/{business_unit_id}/users`.\n",
+                      "items": {
+                        "type": "object",
+                        "description": "A business unit the user belongs to.",
+                        "properties": {
+                          "id": {
                             "type": "string",
-                            "nullable": true,
-                            "description": "Business unit ID associated with this team (if any)"
+                            "description": "Business unit ID"
                           },
-                          "business_unit_name": {
+                          "name": {
                             "type": "string",
-                            "nullable": true,
-                            "description": "Business unit name associated with this team (if any)"
+                            "description": "Business unit name"
+                          }
+                        }
+                      }
+                    },
+                    "access_profiles": {
+                      "type": "array",
+                      "description": "Every access profile the user holds, one per assignment source. All of them are enforced — their budgets, rate limits, and provider access combine.\n",
+                      "items": {
+                        "type": "object",
+                        "nullable": true,
+                        "description": "Active or fallback user access profile, if assigned.",
+                        "properties": {
+                          "id": {
+                            "type": "integer"
+                          },
+                          "user_id": {
+                            "type": "string"
+                          },
+                          "parent_profile_id": {
+                            "type": "integer",
+                            "nullable": true
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "is_active": {
+                            "type": "boolean"
+                          },
+                          "expires_at": {
+                            "type": "string",
+                            "format": "date-time",
+                            "nullable": true
+                          },
+                          "created_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "updated_at": {
+                            "type": "string",
+                            "format": "date-time"
                           }
                         }
                       }
@@ -67722,7 +68783,7 @@
                     "access_profile": {
                       "type": "object",
                       "nullable": true,
-                      "description": "Active or fallback user access profile, if assigned.",
+                      "description": "Deprecated. A single-value summary of the highest-precedence profile (`attribute_mapping` > `role_default` > `manual`), kept for clients written before a user could hold several. It grants nothing on its own — read `access_profiles` instead.\n",
                       "properties": {
                         "id": {
                           "type": "integer"
@@ -68826,6 +69887,39 @@
                           "calendar_aligned": {
                             "type": "boolean"
                           },
+                          "allow_all_providers": {
+                            "type": "boolean",
+                            "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
+                          },
+                          "auto_rotation_interval": {
+                            "type": "integer",
+                            "format": "int64",
+                            "description": "Interval between automatic rotations of the profile's managed virtual keys, in nanoseconds. 0 means automatic rotation is off."
+                          },
+                          "next_rotation_at": {
+                            "oneOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "When the next scheduled rotation is due. Absent while automatic rotation is off."
+                          },
+                          "last_rotation_at": {
+                            "oneOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "When the last scheduled rotation run finished."
+                          },
                           "mcp_tool_groups": {
                             "type": "array",
                             "items": {
@@ -69204,6 +70298,43 @@
                   "calendar_aligned": {
                     "type": "boolean"
                   },
+                  "allow_all_providers": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
+                  },
+                  "auto_rotation_interval": {
+                    "oneOf": [
+                      {
+                        "type": "string",
+                        "description": "Rotation interval as a day count (\"30d\") or a Go duration (\"12h\", \"720h\"). Must resolve to between 1h and 365d. \"\" disables rotation.",
+                        "pattern": "^$|^[0-9]+d$|^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+                        "example": "30d"
+                      },
+                      {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "Rotation interval in nanoseconds. 0 disables rotation; otherwise between 1h (3600000000000) and 365d (31536000000000000).",
+                        "oneOf": [
+                          {
+                            "const": 0
+                          },
+                          {
+                            "minimum": 3600000000000,
+                            "maximum": 31536000000000000
+                          }
+                        ],
+                        "example": 2592000000000000
+                      }
+                    ],
+                    "description": "Schedule automatic rotation of the profile's managed virtual keys. Accepts a day count (\"30d\"), a Go duration (\"12h\"), or integer nanoseconds. Between 1h and 365d; omit, \"\" or 0 to leave it off.",
+                    "example": "30d"
+                  },
+                  "next_rotation_at": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "Optional first rotation time; must be in the future and requires auto_rotation_interval. Defaults to now + interval."
+                  },
                   "mcp_tool_groups": {
                     "type": "array",
                     "items": {
@@ -69549,6 +70680,39 @@
                         },
                         "calendar_aligned": {
                           "type": "boolean"
+                        },
+                        "allow_all_providers": {
+                          "type": "boolean",
+                          "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
+                        },
+                        "auto_rotation_interval": {
+                          "type": "integer",
+                          "format": "int64",
+                          "description": "Interval between automatic rotations of the profile's managed virtual keys, in nanoseconds. 0 means automatic rotation is off."
+                        },
+                        "next_rotation_at": {
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the next scheduled rotation is due. Absent while automatic rotation is off."
+                        },
+                        "last_rotation_at": {
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the last scheduled rotation run finished."
                         },
                         "mcp_tool_groups": {
                           "type": "array",
@@ -69959,6 +71123,39 @@
                         },
                         "calendar_aligned": {
                           "type": "boolean"
+                        },
+                        "allow_all_providers": {
+                          "type": "boolean",
+                          "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
+                        },
+                        "auto_rotation_interval": {
+                          "type": "integer",
+                          "format": "int64",
+                          "description": "Interval between automatic rotations of the profile's managed virtual keys, in nanoseconds. 0 means automatic rotation is off."
+                        },
+                        "next_rotation_at": {
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the next scheduled rotation is due. Absent while automatic rotation is off."
+                        },
+                        "last_rotation_at": {
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the last scheduled rotation run finished."
                         },
                         "mcp_tool_groups": {
                           "type": "array",
@@ -70373,6 +71570,52 @@
                     "type": "boolean",
                     "nullable": true
                   },
+                  "allow_all_providers": {
+                    "type": "boolean",
+                    "nullable": true,
+                    "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false, provider-wide access is disabled and access is deny-by-default via provider_configs. Omit to leave unchanged."
+                  },
+                  "auto_rotation_interval": {
+                    "oneOf": [
+                      {
+                        "type": "string",
+                        "description": "Rotation interval as a day count (\"30d\") or a Go duration (\"12h\", \"720h\"). Must resolve to between 1h and 365d. \"\" disables rotation.",
+                        "pattern": "^$|^[0-9]+d$|^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+                        "example": "30d"
+                      },
+                      {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "Rotation interval in nanoseconds. 0 disables rotation; otherwise between 1h (3600000000000) and 365d (31536000000000000).",
+                        "oneOf": [
+                          {
+                            "const": 0
+                          },
+                          {
+                            "minimum": 3600000000000,
+                            "maximum": 31536000000000000
+                          }
+                        ],
+                        "example": 2592000000000000
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Replace the rotation schedule (\"30d\", \"12h\" or nanoseconds); \"\" or 0 turns it off. Omit to leave the schedule unchanged."
+                  },
+                  "next_rotation_at": {
+                    "oneOf": [
+                      {
+                        "type": "string",
+                        "format": "date-time"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Override the next rotation time (must be in the future). null clears it, which is only valid when the interval is off. Omit to keep the existing schedule; a changed interval re-anchors it to now + interval."
+                  },
                   "mcp_tool_groups": {
                     "type": "array",
                     "items": {
@@ -70718,6 +71961,39 @@
                         },
                         "calendar_aligned": {
                           "type": "boolean"
+                        },
+                        "allow_all_providers": {
+                          "type": "boolean",
+                          "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
+                        },
+                        "auto_rotation_interval": {
+                          "type": "integer",
+                          "format": "int64",
+                          "description": "Interval between automatic rotations of the profile's managed virtual keys, in nanoseconds. 0 means automatic rotation is off."
+                        },
+                        "next_rotation_at": {
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the next scheduled rotation is due. Absent while automatic rotation is off."
+                        },
+                        "last_rotation_at": {
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the last scheduled rotation run finished."
                         },
                         "mcp_tool_groups": {
                           "type": "array",
@@ -71199,6 +72475,39 @@
                         "calendar_aligned": {
                           "type": "boolean"
                         },
+                        "allow_all_providers": {
+                          "type": "boolean",
+                          "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
+                        },
+                        "auto_rotation_interval": {
+                          "type": "integer",
+                          "format": "int64",
+                          "description": "Interval between automatic rotations of the profile's managed virtual keys, in nanoseconds. 0 means automatic rotation is off."
+                        },
+                        "next_rotation_at": {
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the next scheduled rotation is due. Absent while automatic rotation is off."
+                        },
+                        "last_rotation_at": {
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the last scheduled rotation run finished."
+                        },
                         "mcp_tool_groups": {
                           "type": "array",
                           "items": {
@@ -71597,6 +72906,39 @@
                         },
                         "calendar_aligned": {
                           "type": "boolean"
+                        },
+                        "allow_all_providers": {
+                          "type": "boolean",
+                          "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
+                        },
+                        "auto_rotation_interval": {
+                          "type": "integer",
+                          "format": "int64",
+                          "description": "Interval between automatic rotations of the profile's managed virtual keys, in nanoseconds. 0 means automatic rotation is off."
+                        },
+                        "next_rotation_at": {
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the next scheduled rotation is due. Absent while automatic rotation is off."
+                        },
+                        "last_rotation_at": {
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the last scheduled rotation run finished."
                         },
                         "mcp_tool_groups": {
                           "type": "array",
@@ -72017,6 +73359,39 @@
                         },
                         "calendar_aligned": {
                           "type": "boolean"
+                        },
+                        "allow_all_providers": {
+                          "type": "boolean",
+                          "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
+                        },
+                        "auto_rotation_interval": {
+                          "type": "integer",
+                          "format": "int64",
+                          "description": "Interval between automatic rotations of the profile's managed virtual keys, in nanoseconds. 0 means automatic rotation is off."
+                        },
+                        "next_rotation_at": {
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the next scheduled rotation is due. Absent while automatic rotation is off."
+                        },
+                        "last_rotation_at": {
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When the last scheduled rotation run finished."
                         },
                         "mcp_tool_groups": {
                           "type": "array",
@@ -73026,6 +74401,7 @@
           "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/governance/users/{user_id}/virtual-keys` instead.\n</Warning>\n<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
         },
         "summary": "List virtual keys available to a user (deprecated path)",
+        "description": "Returns every virtual key assigned to the user, independent of access profiles, so\ndirectly-assigned standalone keys are visible alongside profile-issued ones.\n",
         "tags": [
           "Users",
           "Virtual Keys"
@@ -73060,10 +74436,120 @@
                       "type": "array",
                       "items": {
                         "type": "object",
-                        "additionalProperties": true
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "value": {
+                            "type": "string"
+                          },
+                          "is_access_profile_managed": {
+                            "type": "boolean",
+                            "description": "True when an access profile governs this key, in which case its policy is edit-locked and changed by editing and propagating the profile.\n"
+                          }
+                        }
                       }
                     }
                   }
+                }
+              }
+            }
+          }
+        },
+        "x-bifrost-successor": "/api/governance/users/{user_id}/virtual-keys",
+        "x-bifrost-removal": "following-major-release",
+        "deprecated": true
+      },
+      "post": {
+        "operationId": "addUserVirtualKeyLegacy",
+        "x-mint": {
+          "metadata": {
+            "tag": "Removing soon"
+          },
+          "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/governance/users/{user_id}/virtual-keys` instead.\n</Warning>\n<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
+        },
+        "summary": "Mint an extra virtual key for a user (deprecated path)",
+        "description": "Issues an additional virtual key for the user.\n\nVirtual keys are scoped to the **user**, not to any one access profile: what a request may\ndo with the key is read from whichever of the user's active profiles grants it, and each of\nthose profiles is a separate routing candidate the request may be served by. The user must\ntherefore hold at least one access profile — the request returns 404 otherwise — but the key\nis not tied to the profile that happened to be current when it was minted, and it survives\nthat profile being detached as long as the user still holds another.\n",
+        "tags": [
+          "Users",
+          "Virtual Keys"
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Virtual key created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "virtual_key": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "value": {
+                          "type": "string",
+                          "description": "The generated virtual key secret. Shown only once on creation."
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "User has no access profiles"
+          },
+          "409": {
+            "description": "A virtual key with this name already exists"
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
                 }
               }
             }
@@ -73341,13 +74827,17 @@
     "/api/users/{user_id}/access-profiles/{profile_id}/virtual-keys": {
       "post": {
         "operationId": "addUserAccessProfileVirtualKeyLegacy",
+        "deprecated": true,
+        "x-bifrost-successor": "/api/governance/users/{user_id}/virtual-keys",
+        "x-bifrost-removal": "following-major-release",
         "x-mint": {
           "metadata": {
             "tag": "Removing soon"
           },
-          "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/governance/users/{user_id}/access-profiles/{profile_id}/virtual-keys` instead.\n</Warning>\n<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
+          "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/governance/users/{user_id}/virtual-keys` instead.\n</Warning>\n<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n<Warning>\n  **Deprecated.** Use [`POST /api/governance/users/{user_id}/virtual-keys`](/api-reference/governance/mint-an-extra-virtual-key-for-a-user)\n  instead. This path still works and behaves identically, but will be removed in a future major release.\n</Warning>\n"
         },
-        "summary": "Add an extra virtual key under a user's access profile (deprecated path)",
+        "summary": "Add an extra virtual key under a user's access profile (deprecated) (deprecated path)",
+        "description": "Issues an additional virtual key for the user. \n\nVirtual keys are scoped to the **user**, not to one access profile: what a request may do with\nthe key is resolved at request time from whichever of the user's active profiles grant it. So\n`profile_id` is ignored — the key minted is the same whichever profile is named, and it is not\nbound to that profile or removed with it. The user must hold at least one access profile.\n",
         "tags": [
           "Access Profiles"
         ],
@@ -73364,6 +74854,7 @@
             "name": "profile_id",
             "in": "path",
             "required": true,
+            "description": "Ignored. Kept so the path shape stays valid for existing clients; keys are user-scoped, so any value produces the same result.\n",
             "schema": {
               "type": "integer"
             }
@@ -73423,8 +74914,28 @@
               }
             }
           },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
           "404": {
-            "description": "User access profile not found"
+            "description": "User has no access profiles",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A virtual key with this name already exists"
           },
           "500": {
             "description": "Internal server error",
@@ -73436,10 +74947,7 @@
               }
             }
           }
-        },
-        "x-bifrost-successor": "/api/governance/users/{user_id}/access-profiles/{profile_id}/virtual-keys",
-        "x-bifrost-removal": "following-major-release",
-        "deprecated": true
+        }
       }
     },
     "/api/users/{user_id}/access-profiles/virtual-keys/{vk_id}": {
@@ -84895,9 +86403,6 @@
         "security": [
           {
             "ManagementBearerAuth": []
-          },
-          {
-            "BasicAuth": []
           }
         ],
         "responses": {
@@ -85313,6 +86818,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -106379,6 +107887,10 @@
               "is_key_less": {
                 "type": "boolean"
               },
+              "does_not_send_done_marker": {
+                "type": "boolean",
+                "description": "Provider ends streams on finish_reason without sending a data: [DONE] marker. Without this, a provider that also keeps the connection open leaves the stream waiting for a marker it never sends."
+              },
               "base_provider_type": {
                 "$ref": "#/components/schemas/ModelProvider"
               },
@@ -106614,6 +108126,10 @@
               "is_key_less": {
                 "type": "boolean"
               },
+              "does_not_send_done_marker": {
+                "type": "boolean",
+                "description": "Provider ends streams on finish_reason without sending a data: [DONE] marker. Without this, a provider that also keeps the connection open leaves the stream waiting for a marker it never sends."
+              },
               "base_provider_type": {
                 "$ref": "#/components/schemas/ModelProvider"
               },
@@ -106806,6 +108322,10 @@
             "properties": {
               "is_key_less": {
                 "type": "boolean"
+              },
+              "does_not_send_done_marker": {
+                "type": "boolean",
+                "description": "Provider ends streams on finish_reason without sending a data: [DONE] marker. Without this, a provider that also keeps the connection open leaves the stream waiting for a marker it never sends."
               },
               "base_provider_type": {
                 "$ref": "#/components/schemas/ModelProvider"
@@ -109045,6 +110565,7 @@
           "is_active",
           "budgets",
           "rate_limit",
+          "rate_limits",
           "provider_configs",
           "model_configs"
         ],
@@ -109112,6 +110633,18 @@
                           }
                         }
                       }
+                    },
+                    "source_type": {
+                      "type": "string",
+                      "description": "What governs this budget when it did not come from the virtual key's own rows — e.g. `access_profile`. Omitted when there is nothing to disambiguate.\n"
+                    },
+                    "source_id": {
+                      "type": "string",
+                      "description": "ID of the source named by `source_type`."
+                    },
+                    "source_name": {
+                      "type": "string",
+                      "description": "Human-readable label for `source_id`."
                     }
                   }
                 }
@@ -109119,6 +110652,7 @@
             }
           },
           "rate_limit": {
+            "description": "The single effective rate limit for this key. For a key managed by an enterprise access profile this is the tightest-per-dimension merge of every profile governing the key, and carries the real usage. Kept for readers that expect one value; see `rate_limits` for the unmerged list.\n",
             "oneOf": [
               {
                 "$ref": "#/components/schemas/RateLimit"
@@ -109127,6 +110661,35 @@
                 "type": "null"
               }
             ]
+          },
+          "rate_limits": {
+            "type": "array",
+            "description": "Every rate limit `rate_limit` was merged from, each tagged with its source, so a caller can see which one is actually binding rather than only the merged result. A user may hold several enterprise access profiles at once, each contributing its own rate limit, so this can carry more than one entry. Always present; empty when the key has no rate limit at all.\n",
+            "items": {
+              "description": "A rate limit tagged with what governs it. The source fields are empty when there is nothing to disambiguate, e.g. a virtual key's own rate-limit row.\n",
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/RateLimit"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "source_type": {
+                      "type": "string",
+                      "description": "What governs this rate limit — e.g. `access_profile`."
+                    },
+                    "source_id": {
+                      "type": "string",
+                      "description": "ID of the source named by `source_type`."
+                    },
+                    "source_name": {
+                      "type": "string",
+                      "description": "Human-readable label for `source_id`."
+                    }
+                  }
+                }
+              ]
+            }
           },
           "provider_configs": {
             "type": [
@@ -109224,7 +110787,7 @@
                 },
                 "budgets": {
                   "type": "array",
-                  "description": "Provider-specific budget quotas",
+                  "description": "Provider-specific budget quotas. Use this array instead of the removed singular `budget` or `budget_id` fields.",
                   "items": {
                     "$ref": "#/components/schemas/CreateBudgetRequest"
                   }
@@ -109234,6 +110797,7 @@
                 },
                 "key_ids": {
                   "type": "array",
+                  "description": "Provider API key IDs allowed for this config. `[\"*\"]` allows every key for the provider; an empty or omitted array denies all keys.",
                   "items": {
                     "type": "string"
                   }
@@ -109267,7 +110831,7 @@
           },
           "budgets": {
             "type": "array",
-            "description": "Budget quotas assigned directly to this virtual key",
+            "description": "Budget quotas assigned directly to this virtual key. Use this array instead of the removed singular `budget` or `budget_id` fields.",
             "items": {
               "$ref": "#/components/schemas/CreateBudgetRequest"
             }
@@ -109292,6 +110856,34 @@
             "format": "date-time",
             "description": "Optional expiry timestamp. Must be in the future. Omit for a key that never expires."
           }
+        },
+        "example": {
+          "name": "engineering-vk",
+          "provider_configs": [
+            {
+              "provider": "openai",
+              "weight": 1,
+              "allowed_models": [
+                "gpt-4o-mini"
+              ],
+              "key_ids": [
+                "*"
+              ],
+              "budgets": [
+                {
+                  "max_limit": 50,
+                  "reset_duration": "1M"
+                }
+              ]
+            }
+          ],
+          "budgets": [
+            {
+              "max_limit": 100,
+              "reset_duration": "1M"
+            }
+          ],
+          "is_active": true
         }
       },
       "UpdateVirtualKeyRequest": {
@@ -109336,7 +110928,7 @@
                 },
                 "budgets": {
                   "type": "array",
-                  "description": "Provider-specific budget quotas. Replaces all budgets for that provider config when provided.",
+                  "description": "Provider-specific budget quotas. Replaces all budgets for that provider config when provided; the removed singular `budget` and `budget_id` fields are not request fields.",
                   "items": {
                     "$ref": "#/components/schemas/CreateBudgetRequest"
                   }
@@ -109346,6 +110938,7 @@
                 },
                 "key_ids": {
                   "type": "array",
+                  "description": "Provider API key IDs allowed for this config. `[\"*\"]` allows every key for the provider; an empty or omitted array denies all keys.",
                   "items": {
                     "type": "string"
                   }
@@ -109381,7 +110974,7 @@
           },
           "budgets": {
             "type": "array",
-            "description": "Budget quotas assigned directly to this virtual key. Replaces all direct virtual-key budgets when provided.",
+            "description": "Budget quotas assigned directly to this virtual key. Replaces all direct virtual-key budgets when provided; the removed singular `budget` and `budget_id` fields are not request fields.",
             "items": {
               "$ref": "#/components/schemas/CreateBudgetRequest"
             }
@@ -109407,6 +111000,34 @@
             "type": "string",
             "description": "RFC3339 timestamp to set a new expiry (must be in the future), empty string to clear an existing expiry, omitted to leave it unchanged."
           }
+        },
+        "example": {
+          "description": "Updated engineering access",
+          "provider_configs": [
+            {
+              "provider": "openai",
+              "weight": 1,
+              "allowed_models": [
+                "gpt-4o",
+                "gpt-4o-mini"
+              ],
+              "key_ids": [
+                "*"
+              ],
+              "budgets": [
+                {
+                  "max_limit": 75,
+                  "reset_duration": "1M"
+                }
+              ]
+            }
+          ],
+          "budgets": [
+            {
+              "max_limit": 150,
+              "reset_duration": "1M"
+            }
+          ]
         }
       },
       "Team": {
@@ -109686,11 +111307,6 @@
               }
             },
             "additionalProperties": false
-          },
-          "calendar_aligned": {
-            "type": "boolean",
-            "description": "When true, resets align to calendar period boundaries in UTC (not rolling from last reset)",
-            "default": false
           },
           "last_reset": {
             "type": "string",
@@ -110916,12 +112532,24 @@
           "scope_id": {
             "type": "string",
             "nullable": true,
-            "description": "ID of the scope target, for example a virtual key id, a project id, or the user's access-profile assignment id. Required when scope is not `global`."
+            "description": "ID of the scope target — a virtual key ID for `virtual_key`, a user access profile ID for `access_profile`, a user ID for legacy `user` rows. Required when scope is not `global`.\n"
           },
           "scope_name": {
             "type": "string",
             "nullable": true,
             "description": "Resolved human-readable name of the scope target (read-only, set by server)."
+          },
+          "source_type": {
+            "type": "string",
+            "description": "What materialized this limit, when it was not authored directly — e.g. `access_profile`. Read-only; omitted for limits with no upstream source.\n"
+          },
+          "source_id": {
+            "type": "string",
+            "description": "ID of the source named by `source_type` (read-only)."
+          },
+          "source_name": {
+            "type": "string",
+            "description": "Human-readable label for `source_id` (read-only)."
           },
           "calendar_aligned": {
             "type": "boolean",
@@ -113851,20 +115479,99 @@
         "description": "Recalculate cost request",
         "properties": {
           "filters": {
-            "type": "object",
-            "description": "Log search filters",
-            "properties": {
-              "project_ids": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                },
-                "description": "Governance projects to narrow to. A request is scoped to at most one project, so this filter selects rows rather than intersecting sets."
-              },
-              "providers": {
-                "type": "array",
-                "items": {
-                  "type": "string"
+            "allOf": [
+              {
+                "type": "object",
+                "description": "Log search filters",
+                "properties": {
+                  "project_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Governance projects to narrow to. A request is scoped to at most one project, so this filter selects rows rather than intersecting sets."
+                  },
+                  "providers": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "models": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "status": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "objects": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "selected_key_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "virtual_key_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "routing_rule_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "routing_engine_used": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Filter by routing engine (routing-rule, governance, or loadbalancing)"
+                  },
+                  "start_time": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "end_time": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "min_latency": {
+                    "type": "number"
+                  },
+                  "max_latency": {
+                    "type": "number"
+                  },
+                  "min_tokens": {
+                    "type": "integer"
+                  },
+                  "max_tokens": {
+                    "type": "integer"
+                  },
+                  "min_cost": {
+                    "type": "number"
+                  },
+                  "max_cost": {
+                    "type": "number"
+                  },
+                  "missing_cost_only": {
+                    "type": "boolean"
+                  },
+                  "content_search": {
+                    "type": "string"
+                  }
                 }
               },
               {

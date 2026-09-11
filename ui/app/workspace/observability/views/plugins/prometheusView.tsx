@@ -19,6 +19,7 @@ interface PushGatewayConfig {
 
 interface TelemetryConfig {
 	metrics_enabled?: boolean;
+	overhead_breakdown_enabled?: boolean;
 	push_gateway?: PushGatewayConfig;
 }
 
@@ -36,6 +37,7 @@ export default function PrometheusView({ onDelete, isDeleting }: PrometheusViewP
 		return {
 			...pushGateway,
 			metrics_enabled: metricsEnabled,
+			overhead_breakdown_enabled: telemetryConfig.overhead_breakdown_enabled ?? false,
 			push_gateway_enabled: pushGateway.enabled ?? false,
 		};
 	}, [selectedPlugin]);
@@ -68,6 +70,7 @@ export default function PrometheusView({ onDelete, isDeleting }: PrometheusViewP
 					enabled: true,
 					config: {
 						metrics_enabled: config.metrics_enabled,
+						overhead_breakdown_enabled: config.overhead_breakdown_enabled,
 						push_gateway: pushGatewayConfig,
 					},
 				},

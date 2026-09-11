@@ -144593,6 +144593,849 @@
           }
         }
       ]
+    },
+    {
+      "name": "Cowork inline text data URL regression",
+      "description": "Base64 text file_data must become an Anthropic text source in Chat Completions and Responses, without an origin file upload.",
+      "item": [
+        {
+          "name": "Anthropic claude-haiku-4-5 Cowork inline text chat/completions",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401,403,429,500,502,503,504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('inline text is readable', function () { pm.expect(pm.response.code, pm.response.text()).to.be.below(400); pm.expect(pm.response.text()).to.include('cobalt-729'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5-20251001\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Return only the document marker.\"\n        },\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"note.md\",\n            \"file_data\": \"data:text/markdown;base64,VGhlIGRvY3VtZW50IG1hcmtlciBpcyBjb2JhbHQtNzI5Lg==\",\n            \"file_type\": \"text/markdown\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "Anthropic claude-haiku-4-5 Cowork inline text responses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401,403,429,500,502,503,504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('inline text is readable', function () { pm.expect(pm.response.code, pm.response.text()).to.be.below(400); pm.expect(pm.response.text()).to.include('cobalt-729'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5-20251001\",\n  \"max_output_tokens\": 64,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Return only the document marker.\"\n        },\n        {\n          \"type\": \"input_file\",\n          \"filename\": \"note.md\",\n          \"file_data\": \"data:text/markdown;base64,VGhlIGRvY3VtZW50IG1hcmtlciBpcyBjb2JhbHQtNzI5Lg==\",\n          \"file_type\": \"text/markdown\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/v1/responses"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Native Cowork base64 text",
+      "item": [
+        {
+          "name": "Anthropic claude-haiku-4-5 native Cowork base64 text",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "url": "{{baseUrl}}/anthropic/v1/messages",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"anthropic/claude-haiku-4-5-20251001\", \"max_tokens\": 64, \"messages\": [{\"role\": \"user\", \"content\": [{\"type\": \"document\", \"source\": {\"type\": \"base64\", \"media_type\": \"text/markdown\", \"data\": \"VGhlIGRvY3VtZW50IG1hcmtlciBpcyBjb2JhbHQtNzI5Lg==\"}}, {\"type\": \"text\", \"text\": \"Return only the document marker.\"}]}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401,403,429,500,502,503,504].indexOf(pm.response.code)!==-1) return;",
+                  "pm.test('native text document', function(){pm.expect(pm.response.code,pm.response.text()).to.be.below(400);pm.expect(pm.response.text()).to.include('cobalt-729');});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Native Cowork base64 JSON",
+      "item": [
+        {
+          "name": "Anthropic claude-haiku-4-5 native Cowork base64 JSON",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "url": "{{baseUrl}}/anthropic/v1/messages",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"anthropic/claude-haiku-4-5-20251001\", \"max_tokens\": 64, \"messages\": [{\"role\": \"user\", \"content\": [{\"type\": \"document\", \"source\": {\"type\": \"base64\", \"media_type\": \"application/json\", \"data\": \"eyJtYXJrZXIiOiJjb2JhbHQtNzI5In0=\"}}, {\"type\": \"text\", \"text\": \"Return only the document marker.\"}]}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401,403,429,500,502,503,504].indexOf(pm.response.code)!==-1) return;",
+                  "pm.test('native JSON document', function(){pm.expect(pm.response.code,pm.response.text()).to.be.below(400);pm.expect(pm.response.text()).to.include('cobalt-729');});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "75. Anthropic attachments: base64 PDF + Files API file_id across endpoint shapes (cowork-attachments)",
+      "description": "Cowork and API clients attach local files either inline (data URL / base64 document) or by Files API file_id. 75.01-75.04 pin base64 application/pdf through native /anthropic/v1/messages (non-stream + stream), /v1/chat/completions file.file_data and /v1/responses input_file.file_data (core/providers/anthropic/utils.go ConvertToAnthropicDocumentBlock / ConvertResponsesFileBlockToAnthropic data-URL branch). 75.05-75.09 upload fixtures/arxiv-1706.03762.pdf from disk and pin document.source.type=file, OpenAI-shape file.file_id and Responses input_file.file_id, then delete. Every inference row sends x-bf-send-back-raw-request/-response and asserts the document block that actually reached Anthropic (source type, media_type, bare base64 / file_id) plus the raw Anthropic message carrying the marker; the runner enables client_config.allow_per_request_raw_override first (set-raw-override-config.mjs). Unlike the [PREVIEW] file_id rows in folder 12 these run by default: the Files API is GA and needs no beta header (platform.claude.com/docs/en/build-with-claude/files). Inline fixture: fixtures/cowork-marker-inline.pdf (marker indigo-418). Upload fixture: arXiv 1706.03762 (marker is the arXiv id).",
+      "item": [
+        {
+          "name": "75.01 anthropic/claude-haiku-4-5 native /anthropic/v1/messages base64 PDF document",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('75.01: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400); });",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('75.01: marker indigo-418 found in reply', function () { pm.expect(pm.response.text()).to.include('indigo-418'); });",
+                  "var body = pm.response.json() || {};",
+                  "var ef = body.extra_fields || {};",
+                  "var rr = ef.raw_request; if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('75.01: raw_request captured', function () { pm.expect(rr, 'raw_request missing - is client_config.allow_per_request_raw_override on?').to.be.an('object'); });",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var doc = null; (rr.messages || []).forEach(function (m) { (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b && b.type === 'document') { doc = b; } }); });",
+                  "pm.test('75.01: document block reached the wire', function () { pm.expect(doc, 'wire messages: ' + JSON.stringify(rr.messages || rr).slice(0, 400)).to.be.an('object'); });",
+                  "if (!doc) { return; }",
+                  "var src = doc.source || {};",
+                  "pm.test('75.01: wire source is base64 application/pdf', function () { pm.expect(src.type, 'source: ' + JSON.stringify(src).slice(0, 200)).to.eql('base64'); pm.expect(src.media_type, 'source: ' + JSON.stringify(src).slice(0, 200)).to.eql('application/pdf'); });",
+                  "pm.test('75.01: wire data is bare base64 PDF bytes (no data: prefix)', function () { var d = String(src.data || ''); pm.expect(d.indexOf('JVBERi0'), 'data head: ' + d.slice(0, 40)).to.eql(0); });",
+                  "var rs = ef.raw_response; if (typeof rs === 'string') { try { rs = JSON.parse(rs); } catch (e) { rs = null; } }",
+                  "pm.test('75.01: raw_response captured', function () { pm.expect(rs, 'raw_response missing').to.be.an('object'); });",
+                  "if (rs && typeof rs === 'object') { pm.test('75.01: raw_response is an Anthropic message carrying the marker', function () { pm.expect(rs.type, 'raw_response: ' + JSON.stringify(rs).slice(0, 200)).to.eql('message'); pm.expect(JSON.stringify(rs.content || []), 'raw_response content').to.include('indigo-418'); }); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"document\",\n          \"source\": {\n            \"type\": \"base64\",\n            \"media_type\": \"application/pdf\",\n            \"data\": \"JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA1IDAgUiA+PiA+PiAvQ29udGVudHMgNCAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA2NSA+PgpzdHJlYW0KQlQgL0YxIDE0IFRmIDcyIDcyMCBUZCAoVGhlIGRvY3VtZW50IG1hcmtlciBpcyBpbmRpZ28tNDE4LikgVGogRVQKZW5kc3RyZWFtCmVuZG9iago1IDAgb2JqCjw8IC9UeXBlIC9Gb250IC9TdWJ0eXBlIC9UeXBlMSAvQmFzZUZvbnQgL0hlbHZldGljYSA+PgplbmRvYmoKeHJlZgowIDYKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDA5IDAwMDAwIG4gCjAwMDAwMDAwNTggMDAwMDAgbiAKMDAwMDAwMDExNSAwMDAwMCBuIAowMDAwMDAwMjQxIDAwMDAwIG4gCjAwMDAwMDAzNTYgMDAwMDAgbiAKdHJhaWxlcgo8PCAvU2l6ZSA2IC9Sb290IDEgMCBSID4+CnN0YXJ0eHJlZgo0MjYKJSVFT0YK\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Return only the document marker.\"\n        }\n      ]\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "75.02 anthropic/claude-haiku-4-5 native /anthropic/v1/messages base64 PDF document streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('75.02: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400); });",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('75.02: response is SSE', function () { var ct = pm.response.headers.get('content-type') || ''; pm.expect(ct, 'expected SSE, got ' + ct).to.include('event-stream'); });",
+                  "pm.test('75.02: stream reaches message_stop', function () { pm.expect(pm.response.text()).to.include('message_stop'); });",
+                  "pm.test('75.02: no error event in stream', function () { pm.expect(pm.response.text(), pm.response.text().slice(0, 400)).to.not.include('\"type\":\"error\"'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 64,\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"document\",\n          \"source\": {\n            \"type\": \"base64\",\n            \"media_type\": \"application/pdf\",\n            \"data\": \"JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA1IDAgUiA+PiA+PiAvQ29udGVudHMgNCAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA2NSA+PgpzdHJlYW0KQlQgL0YxIDE0IFRmIDcyIDcyMCBUZCAoVGhlIGRvY3VtZW50IG1hcmtlciBpcyBpbmRpZ28tNDE4LikgVGogRVQKZW5kc3RyZWFtCmVuZG9iago1IDAgb2JqCjw8IC9UeXBlIC9Gb250IC9TdWJ0eXBlIC9UeXBlMSAvQmFzZUZvbnQgL0hlbHZldGljYSA+PgplbmRvYmoKeHJlZgowIDYKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDA5IDAwMDAwIG4gCjAwMDAwMDAwNTggMDAwMDAgbiAKMDAwMDAwMDExNSAwMDAwMCBuIAowMDAwMDAwMjQxIDAwMDAwIG4gCjAwMDAwMDAzNTYgMDAwMDAgbiAKdHJhaWxlcgo8PCAvU2l6ZSA2IC9Sb290IDEgMCBSID4+CnN0YXJ0eHJlZgo0MjYKJSVFT0YK\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Return only the document marker.\"\n        }\n      ]\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "75.03 anthropic/claude-haiku-4-5 /v1/chat/completions file.file_data PDF data URL",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('75.03: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400); });",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('75.03: marker indigo-418 found in reply', function () { pm.expect(pm.response.text()).to.include('indigo-418'); });",
+                  "var body = pm.response.json() || {};",
+                  "var ef = body.extra_fields || {};",
+                  "var rr = ef.raw_request; if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('75.03: raw_request captured', function () { pm.expect(rr, 'raw_request missing - is client_config.allow_per_request_raw_override on?').to.be.an('object'); });",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var doc = null; (rr.messages || []).forEach(function (m) { (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b && b.type === 'document') { doc = b; } }); });",
+                  "pm.test('75.03: document block reached the wire', function () { pm.expect(doc, 'wire messages: ' + JSON.stringify(rr.messages || rr).slice(0, 400)).to.be.an('object'); });",
+                  "if (!doc) { return; }",
+                  "var src = doc.source || {};",
+                  "pm.test('75.03: wire source is base64 application/pdf', function () { pm.expect(src.type, 'source: ' + JSON.stringify(src).slice(0, 200)).to.eql('base64'); pm.expect(src.media_type, 'source: ' + JSON.stringify(src).slice(0, 200)).to.eql('application/pdf'); });",
+                  "pm.test('75.03: wire data is bare base64 PDF bytes (no data: prefix)', function () { var d = String(src.data || ''); pm.expect(d.indexOf('JVBERi0'), 'data head: ' + d.slice(0, 40)).to.eql(0); });",
+                  "var rs = ef.raw_response; if (typeof rs === 'string') { try { rs = JSON.parse(rs); } catch (e) { rs = null; } }",
+                  "pm.test('75.03: raw_response captured', function () { pm.expect(rs, 'raw_response missing').to.be.an('object'); });",
+                  "if (rs && typeof rs === 'object') { pm.test('75.03: raw_response is an Anthropic message carrying the marker', function () { pm.expect(rs.type, 'raw_response: ' + JSON.stringify(rs).slice(0, 200)).to.eql('message'); pm.expect(JSON.stringify(rs.content || []), 'raw_response content').to.include('indigo-418'); }); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Return only the document marker.\"\n        },\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"marker.pdf\",\n            \"file_data\": \"data:application/pdf;base64,JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA1IDAgUiA+PiA+PiAvQ29udGVudHMgNCAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA2NSA+PgpzdHJlYW0KQlQgL0YxIDE0IFRmIDcyIDcyMCBUZCAoVGhlIGRvY3VtZW50IG1hcmtlciBpcyBpbmRpZ28tNDE4LikgVGogRVQKZW5kc3RyZWFtCmVuZG9iago1IDAgb2JqCjw8IC9UeXBlIC9Gb250IC9TdWJ0eXBlIC9UeXBlMSAvQmFzZUZvbnQgL0hlbHZldGljYSA+PgplbmRvYmoKeHJlZgowIDYKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDA5IDAwMDAwIG4gCjAwMDAwMDAwNTggMDAwMDAgbiAKMDAwMDAwMDExNSAwMDAwMCBuIAowMDAwMDAwMjQxIDAwMDAwIG4gCjAwMDAwMDAzNTYgMDAwMDAgbiAKdHJhaWxlcgo8PCAvU2l6ZSA2IC9Sb290IDEgMCBSID4+CnN0YXJ0eHJlZgo0MjYKJSVFT0YK\",\n            \"file_type\": \"application/pdf\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "75.04 anthropic/claude-haiku-4-5 /v1/responses input_file PDF data URL",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('75.04: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400); });",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('75.04: marker indigo-418 found in reply', function () { pm.expect(pm.response.text()).to.include('indigo-418'); });",
+                  "var body = pm.response.json() || {};",
+                  "var ef = body.extra_fields || {};",
+                  "var rr = ef.raw_request; if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('75.04: raw_request captured', function () { pm.expect(rr, 'raw_request missing - is client_config.allow_per_request_raw_override on?').to.be.an('object'); });",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var doc = null; (rr.messages || []).forEach(function (m) { (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b && b.type === 'document') { doc = b; } }); });",
+                  "pm.test('75.04: document block reached the wire', function () { pm.expect(doc, 'wire messages: ' + JSON.stringify(rr.messages || rr).slice(0, 400)).to.be.an('object'); });",
+                  "if (!doc) { return; }",
+                  "var src = doc.source || {};",
+                  "pm.test('75.04: wire source is base64 application/pdf', function () { pm.expect(src.type, 'source: ' + JSON.stringify(src).slice(0, 200)).to.eql('base64'); pm.expect(src.media_type, 'source: ' + JSON.stringify(src).slice(0, 200)).to.eql('application/pdf'); });",
+                  "pm.test('75.04: wire data is bare base64 PDF bytes (no data: prefix)', function () { var d = String(src.data || ''); pm.expect(d.indexOf('JVBERi0'), 'data head: ' + d.slice(0, 40)).to.eql(0); });",
+                  "var rs = ef.raw_response; if (typeof rs === 'string') { try { rs = JSON.parse(rs); } catch (e) { rs = null; } }",
+                  "pm.test('75.04: raw_response captured', function () { pm.expect(rs, 'raw_response missing').to.be.an('object'); });",
+                  "if (rs && typeof rs === 'object') { pm.test('75.04: raw_response is an Anthropic message carrying the marker', function () { pm.expect(rs.type, 'raw_response: ' + JSON.stringify(rs).slice(0, 200)).to.eql('message'); pm.expect(JSON.stringify(rs.content || []), 'raw_response content').to.include('indigo-418'); }); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_output_tokens\": 64,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Return only the document marker.\"\n        },\n        {\n          \"type\": \"input_file\",\n          \"filename\": \"marker.pdf\",\n          \"file_data\": \"data:application/pdf;base64,JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA1IDAgUiA+PiA+PiAvQ29udGVudHMgNCAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA2NSA+PgpzdHJlYW0KQlQgL0YxIDE0IFRmIDcyIDcyMCBUZCAoVGhlIGRvY3VtZW50IG1hcmtlciBpcyBpbmRpZ28tNDE4LikgVGogRVQKZW5kc3RyZWFtCmVuZG9iago1IDAgb2JqCjw8IC9UeXBlIC9Gb250IC9TdWJ0eXBlIC9UeXBlMSAvQmFzZUZvbnQgL0hlbHZldGljYSA+PgplbmRvYmoKeHJlZgowIDYKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDA5IDAwMDAwIG4gCjAwMDAwMDAwNTggMDAwMDAgbiAKMDAwMDAwMDExNSAwMDAwMCBuIAowMDAwMDAwMjQxIDAwMDAwIG4gCjAwMDAwMDAzNTYgMDAwMDAgbiAKdHJhaWxlcgo8PCAvU2l6ZSA2IC9Sb290IDEgMCBSID4+CnN0YXJ0eHJlZgo0MjYKJSVFT0YK\",\n          \"file_type\": \"application/pdf\"\n        }\n      ]\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "75.05 anthropic: upload arxiv-1706.03762.pdf for attachments matrix",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('75.05 upload: 200', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json();",
+                  "pm.collectionVariables.set('attachmentsAnthropicFileId', j.id);",
+                  "pm.test('75.05 upload: mime_type application/pdf', function () { pm.expect(j.mime_type, JSON.stringify(j)).to.eql('application/pdf'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "files-api-2025-04-14"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "files"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/arxiv-1706.03762.pdf",
+                  "type": "file"
+                },
+                {
+                  "key": "purpose",
+                  "value": "user_data",
+                  "type": "text"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "75.06 anthropic/claude-haiku-4-5 native /anthropic/v1/messages document file_id",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('75.06: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400); });",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('75.06: marker 1706.03762 found in reply', function () { pm.expect(pm.response.text()).to.include('1706.03762'); });",
+                  "var body = pm.response.json() || {};",
+                  "var ef = body.extra_fields || {};",
+                  "var rr = ef.raw_request; if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('75.06: raw_request captured', function () { pm.expect(rr, 'raw_request missing - is client_config.allow_per_request_raw_override on?').to.be.an('object'); });",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var doc = null; (rr.messages || []).forEach(function (m) { (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b && b.type === 'document') { doc = b; } }); });",
+                  "pm.test('75.06: document block reached the wire', function () { pm.expect(doc, 'wire messages: ' + JSON.stringify(rr.messages || rr).slice(0, 400)).to.be.an('object'); });",
+                  "if (!doc) { return; }",
+                  "var src = doc.source || {};",
+                  "pm.test('75.06: wire source is the uploaded file_id', function () { pm.expect(src.type, 'source: ' + JSON.stringify(src)).to.eql('file'); pm.expect(src.file_id, 'source: ' + JSON.stringify(src)).to.eql(pm.collectionVariables.get('attachmentsAnthropicFileId')); });",
+                  "var rs = ef.raw_response; if (typeof rs === 'string') { try { rs = JSON.parse(rs); } catch (e) { rs = null; } }",
+                  "pm.test('75.06: raw_response captured', function () { pm.expect(rs, 'raw_response missing').to.be.an('object'); });",
+                  "if (rs && typeof rs === 'object') { pm.test('75.06: raw_response is an Anthropic message carrying the marker', function () { pm.expect(rs.type, 'raw_response: ' + JSON.stringify(rs).slice(0, 200)).to.eql('message'); pm.expect(JSON.stringify(rs.content || []), 'raw_response content').to.include('1706.03762'); }); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"document\",\n          \"source\": {\n            \"type\": \"file\",\n            \"file_id\": \"{{attachmentsAnthropicFileId}}\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with only the arXiv identifier printed on the first page of this document.\"\n        }\n      ]\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "75.07 anthropic/claude-haiku-4-5 /v1/chat/completions file.file_id",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('75.07: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400); });",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('75.07: marker 1706.03762 found in reply', function () { pm.expect(pm.response.text()).to.include('1706.03762'); });",
+                  "var body = pm.response.json() || {};",
+                  "var ef = body.extra_fields || {};",
+                  "var rr = ef.raw_request; if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('75.07: raw_request captured', function () { pm.expect(rr, 'raw_request missing - is client_config.allow_per_request_raw_override on?').to.be.an('object'); });",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var doc = null; (rr.messages || []).forEach(function (m) { (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b && b.type === 'document') { doc = b; } }); });",
+                  "pm.test('75.07: document block reached the wire', function () { pm.expect(doc, 'wire messages: ' + JSON.stringify(rr.messages || rr).slice(0, 400)).to.be.an('object'); });",
+                  "if (!doc) { return; }",
+                  "var src = doc.source || {};",
+                  "pm.test('75.07: wire source is the uploaded file_id', function () { pm.expect(src.type, 'source: ' + JSON.stringify(src)).to.eql('file'); pm.expect(src.file_id, 'source: ' + JSON.stringify(src)).to.eql(pm.collectionVariables.get('attachmentsAnthropicFileId')); });",
+                  "var rs = ef.raw_response; if (typeof rs === 'string') { try { rs = JSON.parse(rs); } catch (e) { rs = null; } }",
+                  "pm.test('75.07: raw_response captured', function () { pm.expect(rs, 'raw_response missing').to.be.an('object'); });",
+                  "if (rs && typeof rs === 'object') { pm.test('75.07: raw_response is an Anthropic message carrying the marker', function () { pm.expect(rs.type, 'raw_response: ' + JSON.stringify(rs).slice(0, 200)).to.eql('message'); pm.expect(JSON.stringify(rs.content || []), 'raw_response content').to.include('1706.03762'); }); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with only the arXiv identifier printed on the first page of this document.\"\n        },\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"file_id\": \"{{attachmentsAnthropicFileId}}\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "75.08 anthropic/claude-haiku-4-5 /v1/responses input_file file_id",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('75.08: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400); });",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('75.08: marker 1706.03762 found in reply', function () { pm.expect(pm.response.text()).to.include('1706.03762'); });",
+                  "var body = pm.response.json() || {};",
+                  "var ef = body.extra_fields || {};",
+                  "var rr = ef.raw_request; if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('75.08: raw_request captured', function () { pm.expect(rr, 'raw_request missing - is client_config.allow_per_request_raw_override on?').to.be.an('object'); });",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var doc = null; (rr.messages || []).forEach(function (m) { (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b && b.type === 'document') { doc = b; } }); });",
+                  "pm.test('75.08: document block reached the wire', function () { pm.expect(doc, 'wire messages: ' + JSON.stringify(rr.messages || rr).slice(0, 400)).to.be.an('object'); });",
+                  "if (!doc) { return; }",
+                  "var src = doc.source || {};",
+                  "pm.test('75.08: wire source is the uploaded file_id', function () { pm.expect(src.type, 'source: ' + JSON.stringify(src)).to.eql('file'); pm.expect(src.file_id, 'source: ' + JSON.stringify(src)).to.eql(pm.collectionVariables.get('attachmentsAnthropicFileId')); });",
+                  "var rs = ef.raw_response; if (typeof rs === 'string') { try { rs = JSON.parse(rs); } catch (e) { rs = null; } }",
+                  "pm.test('75.08: raw_response captured', function () { pm.expect(rs, 'raw_response missing').to.be.an('object'); });",
+                  "if (rs && typeof rs === 'object') { pm.test('75.08: raw_response is an Anthropic message carrying the marker', function () { pm.expect(rs.type, 'raw_response: ' + JSON.stringify(rs).slice(0, 200)).to.eql('message'); pm.expect(JSON.stringify(rs.content || []), 'raw_response content').to.include('1706.03762'); }); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_output_tokens\": 64,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with only the arXiv identifier printed on the first page of this document.\"\n        },\n        {\n          \"type\": \"input_file\",\n          \"file_id\": \"{{attachmentsAnthropicFileId}}\"\n        }\n      ]\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "75.09 anthropic: delete attachments fixture (cleanup)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('75.09 cleanup: file deleted', function () { pm.expect(pm.response.code, pm.response.text()).to.be.below(400); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "files-api-2025-04-14"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/files/{{attachmentsAnthropicFileId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "files",
+                "{{attachmentsAnthropicFileId}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "76. OpenAI image_generation tool call decode (#7059 / PR #7060)",
+      "description": "Regression coverage for PR #7060 (fixes #7059): OpenAI emits an image_generation_call item with `action` as a bare JSON string (\"generate\"), but ResponsesToolMessageActionStruct.UnmarshalJSON opened by peeking at `.type`, which cannot be read out of a JSON string. Non-streaming, that killed the whole decode with \"failed to peek at type field\" wrapped in \"failed to unmarshal response from provider API\". Streaming, the per-event decode in OpenAIProvider.ResponsesStream logs and continues, so it silently dropped the two events carrying the image (response.output_item.done and response.completed); the loop then hit EOF with no terminal event and SendStreamTruncatedError surfaced a bogus 502 \"provider closed the stream before sending a completion marker\". The fix probes for a bare string before the type peek, and fills in the generation settings OpenAI echoes back on the completed item (background, output_format, quality, revised_prompt, size), which ResponsesImageGenerationCall previously dropped. The native /v1/responses cases are the ones that pin the typed re-emit - the /openai drop-in returns RawResponse verbatim, so it would stay green even if the typed path were lossy. image_generation had zero coverage in this collection before this folder (HARNESS_COVERAGE_BACKLOG.md, OpenAI Responses server tools).",
+      "item": [
+        {
+          "name": "openai/gpt-5.4 native responses image_generation non-streaming decodes item settings - #7059",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "// 500/502 are deliberately NOT skipped: they are the #7059 failure signatures.",
+                  "pm.test('image_generation_call decodes and keeps its settings - #7059', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'pre-fix decode failure resurfaced').to.not.include('failed to peek at type field');",
+                  "  pm.expect(body, 'pre-fix decode failure resurfaced').to.not.include('failed to unmarshal response from provider API');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body.slice(0, 600)).to.be.below(400);",
+                  "  var out = (pm.response.json() || {}).output || [];",
+                  "  var img = null;",
+                  "  for (var i = 0; i < out.length; i++) { if (out[i].type === 'image_generation_call') { img = out[i]; break; } }",
+                  "  pm.expect(img, 'expected an image_generation_call item in output').to.not.equal(null);",
+                  "  pm.expect(img.result, 'expected base64 image data on the item').to.be.a('string');",
+                  "  pm.expect(img.result.length, 'expected non-trivial base64 image data').to.be.above(1000);",
+                  "  pm.expect(img.action, 'bare-string action must survive the decode').to.equal('generate');",
+                  "  pm.expect(img.output_format, 'output_format must survive the typed re-emit').to.be.a('string');",
+                  "  pm.expect(img.background, 'background must survive the typed re-emit').to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-5.4\",\"input\":\"Generate an image of a sunset over mountains\",\"tools\":[{\"type\":\"image_generation\",\"quality\":\"low\",\"size\":\"1024x1024\",\"output_format\":\"jpeg\",\"output_compression\":30}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-5.4 native responses image_generation streaming reaches terminal event - #7059",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "// 500/502 are deliberately NOT skipped: they are the #7059 failure signatures.",
+                  "pm.test('image_generation stream is not truncated - #7059', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'pre-fix decode failure resurfaced').to.not.include('failed to peek at type field');",
+                  "  pm.expect(body, 'pre-fix truncation error resurfaced').to.not.include('provider closed the stream');",
+                  "  pm.expect(body, 'pre-fix truncation error resurfaced').to.not.include('unexpected EOF');",
+                  "  pm.expect(pm.response.code, 'stream request failed: ' + body.slice(0, 600)).to.equal(200);",
+                  "  pm.expect(body, 'expected SSE frames').to.include('data:');",
+                  "  pm.expect(body, 'expected the image item to reach the client').to.include('image_generation_call');",
+                  "  pm.expect(body, 'bare-string action must survive the stream decode').to.include('\"action\":\"generate\"');",
+                  "  pm.expect(body, 'expected a terminal response.completed event').to.include('response.completed');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-5.4\",\"input\":\"Generate an image of a sunset over mountains\",\"stream\":true,\"tools\":[{\"type\":\"image_generation\",\"quality\":\"low\",\"size\":\"1024x1024\",\"output_format\":\"jpeg\",\"output_compression\":30}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-5.4 /openai drop-in responses image_generation streaming no truncation - #7059",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "// 500/502 are deliberately NOT skipped: they are the #7059 failure signatures.",
+                  "pm.test('drop-in image_generation stream reaches its terminal event - #7059', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'pre-fix decode failure resurfaced').to.not.include('failed to peek at type field');",
+                  "  pm.expect(body, 'pre-fix truncation error resurfaced').to.not.include('provider closed the stream');",
+                  "  pm.expect(body, 'pre-fix truncation error resurfaced').to.not.include('unexpected EOF');",
+                  "  pm.expect(pm.response.code, 'stream request failed: ' + body.slice(0, 600)).to.equal(200);",
+                  "  pm.expect(body, 'expected the image item to reach the client').to.include('image_generation_call');",
+                  "  pm.expect(body, 'expected a terminal response.completed event').to.include('response.completed');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gpt-5.4\",\"input\":\"Generate an image of a sunset over mountains\",\"stream\":true,\"tools\":[{\"type\":\"image_generation\",\"quality\":\"low\",\"size\":\"1024x1024\",\"output_format\":\"jpeg\",\"output_compression\":30}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

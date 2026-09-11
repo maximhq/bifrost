@@ -442,6 +442,11 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 		}
 	}
 
+	jsonBody, err = normalizeBase64TextSources(jsonBody)
+	if err != nil {
+		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+	}
+
 	if defaults.InlineURLSources {
 		jsonBody, err = InlineURLContentSources(ctx, jsonBody)
 		if err != nil {
@@ -700,6 +705,11 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 		if err != nil {
 			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 		}
+	}
+
+	jsonBody, err = normalizeBase64TextSources(jsonBody)
+	if err != nil {
+		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 	}
 
 	if defaults.InlineURLSources {

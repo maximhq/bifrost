@@ -181,6 +181,7 @@ func TestMarshalForStorageRoundTrip(t *testing.T) {
 				"collector_url": "env.OTEL_URL",
 				"trace_type": "genai_extension",
 				"protocol": "grpc",
+				"overhead_breakdown_enabled": true,
 				"headers": {"Authorization": "env.OTEL_TOKEN", "X-Tenant": "acme"}
 			},
 			{
@@ -224,6 +225,13 @@ func TestMarshalForStorageRoundTrip(t *testing.T) {
 	}
 	if len(back.Profiles) != 2 {
 		t.Fatalf("round-trip profiles len = %d, want 2", len(back.Profiles))
+	}
+	// overhead_breakdown_enabled must survive the storage whitelist (profileForStorage).
+	if !back.Profiles[0].OverheadBreakdownEnabled {
+		t.Errorf("round-trip profile 0 overhead_breakdown_enabled = false, want true (dropped by storage whitelist)")
+	}
+	if back.Profiles[1].OverheadBreakdownEnabled {
+		t.Errorf("round-trip profile 1 overhead_breakdown_enabled = true, want false")
 	}
 	if back.PluginSpanFilter == nil || back.PluginSpanFilter.Mode != PluginSpanFilterModeExclude {
 		t.Fatalf("round-trip plugin_span_filter = %+v, want exclude", back.PluginSpanFilter)
