@@ -7595,3 +7595,90 @@ func TestBedrockImageS3URIWithoutExtensionErrors(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot determine image format")
 }
+
+// TestGuardrailConfigSurvivesReconversion guards against the request converter
+// consuming the caller's ExtraParams map.
+//
+// applyBedrockExtraParams deletes the keys it promotes to typed fields. When the
+// converter aliased bifrostReq.Params.ExtraParams instead of copying it, those deletes
+// mutated the caller's request. core re-runs the converter on every retry and fallback
+// attempt against the same BifrostChatRequest, so the second attempt saw no
+// guardrailConfig at all and reached Bedrock unguarded - with no error raised anywhere.
+func TestGuardrailConfigSurvivesReconversion(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	newChatRequest := func() *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: schemas.Bedrock,
+			Model:    "anthropic.claude-3-5-sonnet-v2",
+			Input: []schemas.ChatMessage{
+				{
+					Role:    schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")},
+				},
+			},
+			Params: &schemas.ChatParameters{
+				ExtraParams: map[string]interface{}{
+					"guardrailConfig": map[string]interface{}{
+						"guardrailIdentifier": "test-guardrail-id",
+						"guardrailVersion":    "DRAFT",
+					},
+				},
+			},
+		}
+	}
+
+	t.Run("chat completion path", func(t *testing.T) {
+		req := newChatRequest()
+
+		first, err := bedrock.ToBedrockChatCompletionRequest(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, first.GuardrailConfig, "first attempt must carry the guardrail")
+
+		// The caller's map must be untouched, or any retry loses the guardrail.
+		require.Contains(t, req.Params.ExtraParams, "guardrailConfig",
+			"converting must not delete guardrailConfig from the caller's ExtraParams")
+
+		// Simulate a retry: core converts the same request object again.
+		second, err := bedrock.ToBedrockChatCompletionRequest(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, second.GuardrailConfig,
+			"a retried request must still reach Bedrock with its guardrail attached")
+		assert.Equal(t, first.GuardrailConfig.GuardrailIdentifier, second.GuardrailConfig.GuardrailIdentifier)
+		assert.Equal(t, first.GuardrailConfig.GuardrailVersion, second.GuardrailConfig.GuardrailVersion)
+	})
+
+	t.Run("responses path", func(t *testing.T) {
+		chat := newChatRequest()
+		req := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Bedrock,
+			Model:    chat.Model,
+			Params: &schemas.ResponsesParameters{
+				ExtraParams: map[string]interface{}{
+					"guardrailConfig": map[string]interface{}{
+						"guardrailIdentifier": "test-guardrail-id",
+						"guardrailVersion":    "DRAFT",
+					},
+				},
+			},
+			Input: []schemas.ResponsesMessage{
+				{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Hello")},
+				},
+			},
+		}
+
+		first, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, first.GuardrailConfig, "first attempt must carry the guardrail")
+
+		require.Contains(t, req.Params.ExtraParams, "guardrailConfig",
+			"converting must not delete guardrailConfig from the caller's ExtraParams")
+
+		second, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, second.GuardrailConfig,
+			"a retried request must still reach Bedrock with its guardrail attached")
+	})
+}

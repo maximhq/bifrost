@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"mime"
 	"net/url"
 	"path/filepath"
@@ -813,9 +814,14 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 			Type: mapBifrostServiceTierToBedrock(*bifrostReq.Params.ServiceTier),
 		}
 	}
-	// Add extra parameters
+	// Add extra parameters.
+	// Cloned, not aliased: applyBedrockExtraParams consumes the keys it promotes to typed
+	// fields, and deleting from the caller's map would strip them from the request itself.
+	// core re-runs this converter on every retry and fallback attempt against the same
+	// BifrostChatRequest, so aliasing meant a retried request reached Bedrock with no
+	// guardrailConfig at all - silently unguarded, with no error anywhere.
 	if len(bifrostReq.Params.ExtraParams) > 0 {
-		bedrockReq.ExtraParams = bifrostReq.Params.ExtraParams
+		bedrockReq.ExtraParams = maps.Clone(bifrostReq.Params.ExtraParams)
 		applyBedrockExtraParams(bedrockReq.ExtraParams, bedrockReq)
 		if len(bedrockReq.ExtraParams) == 0 {
 			bedrockReq.ExtraParams = nil
