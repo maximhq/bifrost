@@ -145436,6 +145436,1559 @@
           }
         }
       ]
+    },
+    {
+      "name": "77. Bedrock text-format document source (#7072 / PR #5663)",
+      "description": "Bedrock Converse rejects a DocumentSource that carries only `text` (\"must set one of the following keys: bytes, s3Location\") unless the document block enables citations - `text` and `content` are the citations-oriented members. PR #5663 centralized document conversion into materializeBedrockDocument and, reading the AWS docs' \"only one member\" union rule, made text-format documents ship `source.text` alone, which 400s for every txt/md/csv/html document (#7072). The fix ships every document as `source.bytes`, base64-encoding literal text. These rows pin that across all three materializeBedrockDocument call sites (chat, responses, tool result) and every ingress that can reach them. Each row asserts the marker is echoed, not merely a 200: a double-encoded document returns HTTP 200 with EMPTY content, so status-only assertions cannot see this class of bug. 77.07 is the reverse guard - binary documents must keep passing base64 through untouched. bedrock_mantle is deliberately absent: it routes through the OpenAI-compat path (mantle.go -> openai.HandleOpenAIChatCompletionRequest) and never reaches this converter.",
+      "item": [
+        {
+          "name": "77.01 bedrock/claude-haiku /v1/chat/completions file_data raw text/plain - #7072",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with only the document marker, nothing else.\"\n        },\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"note.txt\",\n            \"file_type\": \"text/plain\",\n            \"file_data\": \"The document marker is cobalt-7701.\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Exact issue repro: raw text file_data on the chat converter.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('Bedrock did not reject the DocumentSource', function () {",
+                  "  pm.expect(body).to.not.include('must set one of the following keys');",
+                  "});",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.be.below(400);",
+                  "});",
+                  "var joined = body;",
+                  "// A text document shipped as a bare source.text 400s; one double-encoded into",
+                  "// source.bytes returns 200 with EMPTY content. Only echoing the marker proves",
+                  "// the document bytes actually survived conversion.",
+                  "pm.test('document content reached the model', function () {",
+                  "  pm.expect(joined, 'marker missing - document did not survive conversion: ' + body.slice(0, 400)).to.include('cobalt-7701');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "77.02 bedrock/claude-haiku /v1/chat/completions file_data base64 data URL text/markdown - #7072",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with only the document marker, nothing else.\"\n        },\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"note.md\",\n            \"file_type\": \"text/markdown\",\n            \"file_data\": \"data:text/markdown;base64,VGhlIGRvY3VtZW50IG1hcmtlciBpcyBjb2JhbHQtNzcwMi4=\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Base64 text data URL must pass through as source.bytes, not be decoded into source.text.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('Bedrock did not reject the DocumentSource', function () {",
+                  "  pm.expect(body).to.not.include('must set one of the following keys');",
+                  "});",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.be.below(400);",
+                  "});",
+                  "var joined = body;",
+                  "// A text document shipped as a bare source.text 400s; one double-encoded into",
+                  "// source.bytes returns 200 with EMPTY content. Only echoing the marker proves",
+                  "// the document bytes actually survived conversion.",
+                  "pm.test('document content reached the model', function () {",
+                  "  pm.expect(joined, 'marker missing - document did not survive conversion: ' + body.slice(0, 400)).to.include('cobalt-7702');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "77.03 bedrock/claude-haiku /v1/chat/completions file_data percent-encoded text data URL - #7072",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with only the document marker, nothing else.\"\n        },\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"note.txt\",\n            \"file_data\": \"data:text/plain,The%20document%20marker%20is%20cobalt-7703.\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Percent-encoded text data URL: unescape then base64 into source.bytes.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('Bedrock did not reject the DocumentSource', function () {",
+                  "  pm.expect(body).to.not.include('must set one of the following keys');",
+                  "});",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.be.below(400);",
+                  "});",
+                  "var joined = body;",
+                  "// A text document shipped as a bare source.text 400s; one double-encoded into",
+                  "// source.bytes returns 200 with EMPTY content. Only echoing the marker proves",
+                  "// the document bytes actually survived conversion.",
+                  "pm.test('document content reached the model', function () {",
+                  "  pm.expect(joined, 'marker missing - document did not survive conversion: ' + body.slice(0, 400)).to.include('cobalt-7703');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "77.04 bedrock/claude-haiku /v1/chat/completions text document format from filename extension - #7072",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with only the document marker, nothing else.\"\n        },\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"rows.csv\",\n            \"file_data\": \"The document marker is cobalt-7704.\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No file_type: csv format inferred from the filename still takes the text branch.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('Bedrock did not reject the DocumentSource', function () {",
+                  "  pm.expect(body).to.not.include('must set one of the following keys');",
+                  "});",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.be.below(400);",
+                  "});",
+                  "var joined = body;",
+                  "// A text document shipped as a bare source.text 400s; one double-encoded into",
+                  "// source.bytes returns 200 with EMPTY content. Only echoing the marker proves",
+                  "// the document bytes actually survived conversion.",
+                  "pm.test('document content reached the model', function () {",
+                  "  pm.expect(joined, 'marker missing - document did not survive conversion: ' + body.slice(0, 400)).to.include('cobalt-7704');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "77.05 bedrock/claude-haiku /v1/chat/completions file_data text/html - #7072",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with only the document marker, nothing else.\"\n        },\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"page.html\",\n            \"file_type\": \"text/html\",\n            \"file_data\": \"<!DOCTYPE html>\\n<html>\\n<head><title>Note</title></head>\\n<body>\\n<h1>Note</h1>\\n<p>The document marker is cobalt-7705.</p>\\n</body>\\n</html>\\n\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// html is a Bedrock text format and must ship as bytes. Bedrock content-sniffs the payload, so the fixture is a full HTML document - a bare fragment is detected as PLAIN_TEXT and rejected.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('Bedrock did not reject the DocumentSource', function () {",
+                  "  pm.expect(body).to.not.include('must set one of the following keys');",
+                  "});",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.be.below(400);",
+                  "});",
+                  "var joined = body;",
+                  "// A text document shipped as a bare source.text 400s; one double-encoded into",
+                  "// source.bytes returns 200 with EMPTY content. Only echoing the marker proves",
+                  "// the document bytes actually survived conversion.",
+                  "pm.test('document content reached the model', function () {",
+                  "  pm.expect(joined, 'marker missing - document did not survive conversion: ' + body.slice(0, 400)).to.include('cobalt-7705');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "77.06 bedrock/claude-haiku /v1/chat/completions streaming raw text document - #7072",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 64,\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with only the document marker, nothing else.\"\n        },\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"note.txt\",\n            \"file_type\": \"text/plain\",\n            \"file_data\": \"The document marker is cobalt-7706.\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Streaming shares the same request converter.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('Bedrock did not reject the DocumentSource', function () {",
+                  "  pm.expect(body).to.not.include('must set one of the following keys');",
+                  "});",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.be.below(400);",
+                  "});",
+                  "// The model splits the marker across SSE deltas ('cob' + 'alt-77xx'), so it only",
+                  "// exists in the reassembled stream - a substring check on the raw body false-fails.",
+                  "var joined = '';",
+                  "body.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data: ') !== 0) { return; }",
+                  "  try {",
+                  "    var j = JSON.parse(line.slice(6));",
+                  "    var d = j.delta;",
+                  "    // three delta shapes: chat choices[].delta.content, Anthropic delta.text,",
+                  "    // and Responses response.output_text.delta where delta is a bare string.",
+                  "    var t = (j.choices && j.choices[0] && j.choices[0].delta && j.choices[0].delta.content) ||",
+                  "            (typeof d === 'string' ? d : (d && d.text)) || '';",
+                  "    if (t) { joined += t; }",
+                  "  } catch (e) { /* [DONE] and other non-JSON sentinels */ }",
+                  "});",
+                  "// A text document shipped as a bare source.text 400s; one double-encoded into",
+                  "// source.bytes returns 200 with EMPTY content. Only echoing the marker proves",
+                  "// the document bytes actually survived conversion.",
+                  "pm.test('document content reached the model', function () {",
+                  "  pm.expect(joined, 'marker missing - document did not survive conversion: ' + body.slice(0, 400)).to.include('cobalt-7706');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "77.07 bedrock/claude-haiku /v1/chat/completions inline base64 PDF stays binary - #7072",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with only the document marker, nothing else.\"\n        },\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"note.pdf\",\n            \"file_type\": \"application/pdf\",\n            \"file_data\": \"data:application/pdf;base64,JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA1IDAgUiA+PiA+PiAvQ29udGVudHMgNCAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA2NiA+PgpzdHJlYW0KQlQgL0YxIDE4IFRmIDQwIDcwMCBUZCAoVGhlIGRvY3VtZW50IG1hcmtlciBpcyBjb2JhbHQtNzcwNy4pIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKNSAwIG9iago8PCAvVHlwZSAvRm9udCAvU3VidHlwZSAvVHlwZTEgL0Jhc2VGb250IC9IZWx2ZXRpY2EgPj4KZW5kb2JqCnhyZWYKMCA2CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAwOSAwMDAwMCBuIAowMDAwMDAwMDU4IDAwMDAwIG4gCjAwMDAwMDAxMTUgMDAwMDAgbiAKMDAwMDAwMDI0MSAwMDAwMCBuIAowMDAwMDAwMzU3IDAwMDAwIG4gCnRyYWlsZXIKPDwgL1NpemUgNiAvUm9vdCAxIDAgUiA+PgpzdGFydHhyZWYKNDI3CiUlRU9GCg==\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Guard against over-correction: binary documents must keep passing base64 through untouched.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('Bedrock did not reject the DocumentSource', function () {",
+                  "  pm.expect(body).to.not.include('must set one of the following keys');",
+                  "});",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.be.below(400);",
+                  "});",
+                  "var joined = body;",
+                  "// A text document shipped as a bare source.text 400s; one double-encoded into",
+                  "// source.bytes returns 200 with EMPTY content. Only echoing the marker proves",
+                  "// the document bytes actually survived conversion.",
+                  "pm.test('document content reached the model', function () {",
+                  "  pm.expect(joined, 'marker missing - document did not survive conversion: ' + body.slice(0, 400)).to.include('cobalt-7707');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "77.08 bedrock/claude-haiku /v1/responses input_file raw text/plain - #7072",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_output_tokens\": 64,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with only the document marker, nothing else.\"\n        },\n        {\n          \"type\": \"input_file\",\n          \"filename\": \"note.txt\",\n          \"file_type\": \"text/plain\",\n          \"file_data\": \"The document marker is cobalt-7708.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Responses converter is a separate materializeBedrockDocument call site.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('Bedrock did not reject the DocumentSource', function () {",
+                  "  pm.expect(body).to.not.include('must set one of the following keys');",
+                  "});",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.be.below(400);",
+                  "});",
+                  "var joined = body;",
+                  "// A text document shipped as a bare source.text 400s; one double-encoded into",
+                  "// source.bytes returns 200 with EMPTY content. Only echoing the marker proves",
+                  "// the document bytes actually survived conversion.",
+                  "pm.test('document content reached the model', function () {",
+                  "  pm.expect(joined, 'marker missing - document did not survive conversion: ' + body.slice(0, 400)).to.include('cobalt-7708');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "77.09 bedrock/claude-haiku /v1/responses input_file base64 data URL text/markdown - #7072",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_output_tokens\": 64,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with only the document marker, nothing else.\"\n        },\n        {\n          \"type\": \"input_file\",\n          \"filename\": \"note.md\",\n          \"file_type\": \"text/markdown\",\n          \"file_data\": \"data:text/markdown;base64,VGhlIGRvY3VtZW50IG1hcmtlciBpcyBjb2JhbHQtNzcwOS4=\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Responses converter, base64 text data URL.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('Bedrock did not reject the DocumentSource', function () {",
+                  "  pm.expect(body).to.not.include('must set one of the following keys');",
+                  "});",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.be.below(400);",
+                  "});",
+                  "var joined = body;",
+                  "// A text document shipped as a bare source.text 400s; one double-encoded into",
+                  "// source.bytes returns 200 with EMPTY content. Only echoing the marker proves",
+                  "// the document bytes actually survived conversion.",
+                  "pm.test('document content reached the model', function () {",
+                  "  pm.expect(joined, 'marker missing - document did not survive conversion: ' + body.slice(0, 400)).to.include('cobalt-7709');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "77.10 bedrock/claude-haiku /v1/responses streaming raw text document - #7072",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_output_tokens\": 64,\n  \"stream\": true,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with only the document marker, nothing else.\"\n        },\n        {\n          \"type\": \"input_file\",\n          \"filename\": \"note.txt\",\n          \"file_type\": \"text/plain\",\n          \"file_data\": \"The document marker is cobalt-7710.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Responses streaming shares the same request converter.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('Bedrock did not reject the DocumentSource', function () {",
+                  "  pm.expect(body).to.not.include('must set one of the following keys');",
+                  "});",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.be.below(400);",
+                  "});",
+                  "// The model splits the marker across SSE deltas ('cob' + 'alt-77xx'), so it only",
+                  "// exists in the reassembled stream - a substring check on the raw body false-fails.",
+                  "var joined = '';",
+                  "body.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data: ') !== 0) { return; }",
+                  "  try {",
+                  "    var j = JSON.parse(line.slice(6));",
+                  "    var d = j.delta;",
+                  "    // three delta shapes: chat choices[].delta.content, Anthropic delta.text,",
+                  "    // and Responses response.output_text.delta where delta is a bare string.",
+                  "    var t = (j.choices && j.choices[0] && j.choices[0].delta && j.choices[0].delta.content) ||",
+                  "            (typeof d === 'string' ? d : (d && d.text)) || '';",
+                  "    if (t) { joined += t; }",
+                  "  } catch (e) { /* [DONE] and other non-JSON sentinels */ }",
+                  "});",
+                  "// A text document shipped as a bare source.text 400s; one double-encoded into",
+                  "// source.bytes returns 200 with EMPTY content. Only echoing the marker proves",
+                  "// the document bytes actually survived conversion.",
+                  "pm.test('document content reached the model', function () {",
+                  "  pm.expect(joined, 'marker missing - document did not survive conversion: ' + body.slice(0, 400)).to.include('cobalt-7710');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "77.11 bedrock/claude-haiku /openai/v1/chat/completions file_data raw text/plain - #7072",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with only the document marker, nothing else.\"\n        },\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"note.txt\",\n            \"file_type\": \"text/plain\",\n            \"file_data\": \"The document marker is cobalt-7711.\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// OpenAI drop-in ingress reaches the same Bedrock chat converter.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('Bedrock did not reject the DocumentSource', function () {",
+                  "  pm.expect(body).to.not.include('must set one of the following keys');",
+                  "});",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.be.below(400);",
+                  "});",
+                  "var joined = body;",
+                  "// A text document shipped as a bare source.text 400s; one double-encoded into",
+                  "// source.bytes returns 200 with EMPTY content. Only echoing the marker proves",
+                  "// the document bytes actually survived conversion.",
+                  "pm.test('document content reached the model', function () {",
+                  "  pm.expect(joined, 'marker missing - document did not survive conversion: ' + body.slice(0, 400)).to.include('cobalt-7711');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "77.12 bedrock/claude-haiku /openai/v1/responses input_file raw text/plain - #7072",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_output_tokens\": 64,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with only the document marker, nothing else.\"\n        },\n        {\n          \"type\": \"input_file\",\n          \"filename\": \"note.txt\",\n          \"file_type\": \"text/plain\",\n          \"file_data\": \"The document marker is cobalt-7712.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// OpenAI Responses drop-in ingress.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('Bedrock did not reject the DocumentSource', function () {",
+                  "  pm.expect(body).to.not.include('must set one of the following keys');",
+                  "});",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.be.below(400);",
+                  "});",
+                  "var joined = body;",
+                  "// A text document shipped as a bare source.text 400s; one double-encoded into",
+                  "// source.bytes returns 200 with EMPTY content. Only echoing the marker proves",
+                  "// the document bytes actually survived conversion.",
+                  "pm.test('document content reached the model', function () {",
+                  "  pm.expect(joined, 'marker missing - document did not survive conversion: ' + body.slice(0, 400)).to.include('cobalt-7712');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "77.13 bedrock/claude-haiku /anthropic/v1/messages document source.type text - #7072",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with only the document marker, nothing else.\"\n        },\n        {\n          \"type\": \"document\",\n          \"source\": {\n            \"type\": \"text\",\n            \"media_type\": \"text/plain\",\n            \"data\": \"The document marker is cobalt-7713.\"\n          },\n          \"title\": \"Note\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Issue repro surface: Anthropic Messages text document block against a Bedrock model.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('Bedrock did not reject the DocumentSource', function () {",
+                  "  pm.expect(body).to.not.include('must set one of the following keys');",
+                  "});",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.be.below(400);",
+                  "});",
+                  "var joined = body;",
+                  "// A text document shipped as a bare source.text 400s; one double-encoded into",
+                  "// source.bytes returns 200 with EMPTY content. Only echoing the marker proves",
+                  "// the document bytes actually survived conversion.",
+                  "pm.test('document content reached the model', function () {",
+                  "  pm.expect(joined, 'marker missing - document did not survive conversion: ' + body.slice(0, 400)).to.include('cobalt-7713');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "77.14 bedrock/claude-haiku /anthropic/v1/messages document source.type base64 text/plain - #7072",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with only the document marker, nothing else.\"\n        },\n        {\n          \"type\": \"document\",\n          \"source\": {\n            \"type\": \"base64\",\n            \"media_type\": \"text/plain\",\n            \"data\": \"VGhlIGRvY3VtZW50IG1hcmtlciBpcyBjb2JhbHQtNzcxNC4=\"\n          },\n          \"title\": \"Note\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Anthropic base64 document with a text media type.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('Bedrock did not reject the DocumentSource', function () {",
+                  "  pm.expect(body).to.not.include('must set one of the following keys');",
+                  "});",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.be.below(400);",
+                  "});",
+                  "var joined = body;",
+                  "// A text document shipped as a bare source.text 400s; one double-encoded into",
+                  "// source.bytes returns 200 with EMPTY content. Only echoing the marker proves",
+                  "// the document bytes actually survived conversion.",
+                  "pm.test('document content reached the model', function () {",
+                  "  pm.expect(joined, 'marker missing - document did not survive conversion: ' + body.slice(0, 400)).to.include('cobalt-7714');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "77.15 bedrock/claude-haiku /anthropic/v1/messages streaming document source.type text - #7072",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 64,\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with only the document marker, nothing else.\"\n        },\n        {\n          \"type\": \"document\",\n          \"source\": {\n            \"type\": \"text\",\n            \"media_type\": \"text/plain\",\n            \"data\": \"The document marker is cobalt-7715.\"\n          },\n          \"title\": \"Note\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Anthropic drop-in streaming.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('Bedrock did not reject the DocumentSource', function () {",
+                  "  pm.expect(body).to.not.include('must set one of the following keys');",
+                  "});",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.be.below(400);",
+                  "});",
+                  "// The model splits the marker across SSE deltas ('cob' + 'alt-77xx'), so it only",
+                  "// exists in the reassembled stream - a substring check on the raw body false-fails.",
+                  "var joined = '';",
+                  "body.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data: ') !== 0) { return; }",
+                  "  try {",
+                  "    var j = JSON.parse(line.slice(6));",
+                  "    var d = j.delta;",
+                  "    // three delta shapes: chat choices[].delta.content, Anthropic delta.text,",
+                  "    // and Responses response.output_text.delta where delta is a bare string.",
+                  "    var t = (j.choices && j.choices[0] && j.choices[0].delta && j.choices[0].delta.content) ||",
+                  "            (typeof d === 'string' ? d : (d && d.text)) || '';",
+                  "    if (t) { joined += t; }",
+                  "  } catch (e) { /* [DONE] and other non-JSON sentinels */ }",
+                  "});",
+                  "// A text document shipped as a bare source.text 400s; one double-encoded into",
+                  "// source.bytes returns 200 with EMPTY content. Only echoing the marker proves",
+                  "// the document bytes actually survived conversion.",
+                  "pm.test('document content reached the model', function () {",
+                  "  pm.expect(joined, 'marker missing - document did not survive conversion: ' + body.slice(0, 400)).to.include('cobalt-7715');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "77.16 bedrock/claude-haiku /bedrock converse native document source.text round-trip - #7072",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Reply with only the document marker, nothing else.\"\n        },\n        {\n          \"document\": {\n            \"format\": \"txt\",\n            \"name\": \"Note\",\n            \"source\": {\n              \"text\": \"The document marker is cobalt-7716.\"\n            }\n          }\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 64\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-haiku-4-5-20251001-v1:0/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "converse"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Bedrock-native ingress: an inbound source.text must be re-materialized as source.bytes on egress.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('Bedrock did not reject the DocumentSource', function () {",
+                  "  pm.expect(body).to.not.include('must set one of the following keys');",
+                  "});",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.be.below(400);",
+                  "});",
+                  "var joined = body;",
+                  "// A text document shipped as a bare source.text 400s; one double-encoded into",
+                  "// source.bytes returns 200 with EMPTY content. Only echoing the marker proves",
+                  "// the document bytes actually survived conversion.",
+                  "pm.test('document content reached the model', function () {",
+                  "  pm.expect(joined, 'marker missing - document did not survive conversion: ' + body.slice(0, 400)).to.include('cobalt-7716');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "77.17 bedrock/claude-haiku /bedrock converse native document source.bytes round-trip - #7072",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Reply with only the document marker, nothing else.\"\n        },\n        {\n          \"document\": {\n            \"format\": \"txt\",\n            \"name\": \"Note\",\n            \"source\": {\n              \"bytes\": \"VGhlIGRvY3VtZW50IG1hcmtlciBpcyBjb2JhbHQtNzcxNy4=\"\n            }\n          }\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 64\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-haiku-4-5-20251001-v1:0/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "converse"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Bedrock-native ingress: inbound bytes must not be double-encoded on the way back out.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('Bedrock did not reject the DocumentSource', function () {",
+                  "  pm.expect(body).to.not.include('must set one of the following keys');",
+                  "});",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.be.below(400);",
+                  "});",
+                  "var joined = body;",
+                  "// A text document shipped as a bare source.text 400s; one double-encoded into",
+                  "// source.bytes returns 200 with EMPTY content. Only echoing the marker proves",
+                  "// the document bytes actually survived conversion.",
+                  "pm.test('document content reached the model', function () {",
+                  "  pm.expect(joined, 'marker missing - document did not survive conversion: ' + body.slice(0, 400)).to.include('cobalt-7717');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "77.18 bedrock/claude-haiku /v1/responses function_call_output text document tool result - #7072",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_output_tokens\": 64,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"fetch_note\",\n      \"description\": \"Fetch the note\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": \"Call fetch_note, then reply with only the document marker.\"\n    },\n    {\n      \"type\": \"function_call\",\n      \"role\": \"assistant\",\n      \"status\": \"completed\",\n      \"call_id\": \"call_7718\",\n      \"name\": \"fetch_note\",\n      \"arguments\": \"{}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_7718\",\n      \"output\": [\n        {\n          \"type\": \"input_file\",\n          \"filename\": \"note.txt\",\n          \"file_type\": \"text/plain\",\n          \"file_data\": \"The document marker is cobalt-7718.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Tool-result document path - the branch PR #5663 was written to add.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('Bedrock did not reject the DocumentSource', function () {",
+                  "  pm.expect(body).to.not.include('must set one of the following keys');",
+                  "});",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 400)).to.be.below(400);",
+                  "});",
+                  "var joined = body;",
+                  "// A text document shipped as a bare source.text 400s; one double-encoded into",
+                  "// source.bytes returns 200 with EMPTY content. Only echoing the marker proves",
+                  "// the document bytes actually survived conversion.",
+                  "pm.test('document content reached the model', function () {",
+                  "  pm.expect(joined, 'marker missing - document did not survive conversion: ' + body.slice(0, 400)).to.include('cobalt-7718');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "78. Bedrock OpenAI-compatible surface (use_openai_endpoints / gpt-6 path / region prefix)",
+      "description": "Pins the Bedrock OpenAI-compatible routing added in df47e2173, 0eaf82d19 and 473af3607.\n\nMantle answers a frontier model on exactly one of its two base paths and 400s on the other, so a new closed generation that nothing names falls through to the bare \"v1\" path gpt-oss uses. gpt-6-astra did exactly that. The base path now comes from schemas.ResolveBedrockMantleBasePath (datasheet bedrock_mantle_base_path, family list as fallback).\n\nThe \"{region}/model\" form is Bifrost addressing, not part of the AWS identifier: it selects the host and signing scope and must be stripped before the wire. The Converse and native-Anthropic paths always did; the OpenAI-compatible ones handed request.Model straight to the shared handler and AWS 404d it.\n\nResponses on bedrock-runtime can now be served from /openai/v1/responses instead of Converse, behind the key-level use_openai_endpoints opt-in. Converse has no previous_response_id, so a stateful client loses prior-turn context and any tool continuation fails. The opt-in never overrides capability: Claude and application inference profiles stay on Converse.\n\nCases 4 and 5 require the bedrock_openai_ep provider in tests/integrations/python/config.json (same credentials, use_openai_endpoints: true).",
+      "item": [
+        {
+          "name": "bedrock_mantle/us-west-2/openai.gpt-6-astra /v1/chat/completions routes to openai/v1 with the region prefix stripped - bedrock-openai-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_mantle/us-west-2/openai.gpt-6-astra\",\"max_tokens\":24,\"messages\":[{\"role\":\"user\",\"content\":\"Say OK\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "// Two distinct regressions answer here, both with a 4xx, so 400/404 must NOT be skipped:",
+                  "//   wrong base path -> 400 \"model `openai.gpt-6-astra` isn't supported on this route\"",
+                  "//   prefix left on   -> 404 \"The model 'us-west-2/openai.gpt-6-astra' does not exist\"",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('gpt-6 reaches mantle on openai/v1 with a bare model id', function () {",
+                  "  pm.expect(body, 'mantle rejected the base path').to.not.include(\"isn't supported on this route\");",
+                  "  // Quoted error phrasing, not the bare id: routing_info.model,",
+                  "  // original_model_requested and resolved_model_used all echo the prefixed",
+                  "  // form on a healthy 200, so a bare substring check could never pass.",
+                  "  pm.expect(body, 'prefixed id was rejected upstream').to.not.include(\"The model 'us-west-2/openai.gpt-6-astra'\");",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.choices, 'expected choices in the response').to.be.an('array').that.is.not.empty;",
+                  "  var wire = ((j.extra_fields || {}).raw_request || {}).model;",
+                  "  pm.expect(wire, 'raw_request missing - is send_back_raw_request honoured?').to.be.a('string');",
+                  "  pm.expect(wire, 'region prefix reached the wire: ' + wire).to.equal('openai.gpt-6-astra');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock_mantle/us-west-2/openai.gpt-6-astra /v1/responses keeps xhigh reasoning effort - bedrock-openai-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_mantle/us-west-2/openai.gpt-6-astra\",\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"xhigh\"},\"input\":\"Say OK\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('xhigh survives to the wire instead of being normalised to high', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  var raw = JSON.stringify((j.extra_fields || {}).raw_request || {});",
+                  "  pm.expect(raw, 'raw_request missing - is send_back_raw_request honoured?').to.not.equal('{}');",
+                  "  // Before gpt-6 joined acceptsXHighEffort the ladder lacked the tier and the",
+                  "  // requested effort was silently clamped to the next one down.",
+                  "  pm.expect(raw, 'effort was downgraded: ' + raw).to.include('\"xhigh\"');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/us.openai.gpt-5.6-terra /v1/responses stays on Converse without the opt-in - bedrock-openai-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.openai.gpt-5.6-terra\",\"max_output_tokens\":64,\"input\":\"Say OK\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('default bedrock key serves Responses from Converse', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  // Converse returns the AWS request id; the OpenAI surface mints resp_*.",
+                  "  pm.expect(String(j.id || ''), 'diverted without use_openai_endpoints: ' + j.id).to.not.match(/^resp_/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock_openai_ep/us.openai.gpt-5.6-terra /v1/responses diverts to the OpenAI surface when opted in - bedrock-openai-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_openai_ep/us.openai.gpt-5.6-terra\",\"max_output_tokens\":64,\"input\":\"Say OK\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('use_openai_endpoints routes Responses to /openai/v1/responses', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  // resp_* is what makes previous_response_id continuations possible at all.",
+                  "  pm.expect(String(j.id || ''), 'still on Converse: ' + j.id).to.match(/^resp_/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock_openai_ep/us.anthropic.claude-sonnet-4-6 /v1/responses keeps claude on Converse despite the opt-in - bedrock-openai-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_openai_ep/us.anthropic.claude-sonnet-4-6\",\"max_output_tokens\":64,\"input\":\"Say OK\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('opting in cannot force a surface the model does not serve', function () {",
+                  "  // AWS 404s every non-OpenAI family on /openai/v1 (\"doesn't support this API\"),",
+                  "  // so a diverted Claude request would fail outright rather than degrade.",
+                  "  pm.expect(body, 'claude was diverted to the OpenAI surface').to.not.include(\"doesn't support this API\");",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(String(j.id || ''), 'claude diverted: ' + j.id).to.not.match(/^resp_/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/openai.gpt-5.6-terra /v1/responses translates cache_control into a prompt cache breakpoint - bedrock-openai-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/openai.gpt-5.6-terra\",\"max_output_tokens\":48,\"input\":[{\"type\":\"message\",\"role\":\"system\",\"content\":[{\"type\":\"input_text\",\"text\":\"You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. You are a meticulous code reviewer. Follow these rules exactly. \",\"cache_control\":{\"type\":\"ephemeral\"}}]},{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Say OK.\"}]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('bedrock reaches the gpt-5.6 breakpoint path instead of dropping the marker', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  var raw = JSON.stringify((j.extra_fields || {}).raw_request || {});",
+                  "  pm.expect(raw, 'raw_request missing - is send_back_raw_request honoured?').to.not.equal('{}');",
+                  "  // schemas.Bedrock was absent from responsesUsesPromptCacheBreakpoints, so the",
+                  "  // serializer stripped cache_control and left implicit caching in place.",
+                  "  pm.expect(raw, 'cache_control was dropped: ' + raw).to.include('prompt_cache_breakpoint');",
+                  "  pm.expect(raw, 'explicit mode not requested: ' + raw).to.include('prompt_cache_options');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "79. Claude Code against Bedrock OpenAI-family models (anthropic route conversion)",
+      "description": "Two defects made every Claude Code session against a Bedrock OpenAI-family model fail on its first message. Both live in the Anthropic -> Responses conversion and both answer with a 400, so neither degrades quietly.\n\nConvertAnthropicMessagesToBifrostMessages is called with keepToolsGrouped = (provider == bedrock). The grouped converter built input messages with ResponsesOutputMessageContentTypeText plus annotations/logprobs, all output-side. The Responses API matches `input` against a union of input-item variants and a user message carrying output_text matches none: \"Invalid 'input': value did not match any expected variant\". The ungrouped converter (bedrock_mantle) always used input_text, which is why only the bedrock provider failed.\n\nSeparately, the converter pins reasoning.summary to \"detailed\" whenever the user agent is claude-cli. Bedrock advertises concise/detailed/auto in its schema but its models serve only \"auto\", answering the others with \"Unsupported parameter: 'reasoning.summary' is not supported with the ... model\" on BOTH bedrock-runtime and bedrock-mantle. The summary is now narrowed to auto for Bedrock targets rather than dropped, since the caller did ask to see reasoning.\n\nThe third case is the regression guard: Claude on the bedrock provider takes the same grouped converter, so the input_text change had to leave it working.",
+      "item": [
+        {
+          "name": "bedrock/openai.gpt-5.6-terra via /anthropic/v1/messages with a claude-cli agent - bedrock-cc-anthropic-conversion",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/1.0"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/openai.gpt-5.6-terra\",\"max_tokens\":2048,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"system\":[{\"type\":\"text\",\"text\":\"You are Claude Code, Anthropic's official CLI for Claude.\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Hi\"}]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('grouped converter emits input_text and a summary bedrock serves', function () {",
+                  "  pm.expect(body, 'input union rejected - output_text on an input message?').to.not.include('did not match any expected variant');",
+                  "  pm.expect(body, 'summary style the model cannot serve').to.not.include(\"Unsupported parameter: 'reasoning.summary'\");",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  var raw = (j.extra_fields || {}).raw_request || {};",
+                  "  pm.expect(raw.input, 'raw_request missing - is send_back_raw_request honoured?').to.be.an('array');",
+                  "  var types = {};",
+                  "  raw.input.forEach(function (item) {",
+                  "    (item.content || []).forEach(function (part) { if (part && part.type) { types[part.type] = true; } });",
+                  "  });",
+                  "  // A user turn carries input_text; output_text is output-side and makes the",
+                  "  // Responses input union unmatchable.",
+                  "  pm.expect(types['output_text'], 'output_text on an input message: ' + JSON.stringify(types)).to.not.equal(true);",
+                  "  pm.expect(types['input_text'], 'expected input_text, got ' + JSON.stringify(types)).to.equal(true);",
+                  "  var reasoning = raw.reasoning || {};",
+                  "  // Bedrock advertises concise/detailed/auto but serves only auto; the Anthropic",
+                  "  // converter pins 'detailed' for every Claude Code request.",
+                  "  if (reasoning.summary) { pm.expect(reasoning.summary, 'summary not narrowed for bedrock').to.equal('auto'); }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock_mantle/openai.gpt-5.6-terra via /anthropic/v1/messages with a claude-cli agent - bedrock-cc-anthropic-conversion",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/1.0"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_mantle/openai.gpt-5.6-terra\",\"max_tokens\":2048,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"system\":[{\"type\":\"text\",\"text\":\"You are Claude Code, Anthropic's official CLI for Claude.\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Hi\"}]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "// The ungrouped converter already emitted input_text, so this case isolates the",
+                  "// summary narrowing on the other host.",
+                  "pm.test('summary is narrowed to auto on the mantle host too', function () {",
+                  "  pm.expect(body, 'input union rejected - output_text on an input message?').to.not.include('did not match any expected variant');",
+                  "  pm.expect(body, 'summary style the model cannot serve').to.not.include(\"Unsupported parameter: 'reasoning.summary'\");",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  var raw = (j.extra_fields || {}).raw_request || {};",
+                  "  pm.expect(raw.input, 'raw_request missing - is send_back_raw_request honoured?').to.be.an('array');",
+                  "  var types = {};",
+                  "  raw.input.forEach(function (item) {",
+                  "    (item.content || []).forEach(function (part) { if (part && part.type) { types[part.type] = true; } });",
+                  "  });",
+                  "  // A user turn carries input_text; output_text is output-side and makes the",
+                  "  // Responses input union unmatchable.",
+                  "  pm.expect(types['output_text'], 'output_text on an input message: ' + JSON.stringify(types)).to.not.equal(true);",
+                  "  pm.expect(types['input_text'], 'expected input_text, got ' + JSON.stringify(types)).to.equal(true);",
+                  "  var reasoning = raw.reasoning || {};",
+                  "  // Bedrock advertises concise/detailed/auto but serves only auto; the Anthropic",
+                  "  // converter pins 'detailed' for every Claude Code request.",
+                  "  if (reasoning.summary) { pm.expect(reasoning.summary, 'summary not narrowed for bedrock').to.equal('auto'); }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/us.anthropic.claude-sonnet-4-6 via /anthropic/v1/messages keeps working through the grouped converter - bedrock-cc-anthropic-conversion",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/1.0"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.anthropic.claude-sonnet-4-6\",\"max_tokens\":2048,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"system\":[{\"type\":\"text\",\"text\":\"You are Claude Code, Anthropic's official CLI for Claude.\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Hi\"}]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "// Claude on the bedrock provider shares keepToolsGrouped=true with the models",
+                  "// above, so the input_text change had to leave this path intact.",
+                  "pm.test('claude on bedrock still answers through the grouped converter', function () {",
+                  "  pm.expect(body, 'input union rejected').to.not.include('did not match any expected variant');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.content, 'expected content blocks').to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

@@ -5997,20 +5997,21 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 						},
 					})
 				} else {
-					// For input messages, emit text immediately as separate message
+					// For input messages, emit text immediately as separate message.
+					// input_text, not output_text: the Responses API matches `input`
+					// against a union of input-item variants, and an output-side block on
+					// a user message matches none of them ("Invalid 'input': value did not
+					// match any expected variant"). Annotations and logprobs are
+					// output-only for the same reason. Mirrors the ungrouped converter.
 					bifrostMsg := schemas.ResponsesMessage{
 						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
 						Role: role,
 						Content: &schemas.ResponsesMessageContent{
 							ContentBlocks: []schemas.ResponsesMessageContentBlock{
 								{
-									Type:         schemas.ResponsesOutputMessageContentTypeText,
+									Type:         schemas.ResponsesInputMessageContentBlockTypeText,
 									Text:         block.Text,
 									CacheControl: block.CacheControl,
-									ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
-										LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
-										Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
-									},
 								},
 							},
 						},

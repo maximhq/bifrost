@@ -518,6 +518,30 @@
         ]
       }
     },
+    "bedrock_openai_ep": {
+      "keys": [
+        {
+          "name": "Bedrock API Key",
+          "bedrock_key_config": {
+            "access_key": "env.AWS_ACCESS_KEY_ID",
+            "secret_key": "env.AWS_SECRET_ACCESS_KEY",
+            "region": "env.AWS_REGION"
+          },
+          "weight": 1,
+          "models": [
+            "*"
+          ],
+          "use_openai_endpoints": true
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "bedrock",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
     "openai_pc_auto": {
       "keys": [
         {
