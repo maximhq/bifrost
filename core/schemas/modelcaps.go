@@ -496,6 +496,17 @@ func (c ModelCaps) ToolNameMaxLength(fallback int) int {
 	return fallback
 }
 
+// ReservedToolNamespaces returns the namespace-tool names the provider reserves for
+// its own server tools. A non-empty row replaces fallback outright, so a row can
+// both add names and clear a hardcoded one; absent or empty returns fallback.
+func (c ModelCaps) ReservedToolNamespaces(fallback []string) []string {
+	if c.record != nil && len(c.record.ReservedToolNamespaces) > 0 {
+		return c.record.ReservedToolNamespaces
+
+	}
+	return fallback
+}
+
 // SupportsAdvisorTool reports whether the model accepts advisor_tool_result blocks.
 func (c ModelCaps) SupportsAdvisorTool(fallback bool) bool {
 	if c.record != nil && c.record.SupportsAdvisorTool != nil {

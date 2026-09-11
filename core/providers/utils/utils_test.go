@@ -2584,6 +2584,162 @@ func TestFlattenResponsesNamespaceTools_DropsNonFunctionNestedTools(t *testing.T
 	}
 }
 
+// Codex >= 0.147 wraps its default tools in a namespace literally named
+// "functions" (openai/codex#37022), which it treats as identical to no namespace.
+// Bedrock Mantle reserves that name and 400s. Unwrapping is identity-preserving,
+// so it runs for every provider, before the support check.
+func TestUnwrapDefaultNamespaceTools(t *testing.T) {
+	codexExec := schemas.ResponsesTool{
+		Type:                schemas.ResponsesToolTypeCustom,
+		Name:                new("exec"),
+		ResponsesToolCustom: &schemas.ResponsesToolCustom{},
+	}
+	functionsNS := namespaceTool("functions", codexExec, namespaceFunctionTool("wait"))
+	collab := namespaceTool("collaboration", namespaceFunctionTool("spawn"))
+
+	t.Run("hoists nested tools verbatim and keeps other namespaces", func(t *testing.T) {
+		req := issue7048Request()
+		req.Params.Tools = []schemas.ResponsesTool{functionsNS, collab, namespaceFunctionTool("plain")}
+
+		out, bifrostErr := UnwrapDefaultNamespaceTools(req)
+		if bifrostErr != nil {
+			t.Fatalf("unexpected error: %v", bifrostErr.Error.Message)
+		}
+		if out == req {
+			t.Fatal("an unwrapping attempt must dispatch a copy, not the shared request")
+		}
+		got := toolNames(out.Params.Tools)
+		if strings.Join(got, ",") != "exec,wait,collaboration,plain" {
+			t.Fatalf("tool names = %v, want [exec wait collaboration plain]", got)
+		}
+		if out.Params.Tools[0].Type != schemas.ResponsesToolTypeCustom {
+			t.Errorf("custom nested tool must keep its type, got %q", out.Params.Tools[0].Type)
+		}
+		if out.Params.Tools[2].Type != schemas.ResponsesToolTypeNamespace {
+			t.Errorf("a non-default namespace must be left intact, got %q", out.Params.Tools[2].Type)
+		}
+		if len(req.Params.Tools) != 3 || req.Params.Tools[0].Type != schemas.ResponsesToolTypeNamespace {
+			t.Fatal("the shared request was mutated")
+		}
+	})
+
+	t.Run("no functions namespace returns the same pointer", func(t *testing.T) {
+		req := issue7048Request()
+		req.Params.Tools = []schemas.ResponsesTool{collab}
+		out, bifrostErr := UnwrapDefaultNamespaceTools(req)
+		if bifrostErr != nil || out != req {
+			t.Fatal("a request without a functions namespace must pass through untouched")
+		}
+	})
+
+	t.Run("prepends the namespace description like flatten does", func(t *testing.T) {
+		described := functionsNS
+		described.Description = new("Default tools for this session")
+		req := issue7048Request()
+		req.Params.Tools = []schemas.ResponsesTool{described}
+
+		out, bifrostErr := UnwrapDefaultNamespaceTools(req)
+		if bifrostErr != nil {
+			t.Fatalf("unexpected error: %v", bifrostErr.Error.Message)
+		}
+		wait := out.Params.Tools[1]
+		if wait.Description == nil || *wait.Description != "Default tools for this session\n\nRun JavaScript" {
+			t.Fatalf("hoisted member description = %v, want the namespace description prepended", wait.Description)
+		}
+		if orig := req.Params.Tools[0].ResponsesToolNamespace.Tools[1].Description; orig == nil || *orig != "Run JavaScript" {
+			t.Fatal("the shared request's nested tool description was mutated")
+		}
+	})
+
+	t.Run("duplicate against a top-level tool is a 400", func(t *testing.T) {
+		req := issue7048Request()
+		req.Params.Tools = []schemas.ResponsesTool{functionsNS, namespaceFunctionTool("wait")}
+		_, bifrostErr := UnwrapDefaultNamespaceTools(req)
+		if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 {
+			t.Fatalf("expected a 400 for a name duplicated after unwrapping, got %+v", bifrostErr)
+		}
+	})
+}
+
+// The namespace's own description is context the nested tool loses when it is
+// hoisted, so it is prepended, blank-line separated, the way LiteLLM does it.
+func TestFlattenResponsesNamespaceTools_PrependsNamespaceDescription(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	described := namespaceTool("crm", namespaceFunctionTool("lookup"))
+	described.Description = new("CRM tools for customer lookup")
+	bare := namespaceFunctionTool("undescribed")
+	bare.Description = nil
+	describedOnlyNS := namespaceTool("billing", bare)
+	describedOnlyNS.Description = new("Billing tools")
+	req := issue7048Request()
+	req.Params.Tools = []schemas.ResponsesTool{
+		described,
+		describedOnlyNS,
+		namespaceTool("nodesc", namespaceFunctionTool("run")),
+	}
+
+	out, bifrostErr := FlattenResponsesNamespaceTools(ctx, req)
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr.Error.Message)
+	}
+	want := map[string]string{
+		"crm__lookup":          "CRM tools for customer lookup\n\nRun JavaScript",
+		"billing__undescribed": "Billing tools",
+		"nodesc__run":          "Run JavaScript",
+	}
+	for _, tool := range out.Params.Tools {
+		if tool.Description == nil {
+			t.Errorf("%s: description is nil", *tool.Name)
+			continue
+		}
+		if *tool.Description != want[*tool.Name] {
+			t.Errorf("%s: description = %q, want %q", *tool.Name, *tool.Description, want[*tool.Name])
+		}
+	}
+	if *req.Params.Tools[0].ResponsesToolNamespace.Tools[0].Description != "Run JavaScript" {
+		t.Fatal("the shared request's nested tool description was mutated")
+	}
+}
+
+// A model sometimes calls the bare nested name even though the definition was
+// prefixed. When that bare name lives in exactly one namespace and is not a
+// top-level tool, it is restored to that namespace; otherwise it is left alone.
+func TestRestoreResponsesNamespaceToolCalls_BareNameFallback(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := issue7048Request()
+	req.Params.Tools = []schemas.ResponsesTool{
+		namespaceTool("namespace_a", namespaceFunctionTool("js"), namespaceFunctionTool("unique_fn")),
+		namespaceTool("namespace_b", namespaceFunctionTool("js"), namespaceFunctionTool("shadowed")),
+		namespaceFunctionTool("shadowed"),
+	}
+	prepared, bifrostErr := FlattenResponsesNamespaceTools(ctx, req)
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr.Error.Message)
+	}
+	call := func(name string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Type:                 new(schemas.ResponsesMessageTypeFunctionCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: new("c"), Name: new(name), Arguments: new("{}")},
+		}
+	}
+	resp := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+		Output: []schemas.ResponsesMessage{call("unique_fn"), call("js"), call("shadowed")},
+	}}
+
+	RestoreResponsesNamespaceToolCalls(prepared.NamespaceToolAliases, resp)
+
+	out := resp.ResponsesResponse.Output
+	if *out[0].Name != "unique_fn" || out[0].Namespace == nil || *out[0].Namespace != "namespace_a" {
+		t.Errorf("unique bare name: got name=%q namespace=%v, want unique_fn in namespace_a", *out[0].Name, out[0].Namespace)
+	}
+	if out[1].Namespace != nil {
+		t.Errorf("ambiguous bare name js must not be assigned a namespace, got %q", *out[1].Namespace)
+	}
+	if out[2].Namespace != nil {
+		t.Errorf("a bare name that is also a top-level tool must not be assigned a namespace, got %q", *out[2].Namespace)
+	}
+}
+
 func TestRestoreResponsesNamespaceToolCalls(t *testing.T) {
 	aliasesFor := func(withAliases bool) map[string]schemas.NamespaceToolAlias {
 		if !withAliases {

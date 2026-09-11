@@ -195,6 +195,35 @@ func TestModelCaps_ToolNameMaxLength(t *testing.T) {
 	})
 }
 
+// ModelCaps.ReservedToolNamespaces: a non-empty row replaces the caller's
+// hardcoded list outright; an absent or empty row hands the fallback back.
+func TestModelCaps_ReservedToolNamespaces(t *testing.T) {
+	fallback := []string{"web", "python"}
+
+	t.Run("RowReplacesFallback", func(t *testing.T) {
+		model := "mantle-model-reserved-row"
+		setCapabilityOverride(t, model, ModelCapabilities{ReservedToolNamespaces: []string{"only_this"}})
+		assert.Equal(t, []string{"only_this"}, ResolveModelCaps(BedrockMantle, model).ReservedToolNamespaces(fallback))
+	})
+
+	t.Run("EmptyRowFallsBack", func(t *testing.T) {
+		model := "mantle-model-empty-row"
+		setCapabilityOverride(t, model, ModelCapabilities{ReservedToolNamespaces: []string{}})
+		assert.Equal(t, fallback, ResolveModelCaps(BedrockMantle, model).ReservedToolNamespaces(fallback))
+	})
+
+	t.Run("AbsentRowFallsBack", func(t *testing.T) {
+		assert.Equal(t, fallback, ResolveModelCaps(BedrockMantle, "no-row").ReservedToolNamespaces(fallback))
+		assert.Nil(t, ResolveModelCaps(BedrockMantle, "no-row").ReservedToolNamespaces(nil))
+	})
+
+	t.Run("ZeroValue", func(t *testing.T) {
+		var caps ModelCaps
+		assert.Equal(t, fallback, caps.ReservedToolNamespaces(fallback))
+
+	})
+}
+
 // A row's effort ladder is taken verbatim over the caller's name-based fallback
 // and the base set — narrowing included, which is what the per-level booleans
 // this replaced could not express.

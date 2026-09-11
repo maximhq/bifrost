@@ -2924,3 +2924,105 @@ func TestToOpenAIResponsesRequest_DropsReservedNamespaceForBedrock(t *testing.T)
 		})
 	}
 }
+
+// The reserved-namespace list is datasheet-first: a row's reserved_tool_namespaces
+// replaces the hardcoded per-provider fallback for that (provider, model), and a
+// provider with no fallback at all can still reserve names through a row. The row
+// is looked up on the BASE provider so a custom provider wrapping Mantle reads
+// the bedrock_mantle row.
+func TestToOpenAIResponsesRequest_ReservedNamespacesFromDatasheet(t *testing.T) {
+	rows := map[schemas.ModelProvider]map[string][]string{
+		schemas.BedrockMantle: {"openai.gpt-5.6-luna": {"only_this"}},
+		schemas.XAI:           {"grok-4.6": {"x_tools"}},
+	}
+	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		reserved, ok := rows[provider][model]
+		if !ok {
+			return nil
+		}
+		return &schemas.ModelCapabilities{ReservedToolNamespaces: reserved}
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	namespace := func(name string) schemas.ResponsesTool {
+		return schemas.ResponsesTool{
+			Type: schemas.ResponsesToolTypeNamespace,
+			Name: schemas.Ptr(name),
+			ResponsesToolNamespace: &schemas.ResponsesToolNamespace{Tools: []schemas.ResponsesTool{{
+				Type:                  schemas.ResponsesToolTypeFunction,
+				Name:                  schemas.Ptr("run"),
+				ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+			}}},
+		}
+	}
+
+	tests := []struct {
+		name         string
+		provider     schemas.ModelProvider
+		baseProvider schemas.ModelProvider
+		model        string
+		tools        []schemas.ResponsesTool
+		wantNames    []string
+	}{
+		{
+			name:      "mantle row replaces the hardcoded list, so web survives and only_this is dropped",
+			provider:  schemas.BedrockMantle,
+			model:     "openai.gpt-5.6-luna",
+			tools:     []schemas.ResponsesTool{namespace("web"), namespace("only_this"), namespace("keep")},
+			wantNames: []string{"web", "keep"},
+		},
+		{
+			name:      "mantle model without a row keeps the hardcoded fallback",
+			provider:  schemas.BedrockMantle,
+			model:     "openai.gpt-5.6-terra",
+			tools:     []schemas.ResponsesTool{namespace("web"), namespace("only_this"), namespace("keep")},
+			wantNames: []string{"only_this", "keep", ""},
+		},
+		{
+			name:      "a provider with no hardcoded entry reserves names through its row",
+			provider:  schemas.XAI,
+			model:     "grok-4.6",
+			tools:     []schemas.ResponsesTool{namespace("x_tools"), namespace("keep")},
+			wantNames: []string{"keep"},
+		},
+		{
+			name:         "custom provider on a mantle base reads the bedrock_mantle row",
+			provider:     schemas.ModelProvider("my-mantle"),
+			baseProvider: schemas.BedrockMantle,
+			model:        "openai.gpt-5.6-luna",
+			tools:        []schemas.ResponsesTool{namespace("web"), namespace("only_this")},
+			wantNames:    []string{"web"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostResponsesRequest{
+				Provider: tc.provider,
+				Model:    tc.model,
+				Input: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+				}},
+				Params: &schemas.ResponsesParameters{Tools: tc.tools},
+			}
+			var ctx *schemas.BifrostContext
+			if tc.baseProvider != "" {
+				ctx = schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline,
+					schemas.BifrostContextKeyBaseProviderType, tc.baseProvider)
+			}
+			result := ToOpenAIResponsesRequest(ctx, bifrostReq)
+			require.NotNil(t, result)
+
+			gotNames := make([]string, 0, len(result.Tools))
+			for _, tool := range result.Tools {
+				name := ""
+				if tool.Name != nil {
+					name = *tool.Name
+				}
+				gotNames = append(gotNames, name)
+			}
+			require.Equal(t, tc.wantNames, gotNames)
+		})
+	}
+}

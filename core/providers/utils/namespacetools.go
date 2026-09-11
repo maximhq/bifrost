@@ -70,6 +70,77 @@ func DefaultNamespaceToolSupport(ctx *schemas.BifrostContext, baseProvider schem
 	}
 }
 
+// defaultToolNamespace is the namespace OpenAI-family models address top-level tools
+// under. Codex >= 0.147 declares it explicitly on every request
+// (openai/codex#37022, "Canonicalize default tools under the functions namespace")
+// and normalizes a missing, empty or explicit "functions" namespace to the same tool
+// identity. Bedrock Mantle reserves the name and rejects an explicit declaration:
+// "Invalid Value: 'tools.namespace'. User-defined namespace 'functions' collides
+// with an existing tool namespace."
+const defaultToolNamespace = "functions"
+
+// namespaceDescriptionSeparator joins a namespace's description onto each hoisted
+// member's description, so the context the namespace carried is not lost.
+const namespaceDescriptionSeparator = "\n\n"
+
+// UnwrapDefaultNamespaceTools hoists the members of a namespace named "functions"
+// to the top level, verbatim and unprefixed. It runs for EVERY provider, before the
+// wire support check: on wires that accept namespaces it is a semantic no-op, on
+// Bedrock Mantle it avoids the reserved-name 400, and on wires that flatten it
+// keeps Codex's default tools from acquiring a "functions__" prefix. No reverse map
+// is needed because the caller already treats the bare name and the explicit
+// namespace as the same tool.
+//
+// Copy-on-write like the other helpers here; the same pointer comes back when no
+// such namespace is present. A hoisted name that duplicates a top-level tool is a
+// 400, since the upstream would reject it as well, less clearly.
+func UnwrapDefaultNamespaceTools(req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesRequest, *schemas.BifrostError) {
+	if req == nil || req.Params == nil {
+		return req, nil
+	}
+	found := false
+	for _, tool := range req.Params.Tools {
+		if isDefaultNamespaceTool(tool) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return req, nil
+	}
+
+	unwrapped := make([]schemas.ResponsesTool, 0, len(req.Params.Tools))
+	for _, tool := range req.Params.Tools {
+		if !isDefaultNamespaceTool(tool) {
+			unwrapped = append(unwrapped, tool)
+			continue
+		}
+		if tool.ResponsesToolNamespace != nil {
+			// Members are hoisted verbatim except for the description: the namespace's
+			// own description is context the member would otherwise lose, so it is
+			// prepended the same way FlattenResponsesNamespaceTools does it.
+			for _, nested := range tool.ResponsesToolNamespace.Tools {
+				hoisted := nested
+				hoisted.Description = joinNamespaceDescription(tool.Description, nested.Description)
+				unwrapped = append(unwrapped, hoisted)
+			}
+		}
+	}
+	if bifrostErr := checkUniqueToolNames(unwrapped, nil); bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	cp := *req
+	params := *req.Params
+	params.Tools = unwrapped
+	cp.Params = &params
+	return &cp, nil
+}
+
+func isDefaultNamespaceTool(tool schemas.ResponsesTool) bool {
+	return tool.Type == schemas.ResponsesToolTypeNamespace && tool.Name != nil && *tool.Name == defaultToolNamespace
+}
+
 // FlattenResponsesNamespaceTools rewrites a Responses request for a wire that does not
 // understand namespace tools. Every nested function tool is hoisted to the top level
 // under the name "<namespace>__<function>", so two namespaces that both define "js"
@@ -115,6 +186,7 @@ func FlattenResponsesNamespaceTools(ctx *schemas.BifrostContext, req *schemas.Bi
 			alias := namespaceToolAlias(namespace, *nested.Name, limit)
 			hoisted := nested
 			hoisted.Name = new(alias)
+			hoisted.Description = joinNamespaceDescription(tool.Description, nested.Description)
 			flattened = append(flattened, hoisted)
 			aliases[alias] = schemas.NamespaceToolAlias{Namespace: namespace, Name: *nested.Name}
 			byFunction[*nested.Name] = append(byFunction[*nested.Name], alias)
@@ -137,9 +209,67 @@ func FlattenResponsesNamespaceTools(ctx *schemas.BifrostContext, req *schemas.Bi
 			return nil, bifrostErr
 		}
 		params.ToolChoice = toolChoice
-		cp.NamespaceToolAliases = aliases
+		// The response-side map also carries bare-name fallbacks; request-side
+		// re-aliasing above keeps using the qualified aliases only.
+		cp.NamespaceToolAliases = withBareNameFallbacks(aliases, byFunction, flattened)
 	}
 	return &cp, nil
+}
+
+// joinNamespaceDescription prepends the namespace's description to a hoisted
+// member's, blank-line separated, so the grouping context survives flattening. A
+// missing side is simply omitted; both missing leaves the description nil.
+func joinNamespaceDescription(namespace, member *string) *string {
+	nsDesc := ""
+	if namespace != nil {
+		nsDesc = *namespace
+	}
+	switch {
+	case nsDesc == "":
+		return member
+	case member == nil || *member == "":
+		return new(nsDesc)
+	default:
+		return new(nsDesc + namespaceDescriptionSeparator + *member)
+	}
+}
+
+// withBareNameFallbacks returns the restore map extended with each nested function's
+// bare name, when that name lives in exactly one namespace and is not itself a
+// top-level tool. A model sometimes calls the short name even though the definition
+// was prefixed; mapping it back keeps the caller's dispatch working. Only the map
+// stored for the response side gets these entries; request-side lookups keep using
+// the qualified aliases.
+func withBareNameFallbacks(aliases map[string]schemas.NamespaceToolAlias, byFunction map[string][]string, tools []schemas.ResponsesTool) map[string]schemas.NamespaceToolAlias {
+	out := make(map[string]schemas.NamespaceToolAlias, len(aliases)+len(byFunction))
+	for alias, target := range aliases {
+		out[alias] = target
+	}
+	for bare, candidates := range byFunction {
+		if len(candidates) != 1 {
+			continue
+		}
+		if _, taken := out[bare]; taken {
+			continue
+		}
+		if isTopLevelToolName(bare, tools, aliases) {
+			continue
+		}
+		out[bare] = aliases[candidates[0]]
+	}
+	return out
+}
+
+func isTopLevelToolName(name string, tools []schemas.ResponsesTool, aliases map[string]schemas.NamespaceToolAlias) bool {
+	for _, tool := range tools {
+		if tool.Name == nil || *tool.Name != name {
+			continue
+		}
+		if _, isAlias := aliases[*tool.Name]; !isAlias {
+			return true
+		}
+	}
+	return false
 }
 
 // RestoreResponsesNamespaceToolCalls rewrites function_call items whose name is a
