@@ -166,7 +166,7 @@ ChatContentBlock:
   properties:
     type:
       type: string
-      enum: [text, image_url, input_audio, file, refusal]
+      enum: [text, image_url, input_audio, input_video, file, refusal]
     text:
       type: string
     refusal:
@@ -175,6 +175,8 @@ ChatContentBlock:
       $ref: '#/ChatInputImage'
     input_audio:
       $ref: '#/ChatInputAudio'
+    input_video:
+      $ref: '#/ChatInputVideo'
     file:
       $ref: '#/ChatInputFile'
     cache_control:
@@ -197,6 +199,16 @@ ChatInputAudio:
     - data
   properties:
     data:
+      type: string
+    format:
+      type: string
+
+ChatInputVideo:
+  type: object
+  properties:
+    data:
+      type: string
+    url:
       type: string
     format:
       type: string
