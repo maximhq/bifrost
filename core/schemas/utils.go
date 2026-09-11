@@ -1795,6 +1795,28 @@ func BedrockModelSupportsCachePoints(model string) bool {
 	return IsAnthropicModel(model) || IsNovaModel(model)
 }
 
+// ResolveBedrockMantleBasePath returns the URL base path Bedrock Mantle serves the
+// model's OpenAI-compatible APIs on, preferring the datasheet and falling back to
+// family detection.
+//
+// Mantle answers a model on exactly one of its two paths and 400s on the other
+// ("model `openai.gpt-6-astra` isn't supported on this route"), so the fallback has
+// to name every closed generation explicitly: one that nothing matches drops to the
+// bare path the open-weight families use and fails outright. That is why the
+// datasheet leads — a new generation becomes a published row rather than a release.
+//
+// Takes the canonical (capability-resolved) model; the request body still carries
+// the wire model.
+func ResolveBedrockMantleBasePath(model string) BedrockMantleBasePath {
+	fallback := BedrockMantleBasePathV1
+	lower := strings.ToLower(model)
+	if strings.Contains(lower, "gpt-5") || strings.Contains(lower, "gpt-6") ||
+		strings.Contains(lower, "gemma-4") || IsGrokModel(model) {
+		fallback = BedrockMantleBasePathOpenAIV1
+	}
+	return ResolveModelCaps(BedrockMantle, model).BedrockMantleBasePath(fallback)
+}
+
 // ModelSupportsPromptCaching is the datasheet-independent fallback for
 // ModelCaps.SupportsPromptCaching. It answers the narrower question the breakpoint
 // injector needs: can a marker placed on a content block actually do anything here?

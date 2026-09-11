@@ -322,3 +322,56 @@ func TestResolveModelCaps_NormalizesRepeatedProviderPrefix(t *testing.T) {
 		})
 	}
 }
+
+// The base-path split is not a preference: mantle answers a model on exactly one
+// of its two paths and 400s on the other, so every closed generation has to be
+// named. The datasheet leads so a new one is a published row, not a release.
+func TestResolveBedrockMantleBasePath(t *testing.T) {
+	t.Run("FamilyFallback", func(t *testing.T) {
+		cases := []struct {
+			model string
+			want  BedrockMantleBasePath
+		}{
+			{"openai.gpt-5.6-terra", BedrockMantleBasePathOpenAIV1},
+			{"openai.gpt-6-astra", BedrockMantleBasePathOpenAIV1},
+			{"gpt-6-astra", BedrockMantleBasePathOpenAIV1},
+			{"google.gemma-4-31b", BedrockMantleBasePathOpenAIV1},
+			{"xai.grok-4.3", BedrockMantleBasePathOpenAIV1},
+			{"openai.gpt-oss-120b", BedrockMantleBasePathV1},
+			{"openai.gpt-oss-safeguard-120b", BedrockMantleBasePathV1},
+			{"google.gemma-3-12b-it", BedrockMantleBasePathV1},
+			{"deepseek.v3.2", BedrockMantleBasePathV1},
+		}
+		for _, tc := range cases {
+			if got := ResolveBedrockMantleBasePath(tc.model); got != tc.want {
+				t.Errorf("ResolveBedrockMantleBasePath(%q) = %q, want %q", tc.model, got, tc.want)
+			}
+		}
+	})
+
+	// Both directions, so a published row can correct the fallback either way.
+	t.Run("DatasheetWinsOverFamily", func(t *testing.T) {
+		model := "openai.gpt-oss-120b" // fallback says v1
+		setCapabilityOverride(t, model, ModelCapabilities{BedrockMantleBasePath: BedrockMantleBasePathOpenAIV1})
+		if got := ResolveBedrockMantleBasePath(model); got != BedrockMantleBasePathOpenAIV1 {
+			t.Errorf("datasheet should promote to openai/v1, got %q", got)
+		}
+	})
+
+	t.Run("DatasheetCanDemote", func(t *testing.T) {
+		model := "openai.gpt-6-astra" // fallback says openai/v1
+		setCapabilityOverride(t, model, ModelCapabilities{BedrockMantleBasePath: BedrockMantleBasePathV1})
+		if got := ResolveBedrockMantleBasePath(model); got != BedrockMantleBasePathV1 {
+			t.Errorf("datasheet should demote to v1, got %q", got)
+		}
+	})
+
+	// A value shipped ahead of this binary must not win; the fallback still answers.
+	t.Run("UnrecognisedValueFallsBack", func(t *testing.T) {
+		model := "openai.gpt-6-astra"
+		setCapabilityOverride(t, model, ModelCapabilities{BedrockMantleBasePath: BedrockMantleBasePath("v3")})
+		if got := ResolveBedrockMantleBasePath(model); got != BedrockMantleBasePathOpenAIV1 {
+			t.Errorf("unrecognised value should fall back to openai/v1, got %q", got)
+		}
+	})
+}
