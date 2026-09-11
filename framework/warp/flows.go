@@ -3,14 +3,16 @@ package warp
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/maximhq/bifrost/framework/logstore"
 )
 
-// The five named query flows Warp exposes, plus a drill-down and a discovery
-// tool. Each flow is one tool over the logstore read surface; they all take the
-// same filter object, which is what lets one parser and one scope path serve
-// every one of them.
+// The named query flows Warp exposes, plus a drill-down and a discovery tool.
+// Each flow is one tool over the logstore read surface; they all take the same
+// filter object, which is what lets one parser and one scope path serve every
+// one of them.
 
 // ---------------------------------------------------------------- flow 1: logs
 
@@ -200,7 +202,7 @@ func countLogsTool() Tool {
 			case stats.TotalRequests > LargeResultThreshold:
 				out["too_many_to_list"] = true
 				out["guidance"] = fmt.Sprintf(
-					"%d requests match - far too many to list. Answer from aggregates (query_metrics, query_model_performance) where you can. If you genuinely need individual rows, narrow by provider, model, status or virtual key, or split the window into smaller slices and handle one at a time.",
+					"%d requests match - far too many to list in full. For a sorted top-N (\"slowest requests\", \"most expensive calls\"), call query_logs with sort_by and limit directly; that works regardless of this count, it is not the same as listing everything. For a total, answer from aggregates (query_metrics, query_model_performance) where you can. Only narrow by provider, model, status or virtual key, or split the window into smaller slices, if you genuinely need individual rows beyond a top-N.",
 					stats.TotalRequests)
 			default:
 				out["guidance"] = "Small enough to list with query_logs if individual rows are needed."
@@ -218,7 +220,8 @@ func queryMetricsTool() Tool {
 		name: "query_metrics",
 		description: "Aggregate statistics and time series over requests: totals, cost, tokens, latency percentiles, throughput. " +
 			"This is the cheapest way to answer 'how much', 'how many' and 'is it getting worse'. Series are returned summarized (total, mean, min, max, first, last) rather than bucket by bucket. " +
-			"group_by supports 'none' and 'provider' only.",
+			"group_by supports 'none' and 'provider' only. " +
+			"Set compare_to_previous with metrics including summary to answer 'is it up or down vs last period' in this one call, instead of calling this twice with a shifted window.",
 		schemaJSON: `{
   "type": "object",
   "properties": {
@@ -230,7 +233,8 @@ func queryMetricsTool() Tool {
       "items": {"type": "string", "enum": ["summary", "requests", "tokens", "cost", "latency", "throughput"]},
       "description": "'summary' returns overall totals and is usually the right starting point."
     },
-    "group_by": {"type": "string", "enum": ["none", "provider"]}
+    "group_by": {"type": "string", "enum": ["none", "provider"]},
+    "compare_to_previous": {"type": "boolean", "description": "Requires 'summary' in metrics. Also fetches the immediately preceding period of equal length and returns a trend block (has_previous_period, requests_trend, tokens_trend, cost_trend as percent change) alongside summary."}
   },
   "required": ["filters", "metrics"]
 }`,
@@ -246,6 +250,10 @@ func queryMetricsTool() Tool {
 			}
 			groupBy, _ := args["group_by"].(string)
 			byProvider := groupBy == "provider"
+			compareToPrevious := boolArg(args, "compare_to_previous")
+			if compareToPrevious && !slices.Contains(metrics, "summary") {
+				return nil, fmt.Errorf("compare_to_previous requires metrics to include \"summary\"")
+			}
 
 			bucket, err := bucketSize(filters)
 			if err != nil {
@@ -268,6 +276,13 @@ func queryMetricsTool() Tool {
 						return nil, fmt.Errorf("stats query failed: %w", err)
 					}
 					out["summary"] = stats
+					if compareToPrevious {
+						trend, err := previousPeriodTrend(ctx, deps, filters, stats)
+						if err != nil {
+							return nil, fmt.Errorf("previous-period comparison failed: %w", err)
+						}
+						out["previous_period"] = trend
+					}
 				case "requests":
 					result, err := deps.logManager.GetHistogram(ctx, filters, bucket)
 					if err != nil {
@@ -339,71 +354,150 @@ func queryMetricsTool() Tool {
 	}
 }
 
-// --------------------------------------------------------------- flow 3: users
+// previousPeriodTrend fetches the period immediately preceding the filtered
+// window, of equal length, and compares it to the stats already fetched for
+// that window. It costs one extra store query so query_metrics's caller never
+// has to spend a second tool call computing the same comparison rankings get
+// for free.
+func previousPeriodTrend(ctx context.Context, deps *ToolDeps, filters *logstore.SearchFilters, current *logstore.SearchStats) (map[string]any, error) {
+	span := filters.EndTime.Sub(*filters.StartTime)
+	prevEnd := *filters.StartTime
+	prevStart := prevEnd.Add(-span)
 
-// queryUsersTool is flow 3: users ranked by usage.
-func queryUsersTool() Tool {
-	return Tool{
-		name: "query_user_usage",
-		description: "Rank users by usage - cost, requests and tokens - over a window. Answers 'who is spending the most', 'who drove the spike'. " +
-			"Users come from the user dimension recorded on each request, not from a directory, so anyone who has not made a request will not appear.",
-		schemaJSON: `{
-  "type": "object",
-  "properties": {
-    "filters": ` + FilterSchema + `,
-    "limit": {"type": "integer", "minimum": 1, "maximum": 20}
-  },
-  "required": ["filters"]
-}`,
-		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
-			return rankByDimension(ctx, deps, args, logstore.RankingDimensionUser)
-		},
-	}
-}
+	// A shallow copy: every other filter (providers, scope, status...) carries
+	// over unchanged, only the window shifts.
+	prevFilters := *filters
+	prevFilters.StartTime, prevFilters.EndTime = &prevStart, &prevEnd
 
-// -------------------------------------------------------- flow 4: virtual keys
-
-// queryVirtualKeysTool is flow 4: virtual keys ranked by usage.
-func queryVirtualKeysTool() Tool {
-	return Tool{
-		name: "query_virtual_key_usage",
-		description: "Rank virtual keys by usage - cost, requests and tokens - over a window. Answers 'which key is burning the budget'. " +
-			"Note: a per-key time series is not available; to see a trend, filter by virtual_key_ids and call query_metrics, which returns one combined series for those keys.",
-		schemaJSON: `{
-  "type": "object",
-  "properties": {
-    "filters": ` + FilterSchema + `,
-    "limit": {"type": "integer", "minimum": 1, "maximum": 20}
-  },
-  "required": ["filters"]
-}`,
-		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
-			return rankByDimension(ctx, deps, args, logstore.RankingDimensionVirtualKey)
-		},
-	}
-}
-
-// rankByDimension backs the user and virtual-key flows. RankingLimit pushes
-// the cap into SQL, so a large deployment never materializes more rows than the
-// answer needs.
-func rankByDimension(ctx context.Context, deps *ToolDeps, args map[string]any, dimension logstore.RankingDimension) (any, error) {
-	now := Now()
-	filters, err := filterArg(args, now, deps.scope)
+	previous, err := deps.logManager.GetStats(ctx, &prevFilters)
 	if err != nil {
 		return nil, err
 	}
-	limit := intArg(args, "limit", 10, MaxRankingRows)
-	filters.RankingLimit = &limit
-	result, err := deps.logManager.GetDimensionRankings(ctx, filters, dimension)
-	if err != nil {
-		return nil, fmt.Errorf("%s rankings failed: %w", dimension, err)
+
+	trend := map[string]any{
+		"has_previous_period": previous.TotalRequests > 0,
+		"requests_trend":      0.0,
+		"tokens_trend":        0.0,
+		"cost_trend":          0.0,
+		"window": map[string]string{
+			"start": prevStart.UTC().Format("2006-01-02T15:04:05Z"),
+			"end":   prevEnd.UTC().Format("2006-01-02T15:04:05Z"),
+		},
 	}
-	return map[string]any{"rankings": result, "scope": scopeNote(filters, deps.scope), "logs_link": logsViewLink(filters)}, nil
+	if previous.TotalRequests > 0 {
+		trend["requests_trend"] = pctChange(float64(previous.TotalRequests), float64(current.TotalRequests))
+		trend["tokens_trend"] = pctChange(float64(previous.TotalTokens), float64(current.TotalTokens))
+		trend["cost_trend"] = pctChange(previous.TotalCost, current.TotalCost)
+	}
+	return trend, nil
 }
 
-// ------------------------------------------------ flow 5: providers and models
+// pctChange is the percentage change from old to new. old == 0 reports no
+// change rather than a divide-by-zero or an infinite percentage - there is
+// nothing to compare against, which has_previous_period already says plainly.
+func pctChange(old, new float64) float64 {
+	if old == 0 {
+		return 0
+	}
+	return (new - old) / old * 100
+}
 
-// queryModelsTool is flow 5: model rankings and provider performance.
+// ---------------------------------------------------------- flow 3: rankings
+
+// rankingDimensions is every dimension GetDimensionRankings can group by, with
+// the one-line sense of each. Declared once here so the tool's enum and its
+// validation error can never drift apart from each other.
+var rankingDimensions = []struct {
+	value       logstore.RankingDimension
+	description string
+}{
+	{logstore.RankingDimensionUser, "the user recorded on each request"},
+	{logstore.RankingDimensionVirtualKey, "the virtual key used"},
+	{logstore.RankingDimensionTeam, "the team on the request or its virtual key"},
+	{logstore.RankingDimensionCustomer, "the customer on the request or its virtual key"},
+	{logstore.RankingDimensionBusinessUnit, "the business unit on the request or its virtual key"},
+	{logstore.RankingDimensionProject, "the project on the request or its virtual key"},
+	{logstore.RankingDimensionApp, "the client app that sent the request"},
+	{logstore.RankingDimensionUserAgent, "the raw User-Agent string"},
+}
+
+// queryUsageByTool is flow 3: any dimension ranked by usage, one tool instead
+// of one per dimension. team/customer/business_unit/project only have data
+// where that field is populated on the request or its virtual key - a
+// deployment that never sets it will get back an all-"Unassigned" ranking,
+// which is a real answer ("nothing is tagged"), not a tool failure.
+func queryUsageByTool() Tool {
+	var enumValues, describedValues []string
+	for _, dim := range rankingDimensions {
+		enumValues = append(enumValues, string(dim.value))
+		describedValues = append(describedValues, fmt.Sprintf("%s (%s)", dim.value, dim.description))
+	}
+
+	return Tool{
+		name: "query_usage_by",
+		description: "Rank a dimension by usage - cost, requests and tokens - over a window, with a trend against the immediately preceding period of equal length. " +
+			"Answers 'who is spending the most', 'which team spends the most', 'which key is burning the budget', 'is X up or down'. " +
+			"Each ranking row already carries a trend block (has_previous_period, requests_trend, tokens_trend, cost_trend); read it rather than calling this twice to check direction. " +
+			"Dimensions: " + strings.Join(describedValues, "; ") + ". " +
+			"Note: a per-entity time series is not available for any dimension; to see one, filter by the relevant id(s) and call query_metrics, which returns one combined series.",
+		schemaJSON: `{
+  "type": "object",
+  "properties": {
+    "dimension": {"type": "string", "enum": [` + quotedJoin(enumValues) + `]},
+    "filters": ` + FilterSchema + `,
+    "limit": {"type": "integer", "minimum": 1, "maximum": 20}
+  },
+  "required": ["dimension", "filters"]
+}`,
+		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
+			raw, _ := args["dimension"].(string)
+			dimension, ok := validRankingDimension(raw)
+			if !ok {
+				return nil, fmt.Errorf("unknown dimension %q; supported: %s", raw, strings.Join(enumValues, ", "))
+			}
+
+			now := Now()
+			filters, err := filterArg(args, now, deps.scope)
+			if err != nil {
+				return nil, err
+			}
+			limit := intArg(args, "limit", 10, MaxRankingRows)
+			filters.RankingLimit = &limit
+			result, err := deps.logManager.GetDimensionRankings(ctx, filters, dimension)
+			if err != nil {
+				return nil, fmt.Errorf("%s rankings failed: %w", dimension, err)
+			}
+			return map[string]any{"rankings": result, "scope": scopeNote(filters, deps.scope), "logs_link": logsViewLink(filters)}, nil
+		},
+	}
+}
+
+// validRankingDimension checks the model's dimension string against the
+// declared set, rather than casting it blindly: a typo would otherwise reach
+// the store as an opaque "invalid ranking dimension" error with no indication
+// of what was actually available.
+func validRankingDimension(raw string) (logstore.RankingDimension, bool) {
+	for _, dim := range rankingDimensions {
+		if string(dim.value) == raw {
+			return dim.value, true
+		}
+	}
+	return "", false
+}
+
+// quotedJoin renders a string slice as comma-separated JSON string literals,
+// for splicing into a schema written as a Go string literal above.
+func quotedJoin(values []string) string {
+	quoted := make([]string, len(values))
+	for i, v := range values {
+		quoted[i] = `"` + v + `"`
+	}
+	return strings.Join(quoted, ", ")
+}
+
+// ------------------------------------------------ flow 4: providers and models
+
+// queryModelsTool is flow 4: model rankings and provider performance.
 func queryModelsTool() Tool {
 	return Tool{
 		name: "query_model_performance",

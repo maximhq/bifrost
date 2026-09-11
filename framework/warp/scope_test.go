@@ -108,13 +108,17 @@ func TestWarpScopeNoteDescribesWhatTheResultCovers(t *testing.T) {
 func TestWarpFlowsReportScope(t *testing.T) {
 	deps := &ToolDeps{logManager: &fakeLogReader{}, scope: Scope{HasIdentity: true, UserID: "user-7"}}
 
-	for _, name := range []string{"query_logs", "query_user_usage", "query_model_performance"} {
+	for _, name := range []string{"query_logs", "query_model_performance"} {
 		result, err := runTool(t, name, deps, map[string]any{"filters": map[string]any{}})
 		require.NoError(t, err, name)
 		payload, ok := result.(map[string]any)
 		require.True(t, ok, name)
 		require.NotEmpty(t, payload["scope"], "%s must report what its result covers", name)
 	}
+
+	usage, err := runTool(t, "query_usage_by", deps, map[string]any{"dimension": "user", "filters": map[string]any{}})
+	require.NoError(t, err)
+	require.NotEmpty(t, usage.(map[string]any)["scope"], "query_usage_by must report what its result covers")
 
 	result, err := runTool(t, "query_metrics", deps, map[string]any{
 		"filters": map[string]any{}, "metrics": []any{"summary"},
