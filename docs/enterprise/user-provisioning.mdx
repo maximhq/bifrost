@@ -132,10 +132,13 @@ All providers share the same outer config shape in `config.json`:
     "provider": "okta | entra | zitadel | keycloak | google | sailpoint",
     "config": {
       "...": "provider-specific fields - see each IdP guide"
-    }
+    },
+    "trusted_networks": [{ "cidr": "10.20.0.0/16", "description": "On-prem Keycloak" }]
   }
 }
 ```
+
+`trusted_networks` is the private IP/CIDR allowlist the SSRF guard consults before outbound discovery calls, so a self-hosted IdP on an internal network is reachable - see [Generic OIDC](/enterprise/setting-up-generic-oidc/oidc) for when you need it. Entries are `{ cidr, description }`; a bare IP is a single host and hostnames are rejected. Declaring the key makes `config.json` own the whole list (an explicit `[]` clears ranges added from the dashboard); omit it to leave them untouched.
 
 Shared fields across providers:
 

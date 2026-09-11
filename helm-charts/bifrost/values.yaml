@@ -837,6 +837,7 @@ bifrost:
       #   max_limit: 100
       #   reset_duration: "1M"     # Supports: 30s, 5m, 1h, 1d, 1w, 1M, 1Q, 1Y
       #   calendar_aligned: false  # Snap reset to calendar boundaries (e.g. 1M resets on the 1st)
+      #   virtual_key_id: "vk-1"  # Optional owner; set this on the budget, not budget_id on the virtual key
       #   # reset_config only applies to quarterly ("1Q") budgets:
       #   reset_config:
       #     quarter_start_month: 4  # First month of Q1 as 1-12 (e.g. 4 = fiscal year starting April). 0/omitted = January.
@@ -879,7 +880,8 @@ bifrost:
       #   # GuardrailsConfig, MCPGateway, VirtualMCPs, Projects.
       #   entity_dac:
       #     VirtualKeys: "own-data"  # team-data everywhere else, but only their own keys
-      #   access_profile: "analyst-profile"  # Optional: name of an access_profile to attach
+      #   access_profiles:                    # Optional: names of all access profiles to grant
+      #     - "analyst-profile"              # Takes precedence over deprecated access_profile
       #   permissions:
       #     - resource: "Logs"
       #       operation: "View"
@@ -899,17 +901,14 @@ bifrost:
       #   team_id: "team-1"        # Mutually exclusive with customer_id
       #   customer_id: ""          # Mutually exclusive with team_id
       #   rate_limit_id: "rate-limit-1"
-      #   # Provider-specific configurations (empty means all providers allowed)
+      #   # Provider-specific configurations (empty means no providers allowed unless allow_all_providers is true)
       #   provider_configs:
       #     - provider: "openai"
       #       weight: 1.0
       #       allowed_models: ["gpt-4o"]
       #       blacklisted_models: []   # Models blocked even if matched by allowed_models; ["*"] blocks all
       #       rate_limit_id: ""
-      #       keys:
-      #         - key_id: "uuid-of-key"
-      #           name: "my-key"
-      #           value: "sk-..."
+      #       key_ids: ["*"]       # Provider key IDs; ["*"] allows all, while empty or omitted allows none
       #   # MCP configurations for this virtual key
       #   mcp_configs:
       #     - mcp_client_id: 1
@@ -1088,6 +1087,14 @@ bifrost:
   #   enabled: true
   #   # Provider: okta, entra, keycloak, zitadel, google, sailpoint, generic
   #   provider: ""
+  #   # Private IP/CIDR allowlist for SSRF-guarded outbound discovery (Enterprise): lets the
+  #   # generic provider's "Discover endpoints"/"Discover claims" reach a self-hosted IdP on an
+  #   # internal network. Declaring this key makes Helm own the whole list — it replaces whatever
+  #   # is stored, and an explicit `trustedNetworks: []` clears dashboard-added ranges. Omit the
+  #   # key to leave them alone.
+  #   trustedNetworks:
+  #     - cidr: "10.20.0.0/16"          # bare IPs are treated as a single host; hostnames are rejected
+  #       description: "On-prem Keycloak"
   #   config: {}
       # Okta configuration:
       # issuerUrl: "https://your-domain.okta.com/oauth2/default"

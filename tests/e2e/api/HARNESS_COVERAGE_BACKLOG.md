@@ -55,7 +55,7 @@ Sources:
 - [ ] **File search** (dropped earlier; needs vector_store setup) — `tools: [{ type: "file_search", vector_store_ids: [...] }]`
 - [ ] **Computer use preview** (`tools: [{ type: "computer_use_preview", display_width, display_height, environment }]`)
 - [~] **MCP tool** (`tools: [{ type: "mcp", server_label, server_url }]`) — drop-path covered for non-MCP providers (Bedrock + Vertex) via "MCP Tool Handling cross-cut" (regression #3795); **OpenAI/Anthropic forward-to-connector path still untested**
-- [ ] **Image generation** (`tools: [{ type: "image_generation" }]` requires gpt-image-1 access)
+- [x] **Image generation** (`tools: [{ type: "image_generation" }]` requires gpt-image-1 access) — folder 76 (#7059 / PR #7060): bare-string `action` decode + the settings echoed back on the completed item, across native `/v1/responses` (non-streaming + streaming) and the `/openai` drop-in stream
 - [x] **Reasoning summary** (`reasoning: { summary: "auto" }`) — OpenAI passthrough in "12. Backlog Coverage" (`summary_index + obfuscation preserved`); the `reasoning_summary_*` event fields themselves across Gemini/Vertex/Anthropic/Bedrock in "72. Reasoning Summary Streaming Event Fields"
 - [ ] **Background mode** (`background: true`) — async execution
 - [ ] **Truncation strategy** (`truncation: "auto"`)
