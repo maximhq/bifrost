@@ -28,6 +28,7 @@ import {
 	useInitiateMCPClientVerificationMutation,
 	useReauthorizeMCPClientMutation,
 	useReconnectMCPClientMutation,
+	useRefreshMCPClientToolsMutation,
 	useUpdateMCPClientMutation,
 	useVerifyMCPClientExchangeMutation,
 	useVerifyMCPClientHeadersMutation,
@@ -45,6 +46,7 @@ import {
 	Copy,
 	Info,
 	KeyRound,
+	ListRestart,
 	Loader2,
 	MoreHorizontal,
 	PencilIcon,
@@ -70,12 +72,14 @@ function MCPClientActionsMenu({
 	hasUpdateAccess,
 	hasDeleteAccess,
 	isReconnecting,
+	isRefreshingTools,
 	isAuthorizing,
 	isReauthorizing,
 	isVerifyingExchange,
 	canReconnect,
 	onEdit,
 	onReconnect,
+	onRefreshTools,
 	onAuthorize,
 	onReauthorize,
 	onRefreshHeaders,
@@ -86,12 +90,14 @@ function MCPClientActionsMenu({
 	hasUpdateAccess: boolean;
 	hasDeleteAccess: boolean;
 	isReconnecting: boolean;
+	isRefreshingTools: boolean;
 	isAuthorizing: boolean;
 	isReauthorizing: boolean;
 	isVerifyingExchange: boolean;
 	canReconnect: boolean;
 	onEdit: (client: MCPClient) => void;
 	onReconnect: (client: MCPClient) => void;
+	onRefreshTools: (client: MCPClient) => void;
 	onAuthorize: (client: MCPClient) => void;
 	onReauthorize: (client: MCPClient) => void;
 	onRefreshHeaders: (client: MCPClient) => void;
@@ -109,9 +115,9 @@ function MCPClientActionsMenu({
 					className="h-8 w-8"
 					aria-label="MCP server actions"
 					data-testid={`mcp-client-actions-${client.config.client_id}-btn`}
-					disabled={isReconnecting || isReauthorizing || isVerifyingExchange}
+					disabled={isReconnecting || isRefreshingTools || isReauthorizing || isVerifyingExchange}
 				>
-					{isReconnecting || isAuthorizing || isReauthorizing || isVerifyingExchange ? (
+					{isReconnecting || isRefreshingTools || isAuthorizing || isReauthorizing || isVerifyingExchange ? (
 						<Loader2 className="h-4 w-4 animate-spin" />
 					) : (
 						<MoreHorizontal className="h-4 w-4" />
@@ -171,6 +177,23 @@ function MCPClientActionsMenu({
 					>
 						<RefreshCcw className="h-4 w-4" />
 						Reconnect
+					</DropdownMenuItem>
+				)}
+				{hasUpdateAccess && (
+					<DropdownMenuItem
+						className="cursor-pointer"
+						disabled={
+							client.config.disabled || isRefreshingTools || client.state === "pending_verification" || client.state === "needs_reauth"
+						}
+						data-testid={`mcp-client-refresh-tools-${client.config.client_id}-menu-item`}
+						onSelect={(e) => {
+							e.preventDefault();
+							onRefreshTools(client);
+							setIsOpen(false);
+						}}
+					>
+						<ListRestart className="h-4 w-4" />
+						Refresh tools
 					</DropdownMenuItem>
 				)}
 				{hasUpdateAccess &&
@@ -321,6 +344,7 @@ export default function MCPClientsTable({
 	const { toast } = useToast();
 
 	const [reconnectingClients, setReconnectingClients] = useState<string[]>([]);
+	const [refreshingToolsClients, setRefreshingToolsClients] = useState<string[]>([]);
 	const [authorizingClients, setAuthorizingClients] = useState<string[]>([]);
 	const [reauthorizingClients, setReauthorizingClients] = useState<string[]>([]);
 	const [verifyingExchangeClients, setVerifyingExchangeClients] = useState<string[]>([]);
@@ -355,6 +379,7 @@ export default function MCPClientsTable({
 
 	// RTK Query mutations
 	const [reconnectMCPClient] = useReconnectMCPClientMutation();
+	const [refreshMCPClientTools] = useRefreshMCPClientToolsMutation();
 	const [reauthorizeMCPClient] = useReauthorizeMCPClientMutation();
 	const [verifyMCPClientExchange] = useVerifyMCPClientExchangeMutation();
 	const [deleteMCPClient] = useDeleteMCPClientMutation();
@@ -378,6 +403,28 @@ export default function MCPClientsTable({
 		} catch (error) {
 			setReconnectingClients((prev) => prev.filter((id) => id !== client.config.client_id));
 			toast({ title: "Error", description: getErrorMessage(error), variant: "destructive" });
+		}
+	};
+
+	// Re-discovers the client's tools from its upstream server immediately.
+	// Distinct from Reconnect, which recycles the connection and does not apply
+	// to per-call clients at all: this works for every client type, and is what
+	// an operator reaches for after adding or removing a tool upstream.
+	const handleRefreshTools = async (client: MCPClient) => {
+		setRefreshingToolsClients((prev) => [...prev, client.config.client_id]);
+		try {
+			const result = await refreshMCPClientTools(client.config.client_id).unwrap();
+			toast({
+				title: "Tools refreshed",
+				description: `Client ${client.config.name} is now serving ${result.tool_count} ${result.tool_count === 1 ? "tool" : "tools"}.`,
+			});
+			if (refetch) {
+				await refetch();
+			}
+		} catch (error) {
+			toast({ title: "Error", description: getErrorMessage(error), variant: "destructive" });
+		} finally {
+			setRefreshingToolsClients((prev) => prev.filter((id) => id !== client.config.client_id));
 		}
 	};
 
@@ -1136,12 +1183,14 @@ export default function MCPClientsTable({
 													hasUpdateAccess={hasUpdateMCPClientAccess}
 													hasDeleteAccess={hasDeleteMCPClientAccess}
 													isReconnecting={reconnectingClients.includes(c.config.client_id)}
+													isRefreshingTools={refreshingToolsClients.includes(c.config.client_id)}
 													isAuthorizing={authorizingClients.includes(c.config.client_id)}
 													isReauthorizing={reauthorizingClients.includes(c.config.client_id)}
 													isVerifyingExchange={verifyingExchangeClients.includes(c.config.client_id)}
 													canReconnect={canReconnect}
 													onEdit={handleRowClick}
 													onReconnect={(client) => void handleReconnect(client)}
+													onRefreshTools={(client) => void handleRefreshTools(client)}
 													onAuthorize={(client) => void handleStartBootstrap(client)}
 													onReauthorize={(client) => void handleReauthorize(client)}
 													onRefreshHeaders={handleRefreshHeaders}
