@@ -5192,10 +5192,10 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 					)
 					if err != nil {
 						return nil, fmt.Errorf("failed to convert document in responses content block: %w", err)
-						// The Converse API rejects duplicate document names within a
-						// request (#7003): disambiguate via the request-scoped namer.
-						document.Name = docNamer.name(document.Name)
 					}
+					// The Converse API rejects duplicate document names within a
+					// request (#7003): disambiguate via the request-scoped namer.
+					document.Name = docNamer.name(document.Name)
 					bedrockBlock.Document = document
 				}
 			default:

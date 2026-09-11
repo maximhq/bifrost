@@ -259,6 +259,11 @@ func normalizeBedrockFilename(filename string) string {
 	return normalized
 }
 
+// bedrockMaxDocumentNameLen is the Converse API's limit on
+// DocumentBlock.name. Suffixes must fit inside it, so the base name is
+// trimmed before a suffix is appended.
+const bedrockMaxDocumentNameLen = 200
+
 // bedrockDocNamer assigns unique document names within a single Bedrock
 // request: the Converse API rejects duplicate document names, so untitled
 // documents (which all normalize to the same default) get numbered suffixes.
@@ -281,7 +286,12 @@ func (n *bedrockDocNamer) name(filename string) string {
 		return base
 	}
 	for count := n.used[base] + 1; ; count++ {
-		candidate := fmt.Sprintf("%s-%d", base, count)
+		suffix := fmt.Sprintf("-%d", count)
+		trimmed := base
+		if len(trimmed)+len(suffix) > bedrockMaxDocumentNameLen {
+			trimmed = strings.TrimRight(trimmed[:bedrockMaxDocumentNameLen-len(suffix)], " ")
+		}
+		candidate := trimmed + suffix
 		if _, taken := n.used[candidate]; taken {
 			continue
 		}
