@@ -7430,6 +7430,13 @@ func prepareResponsesRequest(ctx *schemas.BifrostContext, config *schemas.Provid
 	if r == nil {
 		return nil, nil
 	}
+	// Codex's explicit "functions" namespace is the default namespace by definition,
+	// so it is unwrapped for every wire before the support check: Bedrock Mantle
+	// reserves the name, and flattening wires would otherwise prefix its members.
+	r, bifrostErr := providerUtils.UnwrapDefaultNamespaceTools(r)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
 	var supported bool
 	if capable, ok := provider.(schemas.ResponsesNamespaceToolProvider); ok {
 		supported = capable.SupportsResponsesNamespaceTools(ctx, key, r.Model)

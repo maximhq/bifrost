@@ -237,6 +237,14 @@ type ModelCapabilities struct {
 	// Perplexity: reasoning_effort is a required field (not optional).
 	ReasoningRequired *bool `json:"reasoning_required,omitempty"`
 
+	// Namespace-tool names the provider keeps for its own server-side tools. A
+	// caller-defined namespace with one of these names is rejected upstream
+	// (Bedrock Mantle: "User-defined namespace 'web' collides with an existing
+	// tool namespace"), so the request builder drops it. A non-empty list replaces
+	// the hardcoded per-provider fallback in core/providers/openai outright; absent
+	// or empty means the fallback applies.
+	ReservedToolNamespaces []string `json:"reserved_tool_namespaces,omitempty"`
+
 	// ---- Aliasing & regional inference profiles ----
 
 	// Bedrock regional inference profile aliases that point to a canonical entry.

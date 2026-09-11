@@ -147737,6 +147737,280 @@
       ]
     },
     {
+      "name": "80. Codex functions namespace unwrap and reserved namespace names on Mantle (#7048 / PR #7084)",
+      "description": "Regression coverage for PR #7084 (follows #7082 and #7039). Codex CLI >= 0.147 wraps its default function and custom tools in a namespace literally named `functions` on every request (openai/codex#37022). Bedrock Mantle reserves that name and rejects the whole request with \"Invalid Value: 'tools.namespace'. User-defined namespace 'functions' collides with an existing tool namespace.\" Core now unwraps that namespace to top-level tools, unprefixed, for every provider before dispatch: Codex treats the bare name and the explicit `functions` namespace as the same tool, so nothing needs mapping back, and on flattening wires the members must not acquire a `functions__` prefix. The same PR moved the reserved-namespace list (`web`, `image_gen`, `browser`, `python` on bedrock and bedrock_mantle) behind the datasheet row `reserved_tool_namespaces`, with the hardcoded list as fallback; the web row pins that fallback still drops Codex's client-side `web` namespace on Mantle and substitutes the hosted web_search tool, which folder 33 never exercised. The bedrock/ row pins the legacy in-provider Mantle route.",
+      "item": [
+        {
+          "name": "bedrock_mantle/openai.gpt-5.6-sol /v1/responses Codex 0.147 functions namespace is unwrapped to top-level tools (raw_request) - #7048",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }\n// 400 is deliberately NOT skipped: \"collides with an existing tool namespace\" is the failure signature.",
+                  "pm.test('bedrock_mantle gpt-5.6-sol: explicit functions namespace is accepted - #7048', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(text, 'pre-fix reserved-namespace 400 resurfaced').to.not.include('collides with an existing tool namespace');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + text.slice(0, 600)).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var ef = body.extra_fields || {};",
+                  "var rr = ef.raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rrText = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('bedrock_mantle gpt-5.6-sol: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "pm.test('bedrock_mantle gpt-5.6-sol: functions members hoisted to top level, unprefixed - #7048', function () {",
+                  "  pm.expect(rrText, 'the functions namespace container reached the provider').to.not.match(/\"name\"\\s*:\\s*\"functions\"/);",
+                  "  pm.expect(rrText, 'the member must keep its bare name').to.include('\"wait\"');",
+                  "  pm.expect(rrText, 'the default namespace must never become a prefix').to.not.include('functions__wait');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-5.6-sol\",\n  \"input\": \"Reply with the single word OK.\",\n  \"max_output_tokens\": 32,\n  \"tools\": [\n    {\n      \"type\": \"namespace\",\n      \"name\": \"functions\",\n      \"description\": \"\",\n      \"tools\": [\n        {\n          \"type\": \"function\",\n          \"name\": \"wait\",\n          \"description\": \"Wait for a background task to finish.\",\n          \"strict\": false,\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {},\n            \"additionalProperties\": false\n          }\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "bedrock/openai.gpt-5.6-sol /v1/responses Codex 0.147 functions namespace is unwrapped on the legacy Mantle route (raw_request) - #7048",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }\n// 400 is deliberately NOT skipped: \"collides with an existing tool namespace\" is the failure signature.",
+                  "pm.test('bedrock legacy Mantle route gpt-5.6-sol: explicit functions namespace is accepted - #7048', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(text, 'pre-fix reserved-namespace 400 resurfaced').to.not.include('collides with an existing tool namespace');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + text.slice(0, 600)).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var ef = body.extra_fields || {};",
+                  "var rr = ef.raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rrText = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('bedrock legacy Mantle route gpt-5.6-sol: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "pm.test('bedrock legacy Mantle route gpt-5.6-sol: functions members hoisted to top level, unprefixed - #7048', function () {",
+                  "  pm.expect(rrText, 'the functions namespace container reached the provider').to.not.match(/\"name\"\\s*:\\s*\"functions\"/);",
+                  "  pm.expect(rrText, 'the member must keep its bare name').to.include('\"wait\"');",
+                  "  pm.expect(rrText, 'the default namespace must never become a prefix').to.not.include('functions__wait');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/openai.gpt-5.6-sol\",\n  \"input\": \"Reply with the single word OK.\",\n  \"max_output_tokens\": 32,\n  \"tools\": [\n    {\n      \"type\": \"namespace\",\n      \"name\": \"functions\",\n      \"description\": \"\",\n      \"tools\": [\n        {\n          \"type\": \"function\",\n          \"name\": \"wait\",\n          \"description\": \"Wait for a background task to finish.\",\n          \"strict\": false,\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {},\n            \"additionalProperties\": false\n          }\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "anthropic/claude-haiku-4-5 /v1/responses Codex 0.147 functions namespace members stay unprefixed on a flattening wire (raw_request) - #7048",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }\n// 400 is deliberately NOT skipped: \"collides with an existing tool namespace\" is the failure signature.",
+                  "pm.test('anthropic haiku-4-5: explicit functions namespace is accepted - #7048', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(text, 'pre-fix reserved-namespace 400 resurfaced').to.not.include('collides with an existing tool namespace');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + text.slice(0, 600)).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var ef = body.extra_fields || {};",
+                  "var rr = ef.raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rrText = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('anthropic haiku-4-5: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "pm.test('anthropic haiku-4-5: functions members hoisted to top level, unprefixed - #7048', function () {",
+                  "  pm.expect(rrText, 'the functions namespace container reached the provider').to.not.match(/\"name\"\\s*:\\s*\"functions\"/);",
+                  "  pm.expect(rrText, 'the member must keep its bare name').to.include('\"wait\"');",
+                  "  pm.expect(rrText, 'the default namespace must never become a prefix').to.not.include('functions__wait');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"input\": \"Reply with the single word OK.\",\n  \"max_output_tokens\": 32,\n  \"tools\": [\n    {\n      \"type\": \"namespace\",\n      \"name\": \"functions\",\n      \"description\": \"\",\n      \"tools\": [\n        {\n          \"type\": \"function\",\n          \"name\": \"wait\",\n          \"description\": \"Wait for a background task to finish.\",\n          \"strict\": false,\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {},\n            \"additionalProperties\": false\n          }\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "bedrock_mantle/openai.gpt-5.6-sol /v1/responses reserved web namespace dropped and hosted web_search substituted (raw_request) - #7039",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }\n// 400 is deliberately NOT skipped: \"collides with an existing tool namespace\" is the failure signature.",
+                  "pm.test('bedrock_mantle gpt-5.6-sol: reserved web namespace does not reach Mantle - #7039', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(text, 'reserved-namespace 400 resurfaced').to.not.include('collides with an existing tool namespace');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + text.slice(0, 600)).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var ef = body.extra_fields || {};",
+                  "var rr = ef.raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rrText = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('bedrock_mantle gpt-5.6-sol: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "pm.test('bedrock_mantle gpt-5.6-sol: web namespace dropped and hosted web_search substituted - #7039', function () {",
+                  "  pm.expect(rrText, 'the reserved web namespace reached the provider').to.not.match(/\"name\"\\s*:\\s*\"web\"/);",
+                  "  pm.expect(rrText, 'expected the hosted web_search tool in place of the dropped namespace').to.include('\"type\":\"web_search\"');",
+                  "  pm.expect(rrText, 'substituted web_search must carry external_web_access=false').to.include('\"external_web_access\":false');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-5.6-sol\",\n  \"input\": \"Reply with the single word OK.\",\n  \"max_output_tokens\": 32,\n  \"tools\": [\n    {\n      \"type\": \"namespace\",\n      \"name\": \"web\",\n      \"tools\": [\n        {\n          \"type\": \"function\",\n          \"name\": \"run\",\n          \"description\": \"Search the web.\",\n          \"strict\": false,\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {},\n            \"additionalProperties\": false\n          }\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
       "name": "82. Flattened namespace tool names honour each wire tool-name limit (namespace-alias-length)",
       "description": "Companion to folder 79 (#7048). Flattening a Responses `namespace` tool renames each nested function to `<namespace>__<function>`. Each wire caps tool names by its own documented contract: OpenAI-compatible wires, Bedrock Converse and Fireworks at 64 characters of [A-Za-z0-9_-]; Anthropic at 128; Gemini and Vertex at 128 with '.' and ':' also allowed; providers that document no limit take the OpenAI-compatible 64. The pre-fix alias had no cap, so a Codex MCP namespace plus a tool name could exceed the wire limit and the provider answered 400 on a name the caller never sent. The alias is now capped per base provider (datasheet row tool_name_max_length overrides), deterministically: plain when it fits, otherwise an 8-hex hash prefix plus the function name. Both rows send the same 64-char namespace with two functions (a 98-char plain alias) and pin the outbound names through raw_request: on Anthropic the alias stays plain under 128; on DeepSeek, an Anthropic-wire provider with no documented limit, it takes the hashed form under 64. Run: make run-provider-harness-test PROVIDER=<anthropic|deepseek> FEATURE=\"namespace-alias-length\" PARALLEL=0",
       "item": [

@@ -347,3 +347,47 @@ func TestWrapNamespaceRestorePostHookRunner(t *testing.T) {
 	plain(nil, chunk(), nil)
 	assert.Equal(t, "namespace_a__js", *seen.ResponsesStreamResponse.Item.Name)
 }
+
+// Codex >= 0.147 sends a "functions" namespace on every request. It is the default
+// namespace by definition, so it is unwrapped for EVERY provider, including ones
+// whose wire accepts namespaces: Bedrock Mantle reserves the name and 400s, and on
+// OpenAI the unwrap is a no-op semantically.
+func TestPrepareResponsesRequest_UnwrapsFunctionsNamespaceForEveryWire(t *testing.T) {
+	functionsNS := schemas.ResponsesTool{
+		Type: schemas.ResponsesToolTypeNamespace,
+		Name: new("functions"),
+		ResponsesToolNamespace: &schemas.ResponsesToolNamespace{Tools: []schemas.ResponsesTool{
+			{Type: schemas.ResponsesToolTypeFunction, Name: new("wait"), ResponsesToolFunction: &schemas.ResponsesToolFunction{}},
+		}},
+	}
+
+	t.Run("namespace-capable provider still gets it unwrapped", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req := responsesReqWithNamespaces(schemas.Bedrock)
+		req.Params.Tools = []schemas.ResponsesTool{functionsNS, req.Params.Tools[0]}
+
+		out, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{},
+			namespaceCapableStub{stubProvider: stubProvider{key: schemas.Bedrock}, supported: true}, schemas.Key{}, req)
+
+		require.Nil(t, bifrostErr)
+		require.NotSame(t, req, out)
+		require.Len(t, out.Params.Tools, 2)
+		assert.Equal(t, schemas.ResponsesToolTypeFunction, out.Params.Tools[0].Type)
+		assert.Equal(t, "wait", *out.Params.Tools[0].Name, "functions members are hoisted without a prefix")
+		assert.Equal(t, schemas.ResponsesToolTypeNamespace, out.Params.Tools[1].Type, "other namespaces pass through on a capable wire")
+		assert.Equal(t, schemas.ResponsesToolTypeNamespace, req.Params.Tools[0].Type, "the shared request was mutated")
+	})
+
+	t.Run("flattening wire hoists functions members without a prefix", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req := responsesReqWithNamespaces(schemas.Anthropic)
+		req.Params.Tools = []schemas.ResponsesTool{functionsNS, req.Params.Tools[0]}
+
+		out, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.Anthropic}, schemas.Key{}, req)
+
+		require.Nil(t, bifrostErr)
+		require.Len(t, out.Params.Tools, 2)
+		assert.Equal(t, "wait", *out.Params.Tools[0].Name)
+		assert.Equal(t, "namespace_a__js", *out.Params.Tools[1].Name)
+	})
+}

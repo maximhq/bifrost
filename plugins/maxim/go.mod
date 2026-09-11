@@ -107,7 +107,7 @@ require (
 	github.com/mailru/easyjson v0.9.1 // indirect
 	github.com/mark3labs/mcp-go v0.43.2 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
-	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect
 	github.com/molecule-man/go-brrr v1.0.1 // indirect
 	github.com/oapi-codegen/runtime v1.1.1 // indirect
