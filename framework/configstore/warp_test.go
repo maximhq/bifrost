@@ -165,3 +165,27 @@ func TestWarpConfigMigrationReshapesLegacyTable(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "key-abc", config.APIKeyID)
 }
+
+func TestWarpConfigMigrationAddsTemperatureReasoningColumns(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: gormlogger.Default.LogMode(gormlogger.Silent)})
+	require.NoError(t, err)
+	ctx := context.Background()
+	require.NoError(t, db.Exec(`CREATE TABLE warp_config (
+		id integer PRIMARY KEY,
+		enabled numeric DEFAULT false,
+		provider text,
+		model text,
+		base_url text,
+		api_key_id text,
+		max_iterations integer DEFAULT 0,
+		request_timeout_seconds integer DEFAULT 0,
+		system_prompt_suffix text,
+		created_at datetime NOT NULL,
+		updated_at datetime NOT NULL
+	)`).Error)
+
+	require.NoError(t, migrationAddWarpTemperatureReasoningColumns(ctx, db, testMigrationLogger))
+	for _, column := range []string{"temperature", "reasoning_effort"} {
+		require.Truef(t, db.Migrator().HasColumn(&tables.TableWarpConfig{}, column), "missing %s", column)
+	}
+}

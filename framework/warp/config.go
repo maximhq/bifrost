@@ -25,6 +25,8 @@ type ConfigView struct {
 	RequestTimeoutSeconds   int                   `json:"request_timeout_seconds"`
 	HistoryRetentionDays    int                   `json:"history_retention_days"`
 	SystemPromptSuffix      string                `json:"system_prompt_suffix,omitempty"`
+	Temperature             *float64              `json:"temperature,omitempty"`
+	ReasoningEffort         string                `json:"reasoning_effort,omitempty"`
 	EmbeddingProvider       schemas.ModelProvider `json:"embedding_provider"`
 	EmbeddingModel          string                `json:"embedding_model"`
 	EmbeddingAPIKeyID       string                `json:"embedding_api_key_id,omitempty"`
@@ -44,11 +46,16 @@ type ConfigInput struct {
 	// APIKeyID names one of the provider's configured keys, or is empty for a
 	// provider that needs none. It round-trips like any other field - no
 	// omitted-means-unchanged special case, because there is no secret to lose.
-	APIKeyID                string                `json:"api_key_id,omitempty"`
-	MaxIterations           int                   `json:"max_iterations,omitempty"`
-	RequestTimeoutSeconds   int                   `json:"request_timeout_seconds,omitempty"`
-	HistoryRetentionDays    int                   `json:"history_retention_days,omitempty"`
-	SystemPromptSuffix      string                `json:"system_prompt_suffix,omitempty"`
+	APIKeyID              string `json:"api_key_id,omitempty"`
+	MaxIterations         int    `json:"max_iterations,omitempty"`
+	RequestTimeoutSeconds int    `json:"request_timeout_seconds,omitempty"`
+	HistoryRetentionDays  int    `json:"history_retention_days,omitempty"`
+	SystemPromptSuffix    string `json:"system_prompt_suffix,omitempty"`
+	// Temperature is a pointer so an explicit 0 (fully deterministic) round-trips
+	// distinctly from "not set". A request that omits the field entirely leaves
+	// this nil, same as one that sends "temperature": null.
+	Temperature             *float64              `json:"temperature,omitempty"`
+	ReasoningEffort         string                `json:"reasoning_effort,omitempty"`
 	EmbeddingProvider       schemas.ModelProvider `json:"embedding_provider"`
 	EmbeddingModel          string                `json:"embedding_model"`
 	EmbeddingAPIKeyID       string                `json:"embedding_api_key_id,omitempty"`
@@ -269,6 +276,8 @@ func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigVie
 		MaxIterations:           input.MaxIterations,
 		RequestTimeoutSeconds:   input.RequestTimeoutSeconds,
 		HistoryRetentionDays:    input.HistoryRetentionDays,
+		Temperature:             input.Temperature,
+		ReasoningEffort:         input.ReasoningEffort,
 		EmbeddingProvider:       string(input.EmbeddingProvider),
 		EmbeddingModel:          input.EmbeddingModel,
 		EmbeddingAPIKeyID:       strings.TrimSpace(input.EmbeddingAPIKeyID),
@@ -419,6 +428,13 @@ func ValidateConfigInput(input *ConfigInput) error {
 	if input.MaxIterations < 0 || input.MaxIterations > schemas.WarpMaxIterationsCeiling {
 		return fmt.Errorf("%w: max_iterations must be between 0 and %d", ErrInvalidConfig, schemas.WarpMaxIterationsCeiling)
 	}
+	if input.Temperature != nil && (*input.Temperature < schemas.WarpMinTemperature || *input.Temperature > schemas.WarpMaxTemperature) {
+		return fmt.Errorf("%w: temperature must be between %g and %g", ErrInvalidConfig, schemas.WarpMinTemperature, schemas.WarpMaxTemperature)
+	}
+	input.ReasoningEffort = strings.TrimSpace(input.ReasoningEffort)
+	if input.ReasoningEffort != "" && !schemas.IsWarpReasoningEffort(input.ReasoningEffort) {
+		return fmt.Errorf("%w: reasoning_effort must be one of %s", ErrInvalidConfig, strings.Join(schemas.WarpReasoningEfforts, ", "))
+	}
 	if input.RequestTimeoutSeconds < 0 {
 		return fmt.Errorf("%w: request_timeout_seconds must not be negative", ErrInvalidConfig)
 	}
@@ -481,6 +497,8 @@ func (s *Service) configViewFromRow(row *tables.TableWarpConfig) ConfigView {
 		RequestTimeoutSeconds:   config.EffectiveRequestTimeoutSeconds(),
 		HistoryRetentionDays:    config.EffectiveHistoryRetentionDays(),
 		SystemPromptSuffix:      derefString(row.SystemPromptSuffix),
+		Temperature:             config.Temperature,
+		ReasoningEffort:         config.ReasoningEffort,
 		EmbeddingProvider:       config.EmbeddingProvider,
 		EmbeddingModel:          config.EmbeddingModel,
 		EmbeddingAPIKeyID:       config.EmbeddingAPIKeyID,
@@ -507,6 +525,8 @@ func configFromRow(row *tables.TableWarpConfig) *schemas.WarpConfig {
 		RequestTimeoutSeconds:           row.RequestTimeoutSeconds,
 		HistoryRetentionDays:            row.HistoryRetentionDays,
 		SystemPromptSuffix:              derefString(row.SystemPromptSuffix),
+		Temperature:                     row.Temperature,
+		ReasoningEffort:                 row.ReasoningEffort,
 		UpdatedAt:                       row.UpdatedAt,
 		EmbeddingProvider:               schemas.ModelProvider(row.EmbeddingProvider),
 		EmbeddingModel:                  row.EmbeddingModel,
