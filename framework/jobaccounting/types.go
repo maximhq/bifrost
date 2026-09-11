@@ -382,5 +382,13 @@ func PricingScopesForLog(entry *logstore.Log) modelcatalog.PricingLookupScopes {
 		SelectedKeyID: entry.SelectedKeyID,
 		VirtualKeyID:  virtualKeyID,
 		UserID:        userID,
+		// Pin time-of-day pricing to the row's own Timestamp so a reprice charges
+		// the same rate the row was settled at. For an aggregate batch or video
+		// row that instant is settlement time, since buildAggregateLog stamps
+		// Timestamp from JobRequest.Now, which is also what the initial
+		// settlement priced against. Leaving this unset made every reprice
+		// resolve peak vs off-peak against whenever the sweeper happened to run,
+		// so the same row yielded a different cost on each pass.
+		BilledAt: entry.Timestamp,
 	}
 }
