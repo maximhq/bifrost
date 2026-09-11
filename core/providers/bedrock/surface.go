@@ -169,24 +169,44 @@ func resolveBedrockSurface(ctx *schemas.BifrostContext, key schemas.Key, model s
 	return bedrockSurface{host: bedrockServiceRuntime, reason: reasonModelFamilyFallback}
 }
 
-// runtimeServesResponses reports whether a runtime-bound Responses request should use
-// bedrock-runtime's OpenAI-compatible /openai/v1/responses surface instead of Converse.
+// ResolveUseOpenAIEndpoints reports whether this key or alias routes Bedrock inference
+// through the OpenAI-compatible endpoints instead of Converse. Opt-in, and an alias value
+// wins over the key, mirroring ResolveUseAnthropicEndpoints.
 //
-// Converse holds no conversation state and has no previous_response_id, so it silently
-// drops the reference: a stateful client sends only the new turn and the model never sees
-// the rest. With tools that fails outright, since the tool result arrives with its toolUse
-// left behind in state. The OpenAI surface both reads and mints response ids.
+// Opt-in rather than automatic because the two surfaces are not interchangeable. Converse
+// carries Bedrock Guardrails, performanceConfig and requestMetadata, all of which the
+// OpenAI-compatible endpoints accept and silently ignore, so diverting on Bifrost's own
+// initiative could stop a guardrail being enforced with no error anywhere.
+func ResolveUseOpenAIEndpoints(ctx *schemas.BifrostContext, key schemas.Key) bool {
+	if ra := schemas.GetResolvedAlias(ctx); ra != nil && ra.Config != nil && ra.Config.UseOpenAIEndpoints != nil {
+		return *ra.Config.UseOpenAIEndpoints
+	}
+	return key.UseOpenAIEndpoints != nil && *key.UseOpenAIEndpoints
+}
+
+// runtimeServesOpenAIAPI reports whether a runtime-bound request should use
+// bedrock-runtime's OpenAI-compatible surface for the given wire API.
 //
-// The datasheet decides when it publishes a runtime row; otherwise family detection, since
-// AWS 404s every other family on this path ("doesn't support this API").
-func runtimeServesResponses(ctx *schemas.BifrostContext, surface bedrockSurface, model string) bool {
+// What the opt-in buys: Converse holds no conversation state and has no
+// previous_response_id, so it silently drops the reference. A stateful client sends only
+// the new turn and the model never sees the rest; with tools that fails outright, since
+// the tool result arrives with its toolUse left behind in state.
+//
+// The datasheet decides support when it publishes a runtime row; otherwise family
+// detection, since AWS 404s every other family here ("doesn't support this API"). Support
+// is a separate question from the flag: opting in never forces a surface the model cannot
+// serve.
+func runtimeServesOpenAIAPI(ctx *schemas.BifrostContext, key schemas.Key, surface bedrockSurface, model string, api schemas.BedrockAPI) bool {
+	if !ResolveUseOpenAIEndpoints(ctx, key) {
+		return false
+	}
 	// An application inference profile is Converse-only, so it must never divert.
 	if surface.isMantle() || surface.reason == reasonApplicationProfile {
 		return false
 	}
 	canonical := schemas.ResolveCanonicalModel(ctx, model)
 	if apis := schemas.ResolveModelCaps(schemas.Bedrock, canonical).BedrockAPIs(); len(apis) > 0 {
-		return slices.Contains(apis, schemas.BedrockAPIResponses)
+		return slices.Contains(apis, api)
 	}
 	return schemas.IsOpenAIModelFamily(ctx, canonical) || schemas.IsGrokModel(canonical)
 }
