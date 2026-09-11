@@ -809,6 +809,17 @@ type ResponsesLifecycleProvider interface {
 	ResponsesInputItems(ctx *BifrostContext, key Key, req *BifrostResponsesInputItemsRequest) (*BifrostResponsesInputItemsResponse, *BifrostError)
 }
 
+// ResponsesNamespaceToolProvider is an optional interface for providers whose
+// support for OpenAI Responses `namespace` tools depends on how the attempt is
+// routed, not on the provider key alone. Bedrock is the case: a gpt model goes to
+// the Mantle OpenAI-compatible endpoint, which accepts namespaces, while Claude goes
+// to Converse or the Anthropic Messages surface, which do not. Checked via type
+// assertion in core dispatch before namespace tools are flattened; providers that do
+// not implement it fall back to a per-provider default in core/providers/utils.
+type ResponsesNamespaceToolProvider interface {
+	SupportsResponsesNamespaceTools(ctx *BifrostContext, key Key, model string) bool
+}
+
 // WebSocketCapableProvider is an optional interface that providers can implement
 // to indicate support for the OpenAI Responses API WebSocket Mode.
 // Checked via type assertion: provider.(WebSocketCapableProvider).

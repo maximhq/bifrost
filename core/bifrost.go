@@ -7415,6 +7415,34 @@ func promptCacheResponsesRequest(ctx *schemas.BifrostContext, config *schemas.Pr
 	return &cp
 }
 
+// prepareResponsesRequest returns the Responses request to dispatch for one attempt:
+// prompt-cache breakpoints first, then namespace tools flattened when the target wire
+// does not understand them (#7048). Both steps are copy-on-write, so the shared
+// req.BifrostRequest keeps the caller's namespaces for a later fallback attempt against
+// a wire that does.
+//
+// The provider answers the support question itself when it implements
+// schemas.ResponsesNamespaceToolProvider (Bedrock: Mantle yes, Converse no); otherwise
+// the per-provider default in providerUtils applies, keyed on the BASE provider so a
+// custom provider wrapping OpenAI is treated like OpenAI.
+func prepareResponsesRequest(ctx *schemas.BifrostContext, config *schemas.ProviderConfig, provider schemas.Provider, key schemas.Key, r *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesRequest, *schemas.BifrostError) {
+	r = promptCacheResponsesRequest(ctx, config, provider.GetProviderKey(), r)
+	if r == nil {
+		return nil, nil
+	}
+	var supported bool
+	if capable, ok := provider.(schemas.ResponsesNamespaceToolProvider); ok {
+		supported = capable.SupportsResponsesNamespaceTools(ctx, key, r.Model)
+	} else {
+		supported = providerUtils.ResponsesNamespaceToolsSupported(ctx, schemas.ResolveBaseProvider(ctx, provider.GetProviderKey()), r.Model)
+	}
+	if supported {
+		// Pass-through: the request carries no alias map, so nothing is restored.
+		return r, nil
+	}
+	return providerUtils.FlattenResponsesNamespaceTools(ctx, r)
+}
+
 // promptCacheChatRequest is the Chat Completions parallel of
 // promptCacheResponsesRequest, with the same copy-on-write guarantee.
 func promptCacheChatRequest(ctx *schemas.BifrostContext, config *schemas.ProviderConfig, provider schemas.ModelProvider, r *schemas.BifrostChatRequest) *schemas.BifrostChatRequest {
@@ -7463,7 +7491,10 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ResponsesRequest {
 			responsesRequest := req.BifrostRequest.ChatRequest.ToResponsesRequest()
 			if responsesRequest != nil {
-				responsesRequest = promptCacheResponsesRequest(req.Context, config, provider.GetProviderKey(), responsesRequest)
+				responsesRequest, bifrostError := prepareResponsesRequest(req.Context, config, provider, key, responsesRequest)
+				if bifrostError != nil {
+					return nil, bifrostError
+				}
 				responsesResponse, bifrostError := provider.Responses(req.Context, key, responsesRequest)
 				if bifrostError != nil {
 					return nil, bifrostError
@@ -7479,8 +7510,14 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		chatCompletionResponse.BackfillParams(req.BifrostRequest.ChatRequest)
 		response.ChatResponse = chatCompletionResponse
 	case schemas.ResponsesRequest:
+		// Prepared BEFORE the chat-fallback branch: ToChatRequest keeps only function
+		// tools, so a namespace that reached it unflattened would be dropped silently.
+		preparedRequest, bifrostError := prepareResponsesRequest(req.Context, config, provider, key, req.BifrostRequest.ResponsesRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
 		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ChatCompletionRequest {
-			chatRequest := req.BifrostRequest.ResponsesRequest.ToChatRequest()
+			chatRequest := preparedRequest.ToChatRequest()
 			if chatRequest != nil {
 				chatCompletionResponse, bifrostError := provider.ChatCompletion(req.Context, key, chatRequest)
 				if bifrostError != nil {
@@ -7489,15 +7526,17 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 				responsesResponse := chatCompletionResponse.ToBifrostResponsesResponse()
 				responsesResponse.BackfillParams(req.BifrostRequest.ResponsesRequest)
 				response.ResponsesResponse = responsesResponse
+				providerUtils.RestoreResponsesNamespaceToolCalls(preparedRequest.NamespaceToolAliases, response)
 				break
 			}
 		}
-		responsesResponse, bifrostError := provider.Responses(req.Context, key, promptCacheResponsesRequest(req.Context, config, provider.GetProviderKey(), req.BifrostRequest.ResponsesRequest))
+		responsesResponse, bifrostError := provider.Responses(req.Context, key, preparedRequest)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
 		responsesResponse.BackfillParams(req.BifrostRequest.ResponsesRequest)
 		response.ResponsesResponse = responsesResponse
+		providerUtils.RestoreResponsesNamespaceToolCalls(preparedRequest.NamespaceToolAliases, response)
 	case schemas.CountTokensRequest:
 		countTokensResponse, bifrostError := provider.CountTokens(req.Context, key, req.BifrostRequest.CountTokensRequest)
 		if bifrostError != nil {
@@ -7850,21 +7889,33 @@ func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, c
 		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ResponsesRequest {
 			responsesRequest := req.BifrostRequest.ChatRequest.ToResponsesRequest()
 			if responsesRequest != nil {
-				return provider.ResponsesStream(req.Context, wrapConvertedStreamPostHookRunner(postHookRunner, schemas.ResponsesRequest), postHookSpanFinalizer, key, promptCacheResponsesRequest(req.Context, config, provider.GetProviderKey(), responsesRequest))
+				responsesRequest, bifrostError := prepareResponsesRequest(req.Context, config, provider, key, responsesRequest)
+				if bifrostError != nil {
+					return nil, bifrostError
+				}
+				return provider.ResponsesStream(req.Context, wrapConvertedStreamPostHookRunner(postHookRunner, schemas.ResponsesRequest), postHookSpanFinalizer, key, responsesRequest)
 			}
 		}
 		return provider.ChatCompletionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, promptCacheChatRequest(req.Context, config, provider.GetProviderKey(), req.BifrostRequest.ChatRequest))
 	case schemas.ResponsesStreamRequest:
+		// Prepared BEFORE the chat-fallback branch: ToChatRequest keeps only function
+		// tools, so a namespace that reached it unflattened would be dropped silently.
+		preparedRequest, bifrostError := prepareResponsesRequest(req.Context, config, provider, key, req.BifrostRequest.ResponsesRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
 		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ChatCompletionRequest {
-			chatRequest := req.BifrostRequest.ResponsesRequest.ToChatRequest()
+			chatRequest := preparedRequest.ToChatRequest()
 			if chatRequest != nil {
 				// The providers' chat streaming handler re-assembles Responses events from the
 				// chat chunks when this flag is set, so the caller still gets a Responses stream.
 				req.Context.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
-				return provider.ChatCompletionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, chatRequest)
+				return provider.ChatCompletionStream(req.Context, providerUtils.WrapNamespaceRestorePostHookRunner(postHookRunner, preparedRequest.NamespaceToolAliases), postHookSpanFinalizer, key, chatRequest)
 			}
 		}
-		return provider.ResponsesStream(req.Context, postHookRunner, postHookSpanFinalizer, key, promptCacheResponsesRequest(req.Context, config, provider.GetProviderKey(), req.BifrostRequest.ResponsesRequest))
+		// The prepared request carries the alias map; the wrapped runner restores the
+		// caller's tool names on every chunk before the post hooks see it.
+		return provider.ResponsesStream(req.Context, providerUtils.WrapNamespaceRestorePostHookRunner(postHookRunner, preparedRequest.NamespaceToolAliases), postHookSpanFinalizer, key, preparedRequest)
 	case schemas.ResponsesRetrieveStreamRequest:
 		lifecycle, ok := provider.(schemas.ResponsesLifecycleProvider)
 		if !ok {

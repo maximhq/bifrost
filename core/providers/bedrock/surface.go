@@ -220,6 +220,29 @@ func (provider *BedrockProvider) resolveSurface(ctx *schemas.BifrostContext, key
 	return surface
 }
 
+// SupportsResponsesNamespaceTools implements schemas.ResponsesNamespaceToolProvider.
+// Only the Mantle OpenAI-compatible endpoint understands the Responses `namespace`
+// tool type. Converse does not, and neither does the native Anthropic Messages
+// surface Claude takes on Mantle, so core flattens namespaces for both.
+//
+// The surface is routing (identifier form, key ARN) and stays code; it decides what
+// the wire can structurally carry, and the datasheet row can only narrow within
+// that. Reads the surface directly rather than through routesToMantle to avoid a
+// second debug log line per attempt.
+func (provider *BedrockProvider) SupportsResponsesNamespaceTools(ctx *schemas.BifrostContext, key schemas.Key, model string) bool {
+	surface := resolveBedrockSurface(ctx, key, model)
+	// Converse has no namespace container, and neither does the Anthropic Messages
+	// surface Claude takes on Mantle, so no datasheet row can enable them: a row
+	// saying "supported" there would send the container to a wire that rejects it.
+	if !surface.isMantle() || schemas.IsAnthropicModelFamily(ctx, model) {
+		return false
+	}
+	// Mantle's OpenAI-compatible path accepts namespaces; a bedrock_mantle row may
+	// still switch it off for a model that turns out not to.
+	caps := schemas.ResolveModelCaps(schemas.BedrockMantle, schemas.ResolveCanonicalModel(ctx, model))
+	return caps.SupportsNamespaceTools(true)
+}
+
 // routesToMantle resolves the surface and logs the deciding rule.
 func (provider *BedrockProvider) routesToMantle(ctx *schemas.BifrostContext, key schemas.Key, model string) bool {
 	return provider.resolveSurface(ctx, key, model).isMantle()

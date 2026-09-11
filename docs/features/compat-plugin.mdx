@@ -135,7 +135,8 @@ The following parameters are converted to their supported equivalents:
 | Parameter | Original Value | Transformed Value | Provider |
 |-----------|----------------|-------------------|----------|
 | messages.role | developer | system | Gemini, Vertex, Bedrock |
-| tools | namespace-scoped tools | flattened top-level tools list | Non-openai |
+
+Namespace-scoped tools are no longer handled by this plugin. Bifrost core flattens them for every provider whose wire does not support the `namespace` tool type, renames each nested function to `<namespace>__<function>` so names stay unique, and maps returned `function_call` items back to the original `name` plus `namespace`.
 
 ## Supported Providers
 

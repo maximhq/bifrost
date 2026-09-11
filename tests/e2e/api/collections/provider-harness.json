@@ -147415,6 +147415,479 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "79. Responses namespace tools flattened to unique names for non-namespace wires and mapped back (#7048 / PR #7082)",
+      "description": "Regression coverage for PR #7082 (fixes #7048). The OpenAI Responses `namespace` tool container groups function tools; only OpenAI's own wire accepts it. Bifrost used to flatten it (in the compat plugin, behind should_convert_params) by splicing each namespace's members into the top-level list unprefixed, so two namespaces that both define `js` produced two top-level tools named `js` and the upstream rejected the request with 400 \"Tool names must be unique\". With the flag off, core silently dropped or mangled the container instead. Core now flattens at dispatch for every wire that lacks namespace support: members become `<namespace>__<function>`, a forced tool_choice on a bare nested name is re-aliased when it is unique, and returned function_call items are mapped back to the OpenAI shape (bare `name` plus a separate `namespace`), unary and streaming. The deepseek row is the issue's provider and the raw_request assertion pins the outbound names; the anthropic rows pin the tool_choice re-alias and the response-side restore; the openai row pins that a namespace-capable wire is left alone.",
+      "item": [
+        {
+          "name": "deepseek/deepseek-v4-flash /v1/responses two namespaces sharing js flatten to unique prefixed tools (raw_request) - #7048",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }\n// 400 is deliberately NOT skipped: \"Tool names must be unique\" is the #7048 failure signature.",
+                  "pm.test('deepseek v4-flash: colliding namespaces flatten to unique names - #7048', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(text, 'pre-fix duplicate tool names reached the provider').to.not.include('Tool names must be unique');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + text.slice(0, 600)).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var ef = body.extra_fields || {};",
+                  "var rr = ef.raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rrText = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('deepseek v4-flash: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "pm.test('deepseek v4-flash: outbound tools are namespace_a__js and namespace_b__js - #7048', function () {",
+                  "  pm.expect(rrText, 'expected the flattened alias for namespace_a').to.include('\"namespace_a__js\"');",
+                  "  pm.expect(rrText, 'expected the flattened alias for namespace_b').to.include('\"namespace_b__js\"');",
+                  "  pm.expect(rrText, 'a bare, colliding \"js\" tool reached the provider').to.not.match(/\"name\"\\s*:\\s*\"js\"/);",
+                  "  pm.expect(rrText, 'the namespace container must not reach a wire that does not support it').to.not.include('\"type\":\"namespace\"');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"input\": \"Test the tools\",\n  \"max_output_tokens\": 64,\n  \"tools\": [\n    {\n      \"type\": \"namespace\",\n      \"name\": \"namespace_a\",\n      \"tools\": [\n        {\n          \"type\": \"function\",\n          \"name\": \"js\",\n          \"description\": \"Run JavaScript in namespace A\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {},\n            \"additionalProperties\": false\n          }\n        }\n      ]\n    },\n    {\n      \"type\": \"namespace\",\n      \"name\": \"namespace_b\",\n      \"tools\": [\n        {\n          \"type\": \"function\",\n          \"name\": \"js\",\n          \"description\": \"Run JavaScript in namespace B\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {},\n            \"additionalProperties\": false\n          }\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "anthropic/claude-haiku-4-5 /v1/responses two namespaces sharing js flatten to unique prefixed tools (raw_request) - #7048",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }\n// 400 is deliberately NOT skipped: \"Tool names must be unique\" is the #7048 failure signature.",
+                  "pm.test('anthropic haiku-4-5: colliding namespaces flatten to unique names - #7048', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(text, 'pre-fix duplicate tool names reached the provider').to.not.include('Tool names must be unique');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + text.slice(0, 600)).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var ef = body.extra_fields || {};",
+                  "var rr = ef.raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rrText = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('anthropic haiku-4-5: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "pm.test('anthropic haiku-4-5: outbound tools are namespace_a__js and namespace_b__js - #7048', function () {",
+                  "  pm.expect(rrText, 'expected the flattened alias for namespace_a').to.include('\"namespace_a__js\"');",
+                  "  pm.expect(rrText, 'expected the flattened alias for namespace_b').to.include('\"namespace_b__js\"');",
+                  "  pm.expect(rrText, 'a bare, colliding \"js\" tool reached the provider').to.not.match(/\"name\"\\s*:\\s*\"js\"/);",
+                  "  pm.expect(rrText, 'the namespace container must not reach a wire that does not support it').to.not.include('\"type\":\"namespace\"');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"input\": \"Test the tools\",\n  \"max_output_tokens\": 64,\n  \"tools\": [\n    {\n      \"type\": \"namespace\",\n      \"name\": \"namespace_a\",\n      \"tools\": [\n        {\n          \"type\": \"function\",\n          \"name\": \"js\",\n          \"description\": \"Run JavaScript in namespace A\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {},\n            \"additionalProperties\": false\n          }\n        }\n      ]\n    },\n    {\n      \"type\": \"namespace\",\n      \"name\": \"namespace_b\",\n      \"tools\": [\n        {\n          \"type\": \"function\",\n          \"name\": \"js\",\n          \"description\": \"Run JavaScript in namespace B\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {},\n            \"additionalProperties\": false\n          }\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "anthropic/claude-haiku-4-5 /v1/responses forced tool_choice on a namespaced function returns bare name plus namespace - #7048",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }\n// 400 is deliberately NOT skipped: \"Tool names must be unique\" is the #7048 failure signature.",
+                  "pm.test('anthropic haiku-4-5 non-streaming: forced namespaced call comes back with bare name plus namespace - #7048', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(text, 'pre-fix duplicate tool names reached the provider').to.not.include('Tool names must be unique');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + text.slice(0, 600)).to.be.below(400);",
+                  "  var out = (pm.response.json() || {}).output || [];",
+                  "  var call = null;",
+                  "  for (var i = 0; i < out.length; i++) { if (out[i].type === 'function_call') { call = out[i]; break; } }",
+                  "  pm.expect(call, 'expected a function_call item (tool_choice forced ping)').to.not.equal(null);",
+                  "  pm.expect(call.name, 'name must be the bare function name, not the flattened alias').to.equal('ping');",
+                  "  pm.expect(call.namespace, 'namespace must be restored from the alias map').to.equal('namespace_b');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"input\": \"Call the ping tool.\",\n  \"max_output_tokens\": 64,\n  \"tools\": [\n    {\n      \"type\": \"namespace\",\n      \"name\": \"namespace_a\",\n      \"tools\": [\n        {\n          \"type\": \"function\",\n          \"name\": \"js\",\n          \"description\": \"Run JavaScript in namespace A\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {},\n            \"additionalProperties\": false\n          }\n        }\n      ]\n    },\n    {\n      \"type\": \"namespace\",\n      \"name\": \"namespace_b\",\n      \"tools\": [\n        {\n          \"type\": \"function\",\n          \"name\": \"js\",\n          \"description\": \"Run JavaScript in namespace B\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {},\n            \"additionalProperties\": false\n          }\n        },\n        {\n          \"type\": \"function\",\n          \"name\": \"ping\",\n          \"description\": \"Return pong. Takes no arguments.\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {},\n            \"additionalProperties\": false\n          }\n        }\n      ]\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"name\": \"ping\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "anthropic/claude-haiku-4-5 /v1/responses streaming forced tool_choice on a namespaced function returns bare name plus namespace - #7048",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }\n// 400 is deliberately NOT skipped: \"Tool names must be unique\" is the #7048 failure signature.",
+                  "pm.test('anthropic haiku-4-5 streaming: forced namespaced call comes back with bare name plus namespace - #7048', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(text, 'pre-fix duplicate tool names reached the provider').to.not.include('Tool names must be unique');",
+                  "  pm.expect(pm.response.code, 'stream request failed: ' + text.slice(0, 600)).to.equal(200);",
+                  "  pm.expect(text, 'expected a terminal response.completed event').to.include('response.completed');",
+                  "  pm.expect(text, 'expected the function_call to carry the bare name').to.include('\"name\":\"ping\"');",
+                  "  pm.expect(text, 'expected the function_call to carry its namespace').to.include('\"namespace\":\"namespace_b\"');",
+                  "  pm.expect(text, 'the flattened alias leaked to the client').to.not.include('namespace_b__ping');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"input\": \"Call the ping tool.\",\n  \"max_output_tokens\": 64,\n  \"tools\": [\n    {\n      \"type\": \"namespace\",\n      \"name\": \"namespace_a\",\n      \"tools\": [\n        {\n          \"type\": \"function\",\n          \"name\": \"js\",\n          \"description\": \"Run JavaScript in namespace A\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {},\n            \"additionalProperties\": false\n          }\n        }\n      ]\n    },\n    {\n      \"type\": \"namespace\",\n      \"name\": \"namespace_b\",\n      \"tools\": [\n        {\n          \"type\": \"function\",\n          \"name\": \"js\",\n          \"description\": \"Run JavaScript in namespace B\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {},\n            \"additionalProperties\": false\n          }\n        },\n        {\n          \"type\": \"function\",\n          \"name\": \"ping\",\n          \"description\": \"Return pong. Takes no arguments.\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {},\n            \"additionalProperties\": false\n          }\n        }\n      ]\n    }\n  ],\n  \"stream\": true,\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"name\": \"ping\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "openai/gpt-5-mini /v1/responses namespace tools pass through untouched on the OpenAI wire (raw_request) - #7048",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('openai gpt-5-mini: namespace tools accepted natively - #7048', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text().slice(0, 600)).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var ef = body.extra_fields || {};",
+                  "var rr = ef.raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var rrText = rr ? JSON.stringify(rr) : '';",
+                  "pm.test('openai gpt-5-mini: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "pm.test('openai gpt-5-mini: namespace container reaches the OpenAI wire untouched - #7048', function () {",
+                  "  var tools = rr.tools || [];",
+                  "  pm.expect(tools, 'both namespace containers must reach the wire: ' + rrText.slice(0, 400)).to.have.length(2);",
+                  "  pm.expect(tools[0].name).to.equal('namespace_a');",
+                  "  pm.expect(tools[0].tools, 'namespace_a must keep its nested js').to.have.length(1);",
+                  "  pm.expect(tools[0].tools[0].name).to.equal('js');",
+                  "  pm.expect(tools[1].name).to.equal('namespace_b');",
+                  "  pm.expect(tools[1].tools, 'namespace_b must keep its nested js').to.have.length(1);",
+                  "  pm.expect(tools[1].tools[0].name).to.equal('js');",
+                  "  pm.expect(rrText, 'OpenAI understands namespace tools; they must not be flattened').to.include('\"type\":\"namespace\"');",
+                  "  pm.expect(rrText, 'no alias prefix on a namespace-capable wire').to.not.include('namespace_a__js');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5-mini\",\n  \"input\": \"Test the tools\",\n  \"max_output_tokens\": 64,\n  \"tools\": [\n    {\n      \"type\": \"namespace\",\n      \"name\": \"namespace_a\",\n      \"tools\": [\n        {\n          \"type\": \"function\",\n          \"name\": \"js\",\n          \"description\": \"Run JavaScript in namespace A\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {},\n            \"additionalProperties\": false\n          }\n        }\n      ]\n    },\n    {\n      \"type\": \"namespace\",\n      \"name\": \"namespace_b\",\n      \"tools\": [\n        {\n          \"type\": \"function\",\n          \"name\": \"js\",\n          \"description\": \"Run JavaScript in namespace B\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {},\n            \"additionalProperties\": false\n          }\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "82. Flattened namespace tool names honour each wire tool-name limit (namespace-alias-length)",
+      "description": "Companion to folder 79 (#7048). Flattening a Responses `namespace` tool renames each nested function to `<namespace>__<function>`. Each wire caps tool names by its own documented contract: OpenAI-compatible wires, Bedrock Converse and Fireworks at 64 characters of [A-Za-z0-9_-]; Anthropic at 128; Gemini and Vertex at 128 with '.' and ':' also allowed; providers that document no limit take the OpenAI-compatible 64. The pre-fix alias had no cap, so a Codex MCP namespace plus a tool name could exceed the wire limit and the provider answered 400 on a name the caller never sent. The alias is now capped per base provider (datasheet row tool_name_max_length overrides), deterministically: plain when it fits, otherwise an 8-hex hash prefix plus the function name. Both rows send the same 64-char namespace with two functions (a 98-char plain alias) and pin the outbound names through raw_request: on Anthropic the alias stays plain under 128; on DeepSeek, an Anthropic-wire provider with no documented limit, it takes the hashed form under 64. Run: make run-provider-harness-test PROVIDER=<anthropic|deepseek> FEATURE=\"namespace-alias-length\" PARALLEL=0",
+      "item": [
+        {
+          "name": "anthropic/claude-haiku-4-5 /v1/responses 64-char namespace with two functions: 98-char alias stays plain under the 128-char Anthropic limit (raw_request) - namespace-alias-length",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "// 400 is deliberately NOT skipped: an over-length or malformed tool name is the failure signature.",
+                  "pm.test('anthropic haiku-4-5, 128-char wire: request accepted - namespace-alias-length', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + text.slice(0, 600)).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var ef = body.extra_fields || {};",
+                  "var rr = ef.raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('anthropic haiku-4-5, 128-char wire: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var tools = rr.tools || [];",
+                  "pm.test('anthropic haiku-4-5, 128-char wire: both nested functions reach the wire as distinct tools', function () {",
+                  "  pm.expect(tools.length, 'expected two outbound tools: ' + JSON.stringify(rr).slice(0, 400)).to.equal(2);",
+                  "  pm.expect(tools[0].name, 'the two flattened names must stay distinct').to.not.equal(tools[1].name);",
+                  "});",
+                  "pm.test('anthropic haiku-4-5: names honour the 128-char Anthropic contract and stay plain - namespace-alias-length', function () {",
+                  "  for (var i = 0; i < tools.length; i++) {",
+                  "    var name = tools[i].name || '';",
+                  "    pm.expect(name, 'tool[' + i + '] name ' + JSON.stringify(name) + ' (len ' + name.length + ') breaks the 128-char Anthropic contract').to.match(/^[A-Za-z0-9_-]{1,128}$/);",
+                  "  }",
+                  "  pm.expect(tools[0].name, 'a 98-char alias fits the Anthropic limit and must not be hashed').to.equal(\"mcp__server_with_a_very_long_name_server_with_a_very_long_name_x__read_repository_file_contents_v2\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"input\": \"Reply with the single word OK.\",\n  \"max_output_tokens\": 32,\n  \"tools\": [\n    {\n      \"type\": \"namespace\",\n      \"name\": \"mcp__server_with_a_very_long_name_server_with_a_very_long_name_x\",\n      \"description\": \"A long MCP-style namespace\",\n      \"tools\": [\n        {\n          \"type\": \"function\",\n          \"name\": \"read_repository_file_contents_v2\",\n          \"description\": \"Return OK. Takes no arguments.\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {},\n            \"additionalProperties\": false\n          }\n        },\n        {\n          \"type\": \"function\",\n          \"name\": \"list_repository_directory_entries\",\n          \"description\": \"Return OK. Takes no arguments.\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {},\n            \"additionalProperties\": false\n          }\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash /v1/responses 64-char namespace with two functions: 98-char alias is hashed under the 64-char OpenAI-compatible limit (raw_request) - namespace-alias-length",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "// 400 is deliberately NOT skipped: an over-length or malformed tool name is the failure signature.",
+                  "pm.test('deepseek v4-flash, 64-char wire: request accepted - namespace-alias-length', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + text.slice(0, 600)).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var ef = body.extra_fields || {};",
+                  "var rr = ef.raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('deepseek v4-flash, 64-char wire: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var tools = rr.tools || [];",
+                  "pm.test('deepseek v4-flash, 64-char wire: both nested functions reach the wire as distinct tools', function () {",
+                  "  pm.expect(tools.length, 'expected two outbound tools: ' + JSON.stringify(rr).slice(0, 400)).to.equal(2);",
+                  "  pm.expect(tools[0].name, 'the two flattened names must stay distinct').to.not.equal(tools[1].name);",
+                  "});",
+                  "pm.test('deepseek v4-flash: names honour the 64-char OpenAI-compatible contract via the hashed form - namespace-alias-length', function () {",
+                  "  for (var i = 0; i < tools.length; i++) {",
+                  "    var name = tools[i].name || '';",
+                  "    pm.expect(name, 'tool[' + i + '] name ' + JSON.stringify(name) + ' (len ' + name.length + ') breaks the 64-char contract').to.match(/^[A-Za-z0-9_-]{1,64}$/);",
+                  "    pm.expect(name, 'a 98-char alias must take the <8-hex hash>_<function> form on a 64-char wire').to.match(/^[0-9a-f]{8}_/);",
+                  "  }",
+                  "  pm.expect(tools[0].name, 'the function name must stay readable after the hash prefix').to.include('read_repository_file');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"input\": \"Reply with the single word OK.\",\n  \"max_output_tokens\": 32,\n  \"tools\": [\n    {\n      \"type\": \"namespace\",\n      \"name\": \"mcp__server_with_a_very_long_name_server_with_a_very_long_name_x\",\n      \"description\": \"A long MCP-style namespace\",\n      \"tools\": [\n        {\n          \"type\": \"function\",\n          \"name\": \"read_repository_file_contents_v2\",\n          \"description\": \"Return OK. Takes no arguments.\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {},\n            \"additionalProperties\": false\n          }\n        },\n        {\n          \"type\": \"function\",\n          \"name\": \"list_repository_directory_entries\",\n          \"description\": \"Return OK. Takes no arguments.\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {},\n            \"additionalProperties\": false\n          }\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }
