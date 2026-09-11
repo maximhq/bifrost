@@ -728,7 +728,7 @@
       "responses": false,
       "responses_with_tools": false,
       "count_tokens": false,
-      "embedding": false,
+      "embedding": true,
       "speech": false,
       "transcription": false,
       "list_models": true,
