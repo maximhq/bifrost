@@ -4660,17 +4660,9 @@ func TestDocumentFormatFromDataURL(t *testing.T) {
 
 			assert.Equal(t, tt.expectedFormat, doc.Format,
 				"data URL media type %q should map to format %q", tt.mediaType, tt.expectedFormat)
-			if strings.HasPrefix(strings.ToLower(tt.mediaType), "text/") {
-				decoded, err := base64.StdEncoding.DecodeString(payload)
-				require.NoError(t, err)
-				require.NotNil(t, doc.Source.Text)
-				assert.Equal(t, string(decoded), *doc.Source.Text)
-				assert.Nil(t, doc.Source.Bytes, "document source is a union")
-			} else {
-				require.NotNil(t, doc.Source.Bytes)
-				assert.Equal(t, payload, *doc.Source.Bytes, "data URL prefix must be stripped from source.bytes")
-				assert.Nil(t, doc.Source.Text, "document source is a union")
-			}
+			require.NotNil(t, doc.Source.Bytes)
+			assert.Equal(t, payload, *doc.Source.Bytes, "data URL prefix must be stripped from source.bytes")
+			assert.Nil(t, doc.Source.Text, "Converse rejects a text-only document source")
 		})
 	}
 }
@@ -4717,9 +4709,9 @@ func TestDocumentInlineTextDataURL(t *testing.T) {
 	})
 
 	assert.Equal(t, "txt", doc.Format)
-	require.NotNil(t, doc.Source.Text)
-	assert.Equal(t, "Hello World", *doc.Source.Text)
-	assert.Nil(t, doc.Source.Bytes, "document source is a union and text documents must not also carry bytes")
+	require.NotNil(t, doc.Source.Bytes)
+	assert.Equal(t, base64.StdEncoding.EncodeToString([]byte("Hello World")), *doc.Source.Bytes)
+	assert.Nil(t, doc.Source.Text, "Converse rejects a text-only document source")
 
 	// A binary format never gets source.text, matching the raw file_data path.
 	doc = chatFileBlockDocument(t, &schemas.ChatInputFile{
@@ -4731,6 +4723,37 @@ func TestDocumentInlineTextDataURL(t *testing.T) {
 	assert.Nil(t, doc.Source.Text, "binary documents must not carry source.text")
 	require.NotNil(t, doc.Source.Bytes)
 	assert.Equal(t, base64.StdEncoding.EncodeToString([]byte("%PDF-1.4")), *doc.Source.Bytes)
+}
+
+// Converse rejects a text-only document source, so text formats ship as base64 bytes.
+func TestTextDocumentUsesBytesSource(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		fileType       string
+		expectedFormat string
+	}{
+		{"PlainText", "text/plain", "txt"},
+		{"Markdown", "text/markdown", "md"},
+		{"CSV", "text/csv", "csv"},
+		{"HTML", "text/html", "html"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc := chatFileBlockDocument(t, &schemas.ChatInputFile{
+				Filename: schemas.Ptr("notes." + tt.expectedFormat),
+				FileType: schemas.Ptr(tt.fileType),
+				FileData: schemas.Ptr("hello world"),
+			})
+
+			assert.Equal(t, tt.expectedFormat, doc.Format)
+			require.NotNil(t, doc.Source.Bytes)
+			assert.Equal(t, base64.StdEncoding.EncodeToString([]byte("hello world")), *doc.Source.Bytes)
+			assert.Nil(t, doc.Source.Text, "Converse rejects a text-only document source")
+		})
+	}
 }
 
 // A non-base64 data URL payload is percent-encoded by definition, so a malformed
