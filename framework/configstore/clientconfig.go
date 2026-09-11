@@ -570,6 +570,12 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		} else {
 			redactedConfig.Keys[i].UseAnthropicEndpoints = new(false)
 		}
+		// Add back use openai endpoints
+		if key.UseOpenAIEndpoints != nil {
+			redactedConfig.Keys[i].UseOpenAIEndpoints = key.UseOpenAIEndpoints
+		} else {
+			redactedConfig.Keys[i].UseOpenAIEndpoints = new(false)
+		}
 
 		// Add model discovery status and error
 		redactedConfig.Keys[i].Status = key.Status
