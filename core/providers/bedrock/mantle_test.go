@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -109,4 +110,116 @@ func TestParseBedrockRegionAndModelStripsForTheWire(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Converse takes a guardrail as a guardrailConfig body field; the OpenAI-compatible
+// endpoints take it as headers and ignore the body field, so the two renderings are not
+// interchangeable. Mantle is deliberately not wired: it accepts the headers and enforces
+// nothing, so there is no rendering that works there.
+func TestWithGuardrailHeaders(t *testing.T) {
+	base := map[string]string{"X-Existing": "keep"}
+
+	t.Run("renders the headers and consumes the extra param", func(t *testing.T) {
+		extra := map[string]any{
+			"guardrailConfig": map[string]any{
+				"guardrailIdentifier": "gr-123",
+				"guardrailVersion":    "DRAFT",
+				"trace":               "ENABLED",
+			},
+			"other": "untouched",
+		}
+		got := withGuardrailHeaders(base, extra)
+
+		if got[guardrailIdentifierHeader] != "gr-123" || got[guardrailVersionHeader] != "DRAFT" {
+			t.Errorf("guardrail headers = %v", got)
+		}
+		if got[guardrailTraceHeader] != "ENABLED" {
+			t.Errorf("trace header = %q", got[guardrailTraceHeader])
+		}
+		if got["X-Existing"] != "keep" {
+			t.Error("existing headers must survive")
+		}
+		// Read, never consumed: core reuses one request across retry attempts, so
+		// removing it would drop the guardrail on every attempt after the first.
+		if _, still := extra["guardrailConfig"]; !still {
+			t.Error("guardrailConfig must survive for the next retry attempt")
+		}
+		if extra["other"] != "untouched" {
+			t.Error("unrelated extra params must be left alone")
+		}
+		// The shared networkConfig map must never be written through.
+		if _, leaked := base[guardrailIdentifierHeader]; leaked {
+			t.Error("base header map was mutated")
+		}
+	})
+
+	t.Run("no guardrail config returns base unchanged", func(t *testing.T) {
+		if got := withGuardrailHeaders(base, map[string]any{"other": 1}); len(got) != 1 {
+			t.Errorf("expected base untouched, got %v", got)
+		}
+	})
+
+	// Both fields are required upstream; half a config is left alone rather than sent.
+	t.Run("identifier without version is not sent", func(t *testing.T) {
+		extra := map[string]any{"guardrailConfig": map[string]any{"guardrailIdentifier": "gr-123"}}
+		got := withGuardrailHeaders(base, extra)
+		if _, ok := got[guardrailIdentifierHeader]; ok {
+			t.Error("a half-formed guardrail config must not be sent")
+		}
+		if _, still := extra["guardrailConfig"]; !still {
+			t.Error("an unused config must be left in place")
+		}
+	})
+
+	// SetExtraHeaders canonicalises keys and keeps the first it reaches; Go map order is
+	// random, so a differently-cased static header must be replaced, not merely shadowed.
+	t.Run("a differently-cased static header is replaced, not doubled", func(t *testing.T) {
+		static := map[string]string{
+			"x-amzn-bedrock-guardrailidentifier": "gr-static",
+			"X-Other":                            "keep",
+		}
+		extra := map[string]any{"guardrailConfig": map[string]any{
+			"guardrailIdentifier": "gr-request", "guardrailVersion": "1"}}
+		got := withGuardrailHeaders(static, extra)
+
+		seen := 0
+		for k, v := range got {
+			if strings.EqualFold(k, guardrailIdentifierHeader) {
+				seen++
+				if v != "gr-request" {
+					t.Errorf("per-request value should win, got %q", v)
+				}
+			}
+		}
+		if seen != 1 {
+			t.Errorf("expected exactly one identifier header, found %d in %v", seen, got)
+		}
+		if got["X-Other"] != "keep" {
+			t.Error("unrelated static headers must survive")
+		}
+		if static["x-amzn-bedrock-guardrailidentifier"] != "gr-static" {
+			t.Error("the caller's map was mutated")
+		}
+	})
+
+	// The same request object is handed to every retry attempt, so repeated calls must
+	// render the same headers rather than degrade after the first.
+	t.Run("repeated calls are stable across retry attempts", func(t *testing.T) {
+		extra := map[string]any{"guardrailConfig": map[string]any{
+			"guardrailIdentifier": "gr-1", "guardrailVersion": "DRAFT"}}
+		first := withGuardrailHeaders(base, extra)
+		second := withGuardrailHeaders(base, extra)
+		if second[guardrailIdentifierHeader] != first[guardrailIdentifierHeader] ||
+			second[guardrailVersionHeader] != first[guardrailVersionHeader] {
+			t.Errorf("second attempt lost the guardrail: %v then %v", first, second)
+		}
+	})
+
+	t.Run("nil base map is handled", func(t *testing.T) {
+		extra := map[string]any{"guardrailConfig": map[string]any{
+			"guardrailIdentifier": "gr-1", "guardrailVersion": "1"}}
+		if got := withGuardrailHeaders(nil, extra); got[guardrailIdentifierHeader] != "gr-1" {
+			t.Errorf("got %v", got)
+		}
+	})
 }
