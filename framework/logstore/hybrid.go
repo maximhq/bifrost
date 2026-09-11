@@ -39,7 +39,8 @@ type uploadWork struct {
 //   - Delegated directly (40+ methods): all analytics, search, histogram, ranking,
 //     distinct, MCP, async job methods
 //   - Intercepted: Create, CreateIfNotExists, BatchCreateIfNotExists, FindByID,
-//     Update, DeleteLog, DeleteLogs, DeleteLogsBatch, Close
+//     Update, DeleteLog, DeleteLogs, DeleteLogsBatch, DeleteMCPToolLogsBatch,
+//     Close
 type HybridLogStore struct {
 	inner          LogStore
 	objects        objectstore.ObjectStore
@@ -544,6 +545,28 @@ func (h *HybridLogStore) DeleteLogs(ctx context.Context, ids []string) error {
 func (h *HybridLogStore) DeleteLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
 	// Delegate to inner — S3 objects will be cleaned up by lifecycle policies.
 	return h.inner.DeleteLogsBatch(ctx, cutoff, batchSize)
+}
+
+// DeleteMCPToolLogsBatch deletes old MCP tool log rows older than cutoff in
+// batches of batchSize. As with DeleteLogsBatch, object-store entries are
+// intentionally NOT deleted here: the expectation is that the bucket has a
+// lifecycle policy configured to expire objects on the same schedule, which is
+// far cheaper than per-row DELETEs. Note that MCP payloads live under a
+// separate <prefix>/mcp-logs/ key space, so a lifecycle rule scoped only to
+// <prefix>/logs/ will orphan them once the rows are pruned. Age-based MCP
+// pruning is optional on the inner store, so an inner store without it reports
+// nothing deleted and the cleaner stops after a single pass instead of
+// erroring.
+func (h *HybridLogStore) DeleteMCPToolLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
+	inner, ok := h.inner.(MCPToolLogRetentionManager)
+	if !ok {
+		// Logged because the hybrid itself satisfies the interface, so the
+		// cleaner cannot tell this apart from an already-drained table.
+		h.logger.Warn("objectstore: inner log store does not support pruning mcp tool logs by age; mcp_tool_logs will not be pruned")
+		return 0, nil
+	}
+	// Delegate to inner — S3 objects will be cleaned up by lifecycle policies.
+	return inner.DeleteMCPToolLogsBatch(ctx, cutoff, batchSize)
 }
 
 // Close shuts the store down cleanly: marks the store closed (so further

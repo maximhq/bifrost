@@ -146,7 +146,7 @@ func buildClickHouseDSN(config *ClickHouseConfig) (string, error) {
 
 // newClickHouseLogStore creates a new ClickHouse log store. retentionDays drives
 // the table TTL; values < 1 leave TTL unset (the LogsCleaner still prunes via
-// DeleteLogsBatch).
+// DeleteLogsBatch and DeleteMCPToolLogsBatch).
 func newClickHouseLogStore(ctx context.Context, config *ClickHouseConfig, retentionDays int, logger schemas.Logger) (LogStore, error) {
 	dsn, err := buildClickHouseDSN(config)
 	if err != nil {
