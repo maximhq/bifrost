@@ -46,6 +46,12 @@ type BifrostResponsesRequest struct {
 	Params         *ResponsesParameters `json:"params,omitempty"`
 	Fallbacks      []Fallback           `json:"fallbacks,omitempty"`
 	RawRequestBody []byte               `json:"-"` // set bifrost-use-raw-request-body to true in ctx to use the raw request body. Bifrost will directly send this to the downstream provider.
+
+	// NamespaceToolAliases maps each flattened tool name back to the namespace and
+	// function the caller sent. Core dispatch sets it on the prepared copy when the
+	// target wire does not support namespace tools, and the response path reads it to
+	// restore function_call items. Never serialized; the shared request never has it.
+	NamespaceToolAliases map[string]NamespaceToolAlias `json:"-"`
 }
 
 func (r *BifrostResponsesRequest) GetRawRequestBody() []byte {
@@ -3681,6 +3687,16 @@ type ResponsesToolAdvisor struct {
 // ResponsesToolNamespace represents a namespace tool that groups related function tools.
 type ResponsesToolNamespace struct {
 	Tools []ResponsesTool `json:"tools,omitempty"`
+}
+
+// NamespaceToolAlias is what a flattened tool name stands for: the namespace and the
+// bare function name the caller sent. Bifrost flattens namespace tools to
+// "<namespace>__<function>" for wires that do not understand the namespace type, keeps
+// one of these per alias on the request context, and uses it to hand the caller back
+// a function_call item with the OpenAI shape (bare name plus a separate namespace).
+type NamespaceToolAlias struct {
+	Namespace string
+	Name      string
 }
 
 // ResponsesToolXSearch represents the xAI-native x_search server-side tool.

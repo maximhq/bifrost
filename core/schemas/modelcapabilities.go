@@ -35,6 +35,8 @@ type ModelCapabilities struct {
 	SupportsTextEditorTool          *bool `json:"supports_text_editor_tool,omitempty"`
 	SupportsMemoryTool              *bool `json:"supports_memory_tool,omitempty"`
 	SupportsToolSearch              *bool `json:"supports_tool_search,omitempty"`
+	ToolNameMaxLength               *int  `json:"tool_name_max_length,omitempty"`     // longest tool name the wire accepts; absent falls back to the per-provider default in core/providers/utils (64 for OpenAI-compatible wires and Bedrock, 128 for Anthropic and Gemini)
+	SupportsNamespaceTools          *bool `json:"supports_namespace_tools,omitempty"` // accepts the OpenAI Responses `namespace` tool container on the wire; absent falls back to the per-provider default in core/providers/utils
 	SupportsFilesAPI                *bool `json:"supports_files_api,omitempty"`
 	SupportsCompaction              *bool `json:"supports_compaction,omitempty"`
 	SupportsContextEditing          *bool `json:"supports_context_editing,omitempty"`

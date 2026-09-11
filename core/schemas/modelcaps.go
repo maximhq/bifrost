@@ -475,6 +475,27 @@ func (c ModelCaps) SupportsToolSearch(fallback bool) bool {
 	return fallback
 }
 
+// SupportsNamespaceTools reports whether the model accepts the OpenAI Responses
+// `namespace` tool container on the wire. A row decides in either direction;
+// with no row the caller's per-provider default is returned, which is what
+// decides whether core flattens namespaces before dispatch (#7048).
+func (c ModelCaps) SupportsNamespaceTools(fallback bool) bool {
+	if c.record != nil && c.record.SupportsNamespaceTools != nil {
+		return *c.record.SupportsNamespaceTools
+	}
+	return fallback
+}
+
+// ToolNameMaxLength returns the longest tool name the wire accepts. A row with a
+// positive tool_name_max_length wins; absent or non-positive returns fallback, the
+// caller's per-provider default.
+func (c ModelCaps) ToolNameMaxLength(fallback int) int {
+	if c.record != nil && c.record.ToolNameMaxLength != nil && *c.record.ToolNameMaxLength > 0 {
+		return *c.record.ToolNameMaxLength
+	}
+	return fallback
+}
+
 // SupportsAdvisorTool reports whether the model accepts advisor_tool_result blocks.
 func (c ModelCaps) SupportsAdvisorTool(fallback bool) bool {
 	if c.record != nil && c.record.SupportsAdvisorTool != nil {

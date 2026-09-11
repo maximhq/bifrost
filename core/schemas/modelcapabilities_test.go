@@ -150,6 +150,51 @@ func TestModelCaps_SupportsFastMode(t *testing.T) {
 	})
 }
 
+// ModelCaps.SupportsNamespaceTools follows the same record-vs-fallback contract:
+// a datasheet row decides in either direction, and an absent row hands the
+// caller's per-provider default straight back.
+func TestModelCaps_SupportsNamespaceTools(t *testing.T) {
+	t.Run("OverrideHit", func(t *testing.T) {
+		model := "third-party-model-namespace-yes"
+		setCapabilityOverride(t, model, ModelCapabilities{SupportsNamespaceTools: new(true)})
+		assert.True(t, ResolveModelCaps(DeepSeek, model).SupportsNamespaceTools(false))
+	})
+
+	t.Run("OverrideExplicitFalse", func(t *testing.T) {
+		model := "gpt-model-namespace-no"
+		setCapabilityOverride(t, model, ModelCapabilities{SupportsNamespaceTools: new(false)})
+		assert.False(t, ResolveModelCaps(OpenAI, model).SupportsNamespaceTools(true))
+	})
+
+	t.Run("OverrideAbsent_CallerFallbackTakesOver", func(t *testing.T) {
+		assert.True(t, ResolveModelCaps(OpenAI, "gpt-5.4").SupportsNamespaceTools(true))
+		assert.False(t, ResolveModelCaps(OpenAI, "gpt-5.4").SupportsNamespaceTools(false))
+	})
+
+	t.Run("ZeroValue", func(t *testing.T) {
+		var caps ModelCaps
+		assert.False(t, caps.SupportsNamespaceTools(false))
+	})
+}
+
+// ModelCaps.ToolNameMaxLength: a row's tool_name_max_length replaces the caller's
+// per-provider default; absent hands the default back.
+func TestModelCaps_ToolNameMaxLength(t *testing.T) {
+	t.Run("RowWins", func(t *testing.T) {
+		model := "model-with-short-tool-names"
+		setCapabilityOverride(t, model, ModelCapabilities{ToolNameMaxLength: new(40)})
+		assert.Equal(t, 40, ResolveModelCaps(Anthropic, model).ToolNameMaxLength(128))
+	})
+	t.Run("AbsentFallsBack", func(t *testing.T) {
+		assert.Equal(t, 128, ResolveModelCaps(Anthropic, "no-row").ToolNameMaxLength(128))
+	})
+	t.Run("NonPositiveRowIgnored", func(t *testing.T) {
+		model := "model-with-bad-row"
+		setCapabilityOverride(t, model, ModelCapabilities{ToolNameMaxLength: new(0)})
+		assert.Equal(t, 64, ResolveModelCaps(OpenAI, model).ToolNameMaxLength(64))
+	})
+}
+
 // A row's effort ladder is taken verbatim over the caller's name-based fallback
 // and the base set — narrowing included, which is what the per-level booleans
 // this replaced could not express.

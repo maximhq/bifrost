@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -208,4 +209,141 @@ func TestPromptCacheDispatch_HonoursPerRequestOverride(t *testing.T) {
 		assert.Same(t, req, out, "a header must not manufacture operator opt-in")
 		assert.Nil(t, req.Input[0].Content.ContentBlocks[0].CacheControl)
 	})
+}
+
+// stubProvider satisfies schemas.Provider for the dispatch seam; only GetProviderKey is
+// ever called by prepareResponsesRequest. Everything else panics on the nil embed.
+type stubProvider struct {
+	schemas.Provider
+	key schemas.ModelProvider
+}
+
+func (s stubProvider) GetProviderKey() schemas.ModelProvider { return s.key }
+
+// namespaceCapableStub is a provider that answers the namespace question itself, the
+// way Bedrock does from its surface resolver.
+type namespaceCapableStub struct {
+	stubProvider
+	supported bool
+}
+
+func (s namespaceCapableStub) SupportsResponsesNamespaceTools(*schemas.BifrostContext, schemas.Key, string) bool {
+	return s.supported
+}
+
+func responsesReqWithNamespaces(provider schemas.ModelProvider) *schemas.BifrostResponsesRequest {
+	req := responsesReqWithText("Test the tools")
+	req.Provider = provider
+	nested := func(name string) schemas.ResponsesTool {
+		return schemas.ResponsesTool{Type: schemas.ResponsesToolTypeFunction, Name: new(name), ResponsesToolFunction: &schemas.ResponsesToolFunction{}}
+	}
+	req.Params = &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{
+		{Type: schemas.ResponsesToolTypeNamespace, Name: new("namespace_a"), ResponsesToolNamespace: &schemas.ResponsesToolNamespace{Tools: []schemas.ResponsesTool{nested("js")}}},
+		{Type: schemas.ResponsesToolTypeNamespace, Name: new("namespace_b"), ResponsesToolNamespace: &schemas.ResponsesToolNamespace{Tools: []schemas.ResponsesTool{nested("js")}}},
+	}}
+	return req
+}
+
+// TestPrepareResponsesRequest_FlattensForUnsupportedWireAndIsolatesSharedRequest is the
+// dispatch-seam half of issue #7048: an attempt against a wire without namespace support
+// gets flattened, prefixed tools, and the shared request keeps the caller's namespaces
+// for the next attempt.
+func TestPrepareResponsesRequest_FlattensForUnsupportedWireAndIsolatesSharedRequest(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := responsesReqWithNamespaces(schemas.Anthropic)
+
+	out, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.Anthropic}, schemas.Key{}, req)
+
+	require.Nil(t, bifrostErr)
+	require.NotSame(t, req, out)
+	require.Len(t, out.Params.Tools, 2)
+	assert.Equal(t, "namespace_a__js", *out.Params.Tools[0].Name)
+	assert.Equal(t, "namespace_b__js", *out.Params.Tools[1].Name)
+	assert.Equal(t, schemas.ResponsesToolTypeNamespace, req.Params.Tools[0].Type, "the shared request was mutated")
+
+	// The chat fallback must see function tools, not an empty list.
+	chat := out.ToChatRequest()
+	require.NotNil(t, chat)
+	require.Len(t, chat.Params.Tools, 2)
+}
+
+func TestPrepareResponsesRequest_PassesThroughForOpenAI(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := responsesReqWithNamespaces(schemas.OpenAI)
+
+	out, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.OpenAI}, schemas.Key{}, req)
+
+	require.Nil(t, bifrostErr)
+	assert.Same(t, req, out, "OpenAI understands namespace tools; the request must dispatch unchanged")
+}
+
+func TestPrepareResponsesRequest_ProviderAnswerWins(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := responsesReqWithNamespaces(schemas.Bedrock)
+
+	out, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{},
+		namespaceCapableStub{stubProvider: stubProvider{key: schemas.Bedrock}, supported: true}, schemas.Key{}, req)
+
+	require.Nil(t, bifrostErr)
+	assert.Same(t, req, out, "a provider that reports namespace support must not be flattened")
+}
+
+// TestPrepareResponsesRequest_AliasesTravelWithThePreparedRequest pins the ownership
+// rule: the alias map is request state, carried on the prepared copy and applied to
+// that attempt's response. A later attempt on a wire that accepts namespaces gets the
+// shared request back with no map, so nothing from the earlier attempt can leak into
+// its response, without any context key or process-wide store.
+func TestPrepareResponsesRequest_AliasesTravelWithThePreparedRequest(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := responsesReqWithNamespaces(schemas.Anthropic)
+
+	// Attempt 1: unsupported wire, the prepared copy carries the map.
+	first, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.Anthropic}, schemas.Key{}, req)
+	require.Nil(t, bifrostErr)
+	require.Len(t, first.NamespaceToolAliases, 2, "attempt 1 must carry the aliases it produced")
+	assert.Nil(t, req.NamespaceToolAliases, "the shared request never carries a map")
+
+	// Attempt 2: supported wire on the same request, nothing to restore.
+	req.Provider = schemas.OpenAI
+	second, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.OpenAI}, schemas.Key{}, req)
+	require.Nil(t, bifrostErr)
+	assert.Same(t, req, second)
+	assert.Nil(t, second.NamespaceToolAliases)
+
+	// Restoring attempt 2's response with attempt 2's (empty) map leaves it untouched.
+	resp := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{{
+		Type:                 new(schemas.ResponsesMessageTypeFunctionCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: new("c"), Name: new("namespace_a__js"), Arguments: new("{}")},
+	}}}}
+	providerUtils.RestoreResponsesNamespaceToolCalls(second.NamespaceToolAliases, resp)
+	assert.Equal(t, "namespace_a__js", *resp.ResponsesResponse.Output[0].Name)
+	assert.Nil(t, resp.ResponsesResponse.Output[0].Namespace)
+}
+
+// The streaming path restores through a wrapped PostHookRunner built from the prepared
+// request's map, so every chunk reaches the post hooks with the caller's names.
+func TestWrapNamespaceRestorePostHookRunner(t *testing.T) {
+	aliases := map[string]schemas.NamespaceToolAlias{"namespace_a__js": {Namespace: "namespace_a", Name: "js"}}
+	var seen *schemas.BifrostResponse
+	inner := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		seen = result
+		return result, err
+	}
+	chunk := func() *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type: schemas.ResponsesStreamResponseTypeOutputItemAdded,
+			Item: &schemas.ResponsesMessage{Type: new(schemas.ResponsesMessageTypeFunctionCall), ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: new("c"), Name: new("namespace_a__js"), Arguments: new("{}")}},
+		}}
+	}
+
+	wrapped := providerUtils.WrapNamespaceRestorePostHookRunner(inner, aliases)
+	wrapped(nil, chunk(), nil)
+	require.NotNil(t, seen)
+	assert.Equal(t, "js", *seen.ResponsesStreamResponse.Item.Name)
+	assert.Equal(t, "namespace_a", *seen.ResponsesStreamResponse.Item.Namespace)
+
+	// No aliases: the runner is returned as is and chunks pass through untouched.
+	plain := providerUtils.WrapNamespaceRestorePostHookRunner(inner, nil)
+	plain(nil, chunk(), nil)
+	assert.Equal(t, "namespace_a__js", *seen.ResponsesStreamResponse.Item.Name)
 }
