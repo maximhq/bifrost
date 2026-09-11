@@ -13,6 +13,99 @@ import (
 // rawRequestTextPathCollector returns the integration-owned JSON string paths that correspond to mutable normalized text.
 type rawRequestTextPathCollector func(root gjson.Result, replacements map[string]string) ([]string, error)
 
+// rawJSONTextTarget identifies one integration-owned JSON string field for an exact provider transformation.
+type rawJSONTextTarget struct {
+	ID   schemas.TextTargetID
+	Path string
+}
+
+// rawJSONTextTargetCollector returns the integration-owned JSON string fields that mirror normalized text targets.
+type rawJSONTextTargetCollector func(root gjson.Result) ([]rawJSONTextTarget, error)
+
+// rewriteRawJSONTextTargets applies exact provider transformations only to integration-owned JSON string fields.
+// It validates every target and original value before returning so duplicate text and narrowed guardrail windows
+// cannot cause a replacement to land in a different native field.
+func rewriteRawJSONTextTargets(rawJSON []byte, rewrites []schemas.TextRewrite, collect rawJSONTextTargetCollector) ([]byte, error) {
+	if len(rewrites) == 0 {
+		return rawJSON, nil
+	}
+	if len(rawJSON) == 0 {
+		return nil, fmt.Errorf("raw JSON is empty")
+	}
+	if !gjson.ValidBytes(rawJSON) {
+		return nil, fmt.Errorf("raw JSON is not valid JSON")
+	}
+	root := gjson.ParseBytes(rawJSON)
+	if err := validateRawRequestUniqueObjectKeys(root); err != nil {
+		return nil, err
+	}
+	if collect == nil {
+		return nil, fmt.Errorf("raw JSON text target collector is unavailable")
+	}
+
+	targets, err := collect(root)
+	if err != nil {
+		return nil, err
+	}
+	targetPaths := make(map[schemas.TextTargetID]string, len(targets))
+	seenPaths := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		if target.ID == "" || target.Path == "" {
+			return nil, fmt.Errorf("raw JSON text target is incomplete")
+		}
+		if _, exists := targetPaths[target.ID]; exists {
+			return nil, fmt.Errorf("raw JSON text target %q is duplicated", target.ID)
+		}
+		if _, exists := seenPaths[target.Path]; exists {
+			return nil, fmt.Errorf("raw JSON text target path %q is duplicated", target.Path)
+		}
+		targetPaths[target.ID] = target.Path
+		seenPaths[target.Path] = struct{}{}
+	}
+
+	seenRewrites := make(map[schemas.TextTargetID]struct{}, len(rewrites))
+	expected := make(map[string]string, len(rewrites))
+	patched := rawJSON
+	for _, rewrite := range rewrites {
+		if rewrite.TargetID == "" {
+			return nil, fmt.Errorf("raw JSON text rewrite target is empty")
+		}
+		if _, exists := seenRewrites[rewrite.TargetID]; exists {
+			return nil, fmt.Errorf("raw JSON text rewrite target %q is duplicated", rewrite.TargetID)
+		}
+		seenRewrites[rewrite.TargetID] = struct{}{}
+		path, exists := targetPaths[rewrite.TargetID]
+		if !exists {
+			return nil, fmt.Errorf("raw JSON does not expose text target %q", rewrite.TargetID)
+		}
+		field := gjson.GetBytes(patched, path)
+		if !field.Exists() || field.Type != gjson.String {
+			return nil, fmt.Errorf("raw JSON text target %q at %q is no longer a string", rewrite.TargetID, path)
+		}
+		if field.String() != rewrite.Original {
+			return nil, fmt.Errorf("raw JSON text target %q no longer matches its normalized original", rewrite.TargetID)
+		}
+		if rewrite.Replacement == rewrite.Original {
+			continue
+		}
+		patched, err = providerUtils.SetJSONStringFieldInPlace(patched, path, rewrite.Replacement)
+		if err != nil {
+			return nil, fmt.Errorf("rewrite raw JSON text target %q: %w", rewrite.TargetID, err)
+		}
+		expected[path] = rewrite.Replacement
+	}
+	if !gjson.ValidBytes(patched) {
+		return nil, fmt.Errorf("rewritten raw JSON is not valid JSON")
+	}
+	for path, want := range expected {
+		field := gjson.GetBytes(patched, path)
+		if !field.Exists() || field.Type != gjson.String || field.String() != want {
+			return nil, fmt.Errorf("rewritten raw JSON text path %q failed verification", path)
+		}
+	}
+	return patched, nil
+}
+
 // rewriteRawRequestTextFields applies literal replacements only to paths selected by the native integration.
 // It consumes caller-owned rawBody bytes so repeated field updates can reuse the same backing array, then
 // verifies every requested literal was found and every patched value persisted before returning the body.

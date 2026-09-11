@@ -2,6 +2,7 @@ package integrations
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -363,6 +364,10 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 				schemas.BifrostContextKeyRawStreamTextCodec,
 				schemas.RawStreamTextCodec(anthropicRawStreamTextCodec{}),
 			)
+			bifrostCtx.SetValue(
+				schemas.BifrostContextKeyRawResponseTextTransformer,
+				schemas.RawResponseTextTransformer(rewriteAnthropicRawResponseTransforms),
+			)
 		}
 		if provider == schemas.Vertex && (hasPromptCachingScopeBetaHeader(headers) || hasFastModeBetaHeader(headers)) {
 			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
@@ -374,6 +379,12 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 			schemas.BifrostContextKeyRawRequestBodyTextRewriter,
 			schemas.RawRequestBodyTextRewriter(rewriteAnthropicRawRequestBody),
 		)
+		if isMessagesRequest {
+			bifrostCtx.SetValue(
+				schemas.BifrostContextKeyRawRequestBodyTextTransformer,
+				schemas.RawRequestBodyTextTransformer(rewriteAnthropicRawRequestBodyTransforms),
+			)
+		}
 	}
 	return nil
 }
@@ -433,6 +444,34 @@ func rewriteAnthropicRawRequestBody(rawBody []byte, replacements map[string]stri
 	return rewriteRawRequestTextFields(rawBody, replacements, collectAnthropicRawRequestTextPaths)
 }
 
+// rewriteAnthropicRawRequestBodyTransforms applies provider-managed transformations to exact mutable Anthropic fields.
+func rewriteAnthropicRawRequestBodyTransforms(rawBody []byte, rewrites []schemas.TextRewrite) ([]byte, error) {
+	return rewriteRawJSONTextTargets(rawBody, rewrites, collectAnthropicRawRequestTextTargets)
+}
+
+// rewriteAnthropicRawResponseTransforms applies provider-managed transformations to an Anthropic native response.
+func rewriteAnthropicRawResponseTransforms(rawResponse any, rewrites []schemas.TextRewrite) (any, error) {
+	var rawJSON []byte
+	wrap := func(rewritten []byte) any { return rewritten }
+	switch value := rawResponse.(type) {
+	case json.RawMessage:
+		rawJSON = append([]byte(nil), value...)
+		wrap = func(rewritten []byte) any { return json.RawMessage(rewritten) }
+	case []byte:
+		rawJSON = append([]byte(nil), value...)
+	case string:
+		rawJSON = []byte(value)
+		wrap = func(rewritten []byte) any { return string(rewritten) }
+	default:
+		return nil, fmt.Errorf("Anthropic raw response has unsupported type %T", rawResponse)
+	}
+	rewritten, err := rewriteRawJSONTextTargets(rawJSON, rewrites, collectAnthropicRawResponseTextTargets)
+	if err != nil {
+		return nil, err
+	}
+	return wrap(rewritten), nil
+}
+
 // anthropicRawContentScope controls which native content-block text fields are guardrail-visible.
 type anthropicRawContentScope uint8
 
@@ -471,6 +510,127 @@ func collectAnthropicRawRequestTextPaths(root gjson.Result, replacements map[str
 		return collectErr == nil
 	})
 	return paths, collectErr
+}
+
+// collectAnthropicRawRequestTextTargets enumerates writable Anthropic request text in normalized guardrail order.
+// Reasoning and tool argument fields are intentionally omitted: provider transformations only mutate ordinary text,
+// while those fields follow separate read-only and finding-only guardrail lanes.
+func collectAnthropicRawRequestTextTargets(root gjson.Result) ([]rawJSONTextTarget, error) {
+	targets := make([]rawJSONTextTarget, 0)
+	if err := collectAnthropicRawTransformContentTargets(&targets, root.Get("system"), "system", anthropicRawContentScopeSystem); err != nil {
+		return nil, err
+	}
+	messages := root.Get("messages")
+	if !messages.Exists() || messages.Type == gjson.Null {
+		return targets, nil
+	}
+	if !messages.IsArray() {
+		return nil, fmt.Errorf("raw Anthropic request messages must be an array")
+	}
+	var collectErr error
+	messages.ForEach(func(index, message gjson.Result) bool {
+		messagePath := rawRequestArrayPath("messages", int(index.Int()))
+		collectErr = collectAnthropicRawTransformContentTargets(
+			&targets,
+			message.Get("content"),
+			rawRequestObjectPath(messagePath, "content"),
+			anthropicRawContentScopeMessage,
+		)
+		return collectErr == nil
+	})
+	return targets, collectErr
+}
+
+// collectAnthropicRawResponseTextTargets enumerates writable text blocks from one native Anthropic response.
+func collectAnthropicRawResponseTextTargets(root gjson.Result) ([]rawJSONTextTarget, error) {
+	targets := make([]rawJSONTextTarget, 0)
+	content := root.Get("content")
+	if !content.Exists() || content.Type == gjson.Null {
+		return targets, nil
+	}
+	if !content.IsArray() {
+		return nil, fmt.Errorf("raw Anthropic response content must be an array")
+	}
+	var collectErr error
+	content.ForEach(func(index, block gjson.Result) bool {
+		path := rawRequestArrayPath("content", int(index.Int()))
+		collectErr = collectAnthropicRawTransformContentBlockTarget(&targets, block, path, anthropicRawContentScopeMessage)
+		return collectErr == nil
+	})
+	return targets, collectErr
+}
+
+// collectAnthropicRawTransformContentTargets walks a native Anthropic content union in guardrail text order.
+func collectAnthropicRawTransformContentTargets(targets *[]rawJSONTextTarget, content gjson.Result, path string, scope anthropicRawContentScope) error {
+	if !content.Exists() || content.Type == gjson.Null {
+		return nil
+	}
+	if content.Type == gjson.String {
+		return appendAnthropicRawTransformTextTarget(targets, content, path)
+	}
+	if content.IsObject() {
+		return collectAnthropicRawTransformContentBlockTarget(targets, content, path, scope)
+	}
+	if !content.IsArray() {
+		return fmt.Errorf("raw Anthropic content path %q must be a string, object, or array", path)
+	}
+	var collectErr error
+	content.ForEach(func(index, block gjson.Result) bool {
+		collectErr = collectAnthropicRawTransformContentBlockTarget(targets, block, rawRequestArrayPath(path, int(index.Int())), scope)
+		return collectErr == nil
+	})
+	return collectErr
+}
+
+// collectAnthropicRawTransformContentBlockTarget selects only writable text fields represented in provider transforms.
+func collectAnthropicRawTransformContentBlockTarget(targets *[]rawJSONTextTarget, block gjson.Result, path string, scope anthropicRawContentScope) error {
+	if !block.IsObject() {
+		return fmt.Errorf("raw Anthropic content block at %q must be an object", path)
+	}
+	blockType := block.Get("type")
+	if !blockType.Exists() || blockType.Type == gjson.Null {
+		return nil
+	}
+	if blockType.Type != gjson.String {
+		return fmt.Errorf("raw Anthropic content block type at %q must be a string", path)
+	}
+	switch scope {
+	case anthropicRawContentScopeSystem, anthropicRawContentScopeToolResult:
+		if blockType.String() == string(anthropic.AnthropicContentBlockTypeText) {
+			return appendAnthropicRawTransformTextTarget(targets, block.Get("text"), rawRequestObjectPath(path, "text"))
+		}
+	case anthropicRawContentScopeMessage:
+		switch anthropic.AnthropicContentBlockType(blockType.String()) {
+		case anthropic.AnthropicContentBlockTypeText:
+			return appendAnthropicRawTransformTextTarget(targets, block.Get("text"), rawRequestObjectPath(path, "text"))
+		case anthropic.AnthropicContentBlockTypeToolResult, anthropic.AnthropicContentBlockTypeMCPToolResult:
+			return collectAnthropicRawTransformContentTargets(
+				targets,
+				block.Get("content"),
+				rawRequestObjectPath(path, "content"),
+				anthropicRawContentScopeToolResult,
+			)
+		}
+	}
+	return nil
+}
+
+// appendAnthropicRawTransformTextTarget appends one verified writable text target in normalized row order.
+func appendAnthropicRawTransformTextTarget(targets *[]rawJSONTextTarget, field gjson.Result, path string) error {
+	if !field.Exists() || field.Type == gjson.Null {
+		return nil
+	}
+	if field.Type != gjson.String {
+		return fmt.Errorf("raw Anthropic text path %q must be a string", path)
+	}
+	if field.String() == "" {
+		return nil
+	}
+	*targets = append(*targets, rawJSONTextTarget{
+		ID:   schemas.TextTargetIDForIndex(len(*targets)),
+		Path: path,
+	})
+	return nil
 }
 
 // collectAnthropicRawContentPaths handles the string, block-array, and single-block Anthropic content union.
