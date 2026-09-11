@@ -666,6 +666,89 @@ func TestResolveCanonicalModelPrecedence(t *testing.T) {
 	}
 }
 
+func TestShouldUseAdaptiveThinking(t *testing.T) {
+	// Helper to build a BifrostContext carrying a ResolvedAlias (nil ra => no alias).
+	withAlias := func(ra *ResolvedAlias) *BifrostContext {
+		bc := NewBifrostContext(nil, NoDeadline)
+		if ra != nil {
+			bc.SetValue(BifrostContextKeyResolvedAlias, ra)
+		}
+		return bc
+	}
+	forced := func(v bool) *ResolvedAlias {
+		return &ResolvedAlias{Key: "best-claude", Config: &AliasConfig{
+			ModelID:                  "claude-sonnet-4-6",
+			ForceFixedBudgetThinking: Ptr(v),
+		}}
+	}
+
+	cases := []struct {
+		name             string
+		ra               *ResolvedAlias
+		supportsAdaptive bool
+		adaptiveOnly     bool
+		want             bool
+	}{
+		{
+			name:             "adaptive-capable, no override: adaptive used (regression baseline)",
+			ra:               nil,
+			supportsAdaptive: true,
+			adaptiveOnly:     false,
+			want:             true,
+		},
+		{
+			name:             "adaptive-capable, override nil: adaptive used",
+			ra:               &ResolvedAlias{Key: "best-claude", Config: &AliasConfig{ModelID: "claude-sonnet-4-6"}},
+			supportsAdaptive: true,
+			adaptiveOnly:     false,
+			want:             true,
+		},
+		{
+			name:             "adaptive-capable, override false: adaptive used",
+			ra:               forced(false),
+			supportsAdaptive: true,
+			adaptiveOnly:     false,
+			want:             true,
+		},
+		{
+			name:             "adaptive-capable NOT adaptive-only, override true: budget_tokens (new behavior)",
+			ra:               forced(true),
+			supportsAdaptive: true,
+			adaptiveOnly:     false,
+			want:             false,
+		},
+		{
+			name:             "adaptive-ONLY, override true: override ignored, adaptive used",
+			ra:               forced(true),
+			supportsAdaptive: true,
+			adaptiveOnly:     true,
+			want:             true,
+		},
+		{
+			name:             "does not support adaptive, override true: budget_tokens (unaffected, no panic)",
+			ra:               forced(true),
+			supportsAdaptive: false,
+			adaptiveOnly:     false,
+			want:             false,
+		},
+		{
+			name:             "override true but nil Config: defensive, adaptive used",
+			ra:               &ResolvedAlias{Key: "best-claude", Config: nil},
+			supportsAdaptive: true,
+			adaptiveOnly:     false,
+			want:             true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := ShouldUseAdaptiveThinking(withAlias(c.ra), c.supportsAdaptive, c.adaptiveOnly)
+			if got != c.want {
+				t.Fatalf("ShouldUseAdaptiveThinking: got %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
 func TestModelFamilyIsValid(t *testing.T) {
 	valid := []ModelFamily{
 		ModelFamilyAnthropic, ModelFamilyOpenAI, ModelFamilyMistral,

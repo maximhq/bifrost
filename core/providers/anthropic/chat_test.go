@@ -1168,6 +1168,96 @@ func TestToAnthropicChatRequest_NonOpus47_ReasoningMaxTokens_EnabledWithBudget(t
 	}
 }
 
+// TestToAnthropicChatRequest_ForceFixedBudgetThinkingOverride verifies the
+// per-alias ForceFixedBudgetThinking override on the direct Anthropic chat path.
+// The wire model id is opaque (mirroring the incident); capModel is resolved
+// from the alias ModelName.
+func TestToAnthropicChatRequest_ForceFixedBudgetThinkingOverride(t *testing.T) {
+	const wireModelID = "a1b2c3d4e5f6" // opaque resource id, like the incident alias's model_id
+
+	tests := []struct {
+		name         string
+		modelName    string
+		force        *bool
+		expectedType string
+		expectBudget bool
+		expectEffort bool
+	}{
+		{
+			name:         "Sonnet4.6_NoOverride_UsesAdaptive_Regression",
+			modelName:    "claude-sonnet-4-6",
+			force:        nil,
+			expectedType: "adaptive",
+			expectBudget: false,
+			expectEffort: true,
+		},
+		{
+			name:         "Sonnet4.6_OverrideTrue_UsesBudgetTokens_NewBehavior",
+			modelName:    "claude-sonnet-4-6",
+			force:        schemas.Ptr(true),
+			expectedType: "enabled",
+			expectBudget: true,
+			expectEffort: false,
+		},
+		{
+			name:         "Sonnet5_AdaptiveOnly_OverrideTrue_IgnoredStaysAdaptive",
+			modelName:    "claude-sonnet-5",
+			force:        schemas.Ptr(true),
+			expectedType: "adaptive",
+			expectBudget: false,
+			expectEffort: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostChatRequest{
+				Provider: schemas.Anthropic,
+				Model:    wireModelID,
+				Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("think")}},
+				},
+				Params: &schemas.ChatParameters{
+					MaxCompletionTokens: schemas.Ptr(8192),
+					Reasoning:           &schemas.ChatReasoning{Effort: schemas.Ptr("high")},
+				},
+			}
+
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+				Key: "best-claude",
+				Config: &schemas.AliasConfig{
+					ModelID:                  wireModelID,
+					ModelName:                schemas.Ptr(tt.modelName),
+					ForceFixedBudgetThinking: tt.force,
+				},
+			})
+
+			result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if result.Thinking == nil {
+				t.Fatal("expected Thinking to be set")
+			}
+			if result.Thinking.Type != tt.expectedType {
+				t.Errorf("thinking.type: got %q, want %q", result.Thinking.Type, tt.expectedType)
+			}
+			if tt.expectBudget && result.Thinking.BudgetTokens == nil {
+				t.Error("expected BudgetTokens to be set for budget_tokens wire shape")
+			}
+			if !tt.expectBudget && result.Thinking.BudgetTokens != nil {
+				t.Errorf("expected no BudgetTokens for adaptive wire shape, got %v", *result.Thinking.BudgetTokens)
+			}
+			hasEffort := result.OutputConfig != nil && result.OutputConfig.Effort != nil
+			if hasEffort != tt.expectEffort {
+				t.Errorf("output_config.effort presence: got %v, want %v", hasEffort, tt.expectEffort)
+			}
+		})
+	}
+}
+
 func TestToAnthropicChatRequest_Opus47_ReasoningEffort_AdaptiveWithEffort(t *testing.T) {
 	effort := "high"
 
