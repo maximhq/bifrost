@@ -6142,10 +6142,15 @@ func executeRequestWithRetries[T any](
 		switch {
 		case bifrostError == nil:
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Request to %s/%s succeeded after %d retry attempt(s)", providerKey, model, attempts))
-		case bifrostError.IsBifrostError:
-			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Retries halted for %s/%s after %d attempt(s): internal Bifrost error (%s)", providerKey, model, attempts, routingErrorSummary(bifrostError)))
+		// Cancellation and timeout are checked before IsBifrostError: a context that
+		// ends during the retry backoff (newBifrostCtxDoneError) carries both, and
+		// so does a provider header-wait 504; neither is an internal error.
 		case bifrostError.Error != nil && bifrostError.Error.Type != nil && *bifrostError.Error.Type == schemas.RequestCancelled:
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Request to %s/%s cancelled after %d attempt(s)", providerKey, model, attempts))
+		case bifrostError.Error != nil && bifrostError.Error.Type != nil && *bifrostError.Error.Type == schemas.RequestTimedOut:
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Request to %s/%s timed out after %d attempt(s)", providerKey, model, attempts))
+		case bifrostError.IsBifrostError:
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Retries halted for %s/%s after %d attempt(s): internal Bifrost error (%s)", providerKey, model, attempts, routingErrorSummary(bifrostError)))
 		default:
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Retries exhausted for %s/%s after %d attempt(s); last error: %s", providerKey, model, attempts, routingErrorSummary(bifrostError)))
 		}
@@ -6272,30 +6277,6 @@ func executeRequestWithRetries[T any](
 			currentKey = selectedKey
 			ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, currentKey.ID)
 			ctx.SetValue(schemas.BifrostContextKeySelectedKeyName, currentKey.Name)
-
-			// Resolve any pending rotation marker from the previous failed attempt. Only mark
-			// TriggeredRotation=true if the newly selected key differs from the failed one —
-			// fixed-key paths return the same key, in which case no rotation actually happened.
-			if pendingRotationAttemptIdx >= 0 {
-				if trail, ok := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord); ok &&
-					pendingRotationAttemptIdx < len(trail) &&
-					trail[pendingRotationAttemptIdx].KeyID != currentKey.ID {
-					trail[pendingRotationAttemptIdx].TriggeredRotation = true
-					ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, trail)
-				}
-				pendingRotationAttemptIdx = -1
-			}
-		}
-
-		// Append a trail record for every attempt (key rotation and same-key retries alike).
-		// Skipped when keyProvider is nil (keyless providers have no key to track).
-		// FailReason is populated below once the attempt outcome is known.
-		if keyProvider != nil {
-			schemas.AppendToContextList(ctx, schemas.BifrostContextKeyAttemptTrail, schemas.KeyAttemptRecord{
-				Attempt: attempts,
-				KeyID:   currentKey.ID,
-				KeyName: currentKey.Name,
-			})
 		}
 
 		if attempts > 0 {
@@ -6343,11 +6324,54 @@ func executeRequestWithRetries[T any](
 			}
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Retry %d/%d for %s/%s (previous attempt failed: %s%s)", attempts, config.NetworkConfig.MaxRetries+extraAttempts, providerKey, model, routingErrorSummary(bifrostError), keyNote))
 
+			// A context that ends before the retry is dispatched ends the loop: the
+			// worker is freed and the request ends as a cancellation instead of
+			// recording one more attempt on behalf of a caller that has gone (#7035).
+			// That holds whether the wait was a backoff or was skipped for a
+			// credential swap or a stripped replay.
+			ctxEnded := false
+			stage := "before retry dispatch"
 			if !((lastWasPermanentKeyFailure && keyChanged) || lastWasEncryptedContentStrip) {
 				backoff := calculateBackoff(attempts-1, config)
 				logger.Debug("sleeping for %s before retry", backoff)
-				time.Sleep(backoff)
+				ctxEnded = waitRetryBackoff(ctx, backoff)
+				stage = "during retry backoff"
+			} else {
+				ctxEnded = ctx.Err() != nil
 			}
+			if ctxEnded {
+				// This retry never ran: report the retries that did.
+				ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, attempts-1)
+				bifrostError = newBifrostCtxDoneError(ctx, stage)
+				break
+			}
+		}
+
+		// Append a trail record for every attempt that is actually dispatched (key
+		// rotation and same-key retries alike). It sits after the backoff so a request
+		// cancelled while waiting to retry does not record an attempt that never ran.
+		// Skipped when keyProvider is nil (keyless providers have no key to track).
+		// FailReason is populated below once the attempt outcome is known.
+		if keyProvider != nil {
+			// Resolve any pending rotation marker from the previous failed attempt. Only mark
+			// TriggeredRotation=true if the newly selected key differs from the failed one:
+			// fixed-key paths return the same key, in which case no rotation actually happened.
+			// It is resolved here, after the backoff, so a request cancelled while waiting
+			// does not report a rotation whose attempt never ran.
+			if pendingRotationAttemptIdx >= 0 {
+				if trail, ok := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord); ok &&
+					pendingRotationAttemptIdx < len(trail) &&
+					trail[pendingRotationAttemptIdx].KeyID != currentKey.ID {
+					trail[pendingRotationAttemptIdx].TriggeredRotation = true
+					ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, trail)
+				}
+				pendingRotationAttemptIdx = -1
+			}
+			schemas.AppendToContextList(ctx, schemas.BifrostContextKeyAttemptTrail, schemas.KeyAttemptRecord{
+				Attempt: attempts,
+				KeyID:   currentKey.ID,
+				KeyName: currentKey.Name,
+			})
 		}
 
 		logger.Debug("attempting %s request for provider %s", requestType, providerKey)

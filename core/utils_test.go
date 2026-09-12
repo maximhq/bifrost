@@ -496,3 +496,19 @@ func TestValidateKeyGithubCopilot(t *testing.T) {
 
 	}
 }
+
+// A request cancelled at the same instant its backoff expires must still be
+// reported as cancelled: Go's select picks uniformly among ready cases, so a
+// timer-only check lets roughly half of such requests run one more attempt
+// (maximhq/bifrost#7105 review). With a cancelled ctx and a zero backoff both
+// cases are ready on every call, so 64 calls expose a missing ctx check with
+// probability 1 - 2^-64.
+func TestWaitRetryBackoffReportsCancellationAtTimerExpiry(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for i := 0; i < 64; i++ {
+		if !waitRetryBackoff(ctx, 0) {
+			t.Fatalf("call %d: backoff expired together with the cancel and the wait reported not cancelled", i)
+		}
+	}
+}

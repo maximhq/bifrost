@@ -155,6 +155,21 @@ func calculateBackoff(attempt int, config *schemas.ProviderConfig) time.Duration
 	return min(result, config.NetworkConfig.RetryBackoffMax)
 }
 
+// waitRetryBackoff sleeps for backoff unless ctx ends first. It reports true when
+// the request was cancelled, in which case the caller must not run another attempt.
+// select picks uniformly among ready cases, so a cancel that lands together with
+// the timer expiry could otherwise be reported as a completed wait; ctx.Err() is
+// the authority after the select.
+func waitRetryBackoff(ctx context.Context, backoff time.Duration) (cancelled bool) {
+	backoffTimer := time.NewTimer(backoff)
+	select {
+	case <-backoffTimer.C:
+	case <-ctx.Done():
+		backoffTimer.Stop()
+	}
+	return ctx.Err() != nil
+}
+
 // validateRequestAfterPreRequestHooks validates the provider and model fields of the given request.
 func validateRequestAfterPreRequestHooks(req *schemas.BifrostRequest) *schemas.BifrostError {
 	if req == nil {
