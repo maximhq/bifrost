@@ -395,6 +395,26 @@ func (c *CasLogStore) HydrateBillingChunk(ctx context.Context, logs []*Log) (Bil
 	return result, nil
 }
 
+// billingModalityInputPresent reports whether the row carries the pricing
+// input for its modality column. The serialized column is the primary
+// evidence, but image_generation_output has a second legal state: the billing
+// search already ran stripNonBillingPayloadBytes, which clears the serialized
+// column while leaving the parsed structure — the image count pricing
+// actually reads — intact. Accepting the parsed structure mirrors the strip
+// exactly (it clears the column whenever ImageGenerationOutputParsed is
+// non-nil), so the fail-closed case is unchanged: a CAS-offloaded image whose
+// pointer was lost parses nothing, and an empty column beside a nil parsed
+// struct still rejects the row.
+func billingModalityInputPresent(l *Log, column string) bool {
+	if billingPayloadColumnValue(l, column) != "" {
+		return true
+	}
+	if column == "image_generation_output" && l.ImageGenerationOutputParsed != nil {
+		return true
+	}
+	return false
+}
+
 // hydrateLogForBilling reassembles only the fields pricing reads from the
 // CAS pointers, then re-deserializes so the virtual structs match. Unlike
 // the serving paths it never serves partially-hydrated content: an error
@@ -472,8 +492,13 @@ func (c *CasLogStore) hydrateLogForBilling(ctx context.Context, log *Log) error 
 	// fully recovered, raw column deliberately released — as Unpriceable.
 	// Verified here is exactly what billing reads before hydration success is
 	// declared: the hydrated serialized column (equivalently its parsed
-	// struct, which DeserializeFields just built from it).
-	if col := billingPayloadColumnFor(log.Object); col != "" && billingPayloadColumnValue(log, col) == "" {
+	// struct, which DeserializeFields just built from it). One divergence is
+	// legal and must not reject the row: stripNonBillingPayloadBytes also
+	// runs at the END of SearchLogsForBilling (rdb.go), so a row-resident
+	// image output arrives here with an empty serialized column but an intact
+	// parsed structure — billingModalityInputPresent accepts that state, and
+	// only a row with neither the column nor the parsed struct fails.
+	if col := billingPayloadColumnFor(log.Object); col != "" && !billingModalityInputPresent(log, col) {
 		return fmt.Errorf("hydrated payload has no %s", col)
 	}
 	// All checks passed. Only now may the row carry the hydrated marker: the
