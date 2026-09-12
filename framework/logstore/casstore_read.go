@@ -248,6 +248,15 @@ func (c *CasLogStore) hydrateFields(ctx context.Context, log *Log, includeHidden
 //     columns: unprojected columns are zero in the in-memory object and would
 //     false-positive. A concurrent write to a column outside the projection
 //     is therefore not detected — the projection never serves it either.
+//   - Billing reads (includeHidden) additionally compare the ownership
+//     columns the billing projection loads (billingBindingColumns), so a
+//     concurrent ownership change under a billing batch is still detected;
+//     and they skip the payload columns stripNonBillingPayloadBytes clears
+//     in memory (billingStripClearedPayloadColumns), because that divergence
+//     is the billing search's deliberate byte release, not a concurrent
+//     write — comparing them failed every healthy row with row-resident
+//     generated images as ErrCasConcurrentModification and misreported it
+//     Unpriceable.
 //
 // casRootRowBindingColumns are the non-payload row columns a full-row serving
 // read additionally binds to the hydration snapshot. They are the columns
@@ -260,6 +269,28 @@ func (c *CasLogStore) hydrateFields(ctx context.Context, log *Log, includeHidden
 var casRootRowBindingColumns = []string{
 	"user_id", "virtual_key_id", "team_id", "customer_id", "business_unit_id",
 	"project_id", "selected_key_id", "status", "content_summary",
+}
+
+// billingBindingColumns are the ownership columns the billing projection
+// actually loads (billingScalarColumns, rdb.go): SearchLogsForBilling selects
+// exactly these alongside the pricing inputs, so a billing row in memory
+// always carries them and they can be compared against the hydration
+// snapshot without false positives. team/customer/business_unit/project are
+// NOT loaded by the projection and must not be added here: their in-memory
+// zero value would mismatch every populated row.
+var billingBindingColumns = []string{
+	"user_id", "virtual_key_id", "selected_key_id",
+}
+
+// billingStripClearedPayloadColumns lists the payload columns that
+// stripNonBillingPayloadBytes (rdb.go) clears on the in-memory object after
+// SearchLogsForBilling has parsed them. Billing hydration must not
+// byte-compare these against the database: the divergence is the deliberate
+// memory release, not a concurrent modification. Their integrity is still
+// vouched for elsewhere — a CAS-stored copy is hash-verified on read, and
+// the parsed structure the strip preserves is the pricing input.
+var billingStripClearedPayloadColumns = map[string]struct{}{
+	"image_generation_output": {},
 }
 
 func verifyRootRowRevision(tx *gorm.DB, log *Log, requestedFields []string, includeHidden bool) error {
@@ -278,6 +309,27 @@ func verifyRootRowRevision(tx *gorm.DB, log *Log, requestedFields []string, incl
 	} else {
 		for _, f := range requestedFields {
 			if _, isPayload := payloadFieldSet[f]; isPayload {
+				if includeHidden {
+					// Billing rows arrive from SearchLogsForBilling, which
+					// has already run stripNonBillingPayloadBytes on them.
+					// A column that strip cleared in memory never matches
+					// its row-resident database value, and that divergence
+					// is by design — skip it rather than fail healthy rows.
+					if _, cleared := billingStripClearedPayloadColumns[f]; cleared {
+						continue
+					}
+				}
+				colSet[f] = struct{}{}
+				compare[f] = struct{}{}
+			}
+		}
+		if includeHidden {
+			// The billing projection loads these ownership columns, so a
+			// concurrent ownership change between the billing search and
+			// the hydration snapshot is detectable exactly as it is for
+			// full-row serving reads (the caller's scope predicates run
+			// over them).
+			for _, f := range billingBindingColumns {
 				colSet[f] = struct{}{}
 				compare[f] = struct{}{}
 			}
@@ -583,6 +635,26 @@ func (c *CasLogStore) HydrateBillingChunk(ctx context.Context, logs []*Log) (Bil
 	return result, nil
 }
 
+// billingModalityInputPresent reports whether the row carries the pricing
+// input for its modality column. The serialized column is the primary
+// evidence, but image_generation_output has a second legal state: the billing
+// search already ran stripNonBillingPayloadBytes, which clears the serialized
+// column while leaving the parsed structure — the image count pricing
+// actually reads — intact. Accepting the parsed structure mirrors the strip
+// exactly (it clears the column whenever ImageGenerationOutputParsed is
+// non-nil), so the fail-closed case is unchanged: a CAS-offloaded image whose
+// pointer was lost parses nothing, and an empty column beside a nil parsed
+// struct still rejects the row.
+func billingModalityInputPresent(l *Log, column string) bool {
+	if billingPayloadColumnValue(l, column) != "" {
+		return true
+	}
+	if column == "image_generation_output" && l.ImageGenerationOutputParsed != nil {
+		return true
+	}
+	return false
+}
+
 // hydrateLogForBilling reassembles only the fields pricing reads from the
 // CAS pointers, then re-deserializes so the virtual structs match. Unlike
 // hydrateLog it never serves partially-hydrated content: an error here means
@@ -620,8 +692,13 @@ func (c *CasLogStore) hydrateLogForBilling(ctx context.Context, log *Log) error 
 	// fully recovered, raw column deliberately released — as Unpriceable.
 	// Verified here is exactly what billing reads before hydration success is
 	// declared: the hydrated serialized column (equivalently its parsed
-	// struct, which DeserializeFields just built from it).
-	if col := billingPayloadColumnFor(log.Object); col != "" && billingPayloadColumnValue(log, col) == "" {
+	// struct, which DeserializeFields just built from it). One divergence is
+	// legal and must not reject the row: stripNonBillingPayloadBytes also
+	// runs at the END of SearchLogsForBilling (rdb.go), so a row-resident
+	// image output arrives here with an empty serialized column but an intact
+	// parsed structure — billingModalityInputPresent accepts that state, and
+	// only a row with neither the column nor the parsed struct fails.
+	if col := billingPayloadColumnFor(log.Object); col != "" && !billingModalityInputPresent(log, col) {
 		return fmt.Errorf("hydrated payload has no %s", col)
 	}
 	// All checks passed. Only now may the row carry the hydrated marker: the
