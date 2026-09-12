@@ -11,8 +11,10 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func casPointerCount(t *testing.T, cas *CasLogStore, logID, field string) int64 {
@@ -611,4 +613,279 @@ func TestCas_SearchSummaryCoversOutput(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, result.Logs, 1, "output-only keyword must be searchable in CAS mode")
 	assert.Equal(t, "search-1", result.Logs[0].ID)
+}
+
+// --- round-3 review defects ---
+
+// Defect: hydrateFields read cas_payloads/manifests/segments through the
+// caller-scoped handle in separate autocommit SELECTs. A QueryScope carrying
+// logs-column predicates (user_id/virtual_key_id, the shape the enterprise
+// DAC wrapper builds) made every hydration fail with a SQL error — the CAS
+// tables have no such columns. CAS reads now run unscoped inside one read
+// transaction; row-level authorization stays at the log root, where the
+// scoped inner-store fetch enforces it.
+func TestCas_QueryScopeCompatibleHydration(t *testing.T) {
+	cas, _ := newTestCas(t)
+	defer cas.Close(context.Background())
+	ctx := context.Background()
+
+	entry := bigChatEntry("scope-1", strings.Repeat("scoped history ", 30))
+	entry.UserID = strPtr("u1")
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, cas.CreateIfNotExists(ctx, entry))
+	require.Positive(t, casPointerCount(t, cas, "scope-1", "input_history"))
+
+	// Same closure shape the enterprise DAC wrapper builds (see
+	// logstoreparity_test.go QueryScopeDAC): OR-joined IN predicates over
+	// logs ownership columns.
+	scopedCtx := queryscope.WithQueryScope(context.Background(), func(db *gorm.DB) *gorm.DB {
+		return db.Where("(user_id IN ? OR virtual_key_id IN ?)", []string{"u1"}, []string{"vk2"})
+	})
+
+	found, err := cas.FindByID(scopedCtx, "scope-1")
+	require.NoError(t, err, "scoped read must hydrate, not SQL-error on CAS tables")
+	assert.Equal(t, entry.InputHistory, found.InputHistory)
+
+	logs, err := cas.FindAll(scopedCtx, map[string]any{"id": "scope-1"})
+	require.NoError(t, err, "scoped FindAll must hydrate, not SQL-error on CAS tables")
+	require.Len(t, logs, 1)
+	assert.Equal(t, entry.InputHistory, logs[0].InputHistory)
+
+	// Fail-closed scope: the scoped inner fetch must still hide the row
+	// entirely — removing the scope from CAS reads must not widen visibility.
+	hidden, err := cas.FindByID(queryscope.WithQueryScope(context.Background(), func(db *gorm.DB) *gorm.DB {
+		return db.Where("1 = 0")
+	}), "scope-1")
+	assert.ErrorIs(t, err, ErrNotFound, "out-of-scope row must stay invisible")
+	assert.Nil(t, hidden)
+}
+
+// Defect: hydration's separate autocommit SELECTs had no shared snapshot. A
+// concurrent Update could commit and reclaim the old manifest between the
+// pointer read and the manifest read, so a healthy row was misreported as
+// "manifest missing". All CAS reads now share one read-transaction snapshot,
+// so a reader sees either the complete old revision or the complete new one.
+// Run with -race for the writer/reader overlap.
+func TestCas_HydrateSnapshotConsistencyUnderConcurrentUpdates(t *testing.T) {
+	cas, _ := newTestCas(t)
+	defer cas.Close(context.Background())
+	ctx := context.Background()
+
+	const id = "snap-1"
+	entry := bigChatEntry(id, "tiny")
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, cas.CreateIfNotExists(ctx, entry))
+
+	contentA := bigOutputJSON(t, strings.Repeat("alpha ", 120))
+	contentB := bigOutputJSON(t, strings.Repeat("beta ", 120))
+	// The row's pre-update output ("ok") is a legal observation until the
+	// first writer commit lands; capture it as an allowed complete revision.
+	initial, err := cas.FindByID(ctx, id)
+	require.NoError(t, err)
+	initialOut := initial.OutputMessage
+	const iterations = 200
+	done := make(chan error, 1)
+	go func() {
+		var werr error
+		for i := 0; i < iterations; i++ {
+			content := contentA
+			if i%2 == 1 {
+				content = contentB
+			}
+			if err := cas.Update(ctx, id, map[string]interface{}{"output_message": content}); err != nil {
+				werr = err
+				break
+			}
+		}
+		done <- werr
+	}()
+	for i := 0; i < iterations; i++ {
+		found, err := cas.FindByID(ctx, id)
+		require.NoError(t, err,
+			"hydrate must never observe a torn revision (old pointer, reclaimed manifest)")
+		require.Contains(t, []string{contentA, contentB, initialOut}, found.OutputMessage,
+			"hydrated content must be one complete revision, never a mix")
+	}
+	require.NoError(t, <-done)
+}
+
+// Defect: map Update with a []byte payload value passed straight into the row
+// update (only bare string/nil were intercepted): a large []byte bypassed CAS
+// entirely, and a small one changed the row while the stale pointer survived.
+// []byte now normalizes to string and follows the string path.
+func TestCas_UpdateMapByteSlicePayload(t *testing.T) {
+	cas, inner := newTestCas(t)
+	defer cas.Close(context.Background())
+	ctx := context.Background()
+
+	entry := bigChatEntry("bytes-1", "tiny")
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, cas.CreateIfNotExists(ctx, entry))
+
+	big := []byte(bigOutputJSON(t, strings.Repeat("bytes answer ", 60)))
+	require.NoError(t, cas.Update(ctx, "bytes-1", map[string]interface{}{"output_message": big}))
+	assert.Positive(t, casPointerCount(t, cas, "bytes-1", "output_message"),
+		"large []byte payload must be stored in CAS, not in the row")
+	row, err := inner.FindByID(ctx, "bytes-1")
+	require.NoError(t, err)
+	assert.Empty(t, row.OutputMessage, "[]byte offload must empty the row column")
+	found, err := cas.FindByID(ctx, "bytes-1")
+	require.NoError(t, err)
+	assert.Equal(t, string(big), found.OutputMessage)
+
+	// Small []byte: row-resident downgrade, pointer dropped, no resurrection.
+	require.NoError(t, cas.Update(ctx, "bytes-1", map[string]interface{}{"output_message": []byte("small now")}))
+	assert.Zero(t, casPointerCount(t, cas, "bytes-1", "output_message"),
+		"downgraded []byte field must lose its pointer")
+	found, err = cas.FindByID(ctx, "bytes-1")
+	require.NoError(t, err)
+	assert.Equal(t, "small now", found.OutputMessage)
+}
+
+// Defect: map Update with an unsupported payload value type (gorm.Expr, typed
+// pointers, ...) changed the row column while leaving the stale CAS pointer,
+// and hydration resurrected the old content over the new value. Such updates
+// are now rejected up front (fail closed) before any CAS or row write.
+func TestCas_UpdateMapUnsupportedPayloadTypeRejected(t *testing.T) {
+	cas, _ := newTestCas(t)
+	defer cas.Close(context.Background())
+	ctx := context.Background()
+
+	entry := bigChatEntry("expr-1", strings.Repeat("expr guard content ", 30))
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, cas.CreateIfNotExists(ctx, entry))
+
+	err := cas.Update(ctx, "expr-1", map[string]interface{}{"input_history": gorm.Expr("NULL")})
+	require.Error(t, err, "gorm.Expr on a payload field must be rejected, not bypass CAS")
+	assert.Contains(t, err.Error(), "unsupported value type")
+	// Rejection must be side-effect free: pointer intact, content unchanged.
+	assert.Positive(t, casPointerCount(t, cas, "expr-1", "input_history"))
+	found, err := cas.FindByID(ctx, "expr-1")
+	require.NoError(t, err)
+	assert.Equal(t, entry.InputHistory, found.InputHistory)
+
+	// Non-payload columns keep full gorm expressiveness.
+	require.NoError(t, cas.Update(ctx, "expr-1", map[string]interface{}{"status": gorm.Expr("'error'")}))
+	row, err := cas.FindByID(ctx, "expr-1")
+	require.NoError(t, err)
+	assert.Equal(t, "error", row.Status)
+}
+
+// Defect: hydrateLogForBilling only checked token_usage. A modality row
+// (speech/ocr/image_generation/...) whose modality payload pointer was lost
+// hydrated zero billing fields yet returned success, was counted as Hydrated,
+// and billing continued without its input. A missing modality payload after
+// hydration must fail closed into Unpriceable, exactly like missing usage.
+func TestCas_BillingModalityPointerMissingIsUnpriceable(t *testing.T) {
+	cas, inner := newTestCas(t)
+	defer cas.Close(context.Background())
+	ctx := context.Background()
+
+	entry := bigChatEntry("ocrbill-1", strings.Repeat("history for the ocr row ", 30))
+	entry.Object = "ocr"
+	entry.OCROutput = `{"pages":[{"text":"` + strings.Repeat("page text ", 60) + `"}]}`
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, cas.CreateIfNotExists(ctx, entry))
+	require.Positive(t, casPointerCount(t, cas, "ocrbill-1", "ocr_output"),
+		"big ocr payload must be offloaded to CAS")
+	require.Positive(t, casPointerCount(t, cas, "ocrbill-1", "input_history"),
+		"row must keep another pointer so the missing modality pointer is a partial loss")
+
+	// Simulate the loss this defect is about: only the modality pointer row
+	// disappears (manual surgery / partial corruption). The input_history
+	// pointer stays, so hydration of the billing field set finds no pointers
+	// and the old code returned success with an empty ocr_output.
+	require.NoError(t, cas.db.Where("log_id = ? AND field = ?", "ocrbill-1", "ocr_output").
+		Delete(&casPayload{}).Error)
+
+	row, err := inner.FindByID(ctx, "ocrbill-1")
+	require.NoError(t, err)
+	require.True(t, row.HasObject)
+
+	result, err := cas.HydrateBillingChunk(ctx, []*Log{row})
+	require.NoError(t, err)
+	assert.Contains(t, result.Unpriceable, "ocrbill-1",
+		"modality row without its billing payload must be Unpriceable, not billed from a stub")
+	assert.NotContains(t, result.Hydrated, "ocrbill-1")
+	assert.Empty(t, row.OCROutput, "nothing was recoverable for the billing column")
+}
+
+// Defect: the round-2 delete/recreate test was strictly sequential, so the
+// old two-transaction delete could not fail it. This is the real race: a
+// delete loop against a same-ID create loop on SQLite (writers serialize, so
+// every interleaving is one of: delete-all-then-create-fresh, or
+// create-then-delete-all). After each create, the invariant is asserted live:
+// a present row must hydrate fully and correctly; once the delete loop
+// drains, no CAS pointer may outlive its log row.
+func TestCas_ConcurrentDeleteRecreateKeepsInvariants(t *testing.T) {
+	cas, _ := newTestCas(t)
+	defer cas.Close(context.Background())
+	ctx := context.Background()
+
+	const id = "delrace-1"
+	e0 := bigChatEntry(id, strings.Repeat("seed life ", 30))
+	require.NoError(t, e0.SerializeFields())
+	require.NoError(t, cas.CreateIfNotExists(ctx, e0))
+
+	const iterations = 100
+	delErr := make(chan error, 1)
+	go func() {
+		var err error
+		for i := 0; i < iterations; i++ {
+			if err = cas.DeleteLog(ctx, id); err != nil {
+				break
+			}
+		}
+		delErr <- err
+	}()
+	for i := 0; i < iterations; i++ {
+		e := bigChatEntry(id, strings.Repeat("recreated body ", 30))
+		require.NoError(t, e.SerializeFields())
+		require.NoError(t, cas.CreateIfNotExists(ctx, e))
+		// Live invariant: whenever the read succeeds, the content must be a
+		// complete revision — the untouched seed (the create hit the ON
+		// CONFLICT before any delete drained) or the recreated entry. A
+		// failure is only legal in the concurrent window where the delete
+		// commits between the inner row fetch and the CAS hydration snapshot
+		// (an inherent read-vs-delete race: the row read is a separate
+		// snapshot by construction); the converged checks below then prove no
+		// "row present, payload gone" state can persist.
+		found, err := cas.FindByID(ctx, id)
+		if err == nil {
+			require.NotEmpty(t, found.InputHistory, "present row must never serve empty payload")
+			require.Contains(t, []string{e0.InputHistory, e.InputHistory}, found.InputHistory,
+				"present row must carry a complete revision, never a stale or torn payload")
+		}
+	}
+	require.NoError(t, <-delErr)
+
+	// Converged invariant (no more writers): either the row is gone —
+	// FindByID is ErrNotFound AND no row exists — or it exists and hydrates
+	// fully and correctly. This is what the old two-transaction delete broke:
+	// a recreate interleaved between row delete and CAS cleanup kept a row
+	// whose fresh pointers the cleanup then deleted, a persistent
+	// "row present, payload gone" state.
+	found, err := cas.FindByID(ctx, id)
+	if err == nil {
+		require.NotEmpty(t, found.InputHistory, "surviving row must hydrate fully")
+	} else {
+		require.ErrorIs(t, err, ErrNotFound, "after convergence only a deleted row may fail FindByID")
+		var n int64
+		require.NoError(t, cas.db.Model(&Log{}).Where("id = ?", id).Count(&n).Error)
+		assert.Zero(t, n, "a persistent hydrate failure with the row still present is the delete/recreate bug")
+	}
+
+	// Converged invariant: no CAS pointer may reference a missing log row.
+	var orphans int64
+	require.NoError(t, cas.db.Raw(
+		"SELECT COUNT(*) FROM cas_payloads WHERE NOT EXISTS (SELECT 1 FROM logs WHERE logs.id = cas_payloads.log_id)",
+	).Scan(&orphans).Error)
+	assert.Zero(t, orphans, "CAS pointers must not outlive their log row")
+	// And the same for manifest reachability: no ref owned by a manifest no
+	// pointer references.
+	var dangling int64
+	require.NoError(t, cas.db.Raw(
+		"SELECT COUNT(*) FROM cas_refs WHERE NOT EXISTS (SELECT 1 FROM cas_payloads WHERE cas_payloads.blob_hash = cas_refs.owner_hash)",
+	).Scan(&dangling).Error)
+	assert.Zero(t, dangling)
 }

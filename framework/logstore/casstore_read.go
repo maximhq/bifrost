@@ -16,6 +16,7 @@ import (
 	"fmt"
 
 	"github.com/bytedance/sonic"
+	"gorm.io/gorm"
 )
 
 func (c *CasLogStore) FindByID(ctx context.Context, id string) (*Log, error) {
@@ -115,9 +116,45 @@ func (c *CasLogStore) hydrateFields(ctx context.Context, log *Log, includeHidden
 	if log.ContentHidden && !includeHidden {
 		return nil
 	}
-	db := c.scopedDB(ctx)
+	// All CAS table reads run inside ONE read transaction on the unscoped
+	// handle, for two reasons.
+	//
+	// Snapshot consistency: the pointer rows, manifests and segments must come
+	// from the same database snapshot. Separate autocommit SELECTs could read
+	// the pointer rows of the old revision and then miss its manifest after a
+	// concurrent writer's Update committed and reclaimed the old blobs —
+	// healthy data misreported as "manifest missing". Inside one transaction
+	// every statement sees one snapshot: on SQLite (WAL) all SELECTs share the
+	// snapshot begun with the first read. On PostgreSQL the default READ
+	// COMMITTED gives per-statement snapshots, so a commit can still land
+	// between two statements inside this transaction; the window is far
+	// smaller than autocommit's and the read-side hash/length verification
+	// still rejects torn content, but a strict guarantee there would require
+	// REPEATABLE READ. Documented as a known boundary rather than forced.
+	//
+	// Authorization: these reads deliberately do NOT apply the caller's
+	// QueryScope. A QueryScope carries predicates over logs columns
+	// (user_id/virtual_key_id, ...); the CAS tables have none of those columns,
+	// so applying the scope turned legitimate hydrations into SQL errors. The
+	// authorization model is: row-level access control lives at the log root —
+	// every serving and billing path first obtains the log row through the
+	// scoped inner store (FindByID/FindFirst/FindAll/billing batch selection
+	// all run scoped queries), and CAS references then follow the
+	// already-authorized row. Reading CAS rows without the scope grants no
+	// extra visibility: the hydrated content is only ever attached to a row
+	// the caller was already allowed to read.
+	return c.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return c.hydrateFieldsTx(tx, log, requestedFields...)
+	})
+}
+
+// hydrateFieldsTx reads pointers, manifests and segments from the single
+// snapshot tx and merges the reconstructed payload into log. A non-nil return
+// rolls the (read-only) transaction back, which is harmless: nothing in here
+// writes.
+func (c *CasLogStore) hydrateFieldsTx(tx *gorm.DB, log *Log, requestedFields ...string) error {
 	var rows []casPayload
-	if err := db.Where("log_id = ?", log.ID).Find(&rows).Error; err != nil {
+	if err := tx.Where("log_id = ?", log.ID).Find(&rows).Error; err != nil {
 		return fmt.Errorf("list payloads: %w", err)
 	}
 	if len(rows) == 0 {
@@ -130,10 +167,7 @@ func (c *CasLogStore) hydrateFields(ctx context.Context, log *Log, includeHidden
 		// is indistinguishable from a field that legitimately lives in the row
 		// (was downgraded with has_object left stale) and cannot be detected
 		// here; per-pointer integrity is enforced once the pointer is read.
-		if log.HasObject {
-			return fmt.Errorf("logstore/cas: log %s: has_object is set but cas payloads are missing", log.ID)
-		}
-		return nil
+		return fmt.Errorf("logstore/cas: log %s: has_object is set but cas payloads are missing", log.ID)
 	}
 	if len(requestedFields) > 0 {
 		requested := make(map[string]struct{}, len(requestedFields))
@@ -156,7 +190,7 @@ func (c *CasLogStore) hydrateFields(ctx context.Context, log *Log, includeHidden
 		manifestHashes = append(manifestHashes, r.BlobHash)
 	}
 	var manifestBlobs []casBlob
-	if err := db.Where("hash IN ?", manifestHashes).Find(&manifestBlobs).Error; err != nil {
+	if err := tx.Where("hash IN ?", manifestHashes).Find(&manifestBlobs).Error; err != nil {
 		return fmt.Errorf("fetch manifests: %w", err)
 	}
 	manifestRaw := make(map[string][]byte, len(manifestBlobs))
@@ -186,7 +220,7 @@ func (c *CasLogStore) hydrateFields(ctx context.Context, log *Log, includeHidden
 	}
 	var segmentBlobs []casBlob
 	if len(hashes) > 0 {
-		if err := db.Where("hash IN ?", hashes).Find(&segmentBlobs).Error; err != nil {
+		if err := tx.Where("hash IN ?", hashes).Find(&segmentBlobs).Error; err != nil {
 			return fmt.Errorf("fetch segments: %w", err)
 		}
 	}
@@ -318,6 +352,16 @@ func (c *CasLogStore) hydrateLogForBilling(ctx context.Context, log *Log) error 
 	// payload recovered above, so an empty usage is not an error for them.
 	if log.TokenUsage == "" && billingPayloadColumnFor(log.Object) == "" {
 		return fmt.Errorf("hydrated payload has no token_usage")
+	}
+	// A modality row (speech/ocr/image_generation/... — see
+	// billingPayloadColumns) prices off its modality payload column, not
+	// token_usage. If that column is still empty after hydration — the CAS
+	// pointer row was lost, or hydration recovered nothing for it — pricing
+	// has no input, and a "successful" hydration that counts the row as
+	// Hydrated would let billing continue on a lossy stub. Fail closed the
+	// same way a missing token_usage does: the row goes to Unpriceable.
+	if col := billingPayloadColumnFor(log.Object); col != "" && billingPayloadColumnValue(log, col) == "" {
+		return fmt.Errorf("hydrated payload has no %s", col)
 	}
 	return nil
 }

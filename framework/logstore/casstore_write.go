@@ -267,18 +267,35 @@ func (c *CasLogStore) updateFromMap(ctx context.Context, id string, updates map[
 				rowUpdates[k] = nil
 				continue
 			}
-			if s, isString := val.(string); isString {
-				if c.casEligible(k, s) {
-					toStore = append(toStore, casFieldContent{k, s})
-					rowUpdates[k] = "" // empty the row column; CAS is now authoritative
+			// Payload update values converge to three supported shapes: string,
+			// nil (explicit clear above) and []byte (normalized to string here).
+			// Anything else — gorm.Expr, typed pointers, driver Valuer wrappers,
+			// numbers... — used to pass straight into the row update: the column
+			// changed while the stale CAS pointer survived, and hydration
+			// resurrected the OLD content over the new value. Fail closed
+			// instead: unsupported payload update types are rejected up front,
+			// before any CAS or row write happens.
+			s, isString := val.(string)
+			if !isString {
+				if b, isBytes := val.([]byte); isBytes {
+					s = string(b)
+					isString = true
 				} else {
-					// Explicitly set to a small or empty value: the row column
-					// (written below) is the new truth; any stale pointer must go.
-					downgrades = append(downgrades, k)
-					rowUpdates[k] = s
+					return fmt.Errorf(
+						"logstore/cas: Update: payload field %q has unsupported value type %T; CAS storage accepts string, []byte or nil for payload fields",
+						k, val)
 				}
-				continue
 			}
+			if c.casEligible(k, s) {
+				toStore = append(toStore, casFieldContent{k, s})
+				rowUpdates[k] = "" // empty the row column; CAS is now authoritative
+			} else {
+				// Explicitly set to a small or empty value: the row column
+				// (written below) is the new truth; any stale pointer must go.
+				downgrades = append(downgrades, k)
+				rowUpdates[k] = s
+			}
+			continue
 		}
 		rowUpdates[k] = val
 	}
