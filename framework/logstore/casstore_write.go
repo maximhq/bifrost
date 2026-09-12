@@ -29,14 +29,15 @@ import (
 	"gorm.io/gorm/schema"
 )
 
-// casSplitPayload partitions an extracted payload map into the fields that go
-// to CAS (cleared) and their contents. Map iteration order is irrelevant: each
-// field is stored independently.
-func (c *CasLogStore) casSplitPayload(payload map[string]string) (map[string]struct{}, []casFieldContent) {
+// casSplitPayload partitions an extracted payload map into fields that go to
+// CAS. Hidden rows force every nonempty payload field into CAS because their
+// row content is cleared regardless of the normal size threshold; applying the
+// threshold there would destroy the only copy of a small field.
+func (c *CasLogStore) casSplitPayload(payload map[string]string, forceAll bool) (map[string]struct{}, []casFieldContent) {
 	cleared := make(map[string]struct{})
 	var toStore []casFieldContent
 	for field, content := range payload {
-		if c.casEligible(field, content) {
+		if content != "" && (forceAll || c.casEligible(field, content)) {
 			cleared[field] = struct{}{}
 			toStore = append(toStore, casFieldContent{field, content})
 		}
@@ -183,7 +184,7 @@ func (c *CasLogStore) prepareCreate(entry *Log) (*casPreparedCreate, error) {
 		return nil, fmt.Errorf("logstore/cas: serialize before store: %w", err)
 	}
 	payload := c.extractCasPayload(entry)
-	cleared, toStore := c.casSplitPayload(payload)
+	cleared, toStore := c.casSplitPayload(payload, entry.ContentHidden)
 	dbEntry := *entry
 	// Search-index parity with the plain RDB path: SerializeFields built the
 	// FULL input+output summary, but prepareCasEntry inherits hybrid's

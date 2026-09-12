@@ -33,6 +33,86 @@ type CASFieldAnalysis struct {
 	blobs        map[string]casBlob
 }
 
+// PrepareCASRowForAnalysis applies the production lightweight-row preparation
+// to an already serialized Log. Fields in casFields are represented by CAS;
+// the returned row preserves the production list preview and full search
+// summary while clearing the same payload columns as a real CAS write.
+func PrepareCASRowForAnalysis(source *Log, casFields []string) (*Log, error) {
+	if source == nil {
+		return nil, fmt.Errorf("logstore/cas analysis: nil log")
+	}
+	row := *source
+	if err := row.DeserializeFields(); err != nil {
+		return nil, fmt.Errorf("logstore/cas analysis: deserialize row: %w", err)
+	}
+	if row.ContentSummary == "" {
+		row.ContentSummary = row.BuildContentSummary()
+	}
+	fullSummary := row.ContentSummary
+	cleared := make(map[string]struct{}, len(casFields))
+	for _, field := range casFields {
+		if _, ok := payloadFieldSet[field]; !ok {
+			return nil, fmt.Errorf("logstore/cas analysis: unknown payload field %q", field)
+		}
+		cleared[field] = struct{}{}
+	}
+	prepareCasEntry(&row, map[string]struct{}{"token_usage": {}, "cache_debug": {}}, cleared)
+	if !row.ContentHidden {
+		row.ContentSummary = fullSummary
+	}
+	row.HasObject = len(cleared) > 0
+	return &row, nil
+}
+
+// CASRowPayloadForAnalysis returns the production row-resident payload values
+// for an already serialized log payload. Only the two input-history fields are
+// deserialized because they determine list previews; other payload fields may
+// intentionally be opaque fallback bytes and must not be parsed here.
+func CASRowPayloadForAnalysis(serialized map[string]string, contentSummary string, contentHidden bool, casFields []string) (map[string]string, string, bool, error) {
+	log := &Log{
+		ContentSummary:        contentSummary,
+		ContentHidden:         contentHidden,
+		InputHistory:          serialized["input_history"],
+		ResponsesInputHistory: serialized["responses_input_history"],
+	}
+	if err := log.DeserializeFields(); err != nil {
+		return nil, "", false, fmt.Errorf("logstore/cas analysis: deserialize input history: %w", err)
+	}
+	fullSummary := contentSummary
+	cleared := make(map[string]struct{}, len(casFields))
+	for _, field := range casFields {
+		if _, ok := payloadFieldSet[field]; !ok {
+			return nil, "", false, fmt.Errorf("logstore/cas analysis: unknown payload field %q", field)
+		}
+		cleared[field] = struct{}{}
+	}
+	prepareCasEntry(log, map[string]struct{}{"token_usage": {}, "cache_debug": {}}, cleared)
+	rowPayload := make(map[string]string, len(serialized))
+	for field, value := range serialized {
+		rowPayload[field] = value
+	}
+	for field := range cleared {
+		rowPayload[field] = ""
+	}
+	if _, ok := cleared["input_history"]; ok {
+		rowPayload["input_history"] = log.InputHistory
+	}
+	if _, ok := cleared["responses_input_history"]; ok {
+		rowPayload["responses_input_history"] = log.ResponsesInputHistory
+	}
+	if contentHidden {
+		for field := range rowPayload {
+			if field != "token_usage" && field != "cache_debug" {
+				rowPayload[field] = ""
+			}
+		}
+		rowPayload["token_usage"] = serialized["token_usage"]
+		rowPayload["cache_debug"] = serialized["cache_debug"]
+		fullSummary = ""
+	}
+	return rowPayload, fullSummary, len(cleared) > 0, nil
+}
+
 // PayloadColumnsForAnalysis returns every serialized payload column. Callers
 // use this list for the baseline and row-resident byte totals.
 func PayloadColumnsForAnalysis() []string {

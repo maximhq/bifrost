@@ -20,6 +20,7 @@ func materializeFixture(t *testing.T) string {
 	_, err = db.Exec(`CREATE TABLE logs (
 		id TEXT PRIMARY KEY,
 		has_object INTEGER NOT NULL DEFAULT 0,
+		content_hidden INTEGER NOT NULL DEFAULT 0,
 		content_summary TEXT,
 		input_history TEXT,
 		output_message TEXT,
@@ -30,14 +31,16 @@ func materializeFixture(t *testing.T) string {
 	require.NoError(t, err)
 	_, err = db.Exec(`CREATE INDEX idx_logs_summary ON logs(content_summary)`)
 	require.NoError(t, err)
-	repeated := `[{"role":"user","content":"SECRET_MATERIALIZE repeated repeated repeated"}]  `
+	repeated := `[{"role":"system","content":"SECRET_MATERIALIZE fixed context"},{"role":"assistant","content":"earlier response"},{"role":"user","content":"SECRET_MATERIALIZE repeated repeated repeated"}]  `
 	_, err = db.Exec(`INSERT INTO logs VALUES
-		('private-id-1',0,'SECRET_MATERIALIZE summary',?,NULL,'not-json SECRET_MATERIALIZE','{}',''),
-		('private-id-2',0,'summary two',?,'',?,'{}',NULL),
-		('private-id-3',0,'summary three',CAST(x'FFFE0078' AS TEXT),?,'[]','{}','{}')`,
+		('private-id-1',0,0,'SECRET_MATERIALIZE summary',?,NULL,'not-json SECRET_MATERIALIZE','{}',''),
+		('private-id-2',0,0,'summary two',?,'',?,'{}',NULL),
+		('private-id-3',0,0,'summary three',CAST(x'FFFE0078' AS TEXT),?,'[]','{}','{}'),
+		('private-id-hidden',0,1,'must clear',?,NULL,'[{"name":"tiny"}]','{"total_tokens":1}','cache')`,
 		repeated, repeated,
 		`[{"name":"tool","description":"SECRET_MATERIALIZE dynamic"}]`,
-		`[{"role":"assistant","content":"output output output"}]`)
+		`[{"role":"assistant","content":"output output output"}]`,
+		repeated)
 	require.NoError(t, err)
 	require.NoError(t, db.Close())
 	return path
@@ -68,7 +71,7 @@ func TestMaterializeAllSchemesAndVerify(t *testing.T) {
 		require.NoError(t, quickCheck(db))
 		var rows int
 		require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM logs").Scan(&rows))
-		require.Equal(t, 3, rows)
+		require.Equal(t, 4, rows)
 		var indexCount int
 		require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_logs_summary'").Scan(&indexCount))
 		require.Equal(t, 1, indexCount)
@@ -82,7 +85,7 @@ func TestMaterializeAllSchemesAndVerify(t *testing.T) {
 	require.NotContains(t, string(data), "SECRET_MATERIALIZE")
 	require.NotContains(t, string(data), "private-id")
 	require.Len(t, r.Schemes, 3)
-	require.Equal(t, int64(3), r.Rows)
+	require.Equal(t, int64(4), r.Rows)
 	require.True(t, r.InputUnchanged)
 	require.Positive(t, r.Schemes[1].Verification.CheckedFields)
 	require.Zero(t, r.Schemes[1].Verification.Mismatches)
@@ -93,12 +96,27 @@ func TestMaterializeAllSchemesAndVerify(t *testing.T) {
 	casDB, err := sql.Open("sqlite3", readDSN(filepath.Join(work, "cas-manifest.db")))
 	require.NoError(t, err)
 	defer casDB.Close()
-	var cleared string
-	require.NoError(t, casDB.QueryRow("SELECT input_history FROM logs WHERE id='private-id-1'").Scan(&cleared))
-	require.Empty(t, cleared)
+	var preview string
+	require.NoError(t, casDB.QueryRow("SELECT input_history FROM logs WHERE id='private-id-1'").Scan(&preview))
+	require.NotEmpty(t, preview)
+	sourceDB, err := sql.Open("sqlite3", readDSN(source))
+	require.NoError(t, err)
+	var originalHistory string
+	require.NoError(t, sourceDB.QueryRow("SELECT input_history FROM logs WHERE id='private-id-1'").Scan(&originalHistory))
+	require.NoError(t, sourceDB.Close())
+	require.NotEqual(t, originalHistory, preview)
 	var hasObject bool
 	require.NoError(t, casDB.QueryRow("SELECT has_object FROM logs WHERE id='private-id-1'").Scan(&hasObject))
 	require.True(t, hasObject)
+	var hiddenSummary, hiddenTools, hiddenUsage, hiddenCache string
+	require.NoError(t, casDB.QueryRow("SELECT content_summary,tools,token_usage,cache_debug FROM logs WHERE id='private-id-hidden'").Scan(&hiddenSummary, &hiddenTools, &hiddenUsage, &hiddenCache))
+	require.Empty(t, hiddenSummary)
+	require.Empty(t, hiddenTools)
+	require.NotEmpty(t, hiddenUsage)
+	require.NotEmpty(t, hiddenCache)
+	var hiddenToolPointer int
+	require.NoError(t, casDB.QueryRow("SELECT COUNT(*) FROM cas_payloads WHERE log_id='private-id-hidden' AND field='tools'").Scan(&hiddenToolPointer))
+	require.Equal(t, 1, hiddenToolPointer)
 }
 
 func TestVerifyExistingSchemes(t *testing.T) {
@@ -118,7 +136,7 @@ func TestVerifyExistingSchemes(t *testing.T) {
 	require.Len(t, r.Schemes, 3)
 	for _, scheme := range r.Schemes {
 		require.Zero(t, scheme.Verification.Mismatches)
-		require.Equal(t, int64(3), scheme.Rows)
+		require.Equal(t, int64(4), scheme.Rows)
 	}
 }
 

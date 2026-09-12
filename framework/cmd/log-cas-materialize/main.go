@@ -195,6 +195,11 @@ func payloadSetup(source *sql.DB, o options) ([]string, map[string]bool, error) 
 	if err != nil {
 		return nil, nil, err
 	}
+	for _, required := range []string{"id", "has_object", "content_hidden", "content_summary"} {
+		if !available[required] {
+			return nil, nil, fmt.Errorf("logs table missing required column: %s", required)
+		}
+	}
 	columns := []string{}
 	for _, column := range logstore.PayloadColumnsForAnalysis() {
 		if available[column] {
@@ -213,6 +218,14 @@ func payloadSetup(source *sql.DB, o options) ([]string, map[string]bool, error) 
 	}
 	return columns, eligible, nil
 }
+func streamTransformLogs(source *sql.DB, columns []string) (*sql.Rows, error) {
+	selected := append([]string{"id", "content_summary", "content_hidden"}, columns...)
+	for i := range selected {
+		selected[i] = quote(selected[i])
+	}
+	return source.Query("SELECT " + strings.Join(selected, ",") + " FROM logs ORDER BY id")
+}
+
 func streamLogs(source *sql.DB, columns []string) (*sql.Rows, error) {
 	selected := append([]string{"id"}, columns...)
 	for i := range selected {
@@ -411,6 +424,29 @@ func updateClearedFields(tx *sql.Tx, id string, fields []string, hasObject bool)
 	return err
 }
 
+func updatePreparedRow(tx *sql.Tx, id string, fields []string, rowPayload map[string]string, contentSummary string, hasObject bool) error {
+	assignments := make([]string, 0, len(fields)+2)
+	args := make([]any, 0, len(fields)+3)
+	for _, field := range fields {
+		assignments = append(assignments, quote(field)+"=?")
+		args = append(args, rowPayload[field])
+	}
+	assignments = append(assignments, "content_summary=?", "has_object=?")
+	args = append(args, contentSummary, hasObject, id)
+	_, err := tx.Exec("UPDATE logs SET "+strings.Join(assignments, ",")+" WHERE id=?", args...)
+	return err
+}
+
+func serializedPayload(columns []string, rawValues []sql.RawBytes, offset int) map[string]string {
+	payload := make(map[string]string, len(columns))
+	for i, column := range columns {
+		if rawValues[offset+i] != nil {
+			payload[column] = string(rawValues[offset+i])
+		}
+	}
+	return payload
+}
+
 func transformZstd(ctx context.Context, sourcePath, workPath, finalPath string, o options) (result schemeReport, err error) {
 	source, err := sql.Open("sqlite3", readDSN(sourcePath))
 	if err != nil {
@@ -434,7 +470,7 @@ func transformZstd(ctx context.Context, sourcePath, workPath, finalPath string, 
 	if _, err = db.Exec("CREATE TABLE field_zstd_payloads(log_id TEXT NOT NULL, field TEXT NOT NULL, codec TEXT NOT NULL, orig_len INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY(log_id,field))"); err != nil {
 		return result, err
 	}
-	rows, err := streamLogs(source, columns)
+	rows, err := streamTransformLogs(source, columns)
 	if err != nil {
 		return result, err
 	}
@@ -447,7 +483,7 @@ func transformZstd(ctx context.Context, sourcePath, workPath, finalPath string, 
 	rowsInBatch := 0
 	var blobs, walPeak, workPeak int64
 	for rows.Next() {
-		values := make([]any, len(columns)+1)
+		values := make([]any, len(columns)+3)
 		rawValues := make([]sql.RawBytes, len(values))
 		for i := range values {
 			values[i] = &rawValues[i]
@@ -457,10 +493,13 @@ func transformZstd(ctx context.Context, sourcePath, workPath, finalPath string, 
 			return result, err
 		}
 		id := string(rawValues[0])
+		contentSummary := string(rawValues[1])
+		contentHidden := len(rawValues[2]) > 0 && string(rawValues[2]) != "0"
+		payload := serializedPayload(columns, rawValues, 3)
 		cleared := []string{}
 		for i, column := range columns {
-			raw := rawValues[i+1]
-			if raw == nil || len(raw) == 0 || !eligible[column] || len(raw) < o.minFieldBytes {
+			raw := rawValues[i+3]
+			if raw == nil || len(raw) == 0 || (!contentHidden && (!eligible[column] || len(raw) < o.minFieldBytes)) {
 				continue
 			}
 			encoded := logstore.CompressFieldDataForAnalysis(raw)
@@ -471,7 +510,21 @@ func transformZstd(ctx context.Context, sourcePath, workPath, finalPath string, 
 			cleared = append(cleared, column)
 			blobs++
 		}
-		if err = updateClearedFields(tx, id, cleared, false); err != nil {
+		rowPayload, rowSummary, _, prepareErr := logstore.CASRowPayloadForAnalysis(payload, contentSummary, contentHidden, cleared)
+		if prepareErr != nil {
+			_ = tx.Rollback()
+			return result, prepareErr
+		}
+		transformFields := append([]string(nil), cleared...)
+		if contentHidden {
+			transformFields = transformFields[:0]
+			for _, column := range columns {
+				if column != "token_usage" && column != "cache_debug" {
+					transformFields = append(transformFields, column)
+				}
+			}
+		}
+		if err = updatePreparedRow(tx, id, transformFields, rowPayload, rowSummary, false); err != nil {
 			_ = tx.Rollback()
 			return result, err
 		}
@@ -553,7 +606,7 @@ func transformCAS(ctx context.Context, sourcePath, workPath, finalPath string, o
 			return result, err
 		}
 	}
-	rows, err := streamLogs(source, columns)
+	rows, err := streamTransformLogs(source, columns)
 	if err != nil {
 		return result, err
 	}
@@ -566,7 +619,7 @@ func transformCAS(ctx context.Context, sourcePath, workPath, finalPath string, o
 	rowsInBatch := 0
 	var pointers, walPeak, workPeak int64
 	for rows.Next() {
-		values := make([]any, len(columns)+1)
+		values := make([]any, len(columns)+3)
 		rawValues := make([]sql.RawBytes, len(values))
 		for i := range values {
 			values[i] = &rawValues[i]
@@ -576,10 +629,13 @@ func transformCAS(ctx context.Context, sourcePath, workPath, finalPath string, o
 			return result, err
 		}
 		id := string(rawValues[0])
+		contentSummary := string(rawValues[1])
+		contentHidden := len(rawValues[2]) > 0 && string(rawValues[2]) != "0"
+		payload := serializedPayload(columns, rawValues, 3)
 		cleared := []string{}
 		for i, column := range columns {
-			raw := rawValues[i+1]
-			if raw == nil || len(raw) == 0 || !eligible[column] || len(raw) < o.minFieldBytes {
+			raw := rawValues[i+3]
+			if raw == nil || len(raw) == 0 || (!contentHidden && (!eligible[column] || len(raw) < o.minFieldBytes)) {
 				continue
 			}
 			analysis, analysisErr := logstore.AnalyzeCASField(raw, o.minChunkBytes)
@@ -606,7 +662,21 @@ func transformCAS(ctx context.Context, sourcePath, workPath, finalPath string, o
 			cleared = append(cleared, column)
 			pointers++
 		}
-		if err = updateClearedFields(tx, id, cleared, len(cleared) > 0); err != nil {
+		rowPayload, rowSummary, hasObject, prepareErr := logstore.CASRowPayloadForAnalysis(payload, contentSummary, contentHidden, cleared)
+		if prepareErr != nil {
+			_ = tx.Rollback()
+			return result, prepareErr
+		}
+		transformFields := append([]string(nil), cleared...)
+		if contentHidden {
+			transformFields = transformFields[:0]
+			for _, column := range columns {
+				if column != "token_usage" && column != "cache_debug" {
+					transformFields = append(transformFields, column)
+				}
+			}
+		}
+		if err = updatePreparedRow(tx, id, transformFields, rowPayload, rowSummary, hasObject); err != nil {
 			_ = tx.Rollback()
 			return result, err
 		}
@@ -756,6 +826,7 @@ func verifyZstd(sourcePath, targetPath string, columns []string) (int64, verific
 			transformed.Mismatches++
 		}
 	}
+	transformedMismatches := transformed.Mismatches
 	rowStats, err := compareResidentWithTransforms(source, target, columns, "field_zstd_payloads")
 	if err != nil {
 		return 0, transformed, err
@@ -765,17 +836,21 @@ func verifyZstd(sourcePath, targetPath string, columns []string) (int64, verific
 	transformed.CheckedBytes += rowStats.CheckedBytes
 	transformed.Mismatches += rowStats.Mismatches
 	if transformed.Mismatches > 0 {
-		return 0, transformed, errors.New("field-zstd verification failed")
+		return 0, transformed, fmt.Errorf("field-zstd verification failed: decoded=%d row=%d", transformedMismatches, rowStats.Mismatches)
 	}
 	return time.Since(start).Nanoseconds(), transformed, nil
 }
 func compareResidentWithTransforms(source, target *sql.DB, columns []string, pointerTable string) (verificationStats, error) {
-	left, err := streamLogs(source, columns)
+	left, err := streamTransformLogs(source, columns)
 	if err != nil {
 		return verificationStats{}, err
 	}
 	defer left.Close()
-	right, err := streamLogs(target, columns)
+	selected := append([]string{"id", "content_summary", "content_hidden"}, columns...)
+	for i := range selected {
+		selected[i] = quote(selected[i])
+	}
+	right, err := target.Query("SELECT " + strings.Join(selected, ",") + " FROM logs ORDER BY id")
 	if err != nil {
 		return verificationStats{}, err
 	}
@@ -785,8 +860,8 @@ func compareResidentWithTransforms(source, target *sql.DB, columns []string, poi
 		if !right.Next() {
 			return result, errors.New("target has fewer logs")
 		}
-		leftValues := make([]any, len(columns)+1)
-		rightValues := make([]any, len(columns)+1)
+		leftValues := make([]any, len(columns)+3)
+		rightValues := make([]any, len(columns)+3)
 		leftBytes := make([]sql.RawBytes, len(leftValues))
 		rightBytes := make([]sql.RawBytes, len(rightValues))
 		for i := range leftValues {
@@ -799,22 +874,46 @@ func compareResidentWithTransforms(source, target *sql.DB, columns []string, poi
 		if err = right.Scan(rightValues...); err != nil {
 			return result, err
 		}
+		if !bytes.Equal(leftBytes[0], rightBytes[0]) {
+			return result, errors.New("target log order differs")
+		}
 		result.CheckedRows++
 		id := string(leftBytes[0])
-		for i, column := range columns {
+		contentSummary := string(leftBytes[1])
+		contentHidden := len(leftBytes[2]) > 0 && string(leftBytes[2]) != "0"
+		payload := serializedPayload(columns, leftBytes, 3)
+		transformedFields := []string{}
+		transformedSet := map[string]bool{}
+		for _, column := range columns {
 			var transformed int
 			if err = target.QueryRow("SELECT COUNT(*) FROM "+pointerTable+" WHERE log_id=? AND field=?", id, column).Scan(&transformed); err != nil {
 				return result, err
 			}
-			if transformed == 0 {
-				result.CheckedFields++
-				if leftBytes[i+1] != nil {
-					result.CheckedBytes += int64(len(leftBytes[i+1]))
-				}
-				if (leftBytes[i+1] == nil) != (rightBytes[i+1] == nil) || !bytes.Equal(leftBytes[i+1], rightBytes[i+1]) {
+			if transformed > 0 {
+				transformedFields = append(transformedFields, column)
+				transformedSet[column] = true
+			}
+		}
+		expectedPayload, expectedSummary, _, prepareErr := logstore.CASRowPayloadForAnalysis(payload, contentSummary, contentHidden, transformedFields)
+		if prepareErr != nil {
+			return result, prepareErr
+		}
+		if string(rightBytes[1]) != expectedSummary {
+			result.Mismatches++
+		}
+		for i, column := range columns {
+			preparedColumn := transformedSet[column] || (contentHidden && column != "token_usage" && column != "cache_debug")
+			if preparedColumn {
+				if rightBytes[i+3] == nil || string(rightBytes[i+3]) != expectedPayload[column] {
 					result.Mismatches++
 				}
-			} else if rightBytes[i+1] != nil && len(rightBytes[i+1]) != 0 {
+				continue
+			}
+			result.CheckedFields++
+			if leftBytes[i+3] != nil {
+				result.CheckedBytes += int64(len(leftBytes[i+3]))
+			}
+			if (leftBytes[i+3] == nil) != (rightBytes[i+3] == nil) || !bytes.Equal(leftBytes[i+3], rightBytes[i+3]) {
 				result.Mismatches++
 			}
 		}
@@ -868,6 +967,7 @@ func verifyCAS(sourcePath, targetPath string, columns []string) (int64, verifica
 			transformed.Mismatches++
 		}
 	}
+	transformedMismatches := transformed.Mismatches
 	rowStats, err := compareResidentWithTransforms(source, target, columns, "cas_payloads")
 	if err != nil {
 		return 0, transformed, err
@@ -877,7 +977,7 @@ func verifyCAS(sourcePath, targetPath string, columns []string) (int64, verifica
 	transformed.CheckedBytes += rowStats.CheckedBytes
 	transformed.Mismatches += rowStats.Mismatches
 	if transformed.Mismatches > 0 {
-		return 0, transformed, errors.New("CAS verification failed")
+		return 0, transformed, fmt.Errorf("CAS verification failed: decoded=%d row=%d", transformedMismatches, rowStats.Mismatches)
 	}
 	return time.Since(start).Nanoseconds(), transformed, nil
 }

@@ -29,6 +29,19 @@ func TestCASAnalysisUsesProductionCodec(t *testing.T) {
 	}
 }
 
+func TestCASRowPayloadForAnalysisPreservesProductionPreviewAndSummary(t *testing.T) {
+	entry := bigChatEntry("analysis-preview", "first", "assistant", "last user")
+	require.NoError(t, entry.SerializeFields())
+	serialized := ExtractPayload(entry)
+	row, summary, hasObject, err := CASRowPayloadForAnalysis(serialized, entry.ContentSummary, false, []string{"input_history", "tools"})
+	require.NoError(t, err)
+	require.True(t, hasObject)
+	require.Equal(t, entry.ContentSummary, summary)
+	require.NotEmpty(t, row["input_history"])
+	require.Less(t, len(row["input_history"]), len(serialized["input_history"]))
+	require.Empty(t, row["tools"])
+}
+
 func TestCASObjectStoreForAnalysisReusesLookup(t *testing.T) {
 	raw := []byte(`[{"x":"one"},{"x":"two"}]`)
 	analysis, err := AnalyzeCASField(raw, 4)

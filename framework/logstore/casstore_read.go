@@ -326,6 +326,11 @@ func (c *CasLogStore) hydrateFieldsTx(tx *gorm.DB, log *Log, includeHidden bool,
 		values[r.Field] = string(content)
 	}
 	if len(values) > 0 {
+		// The root row's content_summary is persistent search/index metadata and
+		// remains authoritative. MergePayloadFromJSON rebuilds it as a legacy
+		// object-store repair step; CAS hydration must not silently change the
+		// detail/export representation relative to the row-resident baseline.
+		contentSummary := log.ContentSummary
 		// The snapshot values are the raw TEXT column values; merging via the
 		// payload-map JSON form matches MergePayloadFromJSON's expectations.
 		data, err := sonic.Marshal(values)
@@ -338,6 +343,8 @@ func (c *CasLogStore) hydrateFieldsTx(tx *gorm.DB, log *Log, includeHidden bool,
 				hydrateErr = fmt.Errorf("merge payload: %w", err)
 			}
 			c.logger.Warn("logstore/cas: merge payload for log %s failed: %v", log.ID, err)
+		} else {
+			log.ContentSummary = contentSummary
 		}
 		pruneUnrequestedPayloadFields(log, requestedFields)
 	}
