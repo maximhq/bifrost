@@ -101,6 +101,27 @@ func TestMaterializeAllSchemesAndVerify(t *testing.T) {
 	require.True(t, hasObject)
 }
 
+func TestVerifyExistingSchemes(t *testing.T) {
+	source := materializeFixture(t)
+	work := filepath.Join(t.TempDir(), "work")
+	require.NoError(t, os.Mkdir(work, 0o700))
+	firstReport := filepath.Join(t.TempDir(), "first.json")
+	args := []string{"--db", source, "--snapshot-method", "online-backup", "--work-dir", work, "--output", firstReport, "--min-field-bytes", "8", "--min-chunk-bytes", "8"}
+	require.NoError(t, run(context.Background(), args))
+	secondReport := filepath.Join(t.TempDir(), "second.json")
+	verifyArgs := []string{"--db", source, "--snapshot-method", "online-backup", "--work-dir", work, "--output", secondReport, "--min-field-bytes", "8", "--min-chunk-bytes", "8", "--verify-existing"}
+	require.NoError(t, run(context.Background(), verifyArgs))
+	var r report
+	data, err := os.ReadFile(secondReport)
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(data, &r))
+	require.Len(t, r.Schemes, 3)
+	for _, scheme := range r.Schemes {
+		require.Zero(t, scheme.Verification.Mismatches)
+		require.Equal(t, int64(3), scheme.Rows)
+	}
+}
+
 func TestMaterializeRejectsUnsafeInputs(t *testing.T) {
 	source := materializeFixture(t)
 	work := filepath.Join(t.TempDir(), "work")

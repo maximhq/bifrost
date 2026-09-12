@@ -36,15 +36,17 @@ type options struct {
 	db, snapshotMethod, workDir, output string
 	minFieldBytes, minChunkBytes        int
 	excludeFields                       stringList
+	verifyExisting                      bool
 }
 
 type physicalStats struct {
-	FileBytes     int64 `json:"file_bytes"`
-	PageSize      int64 `json:"page_size"`
-	PageCount     int64 `json:"page_count"`
-	FreelistPages int64 `json:"freelist_pages"`
-	TableBytes    int64 `json:"table_bytes"`
-	IndexBytes    int64 `json:"index_bytes"`
+	FileBytes       int64 `json:"file_bytes"`
+	PageSize        int64 `json:"page_size"`
+	PageCount       int64 `json:"page_count"`
+	FreelistPages   int64 `json:"freelist_pages"`
+	DBStatAvailable bool  `json:"dbstat_available"`
+	TableBytes      int64 `json:"table_bytes,omitempty"`
+	IndexBytes      int64 `json:"index_bytes,omitempty"`
 }
 type verificationStats struct {
 	CheckedRows   int64 `json:"checked_rows"`
@@ -89,6 +91,7 @@ func parseOptions(args []string) (options, error) {
 	fs.IntVar(&o.minFieldBytes, "min-field-bytes", 1024, "field threshold")
 	fs.IntVar(&o.minChunkBytes, "min-chunk-bytes", 256, "chunk threshold")
 	fs.Var(&o.excludeFields, "exclude-field", "payload column to keep row-resident")
+	fs.BoolVar(&o.verifyExisting, "verify-existing", false, "verify existing current.db, field-zstd.db and cas-manifest.db without rewriting them")
 	if err := fs.Parse(args); err != nil {
 		return o, err
 	}
@@ -255,8 +258,25 @@ func validatePaths(o options) (os.FileInfo, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	if len(entries) != 0 {
+	if !o.verifyExisting && len(entries) != 0 {
 		return nil, "", errors.New("work-dir must be empty")
+	}
+	if o.verifyExisting {
+		required := map[string]bool{"current.db": false, "field-zstd.db": false, "cas-manifest.db": false}
+		for _, entry := range entries {
+			if _, ok := required[entry.Name()]; !ok {
+				return nil, "", errors.New("verify-existing work-dir contains unexpected files")
+			}
+			if entry.IsDir() {
+				return nil, "", errors.New("verify-existing work-dir contains a directory")
+			}
+			required[entry.Name()] = true
+		}
+		for name, found := range required {
+			if !found {
+				return nil, "", fmt.Errorf("verify-existing missing %s", name)
+			}
+		}
 	}
 	dbAbs, _ := filepath.Abs(o.db)
 	workAbs, _ := filepath.Abs(o.workDir)
@@ -353,7 +373,8 @@ func physical(path string) (physicalStats, error) {
 	}
 	var tableBytes, indexBytes int64
 	rows, statErr := db.Query("SELECT CASE WHEN name IN (SELECT name FROM sqlite_master WHERE type='index') OR name LIKE 'sqlite_autoindex_%' THEN 'index' ELSE 'table' END, SUM(pgsize) FROM dbstat GROUP BY 1")
-	if statErr == nil {
+	dbstatAvailable := statErr == nil
+	if dbstatAvailable {
 		defer rows.Close()
 		for rows.Next() {
 			var kind string
@@ -372,7 +393,7 @@ func physical(path string) (physicalStats, error) {
 	if err != nil {
 		return physicalStats{}, err
 	}
-	return physicalStats{info.Size(), pageSize, pageCount, free, tableBytes, indexBytes}, nil
+	return physicalStats{info.Size(), pageSize, pageCount, free, dbstatAvailable, tableBytes, indexBytes}, nil
 }
 
 func updateClearedFields(tx *sql.Tx, id string, fields []string, hasObject bool) error {
@@ -764,35 +785,36 @@ func compareResidentWithTransforms(source, target *sql.DB, columns []string, poi
 		if !right.Next() {
 			return result, errors.New("target has fewer logs")
 		}
-		lv := make([]any, len(columns)+1)
-		rv := make([]any, len(columns)+1)
-		lb := make([]sql.RawBytes, len(lv))
-		rb := make([]sql.RawBytes, len(rv))
-		for i := range lv {
-			lv[i] = &lb[i]
-			rv[i] = &rb[i]
+		leftValues := make([]any, len(columns)+1)
+		rightValues := make([]any, len(columns)+1)
+		leftBytes := make([]sql.RawBytes, len(leftValues))
+		rightBytes := make([]sql.RawBytes, len(rightValues))
+		for i := range leftValues {
+			leftValues[i] = &leftBytes[i]
+			rightValues[i] = &rightBytes[i]
 		}
-		if err = left.Scan(lv...); err != nil {
+		if err = left.Scan(leftValues...); err != nil {
 			return result, err
 		}
-		if err = right.Scan(rv...); err != nil {
+		if err = right.Scan(rightValues...); err != nil {
 			return result, err
 		}
 		result.CheckedRows++
-		id := string(lb[0])
+		id := string(leftBytes[0])
 		for i, column := range columns {
-			result.CheckedFields++
-			if lb[i+1] != nil {
-				result.CheckedBytes += int64(len(lb[i+1]))
-			}
-			var n int
-			if err = target.QueryRow("SELECT COUNT(*) FROM "+pointerTable+" WHERE log_id=? AND field=?", id, column).Scan(&n); err != nil {
+			var transformed int
+			if err = target.QueryRow("SELECT COUNT(*) FROM "+pointerTable+" WHERE log_id=? AND field=?", id, column).Scan(&transformed); err != nil {
 				return result, err
 			}
-			if n == 0 && ((lb[i+1] == nil) != (rb[i+1] == nil) || !bytes.Equal(lb[i+1], rb[i+1])) {
-				result.Mismatches++
-			}
-			if n > 0 && rb[i+1] != nil && len(rb[i+1]) != 0 {
+			if transformed == 0 {
+				result.CheckedFields++
+				if leftBytes[i+1] != nil {
+					result.CheckedBytes += int64(len(leftBytes[i+1]))
+				}
+				if (leftBytes[i+1] == nil) != (rightBytes[i+1] == nil) || !bytes.Equal(leftBytes[i+1], rightBytes[i+1]) {
+					result.Mismatches++
+				}
+			} else if rightBytes[i+1] != nil && len(rightBytes[i+1]) != 0 {
 				result.Mismatches++
 			}
 		}
@@ -859,6 +881,84 @@ func verifyCAS(sourcePath, targetPath string, columns []string) (int64, verifica
 	return time.Since(start).Nanoseconds(), transformed, nil
 }
 
+func verifyExistingSchemes(sourcePath, workDir string, columns []string) (schemeReport, schemeReport, schemeReport, error) {
+	currentPath := filepath.Join(workDir, "current.db")
+	zstdPath := filepath.Join(workDir, "field-zstd.db")
+	casPath := filepath.Join(workDir, "cas-manifest.db")
+	current := schemeReport{Name: "current"}
+	zstd := schemeReport{Name: "field-zstd"}
+	cas := schemeReport{Name: "cas-manifest"}
+	var err error
+	current.Physical, err = physical(currentPath)
+	if err != nil {
+		return current, zstd, cas, err
+	}
+	zstd.Physical, err = physical(zstdPath)
+	if err != nil {
+		return current, zstd, cas, err
+	}
+	cas.Physical, err = physical(casPath)
+	if err != nil {
+		return current, zstd, cas, err
+	}
+	source, err := sql.Open("sqlite3", readDSN(sourcePath))
+	if err != nil {
+		return current, zstd, cas, err
+	}
+	defer source.Close()
+	currentDB, err := sql.Open("sqlite3", readDSN(currentPath))
+	if err != nil {
+		return current, zstd, cas, err
+	}
+	currentStart := time.Now()
+	current.Verification, err = compareFullRows(source, currentDB, columns)
+	current.VerifyNS = time.Since(currentStart).Nanoseconds()
+	currentDB.Close()
+	if err != nil || current.Verification.Mismatches > 0 {
+		return current, zstd, cas, errors.New("current verification failed")
+	}
+	current.Rows, err = tableCount(source, "logs")
+	if err != nil {
+		return current, zstd, cas, err
+	}
+	zstd.VerifyNS, zstd.Verification, err = verifyZstd(sourcePath, zstdPath, columns)
+	if err != nil {
+		return current, zstd, cas, err
+	}
+	zstdDB, err := sql.Open("sqlite3", readDSN(zstdPath))
+	if err != nil {
+		return current, zstd, cas, err
+	}
+	zstd.Rows, err = tableCount(zstdDB, "logs")
+	if err == nil {
+		zstd.Blobs, err = tableCount(zstdDB, "field_zstd_payloads")
+	}
+	zstdDB.Close()
+	if err != nil {
+		return current, zstd, cas, err
+	}
+	cas.VerifyNS, cas.Verification, err = verifyCAS(sourcePath, casPath, columns)
+	if err != nil {
+		return current, zstd, cas, err
+	}
+	casDB, err := sql.Open("sqlite3", readDSN(casPath))
+	if err != nil {
+		return current, zstd, cas, err
+	}
+	cas.Rows, err = tableCount(casDB, "logs")
+	if err == nil {
+		cas.Blobs, err = tableCount(casDB, "cas_blobs")
+	}
+	if err == nil {
+		cas.Pointers, err = tableCount(casDB, "cas_payloads")
+	}
+	if err == nil {
+		cas.Refs, err = tableCount(casDB, "cas_refs")
+	}
+	casDB.Close()
+	return current, zstd, cas, err
+}
+
 func run(ctx context.Context, args []string) (err error) {
 	o, err := parseOptions(args)
 	if err != nil {
@@ -877,37 +977,49 @@ func run(ctx context.Context, args []string) (err error) {
 		return err
 	}
 	rows, err := tableCount(source, "logs")
+	if err != nil {
+		source.Close()
+		return err
+	}
+	allColumns, _, err := payloadSetup(source, o)
 	source.Close()
 	if err != nil {
 		return err
 	}
-	currentPath := filepath.Join(o.workDir, "current.db")
-	start := time.Now()
-	_, err = cloneCompact(o.db, currentPath)
-	if err != nil {
-		return err
-	}
-	current := schemeReport{Name: "current", Rows: rows, CompactNS: time.Since(start).Nanoseconds()}
-	current.Physical, err = physical(currentPath)
-	if err != nil {
-		return err
-	}
-	source, _ = sql.Open("sqlite3", readDSN(o.db))
-	currentDB, _ := sql.Open("sqlite3", readDSN(currentPath))
-	allColumns, _, _ := payloadSetup(source, o)
-	current.Verification, err = compareFullRows(source, currentDB, allColumns)
-	source.Close()
-	currentDB.Close()
-	if err != nil || current.Verification.Mismatches > 0 {
-		return errors.New("current verification failed")
-	}
-	zstd, err := transformZstd(ctx, o.db, filepath.Join(o.workDir, ".field-work.db"), filepath.Join(o.workDir, "field-zstd.db"), o)
-	if err != nil {
-		return err
-	}
-	cas, err := transformCAS(ctx, o.db, filepath.Join(o.workDir, ".cas-work.db"), filepath.Join(o.workDir, "cas-manifest.db"), o)
-	if err != nil {
-		return err
+	var current, zstd, cas schemeReport
+	if o.verifyExisting {
+		current, zstd, cas, err = verifyExistingSchemes(o.db, o.workDir, allColumns)
+		if err != nil {
+			return err
+		}
+	} else {
+		currentPath := filepath.Join(o.workDir, "current.db")
+		start := time.Now()
+		_, err = cloneCompact(o.db, currentPath)
+		if err != nil {
+			return err
+		}
+		current = schemeReport{Name: "current", Rows: rows, CompactNS: time.Since(start).Nanoseconds()}
+		current.Physical, err = physical(currentPath)
+		if err != nil {
+			return err
+		}
+		source, _ = sql.Open("sqlite3", readDSN(o.db))
+		currentDB, _ := sql.Open("sqlite3", readDSN(currentPath))
+		current.Verification, err = compareFullRows(source, currentDB, allColumns)
+		source.Close()
+		currentDB.Close()
+		if err != nil || current.Verification.Mismatches > 0 {
+			return errors.New("current verification failed")
+		}
+		zstd, err = transformZstd(ctx, o.db, filepath.Join(o.workDir, ".field-work.db"), filepath.Join(o.workDir, "field-zstd.db"), o)
+		if err != nil {
+			return err
+		}
+		cas, err = transformCAS(ctx, o.db, filepath.Join(o.workDir, ".cas-work.db"), filepath.Join(o.workDir, "cas-manifest.db"), o)
+		if err != nil {
+			return err
+		}
 	}
 	after, err := fileHash(o.db)
 	if err != nil {
