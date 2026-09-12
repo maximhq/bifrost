@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"time"
 
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/oauth2"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -170,8 +172,52 @@ func perUserCallbackRedirect(ctx *fasthttp.RequestCtx, store configstore.ConfigS
 	return "/workspace/mcp-sessions/auth-failed?error=" + url.QueryEscape(userMsg)
 }
 
+// resolveOAuthFlowPollStatus folds an admin-mode flow row into the status a
+// poller should act on. TableOauthConfig.Status alone cannot drive a
+// reauthorize poll: it is write-once and never regresses from "authorized"
+// (see isPrematureOAuthCompletion), so a client redoing consent after an
+// earlier successful auth reads "authorized" from the very first poll, long
+// before the admin has signed in upstream. The flow row is the live signal:
+//   - pending (or claiming, the transient state while a callback is being
+//     processed) and not yet past its deadline: still waiting on the callback
+//   - pending but past its deadline: the callback never came
+//   - failed: the upstream provider denied or errored before redirecting back
+//   - gone: CompleteOAuthFlow ran and cleaned the row up, success or failure
+//     alike; the config status then says which (it is written in the same
+//     completion, before the row is removed)
+//
+// A gone row with the config still "pending" can only mean the bootstrap
+// flow expired and was swept without ever completing, so that reads as
+// expired rather than as a pending flow a poller would wait on forever.
+func resolveOAuthFlowPollStatus(flow *configstoreTables.TableMCPOauthFlow, configStatus string, now time.Time) string {
+	if flow != nil {
+		switch flow.Status {
+		case "failed":
+			return "failed"
+		case "claiming":
+			return "pending"
+		case "pending":
+			if now.After(flow.ExpiresAt) {
+				return "expired"
+			}
+			return "pending"
+		}
+	}
+	switch configStatus {
+	case "authorized", "failed":
+		return configStatus
+	default:
+		return "expired"
+	}
+}
+
 // getOAuthConfigStatus returns the current status of an OAuth config
-// GET /api/oauth/config/{id}/status
+// GET /api/oauth/config/{id}/status[?flow_id=...]
+//
+// Without flow_id the status is the config row's own bootstrap status, which
+// is what create-time flows poll (their config starts "pending"). With
+// flow_id (returned by POST /api/mcp/client/{id}/reauthorize) the status is
+// resolved from that flow row instead, see resolveOAuthFlowPollStatus.
 func (h *OAuthHandler) getOAuthConfigStatus(ctx *fasthttp.RequestCtx) {
 	configID := ctx.UserValue("id").(string)
 
@@ -197,7 +243,27 @@ func (h *OAuthHandler) getOAuthConfigStatus(ctx *fasthttp.RequestCtx) {
 		"created_at": oauthConfig.CreatedAt,
 	}
 
-	if oauthConfig.Status == "authorized" {
+	if flowID := string(ctx.QueryArgs().Peek("flow_id")); flowID != "" {
+		flow, flowErr := h.store.ConfigStore.GetOauthFlowByID(ctx, flowID)
+		if flowErr != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get OAuth flow: %v", flowErr))
+			return
+		}
+		// A flow that exists but belongs to another config is answered as
+		// not found rather than folded in: the caller-supplied id must not
+		// let a poll on config A read the state of config B's flow.
+		if flow != nil && flow.OauthConfigID != configID {
+			SendError(ctx, fasthttp.StatusNotFound, "OAuth flow not found for this OAuth config")
+			return
+		}
+		response["flow_id"] = flowID
+		if flow != nil {
+			response["flow_status"] = flow.Status
+		}
+		response["status"] = resolveOAuthFlowPollStatus(flow, oauthConfig.Status, time.Now())
+	}
+
+	if response["status"] == "authorized" {
 		// Resolve the shared token row via (oauth_config_id, auth_mode='shared')
 		// — the replacement for the retired TableOauthConfig.TokenID FK shortcut.
 		token, err := h.store.ConfigStore.GetSharedOauthTokenByConfigID(ctx, configID)

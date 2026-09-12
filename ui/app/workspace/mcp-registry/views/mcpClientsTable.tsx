@@ -342,6 +342,8 @@ export default function MCPClientsTable({
 	const [reauthorizeFlow, setReauthorizeFlow] = useState<{
 		authorizeUrl: string;
 		oauthConfigId: string;
+		flowId?: string;
+		expiresAt?: string;
 		mcpClientId: string;
 		isPerUserOauth: boolean;
 	} | null>(null);
@@ -433,6 +435,8 @@ export default function MCPClientsTable({
 				setReauthorizeFlow({
 					authorizeUrl: response.authorize_url,
 					oauthConfigId: response.oauth_config_id,
+					flowId: response.flow_id,
+					expiresAt: response.expires_at,
 					mcpClientId: client.config.client_id,
 					isPerUserOauth: client.config.auth_type === "per_user_oauth",
 				});
@@ -1216,22 +1220,35 @@ export default function MCPClientsTable({
 					onError={(error) => {
 						toast({ title: "Reauthorization failed", description: error, variant: "destructive" });
 					}}
-					onConflict={() => {
-						// 409: the flow's completion raced (popup postMessage vs.
-						// status polling both call complete-oauth) or this was a
-						// double submit. Either way the credential is already live
-						// server-side, so treat it as success rather than an error.
-						toast({
-							title: "Success",
-							description: reauthorizeFlow.isPerUserOauth
-								? "Admin discovery credential refreshed successfully."
-								: "MCP client re-authorized successfully",
-						});
+					onConflict={(error) => {
+						// 409: the server refused to complete because the consent
+						// never actually finished (the flow is still pending, or no
+						// fresh credential was written). Nothing was repaired, so
+						// say so instead of claiming success.
+						toast({ title: "Reauthorization did not complete", description: error, variant: "destructive" });
 						setReauthorizeFlow(null);
 						if (refetch) void refetch();
 					}}
+					onRetry={async () => {
+						// A timed-out or denied flow is dead server-side. Start a
+						// fresh one so the confirm step reopens on a live authorize
+						// URL with a new flow id and deadline.
+						const response = await reauthorizeMCPClient(reauthorizeFlow.mcpClientId).unwrap();
+						setReauthorizeFlow(
+							(prev) =>
+								prev && {
+									...prev,
+									authorizeUrl: response.authorize_url,
+									oauthConfigId: response.oauth_config_id,
+									flowId: response.flow_id,
+									expiresAt: response.expires_at,
+								},
+						);
+					}}
 					authorizeUrl={reauthorizeFlow.authorizeUrl}
 					oauthConfigId={reauthorizeFlow.oauthConfigId}
+					flowId={reauthorizeFlow.flowId}
+					expiresAt={reauthorizeFlow.expiresAt}
 					mcpClientId={reauthorizeFlow.mcpClientId}
 					isPerUserOauth={reauthorizeFlow.isPerUserOauth}
 					isReauthorize
