@@ -3610,6 +3610,47 @@ func (gs *LocalGovernanceStore) CreateVirtualKeyInMemory(ctx context.Context, vk
 	gs.storeVirtualKey(clone.Value.GetValue(), &clone)
 }
 
+// rateLimitHeldByModelConfig and budgetHeldByModelConfig report whether a model config still
+// holds the row, which is what tells a key's update that the row left it for another holder
+// rather than being deleted. Reaching a key's update as "removed", a row that only moved would
+// lose its live counters and come back with whatever the last dump persisted.
+func (gs *LocalGovernanceStore) rateLimitHeldByModelConfig(rateLimitID string) bool {
+	if rateLimitID == "" {
+		return false
+	}
+	held := false
+	gs.modelConfigs.Range(func(_, value interface{}) bool {
+		mc, ok := value.(*configstoreTables.TableModelConfig)
+		if !ok || mc == nil || mc.RateLimitID == nil || *mc.RateLimitID != rateLimitID {
+			return true
+		}
+		held = true
+		return false
+	})
+	return held
+}
+
+func (gs *LocalGovernanceStore) budgetHeldByModelConfig(budgetID string) bool {
+	if budgetID == "" {
+		return false
+	}
+	held := false
+	gs.modelConfigs.Range(func(_, value interface{}) bool {
+		mc, ok := value.(*configstoreTables.TableModelConfig)
+		if !ok || mc == nil {
+			return true
+		}
+		for i := range mc.Budgets {
+			if mc.Budgets[i].ID == budgetID {
+				held = true
+				return false
+			}
+		}
+		return true
+	})
+	return held
+}
+
 // UpdateVirtualKeyInMemory updates an existing virtual key in the in-memory store (lock-free)
 func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey, budgetBaselines map[string]float64, rateLimitTokensBaselines map[string]int64, rateLimitRequestsBaselines map[string]int64) {
 	if vk == nil {
@@ -3673,7 +3714,7 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 		}
 		// Delete removed multi-budgets
 		for _, oldBudget := range existingVK.Budgets {
-			if !allNewBudgetIDs[oldBudget.ID] {
+			if !allNewBudgetIDs[oldBudget.ID] && !gs.budgetHeldByModelConfig(oldBudget.ID) {
 				gs.DeleteBudget(ctx, oldBudget.ID)
 			}
 		}
@@ -3697,10 +3738,10 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 			// Clean up old rate limit if ID changed (e.g., after AP propagation
 			// creates a fresh UUID). Without this the orphaned entry leaks memory
 			// and its stale usage pollutes gossip baselines.
-			if existingVK.RateLimit != nil && existingVK.RateLimit.ID != clone.RateLimit.ID {
+			if existingVK.RateLimit != nil && existingVK.RateLimit.ID != clone.RateLimit.ID && !gs.rateLimitHeldByModelConfig(existingVK.RateLimit.ID) {
 				gs.DeleteRateLimit(ctx, existingVK.RateLimit.ID)
 			}
-		} else if existingVK.RateLimit != nil {
+		} else if existingVK.RateLimit != nil && !gs.rateLimitHeldByModelConfig(existingVK.RateLimit.ID) {
 			// Rate limit was removed from the virtual key, delete it from memory
 			gs.DeleteRateLimit(ctx, existingVK.RateLimit.ID)
 		}
