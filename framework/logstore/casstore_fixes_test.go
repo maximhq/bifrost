@@ -1131,3 +1131,184 @@ func TestCas_UpdateMapGoFieldNameExprRejected(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, entry.InputHistory, found.InputHistory)
 }
+// ---------------------------------------------------------------------------
+// Round-5: projection reads must not weaken authorization binding.
+// ---------------------------------------------------------------------------
+
+// projAuthHistoryJSON builds a single-user-message history array, the shape
+// bigChatEntry serializes into input_history.
+func projAuthHistoryJSON(t *testing.T, s string) string {
+	t.Helper()
+	data, err := sonic.Marshal([]schemas.ChatMessage{
+		{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: strPtr(s)}},
+	})
+	require.NoError(t, err)
+	return string(data)
+}
+
+// Defect (round 5, part 1): verifyRootRowRevision's projected branch compared
+// only the requested PAYLOAD columns, so a projection that asked for user_id
+// plus content did not compare user_id. The interleave: read {id, user_id:"A"}
+// with projection [user_id, input_history]; a concurrent update flips
+// ownership to B and rewrites the CAS payload; the verify compared neither
+// user_id (ignored: non-payload) nor the payload columns (old and new
+// in-memory values both empty), so hydration merged the NEW B payload into
+// the OLD A-scoped row — cross-version authorization mismatch.
+//
+// This test pins the half-open window deterministically: the scoped projected
+// read completes, the concurrent update lands, and only then does hydration
+// run. It must fail with ErrCasConcurrentModification, never serve A
+// metadata with B content.
+func TestCas_ProjectedReadBindsProjectedOwnershipToHydration(t *testing.T) {
+	cas, _ := newTestCas(t)
+	defer cas.Close(context.Background())
+	ctx := context.Background()
+
+	const id = "projauth-ilv"
+	entry := bigChatEntry(id, strings.Repeat("owner A history ", 40))
+	entry.UserID = strPtr("userA")
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, cas.CreateIfNotExists(ctx, entry))
+	require.Positive(t, casPointerCount(t, cas, id, "input_history"))
+
+	fields := ensureHydrationFields([]string{"user_id", "input_history"})
+
+	// Half-open window, step 1: the caller's scoped projected read of the
+	// A-owned revision (ownership column projected).
+	stale, err := cas.LogStore.FindFirst(ctx, map[string]any{"id": id, "user_id": "userA"}, fields...)
+	require.NoError(t, err)
+	require.NotNil(t, stale.UserID)
+	require.Equal(t, "userA", *stale.UserID)
+
+	// Step 2: the concurrent update replaces BOTH the ownership and the CAS
+	// payload with the B revision.
+	require.NoError(t, cas.Update(ctx, id, map[string]any{
+		"user_id":       "userB",
+		"input_history": projAuthHistoryJSON(t, strings.Repeat("owner B history ", 40)),
+	}))
+
+	// Step 3: hydrating the stale A row must NOT succeed: user_id is in the
+	// projection, so it is compared, and it changed.
+	err = cas.hydrateLog(ctx, stale, fields...)
+	require.ErrorIs(t, err, ErrCasConcurrentModification)
+	assert.NotContains(t, stale.InputHistory, "owner B history",
+		"hydration must not merge the B revision's payload into the A-scoped row")
+
+	// End-to-end after the interleave: the A query correctly fails (the row
+	// is B's now), and the B query serves one consistent B revision.
+	_, err = cas.FindFirst(ctx, map[string]any{"id": id, "user_id": "userA"}, "user_id", "input_history")
+	assert.ErrorIs(t, err, ErrNotFound, "stale A query must not serve the row")
+	fresh, err := cas.FindFirst(ctx, map[string]any{"id": id, "user_id": "userB"}, "user_id", "input_history")
+	require.NoError(t, err)
+	require.NotNil(t, fresh.UserID)
+	require.Equal(t, "userB", *fresh.UserID)
+	assert.Contains(t, fresh.InputHistory, "owner B history")
+}
+
+// Defect (round 5, part 1, unprojected ownership): an ownership column the
+// projection did NOT select cannot be byte-compared (its in-memory value is
+// the zero value). The fix re-applies the caller's QueryScope to the verify
+// re-read, so a concurrent ownership change that moves the row OUT of the
+// caller's scope fails the re-read as a concurrent modification instead of
+// hydrating the caller's content onto a row that no longer belongs to them.
+func TestCas_ProjectedReadBindsUnprojectedOwnershipViaScope(t *testing.T) {
+	cas, _ := newTestCas(t)
+	defer cas.Close(context.Background())
+	ctx := context.Background()
+
+	const id = "projauth-scope-ilv"
+	entry := bigChatEntry(id, strings.Repeat("scoped history ", 40))
+	entry.UserID = strPtr("userA")
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, cas.CreateIfNotExists(ctx, entry))
+	require.Positive(t, casPointerCount(t, cas, id, "input_history"))
+
+	scopedCtx := queryscope.WithQueryScope(context.Background(), func(db *gorm.DB) *gorm.DB {
+		return db.Where("user_id IN ?", []string{"userA"})
+	})
+
+	// Projection without user_id: the in-memory row cannot prove ownership,
+	// only the scope re-read can.
+	fields := ensureHydrationFields([]string{"input_history"})
+	stale, err := cas.LogStore.FindFirst(scopedCtx, map[string]any{"id": id}, fields...)
+	require.NoError(t, err)
+
+	// Concurrent update flips ownership out of the caller's scope.
+	require.NoError(t, cas.Update(ctx, id, map[string]any{"user_id": "userB"}))
+
+	err = cas.hydrateLog(scopedCtx, stale, fields...)
+	require.ErrorIs(t, err, ErrCasConcurrentModification,
+		"an ownership flip out of scope must fail the scoped verify re-read")
+	// The stale object keeps the A-revision state its projected read loaded
+	// (the row column); nothing from the now-B-owned revision was merged.
+	assert.Contains(t, stale.InputHistory, "scoped history")
+	assert.Nil(t, stale.UserID, "ownership was not projected and must stay unset")
+}
+
+// Defect (round 5, part 2): RDBLogStore.FindFirst/FindAll read through
+// s.db.WithContext and ignored the ctx QueryScope (FindByID was scoped), so
+// the CAS wrappers' assumption "every serving entry point reads scoped" did
+// not hold for these two. A QueryScope on ctx must hide other users' rows.
+func TestCas_InnerFindFirstFindAllApplyQueryScope(t *testing.T) {
+	cas, inner := newTestCas(t)
+	defer cas.Close(context.Background())
+	ctx := context.Background()
+
+	for _, spec := range []struct {
+		id   string
+		user string
+	}{
+		{"projauth-scope-u1", "u1"},
+		{"projauth-scope-u2", "u2"},
+	} {
+		entry := bigChatEntry(spec.id, strings.Repeat("history "+spec.user+" ", 40))
+		entry.UserID = strPtr(spec.user)
+		require.NoError(t, entry.SerializeFields())
+		require.NoError(t, cas.CreateIfNotExists(ctx, entry))
+	}
+
+	// Same closure shape the enterprise DAC wrapper builds (see
+	// logstoreparity_test.go QueryScopeDAC).
+	scopedCtx := queryscope.WithQueryScope(context.Background(), func(db *gorm.DB) *gorm.DB {
+		return db.Where("(user_id IN ? OR virtual_key_id IN ?)", []string{"u1"}, []string{"vk-u1"})
+	})
+
+	// Unscoped contexts are unchanged: the row is visible.
+	plain, err := inner.FindFirst(ctx, map[string]any{"id": "projauth-scope-u2"}, "id", "user_id")
+	require.NoError(t, err)
+	require.Equal(t, "u2", *plain.UserID)
+
+	// FindFirst: an out-of-scope id must not be found even though the row
+	// exists and the id matches.
+	_, err = inner.FindFirst(scopedCtx, map[string]any{"id": "projauth-scope-u2"}, "id", "user_id")
+	require.ErrorIs(t, err, ErrNotFound, "scoped FindFirst must not return another user's row")
+	got, err := inner.FindFirst(scopedCtx, map[string]any{"id": "projauth-scope-u1"}, "id", "user_id")
+	require.NoError(t, err)
+	require.Equal(t, "u1", *got.UserID)
+
+	// FindAll: only in-scope rows come back.
+	logs, err := inner.FindAll(scopedCtx, map[string]any{}, "id", "user_id")
+	require.NoError(t, err)
+	require.Len(t, logs, 1, "scoped FindAll must filter out-of-scope rows")
+	require.Equal(t, "projauth-scope-u1", logs[0].ID)
+
+	// Fail-closed scope (the no-dimension principal shape).
+	closedCtx := queryscope.WithQueryScope(context.Background(), func(db *gorm.DB) *gorm.DB {
+		return db.Where("1 = 0")
+	})
+	empty, err := inner.FindAll(closedCtx, map[string]any{}, "id")
+	require.NoError(t, err)
+	assert.Empty(t, empty)
+	_, err = inner.FindFirst(closedCtx, map[string]any{"id": "projauth-scope-u1"})
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	// End-to-end through the CAS wrapper: the hydration authorization model
+	// assumes the inner fetch is scoped, so an out-of-scope row must be
+	// invisible (and never hydrated) via FindFirst/FindAll as well.
+	_, err = cas.FindFirst(scopedCtx, map[string]any{"id": "projauth-scope-u2"})
+	assert.ErrorIs(t, err, ErrNotFound, "CAS FindFirst must not serve an out-of-scope row")
+	casLogs, err := cas.FindAll(scopedCtx, map[string]any{}, "id", "user_id")
+	require.NoError(t, err)
+	require.Len(t, casLogs, 1)
+	require.Equal(t, "projauth-scope-u1", casLogs[0].ID)
+}

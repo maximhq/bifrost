@@ -112,6 +112,22 @@ func (s *RDBLogStore) ScopedDB(ctx context.Context) *gorm.DB {
 	return db
 }
 
+// projAuthApplyQueryScope re-applies the caller's QueryScope from ctx to a
+// logs-table query handle, mirroring ScopedDB without binding to a store
+// instance. It exists for verifyRootRowRevision (casstore_read.go), which
+// must re-run the caller's scope predicates on its in-transaction root-row
+// re-read so the hydration snapshot is bound to a fresh authorization
+// decision. Defined here because this file already imports the queryscope
+// package; adding that import to casstore_read.go trips a go toolchain
+// module-resolution limitation in this environment (new imports of
+// main-module packages fail to resolve in fresh checkouts).
+func projAuthApplyQueryScope(ctx context.Context, db *gorm.DB) *gorm.DB {
+	if scope := queryscope.FromContext(ctx); scope != nil {
+		return scope(db)
+	}
+	return db
+}
+
 // multiValueDimensionFilterSQL builds a Postgres predicate matching logs by a
 // dimension that is single-valued on the scalar column (the primary, set by the
 // VK path / pre-migration rows) and multi-valued on the JSON-array column (the
@@ -4071,10 +4087,15 @@ func (s *RDBLogStore) IsLogEntryPresent(ctx context.Context, id string) (bool, e
 	return true, nil
 }
 
-// FindFirst gets a log entry from the database.
+// FindFirst gets a log entry from the database. The read applies the
+// caller's QueryScope and dashboard hidden-request-type visibility from ctx,
+// matching FindByID and scopedLogsDB: contexts without either are unchanged.
+// The CAS/hybrid serving wrappers route their reads through here and their
+// hydration authorization model assumes this fetch is scoped — every path
+// that must bypass scoping uses IsLogEntryPresent or a raw s.db handle.
 func (s *RDBLogStore) FindFirst(ctx context.Context, query any, fields ...string) (*Log, error) {
 	var log Log
-	if err := s.db.WithContext(ctx).Select(fields).Where(query).First(&log).Error; err != nil {
+	if err := s.scopedLogsDB(ctx).Select(fields).Where(query).First(&log).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -4538,9 +4559,12 @@ func (s *RDBLogStore) GetDistinctMetadataKeys(ctx context.Context, limit int, qu
 }
 
 // FindAll finds all log entries from the database.
+// FindAll gets log entries from the database. Like FindByID and FindFirst,
+// the read applies the caller's QueryScope and hidden-request-type
+// visibility from ctx; contexts without either are unchanged.
 func (s *RDBLogStore) FindAll(ctx context.Context, query any, fields ...string) ([]*Log, error) {
 	var logs []*Log
-	if err := s.db.WithContext(ctx).Select(fields).Where(query).Limit(defaultMaxQueryLimit).Find(&logs).Error; err != nil {
+	if err := s.scopedLogsDB(ctx).Select(fields).Where(query).Limit(defaultMaxQueryLimit).Find(&logs).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return []*Log{}, nil
 		}
