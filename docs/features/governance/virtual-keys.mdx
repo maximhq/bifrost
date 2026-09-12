@@ -306,6 +306,28 @@ curl -X POST http://localhost:8080/api/governance/virtual-keys \
 
 `allow_all_providers` **coexists** with `provider_configs`. When it is on, a provider that also has a `provider_configs` entry still has that entry's model allow/blacklist, budgets, rate limits, and key selection applied; providers without an entry get all models, all keys, and no per-provider limits. This lets you allow everything while still capping or restricting specific providers.
 
+#### Allowing or blocking model families with patterns
+
+Next to `allowed_models` and `blacklisted_models`, a provider configuration carries `allowed_models_patterns` and `blacklisted_models_patterns`. Each entry is an [RE2](https://github.com/google/re2/wiki/Syntax) pattern, matched case-insensitively as a full match against the model name and against `provider/model`. One pattern then covers a whole family:
+
+```json
+{
+  "provider": "openai",
+  "allowed_models": ["o3"],
+  "allowed_models_patterns": ["^gpt-4.*"],
+  "blacklisted_models_patterns": [".*-preview$"]
+}
+```
+
+- A model is allowed when `allowed_models` is `["*"]`, names it, or an allow pattern matches it. It is blocked when `blacklisted_models` is `["*"]`, names it, or a block pattern matches it. Blocking wins.
+- A pattern has to match the whole name. `gpt-4` matches `gpt-4` only; `gpt-4.*` matches `gpt-4o` and `gpt-4o-mini`.
+- In the example, `gpt-4o-preview` is blocked even though the allow pattern matches it.
+- `allowed_models` and `blacklisted_models` are exact lists. A string such as `regex:^gpt-4.*` there is an ordinary model name, not a pattern, and `*` is not a valid pattern.
+- A pattern is not expanded into model names. `/v1/models` lists the catalog models the pattern matches, and per-model budgets still name concrete models.
+- A pattern that does not compile, is blank or whitespace-only, or repeats another pattern in the same list is refused with a 400 when the configuration is saved.
+
+The same fields exist on provider keys (`models_patterns` and `blacklisted_models_patterns`) and on access profile and project provider configurations. In the web UI, switch the model picker from **Models** to **Regex** to add a pattern.
+
 #### How access is resolved
 
 Access depends on the `allow_all_providers` value and whether the provider has a `provider_configs` entry:
