@@ -216,9 +216,12 @@ func (c *CasLogStore) hydrateFields(ctx context.Context, log *Log, includeHidden
 	// all run scoped queries), and CAS references then follow the
 	// already-authorized row. Reading CAS rows without the scope grants no
 	// extra visibility: the hydrated content is only ever attached to a row
-	// the caller was already allowed to read.
+	// the caller was already allowed to read. The root-row revision verify
+	// inside this transaction IS a logs-table read and DOES re-apply the
+	// caller's QueryScope, binding the hydration snapshot to a fresh
+	// authorization decision.
 	return c.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		return c.hydrateFieldsTx(tx, log, includeHidden, requestedFields...)
+		return c.hydrateFieldsTx(ctx, tx, log, includeHidden, requestedFields...)
 	})
 }
 
@@ -244,10 +247,15 @@ func (c *CasLogStore) hydrateFields(ctx context.Context, log *Log, includeHidden
 //     so any concurrent row write that changes what the row is or whom it
 //     belongs to is detected. This is what binds "metadata is version A" to
 //     "payload is version A" for the A/B update race.
-//   - Projected reads (serving or billing) compare only the requested payload
-//     columns: unprojected columns are zero in the in-memory object and would
-//     false-positive. A concurrent write to a column outside the projection
-//     is therefore not detected — the projection never serves it either.
+//   - Projected reads (serving or billing) compare every requested column
+//     that is a payload field or a binding column — including ownership
+//     columns the caller projected (user_id, virtual_key_id, ...). The
+//     projection decides what is served, not what is authorization-checked.
+//     Ownership columns NOT projected are not byte-compared (their in-memory
+//     zero value would false-positive against any non-empty DB value);
+//     instead the verify re-read re-applies the caller's QueryScope, so a
+//     concurrent ownership change that moves the row out of scope fails the
+//     re-read as a concurrent modification. See projAuthCompareColumns.
 //
 // casRootRowBindingColumns are the non-payload row columns a full-row serving
 // read additionally binds to the hydration snapshot. They are the columns
@@ -262,10 +270,52 @@ var casRootRowBindingColumns = []string{
 	"project_id", "selected_key_id", "status", "content_summary",
 }
 
-func verifyRootRowRevision(tx *gorm.DB, log *Log, requestedFields []string, includeHidden bool) error {
-	fullRow := len(requestedFields) == 0 && !includeHidden
-	colSet := map[string]struct{}{"has_object": {}, "content_hidden": {}}
-	compare := map[string]struct{}{}
+// projAuthComparableColumnSet is the set of non-payload columns that have a
+// casLogColumnString accessor and carry authorization or row-identity
+// semantics (casRootRowBindingColumns). Requested columns outside this set
+// and outside payloadFields (latency, cost, ...) are serving-visible scalars
+// with no authorization meaning and no generic in-memory accessor; they are
+// never compared here.
+var projAuthComparableColumnSet = func() map[string]struct{} {
+	s := make(map[string]struct{}, len(casRootRowBindingColumns))
+	for _, f := range casRootRowBindingColumns {
+		s[f] = struct{}{}
+	}
+	return s
+}()
+
+// projAuthCompareColumns computes the re-read SELECT set (colSet) and the
+// byte-compare set (compare) for verifyRootRowRevision.
+//
+// The projection decides which fields the caller is served — it must not
+// decide which columns are authorization-checked:
+//
+//   - has_object and content_hidden are always selected and compared: they
+//     gate hydration itself and every hydrating projection selects them
+//     (ensureHydrationFields).
+//   - Full-row reads compare every binding column and every payload column,
+//     as before.
+//   - Projected reads compare every requested column that is a payload field
+//     or a binding column. A projected ownership column (user_id,
+//     virtual_key_id, ...) is compared exactly: the inner scoped read
+//     selected it, so the in-memory value and the DB value come from one
+//     revision unless a concurrent write intervened — this is what detects
+//     the "query projected user_id, concurrent update flips ownership and
+//     rewrites the CAS payload" interleave.
+//   - Ownership columns NOT projected are not byte-compared: their in-memory
+//     value is the zero value (the projection never selected them), so a
+//     byte comparison would false-positive against any non-empty DB value on
+//     every healthy row. Instead verifyRootRowRevision re-applies the
+//     caller's QueryScope to the verify re-read: an ownership change that
+//     moves the row out of the caller's scope makes the scoped re-read miss
+//     the row, which fails as ErrCasConcurrentModification and forces a
+//     fresh scoped read. An ownership change that stays inside the caller's
+//     scope is indistinguishable to that caller by construction (both
+//     owners are visible to the same principal), and any projected
+//     ownership column is still caught byte-for-byte above.
+func projAuthCompareColumns(requestedFields []string, fullRow bool) (colSet, compare map[string]struct{}) {
+	colSet = map[string]struct{}{"has_object": {}, "content_hidden": {}}
+	compare = map[string]struct{}{}
 	if fullRow {
 		for _, f := range casRootRowBindingColumns {
 			colSet[f] = struct{}{}
@@ -275,28 +325,51 @@ func verifyRootRowRevision(tx *gorm.DB, log *Log, requestedFields []string, incl
 			colSet[f] = struct{}{}
 			compare[f] = struct{}{}
 		}
-	} else {
-		for _, f := range requestedFields {
-			if _, isPayload := payloadFieldSet[f]; isPayload {
-				colSet[f] = struct{}{}
-				compare[f] = struct{}{}
+		return colSet, compare
+	}
+	for _, f := range requestedFields {
+		if _, isPayload := payloadFieldSet[f]; !isPayload {
+			if _, isBindable := projAuthComparableColumnSet[f]; !isBindable {
+				continue
 			}
 		}
+		colSet[f] = struct{}{}
+		compare[f] = struct{}{}
 	}
+	return colSet, compare
+}
+
+func verifyRootRowRevision(ctx context.Context, tx *gorm.DB, log *Log, requestedFields []string, includeHidden bool) error {
+	fullRow := len(requestedFields) == 0 && !includeHidden
+	colSet, compare := projAuthCompareColumns(requestedFields, fullRow)
 	cols := make([]string, 0, len(colSet))
 	for col := range colSet {
 		cols = append(cols, col)
 	}
 	sort.Strings(cols) // stable SQL across calls (map iteration is not)
 
-	var state map[string]any
-	if err := tx.Table("logs").
+	// Re-apply the caller's QueryScope to the verify re-read. The scope
+	// predicates ran on the inner read that produced log; re-running them
+	// here binds the hydration snapshot to the SAME authorization decision,
+	// including for ownership columns the projection did not select (which
+	// cannot be byte-compared — see projAuthCompareColumns). A row whose
+	// ownership flipped out of scope between the two reads is not found by
+	// this query and fails as a concurrent modification, forcing a fresh
+	// scoped read. Contexts without a QueryScope behave as before.
+	//
+	// projAuthApplyQueryScope lives in rdb.go: that file already imports the
+	// queryscope package, and adding the import here trips a go toolchain
+	// module-resolution limitation in this environment (new imports of
+	// main-module packages fail to resolve in fresh checkouts).
+	q := projAuthApplyQueryScope(ctx, tx.Table("logs").
 		Select(strings.Join(cols, ", ")).
-		Where("id = ?", log.ID).
-		Take(&state).Error; err != nil {
+		Where("id = ?", log.ID))
+	var state map[string]any
+	if err := q.Take(&state).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// The row the caller authorized is gone (deleted, possibly
-			// recreated with different ownership): never hydrate onto it.
+			// recreated with different ownership) or has left the caller's
+			// scope (concurrent ownership change): never hydrate onto it.
 			return fmt.Errorf("logstore/cas: log %s: root row changed before hydration: %w", log.ID, ErrCasConcurrentModification)
 		}
 		return fmt.Errorf("logstore/cas: log %s: re-read root row: %w", log.ID, err)
@@ -401,11 +474,11 @@ func casScanBool(v any) bool {
 // snapshot tx and merges the reconstructed payload into log. A non-nil return
 // rolls the (read-only) transaction back, which is harmless: nothing in here
 // writes.
-func (c *CasLogStore) hydrateFieldsTx(tx *gorm.DB, log *Log, includeHidden bool, requestedFields ...string) error {
+func (c *CasLogStore) hydrateFieldsTx(ctx context.Context, tx *gorm.DB, log *Log, includeHidden bool, requestedFields ...string) error {
 	// Bind the hydration snapshot to the revision of the root row the caller
 	// actually read: any divergence (concurrent update, delete + recreate) is
 	// a retryable failure, never something to hydrate onto.
-	if err := verifyRootRowRevision(tx, log, requestedFields, includeHidden); err != nil {
+	if err := verifyRootRowRevision(ctx, tx, log, requestedFields, includeHidden); err != nil {
 		return err
 	}
 	var rows []casPayload
