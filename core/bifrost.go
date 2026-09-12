@@ -581,7 +581,7 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 						errType == "provider_blocked"
 					if !isExpected {
 						providerErr = bifrostErr
-						bifrost.logger.Warn("failed to list models for provider %s: %s", providerKey, bifrostErr.GetErrorString())
+						bifrost.logger.Warn("failed to list models for provider %s: %s", providerKey, bifrostErr.GetErrorStringWithCause())
 					}
 					// Collect key statuses from error (failure case)
 					if len(bifrostErr.ExtraFields.KeyStatuses) > 0 {
