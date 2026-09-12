@@ -4244,3 +4244,235 @@ func TestBudgetLastResetUsesBudgetQuarterStart(t *testing.T) {
 	assert.False(t, budgetLastReset(false, nil).IsZero())
 	assert.False(t, budgetLastReset(true, nil).IsZero())
 }
+
+// TestUpdateVirtualKey_AdoptsConfigFileSeededGovernance covers a key seeded from
+// config.json, whose budget and rate limit hang off the key row itself rather than off a
+// VK-scoped model config. The sheet writes the top-level tier into a model config, and both
+// sets are enforced, so a plain UI edit used to leave the original rows untouched and still
+// refusing requests at the old ceiling while the sheet showed the raised one. The update has
+// to take the existing rows over instead of minting new ones, and the usage already
+// accumulated in their windows has to survive the move.
+func TestUpdateVirtualKey_AdoptsConfigFileSeededGovernance(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &budgetOverrideTestGovernanceManager{store: store}
+	handler := &GovernanceHandler{configStore: store, governanceManager: manager}
+
+	weekly := "1w"
+	requestMax := int64(4500)
+	rl := &configstoreTables.TableRateLimit{
+		ID:                   "rate-limit-legacy",
+		RequestMaxLimit:      &requestMax,
+		RequestResetDuration: &weekly,
+		RequestCurrentUsage:  4505,
+		RequestLastReset:     time.Now(),
+		TokenLastReset:       time.Now(),
+	}
+	require.NoError(t, store.CreateRateLimit(ctx, rl))
+
+	active := true
+	vk := &configstoreTables.TableVirtualKey{
+		ID:          "vk-legacy-governance",
+		Name:        "legacy-governance",
+		Value:       *schemas.NewSecretVar("sk-bf-legacy-governance"),
+		IsActive:    &active,
+		RateLimitID: &rl.ID,
+		Budgets: []configstoreTables.TableBudget{{
+			ID:            "budget-legacy",
+			MaxLimit:      50,
+			CurrentUsage:  12,
+			ResetDuration: weekly,
+			LastReset:     time.Now(),
+		}},
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+
+	putCtx := newTestRequestCtx(`{"rate_limit":{"request_max_limit":9000,"request_reset_duration":"1w"},"budgets":[{"max_limit":100,"reset_duration":"1w"}]}`)
+	putCtx.SetUserValue("vk_id", vk.ID)
+	handler.updateVirtualKey(putCtx)
+	require.Equal(t, fasthttp.StatusOK, putCtx.Response.StatusCode(),
+		"update failed; body=%s", putCtx.Response.Body())
+
+	// The row the request path reads is the one that was raised, not a second row
+	// created beside it.
+	rateLimits, err := store.GetRateLimits(ctx)
+	require.NoError(t, err)
+	require.Len(t, rateLimits, 1, "the edit minted a second rate limit instead of raising the existing one")
+	require.Equal(t, "rate-limit-legacy", rateLimits[0].ID)
+	require.NotNil(t, rateLimits[0].RequestMaxLimit)
+	assert.Equal(t, int64(9000), *rateLimits[0].RequestMaxLimit)
+	assert.Equal(t, int64(4505), rateLimits[0].RequestCurrentUsage,
+		"usage is runtime-owned and must survive the move")
+
+	updatedVK, err := store.GetVirtualKey(ctx, vk.ID)
+	require.NoError(t, err)
+	assert.Nil(t, updatedVK.RateLimitID, "the key must let go of the row the model config now owns")
+
+	scopeID := vk.ID
+	mc, err := store.GetModelConfig(ctx, configstoreTables.ModelConfigScopeVirtualKey, &scopeID, configstoreTables.ModelConfigAllModels, nil)
+	require.NoError(t, err)
+	require.NotNil(t, mc.RateLimitID)
+	assert.Equal(t, "rate-limit-legacy", *mc.RateLimitID)
+
+	require.Len(t, mc.Budgets, 1, "the legacy budget was duplicated rather than adopted")
+	assert.Equal(t, "budget-legacy", mc.Budgets[0].ID)
+	assert.Equal(t, float64(100), mc.Budgets[0].MaxLimit)
+	assert.Equal(t, float64(12), mc.Budgets[0].CurrentUsage, "spend already booked against the window was lost")
+}
+
+// TestUpdateVirtualKey_DropsLegacyGovernanceOnceSplit covers a key that an earlier edit
+// already split: the sheet's rows live on the VK-scoped model config and the config.json rows
+// are still on the key, still enforced, still invisible in the sheet. The next edit has to
+// leave exactly one enforced set, and it has to be the one the sheet shows.
+func TestUpdateVirtualKey_DropsLegacyGovernanceOnceSplit(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &budgetOverrideTestGovernanceManager{store: store}
+	handler := &GovernanceHandler{configStore: store, governanceManager: manager}
+
+	weekly := "1w"
+	legacyMax := int64(4500)
+	legacyRL := &configstoreTables.TableRateLimit{
+		ID:                   "rate-limit-legacy",
+		RequestMaxLimit:      &legacyMax,
+		RequestResetDuration: &weekly,
+		RequestCurrentUsage:  4505,
+		RequestLastReset:     time.Now(),
+		TokenLastReset:       time.Now(),
+	}
+	require.NoError(t, store.CreateRateLimit(ctx, legacyRL))
+
+	active := true
+	vk := &configstoreTables.TableVirtualKey{
+		ID:          "vk-split-governance",
+		Name:        "split-governance",
+		Value:       *schemas.NewSecretVar("sk-bf-split-governance"),
+		IsActive:    &active,
+		RateLimitID: &legacyRL.ID,
+		Budgets: []configstoreTables.TableBudget{{
+			ID:            "budget-legacy",
+			MaxLimit:      50,
+			CurrentUsage:  12,
+			ResetDuration: weekly,
+			LastReset:     time.Now(),
+		}},
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+
+	// What the earlier edit wrote: a second set, on the model config.
+	sheetMax := int64(9000)
+	sheetRL := &configstoreTables.TableRateLimit{
+		ID:                   "rate-limit-sheet",
+		RequestMaxLimit:      &sheetMax,
+		RequestResetDuration: &weekly,
+		RequestLastReset:     time.Now(),
+		TokenLastReset:       time.Now(),
+	}
+	require.NoError(t, store.CreateRateLimit(ctx, sheetRL))
+	scopeID := vk.ID
+	require.NoError(t, store.CreateModelConfig(ctx, &configstoreTables.TableModelConfig{
+		ID:          "mc-split-governance",
+		ModelName:   configstoreTables.ModelConfigAllModels,
+		Scope:       configstoreTables.ModelConfigScopeVirtualKey,
+		ScopeID:     &scopeID,
+		RateLimitID: &sheetRL.ID,
+		Budgets: []configstoreTables.TableBudget{{
+			ID:            "budget-sheet",
+			MaxLimit:      100,
+			CurrentUsage:  3,
+			ResetDuration: weekly,
+			LastReset:     time.Now(),
+		}},
+	}))
+
+	putCtx := newTestRequestCtx(`{"rate_limit":{"request_max_limit":12000,"request_reset_duration":"1w"},"budgets":[{"id":"budget-sheet","max_limit":200,"reset_duration":"1w"}]}`)
+	putCtx.SetUserValue("vk_id", vk.ID)
+	handler.updateVirtualKey(putCtx)
+	require.Equal(t, fasthttp.StatusOK, putCtx.Response.StatusCode(),
+		"update failed; body=%s", putCtx.Response.Body())
+
+	rateLimits, err := store.GetRateLimits(ctx)
+	require.NoError(t, err)
+	require.Len(t, rateLimits, 1, "the key is still enforcing two rate limits")
+	assert.Equal(t, "rate-limit-sheet", rateLimits[0].ID, "the row the sheet shows must be the one left standing")
+	require.NotNil(t, rateLimits[0].RequestMaxLimit)
+	assert.Equal(t, int64(12000), *rateLimits[0].RequestMaxLimit)
+
+	updatedVK, err := store.GetVirtualKey(ctx, vk.ID)
+	require.NoError(t, err)
+	assert.Nil(t, updatedVK.RateLimitID)
+	assert.Empty(t, updatedVK.Budgets, "the key's own budgets still enforce alongside the sheet's")
+
+	mc, err := store.GetModelConfig(ctx, configstoreTables.ModelConfigScopeVirtualKey, &scopeID, configstoreTables.ModelConfigAllModels, nil)
+	require.NoError(t, err)
+	require.Len(t, mc.Budgets, 1)
+	assert.Equal(t, "budget-sheet", mc.Budgets[0].ID)
+	assert.Equal(t, float64(200), mc.Budgets[0].MaxLimit)
+	assert.Equal(t, float64(3), mc.Budgets[0].CurrentUsage)
+}
+
+// TestUpdateVirtualKey_SharedRateLimitRowSurvivesRelink guards the config.json restart that
+// re-points the key at a row the model config already owns. The link on the key is stale and
+// has to go, but the row behind it is the one that enforces and must not go with it.
+func TestUpdateVirtualKey_SharedRateLimitRowSurvivesRelink(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &budgetOverrideTestGovernanceManager{store: store}
+	handler := &GovernanceHandler{configStore: store, governanceManager: manager}
+
+	weekly := "1w"
+	max := int64(4500)
+	rl := &configstoreTables.TableRateLimit{
+		ID:                   "rate-limit-shared",
+		RequestMaxLimit:      &max,
+		RequestResetDuration: &weekly,
+		RequestCurrentUsage:  4505,
+		RequestLastReset:     time.Now(),
+		TokenLastReset:       time.Now(),
+	}
+	require.NoError(t, store.CreateRateLimit(ctx, rl))
+
+	active := true
+	vk := &configstoreTables.TableVirtualKey{
+		ID:          "vk-shared-governance",
+		Name:        "shared-governance",
+		Value:       *schemas.NewSecretVar("sk-bf-shared-governance"),
+		IsActive:    &active,
+		RateLimitID: &rl.ID,
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+
+	scopeID := vk.ID
+	require.NoError(t, store.CreateModelConfig(ctx, &configstoreTables.TableModelConfig{
+		ID:          "mc-shared-governance",
+		ModelName:   configstoreTables.ModelConfigAllModels,
+		Scope:       configstoreTables.ModelConfigScopeVirtualKey,
+		ScopeID:     &scopeID,
+		RateLimitID: &rl.ID,
+	}))
+
+	putCtx := newTestRequestCtx(`{"rate_limit":{"request_max_limit":9000,"request_reset_duration":"1w"}}`)
+	putCtx.SetUserValue("vk_id", vk.ID)
+	handler.updateVirtualKey(putCtx)
+	require.Equal(t, fasthttp.StatusOK, putCtx.Response.StatusCode(),
+		"update failed; body=%s", putCtx.Response.Body())
+
+	rateLimits, err := store.GetRateLimits(ctx)
+	require.NoError(t, err)
+	require.Len(t, rateLimits, 1, "the enforcing row was deleted along with the stale link")
+	require.NotNil(t, rateLimits[0].RequestMaxLimit)
+	assert.Equal(t, int64(9000), *rateLimits[0].RequestMaxLimit)
+	assert.Equal(t, int64(4505), rateLimits[0].RequestCurrentUsage)
+
+	updatedVK, err := store.GetVirtualKey(ctx, vk.ID)
+	require.NoError(t, err)
+	assert.Nil(t, updatedVK.RateLimitID)
+
+	mc, err := store.GetModelConfig(ctx, configstoreTables.ModelConfigScopeVirtualKey, &scopeID, configstoreTables.ModelConfigAllModels, nil)
+	require.NoError(t, err)
+	require.NotNil(t, mc.RateLimitID)
+	assert.Equal(t, "rate-limit-shared", *mc.RateLimitID)
+}
