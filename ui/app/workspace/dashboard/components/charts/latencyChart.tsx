@@ -2,6 +2,7 @@ import type { LatencyHistogramResponse } from "@/lib/types/logs";
 import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { formatFullTimestamp, formatLatency, formatTimestamp, LATENCY_COLORS } from "../../utils/chartUtils";
+import { barShape } from "./barShape";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 
@@ -107,38 +108,10 @@ function LatencyChartImpl({ data, chartType, startTime, endTime }: LatencyChartP
 							allowDataOverflow={false}
 						/>
 						<Tooltip content={<CustomTooltip />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
-						<Bar
-							isAnimationActive={false}
-							dataKey="avg_latency"
-							fill={LATENCY_COLORS.avg}
-							fillOpacity={0.9}
-							barSize={8}
-							radius={[2, 2, 0, 0]}
-						/>
-						<Bar
-							isAnimationActive={false}
-							dataKey="p90_latency"
-							fill={LATENCY_COLORS.p90}
-							fillOpacity={0.9}
-							barSize={8}
-							radius={[2, 2, 0, 0]}
-						/>
-						<Bar
-							isAnimationActive={false}
-							dataKey="p95_latency"
-							fill={LATENCY_COLORS.p95}
-							fillOpacity={0.9}
-							barSize={8}
-							radius={[2, 2, 0, 0]}
-						/>
-						<Bar
-							isAnimationActive={false}
-							dataKey="p99_latency"
-							fill={LATENCY_COLORS.p99}
-							fillOpacity={0.9}
-							barSize={8}
-							radius={[2, 2, 0, 0]}
-						/>
+						<Bar isAnimationActive={false} dataKey="avg_latency" fill={LATENCY_COLORS.avg} fillOpacity={0.9} barSize={8} shape={barShape} />
+						<Bar isAnimationActive={false} dataKey="p90_latency" fill={LATENCY_COLORS.p90} fillOpacity={0.9} barSize={8} shape={barShape} />
+						<Bar isAnimationActive={false} dataKey="p95_latency" fill={LATENCY_COLORS.p95} fillOpacity={0.9} barSize={8} shape={barShape} />
+						<Bar isAnimationActive={false} dataKey="p99_latency" fill={LATENCY_COLORS.p99} fillOpacity={0.9} barSize={8} shape={barShape} />
 					</BarChart>
 				) : (
 					<AreaChart {...commonProps}>

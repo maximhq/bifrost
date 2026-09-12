@@ -444,7 +444,7 @@ export const createColumns = (
 				if (latency === undefined || latency === null) {
 					return <div className="pl-4 font-mono text-xs">N/A</div>;
 				}
-				const tone = latency >= 5000 ? "bg-red-500" : latency >= 2000 ? "bg-amber-500" : "bg-emerald-500";
+				const tone = latency >= 5000 ? "bg-chart-error" : latency >= 2000 ? "bg-chart-warning" : "bg-chart-success";
 				const pct = Math.min(100, (latency / 5000) * 100);
 				return (
 					<div className="flex items-center gap-2 pl-4">
