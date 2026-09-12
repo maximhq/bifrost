@@ -279,7 +279,7 @@ ClickHouse is a **`logs_store`-only** backend. The `config_store` supports only 
 ```
 
 <Note>
-With ClickHouse, `retention_days` is enforced by a native table **TTL** rather than a background delete job. Setting it to `0` (or omitting it) leaves the TTL unset, so ClickHouse itself never expires rows. Background cleanup is controlled separately by `client_config.log_retention_days`, so set that to your desired horizon as well. `matview_refresh_interval` and `matview_refresh_timeout` do not apply — they are PostgreSQL-only settings for materialized views.
+With ClickHouse, `retention_days` is enforced by a native table **TTL** rather than a background delete job. The TTL is reconciled on every startup, so changing `retention_days` later updates the existing `logs`, `mcp_tool_logs` and `webhook_deliveries` tables (metadata only; expired rows are dropped by ClickHouse's regular TTL merges). Setting it to `0` (or omitting it) leaves any existing TTL untouched and creates new tables without one, so ClickHouse itself never expires rows unless you manage the TTL yourself. Background cleanup is controlled separately by `client_config.log_retention_days`; on ClickHouse each run is a single lightweight `DELETE FROM ... WHERE created_at < cutoff`, as are the periodic sweeps of stale `processing` rows, so setting both is safe. Lightweight deletes require ClickHouse 24.4 or newer. `matview_refresh_interval` and `matview_refresh_timeout` do not apply - they are PostgreSQL-only settings for materialized views.
 </Note>
 
 ### Disabled

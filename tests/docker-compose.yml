@@ -216,6 +216,33 @@ services:
                 # docker image CI test.
                 ipv4_address: 172.28.0.16
 
+    # ClickHouse instance for the framework logstore tests
+    # (framework/logstore/clickhousestore_test.go connects to host port 9001;
+    # host 9000 is taken by weaviate above). Without this service every
+    # TestClickHouse* test is skipped, or fails when CI is set.
+    clickhouse:
+        image: clickhouse/clickhouse-server:24.8-alpine
+        environment:
+            CLICKHOUSE_DB: bifrost
+            CLICKHOUSE_USER: bifrost
+            CLICKHOUSE_PASSWORD: bifrost_password
+        ports:
+            - "9001:9000"
+        volumes:
+            - clickhouse_data:/var/lib/clickhouse
+        ulimits:
+            nofile:
+                soft: 262144
+                hard: 262144
+        healthcheck:
+            test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8123/ping"]
+            interval: 5s
+            timeout: 5s
+            retries: 10
+        networks:
+            bifrost_network:
+                ipv4_address: 172.28.0.20
+
 networks:
     bifrost_network:
         driver: bridge
@@ -227,4 +254,5 @@ networks:
 volumes:
     weaviate_data:
     redis_data:
-    qdrant_data:    
+    qdrant_data:
+    clickhouse_data:    
