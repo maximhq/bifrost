@@ -323,6 +323,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_served_model_column"}, run: migrationAddServedModelColumn},
 	{IDs: []string{"logs_add_tool_call_names_column"}, run: migrationAddToolCallNamesColumn},
 	{IDs: []string{"cas_payload_tables_init"}, run: migrationCreateCasTables},
+	{IDs: []string{"cas_has_object_backfill"}, run: migrationBackfillCasHasObject},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -4847,6 +4848,26 @@ func migrationCreateCasTables(ctx context.Context, db *gorm.DB, logger schemas.L
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while creating CAS tables: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationBackfillCasHasObject repairs rows written by the first CAS
+// implementation, whose Update path stored payload blobs but never set
+// has_object, leaving the content present but unreachable. Rows with CAS
+// pointers always read true; rows without are untouched.
+func migrationBackfillCasHasObject(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "cas_has_object_backfill",
+		Migrate: func(db *gorm.DB) error {
+			return db.Exec("UPDATE logs SET has_object = 1 WHERE has_object = 0 AND EXISTS (SELECT 1 FROM cas_payloads WHERE cas_payloads.log_id = logs.id)").Error
+		},
+		Rollback: func(db *gorm.DB) error {
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while backfilling cas has_object: %s", err.Error())
 	}
 	return nil
 }

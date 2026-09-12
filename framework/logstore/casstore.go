@@ -14,15 +14,17 @@ package logstore
 //	cas_refs(owner_hash, target_hash)           manifest -> segment edges
 //	cas_payloads(log_id, field, blob_hash)      per-log field -> manifest pointer
 //
-// All writes are synchronous and transactional — no async upload queue. The
-// write ordering is CAS first, row insert second, so a failure can only leave
-// orphan blobs (reclaimed by GC), never a row whose content is missing.
+// Every write path performs the log-row write and the CAS writes inside ONE
+// database transaction, so a row never exists without its payload and a
+// payload replacement never loses the old content on failure.
 
 import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"strings"
+	"sync/atomic"
 	"unicode/utf8"
 
 	"github.com/bytedance/sonic"
@@ -44,6 +46,13 @@ const (
 	// Version tag persisted in manifests; bump only with a new decoder kept
 	// side-by-side (design doc: no silent rewrites).
 	casManifestVersion = 1
+	// Upper bound for a manifest's declared OrigLen. Persisted metadata is
+	// untrusted input: a negative or absurd length must be an integrity error,
+	// never an argument to make().
+	casMaxPayloadBytes = int64(1) << 32
+	// Preallocation cap when rebuilding from an untrusted manifest length;
+	// append grows past it as real segments arrive.
+	casMaxPreallocBytes = int64(1) << 20
 )
 
 // casBlob stores one immutable content-addressed object: either a compressed
@@ -87,7 +96,7 @@ type casPart struct {
 
 type casManifest struct {
 	Version int       `json:"v"`
-	OrigLen int       `json:"l"`
+	OrigLen int64     `json:"l"`
 	Parts   []casPart `json:"p"`
 }
 
@@ -122,14 +131,31 @@ func casHash(domain string, raw []byte) string {
 // methods are delegated unchanged via embedding.
 type CasLogStore struct {
 	LogStore
-	db            *gorm.DB
+	// db is captured from the CONSTRUCTION context and is used for writes,
+	// mirroring the inner store's unscoped s.db.WithContext write handle.
+	db *gorm.DB
 	logger        schemas.Logger
 	excluded      map[string]struct{}
 	minFieldBytes int
 	minChunkBytes int
+	// Observability counters (design doc: fallback and failure metrics).
+	fallbacks     atomic.Int64
+	hydrateErrors atomic.Int64
 }
 
-// newCasLogStore wraps inner with content-addressed payload storage.
+// scopedDB returns the database handle with the caller's query scope applied,
+// for read paths (hydration) that must respect caller-driven row visibility.
+func (c *CasLogStore) scopedDB(ctx context.Context) *gorm.DB {
+	if scoped, ok := c.LogStore.(scopedDBLogStore); ok {
+		if db := scoped.ScopedDB(ctx); db != nil {
+			return db
+		}
+	}
+	return c.db.WithContext(ctx)
+}
+
+// newCasLogStore wraps inner with content-addressed payload storage. ctx must
+// not carry a QueryScope: the write handle is captured here.
 func newCasLogStore(ctx context.Context, inner LogStore, cfg *ContentAddressedConfig, logger schemas.Logger) (*CasLogStore, error) {
 	scoped, ok := inner.(scopedDBLogStore)
 	if !ok {
@@ -173,9 +199,10 @@ func (c *CasLogStore) casEligible(field, content string) bool {
 // splitJSONArray splits a JSON array into an ordered token list of raw byte
 // slices: alternating gaps (",", whitespace) and complete top-level elements.
 // It never parses or rewrites bytes; concatenating the tokens reproduces the
-// input exactly. ok is false when b is not a top-level JSON array or contains
-// a structural error, in which case the caller stores the whole field as one
-// opaque blob (design doc fallback).
+// input exactly, including any whitespace after the closing bracket. ok is
+// false when b is not a top-level JSON array or contains a structural error,
+// in which case the caller stores the whole field as one opaque blob
+// (design doc fallback).
 func splitJSONArray(b []byte) (tokens [][]byte, ok bool) {
 	n := len(b)
 	skipSpace := func(i int) int {
@@ -193,7 +220,7 @@ func splitJSONArray(b []byte) (tokens [][]byte, ok bool) {
 	tokens = append(tokens, b[:i+1])
 	i++
 	start := i
-	depth := 0    // brace/bracket nesting inside the current element
+	depth := 0     // brace/bracket nesting inside the current element
 	inStr := false // true while inside a string token (element or nested)
 	esc := false
 	for i < n {
@@ -201,10 +228,14 @@ func splitJSONArray(b []byte) (tokens [][]byte, ok bool) {
 		if depth == 0 && !inStr {
 			switch ch {
 			case ']':
-				tokens = append(tokens, b[start:i+1])
-				if skipSpace(i+1) != n {
+				// Trailing whitespace is legal JSON and part of the field's
+				// bytes: it must survive the round trip, so it is kept in the
+				// closing token.
+				end := skipSpace(i + 1)
+				if end != n {
 					return nil, false // trailing garbage after the array
 				}
+				tokens = append(tokens, b[start:end])
 				return tokens, true
 			case ',':
 				tokens = append(tokens, b[start:i+1]) // separator token, comma included
@@ -264,16 +295,17 @@ func splitJSONArray(b []byte) (tokens [][]byte, ok bool) {
 // minChunkBytes long become blobs; smaller ones stay inline in the manifest
 // unless they are not valid UTF-8 (the manifest is JSON text; such segments
 // are forced into blobs). Returns the manifest, the deduplicated data blobs to
-// persist, and the serialized manifest bytes.
-func buildManifest(raw []byte, minChunk int) (*casManifest, []casBlob, []byte, error) {
+// persist, the serialized manifest bytes, and whether the JSON-array split
+// failed and the whole field was stored as one opaque blob (fallback metric).
+func buildManifest(raw []byte, minChunk int) (m *casManifest, blobs []casBlob, manifestBytes []byte, fallback bool, err error) {
 	var tokens [][]byte
 	var ok bool
 	if tokens, ok = splitJSONArray(raw); !ok {
 		tokens = [][]byte{raw}
+		fallback = true
 	}
-	m := &casManifest{Version: casManifestVersion, OrigLen: len(raw)}
+	m = &casManifest{Version: casManifestVersion, OrigLen: int64(len(raw))}
 	blobSet := make(map[string]struct{})
-	var blobs []casBlob
 	for _, tok := range tokens {
 		if len(tok) < minChunk && utf8.Valid(tok) {
 			m.Parts = append(m.Parts, casPart{Inline: string(tok)})
@@ -291,16 +323,16 @@ func buildManifest(raw []byte, minChunk int) (*casManifest, []casBlob, []byte, e
 			})
 		}
 	}
-	manifestBytes, err := sonic.Marshal(m)
+	manifestBytes, err = sonic.Marshal(m)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("logstore/cas: marshal manifest: %w", err)
+		return nil, nil, nil, false, fmt.Errorf("logstore/cas: marshal manifest: %w", err)
 	}
-	return m, blobs, manifestBytes, nil
+	return m, blobs, manifestBytes, fallback, nil
 }
 
 // casReconstruct rebuilds the original payload bytes from a manifest blob.
-// Length is verified against the manifest; mismatch is corruption and returns
-// an error rather than silently serving partial content.
+// The manifest's declared length is untrusted persisted metadata: it is range
+// checked before any allocation, and the final length must match exactly.
 func casReconstruct(manifestBytes []byte, lookup func(hash string) ([]byte, error)) ([]byte, error) {
 	var m casManifest
 	if err := sonic.Unmarshal(manifestBytes, &m); err != nil {
@@ -309,7 +341,14 @@ func casReconstruct(manifestBytes []byte, lookup func(hash string) ([]byte, erro
 	if m.Version != casManifestVersion {
 		return nil, fmt.Errorf("logstore/cas: unsupported manifest version %d", m.Version)
 	}
-	out := make([]byte, 0, m.OrigLen)
+	if m.OrigLen < 0 || m.OrigLen > casMaxPayloadBytes {
+		return nil, fmt.Errorf("logstore/cas: manifest orig_len %d out of range", m.OrigLen)
+	}
+	prealloc := m.OrigLen
+	if prealloc > casMaxPreallocBytes {
+		prealloc = casMaxPreallocBytes
+	}
+	out := make([]byte, 0, prealloc)
 	for _, p := range m.Parts {
 		if p.Hash != "" {
 			raw, err := lookup(p.Hash)
@@ -321,24 +360,25 @@ func casReconstruct(manifestBytes []byte, lookup func(hash string) ([]byte, erro
 		}
 		out = append(out, p.Inline...)
 	}
-	if len(out) != m.OrigLen {
+	if int64(len(out)) != m.OrigLen {
 		return nil, fmt.Errorf("logstore/cas: reconstructed length %d != manifest %d", len(out), m.OrigLen)
 	}
 	return out, nil
 }
 
 // casStoreField persists one payload field's content into CAS inside tx and
-// points (logID, field) at the manifest blob. Idempotent per (logID, field):
-// the previous pointer row is replaced; blobs that become unreferenced are
-// reclaimed by gcForManifests in the same transaction context.
-func casStoreField(tx *gorm.DB, logID, field string, content []byte, minChunk int) error {
-	_, blobs, manifestBytes, err := buildManifest(content, minChunk)
+// points (logID, field) at the manifest blob. It returns the manifest hash the
+// pointer previously referenced ("" when there was none); the caller reclaims
+// it via gcForManifests after the new pointer is in place, so a replaced
+// field's old content does not leak. Idempotent per (logID, field).
+func casStoreField(tx *gorm.DB, logID, field string, content []byte, minChunk int) (oldManifest string, fallback bool, err error) {
+	_, blobs, manifestBytes, fallback, err := buildManifest(content, minChunk)
 	if err != nil {
-		return err
+		return "", fallback, err
 	}
 	for i := range blobs {
 		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&blobs[i]).Error; err != nil {
-			return fmt.Errorf("logstore/cas: insert segment blob: %w", err)
+			return "", fallback, fmt.Errorf("logstore/cas: insert segment blob: %w", err)
 		}
 	}
 	manifestHash := casHash(casManifestDomain, manifestBytes)
@@ -348,22 +388,55 @@ func casStoreField(tx *gorm.DB, logID, field string, content []byte, minChunk in
 		OrigLen: int64(len(manifestBytes)),
 		Data:    casEncoder.EncodeAll(manifestBytes, nil),
 	}).Error; err != nil {
-		return fmt.Errorf("logstore/cas: insert manifest blob: %w", err)
+		return "", fallback, fmt.Errorf("logstore/cas: insert manifest blob: %w", err)
 	}
 	var m casManifest
 	if err := sonic.Unmarshal(manifestBytes, &m); err != nil {
-		return err
+		return "", fallback, err
 	}
 	for _, p := range m.Parts {
 		if p.Hash == "" {
 			continue
 		}
 		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&casRef{OwnerHash: manifestHash, TargetHash: p.Hash}).Error; err != nil {
-			return fmt.Errorf("logstore/cas: insert ref: %w", err)
+			return "", fallback, fmt.Errorf("logstore/cas: insert ref: %w", err)
 		}
 	}
-	if err := tx.Where("log_id = ? AND field = ?", logID, field).Delete(&casPayload{}).Error; err != nil {
-		return fmt.Errorf("logstore/cas: clear payload pointer: %w", err)
+	var prev []string
+	if err := tx.Model(&casPayload{}).
+		Where("log_id = ? AND field = ?", logID, field).
+		Pluck("blob_hash", &prev).Error; err != nil {
+		return "", fallback, fmt.Errorf("logstore/cas: read previous pointer: %w", err)
 	}
-	return tx.Create(&casPayload{LogID: logID, Field: field, BlobHash: manifestHash}).Error
+	if len(prev) > 0 {
+		oldManifest = prev[0]
+	}
+	if err := tx.Where("log_id = ? AND field = ?", logID, field).Delete(&casPayload{}).Error; err != nil {
+		return "", fallback, fmt.Errorf("logstore/cas: clear payload pointer: %w", err)
+	}
+	return oldManifest, fallback, tx.Create(&casPayload{LogID: logID, Field: field, BlobHash: manifestHash}).Error
+}
+
+// casCountPayloads returns the number of CAS pointers a log currently has
+// inside tx; used to keep the row's has_object flag in sync with reality.
+func casCountPayloads(tx *gorm.DB, logID string) (int64, error) {
+	var n int64
+	if err := tx.Model(&casPayload{}).Where("log_id = ?", logID).Count(&n).Error; err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// casNormalizeProjection strips the "logs." table prefix from projection
+// fields and detects a wildcard. A wildcard means "full row": hydration runs
+// unfiltered instead of being suppressed by the exact-name check.
+func casNormalizeProjection(fields []string) (norm []string, wildcard bool) {
+	for _, f := range fields {
+		f = strings.TrimPrefix(f, "logs.")
+		if f == "*" {
+			return nil, true
+		}
+		norm = append(norm, f)
+	}
+	return norm, false
 }

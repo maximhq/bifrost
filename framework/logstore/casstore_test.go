@@ -34,6 +34,11 @@ func TestSplitJSONArrayByteExact(t *testing.T) {
 		{"nested arrays", `[[1,2],[3,[4]]]`, true},
 		{"newlines and tabs", "[\n\t{\"a\":1},\n\t{\"b\":2}\n]", true},
 		{"mixed depth strings", `[{"s":"[not,a,bracket]"}, "x"]`, true},
+		{"trailing newline", "[1,2]\n", true},
+		{"trailing spaces", "[1,2]  ", true},
+		{"trailing mixed whitespace", "[1,2] \n\t ", true},
+		{"leading whitespace", "  [1,2]", true},
+		{"leading and trailing", "\n[1, 2]\n", true},
 		{"trailing garbage", `[1,2] x`, false},
 		{"truncated", `[1,2`, false},
 		{"unterminated string", `["abc`, false},
@@ -67,9 +72,12 @@ func TestManifestRoundTripByteIdentical(t *testing.T) {
 		[]byte(`["` + big + `","` + big + `"]`), // identical elements -> dedup within one field
 		{0x5b, 0x22, 0xff, 0xfe, 0x22, 0x5d},   // ["\xff\xfe"] invalid UTF-8 inline -> forced blob
 		[]byte(`not json at all ` + big),       // fallback: whole field as one blob
+		[]byte(`[1, 2, 3]\n`),                  // trailing whitespace must survive (regression)
+		[]byte("\n[1, 2, 3] \n\t "),            // leading + trailing whitespace
+		[]byte(`["a","b"]  `),                  // trailing spaces, all-inline
 	}
 	for i, raw := range payloads {
-		_, blobs, manifestBytes, err := buildManifest(raw, 64)
+		_, blobs, manifestBytes, fallback, err := buildManifest(raw, 64)
 		require.NoError(t, err, "payload %d", i)
 
 		store := make(map[string]casBlob)
@@ -84,11 +92,12 @@ func TestManifestRoundTripByteIdentical(t *testing.T) {
 			if !ok {
 				t.Fatalf("missing blob %s", hash)
 			}
-			return casDecodeBlob(b)
+			return casDecodeBlob(b, casDataDomain)
 		}
 		out, err := casReconstruct(manifestBytes, lookup)
 		require.NoError(t, err, "payload %d", i)
 		assert.Equal(t, string(raw), string(out), "byte-identical reconstruction for payload %d", i)
+		_ = fallback
 	}
 }
 
@@ -240,6 +249,7 @@ func TestCas_UpdateMapInterception(t *testing.T) {
 	row, err := inner.FindByID(ctx, "upd-1")
 	require.NoError(t, err)
 	assert.Empty(t, row.OutputMessage, "output must not live in the row")
+	assert.True(t, row.HasObject, "has_object must be set when a field moves to CAS")
 
 	found, err := cas.FindByID(ctx, "upd-1")
 	require.NoError(t, err)

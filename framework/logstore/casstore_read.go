@@ -4,6 +4,12 @@ package logstore
 // the manifest + segment blobs and merges them back into the Log, mirroring
 // hybrid mode's gating (only FindByID/FindFirst/FindAll hydrate; list/search
 // views rely on content_summary and the last-user-message preview).
+//
+// Integrity contract (design doc §7): every blob is verified against its
+// content hash on read — codec, length AND digest — and corruption is an
+// error. FindByID (the detail/export path) propagates hydration failures to
+// the caller; FindFirst/FindAll degrade per log (warn + skip) so one corrupt
+// row cannot blank an entire list view.
 
 import (
 	"context"
@@ -17,12 +23,16 @@ func (c *CasLogStore) FindByID(ctx context.Context, id string) (*Log, error) {
 	if err != nil {
 		return nil, err
 	}
-	c.hydrateLog(ctx, log)
+	if err := c.hydrateLog(ctx, log); err != nil {
+		c.hydrateErrors.Add(1)
+		return nil, fmt.Errorf("logstore/cas: hydrate log %s: %w", id, err)
+	}
 	return log, nil
 }
 
 func (c *CasLogStore) FindFirst(ctx context.Context, query any, fields ...string) (*Log, error) {
-	needsHydration := len(fields) == 0 || fieldsNeedHydration(fields)
+	fields, wildcard := casNormalizeProjection(fields)
+	needsHydration := wildcard || len(fields) == 0 || fieldsNeedHydration(fields)
 	if needsHydration && len(fields) > 0 {
 		fields = ensureHydrationFields(fields)
 	}
@@ -31,13 +41,22 @@ func (c *CasLogStore) FindFirst(ctx context.Context, query any, fields ...string
 		return nil, err
 	}
 	if needsHydration {
-		c.hydrateLog(ctx, log, fields...)
+		if wildcard {
+			if err := c.hydrateLog(ctx, log); err != nil {
+				c.hydrateErrors.Add(1)
+				c.logger.Warn("logstore/cas: hydrate failed for log %s: %v", log.ID, err)
+			}
+		} else if err := c.hydrateLog(ctx, log, fields...); err != nil {
+			c.hydrateErrors.Add(1)
+			c.logger.Warn("logstore/cas: hydrate failed for log %s: %v", log.ID, err)
+		}
 	}
 	return log, nil
 }
 
 func (c *CasLogStore) FindAll(ctx context.Context, query any, fields ...string) ([]*Log, error) {
-	needsHydration := len(fields) == 0 || fieldsNeedHydration(fields)
+	fields, wildcard := casNormalizeProjection(fields)
+	needsHydration := wildcard || len(fields) == 0 || fieldsNeedHydration(fields)
 	if needsHydration && len(fields) > 0 {
 		fields = ensureHydrationFields(fields)
 	}
@@ -47,7 +66,16 @@ func (c *CasLogStore) FindAll(ctx context.Context, query any, fields ...string) 
 	}
 	if needsHydration {
 		for _, log := range logs {
-			c.hydrateLog(ctx, log, fields...)
+			var hydrErr error
+			if wildcard {
+				hydrErr = c.hydrateLog(ctx, log)
+			} else {
+				hydrErr = c.hydrateLog(ctx, log, fields...)
+			}
+			if hydrErr != nil {
+				c.hydrateErrors.Add(1)
+				c.logger.Warn("logstore/cas: hydrate failed for log %s: %v", log.ID, hydrErr)
+			}
 		}
 	}
 	return logs, nil
@@ -55,19 +83,32 @@ func (c *CasLogStore) FindAll(ctx context.Context, query any, fields ...string) 
 
 // hydrateLog restores CAS-stored payload fields into log. It is a no-op when
 // the row has no CAS content or content is hidden (read-side enforcement, same
-// as hybrid). Per-field failures are logged and skipped so one corrupt field
-// cannot blank an entire detail view; hydration never fabricates content.
-func (c *CasLogStore) hydrateLog(ctx context.Context, log *Log, requestedFields ...string) {
-	if log == nil || !log.HasObject || log.ContentHidden {
-		return
+// as hybrid). Every failure is returned as an error — a corrupt or missing
+// blob must never masquerade as an absent field — while still hydrating the
+// remaining fields first, so a single corrupt field degrades the detail view,
+// not the whole log.
+func (c *CasLogStore) hydrateLog(ctx context.Context, log *Log, requestedFields ...string) error {
+	return c.hydrateFields(ctx, log, false, requestedFields...)
+}
+
+// hydrateFields is the hydration core. includeHidden bypasses the
+// ContentHidden serving gate for the billing path, which — exactly like
+// hybrid mode — must recover pricing inputs from hidden rows without ever
+// exposing their content in a serving read.
+func (c *CasLogStore) hydrateFields(ctx context.Context, log *Log, includeHidden bool, requestedFields ...string) error {
+	if log == nil || !log.HasObject {
+		return nil
 	}
+	if log.ContentHidden && !includeHidden {
+		return nil
+	}
+	db := c.scopedDB(ctx)
 	var rows []casPayload
-	if err := c.db.WithContext(ctx).Where("log_id = ?", log.ID).Find(&rows).Error; err != nil {
-		c.logger.Warn("logstore/cas: list payloads for log %s failed: %v", log.ID, err)
-		return
+	if err := db.Where("log_id = ?", log.ID).Find(&rows).Error; err != nil {
+		return fmt.Errorf("list payloads: %w", err)
 	}
 	if len(rows) == 0 {
-		return
+		return nil
 	}
 	if len(requestedFields) > 0 {
 		requested := make(map[string]struct{}, len(requestedFields))
@@ -83,29 +124,27 @@ func (c *CasLogStore) hydrateLog(ctx context.Context, log *Log, requestedFields 
 		rows = filtered
 	}
 	if len(rows) == 0 {
-		return
+		return nil
 	}
 	manifestHashes := make([]string, 0, len(rows))
 	for _, r := range rows {
 		manifestHashes = append(manifestHashes, r.BlobHash)
 	}
 	var manifestBlobs []casBlob
-	if err := c.db.WithContext(ctx).Where("hash IN ?", manifestHashes).Find(&manifestBlobs).Error; err != nil {
-		c.logger.Warn("logstore/cas: fetch manifests for log %s failed: %v", log.ID, err)
-		return
+	if err := db.Where("hash IN ?", manifestHashes).Find(&manifestBlobs).Error; err != nil {
+		return fmt.Errorf("fetch manifests: %w", err)
 	}
 	manifestRaw := make(map[string][]byte, len(manifestBlobs))
 	segmentHashes := make(map[string]struct{})
 	for _, mb := range manifestBlobs {
-		raw, err := casDecodeBlob(mb)
+		raw, err := casDecodeBlob(mb, casManifestDomain)
 		if err != nil {
-			c.logger.Warn("logstore/cas: decode manifest for log %s failed: %v", log.ID, err)
-			continue
+			return fmt.Errorf("decode manifest %s: %w", mb.Hash, err)
 		}
 		manifestRaw[mb.Hash] = raw
 		var m casManifest
 		if err := sonic.Unmarshal(raw, &m); err != nil {
-			continue
+			return fmt.Errorf("unmarshal manifest %s: %w", mb.Hash, err)
 		}
 		for _, p := range m.Parts {
 			if p.Hash != "" {
@@ -114,7 +153,7 @@ func (c *CasLogStore) hydrateLog(ctx context.Context, log *Log, requestedFields 
 		}
 	}
 	if len(manifestRaw) == 0 {
-		return
+		return fmt.Errorf("manifest blobs missing: %v", manifestHashes)
 	}
 	hashes := make([]string, 0, len(segmentHashes))
 	for h := range segmentHashes {
@@ -122,17 +161,15 @@ func (c *CasLogStore) hydrateLog(ctx context.Context, log *Log, requestedFields 
 	}
 	var segmentBlobs []casBlob
 	if len(hashes) > 0 {
-		if err := c.db.WithContext(ctx).Where("hash IN ?", hashes).Find(&segmentBlobs).Error; err != nil {
-			c.logger.Warn("logstore/cas: fetch segments for log %s failed: %v", log.ID, err)
-			return
+		if err := db.Where("hash IN ?", hashes).Find(&segmentBlobs).Error; err != nil {
+			return fmt.Errorf("fetch segments: %w", err)
 		}
 	}
 	segments := make(map[string][]byte, len(segmentBlobs))
 	for _, sb := range segmentBlobs {
-		raw, err := casDecodeBlob(sb)
+		raw, err := casDecodeBlob(sb, casDataDomain)
 		if err != nil {
-			c.logger.Warn("logstore/cas: decode segment %s failed: %v", sb.Hash, err)
-			continue
+			return fmt.Errorf("decode segment %s: %w", sb.Hash, err)
 		}
 		segments[sb.Hash] = raw
 	}
@@ -142,40 +179,52 @@ func (c *CasLogStore) hydrateLog(ctx context.Context, log *Log, requestedFields 
 		}
 		return nil, fmt.Errorf("segment blob missing")
 	}
+	var hydrateErr error
 	values := make(map[string]string, len(rows))
 	for _, r := range rows {
 		raw, ok := manifestRaw[r.BlobHash]
 		if !ok {
-			c.logger.Warn("logstore/cas: manifest %s missing for log %s field %s", r.BlobHash, log.ID, r.Field)
+			err := fmt.Errorf("manifest %s missing for field %s", r.BlobHash, r.Field)
+			if hydrateErr == nil {
+				hydrateErr = err
+			}
+			c.logger.Warn("logstore/cas: log %s: %v", log.ID, err)
 			continue
 		}
 		content, err := casReconstruct(raw, lookup)
 		if err != nil {
-			c.logger.Warn("logstore/cas: reconstruct log %s field %s failed: %v", log.ID, r.Field, err)
+			if hydrateErr == nil {
+				hydrateErr = fmt.Errorf("field %s: %w", r.Field, err)
+			}
+			c.logger.Warn("logstore/cas: log %s: %v", log.ID, err)
 			continue
 		}
 		values[r.Field] = string(content)
 	}
-	if len(values) == 0 {
-		return
+	if len(values) > 0 {
+		// The snapshot values are the raw TEXT column values; merging via the
+		// payload-map JSON form matches MergePayloadFromJSON's expectations.
+		data, err := sonic.Marshal(values)
+		if err != nil {
+			if hydrateErr == nil {
+				hydrateErr = fmt.Errorf("marshal hydrated payload: %w", err)
+			}
+		} else if err := MergePayloadFromJSON(log, data); err != nil {
+			if hydrateErr == nil {
+				hydrateErr = fmt.Errorf("merge payload: %w", err)
+			}
+			c.logger.Warn("logstore/cas: merge payload for log %s failed: %v", log.ID, err)
+		}
+		pruneUnrequestedPayloadFields(log, requestedFields)
 	}
-	// The snapshot values are the raw TEXT column values; merging via the
-	// payload-map JSON form matches MergePayloadFromJSON's expectations.
-	data, err := sonic.Marshal(values)
-	if err != nil {
-		c.logger.Warn("logstore/cas: marshal hydrated payload for log %s: %v", log.ID, err)
-		return
-	}
-	if err := MergePayloadFromJSON(log, data); err != nil {
-		c.logger.Warn("logstore/cas: merge payload for log %s failed: %v", log.ID, err)
-		return
-	}
-	pruneUnrequestedPayloadFields(log, requestedFields)
+	return hydrateErr
 }
 
-// casDecodeBlob verifies codec and length, then decompresses. Corruption is
-// an error, never silently empty content.
-func casDecodeBlob(b casBlob) ([]byte, error) {
+// casDecodeBlob verifies codec, decompresses, checks the recorded length, and
+// re-computes the content hash against the blob's claimed identity in the
+// given domain. A valid zstd frame of the right length but wrong content is
+// corruption, not a successful read.
+func casDecodeBlob(b casBlob, domain string) ([]byte, error) {
 	if b.Codec != casCodecZstd {
 		return nil, fmt.Errorf("logstore/cas: unknown codec %q", b.Codec)
 	}
@@ -186,30 +235,100 @@ func casDecodeBlob(b casBlob) ([]byte, error) {
 	if int64(len(raw)) != b.OrigLen {
 		return nil, fmt.Errorf("logstore/cas: decoded length %d != recorded %d", len(raw), b.OrigLen)
 	}
+	if got := casHash(domain, raw); got != b.Hash {
+		return nil, fmt.Errorf("logstore/cas: content hash mismatch: blob %s actually hashes to %s", b.Hash, got)
+	}
 	return raw, nil
 }
 
-// CasStats reports CAS table sizes for observability.
+// HydrateBillingChunk restores the payload fields pricing reads (token_usage,
+// cache_debug and this row's modality payload column) for offloaded rows.
+// Mirrors hybrid's contract: rows whose inputs cannot be recovered are
+// reported as Unpriceable instead of being billed from a lossy stub.
+func (c *CasLogStore) HydrateBillingChunk(ctx context.Context, logs []*Log) (BillingHydrationResult, error) {
+	var result BillingHydrationResult
+	for _, log := range logs {
+		if log == nil || !log.HasObject {
+			// Never offloaded: the row already carries its own payload.
+			continue
+		}
+		if !billingRowNeedsHydration(log, c.excluded) {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+		if hydrateErr := c.hydrateLogForBilling(ctx, log); hydrateErr != nil {
+			c.hydrateErrors.Add(1)
+			c.logger.Warn("logstore/cas: cannot hydrate pricing inputs for log %s: %v", log.ID, hydrateErr)
+			result.Unpriceable = append(result.Unpriceable, log.ID)
+			continue
+		}
+		result.Hydrated = append(result.Hydrated, log.ID)
+	}
+	return result, nil
+}
+
+// hydrateLogForBilling reassembles only the fields pricing reads from the
+// CAS pointers, then re-deserializes so the virtual structs match. Unlike
+// hydrateLog it never serves partially-hydrated content: an error here means
+// the row stays Unpriceable rather than being billed from a stub.
+func (c *CasLogStore) hydrateLogForBilling(ctx context.Context, log *Log) error {
+	fields := []string{"token_usage", "cache_debug"}
+	if col := billingPayloadColumnFor(log.Object); col != "" {
+		fields = append(fields, col)
+	}
+	if err := c.hydrateFields(ctx, log, true, fields...); err != nil {
+		return err
+	}
+	// MergePayloadFromJSON wrote the serialized columns; re-deserialize so
+	// TokenUsageParsed reflects the hydrated payload.
+	if err := log.DeserializeFields(); err != nil {
+		return fmt.Errorf("deserialize hydrated payload: %w", err)
+	}
+	log.billingPayloadsHydrated = true
+	// Drop payload bytes pricing never reads; it only needs counts/inputs.
+	stripNonBillingPayloadBytes(log)
+	// Only token-billed rows need token_usage. A modality row prices off the
+	// payload recovered above, so an empty usage is not an error for them.
+	if log.TokenUsage == "" && billingPayloadColumnFor(log.Object) == "" {
+		return fmt.Errorf("hydrated payload has no token_usage")
+	}
+	return nil
+}
+
+// CasStats reports CAS table sizes and operational counters for
+// observability.
 type CasStats struct {
-	Blobs       int64 `json:"blobs"`
+	Blobs   int64 `json:"blobs"`
 	BlobBytes   int64 `json:"blob_bytes"`
-	Refs        int64 `json:"refs"`
+	Refs    int64 `json:"refs"`
 	Payloads    int64 `json:"payloads"`
+	// SegmentHits counts segment blobs referenced by more than one manifest —
+	// the rows that exist only because of cross-request dedup.
 	SegmentHits int64 `json:"segment_hits"`
+	// Fallbacks counts fields stored as one opaque blob because the JSON
+	// array split failed (design doc: fallback metric).
+	Fallbacks int64 `json:"fallbacks"`
+	// HydrateErrors counts read-side hydration failures (corruption, missing
+	// blobs).
+	HydrateErrors int64 `json:"hydrate_errors"`
 }
 
 func (c *CasLogStore) CasStorageStats(ctx context.Context) (*CasStats, error) {
 	var stats CasStats
-	err := c.db.WithContext(ctx).Raw(
+	err := c.scopedDB(ctx).Raw(
 		"SELECT " +
 			"(SELECT COUNT(*) FROM cas_blobs) AS blobs, " +
 			"(SELECT COALESCE(SUM(LENGTH(data)),0) FROM cas_blobs) AS blob_bytes, " +
 			"(SELECT COUNT(*) FROM cas_refs) AS refs, " +
 			"(SELECT COUNT(*) FROM cas_payloads) AS payloads, " +
-			"(SELECT COUNT(*) FROM cas_blobs b WHERE EXISTS (SELECT 1 FROM cas_refs r WHERE r.target_hash = b.hash)) AS segment_hits",
+			"(SELECT COUNT(*) FROM cas_blobs b WHERE (SELECT COUNT(DISTINCT r.owner_hash) FROM cas_refs r WHERE r.target_hash = b.hash) > 1) AS segment_hits",
 	).Scan(&stats).Error
 	if err != nil {
 		return nil, err
 	}
+	stats.Fallbacks = c.fallbacks.Load()
+	stats.HydrateErrors = c.hydrateErrors.Load()
 	return &stats, nil
 }
