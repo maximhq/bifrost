@@ -308,6 +308,14 @@ func (p *LoggerPlugin) EnqueueLogEntry(entry *logstore.Log) {
 	p.enqueueLogEntry(entry, p.makePostWriteCallback(nil))
 }
 
+// EnqueueMCPToolLogEntry pushes a completed MCP log through the normal async write queue.
+func (p *LoggerPlugin) EnqueueMCPToolLogEntry(entry *logstore.MCPToolLog) {
+	p.mu.Lock()
+	callback := p.mcpToolLogCallback
+	p.mu.Unlock()
+	p.enqueueMCPToolLogEntry(entry, callback)
+}
+
 // enqueueMCPToolLogEntry pushes a complete MCP tool log entry to the write queue.
 // If the queue is full, the entry is dropped to prevent store slowness from
 // cascading into request handling goroutines.
