@@ -845,6 +845,7 @@ func verifyCAS(sourcePath, targetPath string, columns []string) (int64, verifica
 		objects[o.Hash] = o
 	}
 	rows.Close()
+	objectStore := logstore.NewCASObjectStoreForAnalysis(objects)
 	pointers, err := target.Query("SELECT log_id,field,blob_hash FROM cas_payloads ORDER BY log_id,field")
 	if err != nil {
 		return 0, verificationStats{}, err
@@ -860,7 +861,7 @@ func verifyCAS(sourcePath, targetPath string, columns []string) (int64, verifica
 		if err = source.QueryRow("SELECT "+quote(column)+" FROM logs WHERE id=?", id).Scan(&original); err != nil {
 			return 0, transformed, err
 		}
-		decoded, decodeErr := logstore.ReconstructCASObjectMapForAnalysis(mh, objects)
+		decoded, decodeErr := objectStore.Reconstruct(mh)
 		transformed.CheckedFields++
 		transformed.CheckedBytes += int64(len(original))
 		if decodeErr != nil || !bytes.Equal(original, decoded) {

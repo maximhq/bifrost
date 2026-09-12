@@ -21,6 +21,27 @@ func TestCASAnalysisUsesProductionCodec(t *testing.T) {
 		require.NoError(t, err)
 		require.True(t, bytes.Equal(raw, rebuilt))
 		require.NotEmpty(t, analysis.Objects)
+		require.NotEmpty(t, analysis.ManifestHash())
+		for _, object := range analysis.Objects {
+			require.Equal(t, "zstd", object.Codec)
+			require.Equal(t, object.CompressedBytes, int64(len(object.Data)))
+		}
+	}
+}
+
+func TestCASObjectStoreForAnalysisReusesLookup(t *testing.T) {
+	raw := []byte(`[{"x":"one"},{"x":"two"}]`)
+	analysis, err := AnalyzeCASField(raw, 4)
+	require.NoError(t, err)
+	objects := make(map[string]CASAnalysisObject, len(analysis.Objects))
+	for _, object := range analysis.Objects {
+		objects[object.Hash] = object
+	}
+	store := NewCASObjectStoreForAnalysis(objects)
+	for i := 0; i < 3; i++ {
+		rebuilt, rebuildErr := store.Reconstruct(analysis.ManifestHash())
+		require.NoError(t, rebuildErr)
+		require.Equal(t, raw, rebuilt)
 	}
 }
 

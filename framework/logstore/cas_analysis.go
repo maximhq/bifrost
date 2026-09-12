@@ -138,19 +138,34 @@ func (a *CASFieldAnalysis) ManifestHash() string {
 	return a.manifestHash
 }
 
-// ReconstructCASObjectMapForAnalysis verifies objects loaded from a materialized
-// CAS database and reconstructs the field selected by manifestHash.
-func ReconstructCASObjectMapForAnalysis(manifestHash string, objects map[string]CASAnalysisObject) ([]byte, error) {
-	blobs := make(map[string]casBlob, len(objects))
+// CASObjectStoreForAnalysis holds verified-materialization input in the same
+// internal shape used by the production decoder. Construct it once and reuse
+// it across field reconstructions to avoid rebuilding a large hash map per
+// payload pointer.
+type CASObjectStoreForAnalysis struct {
+	blobs map[string]casBlob
+}
+
+// NewCASObjectStoreForAnalysis prepares a reusable object lookup.
+func NewCASObjectStoreForAnalysis(objects map[string]CASAnalysisObject) *CASObjectStoreForAnalysis {
+	store := &CASObjectStoreForAnalysis{blobs: make(map[string]casBlob, len(objects))}
 	for hash, object := range objects {
-		blobs[hash] = casBlob{
+		store.blobs[hash] = casBlob{
 			Hash:    object.Hash,
 			Codec:   object.Codec,
 			OrigLen: object.OrigLen,
 			Data:    object.Data,
 		}
 	}
-	manifestBlob, ok := blobs[manifestHash]
+	return store
+}
+
+// Reconstruct verifies and reconstructs one field from the reusable store.
+func (s *CASObjectStoreForAnalysis) Reconstruct(manifestHash string) ([]byte, error) {
+	if s == nil {
+		return nil, fmt.Errorf("logstore/cas analysis: nil object store")
+	}
+	manifestBlob, ok := s.blobs[manifestHash]
 	if !ok {
 		return nil, fmt.Errorf("logstore/cas analysis: manifest missing")
 	}
@@ -159,12 +174,18 @@ func ReconstructCASObjectMapForAnalysis(manifestHash string, objects map[string]
 		return nil, err
 	}
 	return casReconstruct(manifest, func(hash string) ([]byte, error) {
-		blob, ok := blobs[hash]
+		blob, ok := s.blobs[hash]
 		if !ok {
 			return nil, fmt.Errorf("logstore/cas analysis: segment missing")
 		}
 		return casDecodeBlob(blob, casDataDomain)
 	})
+}
+
+// ReconstructCASObjectMapForAnalysis verifies objects loaded from a materialized
+// CAS database and reconstructs the field selected by manifestHash.
+func ReconstructCASObjectMapForAnalysis(manifestHash string, objects map[string]CASAnalysisObject) ([]byte, error) {
+	return NewCASObjectStoreForAnalysis(objects).Reconstruct(manifestHash)
 }
 
 // ReconstructCASObjectsForAnalysis verifies materialized production CAS objects
