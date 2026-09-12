@@ -13,22 +13,76 @@ package logstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sort"
+	"strings"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"gorm.io/gorm"
 )
 
+// ErrCasConcurrentModification reports that the log root row changed between
+// the caller's scoped read and the CAS hydration snapshot: the in-memory
+// object's metadata no longer belongs to the payload revision the CAS tables
+// now hold. Hydrating anyway would bind the old row's metadata/authorization
+// to the new revision's content. Find* callers catch this sentinel and retry
+// the full path (scoped re-read + hydration) so the served log is always one
+// consistent revision, freshly authorized.
+var ErrCasConcurrentModification = errors.New("log row changed concurrently during hydration")
+
+// casRootRowRetryLimit bounds how often Find* re-runs the full scoped
+// read + hydration path after ErrCasConcurrentModification before giving up
+// and surfacing the path's normal failure semantics. The budget is larger
+// than a minimal 2–3 because each retry is paced by casRetryBackoff: a row
+// updated in a tight loop keeps colliding with the tiny window between the
+// scoped read and the hydration snapshot, and consecutive immediate retries
+// correlate with the writer's phase. With backoff the attempts decorrelate,
+// so exhausting this budget means genuinely sustained contention, not bad
+// luck — and the failure still degrades the way the path always has.
+const casRootRowRetryLimit = 8
+
+// casRetryBackoff is the base pause between ErrCasConcurrentModification
+// retry attempts; it doubles per attempt (capped) so retries decorrelate from
+// a writer's update phase instead of repeatedly hitting the same window.
+const casRetryBackoff = 200 * time.Microsecond
+
+// casRetrySleep waits between concurrent-modification retry attempts. The
+// final attempt does not sleep.
+func casRetrySleep(attempt int) {
+	if attempt+1 >= casRootRowRetryLimit {
+		return
+	}
+	d := casRetryBackoff << attempt
+	if d > 5*time.Millisecond {
+		d = 5 * time.Millisecond
+	}
+	time.Sleep(d)
+}
+
 func (c *CasLogStore) FindByID(ctx context.Context, id string) (*Log, error) {
-	log, err := c.LogStore.FindByID(ctx, id)
-	if err != nil {
-		return nil, err
+	var lastErr error
+	for attempt := 0; attempt < casRootRowRetryLimit; attempt++ {
+		log, err := c.LogStore.FindByID(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if err := c.hydrateLog(ctx, log); err != nil {
+			lastErr = err
+			if errors.Is(err, ErrCasConcurrentModification) {
+				// The row was concurrently modified between the scoped read
+				// and hydration; retry so both come from one revision.
+				casRetrySleep(attempt)
+				continue
+			}
+			c.hydrateErrors.Add(1)
+			return nil, fmt.Errorf("logstore/cas: hydrate log %s: %w", id, err)
+		}
+		return log, nil
 	}
-	if err := c.hydrateLog(ctx, log); err != nil {
-		c.hydrateErrors.Add(1)
-		return nil, fmt.Errorf("logstore/cas: hydrate log %s: %w", id, err)
-	}
-	return log, nil
+	c.hydrateErrors.Add(1)
+	return nil, fmt.Errorf("logstore/cas: hydrate log %s: %w", id, lastErr)
 }
 
 func (c *CasLogStore) FindFirst(ctx context.Context, query any, fields ...string) (*Log, error) {
@@ -37,27 +91,41 @@ func (c *CasLogStore) FindFirst(ctx context.Context, query any, fields ...string
 	if needsHydration && len(fields) > 0 {
 		fields = ensureHydrationFields(fields)
 	}
-	log, err := c.LogStore.FindFirst(ctx, query, fields...)
-	if err != nil {
-		return nil, err
-	}
-	if needsHydration {
+	var lastErr error
+	for attempt := 0; attempt < casRootRowRetryLimit; attempt++ {
+		log, err := c.LogStore.FindFirst(ctx, query, fields...)
+		if err != nil {
+			return nil, err
+		}
+		if !needsHydration {
+			return log, nil
+		}
 		var hydrErr error
 		if wildcard {
 			hydrErr = c.hydrateLog(ctx, log)
 		} else {
 			hydrErr = c.hydrateLog(ctx, log, fields...)
 		}
-		if hydrErr != nil {
-			c.hydrateErrors.Add(1)
-			c.logger.Warn("logstore/cas: hydrate failed for log %s: %v", log.ID, hydrErr)
-			// The row cannot be served whole; a partially hydrated log would
-			// masquerade as real content. Match the inner store's
-			// record-not-found behavior for an unusable read.
-			return nil, ErrNotFound
+		if hydrErr == nil {
+			return log, nil
 		}
+		lastErr = hydrErr
+		if errors.Is(hydrErr, ErrCasConcurrentModification) {
+			casRetrySleep(attempt)
+			continue
+		}
+		c.hydrateErrors.Add(1)
+		c.logger.Warn("logstore/cas: hydrate failed for log %s: %v", log.ID, hydrErr)
+		// The row cannot be served whole; a partially hydrated log would
+		// masquerade as real content. Match the inner store's
+		// record-not-found behavior for an unusable read.
+		return nil, ErrNotFound
 	}
-	return log, nil
+	// Retry budget exhausted under continuous concurrent modification; the
+	// row still cannot be served whole, so keep the same degrade semantics.
+	c.hydrateErrors.Add(1)
+	c.logger.Warn("logstore/cas: hydrate failed for log after %d attempts: %v", casRootRowRetryLimit, lastErr)
+	return nil, ErrNotFound
 }
 
 func (c *CasLogStore) FindAll(ctx context.Context, query any, fields ...string) ([]*Log, error) {
@@ -78,10 +146,16 @@ func (c *CasLogStore) FindAll(ctx context.Context, query any, fields ...string) 
 		kept := logs[:0]
 		for _, log := range logs {
 			var hydrErr error
-			if wildcard {
-				hydrErr = c.hydrateLog(ctx, log)
-			} else {
-				hydrErr = c.hydrateLog(ctx, log, fields...)
+			for attempt := 0; attempt < casRootRowRetryLimit; attempt++ {
+				if wildcard {
+					hydrErr = c.hydrateLog(ctx, log)
+				} else {
+					hydrErr = c.hydrateLog(ctx, log, fields...)
+				}
+				if hydrErr == nil || !errors.Is(hydrErr, ErrCasConcurrentModification) {
+					break
+				}
+				casRetrySleep(attempt)
 			}
 			if hydrErr != nil {
 				c.hydrateErrors.Add(1)
@@ -144,15 +218,196 @@ func (c *CasLogStore) hydrateFields(ctx context.Context, log *Log, includeHidden
 	// extra visibility: the hydrated content is only ever attached to a row
 	// the caller was already allowed to read.
 	return c.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		return c.hydrateFieldsTx(tx, log, requestedFields...)
+		return c.hydrateFieldsTx(tx, log, includeHidden, requestedFields...)
 	})
+}
+
+// verifyRootRowRevision re-reads the log root row's observable state INSIDE
+// the hydration snapshot transaction and rejects it when that state no longer
+// matches the in-memory object the caller authorized. The inner scoped read
+// and the CAS snapshot are two separate database observations; a concurrent
+// Update (or a delete + same-ID recreate) can commit between them, leaving
+// hydration about to merge the NEW revision's payload into the OLD revision's
+// metadata — including rows whose ownership or content_hidden changed, which
+// would silently bypass the caller's scope. Detecting the divergence and
+// failing with ErrCasConcurrentModification forces the Find* wrappers to retry
+// the whole path, so the row state and the hydrated content are always bound
+// to one revision and authorization always comes from the fresh scoped read.
+//
+// The comparison set is chosen for reliability without false positives:
+//
+//   - has_object and content_hidden are always compared; both are selected by
+//     every projection that hydrates (ensureHydrationFields).
+//   - Full-row serving reads (no projection) additionally compare the
+//     ownership/authorization columns (casRootRowBindingColumns) and every
+//     payload TEXT column byte-for-byte: the inner read loaded all of them,
+//     so any concurrent row write that changes what the row is or whom it
+//     belongs to is detected. This is what binds "metadata is version A" to
+//     "payload is version A" for the A/B update race.
+//   - Projected reads (serving or billing) compare only the requested payload
+//     columns: unprojected columns are zero in the in-memory object and would
+//     false-positive. A concurrent write to a column outside the projection
+//     is therefore not detected — the projection never serves it either.
+//
+// casRootRowBindingColumns are the non-payload row columns a full-row serving
+// read additionally binds to the hydration snapshot. They are the columns
+// whose staleness would matter: the ownership/authorization set the caller's
+// QueryScope predicates run over (a row whose user_id changed under a read
+// must not be hydrated with the previous scope decision), plus status and
+// content_summary as serving-visible metadata. A concurrent update touching
+// ONLY an unlisted column (latency, cost, ...) is not detected — it never
+// changes what the row is allowed to show.
+var casRootRowBindingColumns = []string{
+	"user_id", "virtual_key_id", "team_id", "customer_id", "business_unit_id",
+	"project_id", "selected_key_id", "status", "content_summary",
+}
+
+func verifyRootRowRevision(tx *gorm.DB, log *Log, requestedFields []string, includeHidden bool) error {
+	fullRow := len(requestedFields) == 0 && !includeHidden
+	colSet := map[string]struct{}{"has_object": {}, "content_hidden": {}}
+	compare := map[string]struct{}{}
+	if fullRow {
+		for _, f := range casRootRowBindingColumns {
+			colSet[f] = struct{}{}
+			compare[f] = struct{}{}
+		}
+		for _, f := range payloadFields {
+			colSet[f] = struct{}{}
+			compare[f] = struct{}{}
+		}
+	} else {
+		for _, f := range requestedFields {
+			if _, isPayload := payloadFieldSet[f]; isPayload {
+				colSet[f] = struct{}{}
+				compare[f] = struct{}{}
+			}
+		}
+	}
+	cols := make([]string, 0, len(colSet))
+	for col := range colSet {
+		cols = append(cols, col)
+	}
+	sort.Strings(cols) // stable SQL across calls (map iteration is not)
+
+	var state map[string]any
+	if err := tx.Table("logs").
+		Select(strings.Join(cols, ", ")).
+		Where("id = ?", log.ID).
+		Take(&state).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// The row the caller authorized is gone (deleted, possibly
+			// recreated with different ownership): never hydrate onto it.
+			return fmt.Errorf("logstore/cas: log %s: root row changed before hydration: %w", log.ID, ErrCasConcurrentModification)
+		}
+		return fmt.Errorf("logstore/cas: log %s: re-read root row: %w", log.ID, err)
+	}
+	mismatch := func(what string) error {
+		return fmt.Errorf("logstore/cas: log %s: root row %s changed concurrently: %w", log.ID, what, ErrCasConcurrentModification)
+	}
+	if casScanBool(state["has_object"]) != log.HasObject {
+		return mismatch("has_object")
+	}
+	if casScanBool(state["content_hidden"]) != log.ContentHidden {
+		return mismatch("content_hidden")
+	}
+	if len(compare) > 0 {
+		inMemory := ExtractPayload(log)
+		for f := range compare {
+			var memory string
+			if _, isPayload := payloadFieldSet[f]; isPayload {
+				memory = inMemory[f]
+			} else {
+				memory = casLogColumnString(log, f)
+			}
+			if casScanString(state[f]) != memory {
+				return mismatch("column " + f)
+			}
+		}
+	}
+	return nil
+}
+
+// casLogColumnString reads one non-payload binding column from the in-memory
+// Log, with NULL and zero value converging to "".
+func casLogColumnString(l *Log, column string) string {
+	deref := func(p *string) string {
+		if p == nil {
+			return ""
+		}
+		return *p
+	}
+	switch column {
+	case "user_id":
+		return deref(l.UserID)
+	case "virtual_key_id":
+		return deref(l.VirtualKeyID)
+	case "team_id":
+		return deref(l.TeamID)
+	case "customer_id":
+		return deref(l.CustomerID)
+	case "business_unit_id":
+		return deref(l.BusinessUnitID)
+	case "project_id":
+		return deref(l.ProjectID)
+	case "selected_key_id":
+		return l.SelectedKeyID
+	case "status":
+		return l.Status
+	case "content_summary":
+		return l.ContentSummary
+	default:
+		return ""
+	}
+}
+
+// casScanString normalizes a raw driver value from a TEXT/nullable column to
+// the empty-string representation the Log struct uses for NULL/empty.
+func casScanString(v any) string {
+	switch t := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return t
+	case []byte:
+		return string(t)
+	default:
+		return fmt.Sprintf("%v", t)
+	}
+}
+
+// casScanBool normalizes a raw driver value from a boolean column across
+// dialects (SQLite stores 0/1 integers, PostgreSQL native bool; gorm's map
+// scan widens integers to float64).
+func casScanBool(v any) bool {
+	switch t := v.(type) {
+	case bool:
+		return t
+	case int64:
+		return t != 0
+	case int:
+		return t != 0
+	case float64:
+		return t != 0
+	case []byte:
+		return len(t) > 0 && t[0] != '0' && t[0] != 0
+	case string:
+		return t == "t" || t == "true" || t == "1"
+	default:
+		return false
+	}
 }
 
 // hydrateFieldsTx reads pointers, manifests and segments from the single
 // snapshot tx and merges the reconstructed payload into log. A non-nil return
 // rolls the (read-only) transaction back, which is harmless: nothing in here
 // writes.
-func (c *CasLogStore) hydrateFieldsTx(tx *gorm.DB, log *Log, requestedFields ...string) error {
+func (c *CasLogStore) hydrateFieldsTx(tx *gorm.DB, log *Log, includeHidden bool, requestedFields ...string) error {
+	// Bind the hydration snapshot to the revision of the root row the caller
+	// actually read: any divergence (concurrent update, delete + recreate) is
+	// a retryable failure, never something to hydrate onto.
+	if err := verifyRootRowRevision(tx, log, requestedFields, includeHidden); err != nil {
+		return err
+	}
 	var rows []casPayload
 	if err := tx.Where("log_id = ?", log.ID).Find(&rows).Error; err != nil {
 		return fmt.Errorf("list payloads: %w", err)
@@ -345,9 +600,6 @@ func (c *CasLogStore) hydrateLogForBilling(ctx context.Context, log *Log) error 
 	if err := log.DeserializeFields(); err != nil {
 		return fmt.Errorf("deserialize hydrated payload: %w", err)
 	}
-	log.billingPayloadsHydrated = true
-	// Drop payload bytes pricing never reads; it only needs counts/inputs.
-	stripNonBillingPayloadBytes(log)
 	// Only token-billed rows need token_usage. A modality row prices off the
 	// payload recovered above, so an empty usage is not an error for them.
 	if log.TokenUsage == "" && billingPayloadColumnFor(log.Object) == "" {
@@ -360,9 +612,26 @@ func (c *CasLogStore) hydrateLogForBilling(ctx context.Context, log *Log) error 
 	// has no input, and a "successful" hydration that counts the row as
 	// Hydrated would let billing continue on a lossy stub. Fail closed the
 	// same way a missing token_usage does: the row goes to Unpriceable.
+	//
+	// The checks run BEFORE stripNonBillingPayloadBytes: strip clears
+	// ImageGenerationOutput (rdb.go), and billing reads the modality payload
+	// through billingPayloadColumnValue, so checking after the strip
+	// misjudged every healthy image_generation row — parsed billing input
+	// fully recovered, raw column deliberately released — as Unpriceable.
+	// Verified here is exactly what billing reads before hydration success is
+	// declared: the hydrated serialized column (equivalently its parsed
+	// struct, which DeserializeFields just built from it).
 	if col := billingPayloadColumnFor(log.Object); col != "" && billingPayloadColumnValue(log, col) == "" {
 		return fmt.Errorf("hydrated payload has no %s", col)
 	}
+	// All checks passed. Only now may the row carry the hydrated marker: the
+	// marker suppresses billingRowNeedsHydration, and the billing caller
+	// blocks only on Unpriceable — setting it before the checks let a failed
+	// row sail through a second HydrateBillingChunk call as "nothing left to
+	// fetch" and be billed from its lossy stub.
+	log.billingPayloadsHydrated = true
+	// Drop payload bytes pricing never reads; it only needs counts/inputs.
+	stripNonBillingPayloadBytes(log)
 	return nil
 }
 

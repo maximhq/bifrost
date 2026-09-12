@@ -889,3 +889,259 @@ func TestCas_ConcurrentDeleteRecreateKeepsInvariants(t *testing.T) {
 	).Scan(&dangling).Error)
 	assert.Zero(t, dangling)
 }
+
+// --- round-4 review defects ---
+
+// Defect: hydrateLogForBilling ran stripNonBillingPayloadBytes BEFORE the
+// modality-integrity check, and strip clears ImageGenerationOutput
+// (rdb.go), so a healthy image_generation row whose billing input was fully
+// recovered was misjudged Unpriceable. The integrity checks now run on the
+// pre-strip column — the exact data billing reads — so only rows whose
+// billing input is genuinely empty after hydration fail.
+func TestCas_BillingImageGenerationHydratedNotUnpriceable(t *testing.T) {
+	cas, inner := newTestCas(t)
+	defer cas.Close(context.Background())
+	ctx := context.Background()
+
+	entry := bigChatEntry("imgbill-1", "tiny")
+	entry.Object = "image_generation"
+	entry.ImageGenerationOutputParsed = &schemas.BifrostImageGenerationResponse{
+		Data: []schemas.ImageData{{B64JSON: strings.Repeat("aGVsbG8=", 32), RevisedPrompt: "a shiny red apple"}},
+	}
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, cas.CreateIfNotExists(ctx, entry))
+	require.Positive(t, casPointerCount(t, cas, "imgbill-1", "image_generation_output"),
+		"large image payload must be offloaded to CAS")
+
+	row, err := inner.FindByID(ctx, "imgbill-1")
+	require.NoError(t, err)
+	require.True(t, row.HasObject)
+	require.Empty(t, row.ImageGenerationOutput, "image payload must be offloaded from the row")
+
+	result, err := cas.HydrateBillingChunk(ctx, []*Log{row})
+	require.NoError(t, err)
+	assert.Contains(t, result.Hydrated, "imgbill-1",
+		"recovered image billing input must be Hydrated, not Unpriceable")
+	assert.NotContains(t, result.Unpriceable, "imgbill-1")
+	assert.True(t, row.billingPayloadsHydrated)
+	require.NotNil(t, row.ImageGenerationOutputParsed,
+		"parsed billing input must survive the billing hydration")
+	assert.NotEmpty(t, row.ImageGenerationOutputParsed.Data,
+		"pricing reads the image count from the parsed structure")
+	assert.Empty(t, row.ImageGenerationOutputParsed.Data[0].B64JSON,
+		"strip still releases the base64 bytes pricing never reads")
+	assert.Empty(t, row.ImageGenerationOutput,
+		"serialized column is cleared by strip after the checks")
+}
+
+// Defect: billingPayloadsHydrated was set before the integrity checks ran, so
+// a row that failed them kept the success marker; billingRowNeedsHydration
+// then skipped it on a second HydrateBillingChunk call, and the caller —
+// which blocks only on Unpriceable — billed it from the lossy stub. The
+// marker must only be set after every check passes.
+func TestCas_BillingFailureMarkerNotSetOnUnpriceable(t *testing.T) {
+	cas, inner := newTestCas(t)
+	defer cas.Close(context.Background())
+	ctx := context.Background()
+
+	entry := bigChatEntry("ocrbill-2", strings.Repeat("history for the ocr row ", 30))
+	entry.Object = "ocr"
+	entry.OCROutput = `{"pages":[{"text":"` + strings.Repeat("page text ", 60) + `"}]}`
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, cas.CreateIfNotExists(ctx, entry))
+	// Simulate the partial loss: only the modality pointer disappears.
+	require.NoError(t, cas.db.Where("log_id = ? AND field = ?", "ocrbill-2", "ocr_output").
+		Delete(&casPayload{}).Error)
+
+	row, err := inner.FindByID(ctx, "ocrbill-2")
+	require.NoError(t, err)
+	require.True(t, row.HasObject)
+
+	for call := 1; call <= 2; call++ {
+		result, err := cas.HydrateBillingChunk(ctx, []*Log{row})
+		require.NoError(t, err)
+		assert.Contains(t, result.Unpriceable, "ocrbill-2",
+			"call %d: modality input still unrecoverable, must stay Unpriceable", call)
+		assert.NotContains(t, result.Hydrated, "ocrbill-2",
+			"call %d: a failed row must never be counted Hydrated", call)
+	}
+}
+
+// Defect: the root row was fetched by the scoped inner store in one query
+// while CAS hydration read its pointers from a separate snapshot, so a
+// concurrent Update could bind the OLD row's metadata (and its scoped
+// authorization) to the NEW revision's content. verifyRootRowRevision now
+// re-reads the row's observable state inside the hydration snapshot;
+// divergence fails with ErrCasConcurrentModification and the Find* paths
+// retry the full scoped read + hydration. Run with -race.
+func TestCas_RootRowRevisionBindingUnderConcurrentUpdates(t *testing.T) {
+	cas, _ := newTestCas(t)
+	defer cas.Close(context.Background())
+	ctx := context.Background()
+
+	const id = "revbind-1"
+	entry := bigChatEntry(id, "tiny")
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, cas.CreateIfNotExists(ctx, entry))
+
+	contentA := strings.Repeat("revision alpha payload ", 40)
+	contentB := strings.Repeat("revision beta payload ", 40)
+	// The writer is dense enough that the race window (scoped read ->
+	// hydration snapshot) is hit many times, so this test fails on code
+	// without the revision binding; the reader's bounded retry still absorbs
+	// every individual collision because a retry rarely loses twice.
+	const writerIterations = 300
+	const readerIterations = 100
+	done := make(chan error, 1)
+	go func() {
+		var werr error
+		for i := 0; i < writerIterations; i++ {
+			content, revision := contentA, "rev-a"
+			if i%2 == 1 {
+				content, revision = contentB, "rev-b"
+			}
+			// Both the CAS'd payload and an ownership column change in ONE
+			// transaction, so a consistent read must always see them from
+			// the same revision. user_id is the marker because it is what
+			// QueryScope authorization predicates run over — the exact
+			// staleness the revision binding exists to prevent — and because
+			// hydration rebuilds content_summary from hydrated content,
+			// which would mask a torn read instead of exposing it.
+			if err := cas.Update(ctx, id, map[string]interface{}{
+				"input_history": content,
+				"user_id":       revision,
+			}); err != nil {
+				werr = err
+				break
+			}
+			// Pace the writer; the race window (scoped read -> hydration
+			// snapshot) is still hit repeatedly while it runs.
+			time.Sleep(1 * time.Millisecond)
+		}
+		done <- werr
+	}()
+	for i := 0; i < readerIterations; i++ {
+		found, err := cas.FindByID(ctx, id)
+		if err != nil {
+			// Under sustained contention the bounded retry budget can be
+			// exhausted; the only legitimate failure is the truthful
+			// concurrent-modification report — never a torn read and never
+			// an unrelated hydrate error (manifest missing, corruption...).
+			require.ErrorIs(t, err, ErrCasConcurrentModification,
+				"exhausted retries must surface as concurrent modification, not as a hydrate false alarm")
+		} else {
+			switch casDerefString(found.UserID) {
+			case "rev-a":
+				assert.Equal(t, contentA, found.InputHistory,
+					"metadata version A must be served with content version A")
+			case "rev-b":
+				assert.Equal(t, contentB, found.InputHistory,
+					"metadata version B must be served with content version B")
+			default:
+				// A pre-first-update observation of the row-resident initial
+				// content is a legal complete revision.
+			}
+		}
+
+		// The list path must uphold the same binding when it serves the row.
+		// Sampled every few rounds: it exercises the same retry loop without
+		// doubling every reader iteration's race exposure.
+		if i%5 == 0 {
+			logs, err := cas.FindAll(ctx, map[string]any{"id": id})
+			require.NoError(t, err)
+			if len(logs) == 1 {
+				switch casDerefString(logs[0].UserID) {
+				case "rev-a":
+					assert.Equal(t, contentA, logs[0].InputHistory)
+				case "rev-b":
+					assert.Equal(t, contentB, logs[0].InputHistory)
+				}
+			}
+		}
+	}
+	require.NoError(t, <-done)
+
+	// Deterministic half-open window: the row is read, a newer revision
+	// commits, and hydration then runs on the stale in-memory object — the
+	// exact interleaving the probabilistic loop above only hits by scheduler
+	// luck. Without the revision binding this hydrates the NEW content into
+	// the OLD metadata; with it, hydration must refuse with the sentinel and
+	// the retried full read must serve one consistent revision.
+	stale, err := cas.LogStore.FindByID(ctx, id)
+	require.NoError(t, err)
+	nextContent, nextRevision := contentA, "rev-a"
+	if casDerefString(stale.UserID) == "rev-a" {
+		nextContent, nextRevision = contentB, "rev-b"
+	}
+	require.NoError(t, cas.Update(ctx, id, map[string]interface{}{
+		"input_history": nextContent,
+		"user_id":       nextRevision,
+	}))
+	err = cas.hydrateLog(ctx, stale)
+	require.ErrorIs(t, err, ErrCasConcurrentModification,
+		"hydration must refuse to bind stale metadata to a newer revision's content")
+	fresh, err := cas.FindByID(ctx, id)
+	require.NoError(t, err)
+	require.Equal(t, nextRevision, casDerefString(fresh.UserID))
+	require.Equal(t, nextContent, fresh.InputHistory)
+}
+
+// casDerefString reads a nullable string column for test assertions.
+func casDerefString(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+// Defect: updateFromMap only recognized DB column names, while gorm's Updates
+// also accepts Go field names ("OutputMessage" resolves to output_message via
+// LookUpField). A Go-name key slipped past the CAS interception: the row
+// column changed, the stale pointer survived, and hydration resurrected the
+// OLD content over the new value. Keys are now normalized to column names
+// before any CAS decision, so both spellings behave identically.
+func TestCas_UpdateMapGoFieldNameGoesToCAS(t *testing.T) {
+	cas, inner := newTestCas(t)
+	defer cas.Close(context.Background())
+	ctx := context.Background()
+
+	entry := bigChatEntry("gofield-1", "tiny")
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, cas.CreateIfNotExists(ctx, entry))
+
+	bigOut := bigOutputJSON(t, strings.Repeat("go field name update ", 40))
+	require.NoError(t, cas.Update(ctx, "gofield-1", map[string]interface{}{"OutputMessage": bigOut}))
+
+	assert.Positive(t, casPointerCount(t, cas, "gofield-1", "output_message"),
+		"Go field-name key must route the payload through CAS")
+	row, err := inner.FindByID(ctx, "gofield-1")
+	require.NoError(t, err)
+	assert.Empty(t, row.OutputMessage, "row column must be emptied once CAS is authoritative")
+	found, err := cas.FindByID(ctx, "gofield-1")
+	require.NoError(t, err)
+	assert.Equal(t, bigOut, found.OutputMessage,
+		"the new value must win; the old pointer must not resurrect stale content")
+}
+
+// Same defect, expression flavor: gorm.Expr under a Go field-name key used to
+// bypass the payload type rejection that the column-name spelling enforces.
+// Normalization happens first, so both spellings are rejected identically.
+func TestCas_UpdateMapGoFieldNameExprRejected(t *testing.T) {
+	cas, _ := newTestCas(t)
+	defer cas.Close(context.Background())
+	ctx := context.Background()
+
+	entry := bigChatEntry("gofield-2", strings.Repeat("expr guard content ", 30))
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, cas.CreateIfNotExists(ctx, entry))
+	require.Positive(t, casPointerCount(t, cas, "gofield-2", "input_history"))
+
+	err := cas.Update(ctx, "gofield-2", map[string]interface{}{"InputHistory": gorm.Expr("NULL")})
+	require.Error(t, err, "gorm.Expr on a payload field must be rejected, whichever spelling is used")
+	assert.Contains(t, err.Error(), "unsupported value type")
+	// Rejection must be side-effect free: pointer intact, content unchanged.
+	assert.Positive(t, casPointerCount(t, cas, "gofield-2", "input_history"))
+	found, err := cas.FindByID(ctx, "gofield-2")
+	require.NoError(t, err)
+	assert.Equal(t, entry.InputHistory, found.InputHistory)
+}

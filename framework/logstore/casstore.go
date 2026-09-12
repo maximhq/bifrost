@@ -24,6 +24,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"unicode/utf8"
 
@@ -32,6 +33,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"gorm.io/gorm/schema"
 )
 
 const (
@@ -133,7 +135,7 @@ type CasLogStore struct {
 	LogStore
 	// db is captured from the CONSTRUCTION context and is used for writes,
 	// mirroring the inner store's unscoped s.db.WithContext write handle.
-	db *gorm.DB
+	db            *gorm.DB
 	logger        schemas.Logger
 	excluded      map[string]struct{}
 	minFieldBytes int
@@ -141,6 +143,12 @@ type CasLogStore struct {
 	// Observability counters (design doc: fallback and failure metrics).
 	fallbacks     atomic.Int64
 	hydrateErrors atomic.Int64
+	// logSchema caches the parsed Log schema used to normalize Go field-name
+	// map keys to DB column names in the Update path (see
+	// normalizeUpdateMapKeys in casstore_write.go).
+	logSchemaOnce sync.Once
+	logSchema     *schema.Schema
+	logSchemaErr  error
 }
 
 // scopedDB returns the database handle with the caller's query scope applied,

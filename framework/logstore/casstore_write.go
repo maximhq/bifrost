@@ -21,10 +21,12 @@ package logstore
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"gorm.io/gorm/schema"
 )
 
 // casSplitPayload partitions an extracted payload map into the fields that go
@@ -252,7 +254,47 @@ func (c *CasLogStore) Update(ctx context.Context, id string, entry any) error {
 	}
 }
 
+// normalizeUpdateMapKeys rewrites Go struct field-name keys in an update map
+// to their DB column names before any CAS decision is made. gorm's own
+// Updates accepts both spellings (LookUpField resolves "OutputMessage" to
+// output_message), so a map written with Go field names used to slip past the
+// payload interception here: the row column changed while the stale CAS
+// pointer survived, and hydration resurrected the OLD content over the new
+// value — gorm.Expr values bypassed the payload type rejection the same way.
+// Normalizing first makes both spellings semantically identical; keys that
+// are neither a known column nor a known field pass through unchanged, which
+// is exactly what gorm would do with them.
+func (c *CasLogStore) normalizeUpdateMapKeys(updates map[string]interface{}) map[string]interface{} {
+	c.logSchemaOnce.Do(func() {
+		c.logSchema, c.logSchemaErr = schema.Parse(&Log{}, &sync.Map{}, c.db.NamingStrategy)
+	})
+	if c.logSchemaErr != nil || c.logSchema == nil {
+		// Schema resolution failed; keep legacy passthrough rather than
+		// failing writes that gorm itself would accept.
+		return updates
+	}
+	out := make(map[string]interface{}, len(updates))
+	changed := false
+	for k, v := range updates {
+		if _, isColumn := c.logSchema.FieldsByDBName[k]; isColumn {
+			out[k] = v // already a column name
+			continue
+		}
+		if f, isField := c.logSchema.FieldsByName[k]; isField && f.DBName != "" {
+			out[f.DBName] = v
+			changed = true
+			continue
+		}
+		out[k] = v // unknown key: transparent passthrough (gorm's behavior)
+	}
+	if !changed {
+		return updates
+	}
+	return out
+}
+
 func (c *CasLogStore) updateFromMap(ctx context.Context, id string, updates map[string]interface{}) error {
+	updates = c.normalizeUpdateMapKeys(updates)
 	rowUpdates := make(map[string]interface{}, len(updates))
 	var toStore []casFieldContent
 	var downgrades []string // payload fields set to small/empty values: drop pointers
