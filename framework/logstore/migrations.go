@@ -4860,7 +4860,13 @@ func migrationBackfillCasHasObject(ctx context.Context, db *gorm.DB, logger sche
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: "cas_has_object_backfill",
 		Migrate: func(db *gorm.DB) error {
-			return db.Exec("UPDATE logs SET has_object = 1 WHERE has_object = 0 AND EXISTS (SELECT 1 FROM cas_payloads WHERE cas_payloads.log_id = logs.id)").Error
+			// Dialect-safe booleans: GORM binds true/false as 1/0 on SQLite and
+			// as real booleans on PostgreSQL, where the raw "has_object = 0" /
+			// "SET has_object = 1" literals would fail on a boolean column.
+			// Log has no soft-delete scope, so Model(&Log{}) does not add one.
+			return db.Model(&Log{}).
+				Where("has_object = ? AND EXISTS (SELECT 1 FROM cas_payloads WHERE cas_payloads.log_id = logs.id)", false).
+				Update("has_object", true).Error
 		},
 		Rollback: func(db *gorm.DB) error {
 			return nil

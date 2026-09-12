@@ -420,3 +420,195 @@ func TestCas_UpdateStructClearsRowColumn(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, bigOut, found.OutputMessage)
 }
+
+// --- round-2 review defects ---
+
+// Defect: Update(map) with a payload field set to nil wrote NULL into the row
+// but left the old CAS pointer in place, so FindByID resurrected the old CAS
+// content over the NULL and has_object stayed stale.
+func TestCas_UpdateMapNilClearsPointer(t *testing.T) {
+	cas, inner := newTestCas(t)
+	defer cas.Close(context.Background())
+	ctx := context.Background()
+
+	entry := bigChatEntry("nilupd-1", strings.Repeat("nil update content ", 30))
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, cas.CreateIfNotExists(ctx, entry))
+	manifest := casManifestHashFor(t, cas, "nilupd-1", "input_history")
+
+	require.NoError(t, cas.Update(ctx, "nilupd-1", map[string]interface{}{"input_history": nil}))
+
+	assert.Zero(t, casPointerCount(t, cas, "nilupd-1", "input_history"),
+		"payload field set to nil must drop its CAS pointer")
+	var n int64
+	require.NoError(t, cas.db.Model(&casBlob{}).Where("hash = ?", manifest).Count(&n).Error)
+	assert.Zero(t, n, "cleared field's manifest must be reclaimed")
+	row, err := inner.FindByID(ctx, "nilupd-1")
+	require.NoError(t, err)
+	assert.False(t, row.HasObject, "has_object must be recomputed after the nil clear")
+	found, err := cas.FindByID(ctx, "nilupd-1")
+	require.NoError(t, err)
+	assert.Empty(t, found.InputHistory, "old CAS content must not be resurrected over the NULL")
+}
+
+// Defect: DeleteLog/DeleteLogs ran the row deletion and the CAS cleanup in two
+// separate transactions; a recreate of the same ID in between had its fresh
+// CAS pointers deleted by the cleanup. Row deletion and cleanup now share one
+// transaction, so an immediate same-ID recreate hydrates normally.
+func TestCas_DeleteThenRecreateSameIDPayloadSurvives(t *testing.T) {
+	cas, _ := newTestCas(t)
+	defer cas.Close(context.Background())
+	ctx := context.Background()
+
+	e1 := bigChatEntry("race-1", strings.Repeat("first life ", 30))
+	require.NoError(t, e1.SerializeFields())
+	require.NoError(t, cas.Create(ctx, e1))
+	require.NoError(t, cas.DeleteLog(ctx, "race-1"))
+	assert.Zero(t, casBlobCount(t, cas), "delete must reclaim the CAS content")
+
+	// Immediate same-ID recreate: its new pointers must survive.
+	e2 := bigChatEntry("race-1", strings.Repeat("second life ", 30))
+	require.NoError(t, e2.SerializeFields())
+	require.NoError(t, cas.CreateIfNotExists(ctx, e2))
+	found, err := cas.FindByID(ctx, "race-1")
+	require.NoError(t, err, "recreated log must hydrate after the delete path's CAS cleanup")
+	assert.Equal(t, e2.InputHistory, found.InputHistory)
+	assert.Positive(t, casPointerCount(t, cas, "race-1", "input_history"))
+
+	// Same for the batch delete path.
+	require.NoError(t, cas.DeleteLogs(ctx, []string{"race-1"}))
+	assert.Zero(t, casBlobCount(t, cas))
+	e3 := bigChatEntry("race-1", strings.Repeat("third life ", 30))
+	require.NoError(t, e3.SerializeFields())
+	require.NoError(t, cas.CreateIfNotExists(ctx, e3))
+	found, err = cas.FindByID(ctx, "race-1")
+	require.NoError(t, err)
+	assert.Equal(t, e3.InputHistory, found.InputHistory)
+}
+
+// Defect: a log with has_object=true whose cas_payloads rows were all gone
+// hydrated zero fields and FindByID returned silent success with empty
+// content. Missing pointers must be an explicit error.
+func TestCas_MissingAllPayloadRowsIsError(t *testing.T) {
+	cas, _ := newTestCas(t)
+	defer cas.Close(context.Background())
+	ctx := context.Background()
+
+	entry := bigChatEntry("noptrs-1", strings.Repeat("pointer content ", 30))
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, cas.CreateIfNotExists(ctx, entry))
+	require.Positive(t, casPointerCount(t, cas, "noptrs-1", "input_history"))
+
+	require.NoError(t, cas.db.Where("log_id = ?", "noptrs-1").Delete(&casPayload{}).Error)
+
+	_, err := cas.FindByID(ctx, "noptrs-1")
+	require.Error(t, err, "has_object=true with no cas_payloads rows must fail the read")
+	assert.Contains(t, err.Error(), "cas payloads")
+}
+
+// Defect: migrationBackfillCasHasObject used raw "has_object = 0"/"SET 1"
+// literals, which fail on PostgreSQL boolean columns. The GORM-dialect-safe
+// rewrite must repair flagged rows and leave pointer-less rows untouched
+// (verified on SQLite; PostgreSQL still needs a live test).
+func TestCas_MigrationBackfillHasObject(t *testing.T) {
+	cas, _ := newTestCas(t)
+	defer cas.Close(context.Background())
+	ctx := context.Background()
+
+	withPointer := bigChatEntry("backfill-1", strings.Repeat("backfill content ", 30))
+	require.NoError(t, withPointer.SerializeFields())
+	require.NoError(t, cas.CreateIfNotExists(ctx, withPointer))
+	withoutPointer := bigChatEntry("backfill-2", "tiny")
+	require.NoError(t, withoutPointer.SerializeFields())
+	require.NoError(t, cas.CreateIfNotExists(ctx, withoutPointer))
+	// Simulate the legacy bug the migration repairs.
+	require.NoError(t, cas.db.Model(&Log{}).Where("id = ?", "backfill-1").Update("has_object", false).Error)
+	require.NoError(t, cas.db.Model(&Log{}).Where("id = ?", "backfill-2").Update("has_object", false).Error)
+
+	// The store-open migration pass already recorded this ID as applied; clear
+	// the record (migrator.DefaultOptions table) so the migration re-runs.
+	require.NoError(t, cas.db.Exec("DELETE FROM migrations WHERE id = ?", "cas_has_object_backfill").Error)
+
+	require.NoError(t, migrationBackfillCasHasObject(ctx, cas.db, hybridTestLogger{}))
+
+	var repaired, untouched Log
+	require.NoError(t, cas.db.Where("id = ?", "backfill-1").First(&repaired).Error)
+	assert.True(t, repaired.HasObject, "row with CAS pointers must be repaired")
+	require.NoError(t, cas.db.Where("id = ?", "backfill-2").First(&untouched).Error)
+	assert.False(t, untouched.HasObject, "pointer-less row must stay false")
+
+	// The repaired row must be readable again.
+	found, err := cas.FindByID(ctx, "backfill-1")
+	require.NoError(t, err)
+	assert.Equal(t, withPointer.InputHistory, found.InputHistory)
+}
+
+// Defect: FindFirst/FindAll only warned on hydration failure but still
+// returned the damaged entry, so corrupt rows leaked empty payload fields
+// into results as if they were real content. Failed entries must be dropped
+// (FindFirst: ErrNotFound, matching the inner store's not-found shape) and
+// counted in HydrateErrors.
+func TestCas_FindSkipsCorruptEntries(t *testing.T) {
+	cas, _ := newTestCas(t)
+	defer cas.Close(context.Background())
+	ctx := context.Background()
+
+	healthy := bigChatEntry("aaa-healthy", strings.Repeat("healthy content ", 30))
+	require.NoError(t, healthy.SerializeFields())
+	require.NoError(t, cas.CreateIfNotExists(ctx, healthy))
+	corrupt := bigChatEntry("zzz-corrupt", strings.Repeat("corrupt content ", 30))
+	require.NoError(t, corrupt.SerializeFields())
+	require.NoError(t, cas.CreateIfNotExists(ctx, corrupt))
+	manifest := casManifestHashFor(t, cas, "zzz-corrupt", "input_history")
+	require.NoError(t, cas.db.Where("hash = ?", manifest).Delete(&casBlob{}).Error)
+
+	// FindAll drops the corrupt entry and keeps the healthy one.
+	logs, err := cas.FindAll(ctx, map[string]any{"id": []string{"aaa-healthy", "zzz-corrupt"}})
+	require.NoError(t, err)
+	require.Len(t, logs, 1, "corrupt entry must be skipped, not served damaged")
+	assert.Equal(t, "aaa-healthy", logs[0].ID)
+	assert.Equal(t, healthy.InputHistory, logs[0].InputHistory)
+
+	// FindFirst on a query whose only match is corrupt: ErrNotFound.
+	_, err = cas.FindFirst(ctx, map[string]any{"id": "zzz-corrupt"})
+	assert.ErrorIs(t, err, ErrNotFound, "unhydratable first match must surface as ErrNotFound")
+
+	// FindFirst over both: the healthy entry is still reachable.
+	first, err := cas.FindFirst(ctx, map[string]any{"status": "success"})
+	require.NoError(t, err)
+	assert.Equal(t, "aaa-healthy", first.ID)
+
+	stats, err := cas.CasStorageStats(ctx)
+	require.NoError(t, err)
+	assert.Positive(t, stats.HydrateErrors, "skipped entries must be counted as hydrate errors")
+}
+
+// Defect: the CAS create path kept hybrid's search summary (last user message,
+// truncated to 2048 bytes), so keywords that only appear in the output or in
+// early history were unfindable. The row summary must match the plain RDB
+// path's full BuildContentSummary range.
+func TestCas_SearchSummaryCoversOutput(t *testing.T) {
+	cas, inner := newTestCas(t)
+	defer cas.Close(context.Background())
+	ctx := context.Background()
+
+	entry := bigChatEntry("search-1", "innocent question")
+	entry.OutputMessageParsed = &schemas.ChatMessage{
+		Role:    schemas.ChatMessageRoleAssistant,
+		Content: &schemas.ChatMessageContent{ContentStr: strPtr("the zanzibar unicorn appears here " + strings.Repeat("tail ", 60))},
+	}
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, cas.CreateIfNotExists(ctx, entry))
+	require.Positive(t, casPointerCount(t, cas, "search-1", "output_message"),
+		"big output must be offloaded to CAS")
+
+	row, err := inner.FindByID(ctx, "search-1")
+	require.NoError(t, err)
+	assert.Contains(t, row.ContentSummary, "zanzibar unicorn",
+		"content summary must cover the output, not just the last user message")
+
+	result, err := cas.SearchLogs(ctx, SearchFilters{ContentSearch: "zanzibar unicorn"}, PaginationOptions{Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, result.Logs, 1, "output-only keyword must be searchable in CAS mode")
+	assert.Equal(t, "search-1", result.Logs[0].ID)
+}

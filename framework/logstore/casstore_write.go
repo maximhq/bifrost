@@ -12,9 +12,11 @@ package logstore
 //     downgraded fields' pointers removed, replaced manifests reclaimed, then
 //     the row update runs — including has_object, which is recomputed from the
 //     surviving pointer count instead of being left stale.
-//   - Deletes reclaim blobs via reachability; the full sweep computes
-//     reachability from live log roots so a dead manifest's ref edges cannot
-//     keep its segments (and itself) alive forever.
+//   - Deletes reclaim blobs via reachability, with the row deletion and the
+//     CAS cleanup for the same IDs inside ONE transaction (a same-ID recreate
+//     between the two would otherwise lose its fresh pointers); the full sweep
+//     computes reachability from live log roots so a dead manifest's ref edges
+//     cannot keep its segments (and itself) alive forever.
 
 import (
 	"context"
@@ -181,7 +183,19 @@ func (c *CasLogStore) prepareCreate(entry *Log) (*casPreparedCreate, error) {
 	payload := c.extractCasPayload(entry)
 	cleared, toStore := c.casSplitPayload(payload)
 	dbEntry := *entry
+	// Search-index parity with the plain RDB path: SerializeFields built the
+	// FULL input+output summary, but prepareCasEntry inherits hybrid's
+	// last-user-message preview truncated to 2048 bytes, which hides keywords
+	// that only appear in the output or in early history. The full summary is
+	// captured before prepareCasEntry clears the parsed fields and written to
+	// the row afterwards. Hidden rows keep no summary (prepareCasEntry clears
+	// it and we must not put content back).
+	fullSummary := ""
+	if !entry.ContentHidden {
+		fullSummary = entry.ContentSummary
+	}
 	prepareCasEntry(&dbEntry, c.excluded, cleared)
+	dbEntry.ContentSummary = fullSummary
 	dbEntry.HasObject = len(cleared) > 0
 	return &casPreparedCreate{entry: entry, dbEntry: dbEntry, toStore: toStore}, nil
 }
@@ -243,18 +257,28 @@ func (c *CasLogStore) updateFromMap(ctx context.Context, id string, updates map[
 	var toStore []casFieldContent
 	var downgrades []string // payload fields set to small/empty values: drop pointers
 	for k, val := range updates {
-		s, isString := val.(string)
-		if _, isPayload := payloadFieldSet[k]; isString && isPayload && !c.isExcludedPayload(k) {
-			if c.casEligible(k, s) {
-				toStore = append(toStore, casFieldContent{k, s})
-				rowUpdates[k] = "" // empty the row column; CAS is now authoritative
-			} else {
-				// Explicitly set to a small or empty value: the row column
-				// (written below) is the new truth; any stale pointer must go.
+		if _, isPayload := payloadFieldSet[k]; isPayload && !c.isExcludedPayload(k) {
+			if val == nil {
+				// A payload field set to nil is an explicit clear, same as the
+				// downgrade path: the pointer must be dropped and the row column
+				// becomes NULL (the inner store writes a nil map value as NULL),
+				// otherwise hydration would resurrect the old CAS content.
 				downgrades = append(downgrades, k)
-				rowUpdates[k] = s
+				rowUpdates[k] = nil
+				continue
 			}
-			continue
+			if s, isString := val.(string); isString {
+				if c.casEligible(k, s) {
+					toStore = append(toStore, casFieldContent{k, s})
+					rowUpdates[k] = "" // empty the row column; CAS is now authoritative
+				} else {
+					// Explicitly set to a small or empty value: the row column
+					// (written below) is the new truth; any stale pointer must go.
+					downgrades = append(downgrades, k)
+					rowUpdates[k] = s
+				}
+				continue
+			}
 		}
 		rowUpdates[k] = val
 	}
@@ -468,24 +492,40 @@ func (c *CasLogStore) gcOrphanCas(ctx context.Context) error {
 			return err
 		}
 		return tx.Where(
-			"NOT EXISTS (SELECT 1 FROM cas_payloads WHERE cas_payloads.blob_hash = cas_blobs.hash)"+
+			"NOT EXISTS (SELECT 1 FROM cas_payloads WHERE cas_payloads.blob_hash = cas_blobs.hash)" +
 				" AND NOT EXISTS (SELECT 1 FROM cas_refs WHERE cas_refs.target_hash = cas_blobs.hash)",
 		).Delete(&casBlob{}).Error
 	})
 }
 
+// DeleteLog removes the row AND reclaims its CAS content inside ONE
+// transaction. Splitting the two (row delete, then cleanup) let a recreate of
+// the same ID interleave between them, and the cleanup then deleted the NEW
+// log's fresh CAS pointers. Sharing the transaction closes that window: the
+// recreate blocks on the logs primary key until the cleanup has committed.
 func (c *CasLogStore) DeleteLog(ctx context.Context, id string) error {
-	if err := c.LogStore.DeleteLog(ctx, id); err != nil {
-		return err
-	}
-	return c.deleteCasForLogs(ctx, []string{id})
+	return c.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Replicates the inner store's DeleteLog (simple Where Delete, not
+		// found is not an error) so the CAS cleanup runs on the same tx.
+		if err := tx.Where("id = ?", id).Delete(&Log{}).Error; err != nil {
+			return err
+		}
+		return deleteCasForLogsTx(tx, []string{id})
+	})
 }
 
+// DeleteLogs is DeleteLog for a batch: row deletion and CAS cleanup for the
+// whole ID set share one transaction, same race reasoning as DeleteLog.
 func (c *CasLogStore) DeleteLogs(ctx context.Context, ids []string) error {
-	if err := c.LogStore.DeleteLogs(ctx, ids); err != nil {
-		return err
+	if len(ids) == 0 {
+		return nil
 	}
-	return c.deleteCasForLogs(ctx, ids)
+	return c.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("id IN ?", ids).Delete(&Log{}).Error; err != nil {
+			return err
+		}
+		return deleteCasForLogsTx(tx, ids)
+	})
 }
 
 func (c *CasLogStore) DeleteLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
@@ -517,15 +557,22 @@ func (c *CasLogStore) deleteCasForLogs(ctx context.Context, ids []string) error 
 		return nil
 	}
 	return c.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var manifests []string
-		if err := tx.Model(&casPayload{}).
-			Where("log_id IN ?", ids).
-			Pluck("blob_hash", &manifests).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("log_id IN ?", ids).Delete(&casPayload{}).Error; err != nil {
-			return err
-		}
-		return gcForManifests(tx, manifests)
+		return deleteCasForLogsTx(tx, ids)
 	})
+}
+
+// deleteCasForLogsTx removes the CAS pointers for ids inside tx and reclaims
+// the manifests they referenced. Callers that delete the log rows themselves
+// pass the same tx so row deletion and cleanup are atomic.
+func deleteCasForLogsTx(tx *gorm.DB, ids []string) error {
+	var manifests []string
+	if err := tx.Model(&casPayload{}).
+		Where("log_id IN ?", ids).
+		Pluck("blob_hash", &manifests).Error; err != nil {
+		return err
+	}
+	if err := tx.Where("log_id IN ?", ids).Delete(&casPayload{}).Error; err != nil {
+		return err
+	}
+	return gcForManifests(tx, manifests)
 }

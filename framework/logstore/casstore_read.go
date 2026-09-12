@@ -41,14 +41,19 @@ func (c *CasLogStore) FindFirst(ctx context.Context, query any, fields ...string
 		return nil, err
 	}
 	if needsHydration {
+		var hydrErr error
 		if wildcard {
-			if err := c.hydrateLog(ctx, log); err != nil {
-				c.hydrateErrors.Add(1)
-				c.logger.Warn("logstore/cas: hydrate failed for log %s: %v", log.ID, err)
-			}
-		} else if err := c.hydrateLog(ctx, log, fields...); err != nil {
+			hydrErr = c.hydrateLog(ctx, log)
+		} else {
+			hydrErr = c.hydrateLog(ctx, log, fields...)
+		}
+		if hydrErr != nil {
 			c.hydrateErrors.Add(1)
-			c.logger.Warn("logstore/cas: hydrate failed for log %s: %v", log.ID, err)
+			c.logger.Warn("logstore/cas: hydrate failed for log %s: %v", log.ID, hydrErr)
+			// The row cannot be served whole; a partially hydrated log would
+			// masquerade as real content. Match the inner store's
+			// record-not-found behavior for an unusable read.
+			return nil, ErrNotFound
 		}
 	}
 	return log, nil
@@ -65,6 +70,11 @@ func (c *CasLogStore) FindAll(ctx context.Context, query any, fields ...string) 
 		return nil, err
 	}
 	if needsHydration {
+		// Hydration failures drop the entry from the result (warn + skip, as
+		// the design doc promises): serving a partially hydrated log would
+		// present empty fields as real content. HydrateErrors is still
+		// incremented for observability.
+		kept := logs[:0]
 		for _, log := range logs {
 			var hydrErr error
 			if wildcard {
@@ -75,8 +85,11 @@ func (c *CasLogStore) FindAll(ctx context.Context, query any, fields ...string) 
 			if hydrErr != nil {
 				c.hydrateErrors.Add(1)
 				c.logger.Warn("logstore/cas: hydrate failed for log %s: %v", log.ID, hydrErr)
+				continue
 			}
+			kept = append(kept, log)
 		}
+		logs = kept
 	}
 	return logs, nil
 }
@@ -108,6 +121,18 @@ func (c *CasLogStore) hydrateFields(ctx context.Context, log *Log, includeHidden
 		return fmt.Errorf("list payloads: %w", err)
 	}
 	if len(rows) == 0 {
+		// has_object=true promises CAS pointers. An empty pointer set means
+		// the cas_payloads rows were lost (manual surgery, partial corruption);
+		// serving the row anyway would silently present empty content as the
+		// real payload, so it must be an error.
+		//
+		// Known structural limit: a SINGLE missing pointer row among several
+		// is indistinguishable from a field that legitimately lives in the row
+		// (was downgraded with has_object left stale) and cannot be detected
+		// here; per-pointer integrity is enforced once the pointer is read.
+		if log.HasObject {
+			return fmt.Errorf("logstore/cas: log %s: has_object is set but cas payloads are missing", log.ID)
+		}
 		return nil
 	}
 	if len(requestedFields) > 0 {
@@ -300,10 +325,10 @@ func (c *CasLogStore) hydrateLogForBilling(ctx context.Context, log *Log) error 
 // CasStats reports CAS table sizes and operational counters for
 // observability.
 type CasStats struct {
-	Blobs   int64 `json:"blobs"`
-	BlobBytes   int64 `json:"blob_bytes"`
-	Refs    int64 `json:"refs"`
-	Payloads    int64 `json:"payloads"`
+	Blobs     int64 `json:"blobs"`
+	BlobBytes int64 `json:"blob_bytes"`
+	Refs      int64 `json:"refs"`
+	Payloads  int64 `json:"payloads"`
 	// SegmentHits counts segment blobs referenced by more than one manifest —
 	// the rows that exist only because of cross-request dedup.
 	SegmentHits int64 `json:"segment_hits"`
