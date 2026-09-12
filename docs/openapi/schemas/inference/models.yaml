@@ -65,13 +65,13 @@ Model:
     supported_endpoints:
       type: array
       description: >-
-        Canonical Bifrost endpoints derived from catalog capability metadata when available. This currently contains at most one preferred endpoint and is not an exhaustive list for multi-capable models.
+        Supported endpoints reported by the provider when available. If the provider omits them, Bifrost may backfill at most one preferred endpoint derived from catalog capability metadata, so catalog backfill is not exhaustive for multi-capable models.
       items:
         type: string
     supported_methods:
       type: array
       description: >-
-        Supported methods reported by the provider when available. If the provider omits them, Bifrost backfills request-type identifiers derived from supported_endpoints (for example: chat_completion, responses, speech, image_generation).
+        Supported methods reported by the provider when available. If the provider omits them, Bifrost backfills request-type identifiers by mapping the effective mode to a preferred endpoint (for example: chat_completion, responses, speech, image_generation), rather than by inspecting existing supported_endpoints.
       items:
         type: string
 

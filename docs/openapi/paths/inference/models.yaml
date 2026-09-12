@@ -9,9 +9,9 @@ models:
 
       When Bifrost pricing/catalog metadata is available, `/v1/models` may also backfill:
       - `pricing`, `normalized_name`, and other descriptive fields from the catalog when the provider omitted them,
-      - `supported_endpoints`, which currently contains at most one preferred Bifrost endpoint and is not exhaustive for multi-capable models,
+      - `supported_endpoints`, which preserves provider-reported endpoint lists when present; catalog backfill contributes at most one preferred Bifrost endpoint and is not exhaustive for multi-capable models,
       - `mode`, the preferred/default Bifrost API surface (chat, then responses, then text completion, else deterministic fallback) when that preferred mode maps to a known endpoint,
-      - `supported_methods`, which preserves provider-native values when present and otherwise backfills Bifrost request-type identifiers derived from `supported_endpoints`.
+      - `supported_methods`, which preserves provider-native values when present and otherwise backfills Bifrost request-type identifiers by mapping the effective `mode` to a preferred endpoint rather than by inspecting existing `supported_endpoints`.
     tags:
     - Models
     parameters:
