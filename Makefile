@@ -2058,6 +2058,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' ""                "  Retry reports merge LAST, so a successful attempt supersedes its own failure in tmp/newman-report.json."; \
 		printf '  %-18s %s\n' "SHARD_LINES=0"  "Drop the per-shard completion lines (<shard> N total/pass/fail) and show only the provider table."; \
 		printf '  %-18s %s\n' "SKIP_STREAM_CANCEL=1" "Skip the post-Newman stream-abort probes that verify server-side cancellation on client disconnect."; \
+		printf '  %-18s %s\n' "NONSTREAM_TRIALS=6" "Non-streaming abort trials per provider in those probes; every trial must leave a terminal log row (#6972). Default 6."; \
 		printf '  %-18s %s\n' "HARNESS_SERVER_CWD" "Server working directory for relative logs_store SQLite paths (default: transports/bifrost-http, matching make dev). BIFROST_LOGS_DB_URL overrides config resolution."; \
 		printf '  %-18s %s\n' "DB_VERIFY=0"      "Disable the dbverify reporter (ON by default). When on, [Costing]/[Accounting] requests assert the logs DB cost matches the getbifrost.ai/datasheet-computed cost (resolves DB from APP_DIR/config.json or BIFROST_LOGS_DB_URL); skips gracefully if no logs DB is reachable."; \
 		printf '  %-18s %s\n' "USE_INFISICAL=1" "Source secrets from Infisical CLI ('infisical export --path /local --format dotenv') instead of .env."; \
@@ -2883,6 +2884,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			--config "$$APP_DIR_VAL/config.json" \
 			--server-working-dir "$(or $(HARNESS_SERVER_CWD),$(CURDIR)/transports/bifrost-http)" \
 			$(if $(PROVIDER),--provider "$(PROVIDER)",) \
+			$(if $(NONSTREAM_TRIALS),--nonstream-trials "$(NONSTREAM_TRIALS)",) \
 			--out tmp/stream-cancel-report.json > tmp/stream-cancel-cli.log 2>&1; \
 		STREAM_CANCEL_EXIT=$$?; \
 		if [ "$$HARNESS_QUIET" != "1" ]; then cat tmp/stream-cancel-cli.log; fi; \
