@@ -12,28 +12,9 @@ import (
 	"github.com/maximhq/bifrost/framework/modelcatalog/live"
 )
 
-func modelInfoCatalog(t *testing.T) *ModelCatalog {
+func modelInfoCatalogFromFixtures(t *testing.T, pricingJSON []byte, paramsJSON []byte) *ModelCatalog {
 	t.Helper()
 	pricingPath := filepath.Join(t.TempDir(), "pricing.json")
-	pricingJSON := []byte(`{
-		"claude-opus-5": {
-			"provider": "anthropic",
-			"mode": "chat",
-			"base_model": "claude-opus-5",
-			"max_input_tokens": 200000,
-			"max_output_tokens": 64000,
-			"input_cost_per_token": 0.000005,
-			"output_cost_per_token": 0.000025,
-			"cache_read_input_token_cost": 0.0000005,
-			"cache_creation_input_token_cost": 0.00000625
-		},
-		"retired-model": {
-			"provider": "anthropic",
-			"mode": "chat",
-			"base_model": "retired-model",
-			"is_deprecated": true
-		}
-	}`)
 	if err := os.WriteFile(pricingPath, pricingJSON, 0o600); err != nil {
 		t.Fatalf("write pricing testdata: %v", err)
 	}
@@ -42,12 +23,6 @@ func modelInfoCatalog(t *testing.T) *ModelCatalog {
 	// seeding pricing alone leaves SupportedParameters empty and any assertion
 	// about it passes for the wrong reason.
 	paramsPath := filepath.Join(filepath.Dir(pricingPath), "params.json")
-	paramsJSON := []byte(`{
-		"claude-opus-5": {
-			"mode": "chat",
-			"model_parameters": [{"id": "temperature"}, {"id": "top_p"}]
-		}
-	}`)
 	if err := os.WriteFile(paramsPath, paramsJSON, 0o600); err != nil {
 		t.Fatalf("write model-parameters testdata: %v", err)
 	}
@@ -70,6 +45,34 @@ func modelInfoCatalog(t *testing.T) *ModelCatalog {
 	}
 	mc.initCaches()
 	return mc
+}
+
+func modelInfoCatalog(t *testing.T) *ModelCatalog {
+	t.Helper()
+	return modelInfoCatalogFromFixtures(t, []byte(`{
+		"claude-opus-5": {
+			"provider": "anthropic",
+			"mode": "chat",
+			"base_model": "claude-opus-5",
+			"max_input_tokens": 200000,
+			"max_output_tokens": 64000,
+			"input_cost_per_token": 0.000005,
+			"output_cost_per_token": 0.000025,
+			"cache_read_input_token_cost": 0.0000005,
+			"cache_creation_input_token_cost": 0.00000625
+		},
+		"retired-model": {
+			"provider": "anthropic",
+			"mode": "chat",
+			"base_model": "retired-model",
+			"is_deprecated": true
+		}
+	}`), []byte(`{
+		"claude-opus-5": {
+			"mode": "chat",
+			"model_parameters": [{"id": "temperature"}, {"id": "top_p"}]
+		}
+	}`))
 }
 
 func TestGetModelInfoPopulatesPricingAndLimits(t *testing.T) {
@@ -108,6 +111,15 @@ func TestGetModelInfoPopulatesPricingAndLimits(t *testing.T) {
 	if info.Pricing.InputCacheWrite == nil || *info.Pricing.InputCacheWrite != "0.0000062500" {
 		t.Errorf("Pricing.InputCacheWrite = %v, want 0.0000062500", info.Pricing.InputCacheWrite)
 	}
+	if info.Mode == nil || *info.Mode != "chat" {
+		t.Errorf("Mode = %v, want chat", info.Mode)
+	}
+	if len(info.SupportedEndpoints) != 1 || info.SupportedEndpoints[0] != "/v1/chat/completions" {
+		t.Errorf("SupportedEndpoints = %v, want [/v1/chat/completions]", info.SupportedEndpoints)
+	}
+	if len(info.SupportedMethods) != 1 || info.SupportedMethods[0] != string(schemas.ChatCompletionRequest) {
+		t.Errorf("SupportedMethods = %v, want [%s]", info.SupportedMethods, string(schemas.ChatCompletionRequest))
+	}
 }
 
 func TestGetModelInfoReportsDeprecation(t *testing.T) {
@@ -119,6 +131,71 @@ func TestGetModelInfoReportsDeprecation(t *testing.T) {
 	}
 	if !info.IsDeprecated {
 		t.Error("IsDeprecated = false, want true")
+	}
+}
+
+func TestGetModelInfoPricingEntryWinsOverAliasResolvedCapabilityEntry(t *testing.T) {
+	mc := modelInfoCatalogFromFixtures(t, []byte(`{
+		"alias-model": {
+			"provider": "anthropic",
+			"mode": "responses",
+			"base_model": "alias-model",
+			"input_cost_per_token": 0.000001,
+			"output_cost_per_token": 0.000002
+		},
+		"canonical-model": {
+			"provider": "anthropic",
+			"mode": "chat",
+			"base_model": "canonical-model",
+			"context_length": 8192,
+			"max_input_tokens": 4096,
+			"max_output_tokens": 1024
+		}
+	}`), []byte(`{}`))
+
+	canonicalModel := "canonical-model"
+	mc.keyconf.SetProvider(schemas.Anthropic, []schemas.Key{{
+		ID:      "anthropic-key",
+		Enabled: schemas.Ptr(true),
+		Models:  schemas.WhiteList{"*"},
+		Aliases: schemas.KeyAliases{
+			"alias-model": {
+				ModelID:   "provider-alias-model",
+				ModelName: &canonicalModel,
+			},
+		},
+	}})
+
+	info := mc.GetModelInfo(schemas.Anthropic, "alias-model")
+	if info == nil {
+		t.Fatal("GetModelInfo = nil, want populated model")
+	}
+	if info.Pricing == nil {
+		t.Fatal("Pricing = nil, want populated pricing from alias row")
+	}
+	if info.Pricing.Prompt == nil || *info.Pricing.Prompt != "0.0000010000" {
+		t.Fatalf("Pricing.Prompt = %v, want 0.0000010000 from alias pricing row", info.Pricing.Prompt)
+	}
+	if info.Pricing.Completion == nil || *info.Pricing.Completion != "0.0000020000" {
+		t.Fatalf("Pricing.Completion = %v, want 0.0000020000 from alias pricing row", info.Pricing.Completion)
+	}
+	if info.ContextLength == nil || *info.ContextLength != 8192 {
+		t.Fatalf("ContextLength = %v, want 8192 from canonical capability row", info.ContextLength)
+	}
+	if info.MaxInputTokens == nil || *info.MaxInputTokens != 4096 {
+		t.Fatalf("MaxInputTokens = %v, want 4096 from canonical capability row", info.MaxInputTokens)
+	}
+	if info.MaxOutputTokens == nil || *info.MaxOutputTokens != 1024 {
+		t.Fatalf("MaxOutputTokens = %v, want 1024 from canonical capability row", info.MaxOutputTokens)
+	}
+	if info.Mode == nil || *info.Mode != "chat" {
+		t.Fatalf("Mode = %v, want chat from canonical capability row", info.Mode)
+	}
+	if len(info.SupportedEndpoints) != 1 || info.SupportedEndpoints[0] != "/v1/chat/completions" {
+		t.Fatalf("SupportedEndpoints = %v, want [/v1/chat/completions]", info.SupportedEndpoints)
+	}
+	if len(info.SupportedMethods) != 1 || info.SupportedMethods[0] != string(schemas.ChatCompletionRequest) {
+		t.Fatalf("SupportedMethods = %v, want [%s]", info.SupportedMethods, string(schemas.ChatCompletionRequest))
 	}
 }
 
@@ -188,6 +265,14 @@ func TestGetModelInfoReturnsCallerOwnedCopy(t *testing.T) {
 		t.Fatal("SupportedParameters is empty, so mutating it would prove nothing")
 	}
 	first.SupportedParameters[0] = "mutated"
+	if len(first.SupportedEndpoints) == 0 {
+		t.Fatal("SupportedEndpoints is empty, so mutating it would prove nothing")
+	}
+	if len(first.SupportedMethods) == 0 {
+		t.Fatal("SupportedMethods is empty, so mutating it would prove nothing")
+	}
+	first.SupportedEndpoints[0] = "mutated"
+	first.SupportedMethods[0] = "mutated"
 
 	second := mc.GetModelInfo(schemas.Anthropic, "claude-opus-5")
 	if second == nil {
@@ -210,6 +295,12 @@ func TestGetModelInfoReturnsCallerOwnedCopy(t *testing.T) {
 	// lookup hands back a fresh slice.
 	if slices.Contains(second.SupportedParameters, "mutated") {
 		t.Errorf("SupportedParameters leaked a caller mutation into the catalog: %v", second.SupportedParameters)
+	}
+	if slices.Contains(second.SupportedEndpoints, "mutated") {
+		t.Errorf("SupportedEndpoints leaked a caller mutation into the catalog: %v", second.SupportedEndpoints)
+	}
+	if slices.Contains(second.SupportedMethods, "mutated") {
+		t.Errorf("SupportedMethods leaked a caller mutation into the catalog: %v", second.SupportedMethods)
 	}
 
 	// The pointers themselves must differ, else a later caller mutating through
@@ -283,9 +374,32 @@ func TestApplyModelInfoClonesMutableEntryFields(t *testing.T) {
 	}
 }
 
+func TestApplyModelCapabilitySurfaceDoesNotOverwriteProviderValues(t *testing.T) {
+	existingMode := "responses"
+	model := &schemas.Model{
+		Mode:               &existingMode,
+		SupportedEndpoints: []string{"/v1/responses"},
+		SupportedMethods:   []string{"provider-native"},
+	}
+
+	ApplyModelCapabilitySurface(model, &PricingEntry{Mode: "chat"})
+
+	if model.Mode == nil || *model.Mode != "responses" {
+		t.Errorf("Mode = %v, want responses", model.Mode)
+	}
+	if len(model.SupportedEndpoints) != 1 || model.SupportedEndpoints[0] != "/v1/responses" {
+		t.Errorf("SupportedEndpoints = %v, want [/v1/responses]", model.SupportedEndpoints)
+	}
+	if len(model.SupportedMethods) != 1 || model.SupportedMethods[0] != "provider-native" {
+		t.Errorf("SupportedMethods = %v, want [provider-native]", model.SupportedMethods)
+	}
+}
+
 func TestApplyModelInfoNilSafe(t *testing.T) {
 	ApplyModelInfo(nil, nil)
 	ApplyModelInfo(&schemas.Model{}, nil)
+	ApplyModelCapabilitySurface(nil, nil)
+	ApplyModelCapabilitySurface(&schemas.Model{}, nil)
 
 	var nilCatalog *ModelCatalog
 	if got := nilCatalog.GetModelInfo(schemas.Anthropic, "claude-opus-5"); got != nil {

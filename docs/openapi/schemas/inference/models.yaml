@@ -58,8 +58,20 @@ Model:
       type: string
     owned_by:
       type: string
+    mode:
+      type: string
+      description: >-
+        Preferred/default Bifrost API surface backfilled from catalog capability metadata when available and when the preferred catalog mode maps to a known endpoint. When a model has multiple catalog entries, one preferred mode is exposed (chat, then responses, then text completion, else deterministic fallback).
+    supported_endpoints:
+      type: array
+      description: >-
+        Supported endpoints reported by the provider when available. If the provider omits them, Bifrost may backfill at most one preferred endpoint derived from catalog capability metadata, so catalog backfill is not exhaustive for multi-capable models.
+      items:
+        type: string
     supported_methods:
       type: array
+      description: >-
+        Supported methods reported by the provider when available. If the provider omits them, Bifrost backfills request-type identifiers by mapping the effective mode to a preferred endpoint (for example: chat_completion, responses, speech, image_generation), rather than by inspecting existing supported_endpoints.
       items:
         type: string
 

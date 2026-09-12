@@ -135567,6 +135567,65 @@
       ]
     },
     {
+      "name": "61.1 Native /v1/models capability metadata (#7062)",
+      "description": "Pins the native /v1/models capability metadata added in PR #7062. Before the change, list-models rows could expose pricing/normalized_name from the catalog but never the preferred API surface metadata (mode, supported_endpoints, supported_methods), and capability-only rows could serialize as an empty pricing object. This case keeps the assertion on the native route and only requires that at least one OpenAI model is catalog-enriched with the new capability fields while no model emits pricing: {}.",
+      "item": [
+        {
+          "name": "OpenAI native /v1/models exposes catalog capability metadata - #7062",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('OpenAI native /v1/models exposes catalog capability metadata', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var data = pm.response.json().data || [];",
+                  "  pm.expect(data, 'expected at least one model: ' + body).to.not.be.empty;",
+                  "  var enriched = data.find(function (model) {",
+                  "    return model && typeof model.normalized_name === 'string' && model.normalized_name.length > 0 && typeof model.mode === 'string' && model.mode.length > 0 && Array.isArray(model.supported_endpoints) && model.supported_endpoints.length > 0 && Array.isArray(model.supported_methods) && model.supported_methods.length > 0;",
+                  "  });",
+                  "  pm.expect(enriched, 'no model exposed normalized_name + mode + supported_endpoints + supported_methods: ' + body).to.exist;",
+                  "  pm.expect(enriched.supported_endpoints.every(function (endpoint) { return typeof endpoint === 'string' && endpoint.length > 0; }), JSON.stringify(enriched)).to.eql(true);",
+                  "  pm.expect(enriched.supported_methods.every(function (method) { return typeof method === 'string' && method.length > 0; }), JSON.stringify(enriched)).to.eql(true);",
+                  "  var emptyPricing = data.filter(function (model) {",
+                  "    return model && Object.prototype.hasOwnProperty.call(model, 'pricing') && Object.keys(model.pricing || {}).length === 0;",
+                  "  });",
+                  "  pm.expect(emptyPricing, 'pricing must not serialize as an empty object').to.be.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=openai&page_size=1000",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                },
+                {
+                  "key": "page_size",
+                  "value": "1000"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "62. Files API metadata + content routes across providers (files-routes)",
       "description": "Pins the Anthropic Files API route split and the mime_type/downloadable plumbing.\n\nTwo production bugs are covered:\n1. mime_type and downloadable were dropped in the Anthropic <-> canonical round trip. BifrostFile{Upload,Retrieve}Response carried no such fields, and ToAnthropicFile*Response hardcoded MimeType to \"\", so every file reported mime_type \"\" and downloadable false - including tool-generated files that Anthropic reports as downloadable true.\n2. GET /anthropic/v1/files/{file_id}/content was wired to the retrieve handler (its FileRequestConverter returned FileRetrieveRequest), so it answered 200 with the metadata document instead of file bytes, and no route was registered at GET /anthropic/v1/files/{file_id} at all - that path fell through to the SPA catch-all and returned 200 text/html.\n\nCriss-cross shape: the same file id is exercised across the native /v1, /openai and /anthropic routes, and each route is exercised against anthropic, openai, azure and gemini (provider chosen by ?provider= on the native//openai routes and by the x-model-provider header on /anthropic). Azure is the positive byte-download cell; anthropic and openai legitimately refuse the download, and those rows assert the refusal comes from the content API rather than being the old metadata document.\n\nRows chain on {{filesAnthropicId}} / {{filesOpenaiId}} / {{filesAzureId}} / {{filesGeminiId}} / {{filesCodeExecId}} in the URL path, so filter-collection keeps producers attached under sharding and --rerun-failed.",
       "item": [
