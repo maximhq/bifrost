@@ -7,21 +7,23 @@ import { getRegistrationLabel, getUserHomePrefix } from "../utils";
 export function WindsurfHarnessInstall({
 	canGenerateCommand,
 	clientConfig,
+	emptyMessage,
+	headers,
 	platform,
 	selectedServers,
 	serverScope,
-	virtualKey,
 }: HarnessInstallProps) {
 	const configPath = `${getUserHomePrefix(platform)}/.codeium/windsurf/mcp_config.json`;
 
-	const config = useMemo(() => {
-		if (!virtualKey) return "";
-		return buildWindsurfConfig({
-			clientConfig,
-			selectedServers: serverScope === "selected" ? selectedServers : undefined,
-			virtualKey,
-		});
-	}, [clientConfig, selectedServers, serverScope, virtualKey]);
+	const config = useMemo(
+		() =>
+			buildWindsurfConfig({
+				clientConfig,
+				headers,
+				selectedServers: serverScope === "selected" ? selectedServers : undefined,
+			}),
+		[clientConfig, headers, selectedServers, serverScope],
+	);
 
 	return (
 		<HarnessCommandSection
@@ -29,7 +31,7 @@ export function WindsurfHarnessInstall({
 			command={config}
 			controls={null}
 			copySuccessMessage="Config copied"
-			emptyMessage={virtualKey ? "Select servers or use Gateway root." : "Select a virtual key to generate the config."}
+			emptyMessage={emptyMessage}
 			harnessName="Windsurf (Devin)"
 			label="Config"
 			logoSrc="/images/harness/windsurf.svg"

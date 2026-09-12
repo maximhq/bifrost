@@ -13,21 +13,23 @@ export function AntigravityIcon({ className }: { className?: string }) {
 export function AntigravityHarnessInstall({
 	canGenerateCommand,
 	clientConfig,
+	emptyMessage,
+	headers,
 	platform,
 	selectedServers,
 	serverScope,
-	virtualKey,
 }: HarnessInstallProps) {
 	const configPath = `${getUserHomePrefix(platform)}/.gemini/antigravity/mcp_config.json`;
 
-	const config = useMemo(() => {
-		if (!virtualKey) return "";
-		return buildAntigravityConfig({
-			clientConfig,
-			selectedServers: serverScope === "selected" ? selectedServers : undefined,
-			virtualKey,
-		});
-	}, [clientConfig, selectedServers, serverScope, virtualKey]);
+	const config = useMemo(
+		() =>
+			buildAntigravityConfig({
+				clientConfig,
+				headers,
+				selectedServers: serverScope === "selected" ? selectedServers : undefined,
+			}),
+		[clientConfig, headers, selectedServers, serverScope],
+	);
 
 	return (
 		<HarnessCommandSection
@@ -35,7 +37,7 @@ export function AntigravityHarnessInstall({
 			command={config}
 			controls={null}
 			copySuccessMessage="Config copied"
-			emptyMessage={virtualKey ? "Select servers or use Gateway root." : "Select a virtual key to generate the config."}
+			emptyMessage={emptyMessage}
 			harnessName="Antigravity"
 			label="Config"
 			logoSrc="/images/harness/antigravity.svg"
