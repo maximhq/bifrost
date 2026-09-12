@@ -1,0 +1,1 @@
+- feat: virtual key permits carry the provider config pattern twins, so a request is refused with `model_blocked` when a block pattern matches and admitted when an allow pattern does

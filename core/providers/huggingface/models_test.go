@@ -40,7 +40,7 @@ func TestToBifrostListModelsResponse_AllowlistWithInferenceProviderSegment(t *te
 			},
 		}
 
-		result := response.ToBifrostListModelsResponse(schemas.HuggingFace, featherlessAI, allowlist, nil, nil, false)
+		result := response.ToBifrostListModelsResponse(schemas.HuggingFace, featherlessAI, schemas.ModelAccessRule{Allowed: allowlist}, nil, false)
 		require.NotNil(t, result)
 		require.Len(t, result.Data, 1)
 		assert.Equal(t, "huggingface/featherless-ai/deepseek-ai/DeepSeek-V4-Pro", result.Data[0].ID)
@@ -58,7 +58,7 @@ func TestToBifrostListModelsResponse_AllowlistWithInferenceProviderSegment(t *te
 			},
 		}
 
-		result := response.ToBifrostListModelsResponse(schemas.HuggingFace, cohere, allowlist, nil, nil, false)
+		result := response.ToBifrostListModelsResponse(schemas.HuggingFace, cohere, schemas.ModelAccessRule{Allowed: allowlist}, nil, false)
 		require.NotNil(t, result)
 		assert.Empty(t, result.Data, "an allowlist entry pinned to featherless-ai must not be backfilled under cohere")
 	})
@@ -73,7 +73,7 @@ func TestToBifrostListModelsResponse_AllowlistWithBasetenProviderSegment(t *test
 	response := &HuggingFaceListModelsResponse{Models: nil}
 	allowlist := schemas.WhiteList{"baseten/zai-org/GLM-5.3-Flash"}
 
-	result := response.ToBifrostListModelsResponse(schemas.HuggingFace, provider, allowlist, nil, nil, false)
+	result := response.ToBifrostListModelsResponse(schemas.HuggingFace, provider, schemas.ModelAccessRule{Allowed: allowlist}, nil, false)
 	require.NotNil(t, result)
 	require.Len(t, result.Data, 1)
 	assert.Equal(t, "huggingface/baseten/zai-org/GLM-5.3-Flash", result.Data[0].ID)
@@ -133,7 +133,7 @@ func TestToBifrostListModelsResponse_AllowlistWithAutoPolicySegment(t *testing.T
 	t.Run("canonical first pass emits the auto-policy entry exactly once", func(t *testing.T) {
 		t.Parallel()
 		response := &HuggingFaceListModelsResponse{Models: nil}
-		result := response.ToBifrostListModelsResponse(schemas.HuggingFace, INFERENCE_PROVIDERS[0], allowlist, nil, nil, false)
+		result := response.ToBifrostListModelsResponse(schemas.HuggingFace, INFERENCE_PROVIDERS[0], schemas.ModelAccessRule{Allowed: allowlist}, nil, false)
 		require.NotNil(t, result)
 		require.Len(t, result.Data, 1)
 		assert.Equal(t, "huggingface/auto/deepseek-ai/DeepSeek-V4-Pro", result.Data[0].ID,
@@ -146,7 +146,7 @@ func TestToBifrostListModelsResponse_AllowlistWithAutoPolicySegment(t *testing.T
 		nonCanonicalProvider := INFERENCE_PROVIDERS[1]
 
 		response := &HuggingFaceListModelsResponse{Models: nil}
-		result := response.ToBifrostListModelsResponse(schemas.HuggingFace, nonCanonicalProvider, allowlist, nil, nil, false)
+		result := response.ToBifrostListModelsResponse(schemas.HuggingFace, nonCanonicalProvider, schemas.ModelAccessRule{Allowed: allowlist}, nil, false)
 		require.NotNil(t, result)
 		assert.Empty(t, result.Data, "a non-canonical pass must not re-emit the auto-policy entry")
 	})
@@ -160,7 +160,7 @@ func TestToBifrostListModelsResponse_BackfillWithoutInferenceProviderSegment(t *
 	response := &HuggingFaceListModelsResponse{Models: nil}
 	allowlist := schemas.WhiteList{"deepseek-ai/DeepSeek-V4-Pro"}
 
-	result := response.ToBifrostListModelsResponse(schemas.HuggingFace, featherlessAI, allowlist, nil, nil, false)
+	result := response.ToBifrostListModelsResponse(schemas.HuggingFace, featherlessAI, schemas.ModelAccessRule{Allowed: allowlist}, nil, false)
 	require.NotNil(t, result)
 	require.Len(t, result.Data, 1)
 	assert.Equal(t, "huggingface/featherless-ai/deepseek-ai/DeepSeek-V4-Pro", result.Data[0].ID)
@@ -188,7 +188,7 @@ func TestToBifrostListModelsResponse_BackfillEnrichesHuggingFaceIDAndSupportedMe
 		},
 	}
 
-	result := response.ToBifrostListModelsResponse(schemas.HuggingFace, featherlessAI, allowlist, nil, nil, false)
+	result := response.ToBifrostListModelsResponse(schemas.HuggingFace, featherlessAI, schemas.ModelAccessRule{Allowed: allowlist}, nil, false)
 	require.NotNil(t, result)
 	require.Len(t, result.Data, 1)
 
@@ -221,7 +221,7 @@ func TestToBifrostListModelsResponse_BackfillEnrichesHuggingFaceIDOnlyWhenMethod
 		},
 	}
 
-	result := response.ToBifrostListModelsResponse(schemas.HuggingFace, featherlessAI, allowlist, nil, nil, false)
+	result := response.ToBifrostListModelsResponse(schemas.HuggingFace, featherlessAI, schemas.ModelAccessRule{Allowed: allowlist}, nil, false)
 	require.NotNil(t, result)
 	require.Len(t, result.Data, 1)
 

@@ -239,7 +239,7 @@ func (provider *GeminiProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 		}
 	}
 
-	response := geminiResponse.ToBifrostListModelsResponse(providerName, key.Models, key.BlacklistedModels, key.Aliases, request.Unfiltered)
+	response := geminiResponse.ToBifrostListModelsResponse(providerName, key.ModelAccess(), key.Aliases, request.Unfiltered)
 
 	response.ExtraFields.Latency = latency.Milliseconds()
 

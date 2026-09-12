@@ -1,0 +1,1 @@
+- feat: virtual key and provider key APIs accept `allowed_models_patterns` / `blacklisted_models_patterns` and `models_patterns` / `blacklisted_models_patterns`: RE2 patterns that allow or block model families next to the exact lists. Invalid, empty, duplicate or `*` patterns are refused with 400. The model picker gains a Regex tab that edits the pattern fields

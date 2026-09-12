@@ -543,12 +543,14 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			blacklistedModels = []string{} // Match models: empty JSON array, not null
 		}
 		redactedConfig.Keys[i] = schemas.Key{
-			ID:                key.ID,
-			Name:              key.Name,
-			Models:            models,
-			BlacklistedModels: blacklistedModels,
-			Weight:            key.Weight,
-			ConfigHash:        key.ConfigHash,
+			ID:                        key.ID,
+			Name:                      key.Name,
+			Models:                    models,
+			BlacklistedModels:         blacklistedModels,
+			ModelsPatterns:            key.ModelsPatterns,
+			BlacklistedModelsPatterns: key.BlacklistedModelsPatterns,
+			Weight:                    key.Weight,
+			ConfigHash:                key.ConfigHash,
 		}
 		if key.Enabled != nil {
 			enabled := *key.Enabled
@@ -867,6 +869,29 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 		hash.Write([]byte("blacklistedModels:"))
 		hash.Write(data)
 	}
+	// Hash the pattern twins only when set, so keys without patterns keep their hash.
+	if len(key.ModelsPatterns) > 0 {
+		sortedPatterns := make([]string, len(key.ModelsPatterns))
+		copy(sortedPatterns, key.ModelsPatterns)
+		sort.Strings(sortedPatterns)
+		data, err := sonic.Marshal(sortedPatterns)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("modelsPatterns:"))
+		hash.Write(data)
+	}
+	if len(key.BlacklistedModelsPatterns) > 0 {
+		sortedPatterns := make([]string, len(key.BlacklistedModelsPatterns))
+		copy(sortedPatterns, key.BlacklistedModelsPatterns)
+		sort.Strings(sortedPatterns)
+		data, err := sonic.Marshal(sortedPatterns)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("blacklistedModelsPatterns:"))
+		hash.Write(data)
+	}
 	// Hash Weight
 	data, err := sonic.Marshal(key.Weight)
 	if err != nil {
@@ -1005,9 +1030,12 @@ type VirtualKeyProviderConfigHashInput struct {
 	Weight            *float64
 	AllowedModels     []string
 	BlacklistedModels []string
-	AllowAllKeys      bool
-	RateLimitID       *string
-	KeyIDs            []string // Only key IDs, not full key objects
+	// Pattern twins, omitted from the hash when empty so existing hashes hold.
+	AllowedModelsPatterns     []string `json:",omitempty"`
+	BlacklistedModelsPatterns []string `json:",omitempty"`
+	AllowAllKeys              bool
+	RateLimitID               *string
+	KeyIDs                    []string // Only key IDs, not full key objects
 }
 
 // VirtualKeyMCPConfigHashInput represents MCP config fields for hashing
@@ -1103,14 +1131,26 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 			sortedBlacklistedModels := make([]string, len(pc.BlacklistedModels))
 			copy(sortedBlacklistedModels, pc.BlacklistedModels)
 			sort.Strings(sortedBlacklistedModels)
+
+			var sortedAllowedPatterns, sortedBlacklistedPatterns []string
+			if len(pc.AllowedModelsPatterns) > 0 {
+				sortedAllowedPatterns = append([]string(nil), pc.AllowedModelsPatterns...)
+				sort.Strings(sortedAllowedPatterns)
+			}
+			if len(pc.BlacklistedModelsPatterns) > 0 {
+				sortedBlacklistedPatterns = append([]string(nil), pc.BlacklistedModelsPatterns...)
+				sort.Strings(sortedBlacklistedPatterns)
+			}
 			providerConfigsForHash[i] = VirtualKeyProviderConfigHashInput{
-				Provider:          pc.Provider,
-				Weight:            pc.Weight,
-				AllowedModels:     sortedAllowedModels,
-				BlacklistedModels: sortedBlacklistedModels,
-				AllowAllKeys:      pc.AllowAllKeys,
-				RateLimitID:       pc.RateLimitID,
-				KeyIDs:            keyIDs,
+				Provider:                  pc.Provider,
+				Weight:                    pc.Weight,
+				AllowedModels:             sortedAllowedModels,
+				BlacklistedModels:         sortedBlacklistedModels,
+				AllowedModelsPatterns:     sortedAllowedPatterns,
+				BlacklistedModelsPatterns: sortedBlacklistedPatterns,
+				AllowAllKeys:              pc.AllowAllKeys,
+				RateLimitID:               pc.RateLimitID,
+				KeyIDs:                    keyIDs,
 			}
 		}
 		data, err := sonic.Marshal(providerConfigsForHash)

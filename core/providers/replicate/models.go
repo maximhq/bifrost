@@ -12,8 +12,7 @@ import (
 func ToBifrostListModelsResponse(
 	deploymentsResponse *ReplicateDeploymentListResponse,
 	providerKey schemas.ModelProvider,
-	allowedModels schemas.WhiteList,
-	blacklistedModels schemas.BlackList,
+	access schemas.ModelAccessRule,
 	aliases schemas.KeyAliases,
 	unfiltered bool,
 ) *schemas.BifrostListModelsResponse {
@@ -22,12 +21,11 @@ func ToBifrostListModelsResponse(
 	}
 
 	pipeline := &providerUtils.ListModelsPipeline{
-		AllowedModels:     allowedModels,
-		BlacklistedModels: blacklistedModels,
-		Aliases:           aliases,
-		Unfiltered:        unfiltered,
-		ProviderKey:       providerKey,
-		MatchFns:          providerUtils.DefaultMatchFns(),
+		Access:      access,
+		Aliases:     aliases,
+		Unfiltered:  unfiltered,
+		ProviderKey: providerKey,
+		MatchFns:    providerUtils.DefaultMatchFns(),
 	}
 	if pipeline.ShouldEarlyExit() {
 		return bifrostResponse

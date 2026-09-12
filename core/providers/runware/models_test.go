@@ -31,7 +31,7 @@ func catalogModels() []RunwareModel {
 // The AIR is the identifier every inference task keys off, so it becomes the Bifrost model ID,
 // provider-prefixed like every other provider's listing.
 func TestToBifrostListModelsResponse(t *testing.T) {
-	out := ToBifrostListModelsResponse(catalogModels(), schemas.Runware, schemas.WhiteList{"*"}, nil, nil, false)
+	out := ToBifrostListModelsResponse(catalogModels(), schemas.Runware, schemas.ModelAccessRule{Allowed: schemas.WhiteList{"*"}}, nil, false)
 
 	if len(out.Data) != 2 {
 		t.Fatalf("expected 2 models (the AIR-less entry skipped), got %d", len(out.Data))
@@ -75,7 +75,7 @@ func TestToBifrostListModelsResponse(t *testing.T) {
 
 // A key's allowlist scopes the listing the same way it does for every other provider.
 func TestToBifrostListModelsResponse_RespectsKeyAllowlist(t *testing.T) {
-	out := ToBifrostListModelsResponse(catalogModels(), schemas.Runware, schemas.WhiteList{"tripo:v3.1@0"}, nil, nil, false)
+	out := ToBifrostListModelsResponse(catalogModels(), schemas.Runware, schemas.ModelAccessRule{Allowed: schemas.WhiteList{"tripo:v3.1@0"}}, nil, false)
 	if len(out.Data) != 1 || out.Data[0].ID != "runware/tripo:v3.1@0" {
 		t.Fatalf("allowlist not applied, got %+v", out.Data)
 	}

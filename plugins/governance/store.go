@@ -1444,11 +1444,13 @@ func (gs *LocalGovernanceStore) permitForVirtualKey(ctx context.Context, vk *con
 	for i := range vk.ProviderConfigs {
 		config := vk.ProviderConfigs[i]
 		providerPermits = append(providerPermits, schemas.ProviderPermit{
-			Provider:          config.Provider,
-			AllowedModels:     config.AllowedModels,
-			BlacklistedModels: config.BlacklistedModels,
-			KeyIDs:            config.KeyIDs(),
-			Weight:            config.Weight,
+			Provider:                  config.Provider,
+			AllowedModels:             config.AllowedModels,
+			BlacklistedModels:         config.BlacklistedModels,
+			AllowedModelsPatterns:     config.AllowedModelsPatterns,
+			BlacklistedModelsPatterns: config.BlacklistedModelsPatterns,
+			KeyIDs:                    config.KeyIDs(),
+			Weight:                    config.Weight,
 		})
 	}
 

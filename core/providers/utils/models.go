@@ -155,8 +155,7 @@ type FilterResult struct {
 // and use its methods instead of passing params + matchFns to every function.
 //
 //	pipeline := &providerUtils.ListModelsPipeline{
-//	    AllowedModels:     key.Models,
-//	    BlacklistedModels: key.BlacklistedModels,
+//	    Access:            key.ModelAccess(),
 //	    Aliases:           key.Aliases,
 //	    Unfiltered:        request.Unfiltered,
 //	    ProviderKey:       schemas.OpenAI,
@@ -166,8 +165,10 @@ type FilterResult struct {
 //	result := pipeline.FilterModel(model.ID)
 //	pipeline.BackfillModels(included)
 type ListModelsPipeline struct {
-	AllowedModels     schemas.WhiteList
-	BlacklistedModels schemas.BlackList
+	// Access carries the key's exact allow and block lists plus their pattern
+	// twins. Exact entries go through MatchFns; patterns are evaluated as RE2
+	// against the resolved model name and "<provider>/<model>".
+	Access schemas.ModelAccessRule
 	// Aliases maps user-facing alias keys to their AliasConfig. The pipeline
 	// reads AliasConfig.ModelID for matching and Alias surfacing.
 	Aliases     schemas.KeyAliases
@@ -183,8 +184,9 @@ type ListModelsPipeline struct {
 // return an empty response without processing any models.
 //
 // Returns true when:
-//   - not unfiltered AND allowlist is empty AND no aliases configured
-//     (there is nothing to match against — all models would be filtered out anyway)
+//   - not unfiltered AND allowlist is empty AND no allow patterns AND no aliases
+//     configured (there is nothing to match against — all models would be
+//     filtered out anyway)
 //   - not unfiltered AND blacklist blocks everything
 //
 // Note: allowlist empty + aliases present → do NOT early exit.
@@ -193,13 +195,35 @@ func (p *ListModelsPipeline) ShouldEarlyExit() bool {
 	if p.Unfiltered {
 		return false
 	}
-	if p.BlacklistedModels.IsBlockAll() {
+	if p.Access.Blocked.IsBlockAll() {
 		return true
 	}
-	if p.AllowedModels.IsEmpty() && len(p.Aliases) == 0 {
+	if p.Access.Allowed.IsEmpty() && p.Access.AllowedPatterns.IsEmpty() && len(p.Aliases) == 0 {
 		return true
 	}
 	return false
+}
+
+// admitted reports whether name passes the allow side: an exact entry through
+// MatchFns, or an allow pattern.
+func (p *ListModelsPipeline) admitted(name string) bool {
+	for _, entry := range p.Access.Allowed {
+		if matches(name, entry, p.MatchFns) {
+			return true
+		}
+	}
+	return p.Access.AllowedPatterns.Matches(string(p.ProviderKey), name)
+}
+
+// blocked reports whether name is caught by the block side: an exact entry
+// through MatchFns, or a block pattern.
+func (p *ListModelsPipeline) blocked(name string) bool {
+	for _, entry := range p.Access.Blocked {
+		if matches(name, entry, p.MatchFns) {
+			return true
+		}
+	}
+	return p.Access.BlockedPatterns.Matches(string(p.ProviderKey), name)
 }
 
 // aliasMatch holds a single alias key/value pair returned by resolveModelID.
@@ -247,7 +271,7 @@ func (p *ListModelsPipeline) resolveModelID(modelID string) []aliasMatch {
 //     If matched: resolvedName = alias KEY, aliasValue = provider ID.
 //     If not matched: resolvedName = original modelID, aliasValue = "".
 //  2. Allowlist check (only when allowlist is restricted, i.e. not wildcard):
-//     Skip if resolvedName is not in AllowedModels.
+//     Skip if resolvedName is not admitted by the allow list or an allow pattern.
 //  3. Blacklist check (always):
 //     Skip if resolvedName is blacklisted. Blacklist takes precedence over everything.
 //  4. Return one FilterResult per passing candidate.
@@ -281,31 +305,13 @@ func (p *ListModelsPipeline) FilterModel(modelID string) []FilterResult {
 		// Step 2: allowlist check.
 		// IsRestricted() is true for both an explicit list AND an empty list (deny-all).
 		// Only a wildcard allowlist marker bypasses this check (pass-through).
-		if !p.Unfiltered && p.AllowedModels.IsRestricted() {
-			allowed := false
-			for _, entry := range p.AllowedModels {
-				if matches(resolvedName, entry, p.MatchFns) {
-					allowed = true
-					break
-				}
-			}
-			if !allowed {
-				continue
-			}
+		if !p.Unfiltered && p.Access.Allowed.IsRestricted() && !p.admitted(resolvedName) {
+			continue
 		}
 
 		// Step 3: blacklist check — blacklist always wins regardless of allowlist or aliases.
-		if !p.Unfiltered {
-			blacklisted := false
-			for _, entry := range p.BlacklistedModels {
-				if matches(resolvedName, entry, p.MatchFns) {
-					blacklisted = true
-					break
-				}
-			}
-			if blacklisted {
-				continue
-			}
+		if !p.Unfiltered && p.blocked(resolvedName) {
+			continue
 		}
 
 		results = append(results, FilterResult{
@@ -347,21 +353,14 @@ func (p *ListModelsPipeline) FilterModel(modelID string) []FilterResult {
 func (p *ListModelsPipeline) BackfillModels(included map[string]bool) []schemas.Model {
 	var result []schemas.Model
 
-	if !p.Unfiltered && p.AllowedModels.IsRestricted() {
-		// Case A: backfill explicit allowlist entries not yet matched.
-		for _, entry := range p.AllowedModels {
+	if !p.Unfiltered && p.Access.Allowed.IsRestricted() {
+		// Case A: backfill explicit allowlist entries not yet matched. Allow
+		// patterns name no model, so there is nothing to surface for them.
+		for _, entry := range p.Access.Allowed {
 			if included[strings.ToLower(entry)] {
 				continue
 			}
-			// Blacklist check.
-			blacklisted := false
-			for _, bl := range p.BlacklistedModels {
-				if matches(entry, bl, p.MatchFns) {
-					blacklisted = true
-					break
-				}
-			}
-			if blacklisted {
+			if p.blocked(entry) {
 				continue
 			}
 			m := schemas.Model{
@@ -386,15 +385,7 @@ func (p *ListModelsPipeline) BackfillModels(included map[string]bool) []schemas.
 			if included[strings.ToLower(aliasKey)] {
 				continue
 			}
-			// Blacklist check.
-			blacklisted := false
-			for _, bl := range p.BlacklistedModels {
-				if matches(aliasKey, bl, p.MatchFns) {
-					blacklisted = true
-					break
-				}
-			}
-			if blacklisted {
+			if p.blocked(aliasKey) {
 				continue
 			}
 			result = append(result, schemas.Model{

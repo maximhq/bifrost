@@ -287,7 +287,7 @@ func (provider *CohereProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	}
 
 	// Convert Cohere v2 response to Bifrost response
-	response := cohereResponse.ToBifrostListModelsResponse(provider.GetProviderKey(), key.Models, key.BlacklistedModels, key.Aliases, request.Unfiltered)
+	response := cohereResponse.ToBifrostListModelsResponse(provider.GetProviderKey(), key.ModelAccess(), key.Aliases, request.Unfiltered)
 
 	response.ExtraFields.Latency = latency.Milliseconds()
 
