@@ -33,9 +33,14 @@ const (
 const (
 	startTimeKey         schemas.BifrostContextKey = "bf-prom-start-time"
 	activeRequestTypeKey schemas.BifrostContextKey = "bf-prom-active-req-type"
-	mcpStartTimeKey      schemas.BifrostContextKey = "bf-prom-mcp-start-time"
-	mcpClientNameKey     schemas.BifrostContextKey = "bf-prom-mcp-client-name"
-	mcpToolNameKey       schemas.BifrostContextKey = "bf-prom-mcp-tool-name"
+	// activeRequestDecrementedKey latches the ActiveRequests Dec so a sticky
+	// BifrostContextKeyStreamEndIndicator cannot drive the gauge negative when
+	// PostLLMHook runs again for later stream chunks (client disconnect with
+	// queued chunks, or a streaming retry that left the terminal flag set).
+	activeRequestDecrementedKey schemas.BifrostContextKey = "bf-prom-active-req-dec"
+	mcpStartTimeKey             schemas.BifrostContextKey = "bf-prom-mcp-start-time"
+	mcpClientNameKey            schemas.BifrostContextKey = "bf-prom-mcp-client-name"
+	mcpToolNameKey              schemas.BifrostContextKey = "bf-prom-mcp-tool-name"
 
 	// Overhead is measured across the transport hooks rather than the LLM hooks,
 	// so the window matches the OTEL root span. See recordOverhead.
@@ -952,11 +957,31 @@ func (p *PrometheusPlugin) ObserveWarmupRoutingEmbedding(provider, model string,
 	}
 }
 
+// decrementActiveRequestOnce decrements bifrost_active_requests at most once
+// per PreLLMHook Inc. Streaming PostLLMHook runs per chunk and StreamEndIndicator
+// is sticky on the shared request context, so without this latch a terminal flag
+// set mid-stream (disconnect, first-chunk error before retry) would Dec on every
+// subsequent chunk and drive the gauge negative.
+func (p *PrometheusPlugin) decrementActiveRequestOnce(ctx *schemas.BifrostContext) {
+	if ctx == nil {
+		return
+	}
+	if prev := ctx.GetAndSetValue(activeRequestDecrementedKey, true); prev != nil {
+		return
+	}
+	if method, ok := ctx.Value(activeRequestTypeKey).(schemas.RequestType); ok {
+		p.ActiveRequests.WithLabelValues(string(method)).Dec()
+	}
+}
+
 // PreLLMHook records the start time of the request in the context.
 // This time is used later in PostLLMHook to calculate request duration.
 func (p *PrometheusPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	ctx.SetValue(startTimeKey, time.Now())
 	ctx.SetValue(activeRequestTypeKey, req.RequestType)
+	// PreLLMHook runs again on each fallback attempt (Inc pairs with that attempt's
+	// terminal Dec). Clear the latch so the new Inc can be decremented once.
+	ctx.ClearValue(activeRequestDecrementedKey)
 	p.ActiveRequests.WithLabelValues(string(req.RequestType)).Inc()
 	return req, nil, nil
 }
@@ -1137,15 +1162,16 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// Skip pre-dispatch rejections (no provider and no model) to avoid empty-label
 	// series. Decrement ActiveRequests first, since PreLLMHook incremented it.
 	if provider == "" && model == "" {
-		if method, ok := ctx.Value(activeRequestTypeKey).(schemas.RequestType); ok {
-			p.ActiveRequests.WithLabelValues(string(method)).Dec()
-		}
+		p.decrementActiveRequestOnce(ctx)
 		return result, bifrostErr, nil
 	}
 
 	startTime, ok := ctx.Value(startTimeKey).(time.Time)
 	if !ok {
 		p.logger.Warn("Warning: startTime not found in context for Prometheus PostLLMHook")
+		// Still release the in-flight gauge if PreLLMHook ran (activeRequestTypeKey
+		// is set) so a missing startTime cannot leak ActiveRequests upward.
+		p.decrementActiveRequestOnce(ctx)
 		return result, bifrostErr, nil
 	}
 	// Capture the LLM-hook window synchronously, before the goroutine below and its
@@ -1217,12 +1243,12 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	streamEndIndicatorValue := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator)
 	isFinalChunk, hasFinalChunkIndicator := streamEndIndicatorValue.(bool)
 
-	// Decrement active requests on the final (or only) call for this request
+	// Decrement active requests on the final (or only) call for this request.
+	// The latch inside decrementActiveRequestOnce makes this idempotent even when
+	// StreamEndIndicator stays true across later per-chunk PostLLMHook calls.
 	isStreamFinal := !bifrost.IsStreamRequestType(requestType) || (hasFinalChunkIndicator && isFinalChunk)
 	if isStreamFinal {
-		if method, ok := ctx.Value(activeRequestTypeKey).(schemas.RequestType); ok {
-			p.ActiveRequests.WithLabelValues(string(method)).Dec()
-		}
+		p.decrementActiveRequestOnce(ctx)
 	}
 
 	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(provider))

@@ -6458,10 +6458,15 @@ func executeRequestWithRetries[T any](
 		}
 
 		// The previous failed stream has drained before reaching this retry.
-		if checkAzurePreamble && attempts > 0 {
+		// Clear StreamEndIndicator for every streaming retry (not only Azure): a
+		// sticky terminal flag on the shared context makes per-chunk post-hooks
+		// treat every subsequent chunk as final (e.g. bifrost_active_requests).
+		if IsStreamRequestType(requestType) && attempts > 0 {
 			ctx.ClearValue(schemas.BifrostContextKeyStreamEndIndicator)
-			ctx.ClearValue(schemas.BifrostContextKeyStreamBodyExhausted)
-			ctx.ClearValue(schemas.BifrostContextKeyStreamParkedAfterFinish)
+			if checkAzurePreamble {
+				ctx.ClearValue(schemas.BifrostContextKeyStreamBodyExhausted)
+				ctx.ClearValue(schemas.BifrostContextKeyStreamParkedAfterFinish)
+			}
 		}
 
 		// Attempt the request
@@ -6487,12 +6492,10 @@ func executeRequestWithRetries[T any](
 				}
 				if firstChunkErr != nil {
 					<-drainDone
-					// The dead stream's teardown (ReleaseStreamingResponse) claimed the
-					// connection_closed flag on the shared context. That claim is scoped
-					// to the response it released; clear it so the retry or fallback
-					// attempt that follows doesn't see its own fresh stream as already
-					// closed and fail every read with ErrStreamClosed.
-					ctx.ClearValue(schemas.BifrostContextKeyConnectionClosed)
+					// The dead stream's teardown left stream-lifecycle flags on the
+					// shared context; wipe them so the retry does not inherit a
+					// sticky terminal / closed state (see clearCtxForStreamRetry).
+					clearCtxForStreamRetry(ctx)
 					bifrostError = firstChunkErr
 				} else if checkedStream == nil {
 					// Empty stream (zero chunks before close — includes the large-payload
