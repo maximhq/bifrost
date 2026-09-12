@@ -136,6 +136,11 @@ type CasLogStore struct {
 	// db is captured from the CONSTRUCTION context and is used for writes,
 	// mirroring the inner store's unscoped s.db.WithContext write handle.
 	db            *gorm.DB
+	// rdb is the inner store narrowed to its concrete RDB type; the unified
+	// read snapshot path (casstore_read.go) reads the root row inside a
+	// transaction through its tx-scoped helpers (findLogTx/findLogsTx) and
+	// reuses its child-aggregate rollup.
+	rdb           *RDBLogStore
 	logger        schemas.Logger
 	excluded      map[string]struct{}
 	minFieldBytes int
@@ -173,6 +178,14 @@ func newCasLogStore(ctx context.Context, inner LogStore, cfg *ContentAddressedCo
 	if db == nil {
 		return nil, fmt.Errorf("logstore/cas: inner store returned a nil database handle")
 	}
+	// The unified read snapshot reads the root row inside a read transaction
+	// through the inner store's tx-scoped helpers. CAS only ever wraps the
+	// SQL stores (the ClickHouse store exposes no database handle and fails
+	// the check above), so require the concrete type.
+	rdb, isRdb := inner.(*RDBLogStore)
+	if !isRdb {
+		return nil, fmt.Errorf("logstore/cas: inner store %T is not an RDB log store", inner)
+	}
 	excluded := make(map[string]struct{}, len(cfg.ExcludeFields)+2)
 	for _, f := range cfg.ExcludeFields {
 		if _, isPayload := payloadFieldSet[f]; isPayload {
@@ -186,6 +199,7 @@ func newCasLogStore(ctx context.Context, inner LogStore, cfg *ContentAddressedCo
 	return &CasLogStore{
 		LogStore:      inner,
 		db:            db,
+		rdb:           rdb,
 		logger:        logger,
 		excluded:      excluded,
 		minFieldBytes: cfg.minFieldBytes(),

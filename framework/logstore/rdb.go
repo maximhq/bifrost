@@ -4000,6 +4000,63 @@ func (s *RDBLogStore) FindByID(ctx context.Context, id string) (*Log, error) {
 	return &rows[0], nil
 }
 
+// findLogByIDTx reads one log row by id inside an already-open transaction
+// with the caller's read visibility applied; the by-id form of findLogTx
+// used by the CAS unified read snapshot (serving detail reads and the
+// billing per-row re-read). An out-of-scope or dashboard-hidden id is
+// simply not found.
+func (s *RDBLogStore) findLogByIDTx(ctx context.Context, tx *gorm.DB, id string) (*Log, error) {
+	var log Log
+	if err := applyReadVisibility(ctx, tx).Where("id = ?", id).First(&log).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &log, nil
+}
+
+// findLogTx reads one log row inside an already-open transaction with the
+// caller's read visibility (QueryScope + dashboard hidden request types)
+// applied. It backs the CAS store's unified read snapshot: the root row and
+// its CAS side tables must come from ONE database observation, so the root
+// read runs on the same transaction as the CAS reads instead of the inner
+// store's autocommit scoped query. Query semantics mirror FindFirst;
+// visibility mirrors scopedLogsDB, so an out-of-scope or dashboard-hidden
+// row is simply not found. The exported behavior of the inner Find* methods
+// is unchanged.
+func (s *RDBLogStore) findLogTx(ctx context.Context, tx *gorm.DB, query any, fields ...string) (*Log, error) {
+	var log Log
+	q := applyReadVisibility(ctx, tx)
+	if len(fields) > 0 {
+		q = q.Select(fields)
+	}
+	if err := q.Where(query).First(&log).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &log, nil
+}
+
+// findLogsTx is the multi-row form of findLogTx, mirroring FindAll's
+// semantics (defaultMaxQueryLimit; an empty result, not a not-found error).
+func (s *RDBLogStore) findLogsTx(ctx context.Context, tx *gorm.DB, query any, fields ...string) ([]*Log, error) {
+	var logs []*Log
+	q := applyReadVisibility(ctx, tx)
+	if len(fields) > 0 {
+		q = q.Select(fields)
+	}
+	if err := q.Where(query).Limit(defaultMaxQueryLimit).Find(&logs).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return []*Log{}, nil
+		}
+		return nil, err
+	}
+	return logs, nil
+}
+
 // IsLogEntryPresent checks if a log entry is present in the database.
 // Here we dont load entire log entry in memory - just check if it exists.
 func (s *RDBLogStore) IsLogEntryPresent(ctx context.Context, id string) (bool, error) {

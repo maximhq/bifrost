@@ -967,123 +967,109 @@ func TestCas_BillingFailureMarkerNotSetOnUnpriceable(t *testing.T) {
 	}
 }
 
-// Defect: the root row was fetched by the scoped inner store in one query
-// while CAS hydration read its pointers from a separate snapshot, so a
-// concurrent Update could bind the OLD row's metadata (and its scoped
-// authorization) to the NEW revision's content. verifyRootRowRevision now
-// re-reads the row's observable state inside the hydration snapshot;
-// divergence fails with ErrCasConcurrentModification and the Find* paths
-// retry the full scoped read + hydration. Run with -race.
-func TestCas_RootRowRevisionBindingUnderConcurrentUpdates(t *testing.T) {
+// Round-5 unified read snapshot: the root row AND the CAS side tables are
+// read inside one transaction (REPEATABLE READ on PostgreSQL, one WAL
+// snapshot on SQLite), so there is no second observation point and no
+// revision-verification/retry machinery anymore: a reader sees one complete
+// revision or another complete revision, never old metadata bound to new
+// content. This replaces round-4's verifyRootRowRevision +
+// ErrCasConcurrentModification bounded-retry loop, whose manual
+// binding-column list could never be complete (model and other scalar
+// columns were missing) and whose comparison of database columns against
+// possibly business-modified in-memory objects produced false positives.
+// Run with -race.
+func TestCas_UnifiedReadSnapshotUnderConcurrentUpdates(t *testing.T) {
 	cas, _ := newTestCas(t)
 	defer cas.Close(context.Background())
 	ctx := context.Background()
 
 	const id = "revbind-1"
 	entry := bigChatEntry(id, "tiny")
+	entry.UserID = strPtr("rev-init")
+	entry.Model = "model-init"
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, cas.CreateIfNotExists(ctx, entry))
 
 	contentA := strings.Repeat("revision alpha payload ", 40)
 	contentB := strings.Repeat("revision beta payload ", 40)
-	// The writer is dense enough that the race window (scoped read ->
-	// hydration snapshot) is hit many times, so this test fails on code
-	// without the revision binding; the reader's bounded retry still absorbs
-	// every individual collision because a retry rarely loses twice.
+	// The pre-update row (serialized chat history, model-init, rev-init) is a
+	// legal observation until the first writer commit lands.
+	initial, err := cas.FindByID(ctx, id)
+	require.NoError(t, err)
+	initialOut := initial.InputHistory
+
+	// check asserts that metadata and hydrated content come from ONE
+	// revision: the ownership column (what QueryScope predicates run over),
+	// the scalar model column (deliberately outside round-4's manual
+	// binding list) and the CAS'd payload must all pair up.
+	check := func(t *testing.T, userID, model, content string) {
+		t.Helper()
+		switch userID {
+		case "rev-init":
+			assert.Equal(t, "model-init", model,
+				"initial metadata revision must stay paired with its model")
+			assert.Equal(t, initialOut, content,
+				"initial metadata must be served with the initial content")
+		case "rev-a":
+			assert.Equal(t, "model-a", model,
+				"metadata version A must be served with model version A")
+			assert.Equal(t, contentA, content,
+				"metadata version A must be served with content version A")
+		case "rev-b":
+			assert.Equal(t, "model-b", model,
+				"metadata version B must be served with model version B")
+			assert.Equal(t, contentB, content,
+				"metadata version B must be served with content version B")
+		default:
+			t.Fatalf("served an unknown revision %q: metadata and content are torn", userID)
+		}
+	}
+
 	const writerIterations = 300
 	const readerIterations = 100
 	done := make(chan error, 1)
 	go func() {
 		var werr error
 		for i := 0; i < writerIterations; i++ {
-			content, revision := contentA, "rev-a"
+			content, revision, model := contentA, "rev-a", "model-a"
 			if i%2 == 1 {
-				content, revision = contentB, "rev-b"
+				content, revision, model = contentB, "rev-b", "model-b"
 			}
-			// Both the CAS'd payload and an ownership column change in ONE
-			// transaction, so a consistent read must always see them from
-			// the same revision. user_id is the marker because it is what
-			// QueryScope authorization predicates run over — the exact
-			// staleness the revision binding exists to prevent — and because
-			// hydration rebuilds content_summary from hydrated content,
-			// which would mask a torn read instead of exposing it.
+			// The CAS'd payload, an ownership column AND the scalar model
+			// column change in ONE writer transaction, so a consistent read
+			// must always see all three from the same revision.
 			if err := cas.Update(ctx, id, map[string]interface{}{
 				"input_history": content,
 				"user_id":       revision,
+				"model":         model,
 			}); err != nil {
 				werr = err
 				break
 			}
-			// Pace the writer; the race window (scoped read -> hydration
-			// snapshot) is still hit repeatedly while it runs.
 			time.Sleep(1 * time.Millisecond)
 		}
 		done <- werr
 	}()
 	for i := 0; i < readerIterations; i++ {
 		found, err := cas.FindByID(ctx, id)
-		if err != nil {
-			// Under sustained contention the bounded retry budget can be
-			// exhausted; the only legitimate failure is the truthful
-			// concurrent-modification report — never a torn read and never
-			// an unrelated hydrate error (manifest missing, corruption...).
-			require.ErrorIs(t, err, ErrCasConcurrentModification,
-				"exhausted retries must surface as concurrent modification, not as a hydrate false alarm")
-		} else {
-			switch casDerefString(found.UserID) {
-			case "rev-a":
-				assert.Equal(t, contentA, found.InputHistory,
-					"metadata version A must be served with content version A")
-			case "rev-b":
-				assert.Equal(t, contentB, found.InputHistory,
-					"metadata version B must be served with content version B")
-			default:
-				// A pre-first-update observation of the row-resident initial
-				// content is a legal complete revision.
-			}
-		}
+		// No retry budget exists to exhaust: the unified snapshot must always
+		// serve one complete revision, never a torn one, never a hydrate
+		// false alarm (manifest missing, corruption...).
+		require.NoError(t, err,
+			"the unified read snapshot must always serve one complete revision")
+		check(t, casDerefString(found.UserID), found.Model, found.InputHistory)
 
-		// The list path must uphold the same binding when it serves the row.
-		// Sampled every few rounds: it exercises the same retry loop without
-		// doubling every reader iteration's race exposure.
+		// The list path upholds the same binding when it serves the row.
+		// Sampled every few rounds to keep the reader loop fast.
 		if i%5 == 0 {
 			logs, err := cas.FindAll(ctx, map[string]any{"id": id})
 			require.NoError(t, err)
 			if len(logs) == 1 {
-				switch casDerefString(logs[0].UserID) {
-				case "rev-a":
-					assert.Equal(t, contentA, logs[0].InputHistory)
-				case "rev-b":
-					assert.Equal(t, contentB, logs[0].InputHistory)
-				}
+				check(t, casDerefString(logs[0].UserID), logs[0].Model, logs[0].InputHistory)
 			}
 		}
 	}
 	require.NoError(t, <-done)
-
-	// Deterministic half-open window: the row is read, a newer revision
-	// commits, and hydration then runs on the stale in-memory object — the
-	// exact interleaving the probabilistic loop above only hits by scheduler
-	// luck. Without the revision binding this hydrates the NEW content into
-	// the OLD metadata; with it, hydration must refuse with the sentinel and
-	// the retried full read must serve one consistent revision.
-	stale, err := cas.LogStore.FindByID(ctx, id)
-	require.NoError(t, err)
-	nextContent, nextRevision := contentA, "rev-a"
-	if casDerefString(stale.UserID) == "rev-a" {
-		nextContent, nextRevision = contentB, "rev-b"
-	}
-	require.NoError(t, cas.Update(ctx, id, map[string]interface{}{
-		"input_history": nextContent,
-		"user_id":       nextRevision,
-	}))
-	err = cas.hydrateLog(ctx, stale)
-	require.ErrorIs(t, err, ErrCasConcurrentModification,
-		"hydration must refuse to bind stale metadata to a newer revision's content")
-	fresh, err := cas.FindByID(ctx, id)
-	require.NoError(t, err)
-	require.Equal(t, nextRevision, casDerefString(fresh.UserID))
-	require.Equal(t, nextContent, fresh.InputHistory)
 }
 
 // casDerefString reads a nullable string column for test assertions.

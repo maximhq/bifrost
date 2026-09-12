@@ -3,6 +3,7 @@ package logstore
 import (
 	"context"
 
+	"github.com/maximhq/bifrost/framework/queryscope"
 	"gorm.io/gorm"
 )
 
@@ -21,15 +22,26 @@ func HiddenRequestTypesFromContext(ctx context.Context) []string {
 	return types
 }
 
-// scopedLogsDB composes dashboard visibility with the caller's access scope.
-// Only LLM log readers use it: MCP tables do not have an object_type column.
-// Filtering here keeps counts, aggregates and pagination on the same row set.
-func (s *RDBLogStore) scopedLogsDB(ctx context.Context) *gorm.DB {
-	db := s.ScopedDB(ctx)
+// applyReadVisibility composes dashboard visibility with the caller's access
+// scope onto a gorm query handle — the transaction-friendly core of
+// scopedLogsDB. The QueryScope is a function carried on ctx, not state of the
+// store's base handle, so a transaction begun from any handle (the CAS
+// unified read snapshot, for example) needs it re-applied explicitly.
+func applyReadVisibility(ctx context.Context, db *gorm.DB) *gorm.DB {
+	if scope := queryscope.FromContext(ctx); scope != nil {
+		db = scope(db)
+	}
 	if types := HiddenRequestTypesFromContext(ctx); len(types) > 0 {
 		db = db.Where("object_type NOT IN ?", types)
 	}
 	return db
+}
+
+// scopedLogsDB composes dashboard visibility with the caller's access scope.
+// Only LLM log readers use it: MCP tables do not have an object_type column.
+// Filtering here keeps counts, aggregates and pagination on the same row set.
+func (s *RDBLogStore) scopedLogsDB(ctx context.Context) *gorm.DB {
+	return applyReadVisibility(ctx, s.ScopedDB(ctx))
 }
 
 func (s *RDBLogStore) canUseFilterMatView(ctx context.Context) bool {
