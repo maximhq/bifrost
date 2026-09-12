@@ -66,6 +66,9 @@ func (mc *ModelCatalog) GetModelInfo(provider schemas.ModelProvider, model strin
 	info := &schemas.Model{ID: model}
 	ApplyModelInfo(info, capabilityEntry)
 	ApplyModelCapabilitySurface(info, capabilityEntry)
+	if modelInfoEntryHasPricing(pricingEntry) {
+		info.Pricing = nil
+	}
 	ApplyModelInfo(info, pricingEntry)
 
 	if params := mc.datasheet.GetSupportedParameters(model); len(params) > 0 {
@@ -140,7 +143,7 @@ func ApplyModelInfo(model *schemas.Model, entry *PricingEntry) {
 		model.Architecture = &arch
 	}
 
-	if model.Pricing != nil {
+	if model.Pricing != nil || !modelInfoEntryHasPricing(entry) {
 		return
 	}
 	pricing := &schemas.Pricing{}
@@ -166,6 +169,16 @@ func ApplyModelInfo(model *schemas.Model, entry *PricingEntry) {
 		pricing.Request = new(formatCost(*entry.CostPerRequest))
 	}
 	model.Pricing = pricing
+}
+
+func modelInfoEntryHasPricing(entry *PricingEntry) bool {
+	return entry != nil && (entry.InputCostPerToken != nil ||
+		entry.OutputCostPerToken != nil ||
+		entry.InputCostPerImage != nil ||
+		entry.CacheReadInputTokenCost != nil ||
+		entry.CacheCreationInputTokenCost != nil ||
+		entry.SearchContextCostPerQuery != nil ||
+		entry.CostPerRequest != nil)
 }
 
 // ApplyModelCapabilitySurface fills the preferred mode / endpoint / method

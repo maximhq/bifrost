@@ -958,17 +958,34 @@ func enrichListModelsResponse(resp *schemas.BifrostListModelsResponse, catalog *
 			capabilityEntry = catalog.GetModelCapabilityEntryForModel(*modelEntry.Alias, provider)
 		}
 
-		applyCatalogPricingMetadata(modelEntry, pricingEntry)
+		preserveExistingPricing := modelEntry.Pricing != nil
 		applyCatalogCapabilityMetadata(modelEntry, capabilityEntry)
+		applyCatalogPricingMetadata(modelEntry, pricingEntry, preserveExistingPricing)
 	}
 }
 
-func applyCatalogPricingMetadata(modelEntry *schemas.Model, pricingEntry *modelcatalog.PricingEntry) {
-	if modelEntry == nil || pricingEntry == nil || modelEntry.Pricing != nil {
+func applyCatalogPricingMetadata(modelEntry *schemas.Model, pricingEntry *modelcatalog.PricingEntry, preserveExistingPricing bool) {
+	if modelEntry == nil || pricingEntry == nil {
 		return
+	}
+	if preserveExistingPricing && modelEntry.Pricing != nil {
+		return
+	}
+	if !preserveExistingPricing && modelEntry.Pricing != nil && catalogEntryHasPricing(pricingEntry) {
+		modelEntry.Pricing = nil
 	}
 
 	modelcatalog.ApplyModelInfo(modelEntry, pricingEntry)
+}
+
+func catalogEntryHasPricing(entry *modelcatalog.PricingEntry) bool {
+	return entry != nil && (entry.InputCostPerToken != nil ||
+		entry.OutputCostPerToken != nil ||
+		entry.InputCostPerImage != nil ||
+		entry.CacheReadInputTokenCost != nil ||
+		entry.CacheCreationInputTokenCost != nil ||
+		entry.SearchContextCostPerQuery != nil ||
+		entry.CostPerRequest != nil)
 }
 
 func applyCatalogCapabilityMetadata(modelEntry *schemas.Model, capabilityEntry *modelcatalog.PricingEntry) {
