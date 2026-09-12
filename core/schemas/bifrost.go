@@ -1908,6 +1908,7 @@ const (
 	RequestTimedOut          = "request_timed_out"
 	RequestDropped           = "request_dropped"
 	ProviderConnectionFailed = "provider_connection_failed"
+	ProviderShuttingDown     = "provider_shutting_down"
 )
 
 // BifrostStreamChunk represents a stream of responses from the Bifrost system.
