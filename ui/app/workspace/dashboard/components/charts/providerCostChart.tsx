@@ -12,6 +12,7 @@ import {
 	OTHER_SERIES_KEY,
 	OTHER_SERIES_LABEL,
 } from "../../utils/chartUtils";
+import { CappedBarStack } from "./barShape";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 
@@ -146,18 +147,18 @@ function ProviderCostChartImpl({ data, chartType, startTime, endTime, selectedPr
 							content={<CustomTooltip selectedProvider={selectedProvider} displayProviders={displayProviders} />}
 							cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }}
 						/>
-						{displayProviders.map((provider, idx) => (
-							<Bar
-								isAnimationActive={false}
-								key={provider}
-								dataKey={`provider_${idx}`}
-								stackId="cost"
-								fill={provider === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx)}
-								fillOpacity={0.9}
-								barSize={30}
-								radius={idx === displayProviders.length - 1 ? [2, 2, 0, 0] : [0, 0, 0, 0]}
-							/>
-						))}
+						<CappedBarStack buckets={chartData.length}>
+							{displayProviders.map((provider, idx) => (
+								<Bar
+									isAnimationActive={false}
+									key={provider}
+									dataKey={`provider_${idx}`}
+									fill={provider === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx)}
+									fillOpacity={0.9}
+									barSize={30}
+								/>
+							))}
+						</CappedBarStack>
 					</BarChart>
 				) : (
 					<AreaChart {...commonProps}>

@@ -2,6 +2,7 @@ import type { LatencyHistogramResponse } from "@/lib/types/logs";
 import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { formatFullTimestamp, formatLatency, formatTimestamp, LATENCY_COLORS } from "../../utils/chartUtils";
+import { barShape } from "./barShape";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 
@@ -113,7 +114,7 @@ function OverheadChartImpl({ data, chartType, startTime, endTime }: OverheadChar
 							fill={LATENCY_COLORS.avg}
 							fillOpacity={0.9}
 							barSize={8}
-							radius={[2, 2, 0, 0]}
+							shape={barShape}
 						/>
 						<Bar
 							isAnimationActive={false}
@@ -121,7 +122,7 @@ function OverheadChartImpl({ data, chartType, startTime, endTime }: OverheadChar
 							fill={LATENCY_COLORS.p90}
 							fillOpacity={0.9}
 							barSize={8}
-							radius={[2, 2, 0, 0]}
+							shape={barShape}
 						/>
 						<Bar
 							isAnimationActive={false}
@@ -129,7 +130,7 @@ function OverheadChartImpl({ data, chartType, startTime, endTime }: OverheadChar
 							fill={LATENCY_COLORS.p95}
 							fillOpacity={0.9}
 							barSize={8}
-							radius={[2, 2, 0, 0]}
+							shape={barShape}
 						/>
 						<Bar
 							isAnimationActive={false}
@@ -137,7 +138,7 @@ function OverheadChartImpl({ data, chartType, startTime, endTime }: OverheadChar
 							fill={LATENCY_COLORS.p99}
 							fillOpacity={0.9}
 							barSize={8}
-							radius={[2, 2, 0, 0]}
+							shape={barShape}
 						/>
 					</BarChart>
 				) : (

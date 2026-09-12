@@ -12,6 +12,7 @@ import {
 	OTHER_SERIES_KEY,
 	OTHER_SERIES_LABEL,
 } from "../../utils/chartUtils";
+import { CappedBarStack } from "./barShape";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 
@@ -173,24 +174,16 @@ function ProviderTokenChartImpl({ data, chartType, startTime, endTime, selectedP
 						{mode === "single" ? (
 							<>
 								<Tooltip content={<SingleProviderTooltip provider={selectedProvider} />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
-								<Bar
-									isAnimationActive={false}
-									dataKey="prompt_tokens"
-									stackId="tokens"
-									fill={CHART_COLORS.promptTokens}
-									fillOpacity={0.9}
-									barSize={30}
-									radius={[0, 0, 0, 0]}
-								/>
-								<Bar
-									isAnimationActive={false}
-									dataKey="completion_tokens"
-									stackId="tokens"
-									fill={CHART_COLORS.completionTokens}
-									fillOpacity={0.9}
-									barSize={30}
-									radius={[2, 2, 0, 0]}
-								/>
+								<CappedBarStack buckets={chartData.length}>
+									<Bar isAnimationActive={false} dataKey="prompt_tokens" fill={CHART_COLORS.promptTokens} fillOpacity={0.9} barSize={30} />
+									<Bar
+										isAnimationActive={false}
+										dataKey="completion_tokens"
+										fill={CHART_COLORS.completionTokens}
+										fillOpacity={0.9}
+										barSize={30}
+									/>
+								</CappedBarStack>
 							</>
 						) : (
 							<>
@@ -198,18 +191,18 @@ function ProviderTokenChartImpl({ data, chartType, startTime, endTime, selectedP
 									content={<AllProvidersTooltip displayProviders={displayProviders} />}
 									cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }}
 								/>
-								{displayProviders.map((provider, idx) => (
-									<Bar
-										isAnimationActive={false}
-										key={provider}
-										dataKey={`provider_${idx}`}
-										stackId="tokens"
-										fill={provider === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx)}
-										fillOpacity={0.9}
-										barSize={30}
-										radius={idx === displayProviders.length - 1 ? [2, 2, 0, 0] : [0, 0, 0, 0]}
-									/>
-								))}
+								<CappedBarStack buckets={chartData.length}>
+									{displayProviders.map((provider, idx) => (
+										<Bar
+											isAnimationActive={false}
+											key={provider}
+											dataKey={`provider_${idx}`}
+											fill={provider === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx)}
+											fillOpacity={0.9}
+											barSize={30}
+										/>
+									))}
+								</CappedBarStack>
 							</>
 						)}
 					</BarChart>

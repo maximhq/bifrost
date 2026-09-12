@@ -206,77 +206,7 @@ function OverviewTabImpl({
 		<>
 			{/* Charts Grid */}
 			<div className="grid grid-cols-1 gap-2 lg:grid-cols-2 2xl:grid-cols-3">
-				{/* Log Volume Chart */}
-				<ChartCard
-					title="Request Volume"
-					loading={loadingHistogram}
-					testId="chart-log-volume"
-					totalLabel="Total"
-					total={volumeTotal !== null ? <NumberFlow value={volumeTotal} format={COMPACT_NUMBER_FORMAT} /> : undefined}
-					totalTooltip={volumeTotal !== null ? volumeTotal.toLocaleString("en-US") : undefined}
-					legend={
-						<div className={CHART_HEADER_LEGEND_CLASS}>
-							<span className="flex items-center gap-1">
-								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.success }} />
-								<span className="text-muted-foreground">Success</span>
-							</span>
-							<span className="flex items-center gap-1">
-								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.error }} />
-								<span className="text-muted-foreground">Error</span>
-							</span>
-							<span className="flex items-center gap-1">
-								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.cancelled }} />
-								<span className="text-muted-foreground">Cancelled</span>
-							</span>
-						</div>
-					}
-					controls={
-						<ChartTypeToggle chartType={volumeChartType} onToggle={onVolumeChartToggle} data-testid="dashboard-volume-chart-toggle" />
-					}
-				>
-					<LogVolumeChart data={histogramData} chartType={volumeChartType} startTime={startTime} endTime={endTime} />
-				</ChartCard>
-
-				{/* Token Usage Chart */}
-				<ChartCard
-					title="Token Usage"
-					loading={loadingTokens}
-					testId="chart-token-usage"
-					totalLabel="Total"
-					total={tokenTotal !== null ? <NumberFlow value={tokenTotal} format={COMPACT_NUMBER_FORMAT} /> : undefined}
-					totalTooltip={tokenTotal !== null ? tokenTotal.toLocaleString("en-US") : undefined}
-					legend={
-						<div className={CHART_HEADER_LEGEND_CLASS}>
-							<span className="flex items-center gap-1">
-								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.promptTokens }} />
-								<span className="text-muted-foreground">Input</span>
-							</span>
-							<span className="flex items-center gap-1">
-								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.completionTokens }} />
-								<span className="text-muted-foreground">Output</span>
-							</span>
-							<span className="flex items-center gap-1">
-								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.cachedReadTokens }} />
-								<span className="text-muted-foreground">Cached</span>
-							</span>
-						</div>
-					}
-					controls={<ChartTypeToggle chartType={tokenChartType} onToggle={onTokenChartToggle} data-testid="dashboard-token-chart-toggle" />}
-				>
-					<TokenUsageChart data={tokenData} chartType={tokenChartType} startTime={startTime} endTime={endTime} />
-				</ChartCard>
-
-				{/* External Cache Hit Rate Meter */}
-				<ChartCard title="External Cache Hit Rate" loading={loadingTokens} testId="chart-cache-external">
-					<ExternalCacheTokenMeterChart data={tokenData} />
-				</ChartCard>
-
-				{/* Local Cache Hit Rate Meter */}
-				<ChartCard title="Local Cache Hit Rate" loading={loadingStats} testId="chart-cache-local">
-					<LocalCacheTokenMeterChart data={logsStats} />
-				</ChartCard>
-
-				{/* Cost Chart */}
+				{/* Cost Chart: first so spend is the first thing the page answers. */}
 				<ChartCard
 					title="Cost"
 					loading={loadingCost}
@@ -358,6 +288,76 @@ function OverviewTabImpl({
 					}
 				>
 					<CostChart data={costData} chartType={costChartType} startTime={startTime} endTime={endTime} selectedModel={costModel} />
+				</ChartCard>
+
+				{/* Log Volume Chart */}
+				<ChartCard
+					title="Request Volume"
+					loading={loadingHistogram}
+					testId="chart-log-volume"
+					totalLabel="Total"
+					total={volumeTotal !== null ? <NumberFlow value={volumeTotal} format={COMPACT_NUMBER_FORMAT} /> : undefined}
+					totalTooltip={volumeTotal !== null ? volumeTotal.toLocaleString("en-US") : undefined}
+					legend={
+						<div className={CHART_HEADER_LEGEND_CLASS}>
+							<span className="flex items-center gap-1">
+								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.success }} />
+								<span className="text-muted-foreground">Success</span>
+							</span>
+							<span className="flex items-center gap-1">
+								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.error }} />
+								<span className="text-muted-foreground">Error</span>
+							</span>
+							<span className="flex items-center gap-1">
+								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.cancelled }} />
+								<span className="text-muted-foreground">Cancelled</span>
+							</span>
+						</div>
+					}
+					controls={
+						<ChartTypeToggle chartType={volumeChartType} onToggle={onVolumeChartToggle} data-testid="dashboard-volume-chart-toggle" />
+					}
+				>
+					<LogVolumeChart data={histogramData} chartType={volumeChartType} startTime={startTime} endTime={endTime} />
+				</ChartCard>
+
+				{/* Token Usage Chart */}
+				<ChartCard
+					title="Token Usage"
+					loading={loadingTokens}
+					testId="chart-token-usage"
+					totalLabel="Total"
+					total={tokenTotal !== null ? <NumberFlow value={tokenTotal} format={COMPACT_NUMBER_FORMAT} /> : undefined}
+					totalTooltip={tokenTotal !== null ? tokenTotal.toLocaleString("en-US") : undefined}
+					legend={
+						<div className={CHART_HEADER_LEGEND_CLASS}>
+							<span className="flex items-center gap-1">
+								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.promptTokens }} />
+								<span className="text-muted-foreground">Input</span>
+							</span>
+							<span className="flex items-center gap-1">
+								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.completionTokens }} />
+								<span className="text-muted-foreground">Output</span>
+							</span>
+							<span className="flex items-center gap-1">
+								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.cachedReadTokens }} />
+								<span className="text-muted-foreground">Cached</span>
+							</span>
+						</div>
+					}
+					controls={<ChartTypeToggle chartType={tokenChartType} onToggle={onTokenChartToggle} data-testid="dashboard-token-chart-toggle" />}
+				>
+					<TokenUsageChart data={tokenData} chartType={tokenChartType} startTime={startTime} endTime={endTime} />
+				</ChartCard>
+
+				{/* External Cache Hit Rate Meter */}
+				<ChartCard title="External Cache Hit Rate" loading={loadingTokens} testId="chart-cache-external">
+					<ExternalCacheTokenMeterChart data={tokenData} />
+				</ChartCard>
+
+				{/* Local Cache Hit Rate Meter */}
+				<ChartCard title="Local Cache Hit Rate" loading={loadingStats} testId="chart-cache-local">
+					<LocalCacheTokenMeterChart data={logsStats} />
 				</ChartCard>
 
 				{/* Model Usage Chart */}

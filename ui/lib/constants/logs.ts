@@ -252,15 +252,15 @@ export const logAppDisplayName = (app: ClientApp, userAgent?: string | null): st
 };
 
 export const StatusColors = {
-	success: "bg-green-100 text-green-800",
-	error: "bg-red-100 text-red-800",
+	success: "bg-chart-success/15 text-chart-success-ink",
+	error: "bg-chart-error/15 text-chart-error-ink",
 	processing: "bg-blue-100 text-blue-800",
 	cancelled: "bg-gray-100 text-gray-800",
 } as const;
 
 export const StatusBarColors = {
-	success: "bg-green-500",
-	error: "bg-red-500",
+	success: "bg-chart-success",
+	error: "bg-chart-error",
 	processing: "bg-blue-500",
 	cancelled: "bg-gray-400",
 } as const;

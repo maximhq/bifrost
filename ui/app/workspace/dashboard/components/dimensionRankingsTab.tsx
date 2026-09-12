@@ -7,6 +7,7 @@ import NumberFlow from "@number-flow/react";
 import { memo, useCallback, useMemo, useState } from "react";
 import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { getModelColor } from "../utils/chartUtils";
+import { rankingBarShape } from "./charts/barShape";
 import { ChartCard } from "./charts/chartCard";
 import { ChartErrorBoundary } from "./charts/chartErrorBoundary";
 import { formatCost, SortableHeader, TrendBadge } from "./rankingsShared";
@@ -152,7 +153,7 @@ function TopDimensionChart({
 									width={100}
 								/>
 								<Tooltip content={<TopDimensionTooltip />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
-								<Bar dataKey="total_requests" isAnimationActive={false} barSize={24} radius={[0, 4, 4, 0]}>
+								<Bar dataKey="total_requests" isAnimationActive={false} barSize={24} shape={rankingBarShape}>
 									{chartData.map((entry, idx) => (
 										<Cell key={entry.id} fill={getModelColor(idx)} />
 									))}
