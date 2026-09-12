@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/bytedance/sonic"
@@ -1021,35 +1022,170 @@ type OpenAIListModelsResponse struct {
 	Data   []OpenAIModel `json:"data"`
 }
 
-// UnmarshalJSON accepts both OpenAI envelopes and compatible top-level model arrays.
+// UnmarshalJSON accepts the shapes OpenAI-compatible endpoints return for list-models.
+//
+// Apart from the OpenAI envelope, upstreams hand back bare arrays, id-only entries, a
+// "models" key instead of "data", and scalar fields that are quoted on one endpoint and
+// numeric on the next. None of those differences change which models a caller can reach,
+// so they are normalized here rather than failing the whole request with
+// "failed to unmarshal response from provider API":
+//
+//	{"object":"list","data":[{"id":"gpt-5"}]}   OpenAI envelope
+//	[{"id":"gpt-5"}]                            bare array (Together, vLLM, ...)
+//	["gpt-5","gpt-5-mini"]                      bare array of ids
+//	{"models":[{"id":"gpt-5"}]}                 "models" instead of "data"
 func (response *OpenAIListModelsResponse) UnmarshalJSON(data []byte) error {
-	type envelope OpenAIListModelsResponse
-
-	trimmed := bytes.TrimSpace(data)
-	if len(trimmed) == 0 || trimmed[0] != '[' {
-		return sonic.Unmarshal(trimmed, (*envelope)(response))
+	payload := bytes.TrimSpace(data)
+	if len(payload) == 0 {
+		return nil
 	}
 
-	var models []struct {
-		OpenAIModel
-		Organization  string `json:"organization"`
-		ContextLength *int   `json:"context_length,omitempty"`
+	entries := payload
+	if payload[0] != '[' {
+		var envelope struct {
+			Object string          `json:"object"`
+			Data   json.RawMessage `json:"data"`
+			Models json.RawMessage `json:"models"`
+		}
+		if err := sonic.Unmarshal(payload, &envelope); err != nil {
+			return err
+		}
+		response.Object = envelope.Object
+
+		switch {
+		case hasJSONValue(envelope.Data):
+			entries = envelope.Data
+		case hasJSONValue(envelope.Models):
+			entries = envelope.Models
+		default:
+			return nil
+		}
 	}
-	if err := sonic.Unmarshal(trimmed, &models); err != nil {
+
+	models, err := decodeOpenAIModels(entries)
+	if err != nil {
 		return err
 	}
-
-	response.Data = make([]OpenAIModel, len(models))
-	for i, model := range models {
-		response.Data[i] = model.OpenAIModel
-		if response.Data[i].OwnedBy == "" {
-			response.Data[i].OwnedBy = model.Organization
-		}
-		if response.Data[i].ContextWindow == nil {
-			response.Data[i].ContextWindow = model.ContextLength
-		}
-	}
+	response.Data = models
 	return nil
+}
+
+// hasJSONValue reports whether a raw JSON field carried anything at all, so that an
+// explicit null falls through to the next candidate key.
+func hasJSONValue(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null"))
+}
+
+// decodeOpenAIModels decodes a JSON array of model entries. An entry is normally an
+// object, but id-only string entries are in use as well.
+func decodeOpenAIModels(entries []byte) ([]OpenAIModel, error) {
+	var rawEntries []json.RawMessage
+	if err := sonic.Unmarshal(bytes.TrimSpace(entries), &rawEntries); err != nil {
+		return nil, err
+	}
+
+	models := make([]OpenAIModel, 0, len(rawEntries))
+	for _, rawEntry := range rawEntries {
+		entry := bytes.TrimSpace(rawEntry)
+		if len(entry) == 0 {
+			continue
+		}
+
+		if entry[0] == '"' {
+			id := jsonScalarString(entry)
+			if strings.TrimSpace(id) == "" {
+				continue
+			}
+			models = append(models, OpenAIModel{ID: id, Object: "model"})
+			continue
+		}
+
+		var decoded struct {
+			ID            json.RawMessage `json:"id"`
+			Object        string          `json:"object"`
+			OwnedBy       json.RawMessage `json:"owned_by"`
+			Organization  json.RawMessage `json:"organization"`
+			Created       json.RawMessage `json:"created"`
+			Active        *bool           `json:"active"`
+			ContextWindow json.RawMessage `json:"context_window"`
+			ContextLength json.RawMessage `json:"context_length"`
+		}
+		if err := sonic.Unmarshal(entry, &decoded); err != nil {
+			return nil, err
+		}
+
+		model := OpenAIModel{
+			ID:      jsonScalarString(decoded.ID),
+			Object:  decoded.Object,
+			OwnedBy: jsonScalarString(decoded.OwnedBy),
+			Active:  decoded.Active,
+		}
+		if model.OwnedBy == "" {
+			model.OwnedBy = jsonScalarString(decoded.Organization)
+		}
+		if created, ok := jsonScalarInt64(decoded.Created); ok {
+			model.Created = &created
+		}
+		if window, ok := jsonScalarInt(decoded.ContextWindow); ok {
+			model.ContextWindow = &window
+		} else if window, ok := jsonScalarInt(decoded.ContextLength); ok {
+			model.ContextWindow = &window
+		}
+
+		models = append(models, model)
+	}
+
+	return models, nil
+}
+
+// jsonScalarString reads a JSON scalar as a string. Compatible endpoints quote fields
+// such as id and owned_by inconsistently; null and structured values read as empty.
+func jsonScalarString(raw json.RawMessage) string {
+	value := bytes.TrimSpace(raw)
+	if len(value) == 0 || bytes.Equal(value, []byte("null")) {
+		return ""
+	}
+	if value[0] == '"' {
+		var decoded string
+		if err := sonic.Unmarshal(value, &decoded); err != nil {
+			return ""
+		}
+		return decoded
+	}
+	return string(value)
+}
+
+// jsonScalarInt64 reads a JSON number, or a number quoted as a string, as an int64.
+func jsonScalarInt64(raw json.RawMessage) (int64, bool) {
+	number, ok := jsonScalarNumber(raw)
+	if !ok {
+		return 0, false
+	}
+	if parsed, err := strconv.ParseInt(number, 10, 64); err == nil {
+		return parsed, true
+	}
+	// Counts such as 1.28e5 are still counts.
+	parsed, err := strconv.ParseFloat(number, 64)
+	if err != nil {
+		return 0, false
+	}
+	return int64(parsed), true
+}
+
+// jsonScalarInt reads a JSON number, or a number quoted as a string, as an int.
+func jsonScalarInt(raw json.RawMessage) (int, bool) {
+	parsed, ok := jsonScalarInt64(raw)
+	return int(parsed), ok
+}
+
+// jsonScalarNumber returns the digits behind a JSON number, quoted or not.
+func jsonScalarNumber(raw json.RawMessage) (string, bool) {
+	number := strings.TrimSpace(jsonScalarString(raw))
+	if number == "" {
+		return "", false
+	}
+	return number, true
 }
 
 // OpenAIImageGenerationRequest is the struct for Image Generation requests by OpenAI.

@@ -173,8 +173,12 @@ func ListModelsByKey(
 		return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
 	}
 
-	// Copy response body before releasing
-	responseBody := append([]byte(nil), resp.Body()...)
+	// Decode the response body (handles gzip/deflate/br/zstd Content-Encoding)
+	// before releasing the response.
+	responseBody, decodeErr := providerUtils.CheckAndDecodeBody(resp)
+	if decodeErr != nil {
+		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, decodeErr), latency)
+	}
 
 	openaiResponse := &OpenAIListModelsResponse{}
 

@@ -2032,6 +2032,31 @@ func (e *BifrostError) GetErrorString() string {
 	}
 }
 
+// GetErrorStringWithCause appends the underlying cause to the message when the error
+// carries one. GetErrorString stays message-only because it is surfaced to callers;
+// logs want the cause as well, since that is what turns an error like
+// "failed to unmarshal response from provider API" into something a reader can act on.
+func (e *BifrostError) GetErrorStringWithCause() string {
+	if e == nil {
+		return ""
+	}
+
+	message := e.GetErrorString()
+	if e.Error == nil || e.Error.Error == nil {
+		return message
+	}
+
+	cause := e.Error.Error.Error()
+	if cause == "" || cause == message {
+		return message
+	}
+	if message == "" {
+		return cause
+	}
+
+	return message + ": " + cause
+}
+
 // StreamControl represents stream control options.
 type StreamControl struct {
 	LogError   *bool `json:"log_error,omitempty"`   // Optional: Controls logging of error

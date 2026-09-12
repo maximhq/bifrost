@@ -3921,13 +3921,11 @@ func extractSuccessfulListModelsResponses(results chan schemas.ListModelsByKeyRe
 
 	for result := range results {
 		if result.Err != nil {
-			errMsg := "unknown error"
-			if errorField := result.Err.Error; errorField != nil {
-				if errorField.Message != "" {
-					errMsg = errorField.Message
-				} else if errorField.Error != nil {
-					errMsg = errorField.Error.Error()
-				}
+			// Log the cause too: the message alone ("failed to unmarshal response from
+			// provider API") leaves nothing to act on.
+			errMsg := result.Err.GetErrorStringWithCause()
+			if errMsg == "" {
+				errMsg = "unknown error"
 			}
 			getLogger().Warn(fmt.Sprintf("failed to list models with key %s: %s", result.KeyID, errMsg))
 			keyStatuses = append(keyStatuses, schemas.KeyStatus{
