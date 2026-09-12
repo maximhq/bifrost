@@ -580,6 +580,22 @@ Insert into the collection surgically (a script that splices the new object in, 
 
 The narrow exemptions: changes with no wire-visible effect (comments, internal renames, log lines) and behaviour no HTTP request can reach. If a change is exempt, say so explicitly in the PR rather than leaving the omission unexplained.
 
+### Every non-exempt wire-visible fix ends with a provider-harness run against `tests/integrations/python/config.json`
+
+Unit tests and `make test-core` are not the finish line. The exemptions are the ones in the previous section: a change with no wire-visible effect (comments, internal renames, log lines, test-only or guidance-only edits) or behaviour no HTTP request can reach is exempt, and the report must say so explicitly. For everything else, after the Go-level red/green loop and the regression reruns, run the live provider harness with the shared integration config, scoped to the change with `PROVIDER` and `FEATURE` so the paid sweep stays small, and report the provider table from the run. `APP_DIR=tests/integrations/python` is the config directory the harness starts Bifrost from; pass it explicitly so a stale server or another config never answers for the code under test.
+
+```bash
+# Scoped to the change (preferred): the provider and a keyword from the affected cases
+make run-provider-harness-test APP_DIR=tests/integrations/python CI=1 HARNESS_MAX_REQUESTS=<approved ceiling> PROVIDER=<provider> FEATURE="<keyword>"
+
+# Curated ~100-request smoke set across all providers, when the change is cross-cutting
+make run-provider-harness-test APP_DIR=tests/integrations/python CI=1 HARNESS_MAX_REQUESTS=<approved ceiling> SMOKE=1
+```
+
+`HARNESS_MAX_REQUESTS` is the enforced spend bound: the recipe checks every newman launch against its exact filtered request count before it starts and refuses any launch that would cross the cap (exit 3), so the live total never exceeds the approved number. Always pass it; the preflight count from `filter-collection.mjs` is only an estimate because shared producers repeat per provider fork. Stream-cancellation probes are never sent under a cap.
+
+Port 8080 is a blocking precondition: the recipe reuses any server whose `/health` answers and never starts the `APP_DIR` one, so a stale listener silently tests old code. Run `lsof -nP -iTCP:8080 -sTCP:LISTEN` first; if it reports a listener you did not start from the current working tree, stop, have it shut down (never kill a process you did not start), and recheck before running the target. The one acceptable listener is Bifrost you started yourself from the code under test (`make dev APP_DIR=tests/integrations/python` in the background, then wait for `/health`), which is also the reliable pattern since a cold start can outlast the recipe's 60s health wait. For non-exempt changes, do not skip the run because it is paid or slow; scope it instead, and report exactly which scope ran.
+
 ### Always prefer `make test-core` over raw `go test` for provider-level tests
 
 The `make test-core` target is the canonical harness for provider tests — it wires up env vars from `.env` (provider API keys), invokes the per-provider `{provider}_test.go` entrypoint in `core/providers/<provider>/`, and routes through the shared `core/internal/llmtests/` scenario suite that validates end-to-end behavior (including streaming).

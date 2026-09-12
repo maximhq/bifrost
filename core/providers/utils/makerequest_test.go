@@ -597,6 +597,53 @@ func TestContextTransport_ChunkedStreamReleasesConnForReuse(t *testing.T) {
 	}
 }
 
+// TestContextTransport_TruncatedChunkedStreamReadsAsEOFAndDiscardsConn pins the
+// contract every provider read loop and the semantic truncation check (#5546) are
+// built on: fasthttp reports an upstream that closes on a chunk boundary as a plain
+// io.EOF and leaves "was the stream complete?" to the caller's terminal-marker
+// check, which turns a missing marker into the retryable 502 truncation error. The
+// standard-library chunked reader says io.ErrUnexpectedEOF for the same close, and
+// the loops route any non-EOF error to a generic stream failure instead. The
+// half-read connection must still be closed, never returned to the pool: a POST
+// (non-idempotent, so fasthttp will not silently retry it) must get a fresh
+// connection and succeed.
+func TestContextTransport_TruncatedChunkedStreamReadsAsEOFAndDiscardsConn(t *testing.T) {
+	srv := newScriptedServer(t, func(conn net.Conn, br *bufio.Reader) {
+		if !readRequest(br) {
+			return
+		}
+		writeAll(t, conn, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n")
+		writeAll(t, conn, "9\r\ndata: a\n\n\r\n")
+		// Returning closes conn without the terminating 0-length chunk.
+	})
+	client := BuildStreamingClient(srv.client(5 * time.Second))
+
+	req, resp := streamGet(t, client, "GET")
+	body, err := io.ReadAll(resp.BodyStream())
+	if got := string(body); got != "data: a\n\n" {
+		t.Fatalf("body before the drop = %q, want %q", got, "data: a\n\n")
+	}
+	if err != nil {
+		t.Fatalf("truncated chunked body read error = %v, want a plain io.EOF (io.ReadAll returns nil on EOF)", err)
+	}
+	if err := resp.CloseBodyStream(); err != nil {
+		t.Fatalf("CloseBodyStream: %v", err)
+	}
+	fasthttp.ReleaseRequest(req)
+	fasthttp.ReleaseResponse(resp)
+
+	req, resp = streamGet(t, client, "POST")
+	if resp.StatusCode() != 200 {
+		t.Fatalf("second request status = %d, want 200", resp.StatusCode())
+	}
+	_ = resp.CloseBodyStream()
+	fasthttp.ReleaseRequest(req)
+	fasthttp.ReleaseResponse(resp)
+	if got := srv.accepted.Load(); got != 2 {
+		t.Fatalf("connections accepted = %d, want 2 (a truncated stream's connection must be discarded, not pooled)", got)
+	}
+}
+
 // TestContextTransport_ContentLengthAndIdentityBodies covers the two
 // non-chunked framings of a streamed body.
 func TestContextTransport_ContentLengthAndIdentityBodies(t *testing.T) {

@@ -616,6 +616,17 @@ func HandleOpenAITextCompletionStreaming(
 				if ctx.Err() != nil {
 					return
 				}
+				// A silent park after finish_reason (#7108): the response is complete, so the
+				// idle timeout that finally unblocked the read ends the stream cleanly instead
+				// of failing a response the client already has. The timer closed the socket
+				// and claimed ConnectionClosed, so the deferred release skips the drain.
+				if errors.Is(readErr, providerUtils.ErrStreamIdleTimeout) && finishReason != nil {
+					ctx.SetValue(schemas.BifrostContextKeyStreamParkedAfterFinish, true)
+					if usage.TotalTokens == 0 {
+						logger.Warn("provider %s went silent after finish_reason without sending usage; token counts and cost are unavailable for this request", providerName)
+					}
+					break
+				}
 				if readErr != io.EOF {
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					logger.Warn("Error reading stream: %v", readErr)
@@ -1302,6 +1313,19 @@ func HandleOpenAIChatCompletionStreaming(
 			if readErr != nil {
 				if ctx.Err() != nil {
 					return
+				}
+				// A silent park after finish_reason (#7108): the response is complete, so the
+				// idle timeout that finally unblocked the read ends the stream cleanly instead
+				// of failing a response the client already has. On the Responses fallback path
+				// the terminal signal is the pending completed/incomplete event. The timer
+				// closed the socket and claimed ConnectionClosed, so the deferred release
+				// skips the drain.
+				if errors.Is(readErr, providerUtils.ErrStreamIdleTimeout) && (finishReason != nil || pendingFinalEvent != nil) {
+					ctx.SetValue(schemas.BifrostContextKeyStreamParkedAfterFinish, true)
+					if usage.TotalTokens == 0 {
+						logger.Warn("provider %s went silent after finish_reason without sending usage; token counts and cost are unavailable for this request", providerName)
+					}
+					break
 				}
 				if readErr != io.EOF {
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
