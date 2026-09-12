@@ -112,22 +112,6 @@ func (s *RDBLogStore) ScopedDB(ctx context.Context) *gorm.DB {
 	return db
 }
 
-// projAuthApplyQueryScope re-applies the caller's QueryScope from ctx to a
-// logs-table query handle, mirroring ScopedDB without binding to a store
-// instance. It exists for verifyRootRowRevision (casstore_read.go), which
-// must re-run the caller's scope predicates on its in-transaction root-row
-// re-read so the hydration snapshot is bound to a fresh authorization
-// decision. Defined here because this file already imports the queryscope
-// package; adding that import to casstore_read.go trips a go toolchain
-// module-resolution limitation in this environment (new imports of
-// main-module packages fail to resolve in fresh checkouts).
-func projAuthApplyQueryScope(ctx context.Context, db *gorm.DB) *gorm.DB {
-	if scope := queryscope.FromContext(ctx); scope != nil {
-		return scope(db)
-	}
-	return db
-}
-
 // multiValueDimensionFilterSQL builds a Postgres predicate matching logs by a
 // dimension that is single-valued on the scalar column (the primary, set by the
 // VK path / pre-migration rows) and multi-valued on the JSON-array column (the

@@ -415,100 +415,42 @@ func billingModalityInputPresent(l *Log, column string) bool {
 	return false
 }
 
-// hydrateLogForBilling reassembles only the fields pricing reads from the
-// CAS pointers, then re-deserializes so the virtual structs match. Unlike
-// the serving paths it never serves partially-hydrated content: an error
-// here means the row stays Unpriceable rather than being billed from a stub.
-//
-// The batch selection that produced log is an earlier, separate observation;
-// this per-row short transaction re-reads the root row and the CAS side
-// tables from ONE snapshot and derives the pricing inputs from that
-// consistent revision. The hydrated values are then merged into the caller's
-// in-memory object — metadata the caller already holds is deliberately left
-// alone, so business modifications to it can no longer produce
-// revision-mismatch false positives the way the round-4 column comparison
-// did.
+// hydrateLogForBilling replaces the caller's billing row only after a complete
+// authorized root + CAS snapshot has been recovered and validated. The batch
+// projection is an earlier observation: retaining any of its pricing metadata
+// (model, provider, ownership, object type, etc.) would mix revisions. Derive
+// the modality from the fresh root, and publish metadata and payload together.
 func (c *CasLogStore) hydrateLogForBilling(ctx context.Context, log *Log) error {
-	fields := []string{"token_usage", "cache_debug"}
-	if col := billingPayloadColumnFor(log.Object); col != "" {
-		fields = append(fields, col)
-	}
-	var values map[string]string
+	var ready *Log
 	if err := c.readTx(ctx, func(tx *gorm.DB) error {
 		fresh, err := c.rdb.findLogByIDTx(ctx, tx, log.ID)
 		if err != nil {
 			return fmt.Errorf("re-read log row: %w", err)
 		}
-		if !fresh.HasObject {
-			// The row the batch selected promised CAS content; the snapshot
-			// says otherwise. Billing from the caller's stale expectation
-			// would price a revision that no longer exists.
-			return fmt.Errorf("logstore/cas: log %s no longer has CAS content", log.ID)
+		fields := []string{"token_usage", "cache_debug"}
+		if col := billingPayloadColumnFor(fresh.Object); col != "" {
+			fields = append(fields, col)
 		}
 		if err := c.hydrateFieldsTx(tx, fresh, true, fields...); err != nil {
 			return err
 		}
-		// token_usage and cache_debug are DB-resident (always excluded from
-		// CAS), so they come from the re-read row; the modality column comes
-		// from CAS or the row — whichever this snapshot says is authoritative.
-		payload := ExtractPayload(fresh)
-		values = make(map[string]string, len(fields))
-		for _, f := range fields {
-			values[f] = payload[f]
+		if err := fresh.DeserializeFields(); err != nil {
+			return fmt.Errorf("deserialize hydrated payload: %w", err)
 		}
+		if fresh.TokenUsage == "" && billingPayloadColumnFor(fresh.Object) == "" {
+			return fmt.Errorf("hydrated payload has no token_usage")
+		}
+		if col := billingPayloadColumnFor(fresh.Object); col != "" && !billingModalityInputPresent(fresh, col) {
+			return fmt.Errorf("hydrated payload has no %s", col)
+		}
+		fresh.billingPayloadsHydrated = true
+		stripNonBillingPayloadBytes(fresh)
+		ready = fresh
 		return nil
 	}); err != nil {
 		return err
 	}
-	// MergePayloadFromJSON writes the serialized columns; re-deserialize so
-	// TokenUsageParsed reflects the hydrated payload.
-	data, err := sonic.Marshal(values)
-	if err != nil {
-		return fmt.Errorf("marshal hydrated payload: %w", err)
-	}
-	if err := MergePayloadFromJSON(log, data); err != nil {
-		return fmt.Errorf("merge payload: %w", err)
-	}
-	if err := log.DeserializeFields(); err != nil {
-		return fmt.Errorf("deserialize hydrated payload: %w", err)
-	}
-	// Only token-billed rows need token_usage. A modality row prices off the
-	// payload recovered above, so an empty usage is not an error for them.
-	if log.TokenUsage == "" && billingPayloadColumnFor(log.Object) == "" {
-		return fmt.Errorf("hydrated payload has no token_usage")
-	}
-	// A modality row (speech/ocr/image_generation/... — see
-	// billingPayloadColumns) prices off its modality payload column, not
-	// token_usage. If that column is still empty after hydration — the CAS
-	// pointer row was lost, or hydration recovered nothing for it — pricing
-	// has no input, and a "successful" hydration that counts the row as
-	// Hydrated would let billing continue on a lossy stub. Fail closed the
-	// same way a missing token_usage does: the row goes to Unpriceable.
-	//
-	// The checks run BEFORE stripNonBillingPayloadBytes: strip clears
-	// ImageGenerationOutput (rdb.go), and billing reads the modality payload
-	// through billingPayloadColumnValue, so checking after the strip
-	// misjudged every healthy image_generation row — parsed billing input
-	// fully recovered, raw column deliberately released — as Unpriceable.
-	// Verified here is exactly what billing reads before hydration success is
-	// declared: the hydrated serialized column (equivalently its parsed
-	// struct, which DeserializeFields just built from it). One divergence is
-	// legal and must not reject the row: stripNonBillingPayloadBytes also
-	// runs at the END of SearchLogsForBilling (rdb.go), so a row-resident
-	// image output arrives here with an empty serialized column but an intact
-	// parsed structure — billingModalityInputPresent accepts that state, and
-	// only a row with neither the column nor the parsed struct fails.
-	if col := billingPayloadColumnFor(log.Object); col != "" && !billingModalityInputPresent(log, col) {
-		return fmt.Errorf("hydrated payload has no %s", col)
-	}
-	// All checks passed. Only now may the row carry the hydrated marker: the
-	// marker suppresses billingRowNeedsHydration, and the billing caller
-	// blocks only on Unpriceable — setting it before the checks let a failed
-	// row sail through a second HydrateBillingChunk call as "nothing left to
-	// fetch" and be billed from its lossy stub.
-	log.billingPayloadsHydrated = true
-	// Drop payload bytes pricing never reads; it only needs counts/inputs.
-	stripNonBillingPayloadBytes(log)
+	*log = *ready
 	return nil
 }
 
