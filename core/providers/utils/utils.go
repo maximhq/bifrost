@@ -840,6 +840,42 @@ func createTLSConfigWithCA(caCertPEM string) (*tls.Config, error) {
 	}, nil
 }
 
+// NormalizeBaseURL prepares networkConfig.BaseURL for a provider constructor: when no
+// base URL is configured it applies defaultURL (pass "" for providers whose base URL is
+// optional, e.g. when every key carries its own URL), and it trims trailing slashes from
+// the resolved value. The SecretVar is cloned before it is mutated so a config-store
+// copy sharing the pointer is never edited in place, and its env./vault. reference is
+// retained so serializing the config emits the reference, never the resolved URL.
+func NormalizeBaseURL(networkConfig *schemas.NetworkConfig, defaultURL string) {
+	if networkConfig == nil {
+		return
+	}
+	if !networkConfig.BaseURL.IsSet() {
+		if defaultURL == "" {
+			return
+		}
+		networkConfig.BaseURL = schemas.NewSecretVar(defaultURL)
+	}
+	baseURL := networkConfig.BaseURL.Clone()
+	baseURL.Val = strings.TrimRight(baseURL.Val, "/")
+	networkConfig.BaseURL = baseURL
+}
+
+// LoggableURL returns fullURL in a form safe for logs. When the provider's base_url
+// came from an env./vault. reference, the resolved scheme and host are replaced with
+// the reference (e.g. "env.UPSTREAM_URL/v1beta/batches/123"), so the resolved endpoint
+// never reaches the logs; a literal base_url is logged as-is.
+func LoggableURL(baseURL *schemas.SecretVar, fullURL string) string {
+	if !baseURL.IsFromSecret() {
+		return fullURL
+	}
+	parsed, err := url.Parse(fullURL)
+	if err != nil || parsed.Host == "" {
+		return baseURL.GetRawRef()
+	}
+	return baseURL.GetRawRef() + parsed.RequestURI()
+}
+
 // ConfigureTLS applies TLS settings from NetworkConfig to the fasthttp client.
 // It merges with any existing TLSConfig (e.g., from ConfigureProxy).
 func ConfigureTLS(client *fasthttp.Client, networkConfig schemas.NetworkConfig, logger schemas.Logger) *fasthttp.Client {

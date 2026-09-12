@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -126,10 +125,7 @@ func NewCohereProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 	streamingClient := providerUtils.BuildStreamingClient(client)
 
 	// Set default BaseURL if not provided
-	if config.NetworkConfig.BaseURL == "" {
-		config.NetworkConfig.BaseURL = "https://api.cohere.ai"
-	}
-	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
+	providerUtils.NormalizeBaseURL(&config.NetworkConfig, "https://api.cohere.ai")
 
 	return &CohereProvider{
 		logger:               logger,
@@ -153,7 +149,7 @@ func (provider *CohereProvider) buildRequestURL(ctx *schemas.BifrostContext, def
 	if isCompleteURL {
 		return path
 	}
-	return provider.networkConfig.BaseURL + path
+	return provider.networkConfig.BaseURL.GetValue() + path
 }
 
 // completeRequest sends a request to Cohere's API and handles the response.

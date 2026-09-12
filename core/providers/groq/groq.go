@@ -3,7 +3,6 @@ package groq
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"github.com/maximhq/bifrost/core/providers/openai"
@@ -50,10 +49,7 @@ func NewGroqProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*Gr
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 	// Set default BaseURL if not provided
-	if config.NetworkConfig.BaseURL == "" {
-		config.NetworkConfig.BaseURL = "https://api.groq.com/openai"
-	}
-	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
+	providerUtils.NormalizeBaseURL(&config.NetworkConfig, "https://api.groq.com/openai")
 
 	return &GroqProvider{
 		logger:              logger,
@@ -76,7 +72,7 @@ func (provider *GroqProvider) ListModels(ctx *schemas.BifrostContext, keys []sch
 		ctx,
 		provider.client,
 		request,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/models"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/models"),
 		keys,
 		provider.networkConfig.ExtraHeaders,
 		schemas.Groq,
@@ -102,7 +98,7 @@ func (provider *GroqProvider) ChatCompletion(ctx *schemas.BifrostContext, key sc
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
@@ -124,7 +120,7 @@ func (provider *GroqProvider) ChatCompletionStream(ctx *schemas.BifrostContext, 
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamingClient,
-		provider.networkConfig.BaseURL+"/v1/chat/completions",
+		provider.networkConfig.BaseURL.GetValue()+"/v1/chat/completions",
 		request,
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
@@ -180,7 +176,7 @@ func (provider *GroqProvider) Speech(ctx *schemas.BifrostContext, key schemas.Ke
 	return openai.HandleOpenAISpeechRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/audio/speech"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/audio/speech"),
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
@@ -215,7 +211,7 @@ func (provider *GroqProvider) Transcription(ctx *schemas.BifrostContext, key sch
 	return openai.HandleOpenAITranscriptionRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/audio/transcriptions"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/audio/transcriptions"),
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,

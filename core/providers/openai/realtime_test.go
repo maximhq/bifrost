@@ -53,7 +53,7 @@ func TestExtractRealtimeTurnUsageSupportsDurationTranscriptionCompletion(t *test
 func TestRealtimeWebSocketURL(t *testing.T) {
 	t.Parallel()
 
-	provider := &OpenAIProvider{networkConfig: schemas.NetworkConfig{BaseURL: "https://api.openai.com"}}
+	provider := &OpenAIProvider{networkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar("https://api.openai.com")}}
 	if got, err := provider.RealtimeWebSocketURL(schemas.Key{}, "gpt-4o transcribe", ""); err != nil || got != "wss://api.openai.com/v1/realtime?model=gpt-4o+transcribe" {
 		t.Fatalf("RealtimeWebSocketURL() = %q, %v", got, err)
 	}
