@@ -134,39 +134,62 @@ func (c *CasLogStore) FindAll(ctx context.Context, query any, fields ...string) 
 	if needsHydration && len(fields) > 0 {
 		fields = ensureHydrationFields(fields)
 	}
-	logs, err := c.LogStore.FindAll(ctx, query, fields...)
-	if err != nil {
-		return nil, err
+	if !needsHydration {
+		// Without hydration there is no CAS read and therefore no
+		// concurrent-modification exposure: the inner query is the whole path.
+		return c.LogStore.FindAll(ctx, query, fields...)
 	}
-	if needsHydration {
+	// ErrCasConcurrentModification means the in-memory rows are stale: their
+	// metadata no longer belongs to the revision the CAS tables hold.
+	// Re-hydrating the same objects can never converge, so every retry must
+	// re-run the FULL original query path — scoped re-read + re-authorization
+	// of fresh rows, then hydration — exactly like FindByID/FindFirst. A
+	// single finished update must not make a still-existing, still-matching
+	// row vanish from the result. The result set may legitimately change
+	// across attempts (a row deleted or no longer matching the query is gone
+	// for good); that is the fresh truth, not a loss.
+	for attempt := 0; ; attempt++ {
+		logs, err := c.LogStore.FindAll(ctx, query, fields...)
+		if err != nil {
+			return nil, err
+		}
 		// Hydration failures drop the entry from the result (warn + skip, as
 		// the design doc promises): serving a partially hydrated log would
 		// present empty fields as real content. HydrateErrors is still
 		// incremented for observability.
 		kept := logs[:0]
+		concurrent := false
 		for _, log := range logs {
 			var hydrErr error
-			for attempt := 0; attempt < casRootRowRetryLimit; attempt++ {
-				if wildcard {
-					hydrErr = c.hydrateLog(ctx, log)
-				} else {
-					hydrErr = c.hydrateLog(ctx, log, fields...)
-				}
-				if hydrErr == nil || !errors.Is(hydrErr, ErrCasConcurrentModification) {
-					break
-				}
-				casRetrySleep(attempt)
+			if wildcard {
+				hydrErr = c.hydrateLog(ctx, log)
+			} else {
+				hydrErr = c.hydrateLog(ctx, log, fields...)
 			}
-			if hydrErr != nil {
-				c.hydrateErrors.Add(1)
-				c.logger.Warn("logstore/cas: hydrate failed for log %s: %v", log.ID, hydrErr)
+			if hydrErr == nil {
+				kept = append(kept, log)
 				continue
 			}
-			kept = append(kept, log)
+			if errors.Is(hydrErr, ErrCasConcurrentModification) {
+				concurrent = true
+				continue
+			}
+			c.hydrateErrors.Add(1)
+			c.logger.Warn("logstore/cas: hydrate failed for log %s: %v", log.ID, hydrErr)
 		}
-		logs = kept
+		if !concurrent {
+			return kept, nil
+		}
+		if attempt+1 >= casRootRowRetryLimit {
+			// Retry budget exhausted under sustained concurrent modification.
+			// Keep the per-log degrade semantics: the rows that kept losing
+			// the race are warned about and skipped, the rest are served.
+			c.hydrateErrors.Add(1)
+			c.logger.Warn("logstore/cas: hydrate failed for logs after %d attempts: concurrent modification persisted", casRootRowRetryLimit)
+			return kept, nil
+		}
+		casRetrySleep(attempt)
 	}
-	return logs, nil
 }
 
 // hydrateLog restores CAS-stored payload fields into log. It is a no-op when
