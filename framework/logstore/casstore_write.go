@@ -264,37 +264,71 @@ func (c *CasLogStore) Update(ctx context.Context, id string, entry any) error {
 // Normalizing first makes both spellings semantically identical; keys that
 // are neither a known column nor a known field pass through unchanged, which
 // is exactly what gorm would do with them.
-func (c *CasLogStore) normalizeUpdateMapKeys(updates map[string]interface{}) map[string]interface{} {
+//
+// Two distinct input keys that normalize to the SAME database column are an
+// ambiguous update: with map iteration order being random, the previous
+// last-writer-wins behavior made the effective value (and, for a
+// string-vs-gorm.Expr clash, whether the write was accepted at all) depend on
+// Go's map ordering. Such maps are now rejected up front, before any CAS or
+// row write happens — even when the two values are identical, so the rule
+// stays simple and never needs value-equivalence reasoning about gorm.Expr.
+//
+// Schema resolution failure is also fatal (fail closed): a silent passthrough
+// would let Go field-name keys bypass the CAS interception again. The failure
+// is captured by logSchemaOnce, so every subsequent call returns the same
+// cached error — there is no repeated re-parse, and schema.Parse reports
+// failures as errors rather than panicking.
+func (c *CasLogStore) normalizeUpdateMapKeys(updates map[string]interface{}) (map[string]interface{}, error) {
 	c.logSchemaOnce.Do(func() {
 		c.logSchema, c.logSchemaErr = schema.Parse(&Log{}, &sync.Map{}, c.db.NamingStrategy)
 	})
-	if c.logSchemaErr != nil || c.logSchema == nil {
-		// Schema resolution failed; keep legacy passthrough rather than
-		// failing writes that gorm itself would accept.
-		return updates
+	if c.logSchemaErr != nil {
+		return nil, fmt.Errorf(
+			"logstore/cas: Update: cannot parse Log schema for map key normalization (fail closed): %w",
+			c.logSchemaErr)
+	}
+	if c.logSchema == nil {
+		return nil, fmt.Errorf(
+			"logstore/cas: Update: Log schema unavailable for map key normalization (fail closed)")
 	}
 	out := make(map[string]interface{}, len(updates))
+	origins := make(map[string]string, len(updates)) // DB column -> first original key seen
 	changed := false
 	for k, v := range updates {
+		var col string
 		if _, isColumn := c.logSchema.FieldsByDBName[k]; isColumn {
-			out[k] = v // already a column name
-			continue
-		}
-		if f, isField := c.logSchema.FieldsByName[k]; isField && f.DBName != "" {
-			out[f.DBName] = v
+			col = k // already a column name
+		} else if f, isField := c.logSchema.FieldsByName[k]; isField && f.DBName != "" {
+			col = f.DBName
 			changed = true
+		} else {
+			out[k] = v // unknown key: transparent passthrough (gorm's behavior)
 			continue
 		}
-		out[k] = v // unknown key: transparent passthrough (gorm's behavior)
+		if prev, clash := origins[col]; clash {
+			first, second := prev, k
+			if second < first {
+				first, second = second, first
+			}
+			return nil, fmt.Errorf(
+				"logstore/cas: Update: map keys %q and %q both normalize to column %q; ambiguous update rejected before any write",
+				first, second, col)
+		}
+		origins[col] = k
+		out[col] = v
 	}
 	if !changed {
-		return updates
+		return updates, nil
 	}
-	return out
+	return out, nil
 }
 
 func (c *CasLogStore) updateFromMap(ctx context.Context, id string, updates map[string]interface{}) error {
-	updates = c.normalizeUpdateMapKeys(updates)
+	normalized, err := c.normalizeUpdateMapKeys(updates)
+	if err != nil {
+		return err
+	}
+	updates = normalized
 	rowUpdates := make(map[string]interface{}, len(updates))
 	var toStore []casFieldContent
 	var downgrades []string // payload fields set to small/empty values: drop pointers

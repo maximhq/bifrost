@@ -145,7 +145,10 @@ type CasLogStore struct {
 	hydrateErrors atomic.Int64
 	// logSchema caches the parsed Log schema used to normalize Go field-name
 	// map keys to DB column names in the Update path (see
-	// normalizeUpdateMapKeys in casstore_write.go).
+	// normalizeUpdateMapKeys in casstore_write.go). A parse failure is cached
+	// in logSchemaErr and returned on every call (fail closed): the Update
+	// path must never silently fall back to passing raw keys through, which
+	// would let Go field-name keys bypass the CAS interception.
 	logSchemaOnce sync.Once
 	logSchema     *schema.Schema
 	logSchemaErr  error
