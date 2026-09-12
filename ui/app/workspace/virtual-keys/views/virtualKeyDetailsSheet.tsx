@@ -1,6 +1,7 @@
 import { BudgetOverrideDialog } from "@/components/budgetOverrideDialog";
 import { BudgetOverrideManagerDialog, type BudgetOverrideSection } from "@/components/budgetOverrideManagerDialog";
 import { CopyableId } from "@/components/copyableId";
+import { ModelAccessBadges } from "@/components/modelAccess";
 import { SheetNavigationButtons } from "@/components/sheetNavigationButtons";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
@@ -271,46 +272,14 @@ export default function VirtualKeyDetailSheet({
 														<div className="grid grid-cols-1 items-start gap-4 md:grid-cols-3">
 															<span className="text-muted-foreground pt-0.5 text-sm font-medium">Allowed Models</span>
 															<div className="col-span-2">
-																{config.allowed_models?.includes("*") ? (
-																	<Badge variant="success" className="text-xs">
-																		All Models
-																	</Badge>
-																) : config.allowed_models && config.allowed_models.length > 0 ? (
-																	<div className="flex flex-wrap gap-1">
-																		{config.allowed_models.map((model) => (
-																			<Badge key={model} variant="secondary" className="text-xs">
-																				{model}
-																			</Badge>
-																		))}
-																	</div>
-																) : (
-																	<Badge variant="destructive" className="text-xs">
-																		No models (deny all)
-																	</Badge>
-																)}
+																<ModelAccessBadges value={config.allowed_models} patterns={config.allowed_models_patterns} mode="allow" />
 															</div>
 														</div>
 
 														<div className="grid grid-cols-1 items-start gap-4 md:grid-cols-3">
 															<span className="text-muted-foreground pt-0.5 text-sm font-medium">Blocked Models</span>
 															<div className="col-span-2">
-																{config.blacklisted_models?.includes("*") ? (
-																	<Badge variant="destructive" className="text-xs">
-																		All Models Blocked
-																	</Badge>
-																) : config.blacklisted_models && config.blacklisted_models.length > 0 ? (
-																	<div className="flex flex-wrap gap-1">
-																		{config.blacklisted_models.map((model) => (
-																			<Badge key={model} variant="destructive" className="text-xs">
-																				{model}
-																			</Badge>
-																		))}
-																	</div>
-																) : (
-																	<Badge variant="secondary" className="text-xs">
-																		No models blocked
-																	</Badge>
-																)}
+																<ModelAccessBadges value={config.blacklisted_models} patterns={config.blacklisted_models_patterns} mode="block" />
 															</div>
 														</div>
 

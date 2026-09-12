@@ -1,8 +1,8 @@
+import { ModelAccessSelector } from "@/components/modelAccess";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ModelMultiselect } from "@/components/ui/modelMultiselect";
 import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
@@ -377,50 +377,37 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 						name={`key.models`}
 						render={({ field }) => (
 							<FormItem>
-								<div className="flex items-center gap-2">
-									<FormLabel>Allowed Models</FormLabel>
-									<TooltipProvider>
-										<Tooltip>
-											<TooltipTrigger asChild>
-												<span>
-													<Info className="text-muted-foreground h-3 w-3" />
-												</span>
-											</TooltipTrigger>
-											<TooltipContent className="max-w-sm">
-												<p>
-													Select specific models this key applies to, or choose "Allow All Models" to allow all. Leave empty to deny all.
-													Aliases must be added by their alias name - listing only the underlying model does not allow the alias (an alias
-													best-model → gpt-4o requires "best-model" here, not just "gpt-4o").
-												</p>
-											</TooltipContent>
-										</Tooltip>
-									</TooltipProvider>
-								</div>
 								<FormControl>
-									<ModelMultiselect
+									<ModelAccessSelector
+										mode="allow"
 										data-testid="api-keys-models-multiselect"
 										provider={providerName}
-										allowAllOption={true}
+										unfiltered
 										value={field.value || []}
-										onChange={(models: string[]) => {
-											const hadStar = (field.value || []).includes("*");
-											const hasStar = models.includes("*");
-											if (!hadStar && hasStar) {
-												field.onChange(["*"]);
-											} else if (hadStar && hasStar && models.length > 1) {
-												field.onChange(models.filter((m: string) => m !== "*"));
-											} else {
-												field.onChange(models);
-											}
-										}}
-										placeholder={
-											(field.value || []).includes("*")
-												? "All models allowed"
-												: (field.value || []).length === 0
-													? "No models (deny all)"
-													: "Search models..."
+										onChange={field.onChange}
+										patterns={form.watch("key.models_patterns") ?? []}
+										onPatternsChange={(next) => form.setValue("key.models_patterns", next, { shouldDirty: true, shouldValidate: true })}
+										label={
+											<>
+												<FormLabel>Allowed Models</FormLabel>
+												<TooltipProvider>
+													<Tooltip>
+														<TooltipTrigger asChild>
+															<span>
+																<Info className="text-muted-foreground h-3 w-3" />
+															</span>
+														</TooltipTrigger>
+														<TooltipContent className="max-w-sm">
+															<p>
+																Select specific models this key applies to, or choose "Allow All Models" to allow all. Leave empty to deny
+																all. Aliases must be added by their alias name - listing only the underlying model does not allow the alias
+																(an alias best-model → gpt-4o requires "best-model" here, not just "gpt-4o").
+															</p>
+														</TooltipContent>
+													</Tooltip>
+												</TooltipProvider>
+											</>
 										}
-										unfiltered={true}
 									/>
 								</FormControl>
 								<FormMessage />
@@ -432,50 +419,37 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 						name={`key.blacklisted_models`}
 						render={({ field }) => (
 							<FormItem data-testid="apikey-blacklisted-models-field">
-								<div className="flex items-center gap-2">
-									<FormLabel>Blocked Models</FormLabel>
-									<TooltipProvider>
-										<Tooltip>
-											<TooltipTrigger asChild>
-												<span>
-													<Info className="text-muted-foreground h-3 w-3" />
-												</span>
-											</TooltipTrigger>
-											<TooltipContent className="max-w-sm">
-												<p>
-													Models this key must never serve. The denylist always wins - if a model appears in both Allowed Models and here,
-													it is blocked. Select "All Models" to block every model on this key. Aliases are matched by their alias name -
-													blocking only the underlying model does not block aliases that point to it.
-												</p>
-											</TooltipContent>
-										</Tooltip>
-									</TooltipProvider>
-								</div>
 								<FormControl>
-									<ModelMultiselect
+									<ModelAccessSelector
+										mode="block"
 										data-testid="api-keys-blocked-models-multiselect"
 										provider={providerName}
-										allowAllOption={true}
+										unfiltered
 										value={field.value || []}
-										onChange={(models: string[]) => {
-											const hadStar = (field.value || []).includes("*");
-											const hasStar = models.includes("*");
-											if (!hadStar && hasStar) {
-												field.onChange(["*"]);
-											} else if (hadStar && hasStar && models.length > 1) {
-												field.onChange(models.filter((m: string) => m !== "*"));
-											} else {
-												field.onChange(models);
-											}
-										}}
-										placeholder={
-											(field.value || []).includes("*")
-												? "All models blocked"
-												: (field.value || []).length === 0
-													? "No models blocked"
-													: "Search models..."
+										onChange={field.onChange}
+										patterns={form.watch("key.blacklisted_models_patterns") ?? []}
+										onPatternsChange={(next) => form.setValue("key.blacklisted_models_patterns", next, { shouldDirty: true, shouldValidate: true })}
+										label={
+											<>
+												<FormLabel>Blocked Models</FormLabel>
+												<TooltipProvider>
+													<Tooltip>
+														<TooltipTrigger asChild>
+															<span>
+																<Info className="text-muted-foreground h-3 w-3" />
+															</span>
+														</TooltipTrigger>
+														<TooltipContent className="max-w-sm">
+															<p>
+																Models this key must never serve. The denylist always wins - if a model appears in both Allowed Models and
+																here, it is blocked. Select "All Models" to block every model on this key. Aliases are matched by their
+																alias name - blocking only the underlying model does not block aliases that point to it.
+															</p>
+														</TooltipContent>
+													</Tooltip>
+												</TooltipProvider>
+											</>
 										}
-										unfiltered={true}
 									/>
 								</FormControl>
 								<FormMessage />

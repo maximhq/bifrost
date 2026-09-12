@@ -36,6 +36,8 @@ const makeDefaultEntry = (providerName: string): ProviderConfigCardValue => ({
 	providerName,
 	allowedModels: ["*"],
 	blacklistedModels: [],
+	allowedModelsPatterns: [],
+	blacklistedModelsPatterns: [],
 	weight: undefined,
 	keyIds: ["*"],
 	budgets: [],
@@ -49,6 +51,8 @@ const isDefaultEntry = (e: ProviderConfigCardValue): boolean =>
 	(e.allowedModels || []).length === 1 &&
 	e.allowedModels?.[0] === "*" &&
 	(e.blacklistedModels || []).length === 0 &&
+	(e.allowedModelsPatterns || []).length === 0 &&
+	(e.blacklistedModelsPatterns || []).length === 0 &&
 	(e.keyIds || []).length === 1 &&
 	e.keyIds?.[0] === "*" &&
 	(e.budgets || []).length === 0 &&
