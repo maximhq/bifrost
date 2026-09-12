@@ -914,6 +914,86 @@ func (h *GovernanceHandler) syncVKGovernanceToModelConfigs(ctx context.Context, 
 	return nil
 }
 
+// adoptLegacyVKGovernance settles a virtual key's own budget and rate-limit rows against the
+// top-level VK-scoped model config, and reports the budget IDs that still need their owner
+// column rewritten once that config exists.
+//
+// A key seeded from config.json carries governance on the key row itself: virtual_keys.rate_limit_id
+// and budgets owned through budgets.virtual_key_id. Everything written through the VK sheet lands in
+// VK-scoped model configs instead. Both sets are enforced, so without this a UI edit creates a
+// second, laxer limit while the original keeps refusing requests at its old ceiling, and the sheet
+// shows the new number because the read path hydrates from the model config.
+//
+// Which row survives depends on what the model config already holds. An empty tier adopts the
+// legacy row outright, keeping its identity so the open window and the usage booked against it
+// carry over. A tier that already has its own row means an earlier edit already split this key in
+// two, and there the sheet's row wins and the legacy one is deleted, because the sheet is what the
+// operator is reading. Either way one row is left enforcing, and it is the one the sheet shows.
+//
+// Only the top-level tier settles: per-provider and per-model tiers have no legacy rows on the key.
+func (h *GovernanceHandler) adoptLegacyVKGovernance(ctx context.Context, tx *gorm.DB, vk *configstoreTables.TableVirtualKey, mc *configstoreTables.TableModelConfig, d vkModelConfigDesired) (map[string]bool, error) {
+	if d.provider != nil || d.modelName != "" {
+		return nil, nil
+	}
+
+	if vk.RateLimitID != nil {
+		legacyID := *vk.RateLimitID
+		var rl configstoreTables.TableRateLimit
+		err := tx.WithContext(ctx).First(&rl, "id = ?", legacyID).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+		// A config.json restart re-points the key at a row the model config already owns.
+		// The link is stale, the row is not: clearing one must not delete the other's.
+		shared := mc.RateLimitID != nil && *mc.RateLimitID == legacyID
+		adopt := err == nil && mc.RateLimitID == nil
+		// The key row holds the foreign key, so it has to let go before the model config
+		// can own the row it points at, or before the row can be deleted.
+		if err := tx.WithContext(ctx).Model(&configstoreTables.TableVirtualKey{}).
+			Where("id = ?", vk.ID).
+			Update("rate_limit_id", nil).Error; err != nil {
+			return nil, err
+		}
+		vk.RateLimitID = nil
+		vk.RateLimit = nil
+		switch {
+		case adopt:
+			mc.RateLimitID = &rl.ID
+			mc.RateLimit = &rl
+		case err == nil && !shared:
+			if err := h.configStore.DeleteRateLimit(ctx, legacyID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
+				return nil, err
+			}
+		}
+	}
+
+	var legacy []configstoreTables.TableBudget
+	if err := tx.WithContext(ctx).Where("virtual_key_id = ?", vk.ID).Find(&legacy).Error; err != nil {
+		return nil, err
+	}
+	if len(legacy) == 0 {
+		return nil, nil
+	}
+	if len(mc.Budgets) > 0 {
+		for i := range legacy {
+			if err := h.configStore.DeleteBudget(ctx, legacy[i].ID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
+				return nil, err
+			}
+		}
+		vk.Budgets = nil
+		return nil, nil
+	}
+	adopted := make(map[string]bool, len(legacy))
+	for i := range legacy {
+		legacy[i].VirtualKeyID = nil
+		legacy[i].ModelConfigID = &mc.ID
+		adopted[legacy[i].ID] = true
+	}
+	mc.Budgets = append(mc.Budgets, legacy...)
+	vk.Budgets = nil
+	return adopted, nil
+}
+
 // reconcileVKModelConfig reconciles a single VK-scoped model config to the desired state.
 func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm.DB, vk *configstoreTables.TableVirtualKey, d vkModelConfigDesired, usageReset *budgetUsageReset) error {
 	modelName := d.modelNameOrAll()
@@ -945,6 +1025,11 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 	} else {
 		mc = existingList[0]
 		mc.CalendarAligned = vk.CalendarAligned // keep in sync with the owning VK
+	}
+
+	adoptedBudgetIDs, err := h.adoptLegacyVKGovernance(ctx, tx, vk, &mc, d)
+	if err != nil {
+		return err
 	}
 
 	// Rate limit (mc references it via RateLimitID, so resolve before persisting the mc).
@@ -1003,12 +1088,14 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 
 	if !hasGovernance {
 		// No governance left → drop the model config (and its budgets) if it existed.
-		if !isNew {
-			for i := range mc.Budgets {
-				if err := h.configStore.DeleteBudget(ctx, mc.Budgets[i].ID, tx); err != nil {
-					return err
-				}
+		// Budgets are deleted even on a config that was never persisted: adoption can
+		// have put the key's own legacy rows in here, and those do exist in the database.
+		for i := range mc.Budgets {
+			if err := h.configStore.DeleteBudget(ctx, mc.Budgets[i].ID, tx); err != nil {
+				return err
 			}
+		}
+		if !isNew {
 			if err := tx.Delete(&configstoreTables.TableModelConfig{}, "id = ?", mc.ID).Error; err != nil {
 				return err
 			}
@@ -1029,6 +1116,18 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 	} else {
 		mc.UpdatedAt = time.Now()
 		if err := h.configStore.UpdateModelConfig(ctx, &mc, tx); err != nil {
+			return err
+		}
+	}
+
+	// Re-home the adopted budget rows, which could not move before the config they now
+	// belong to existed. UpdateBudget carries usage forward, so the window the key was
+	// already spending against survives the move.
+	for i := range mc.Budgets {
+		if !adoptedBudgetIDs[mc.Budgets[i].ID] {
+			continue
+		}
+		if err := h.configStore.UpdateBudget(ctx, &mc.Budgets[i], tx); err != nil {
 			return err
 		}
 	}

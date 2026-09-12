@@ -610,7 +610,6 @@ func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*t
 		return virtualKey, fmt.Errorf("failed to reload VK-scoped model configs for VK %s: %w", id, err)
 	}
 	store := governancePlugin.GetGovernanceStore()
-	store.UpdateVirtualKeyInMemory(ctx, virtualKey, nil, nil, nil)
 	// Snapshot in-memory VK-scoped config IDs before the upserts so we can evict
 	// the ones that no longer exist in the DB (e.g. a standalone VK adopted into
 	// an access profile has its VK-scoped governance model configs deleted).
@@ -619,10 +618,17 @@ func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*t
 	for _, mcID := range store.ScopedModelConfigIDs(tables.ModelConfigScopeVirtualKey, id) {
 		staleIDs[mcID] = true
 	}
+	// The model configs go in before the key, because a budget or rate limit can move
+	// from the key onto one of them (see adoptLegacyVKGovernance). Updated in the other
+	// order, the key's update reads that row as removed and drops the live counters with
+	// it, and what replaces them is whatever the last dump happened to persist. This way
+	// the config already holds the row, carrying its counters across, and the key's update
+	// finds it still held and leaves it alone.
 	for i := range mcs {
 		delete(staleIDs, mcs[i].ID)
 		store.UpdateModelConfigInMemory(ctx, &mcs[i])
 	}
+	store.UpdateVirtualKeyInMemory(ctx, virtualKey, nil, nil, nil)
 	for mcID := range staleIDs {
 		store.DeleteModelConfigInMemory(ctx, mcID)
 	}
