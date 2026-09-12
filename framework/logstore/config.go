@@ -19,6 +19,40 @@ type Config struct {
 	// ObjectStorageExcludeFields lists payload field names (DB column names) that
 	// should NOT be offloaded to object storage and instead remain in the database.
 	ObjectStorageExcludeFields []string `json:"object_storage_exclude_fields,omitempty"`
+	// ContentAddressed enables in-database content-addressed payload storage
+	// (dedup + zstd, byte-exact reconstruction). Mutually exclusive with
+	// ObjectStorage.
+	ContentAddressed *ContentAddressedConfig `json:"content_addressed,omitempty"`
+}
+
+// ContentAddressedConfig configures the CAS payload store. All blobs live in
+// the same database as the logs table (SQLite BLOB / PostgreSQL BYTEA).
+type ContentAddressedConfig struct {
+	Enabled bool `json:"enabled"`
+	// ExcludeFields lists payload field names (DB column names) that stay in
+	// the log row and never go to CAS. token_usage and cache_debug are always
+	// excluded (pricing metadata must be readable without hydration).
+	ExcludeFields []string `json:"exclude_fields,omitempty"`
+	// MinFieldBytes is the payload size threshold below which a field stays in
+	// the row. Zero means the default.
+	MinFieldBytes int `json:"min_field_bytes,omitempty"`
+	// MinChunkBytes is the minimum size of a JSON array element to become a
+	// deduplicated blob; smaller elements stay inline in the manifest.
+	MinChunkBytes int `json:"min_chunk_bytes,omitempty"`
+}
+
+func (c *ContentAddressedConfig) minFieldBytes() int {
+	if c == nil || c.MinFieldBytes <= 0 {
+		return casDefaultMinFieldBytes
+	}
+	return c.MinFieldBytes
+}
+
+func (c *ContentAddressedConfig) minChunkBytes() int {
+	if c == nil || c.MinChunkBytes <= 0 {
+		return casDefaultMinChunkBytes
+	}
+	return c.MinChunkBytes
 }
 
 const (
@@ -71,8 +105,9 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 		Config                     json.RawMessage     `json:"config"` // Keep as raw JSON
 		RetentionDays              int                 `json:"retention_days"`
 		Writer                     *WriterConfig       `json:"writer,omitempty"`
-		ObjectStorage              *objectstore.Config `json:"object_storage,omitempty"`
-		ObjectStorageExcludeFields []string            `json:"object_storage_exclude_fields,omitempty"`
+		ObjectStorage              *objectstore.Config       `json:"object_storage,omitempty"`
+		ObjectStorageExcludeFields []string                  `json:"object_storage_exclude_fields,omitempty"`
+		ContentAddressed           *ContentAddressedConfig   `json:"content_addressed,omitempty"`
 	}
 
 	var temp TempConfig
@@ -87,6 +122,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	c.Writer = temp.Writer
 	c.ObjectStorage = temp.ObjectStorage
 	c.ObjectStorageExcludeFields = temp.ObjectStorageExcludeFields
+	c.ContentAddressed = temp.ContentAddressed
 	if !temp.Enabled {
 		c.Config = nil
 		return nil

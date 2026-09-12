@@ -226,6 +226,16 @@ func NewLogStore(ctx context.Context, config *Config, logger schemas.Logger) (Lo
 		return nil, err
 	}
 
+	// Content-addressed in-database payload storage (mutually exclusive with
+	// object storage offloading: both take over the payload lifecycle).
+	if config.ContentAddressed != nil && config.ContentAddressed.Enabled {
+		if config.ObjectStorage != nil {
+			_ = inner.Close(ctx)
+			return nil, fmt.Errorf("logstore: content_addressed and object_storage are mutually exclusive")
+		}
+		return newCasLogStore(ctx, inner, config.ContentAddressed, logger)
+	}
+
 	// Optionally wrap with hybrid decorator for object storage offloading.
 	if config.ObjectStorage != nil {
 		objStore, objErr := objectstore.NewObjectStore(ctx, config.ObjectStorage, logger)

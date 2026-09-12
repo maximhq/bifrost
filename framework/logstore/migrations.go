@@ -322,6 +322,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"mcp_tool_logs_add_project_columns"}, run: migrationAddProjectColumnsToMCPToolLogs},
 	{IDs: []string{"logs_add_served_model_column"}, run: migrationAddServedModelColumn},
 	{IDs: []string{"logs_add_tool_call_names_column"}, run: migrationAddToolCallNamesColumn},
+	{IDs: []string{"cas_payload_tables_init"}, run: migrationCreateCasTables},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -4820,6 +4821,32 @@ func migrationAddServedModelColumn(ctx context.Context, db *gorm.DB, logger sche
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while adding served model column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationCreateCasTables creates the content-addressed storage tables used
+// when logs_store.content_addressed is enabled. Creating them unconditionally
+// is harmless: with CAS disabled they stay empty.
+func migrationCreateCasTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "cas_payload_tables_init",
+		Migrate: func(db *gorm.DB) error {
+			for _, model := range []any{&casBlob{}, &casRef{}, &casPayload{}} {
+				if !db.Migrator().HasTable(model) {
+					if err := db.Migrator().CreateTable(model); err != nil {
+						return fmt.Errorf("create CAS table: %w", err)
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(db *gorm.DB) error {
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while creating CAS tables: %s", err.Error())
 	}
 	return nil
 }
