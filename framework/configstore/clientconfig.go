@@ -584,11 +584,8 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		// Redact Azure key config if present
 		if key.AzureKeyConfig != nil {
 			azureConfig := &schemas.AzureKeyConfig{}
-			if key.AzureKeyConfig.Endpoint.IsFromSecret() {
-				azureConfig.Endpoint = *key.AzureKeyConfig.Endpoint.Redacted()
-			} else {
-				azureConfig.Endpoint = key.AzureKeyConfig.Endpoint
-			}
+			// The endpoint is a hostname, not a credential — surface it in plaintext.
+			azureConfig.Endpoint = *key.AzureKeyConfig.Endpoint.RedactedIfSecret()
 			if key.AzureKeyConfig.ClientID != nil {
 				azureConfig.ClientID = key.AzureKeyConfig.ClientID.Redacted()
 			}
@@ -609,7 +606,8 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			vertexConfig := &schemas.VertexKeyConfig{}
 			vertexConfig.ProjectID = *key.VertexKeyConfig.ProjectID.Redacted()
 			vertexConfig.ProjectNumber = *key.VertexKeyConfig.ProjectNumber.Redacted()
-			vertexConfig.Region = *key.VertexKeyConfig.Region.Redacted()
+			// The region is a public identifier, not a credential — surface it in plaintext.
+			vertexConfig.Region = *key.VertexKeyConfig.Region.RedactedIfSecret()
 			vertexConfig.AuthCredentials = *key.VertexKeyConfig.AuthCredentials.Redacted()
 			vertexConfig.ForceSingleRegion = key.VertexKeyConfig.ForceSingleRegion
 			redactedConfig.Keys[i].VertexKeyConfig = vertexConfig
@@ -623,8 +621,9 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			if key.BedrockKeyConfig.SessionToken != nil {
 				bedrockConfig.SessionToken = key.BedrockKeyConfig.SessionToken.Redacted()
 			}
+			// The region is a public identifier, not a credential — surface it in plaintext.
 			if key.BedrockKeyConfig.Region != nil {
-				bedrockConfig.Region = key.BedrockKeyConfig.Region.Redacted()
+				bedrockConfig.Region = key.BedrockKeyConfig.Region.RedactedIfSecret()
 			}
 			if key.BedrockKeyConfig.ARN != nil {
 				bedrockConfig.ARN = key.BedrockKeyConfig.ARN.Redacted()
@@ -664,8 +663,9 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			if key.BedrockMantleKeyConfig.SessionToken != nil {
 				mantleConfig.SessionToken = key.BedrockMantleKeyConfig.SessionToken.Redacted()
 			}
+			// The region is a public identifier, not a credential — surface it in plaintext.
 			if key.BedrockMantleKeyConfig.Region != nil {
-				mantleConfig.Region = key.BedrockMantleKeyConfig.Region.Redacted()
+				mantleConfig.Region = key.BedrockMantleKeyConfig.Region.RedactedIfSecret()
 			}
 			if key.BedrockMantleKeyConfig.RoleARN != nil {
 				mantleConfig.RoleARN = key.BedrockMantleKeyConfig.RoleARN.Redacted()
@@ -691,7 +691,8 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			vllmConfig := &schemas.VLLMKeyConfig{
 				ModelName: key.VLLMKeyConfig.ModelName,
 			}
-			vllmConfig.URL = *key.VLLMKeyConfig.URL.Redacted()
+			// The URL is a service address, not a credential — surface it in plaintext.
+			vllmConfig.URL = *key.VLLMKeyConfig.URL.RedactedIfSecret()
 			redactedConfig.Keys[i].VLLMKeyConfig = vllmConfig
 		}
 
@@ -704,13 +705,15 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 
 		if key.OllamaKeyConfig != nil {
 			ollamaConfig := &schemas.OllamaKeyConfig{}
-			ollamaConfig.URL = *key.OllamaKeyConfig.URL.Redacted()
+			// The URL is a service address, not a credential — surface it in plaintext.
+			ollamaConfig.URL = *key.OllamaKeyConfig.URL.RedactedIfSecret()
 			redactedConfig.Keys[i].OllamaKeyConfig = ollamaConfig
 		}
 
 		if key.SGLKeyConfig != nil {
 			sglConfig := &schemas.SGLKeyConfig{}
-			sglConfig.URL = *key.SGLKeyConfig.URL.Redacted()
+			// The URL is a service address, not a credential — surface it in plaintext.
+			sglConfig.URL = *key.SGLKeyConfig.URL.RedactedIfSecret()
 			redactedConfig.Keys[i].SGLKeyConfig = sglConfig
 		}
 
@@ -722,11 +725,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			}
 			// The workspace URL is a hostname, not a credential — surface it in
 			// plaintext so the UI can round-trip it, mirroring the Azure endpoint.
-			if key.DatabricksKeyConfig.WorkspaceURL.IsFromSecret() {
-				databricksConfig.WorkspaceURL = *key.DatabricksKeyConfig.WorkspaceURL.Redacted()
-			} else {
-				databricksConfig.WorkspaceURL = key.DatabricksKeyConfig.WorkspaceURL
-			}
+			databricksConfig.WorkspaceURL = *key.DatabricksKeyConfig.WorkspaceURL.RedactedIfSecret()
 			if key.DatabricksKeyConfig.ClientID != nil {
 				databricksConfig.ClientID = key.DatabricksKeyConfig.ClientID.Redacted()
 			}
