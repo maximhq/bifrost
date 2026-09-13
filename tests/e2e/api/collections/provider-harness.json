@@ -150893,7 +150893,7 @@
                       "pm.test('tencent: returns assistant content', function () {",
                       "  var j = pm.response.json();",
                       "  pm.expect(j.choices, 'no choices: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
-                      "  pm.expect(j.choices[0].message).to.have.property('content');",
+                      "  pm.expect(j.choices[0].message.content, 'empty assistant content').to.be.a('string').and.not.be.empty;",
                       "});"
                     ]
                   }

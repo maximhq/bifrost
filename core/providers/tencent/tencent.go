@@ -33,12 +33,13 @@ const (
 
 // TencentProvider implements the Provider interface for Tencent TokenHub's API.
 type TencentProvider struct {
-	logger              schemas.Logger        // Logger for provider operations
-	client              *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
-	streamingClient     *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
-	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
-	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
-	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+	logger               schemas.Logger                // Logger for provider operations
+	client               *fasthttp.Client              // HTTP client for unary API requests (ReadTimeout bounds overall response)
+	streamingClient      *fasthttp.Client              // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
+	networkConfig        schemas.NetworkConfig         // Network configuration including extra headers
+	sendBackRawRequest   bool                          // Whether to include raw request in BifrostResponse
+	sendBackRawResponse  bool                          // Whether to include raw response in BifrostResponse
+	customProviderConfig *schemas.CustomProviderConfig // Optional custom provider configuration for operation gating
 }
 
 // NewTencentProvider creates a new Tencent TokenHub provider instance.
@@ -70,19 +71,23 @@ func NewTencentProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &TencentProvider{
-		logger:              logger,
-		client:              client,
-		streamingClient:     streamingClient,
-		networkConfig:       config.NetworkConfig,
-		sendBackRawRequest:  config.SendBackRawRequest,
-		sendBackRawResponse: config.SendBackRawResponse,
+		logger:               logger,
+		client:               client,
+		streamingClient:      streamingClient,
+		networkConfig:        config.NetworkConfig,
+		sendBackRawRequest:   config.SendBackRawRequest,
+		sendBackRawResponse:  config.SendBackRawResponse,
+		customProviderConfig: config.CustomProviderConfig,
 	}, nil
 }
 
 // anthropicHeaders builds the authentication headers for Tencent TokenHub's
-// Anthropic-compatible endpoint, which authenticates with x-api-key.
+// Anthropic-compatible endpoint, which authenticates with x-api-key and
+// requires the anthropic-version header.
 func (provider *TencentProvider) anthropicHeaders(key schemas.Key) map[string]string {
-	headers := map[string]string{}
+	headers := map[string]string{
+		"anthropic-version": "2023-06-01",
+	}
 	if key.Value.GetValue() != "" {
 		headers["x-api-key"] = key.Value.GetValue()
 	}
@@ -96,6 +101,9 @@ func (provider *TencentProvider) GetProviderKey() schemas.ModelProvider {
 
 // ListModels performs a list models request to Tencent TokenHub's API.
 func (provider *TencentProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(provider.GetProviderKey(), provider.customProviderConfig, schemas.ListModelsRequest); err != nil {
+		return nil, err
+	}
 	return openai.HandleOpenAIListModelsRequest(
 		ctx,
 		provider.client,
@@ -113,6 +121,9 @@ func (provider *TencentProvider) ListModels(ctx *schemas.BifrostContext, keys []
 // The OpenAI-compatible endpoint is used by default; when the key opts into
 // Anthropic endpoints, the request is routed to /v1/messages instead.
 func (provider *TencentProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(provider.GetProviderKey(), provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
+		return nil, err
+	}
 	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
 		return anthropic.HandleAnthropicChatCompletionRequest(
 			ctx,
@@ -154,6 +165,9 @@ func (provider *TencentProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 // key opts into Anthropic endpoints, the request is routed to /v1/messages.
 // Returns a channel containing BifrostStreamChunk objects representing the stream or an error if the request fails.
 func (provider *TencentProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(provider.GetProviderKey(), provider.customProviderConfig, schemas.ChatCompletionStreamRequest); err != nil {
+		return nil, err
+	}
 	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
 		jsonData, bifrostErr := anthropic.BuildAnthropicChatRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
 			Provider:                  schemas.Tencent,
@@ -213,6 +227,9 @@ func (provider *TencentProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 // key opts into Anthropic endpoints it uses /v1/messages, otherwise it falls
 // back to the OpenAI-compatible chat completions endpoint.
 func (provider *TencentProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(provider.GetProviderKey(), provider.customProviderConfig, schemas.ResponsesRequest); err != nil {
+		return nil, err
+	}
 	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
 		return anthropic.HandleAnthropicResponsesRequest(
 			ctx,
@@ -245,6 +262,9 @@ func (provider *TencentProvider) Responses(ctx *schemas.BifrostContext, key sche
 // TokenHub. When the key opts into Anthropic endpoints it uses /v1/messages,
 // otherwise it falls back to streaming chat completions.
 func (provider *TencentProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(provider.GetProviderKey(), provider.customProviderConfig, schemas.ResponsesStreamRequest); err != nil {
+		return nil, err
+	}
 	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
 		jsonData, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
 			Provider:                  schemas.Tencent,
@@ -289,6 +309,9 @@ func (provider *TencentProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 // CountTokens counts tokens for a request against Tencent TokenHub's
 // Anthropic-compatible Messages endpoint.
 func (provider *TencentProvider) CountTokens(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(provider.GetProviderKey(), provider.customProviderConfig, schemas.CountTokensRequest); err != nil {
+		return nil, err
+	}
 	return anthropic.HandleAnthropicCountTokensRequest(
 		ctx,
 		provider.client,
