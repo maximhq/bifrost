@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -3163,6 +3164,123 @@ func (provider *GeminiProvider) BatchDelete(ctx *schemas.BifrostContext, keys []
 
 // processGeminiStreamChunk processes a single chunk from Gemini streaming response
 func processGeminiStreamChunk(jsonData []byte) (*GenerateContentResponse, error) {
+	jsonData = bytes.TrimSpace(jsonData)
+	if len(jsonData) == 0 {
+		return nil, fmt.Errorf("failed to parse Gemini stream response: empty payload")
+	}
+
+	if jsonData[0] == '[' {
+		var elements []json.RawMessage
+		if err := sonic.Unmarshal(jsonData, &elements); err != nil {
+			return nil, fmt.Errorf("failed to parse Gemini stream response: %v", err)
+		}
+
+		responses := make([]*GenerateContentResponse, 0, len(elements))
+		for _, element := range elements {
+			element = bytes.TrimSpace(element)
+			if len(element) > 0 && element[0] == '{' {
+				response, err := processGeminiStreamObject(element)
+				if err != nil {
+					return nil, err
+				}
+				responses = append(responses, response)
+			}
+		}
+
+		if len(responses) == 0 {
+			return nil, fmt.Errorf("failed to parse Gemini stream response: JSON array contains no object elements")
+		}
+
+		return mergeGeminiStreamResponses(responses), nil
+	}
+
+	if jsonData[0] != '{' {
+		var value interface{}
+		if err := sonic.Unmarshal(jsonData, &value); err != nil {
+			return nil, fmt.Errorf("failed to parse Gemini stream response: %v", err)
+		}
+
+		jsonType := "unknown"
+		switch value.(type) {
+		case string:
+			jsonType = "string"
+		case float64:
+			jsonType = "number"
+		case bool:
+			jsonType = "boolean"
+		case nil:
+			jsonType = "null"
+		}
+		return nil, fmt.Errorf("failed to parse Gemini stream response: unexpected JSON type %s", jsonType)
+	}
+
+	return processGeminiStreamObject(jsonData)
+}
+
+func mergeGeminiStreamResponses(responses []*GenerateContentResponse) *GenerateContentResponse {
+	merged := responses[0]
+
+	for _, response := range responses[1:] {
+		if response.ResponseID != "" {
+			merged.ResponseID = response.ResponseID
+		}
+		if response.ModelVersion != "" {
+			merged.ModelVersion = response.ModelVersion
+		}
+		if !response.CreateTime.IsZero() {
+			merged.CreateTime = response.CreateTime
+		}
+		if response.PromptFeedback != nil {
+			merged.PromptFeedback = response.PromptFeedback
+		}
+		if response.UsageMetadata != nil {
+			merged.UsageMetadata = response.UsageMetadata
+		}
+
+		if len(response.Candidates) == 0 {
+			continue
+		}
+		if len(merged.Candidates) == 0 {
+			merged.Candidates = append(merged.Candidates, response.Candidates...)
+			continue
+		}
+
+		mergedCandidate := merged.Candidates[0]
+		for _, candidate := range response.Candidates {
+			if candidate == nil {
+				continue
+			}
+			if mergedCandidate == nil {
+				merged.Candidates[0] = candidate
+				mergedCandidate = candidate
+				continue
+			}
+			if candidate.Content != nil {
+				if mergedCandidate.Content == nil {
+					mergedCandidate.Content = &Content{Role: candidate.Content.Role}
+				} else if mergedCandidate.Content.Role == "" {
+					mergedCandidate.Content.Role = candidate.Content.Role
+				}
+				mergedCandidate.Content.Parts = append(
+					mergedCandidate.Content.Parts, candidate.Content.Parts...,
+				)
+			}
+			if candidate.FinishReason != "" {
+				mergedCandidate.FinishReason = candidate.FinishReason
+			}
+			if candidate.FinishMessage != "" {
+				mergedCandidate.FinishMessage = candidate.FinishMessage
+			}
+			if candidate.GroundingMetadata != nil {
+				mergedCandidate.GroundingMetadata = candidate.GroundingMetadata
+			}
+		}
+	}
+
+	return merged
+}
+
+func processGeminiStreamObject(jsonData []byte) (*GenerateContentResponse, error) {
 	// Error chunks are rare; avoid a second decode in the common path.
 	if bytes.Contains(jsonData, []byte(`"error"`)) {
 		var errorResp GeminiGenerationError
