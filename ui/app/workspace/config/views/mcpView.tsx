@@ -14,12 +14,14 @@ import { useGetSCIMProvidersQuery } from "@enterprise/lib/store/apis/scimApi";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { AlertTriangle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 const secretVarEquals = (a?: SecretVar, b?: SecretVar) =>
 	(a?.value ?? "") === (b?.value ?? "") && (a?.ref ?? "") === (b?.ref ?? "") && (a?.type ?? "plain_text") === (b?.type ?? "plain_text");
 
 export default function MCPView() {
+	const { t } = useTranslation("config");
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const config = bifrostConfig?.client_config;
@@ -195,12 +197,12 @@ export default function MCPView() {
 			const toolTimeout = Number.parseInt(localValues.mcp_tool_execution_timeout);
 
 			if (isNaN(agentDepth) || agentDepth <= 0) {
-				toast.error("Max agent depth must be a positive number.");
+				toast.error(t("mcpSettings.toastDepthPositive"));
 				return;
 			}
 
 			if (isNaN(toolTimeout) || toolTimeout <= 0) {
-				toast.error("Tool execution timeout must be a positive number.");
+				toast.error(t("mcpSettings.toastTimeoutPositive"));
 				return;
 			}
 
@@ -214,17 +216,17 @@ export default function MCPView() {
 			const accessTokenTTL = Number.parseInt(localValues.oauth2_access_token_ttl);
 
 			if (oauthModeActive && (isNaN(authCodeTTL) || authCodeTTL < 1 || authCodeTTL > 900)) {
-				toast.error("Authorization code TTL must be between 1 and 900 seconds (15 minutes).");
+				toast.error(t("mcpSettings.toastAuthCodeTtl"));
 				return;
 			}
 
 			if (oauthModeActive && (isNaN(accessTokenTTL) || accessTokenTTL < 60)) {
-				toast.error("Access token TTL must be at least 60 seconds.");
+				toast.error(t("mcpSettings.toastAccessTokenTtl"));
 				return;
 			}
 
 			if (!bifrostConfig) {
-				toast.error("Configuration not loaded. Please refresh and try again.");
+				toast.error(t("configNotLoadedRefresh"));
 				return;
 			}
 
@@ -249,7 +251,7 @@ export default function MCPView() {
 				...bifrostConfig,
 				client_config: clientConfigToSave,
 			}).unwrap();
-			toast.success("MCP settings updated successfully.");
+			toast.success(t("mcpSettings.toastSaved"));
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
@@ -257,13 +259,13 @@ export default function MCPView() {
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4 px-4 py-6 md:px-0" data-testid="mcp-settings-view">
-			<PageTitle title="MCP Settings">Configure MCP (Model Context Protocol) agent and tool settings.</PageTitle>
+			<PageTitle title={t("mcpSettings.title")}>{t("mcpSettings.description")}</PageTitle>
 			<div className="space-y-4">
 				{/* Max Agent Depth */}
 				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
 						<label htmlFor="mcp-agent-depth" className="text-sm font-medium">
-							Max Agent Depth
+							{t("mcpSettings.maxAgentDepth")}
 						</label>
 						<p className="text-muted-foreground text-sm">Maximum depth for MCP agent execution.</p>
 					</div>
@@ -282,7 +284,7 @@ export default function MCPView() {
 				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
 						<label htmlFor="mcp-tool-execution-timeout" className="text-sm font-medium">
-							Tool Execution Timeout (seconds)
+							{t("mcpSettings.toolTimeout")}
 						</label>
 						<p className="text-muted-foreground text-sm">Maximum time in seconds for tool execution.</p>
 					</div>
@@ -301,7 +303,7 @@ export default function MCPView() {
 				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
 						<label htmlFor="mcp-tool-sync-interval" className="text-sm font-medium">
-							Tool Sync Interval (minutes)
+							{t("mcpSettings.toolSyncInterval")}
 						</label>
 						<p className="text-muted-foreground text-sm">
 							How often to refresh tool lists from MCP servers. Set to 0 to use the default of 10 minutes.
@@ -322,7 +324,7 @@ export default function MCPView() {
 				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
 						<label htmlFor="mcp-disable-auto-tool-inject" className="text-sm font-medium">
-							Disable Auto Tool Injection
+							{t("mcpSettings.disableAutoToolInjection")}
 						</label>
 						<p className="text-muted-foreground text-sm">
 							When enabled, MCP tools are not automatically included in every request. Tools are only injected when explicitly specified via
@@ -343,7 +345,7 @@ export default function MCPView() {
 				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
 						<label htmlFor="mcp-enable-temp-token-auth" className="text-sm font-medium">
-							Allow Temp Token Auth Links
+							{t("mcpSettings.allowTempToken")}
 						</label>
 						<p className="text-muted-foreground text-sm">
 							When enabled, per-user MCP OAuth links can include a short-lived scoped token so someone without an active Bifrost dashboard
@@ -363,7 +365,7 @@ export default function MCPView() {
 				<div className="space-y-4 rounded-sm border p-4">
 					<div className="space-y-0.5">
 						<label htmlFor="mcp-binding-level" className="text-sm font-medium">
-							Code Mode Binding Level
+							{t("mcpSettings.codeModeBinding")}
 						</label>
 						<p className="text-muted-foreground text-sm">
 							How tools are exposed in the VFS: server-level (all tools per server) or tool-level (individual tools).
@@ -625,7 +627,7 @@ export default function MCPView() {
 			</div>
 			<div className="flex justify-end pt-2">
 				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess} data-testid="mcp-settings-save-btn">
-					{isLoading ? "Saving..." : "Save Changes"}
+					{isLoading ? t("saving") : t("saveChanges")}
 				</Button>
 			</div>
 		</div>
