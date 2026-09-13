@@ -1,3 +1,4 @@
+[fix]: resolve host environment references before starting STDIO MCP clients on Windows [@mat973252-coder](https://github.com/mat973252-coder)
 - fix: fasthttp-level stale-connection retries no longer multiply `max_retries`. `contextTransport.RoundTrip` reports a failure before response headers on a freshly dialed socket with `retry=false`, so `network.StaleConnectionRetryIfErr` only walks past pooled keep-alive sockets the upstream closed while idle; an upstream that closes a fresh connection without answering now costs exactly one attempt of Bifrost's own retry budget instead of up to four. The retry backoff also ends as soon as the request context is cancelled, so a worker is freed immediately instead of after up to `retry_backoff_max` (#7035)
 [fix]: Gemini provider - preserve inline image and audio data in chat completions responses [@Atharva-Kanherkar](https://github.com/Atharva-Kanherkar)
 
