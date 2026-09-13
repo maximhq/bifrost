@@ -21,6 +21,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -1305,4 +1306,96 @@ func TestInvokeAnthropicResponsesStream_RetryableException_ChunkIsRetryable(t *t
 				"%s must map to HTTP %d", tc.excType, tc.expectedStatus)
 		})
 	}
+}
+
+// Tool search is the second InvokeModel-only feature on Bedrock: "On Amazon
+// Bedrock, server-side tool search is available only through the InvokeModel
+// API, not the Converse API."
+// (https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool)
+// A request that carries a tool_search tool, or any tool with defer_loading
+// (which only means something alongside tool search), must leave Converse.
+func TestUsesAnthropicInvokePath_ToolSearch(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	model := "us.anthropic.claude-opus-4-6-v1"
+	deferred := true
+
+	t.Run("responses tool_search tool routes to invoke", func(t *testing.T) {
+		req := &schemas.BifrostResponsesRequest{Model: model, Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeToolSearch, Name: schemas.Ptr("tool_search_tool_regex")}},
+		}}
+		require.True(t, responsesUsesAnthropicInvokePath(ctx, req))
+	})
+	t.Run("responses deferred function tool routes to invoke", func(t *testing.T) {
+		req := &schemas.BifrostResponsesRequest{Model: model, Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("get_weather"), DeferLoading: &deferred}},
+		}}
+		require.True(t, responsesUsesAnthropicInvokePath(ctx, req))
+	})
+	t.Run("responses plain function tool stays on converse", func(t *testing.T) {
+		req := &schemas.BifrostResponsesRequest{Model: model, Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("get_weather")}},
+		}}
+		require.False(t, responsesUsesAnthropicInvokePath(ctx, req))
+	})
+	t.Run("chat dated tool_search type routes to invoke", func(t *testing.T) {
+		req := &schemas.BifrostChatRequest{Model: model, Params: &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{{Type: "tool_search_tool_regex_20251119"}},
+		}}
+		require.True(t, chatUsesAnthropicInvokePath(ctx, req))
+	})
+	t.Run("chat deferred function tool routes to invoke", func(t *testing.T) {
+		req := &schemas.BifrostChatRequest{Model: model, Params: &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "get_weather"}, DeferLoading: &deferred}},
+		}}
+		require.True(t, chatUsesAnthropicInvokePath(ctx, req))
+	})
+	t.Run("nova with tool_search stays on converse", func(t *testing.T) {
+		req := &schemas.BifrostResponsesRequest{Model: "amazon.nova-pro-v1:0", Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeToolSearch, Name: schemas.Ptr("tool_search_tool_regex")}},
+		}}
+		require.False(t, responsesUsesAnthropicInvokePath(ctx, req))
+	})
+}
+
+// CountTokens stays on the Converse count-tokens envelope for ordinary
+// requests, but a request that is routed to InvokeModel must be counted with
+// the same body it will be sent with. AWS's CountTokens input is a union of
+// "converse" and "invokeModel" ({"body": <base64 of the InvokeModel body>}):
+// https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_CountTokensInput.html
+func TestBedrockCountTokensBody_UsesInvokeModelInputForRoutedRequests(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	provider := &BedrockProvider{}
+	role := schemas.ResponsesInputMessageRoleUser
+	text := "Hello!"
+	input := []schemas.ResponsesMessage{{Role: &role, Content: &schemas.ResponsesMessageContent{ContentStr: &text}}}
+
+	t.Run("compaction request counts via invokeModel", func(t *testing.T) {
+		req := &schemas.BifrostResponsesRequest{Provider: schemas.Bedrock, Model: "global.anthropic.claude-sonnet-4-6", Input: input, Params: &schemas.ResponsesParameters{
+			ContextManagement: json.RawMessage(`{"edits":[{"type":"compact_20260112"}]}`),
+		}}
+		body, err := provider.buildCountTokensBody(ctx, req)
+		require.NoError(t, err)
+		encoded := gjson.GetBytes(body, "input.invokeModel.body").String()
+		require.NotEmpty(t, encoded, "expected input.invokeModel.body, got %s", string(body))
+		require.False(t, gjson.GetBytes(body, "input.converse").Exists(), "union must carry one member: %s", string(body))
+		decoded, decErr := base64.StdEncoding.DecodeString(encoded)
+		require.NoError(t, decErr)
+		require.Equal(t, "bedrock-2023-05-31", gjson.GetBytes(decoded, "anthropic_version").String(), "decoded body: %s", string(decoded))
+		require.Equal(t, "compact_20260112", gjson.GetBytes(decoded, "context_management.edits.0.type").String())
+	})
+	t.Run("tool_search request counts via invokeModel", func(t *testing.T) {
+		req := &schemas.BifrostResponsesRequest{Provider: schemas.Bedrock, Model: "global.anthropic.claude-sonnet-4-6", Input: input, Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeToolSearch, Name: schemas.Ptr("tool_search_tool_regex")}},
+		}}
+		body, err := provider.buildCountTokensBody(ctx, req)
+		require.NoError(t, err)
+		require.True(t, gjson.GetBytes(body, "input.invokeModel.body").Exists(), "expected invokeModel input, got %s", string(body))
+	})
+	t.Run("plain request counts via converse", func(t *testing.T) {
+		req := &schemas.BifrostResponsesRequest{Provider: schemas.Bedrock, Model: "global.anthropic.claude-sonnet-4-6", Input: input}
+		body, err := provider.buildCountTokensBody(ctx, req)
+		require.NoError(t, err)
+		require.True(t, gjson.GetBytes(body, "input.converse").Exists(), "expected converse input, got %s", string(body))
+		require.False(t, gjson.GetBytes(body, "input.invokeModel").Exists())
+	})
 }

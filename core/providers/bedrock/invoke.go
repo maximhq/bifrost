@@ -1015,11 +1015,12 @@ func (r *BedrockInvokeRequest) convertAnthropicTools() *BedrockToolConfig {
 		}
 
 		// tool_search_tool_* is a server tool for Anthropic's tool-search-tool beta,
-		// not an invocable function — and classic Bedrock can't support tool search
-		// at all (AWS restricts it to InvokeModel/InvokeModelWithResponseStream,
-		// never Converse; see ProviderFeatures[schemas.Bedrock].ToolSearch in the
-		// anthropic package). Skip it here rather than building a broken,
-		// schema-less "function" tool out of it.
+		// not an invocable function. This ingress converts an InvokeModel-shaped
+		// request into the Converse-shaped internal request, which has no slot
+		// for it; the egress side routes tool search to InvokeModel only when the
+		// neutral request carries the tool (bedrock.go, InvokeModel section).
+		// Skip it here rather than building a broken, schema-less "function"
+		// tool out of it.
 		if typeStr, ok := toolMap["type"].(string); ok && strings.HasPrefix(typeStr, "tool_search_tool_") {
 			continue
 		}

@@ -934,3 +934,54 @@ func TestBuildAnthropicChatRequestBody_BedrockInvokeShape(t *testing.T) {
 	}
 	assertBedrockInvokeBodyShape(t, body)
 }
+
+// Tool search is InvokeModel-only on Bedrock (see the routing tests in the
+// bedrock package). Once a request is routed there, the shared builder must keep
+// the tool_search tool, keep defer_loading on the deferred function tool, and
+// opt in with the tool-search-tool-2025-10-19 beta in the anthropic_beta array.
+func TestBuildAnthropicResponsesRequestBody_BedrockInvokeKeepsToolSearch(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	request := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "us.anthropic.claude-sonnet-4-6",
+		Input:    makeSimpleInput("What is the weather in Paris?"),
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				responsesToolFromJSON(t, `{"type":"tool_search_tool_regex_20251119","name":"tool_search_tool_regex"}`),
+				responsesToolFromJSON(t, `{"type":"function","name":"get_weather","description":"Get the weather","parameters":{"type":"object","properties":{"location":{"type":"string"}},"required":["location"]},"defer_loading":true}`),
+			},
+		},
+	}
+	body, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+		Provider:      schemas.Bedrock,
+		Model:         "us.anthropic.claude-sonnet-4-6",
+		ValidateTools: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	tools := providerUtils.GetJSONField(body, "tools").Array()
+	var sawToolSearch, sawDeferred bool
+	for _, tool := range tools {
+		if strings.HasPrefix(tool.Get("type").String(), "tool_search_tool_") {
+			sawToolSearch = true
+		}
+		if tool.Get("name").String() == "get_weather" && tool.Get("defer_loading").Bool() {
+			sawDeferred = true
+		}
+	}
+	if !sawToolSearch {
+		t.Errorf("tool_search tool was stripped from the InvokeModel body: %s", string(body))
+	}
+	if !sawDeferred {
+		t.Errorf("defer_loading was stripped from the deferred function tool: %s", string(body))
+	}
+	var betas []string
+	for _, b := range providerUtils.GetJSONField(body, "anthropic_beta").Array() {
+		betas = append(betas, b.String())
+	}
+	if !slices.Contains(betas, AnthropicToolSearchBetaHeader) {
+		t.Errorf("anthropic_beta = %v, want it to contain %q", betas, AnthropicToolSearchBetaHeader)
+	}
+}
