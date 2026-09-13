@@ -5043,7 +5043,8 @@
               "description": "Routes chat completions and responses requests through Tencent TokenHub's Anthropic-compatible /v1/messages endpoint.",
               "default": false
             }
-          }
+          },
+          "required": ["value", "models"]
         }
       ]
     },

@@ -3,6 +3,7 @@ package tencent
 
 import (
 	"context"
+	"maps"
 	"strings"
 	"time"
 
@@ -70,11 +71,26 @@ func NewTencentProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	}
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
+	// Take provider-owned copies of the caller's mutable header maps so
+	// post-construction mutations of config.NetworkConfig cannot race with
+	// in-flight Tencent requests.
+	networkConfig := config.NetworkConfig
+	if networkConfig.ExtraHeaders != nil {
+		extraHeaders := make(map[string]string, len(networkConfig.ExtraHeaders))
+		maps.Copy(extraHeaders, networkConfig.ExtraHeaders)
+		networkConfig.ExtraHeaders = extraHeaders
+	}
+	if networkConfig.BetaHeaderOverrides != nil {
+		betaHeaderOverrides := make(map[string]bool, len(networkConfig.BetaHeaderOverrides))
+		maps.Copy(betaHeaderOverrides, networkConfig.BetaHeaderOverrides)
+		networkConfig.BetaHeaderOverrides = betaHeaderOverrides
+	}
+
 	return &TencentProvider{
 		logger:               logger,
 		client:               client,
 		streamingClient:      streamingClient,
-		networkConfig:        config.NetworkConfig,
+		networkConfig:        networkConfig,
 		sendBackRawRequest:   config.SendBackRawRequest,
 		sendBackRawResponse:  config.SendBackRawResponse,
 		customProviderConfig: config.CustomProviderConfig,
