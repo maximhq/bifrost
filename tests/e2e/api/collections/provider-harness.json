@@ -59,7 +59,7 @@
           "// Only register the content-shape test when the request actually succeeded.",
           "// Otherwise newman reports it as passing (because of an early return) which is misleading next to a failing status.",
           "var __u = (pm.request && pm.request.url && pm.request.url.toString()) || '';",
-          "var __skipShape = (__u.indexOf('/files/') !== -1 && (__u.indexOf('/content?') !== -1 || __u.slice(-8) === '/content')) || __u.indexOf('storage.googleapis.com') !== -1 || __u.indexOf('batchPredictionJobs') !== -1 || (__u.indexOf('/genai/v1beta/batches/') !== -1 && __u.indexOf(':cancel') !== -1);",
+          "var __skipShape = ((__rn.indexOf('MCP stdio-env-regression ') !== -1 && __u.indexOf('/api/mcp/') !== -1) || __u.indexOf('/files/') !== -1 && (__u.indexOf('/content?') !== -1 || __u.slice(-8) === '/content')) || __u.indexOf('storage.googleapis.com') !== -1 || __u.indexOf('batchPredictionJobs') !== -1 || (__u.indexOf('/genai/v1beta/batches/') !== -1 && __u.indexOf(':cancel') !== -1);",
           "if (pm.response.code < 400 && !__skipShape && (pm.response.headers.get('content-type') || '').indexOf('text/event-stream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('vnd.amazon.eventstream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('audio/') === -1) {",
           "  pm.test('Response has content (text or tool_use)', function () {",
           "    var j;",
@@ -148321,6 +148321,195 @@
               ]
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "84. MCP STDIO host environment references (stdio-env-regression)",
+      "description": "Regression related to #5671 and host-env passthrough from PR #3995: bare environment names reached exec.Cmd.Env and Windows rejected process creation with The parameter is incorrect. This provider-independent, zero-LLM chain creates a real Node STDIO MCP subprocess, checks tool discovery and the received environment, then deletes its unique client. Requires a gateway with dashboard authentication, mcpAdminSession set to an authenticated local admin session, and node on the gateway PATH (override mcpStdioNodeCommand if necessary). Run with PROVIDER=mcp PARALLEL=0 FEATURE=stdio-env-regression INCLUDE_PREVIEW=1 HARNESS_MAX_REQUESTS=4. The 500 creation response is the regression signature and must not be skipped as infrastructure noise. Go tests cover the same subprocess path without external tools.",
+      "item": [
+        {
+          "name": "[PREVIEW] MCP stdio-env-regression create client",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.variables.get('mcpAdminSession')) { throw new Error('Set mcpAdminSession to an authenticated local admin session'); }",
+                  "pm.collectionVariables.set('mcpStdioClientId', pm.variables.replaceIn('{{$guid}}').replace(/-/g, ''));",
+                  "pm.collectionVariables.set('mcpStdioCreated', '0');",
+                  "if (!pm.variables.get('mcpStdioNodeCommand')) { pm.collectionVariables.set('mcpStdioNodeCommand', 'node'); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('MCP operation succeeded', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().status).to.equal('success');",
+                  "});",
+                  "if (pm.response.code === 200 && pm.response.json().status === 'success') { pm.collectionVariables.set('mcpStdioCreated', '1'); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{mcpAdminSession}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"client_id\": \"{{mcpStdioClientId}}\",\n  \"name\": \"stdio_env_{{mcpStdioClientId}}\",\n  \"connection_type\": \"stdio\",\n  \"auth_type\": \"none\",\n  \"stdio_config\": {\n    \"command\": \"{{mcpStdioNodeCommand}}\",\n    \"args\": [\n      \"-e\",\n      \"const r=require('readline').createInterface({input:process.stdin});r.on('line',line=>{const q=JSON.parse(line);if(q.id===undefined)return;let result={};if(q.method==='initialize')result={protocolVersion:q.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:'stdio-env-fixture',version:'1.0.0'}};else if(q.method==='tools/list')result={tools:[{name:'env_probe',description:process.env.PATH&&process.env.BIFROST_STDIO_HARNESS_VALUE==='inline=value'&&process.env.BIFROST_STDIO_HARNESS_EMPTY===''?'env-ok':'env-invalid',inputSchema:{type:'object',properties:{}}}]};else if(q.method!=='ping'){process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:q.id,error:{code:-32601,message:'Method not found'}})+'\\\\n');return;}process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:q.id,result})+'\\\\n');});\"\n    ],\n    \"envs\": [\n      \"PATH\",\n      \"BIFROST_STDIO_HARNESS_VALUE=inline=value\",\n      \"BIFROST_STDIO_HARNESS_EMPTY=\"\n    ]\n  },\n  \"tools_to_execute\": [\n    \"*\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/mcp/client"
+          },
+          "response": []
+        },
+        {
+          "name": "[PREVIEW] MCP stdio-env-regression verify child environment",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.collectionVariables.get('mcpStdioCreated') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('STDIO child is healthy with the expected environment', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var clients = pm.response.json().clients;",
+                  "  pm.expect(clients).to.have.lengthOf(1);",
+                  "  pm.expect(clients[0].state).to.equal('healthy');",
+                  "  pm.expect(clients[0].config.stdio_config.envs).to.include('PATH');",
+                  "  var tools = clients[0].tools;",
+                  "  pm.expect(tools).to.have.lengthOf(1);",
+                  "  pm.expect(tools[0].description).to.equal('env-ok');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{mcpAdminSession}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/mcp/clients?server={{mcpStdioClientId}}"
+          },
+          "response": []
+        },
+        {
+          "name": "[PREVIEW] MCP stdio-env-regression delete client",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.collectionVariables.get('mcpStdioCreated') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('MCP operation succeeded', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().status).to.equal('success');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{mcpAdminSession}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/mcp/client/{{mcpStdioClientId}}"
+          },
+          "response": []
+        },
+        {
+          "name": "[PREVIEW] MCP stdio-env-regression verify cleanup",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.collectionVariables.get('mcpStdioCreated') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Regression client was removed', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().clients).to.have.lengthOf(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{mcpAdminSession}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/mcp/clients?server={{mcpStdioClientId}}"
+          },
+          "response": []
         }
       ]
     }
