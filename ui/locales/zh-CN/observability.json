@@ -243,6 +243,8 @@
 			"showLess": "收起",
 			"showMoreLines": "再显示 {{count}} 行",
 			"tokensInOut": "令牌 入 / 出",
+			"audioDuration": "音频时长",
+			"durationBilled": "计费时长",
 			"toolsAvailable": "可用工具",
 			"filterByUser": "按用户筛选",
 			"copyRequestBodySuccess": "请求体已复制到剪贴板",

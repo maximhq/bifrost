@@ -243,6 +243,8 @@
 			"showLess": "Show less",
 			"showMoreLines": "Show {{count}} more lines",
 			"tokensInOut": "Tokens in / out",
+			"audioDuration": "Audio duration",
+			"durationBilled": "duration billed",
 			"toolsAvailable": "Tools available",
 			"filterByUser": "Filter by user",
 			"copyRequestBodySuccess": "Request body copied to clipboard",
