@@ -157,6 +157,8 @@ func (p *LoggerPlugin) processBatch(batch []*writeQueueEntry) {
 		}
 	}
 
+	persistedLogs := make(map[*logstore.Log]bool, len(logs))
+	persistedMCPLogs := make(map[*logstore.MCPToolLog]bool, len(mcpLogs))
 	if len(logs) > 0 {
 		if err := p.store.BatchCreateIfNotExists(p.ctx, logs); err != nil {
 			p.logger.Warn("batch insert failed for %d entries, falling back to individual inserts: %v", len(logs), err)
@@ -171,8 +173,16 @@ func (p *LoggerPlugin) processBatch(batch []*writeQueueEntry) {
 					if err := p.store.BatchCreateIfNotExists(p.ctx, []*logstore.Log{log}); err != nil {
 						p.logger.Warn("payload-stripped insert failed for log %s: %v", log.ID, err)
 						p.droppedRequests.Add(1)
+					} else {
+						persistedLogs[log] = true
 					}
+				} else {
+					persistedLogs[log] = true
 				}
+			}
+		} else {
+			for _, log := range logs {
+				persistedLogs[log] = true
 			}
 		}
 	}
@@ -183,7 +193,13 @@ func (p *LoggerPlugin) processBatch(batch []*writeQueueEntry) {
 				if err := p.store.BatchCreateMCPToolLogsIfNotExists(p.ctx, []*logstore.MCPToolLog{log}); err != nil {
 					p.logger.Warn("individual insert failed for MCP tool log %s: %v", log.ID, err)
 					p.droppedRequests.Add(1)
+				} else {
+					persistedMCPLogs[log] = true
 				}
+			}
+		} else {
+			for _, log := range mcpLogs {
+				persistedMCPLogs[log] = true
 			}
 		}
 	}
@@ -203,10 +219,10 @@ func (p *LoggerPlugin) processBatch(batch []*writeQueueEntry) {
 	var callbacks []cbPair
 	var mcpCallbacks []mcpCbPair
 	for _, entry := range batch {
-		if entry.callback != nil {
+		if entry.callback != nil && entry.log != nil && persistedLogs[entry.log] {
 			callbacks = append(callbacks, cbPair{cb: entry.callback, log: entry.log})
 		}
-		if entry.mcpCallback != nil {
+		if entry.mcpCallback != nil && entry.mcpLog != nil && persistedMCPLogs[entry.mcpLog] {
 			mcpCallbacks = append(mcpCallbacks, mcpCbPair{cb: entry.mcpCallback, log: entry.mcpLog})
 		}
 	}
