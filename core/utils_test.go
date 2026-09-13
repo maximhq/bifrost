@@ -420,6 +420,48 @@ func TestClearCtxForFallback(t *testing.T) {
 	}
 }
 
+// A finished stream leaves per-stream state on the context, and the next iteration of an agent
+// turn reuses that same context. Left in place, the connection-closed flag alone makes the next
+// provider call return "stream closed" before its first read. What the caller chose is not among
+// it: unlike a fallback, an iteration deliberately stays on the same provider and key for the
+// whole turn, so clearing the selection would silently re-resolve it mid-answer.
+func TestClearCtxForNextStreamIteration(t *testing.T) {
+	cleared := []schemas.BifrostContextKey{
+		schemas.BifrostContextKeyStreamEndIndicator,
+		schemas.BifrostContextKeyConnectionClosed,
+		schemas.BifrostContextKeyStreamBodyExhausted,
+		schemas.BifrostContextKeyStreamParkedAfterFinish,
+		schemas.BifrostContextKeySSEReaderFactory,
+		// Headers belong to the iteration that produced them.
+		schemas.BifrostContextKeyProviderResponseHeaders,
+	}
+	preserved := []schemas.BifrostContextKey{
+		schemas.BifrostContextKeyAPIKeyID,
+		schemas.BifrostContextKeyAPIKeyName,
+		schemas.BifrostContextKeyRoutingPinnedAPIKeyID,
+		schemas.BifrostContextKeyVirtualKey,
+		schemas.BifrostContextKeyUserID,
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for _, key := range append(append([]schemas.BifrostContextKey{}, cleared...), preserved...) {
+		ctx.SetValue(key, "set")
+	}
+
+	clearCtxForNextStreamIteration(ctx)
+
+	for _, key := range cleared {
+		if ctx.Value(key) != nil {
+			t.Errorf("%v survived into the next iteration, which would fail before its first read", key)
+		}
+	}
+	for _, key := range preserved {
+		if ctx.Value(key) == nil {
+			t.Errorf("%v was cleared, so the next iteration would not stay on the caller's chosen key", key)
+		}
+	}
+}
+
 // TestValidateKeyGithubCopilot pins that validateKey rejects the same credentials the
 // provider would reject at request time. Accepting a whitespace-only field here defers the
 // failure to the first inference call, where it reads like a runtime fault rather than a

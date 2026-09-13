@@ -40,6 +40,15 @@ type MCPManagerInterface interface {
 		makeReq func(ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError),
 	) (*schemas.BifrostChatResponse, *schemas.BifrostError)
 
+	// CheckAndExecuteAgentForChatStream wraps a chat stream so agent mode also applies to
+	// streaming requests. Returns the stream unchanged when there is nothing to auto-execute.
+	CheckAndExecuteAgentForChatStream(
+		ctx *schemas.BifrostContext,
+		req *schemas.BifrostChatRequest,
+		stream chan *schemas.BifrostStreamChunk,
+		startStream ChatStreamStarter,
+	) chan *schemas.BifrostStreamChunk
+
 	// CheckAndExecuteAgentForResponsesRequest handles agent mode for Responses API.
 	// Tool executions inside the agent loop go through the plugin gate internally.
 	CheckAndExecuteAgentForResponsesRequest(
