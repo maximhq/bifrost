@@ -50,6 +50,10 @@ type pendingInjectEntries struct {
 	mu        sync.Mutex
 	entries   []*logstore.Log
 	createdAt time.Time
+	// drained is set by Inject under mu once entries has been handed to the write
+	// queue. A storeOrEnqueueEntry that appends after that point would be writing
+	// into a slice nobody reads again; it writes directly instead.
+	drained bool
 }
 
 // writeQueueEntry is an entry pushed to the batch write queue.
