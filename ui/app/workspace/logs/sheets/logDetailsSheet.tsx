@@ -38,9 +38,11 @@ export function LogDetailSheet({
 }: LogDetailSheetProps) {
 	const [pollingInterval, setPollingInterval] = useState(0);
 	const {
-		data: fullLog,
+		currentData: fullLog,
 		isLoading,
 		isError,
+		isFetching,
+		refetch,
 	} = useGetLogByIdQuery(log?.id ?? "", {
 		skip: !open || !log?.id,
 		pollingInterval,
@@ -48,7 +50,9 @@ export function LogDetailSheet({
 
 	const shouldPoll = isError || fullLog?.status === "processing";
 
-	const isFullDataReady = log != null && (isError || (fullLog?.id === log.id && !isLoading));
+	// A list row is only a preview. Failed hydration must never enable export,
+	// including when RTK Query retains cached data after a failed refresh.
+	const displayLog = !isError && !isLoading && fullLog?.id === log?.id ? fullLog : undefined;
 	// Prefer full log when loaded; otherwise list row — enables prompt fetch in parallel with getLogById
 	const selectedPromptId = log ? (fullLog?.id === log.id ? fullLog : log).selected_prompt_id : undefined;
 	const { data: selectedPromptData } = useGetPromptQuery(selectedPromptId ?? "", {
@@ -69,14 +73,20 @@ export function LogDetailSheet({
 
 	if (!log) return null;
 
-	// Show a loader only on the initial fetch, not during background polling refetches.
-	const displayLog: LogEntry = isFullDataReady && fullLog ? fullLog : log;
-	const resolvedSelectedPromptName = selectedPromptData?.prompt?.name ?? displayLog.selected_prompt_name ?? "";
+	const resolvedSelectedPromptName = selectedPromptData?.prompt?.name ?? displayLog?.selected_prompt_name ?? "";
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
 			<SheetContent className="border-secondary flex w-full flex-col gap-4 overflow-x-hidden border p-4 sm:max-w-[60%] md:p-8">
-				{!isFullDataReady ? (
+				{isError ? (
+					<div role="alert" className="flex h-full flex-col items-center justify-center gap-4" data-testid="logdetails-load-error">
+						<SheetTitle>Unable to load complete log details</SheetTitle>
+						<p className="text-muted-foreground text-sm">Details and export are unavailable until the complete log can be loaded.</p>
+						<Button variant="outline" disabled={isFetching} onClick={() => refetch()} data-testid="logdetails-retry-button">
+							{isFetching ? "Retrying..." : "Retry"}
+						</Button>
+					</div>
+				) : !displayLog ? (
 					<div className="flex h-full items-center justify-center">
 						<SheetTitle className="sr-only">Loading log details</SheetTitle>
 						<Loader2 className="text-muted-foreground h-6 w-6 animate-spin" />

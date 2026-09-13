@@ -2131,6 +2131,29 @@
             }
           ]
         },
+        "content_addressed": {
+          "type": "object",
+          "description": "In-database content-addressed payload storage (deduplication and zstd with byte-exact reconstruction). Supported by SQLite and PostgreSQL; when enabled, mutually exclusive with object_storage. token_usage and cache_debug always remain inline.",
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "exclude_fields": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Payload DB column names to keep inline instead of offloading to CAS."
+            },
+            "min_field_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Minimum payload field size to offload. Zero or omitted uses 1024 bytes."
+            },
+            "min_chunk_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Minimum JSON array element size to deduplicate. Zero or omitted uses 256 bytes."
+            }
+          },
+          "additionalProperties": false
+        },
         "writer": {
           "type": "object",
           "description": "Async logging writer queue and batch tuning. Omitted fields use runtime defaults.",
@@ -2308,6 +2331,23 @@
           "description": "Days to retain log entries. 0 disables retention-based cleanup."
         }
       },
+      "allOf": [
+        {
+          "if": {
+            "required": ["content_addressed"],
+            "properties": {
+              "content_addressed": {
+                "required": ["enabled"],
+                "properties": { "enabled": { "const": true } }
+              }
+            }
+          },
+          "then": {
+            "properties": { "type": { "enum": ["sqlite", "postgres"] } },
+            "not": { "required": ["object_storage"] }
+          }
+        }
+      ],
       "additionalProperties": false
     },
     "skills_registry": {
