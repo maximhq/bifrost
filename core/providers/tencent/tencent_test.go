@@ -301,7 +301,9 @@ func TestNetworkConfigMapsAreCopied(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotHeader = r.Header.Get("X-Test-Header")
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, newOpenAIChatResponse())
+		if _, err := fmt.Fprint(w, newOpenAIChatResponse()); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	defer server.Close()
 
