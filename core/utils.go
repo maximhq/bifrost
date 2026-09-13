@@ -408,6 +408,21 @@ func newBifrostMessageChan(message *schemas.BifrostResponse) chan *schemas.Bifro
 	return ch
 }
 
+// clearCtxForNextStreamIteration clears the per-stream state a finished stream leaves on the
+// context, so the next provider call on that same context is not treated as an already-closed
+// connection. Key selection and routing values are deliberately kept: a pinned key stays pinned
+// for the whole agent turn. This is the stream half of clearCtxForFallback, which solves the same
+// problem for a second attempt against a different provider.
+func clearCtxForNextStreamIteration(ctx *schemas.BifrostContext) {
+	ctx.ClearValue(schemas.BifrostContextKeyStreamEndIndicator)
+	ctx.ClearValue(schemas.BifrostContextKeyConnectionClosed)
+	ctx.ClearValue(schemas.BifrostContextKeyStreamBodyExhausted)
+	ctx.ClearValue(schemas.BifrostContextKeyStreamParkedAfterFinish)
+	ctx.ClearValue(schemas.BifrostContextKeySSEReaderFactory)
+	// Response headers belong to the iteration that produced them.
+	ctx.ClearValue(schemas.BifrostContextKeyProviderResponseHeaders)
+}
+
 // clearCtxForFallback clears the ctx values which are not applicable for fallback requests.
 func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyID)
