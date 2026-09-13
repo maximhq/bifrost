@@ -25,7 +25,9 @@ import (
 const PluginName = "governance"
 
 const (
-	governanceRejectedContextKey schemas.BifrostContextKey = "bf-governance-rejected"
+	governanceRejectedContextKey        schemas.BifrostContextKey = "bf-governance-rejected"
+	governanceRequestedModelContextKey  schemas.BifrostContextKey = "bf-governance-requested-model"
+	governanceCallerFallbacksContextKey schemas.BifrostContextKey = "bf-governance-caller-fallbacks"
 
 	VirtualKeyPrefix = "sk-bf-"
 )
@@ -58,7 +60,8 @@ type BaseGovernancePlugin interface {
 	Cleanup() error
 	GetGovernanceStore() GovernanceStore
 	// Routing collaboration: the routing plugin calls these after evaluating routing rules,
-	// so the allowlist and the load balancer both act on the post-rule provider/model.
+	// so provider calls use the post-rule provider/model while access policy continues to use
+	// the caller-facing model captured before the rewrite.
 	// ResolveAccess answers what a request may reach, resolving it once and recording it on the
 	// request's grant so every later reader sees the same answer. A request context that carries no
 	// grant is a wiring fault, and is reported as one.
@@ -376,9 +379,10 @@ func (p *GovernancePlugin) GetBudgetAndRateLimitStatus(ctx *schemas.BifrostConte
 	return p.store.GetBudgetAndRateLimitStatus(ctx, provider, model, budgetBaselines, tokenBaselines, requestBaselines)
 }
 
-// LoadBalanceProvider picks a weighted provider among those the request may reach for req.Model
-// and mutates req.Provider/req.Model with the refined provider/model. Also populates req.Fallbacks
-// from the remaining weighted providers if no fallbacks were configured by the caller.
+// LoadBalanceProvider picks a weighted provider among those the request may reach for its
+// caller-facing model and mutates req.Provider/req.Model with the refined physical provider/model.
+// It also populates req.Fallbacks from the remaining weighted providers if no fallbacks were
+// configured by the caller.
 //
 // Candidacy comes from the request's grants, so a request that holds providers without presenting
 // a key is balanced across them too. Everything it needs comes off the request: the grants say
@@ -421,14 +425,15 @@ func (p *GovernancePlugin) LoadBalanceProvider(ctx *schemas.BifrostContext, req 
 	// Candidates are the provider configs that permit this model: model allowance, blacklists
 	// and composition already applied. Everything below is about which of them may serve the
 	// request right now, and which one gets it.
-	candidates := access.ProvidersForModel(modelStr)
+	accessModel := accessModelForRequest(ctx, modelStr, existingFallbacks)
+	candidates := access.ProvidersForModel(accessModel)
 	serving := make(map[string]struct{}, len(candidates))
 	for _, candidate := range candidates {
 		serving[candidate.Provider] = struct{}{}
 	}
 	for _, availableProvider := range configuredProviders {
 		if _, ok := serving[availableProvider]; !ok {
-			ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Provider %s excluded: model %s is not permitted", availableProvider, modelStr))
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Provider %s excluded: model %s is not permitted", availableProvider, accessModel))
 		}
 	}
 
@@ -437,7 +442,7 @@ func (p *GovernancePlugin) LoadBalanceProvider(ctx *schemas.BifrostContext, req 
 		// Whether a candidate can be afforded right now is the store's answer, because the store
 		// owns what pays for it. Load balancing passes the candidate and does not need to know
 		// whether a key, a team or something else is funding it.
-		if decision, err := p.store.CheckProviderCandidateExclusion(ctx, access, candidate, modelStr); err != nil || decision != DecisionAllow {
+		if decision, err := checkProviderCandidateExclusion(ctx, p.store, access, candidate, modelStr, accessModel); err != nil || decision != DecisionAllow {
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo,
 				fmt.Sprintf("Provider %s excluded: %s", candidate.Provider, candidateExclusionReason(decision, err)))
 			continue
@@ -564,7 +569,7 @@ func candidateExclusionReason(decision Decision, err error) string {
 }
 
 // PublishRoutingAllowlist records, for downstream routing layers, which of the providers the
-// request may reach permit modelStr. It is a coarse provider gate
+// request may reach permit the caller-facing model. It is a coarse provider gate
 // (BifrostContextKeyRoutingAllowedProviders) layered on top of the model catalog checks those
 // layers already run: its purpose is to stop a later routing layer (load balancing,
 // model-catalog resolution) from selecting a provider the request may not use for this model,
@@ -586,7 +591,7 @@ func (p *GovernancePlugin) PublishRoutingAllowlist(ctx *schemas.BifrostContext, 
 		// with no grant is refused by evaluation, which is the place to say so.
 		return
 	}
-	ctx.SetValue(schemas.BifrostContextKeyRoutingAllowedProviders, modelProviders(access.GrantedProvidersForModel(modelStr)))
+	ctx.SetValue(schemas.BifrostContextKeyRoutingAllowedProviders, modelProviders(access.GrantedProvidersForModel(accessModelForRequest(ctx, modelStr, nil))))
 }
 
 // namedProjectNothingScoped reports whether the request named a project and ended up scoped by
@@ -654,7 +659,7 @@ func (p *GovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationReque
 	// A settling error is held rather than refused on the spot: the ordering below puts identity
 	// refusals first, and a caller whose credential is dead must be told that before anything about
 	// how the request would have been funded.
-	limits, limitsErr := resolveLimits(ctx, p.store, evaluationRequest.Provider, evaluationRequest.Model)
+	limits, limitsErr := resolveLimits(ctx, p.store, evaluationRequest.Provider, evaluationRequest.Model, evaluationRequest.modelForAccess())
 
 	// The order of everything below is load bearing:
 	//
@@ -998,18 +1003,31 @@ func (p *GovernancePlugin) modelMatcher() grant.ModelMatcher {
 // composes several possible payers settles there on who pays, and this only records the answer. An
 // error is a request whose payers cannot be settled at all; nothing is recorded for it, and the
 // funnel refuses it rather than serving it against half an answer.
-func resolveLimits(ctx *schemas.BifrostContext, store GovernanceStore, provider schemas.ModelProvider, model string) (schemas.Limits, error) {
+func resolveLimits(ctx *schemas.BifrostContext, store GovernanceStore, provider schemas.ModelProvider, model, accessModel string) (schemas.Limits, error) {
 	g := ctx.Grant()
 	if g == nil {
 		return nil, nil
 	}
-	budgets, rateLimits, err := store.GatherLimits(ctx, g.Access(), provider, model)
+	var budgets, rateLimits []schemas.Limit
+	var err error
+	if accessAware, ok := store.(AccessModelLimitGatherer); ok {
+		budgets, rateLimits, err = accessAware.GatherLimitsForAccessModel(ctx, g.Access(), provider, model, accessModel)
+	} else {
+		budgets, rateLimits, err = store.GatherLimits(ctx, g.Access(), provider, model)
+	}
 	if err != nil {
 		return nil, err
 	}
 	limits := grant.NewLimits(budgets, rateLimits)
 	g.SetLimits(limits)
 	return limits, nil
+}
+
+func checkProviderCandidateExclusion(ctx *schemas.BifrostContext, store GovernanceStore, access schemas.Access, candidate schemas.ProviderCandidate, model, accessModel string) (Decision, error) {
+	if accessAware, ok := store.(AccessModelCandidateChecker); ok {
+		return accessAware.CheckProviderCandidateExclusionForAccessModel(ctx, access, candidate, model, accessModel)
+	}
+	return store.CheckProviderCandidateExclusion(ctx, access, candidate, model)
 }
 
 // PreRequestHook is the per-request governance phase: it resolves the request's access, completes
@@ -1019,7 +1037,8 @@ func resolveLimits(ctx *schemas.BifrostContext, store GovernanceStore, provider 
 // It deliberately runs before the routing plugin so a routing rule evaluates against a fully
 // stamped context. The provider allowlist and load balancing that used to live here now run
 // from the routing plugin after rule evaluation, through PublishRoutingAllowlist and
-// LoadBalanceProvider, because both must act on the post-rule model.
+// LoadBalanceProvider. They use the post-rule model for provider execution and limits, while
+// retaining this caller-facing name for model access policy.
 //
 // Realtime + generic streaming bypass handleRequest (see core/bifrost.go
 // RunRealtimeTurnPreHooks / RunStreamPreHooks) and are still handled at HTTPTransportPreHook.
@@ -1027,6 +1046,19 @@ func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sche
 	if req.RequestType == schemas.PassthroughRequest || req.RequestType == schemas.PassthroughStreamRequest {
 		return nil
 	}
+
+	// Preserve the caller-facing model before the routing plugin can rewrite the request.
+	// Access controls use this name; provider calls and model-scoped limits continue to use
+	// the routed physical model. Large-payload requests carry the model in metadata because
+	// their body has not been parsed into req.
+	_, requestedModel, requestedFallbacks := req.GetRequestFields()
+	if requestedModel == "" {
+		if metadata, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadMetadata).(*schemas.LargePayloadMetadata); metadata != nil {
+			_, requestedModel = schemas.ParseModelString(metadata.Model, "")
+		}
+	}
+	ctx.SetValue(governanceRequestedModelContextKey, requestedModel)
+	ctx.SetValue(governanceCallerFallbacksContextKey, provenanceForCallerFallbacks(requestedFallbacks))
 
 	// The request's provider is a fact access resolution needs to apply provider-scoped grants, and it
 	// rides on the request, not the context. Stamp it before resolving so the resolved access reflects
@@ -1089,12 +1121,14 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 		return req, &schemas.LLMPluginShortCircuit{Error: headerErr}, nil
 	}
 	// Getting provider and mode from the request
-	provider, model, _ := req.GetRequestFields()
+	provider, model, fallbacks := req.GetRequestFields()
 	// Create request context for evaluation
 	evaluationRequest := &EvaluationRequest{
 		RequestType: req.RequestType,
 		Provider:    provider,
-		Model:       model}
+		Model:       model,
+		AccessModel: accessModelForRequest(ctx, model, fallbacks),
+	}
 	// A batch create fans out to many completions, each naming its own model, so
 	// every model it will run is evaluated before the request itself. Each pass
 	// settles that model's limits on the access and checks them; the request's own
@@ -1104,6 +1138,7 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 		for _, batchModel := range BatchCreateModels(req, model) {
 			batchEvaluationRequest := *evaluationRequest
 			batchEvaluationRequest.Model = batchModel
+			batchEvaluationRequest.AccessModel = batchModel
 			_, bifrostError := p.Evaluate(ctx, &batchEvaluationRequest)
 			if bifrostError != nil {
 				return req, &schemas.LLMPluginShortCircuit{

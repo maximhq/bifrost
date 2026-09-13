@@ -81,6 +81,34 @@ func TestLoadBalanceProvider_UnprefixedModelLoadBalances(t *testing.T) {
 	assert.Equal(t, "openai/gpt-4o", got)
 }
 
+// A routing rule may replace the caller-facing alias after PreRequestHook. Provider candidacy
+// and the routing allowlist still come from that alias, while the selected provider receives the
+// physical model. Otherwise #7112 can fail before the final governance evaluation even runs.
+func TestLoadBalanceProvider_UsesCallerFacingModelAfterRoutingRewrite(t *testing.T) {
+	vk := buildVirtualKeyWithProviders("vk1", "sk-bf-lb", "LB VK", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("vllm", []string{"my.alias"}),
+	})
+	p := newLoadBalanceTestPlugin(t, vk)
+	ctx := lbCtx()
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{Model: "my.alias"},
+	}
+
+	require.NoError(t, p.PreRequestHook(ctx, req))
+	req.SetModel("physical-model") // routing rule target
+
+	p.PublishRoutingAllowlist(ctx, "physical-model")
+	allowed, ok := ctx.Value(schemas.BifrostContextKeyRoutingAllowedProviders).([]schemas.ModelProvider)
+	require.True(t, ok)
+	assert.Equal(t, []schemas.ModelProvider{schemas.VLLM}, allowed)
+
+	require.NoError(t, p.LoadBalanceProvider(ctx, req))
+	provider, model, _ := req.GetRequestFields()
+	assert.Equal(t, schemas.VLLM, provider)
+	assert.Equal(t, "physical-model", model)
+}
+
 // TestLoadBalanceProvider_UnknownPrefixIsTreatedAsModelNamespace verifies that a
 // "/" prefix that is not a known provider (e.g. a HuggingFace-style namespace) is
 // kept as part of the model name and load balancing still applies.

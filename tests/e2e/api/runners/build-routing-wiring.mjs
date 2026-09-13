@@ -167,6 +167,9 @@ function routeAssertLines(sid, step, jsNameOf) {
       lines.push(`var expectedKey = ${jsKeyName(sid, step.expectKeyId)};`);
       lines.push("if (ri.key !== expectedKey) { throw new Error('routing_info.key=' + ri.key + ' expected ' + expectedKey); }");
     }
+    if (step.expectModel != null) {
+      lines.push(`if (ri.model !== ${JSON.stringify(step.expectModel)}) { throw new Error('routing_info.model=' + ri.model); }`);
+    }
     if (step.expectResolvedModelId != null) {
       lines.push(
         `if (!ri.resolved_key_alias || ri.resolved_key_alias.model_id !== ${JSON.stringify(step.expectResolvedModelId)}) { throw new Error('resolved_key_alias=' + JSON.stringify(ri.resolved_key_alias)); }`
@@ -296,6 +299,22 @@ function captureVkTest(testname, sid, cleanupName) {
   ];
 }
 
+// Capture a routing rule id so the scenario can remove its global rule before deleting the VK
+// and provider it references.
+function captureRoutingRuleTest(testname, sid, cleanupName) {
+  return [
+    `var cleanupReq = ${JSON.stringify(cleanupName)};`,
+    "var ok = pm.response.code === 200 || pm.response.code === 201;",
+    `pm.test(${JSON.stringify(testname)}, function () {`,
+    "  pm.expect([200, 201], 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+    "});",
+    "if (ok) {",
+    "  var rule = (pm.response.json() || {}).rule || {};",
+    `  pm.collectionVariables.set('ruleid_${sid}', rule.id || '');`,
+    "} else { pm.execution.setNextRequest(cleanupReq); }",
+  ];
+}
+
 // --------------------------------------------------------------------------- //
 // Step expansion
 // --------------------------------------------------------------------------- //
@@ -305,12 +324,13 @@ function expandScenario(sc) {
   const seg = providerSeg(sid);
   const cleanupProvider = `cleanup: delete provider [${sid}]`;
   const cleanupVk = `cleanup: delete vk [${sid}]`;
+  const cleanupRule = `cleanup: delete routing rule [${sid}]`;
   // A failing step jumps to the FIRST cleanup item so the whole teardown runs in
-  // order. When the scenario has a VK, that first item is the VK delete (the
-  // provider delete follows it); jumping straight to the provider delete would
-  // skip the VK and leak it.
+  // order. A routing rule is removed before the VK and providers it references;
+  // jumping to a later cleanup item would skip earlier resources and leak them.
   const hasVkScenario = sc.steps.some((s) => s.type === "createVK");
-  const cleanupTarget = hasVkScenario ? cleanupVk : cleanupProvider;
+  const hasRuleScenario = sc.steps.some((s) => s.type === "createRoutingRule");
+  const cleanupTarget = hasRuleScenario ? cleanupRule : hasVkScenario ? cleanupVk : cleanupProvider;
   // A scenario may stand up more than one provider (e.g. governance LB across
   // providers). ref "self" is the scenario's primary provider; any other ref
   // gets its own run-scoped name. All created providers are torn down.
@@ -342,6 +362,7 @@ function expandScenario(sc) {
   let counter = 0;
   let ordinal = 0;
   let hasVk = false;
+  let hasRule = false;
   const nextId = (tag) => `rt-${sid}-${String(++counter).padStart(2, "0")}-${tag}`;
   const uniq = (label) => `${String(++ordinal).padStart(2, "0")}. ${label} [${sid}]`;
 
@@ -389,6 +410,25 @@ function expandScenario(sc) {
         const name = uniq("create vk");
         items.push(item(nextId("create-vk"), name, request("POST", url(["api", "governance", "virtual-keys"]), body),
           events(null, captureVkTest(name, sid, cleanupTarget))));
+        break;
+      }
+      case "createRoutingRule": {
+        hasRule = true;
+        const targets = (step.targets || []).map((target) => ({
+          provider: nameOf(target.providerRef),
+          model: target.model,
+          weight: target.weight ?? 1,
+        }));
+        const body = {
+          name: `catwiring-rtrule-${sid}-{{run_id}}`,
+          enabled: true,
+          cel_expression: step.celExpression,
+          targets,
+          scope: "global",
+        };
+        const name = uniq("create routing rule");
+        items.push(item(nextId("create-routing-rule"), name, request("POST", url(["api", "routing", "rules"]), body),
+          events(null, captureRoutingRuleTest(name, sid, cleanupTarget))));
         break;
       }
       case "route": {
@@ -520,6 +560,11 @@ function expandScenario(sc) {
   }
 
   const cleanupItems = [];
+  if (hasRule) {
+    cleanupItems.push(item(`rt-${sid}-cleanup-rule`, cleanupRule,
+      request("DELETE", url(["api", "routing", "rules", `{{ruleid_${sid}}}`]), null),
+      events(null, cleanupTest(cleanupRule))));
+  }
   if (hasVk) {
     cleanupItems.push(item(`rt-${sid}-cleanup-vk`, cleanupVk,
       request("DELETE", url(["api", "governance", "virtual-keys", `{{vkid_${sid}}}`]), null),
@@ -964,6 +1009,31 @@ const SCENARIOS = [
       { type: "addProvider", keys: [key({ id: "k1", models: ["catwiring-alias-{{run_id}}"], aliases: { "catwiring-alias-{{run_id}}": MODEL_B } })] },
       { type: "createVK", providerConfigs: [vkProvider({ allowedModels: ["catwiring-alias-{{run_id}}"] })] },
       { type: "route", model: "catwiring-alias-{{run_id}}", expectStatus: 200, expectResolvedModelId: MODEL_B, waitSeconds: 1, label: "alias routes, resolves to model id" },
+      { type: "cleanup" },
+    ],
+  },
+  {
+    id: "routing-rule-alias-governance-7112",
+    title: "Routing-rule alias remains the governance boundary (#7112)",
+    description: "Regression #7112: governance captures the caller-facing alias before a routing rule rewrites it to a physical provider/model. A VK that allows only the alias must admit the request, while the provider still receives the physical target.",
+    steps: [
+      { type: "addProvider", keys: [key({ id: "k1", models: ["*"] })] },
+      { type: "createVK", providerConfigs: [vkProvider({ allowedModels: ["catwiring-rule-alias-{{run_id}}"] })] },
+      {
+        type: "createRoutingRule",
+        celExpression: "model == 'catwiring-rule-alias-{{run_id}}'",
+        targets: [{ providerRef: "self", model: MODEL_B, weight: 1 }],
+      },
+      {
+        type: "route",
+        model: "catwiring-rule-alias-{{run_id}}",
+        bareModel: true,
+        expectStatus: 200,
+        expectKeyId: "k1",
+        expectModel: MODEL_B,
+        waitSeconds: 1,
+        label: "caller alias routes to physical model under VK alias grant (#7112)",
+      },
       { type: "cleanup" },
     ],
   },

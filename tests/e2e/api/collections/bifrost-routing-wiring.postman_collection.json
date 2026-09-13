@@ -17098,6 +17098,402 @@
       ]
     },
     {
+      "name": "Routing-rule alias remains the governance boundary (#7112)",
+      "description": "Regression #7112: governance captures the caller-facing alias before a routing rule rewrites it to a physical provider/model. A VK that allows only the alias must admit the request, while the provider still receives the physical target.",
+      "item": [
+        {
+          "id": "rt-routing-rule-alias-governance-7112-01-add-provider",
+          "name": "01. add provider [routing-rule-alias-governance-7112]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete routing rule [routing-rule-alias-governance-7112]\";",
+                  "pm.test(\"01. add provider [routing-rule-alias-governance-7112]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\":\"catwiring-rt-routing-rule-alias-governance-7112-{{run_id}}\",\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false}}"
+            }
+          }
+        },
+        {
+          "id": "rt-routing-rule-alias-governance-7112-02-add-key",
+          "name": "02. add key k1 [routing-rule-alias-governance-7112]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete routing rule [routing-rule-alias-governance-7112]\";",
+                  "pm.test(\"02. add key k1 [routing-rule-alias-governance-7112]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/catwiring-rt-routing-rule-alias-governance-7112-{{run_id}}/keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "catwiring-rt-routing-rule-alias-governance-7112-{{run_id}}",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\":\"k1-{{run_id}}\",\"name\":\"catwiring-rt-routing-rule-alias-governance-7112-k1-{{run_id}}\",\"models\":[\"*\"],\"enabled\":true,\"value\":\"env.OPENAI_API_KEY\"}"
+            }
+          }
+        },
+        {
+          "id": "rt-routing-rule-alias-governance-7112-03-create-vk",
+          "name": "03. create vk [routing-rule-alias-governance-7112]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete routing rule [routing-rule-alias-governance-7112]\";",
+                  "var ok = pm.response.code === 200 || pm.response.code === 201;",
+                  "pm.test(\"03. create vk [routing-rule-alias-governance-7112]\", function () {",
+                  "  pm.expect([200, 201], 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (ok) {",
+                  "  var vk = (pm.response.json() || {}).virtual_key || {};",
+                  "  pm.collectionVariables.set('vkval_routing-rule-alias-governance-7112', vk.value || '');",
+                  "  pm.collectionVariables.set('vkid_routing-rule-alias-governance-7112', vk.id || '');",
+                  "} else { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"catwiring-rtvk-routing-rule-alias-governance-7112-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-routing-rule-alias-governance-7112-{{run_id}}\",\"key_ids\":[\"*\"],\"allowed_models\":[\"catwiring-rule-alias-{{run_id}}\"],\"blacklisted_models\":[],\"weight\":1}]}"
+            }
+          }
+        },
+        {
+          "id": "rt-routing-rule-alias-governance-7112-04-create-routing-rule",
+          "name": "04. create routing rule [routing-rule-alias-governance-7112]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete routing rule [routing-rule-alias-governance-7112]\";",
+                  "var ok = pm.response.code === 200 || pm.response.code === 201;",
+                  "pm.test(\"04. create routing rule [routing-rule-alias-governance-7112]\", function () {",
+                  "  pm.expect([200, 201], 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (ok) {",
+                  "  var rule = (pm.response.json() || {}).rule || {};",
+                  "  pm.collectionVariables.set('ruleid_routing-rule-alias-governance-7112', rule.id || '');",
+                  "} else { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/routing/rules",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "routing",
+                "rules"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"catwiring-rtrule-routing-rule-alias-governance-7112-{{run_id}}\",\"enabled\":true,\"cel_expression\":\"model == 'catwiring-rule-alias-{{run_id}}'\",\"targets\":[{\"provider\":\"catwiring-rt-routing-rule-alias-governance-7112-{{run_id}}\",\"model\":\"gpt-4o-mini\",\"weight\":1}],\"scope\":\"global\"}"
+            }
+          }
+        },
+        {
+          "id": "rt-routing-rule-alias-governance-7112-05-route",
+          "name": "05. caller alias routes to physical model under VK alias grant (#7112) [routing-rule-alias-governance-7112]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "pm.collectionVariables.set('__cur_poll_key', pollKey);",
+                  "pm.collectionVariables.set('__cur_poll_attempt', String(attempt));",
+                  "if (attempt === 0) { var __ws = Date.now(); while (Date.now() - __ws < 1000) {} }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var maxAttempts = 8;",
+                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
+                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var cleanupReq = \"cleanup: delete routing rule [routing-rule-alias-governance-7112]\";",
+                  "function assertNow() {",
+                  "  if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
+                  "  var body = pm.response.json();",
+                  "  if (!body.choices || body.choices.length === 0) { throw new Error('no choices'); }",
+                  "  var ri = (body.extra_fields || {}).routing_info || {};",
+                  "  var providerName = 'catwiring-rt-routing-rule-alias-governance-7112-' + pm.variables.get('run_id');",
+                  "  if (ri.provider !== providerName) { throw new Error('routing_info.provider=' + ri.provider + ' expected ' + providerName); }",
+                  "  var expectedKey = 'catwiring-rt-routing-rule-alias-governance-7112-k1-' + pm.variables.get('run_id');",
+                  "  if (ri.key !== expectedKey) { throw new Error('routing_info.key=' + ri.key + ' expected ' + expectedKey); }",
+                  "  if (ri.model !== \"gpt-4o-mini\") { throw new Error('routing_info.model=' + ri.model); }",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "if (ok) {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"05. caller alias routes to physical model under VK alias grant (#7112) [routing-rule-alias-governance-7112]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
+                  "} else if (attempt < maxAttempts) {",
+                  "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
+                  "  var sleepMs = Math.min(250 * Math.pow(2, attempt), 4000);",
+                  "  var start = Date.now(); while (Date.now() - start < sleepMs) {}",
+                  "  pm.execution.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"05. caller alias routes to physical model under VK alias grant (#7112) [routing-rule-alias-governance-7112]\", function () { throw new Error(errMsg); });",
+                  "  pm.execution.setNextRequest(cleanupReq);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vkval_routing-rule-alias-governance-7112}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"catwiring-rule-alias-{{run_id}}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok.\"}],\"max_tokens\":5}"
+            }
+          }
+        },
+        {
+          "name": "Cleanup",
+          "item": [
+            {
+              "id": "rt-routing-rule-alias-governance-7112-cleanup-rule",
+              "name": "cleanup: delete routing rule [routing-rule-alias-governance-7112]",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"cleanup: delete routing rule [routing-rule-alias-governance-7112]\", function () {",
+                      "  pm.expect([200, 204, 404], 'cleanup status ' + pm.response.code).to.include(pm.response.code);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/routing/rules/{{ruleid_routing-rule-alias-governance-7112}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "routing",
+                    "rules",
+                    "{{ruleid_routing-rule-alias-governance-7112}}"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "rt-routing-rule-alias-governance-7112-cleanup-vk",
+              "name": "cleanup: delete vk [routing-rule-alias-governance-7112]",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"cleanup: delete vk [routing-rule-alias-governance-7112]\", function () {",
+                      "  pm.expect([200, 204, 404], 'cleanup status ' + pm.response.code).to.include(pm.response.code);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/governance/virtual-keys/{{vkid_routing-rule-alias-governance-7112}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "governance",
+                    "virtual-keys",
+                    "{{vkid_routing-rule-alias-governance-7112}}"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "rt-routing-rule-alias-governance-7112-cleanup-provider-self",
+              "name": "cleanup: delete provider [routing-rule-alias-governance-7112]",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"cleanup: delete provider [routing-rule-alias-governance-7112]\", function () {",
+                      "  pm.expect([200, 204, 404], 'cleanup status ' + pm.response.code).to.include(pm.response.code);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/providers/catwiring-rt-routing-rule-alias-governance-7112-{{run_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "providers",
+                    "catwiring-rt-routing-rule-alias-governance-7112-{{run_id}}"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var required = [];",
+              "for (var i = 0; i < required.length; i++) {",
+              "  var v = required[i];",
+              "  if (!pm.variables.get(v) && !pm.environment.get(v)) {",
+              "    console.log('SKIP: missing ' + v);",
+              "    pm.execution.skipRequest();",
+              "    return;",
+              "  }",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
       "name": "Alias name not whitelisted is blocked",
       "description": "The VK whitelists the resolved model id, but the request uses the alias name; the alias isn't in allowed_models, so the provider is pruned from the routing allowlist and core rejects with a 'provider not permitted' 400 (intended).",
       "item": [

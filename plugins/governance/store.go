@@ -118,6 +118,21 @@ type BudgetAndRateLimitStatus struct {
 	RateLimitRequestPercentUsed float64 `json:"rate_limit_request_percent_used"` // 0-100, >100 means exhausted
 }
 
+// AccessModelLimitGatherer is the optional GovernanceStore capability for requests whose
+// caller-facing authorization name differs from the physical model sent to the provider.
+// Custom stores that select permit-funded limits by model should implement it. Keeping it
+// separate from GovernanceStore preserves source compatibility with existing implementations.
+type AccessModelLimitGatherer interface {
+	GatherLimitsForAccessModel(ctx *schemas.BifrostContext, access schemas.Access, provider schemas.ModelProvider, model, accessModel string) (budgets []schemas.Limit, rateLimits []schemas.Limit, err error)
+}
+
+// AccessModelCandidateChecker is the load-balancing counterpart to
+// AccessModelLimitGatherer. The physical model selects model-scoped limits; accessModel selects
+// the permits that authorize and fund the candidate.
+type AccessModelCandidateChecker interface {
+	CheckProviderCandidateExclusionForAccessModel(ctx *schemas.BifrostContext, access schemas.Access, candidate schemas.ProviderCandidate, model, accessModel string) (Decision, error)
+}
+
 // GovernanceStore defines the interface for governance data access and policy evaluation.
 //
 // Error semantics contract:
@@ -1389,8 +1404,18 @@ func recordVirtualKeyIdentity(ctx *schemas.BifrostContext, virtualKey *configsto
 // model on the candidate's provider is funded on it, and a candidate is affordable only when all of
 // them have room), and which per-model configs cover the pair on this provider and no other.
 func (gs *LocalGovernanceStore) CheckProviderCandidateExclusion(ctx *schemas.BifrostContext, access schemas.Access, candidate schemas.ProviderCandidate, model string) (Decision, error) {
+	return gs.CheckProviderCandidateExclusionForAccessModel(ctx, access, candidate, model, model)
+}
+
+// CheckProviderCandidateExclusionForAccessModel keeps authorization and charging identities
+// separate: permits are selected by the caller-facing accessModel, while provider-scoped model
+// limits are selected by the physical model that the candidate would serve.
+func (gs *LocalGovernanceStore) CheckProviderCandidateExclusionForAccessModel(ctx *schemas.BifrostContext, access schemas.Access, candidate schemas.ProviderCandidate, model, accessModel string) (Decision, error) {
 	if spendingChecksSkipped(ctx) {
 		return DecisionAllow, nil
+	}
+	if accessModel == "" {
+		accessModel = model
 	}
 
 	provider := schemas.ModelProvider(candidate.Provider)
@@ -1399,7 +1424,7 @@ func (gs *LocalGovernanceStore) CheckProviderCandidateExclusion(ctx *schemas.Bif
 	budgets = append(budgets, modelBudgets...)
 	rateLimits = append(rateLimits, modelRateLimits...)
 	if access != nil {
-		for _, permit := range access.PermitsForModel(candidate.Provider, model) {
+		for _, permit := range access.PermitsForModel(candidate.Provider, accessModel) {
 			permitBudgets, permitRateLimits := gs.PermitProviderLimits(ctx, permit, provider)
 			budgets = append(budgets, permitBudgets...)
 			rateLimits = append(rateLimits, permitRateLimits...)
@@ -4620,6 +4645,15 @@ func (gs *LocalGovernanceStore) updateRateLimitReferences(ctx context.Context, r
 // store resolves one permit per credential, so there is nothing to pick between, and one limit
 // reached twice is still one limit once the list is settled.
 func (gs *LocalGovernanceStore) GatherLimits(ctx *schemas.BifrostContext, access schemas.Access, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit, err error) {
+	return gs.GatherLimitsForAccessModel(ctx, access, provider, model, model)
+}
+
+// GatherLimitsForAccessModel gathers physical-model limits while attributing provider-level
+// permit funding to the caller-facing model that authorized the request.
+func (gs *LocalGovernanceStore) GatherLimitsForAccessModel(ctx *schemas.BifrostContext, access schemas.Access, provider schemas.ModelProvider, model, accessModel string) (budgets []schemas.Limit, rateLimits []schemas.Limit, err error) {
+	if accessModel == "" {
+		accessModel = model
+	}
 	budgets, rateLimits = gs.GlobalProviderLimits(ctx, provider)
 	globalModelBudgets, globalModelRateLimits := gs.GlobalModelLimits(ctx, provider, model)
 	budgets = append(budgets, globalModelBudgets...)
@@ -4642,7 +4676,7 @@ func (gs *LocalGovernanceStore) GatherLimits(ctx *schemas.BifrostContext, access
 		budgets = append(budgets, modelBudgets...)
 		rateLimits = append(rateLimits, modelRateLimits...)
 	}
-	for _, permit := range access.PermitsForModel(string(provider), model) {
+	for _, permit := range access.PermitsForModel(string(provider), accessModel) {
 		providerBudgets, providerRateLimits := gs.PermitProviderLimits(ctx, permit, provider)
 		budgets = append(budgets, providerBudgets...)
 		rateLimits = append(rateLimits, providerRateLimits...)
@@ -4651,7 +4685,7 @@ func (gs *LocalGovernanceStore) GatherLimits(ctx *schemas.BifrostContext, access
 }
 
 func (gs *LocalGovernanceStore) GetBudgetAndRateLimitStatus(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus {
-	budgets, rateLimits, _ := gs.GatherLimits(ctx, ctx.Grant().Access(), provider, model)
+	budgets, rateLimits, _ := gs.GatherLimitsForAccessModel(ctx, ctx.Grant().Access(), provider, model, accessModelForRequest(ctx, model, nil))
 	status := &BudgetAndRateLimitStatus{}
 
 	for _, limit := range budgets {
