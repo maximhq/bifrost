@@ -35,8 +35,16 @@ func (mc *ModelCatalog) GetModelsForProvider(provider schemas.ModelProvider) []s
 }
 
 func (mc *ModelCatalog) computeModelsForProvider(provider schemas.ModelProvider) []string {
-	blacklisted := mc.keyconf.BlacklistedFor(provider)
 	allowed := mc.keyconf.AllowedFor(provider)
+	// rule folds the pattern twins in so a name a pattern admits (or blocks) is
+	// treated the same as one the exact lists name.
+	rule := mc.keyconf.AccessFor(provider)
+	// A key may allow models by pattern alone, which leaves the aggregated
+	// exact list nil. Restriction is therefore "either side names something",
+	// not "the exact list is non-nil" - otherwise a pattern-only rule reads as
+	// no rule at all and the whole datasheet is listed.
+	restricted := allowed != nil || len(rule.AllowedPatterns) > 0
+	providerName := string(provider)
 
 	var out []string
 	if liveModels := mc.live.ModelsForProvider(provider); len(liveModels) > 0 {
@@ -50,14 +58,11 @@ func (mc *ModelCatalog) computeModelsForProvider(provider schemas.ModelProvider)
 		if providersWithPartialListModels[provider] {
 			datasheetModelsToAppend = mc.datasheet.DatasheetModelsForProvider(provider)
 		}
-		out = mc.appendAllowedDatasheetModels(out, datasheetModelsToAppend, allowed, blacklisted)
-	} else if datasheetModels := mc.datasheet.DatasheetModelsForProvider(provider); len(datasheetModels) > 0 && allowed != nil {
+		out = mc.appendAllowedDatasheetModels(out, datasheetModelsToAppend, restricted, rule, providerName)
+	} else if datasheetModels := mc.datasheet.DatasheetModelsForProvider(provider); len(datasheetModels) > 0 && restricted {
 		out = make([]string, 0, len(datasheetModels))
 		for _, m := range datasheetModels {
-			if blacklisted.IsBlocked(m) {
-				continue
-			}
-			if allowed.IsAllowed(m) {
+			if rule.Allows(providerName, m) {
 				out = append(out, m)
 			}
 		}
@@ -74,10 +79,11 @@ func (mc *ModelCatalog) computeModelsForProvider(provider schemas.ModelProvider)
 			continue
 		}
 		for alias := range e.Aliases {
-			if blacklisted.IsBlocked(alias) {
-				continue
-			}
-			if allowed == nil || !allowed.IsAllowed(alias) {
+			// No allowed == nil short-circuit: a key may allow models by
+			// pattern alone, which leaves the aggregated exact list empty.
+			// rule.Allows already denies by default when neither side names
+			// anything, and still lets a block pattern win.
+			if !rule.Allows(providerName, alias) {
 				continue
 			}
 			if _, ok := seen[alias]; ok {
@@ -87,7 +93,7 @@ func (mc *ModelCatalog) computeModelsForProvider(provider schemas.ModelProvider)
 			out = append(out, alias)
 		}
 		for _, m := range e.Allowed {
-			if m == "*" || blacklisted.IsBlocked(m) {
+			if m == "*" || rule.Blocks(providerName, m) {
 				continue
 			}
 			if _, ok := seen[m]; ok {
@@ -100,7 +106,7 @@ func (mc *ModelCatalog) computeModelsForProvider(provider schemas.ModelProvider)
 	return out
 }
 
-func (mc *ModelCatalog) appendAllowedDatasheetModels(out []string, models []string, allowed schemas.WhiteList, blacklisted schemas.BlackList) []string {
+func (mc *ModelCatalog) appendAllowedDatasheetModels(out []string, models []string, restricted bool, rule schemas.ModelAccessRule, providerName string) []string {
 	if len(models) == 0 {
 		return out
 	}
@@ -112,10 +118,10 @@ func (mc *ModelCatalog) appendAllowedDatasheetModels(out []string, models []stri
 		if _, ok := seen[m]; ok {
 			continue
 		}
-		if blacklisted.IsBlocked(m) {
+		if rule.Blocks(providerName, m) {
 			continue
 		}
-		if allowed != nil && !allowed.IsAllowed(m) {
+		if restricted && !rule.Admits(providerName, m) {
 			continue
 		}
 		seen[m] = struct{}{}
@@ -269,14 +275,15 @@ func (mc *ModelCatalog) computeProvidersForModel(model string) []schemas.ModelPr
 		if _, ok := seen[p]; ok {
 			continue
 		}
-		if mc.keyconf.BlacklistedFor(p).IsBlocked(model) {
+		rule := mc.keyconf.AccessFor(p)
+		if rule.Blocks(string(p), model) {
 			continue
 		}
-		allowed := mc.keyconf.AllowedFor(p)
+		allowed := rule.Allowed
 		matched := false
-		if _, hit := mc.keyconf.ResolveAlias(p, model); hit && allowed.IsAllowed(model) {
+		if _, hit := mc.keyconf.ResolveAlias(p, model); hit && rule.Admits(string(p), model) {
 			matched = true
-		} else if allowed.Contains(model) {
+		} else if allowed.IsRestricted() && rule.Admits(string(p), model) {
 			matched = true
 		} else if allowed.IsUnrestricted() &&
 			len(mc.datasheet.DatasheetModelsForProvider(p)) == 0 &&
@@ -320,7 +327,7 @@ func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider
 	}
 
 	// Bare-name match needs no catalog access and covers most allowlists.
-	if slices.Contains(allowedModels, model) {
+	if allowedModels.Contains(model) {
 		return true
 	}
 
@@ -377,8 +384,34 @@ func (mc *ModelCatalog) RefineModelForProvider(provider schemas.ModelProvider, m
 	switch provider {
 	case schemas.Groq, schemas.Replicate, schemas.Perplexity, schemas.OpenRouter:
 		return mc.refineNestedProviderModel(provider, model)
+	case schemas.Databricks:
+		return refineDatabricksModel(model), nil
 	}
 	return model, nil
+}
+
+// Mirrors Databricks model refinement:
+// - Catalog-qualified names (2+ dots) and `databricks-*` endpoints pass through.
+// - Other names get the `system.ai.` prefix.
+// - A single dot is treated as a version separator (e.g. `gpt-5.5`).
+//
+// Aliases and explicit `api_format` are handled by the provider and are not visible here.
+func refineDatabricksModel(model string) string {
+	const (
+		// defaultCatalogPrefix is the Unity Catalog prefix under which Databricks publishes
+		// its ready-to-use AI Gateway models.
+		defaultCatalogPrefix = "system.ai."
+		// modelServingEndpointPrefix is the naming convention for Databricks pay-per-token
+		// Foundation Model endpoints, which live on Model Serving and take a bare name.
+		modelServingEndpointPrefix = "databricks-"
+	)
+	if model == "" || strings.Count(model, ".") >= 2 {
+		return model
+	}
+	if strings.HasPrefix(strings.ToLower(model), modelServingEndpointPrefix) {
+		return model
+	}
+	return defaultCatalogPrefix + model
 }
 
 // refineNestedProviderModel resolves provider-native model slugs such as

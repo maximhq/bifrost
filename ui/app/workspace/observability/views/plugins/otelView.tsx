@@ -63,7 +63,7 @@ export default function OtelView({ onDelete, isDeleting }: OtelViewProps) {
 						data-testid="otel-configure-tracing-button"
 					>
 						<Activity className="h-4 w-4" />
-						Configure Plugin Tracing
+						Configure Tracing
 					</Button>
 				</div>
 				<OtelFormFragment onSave={handleOtelConfigSave} currentConfig={currentConfig} onDelete={onDelete} isDeleting={isDeleting} />

@@ -155,6 +155,21 @@ func calculateBackoff(attempt int, config *schemas.ProviderConfig) time.Duration
 	return min(result, config.NetworkConfig.RetryBackoffMax)
 }
 
+// waitRetryBackoff sleeps for backoff unless ctx ends first. It reports true when
+// the request was cancelled, in which case the caller must not run another attempt.
+// select picks uniformly among ready cases, so a cancel that lands together with
+// the timer expiry could otherwise be reported as a completed wait; ctx.Err() is
+// the authority after the select.
+func waitRetryBackoff(ctx context.Context, backoff time.Duration) (cancelled bool) {
+	backoffTimer := time.NewTimer(backoff)
+	select {
+	case <-backoffTimer.C:
+	case <-ctx.Done():
+		backoffTimer.Stop()
+	}
+	return ctx.Err() != nil
+}
+
 // validateRequestAfterPreRequestHooks validates the provider and model fields of the given request.
 func validateRequestAfterPreRequestHooks(req *schemas.BifrostRequest) *schemas.BifrostError {
 	if req == nil {
@@ -217,11 +232,34 @@ func validateKey(providerKey schemas.ModelProvider, key *schemas.Key) error {
 			return fmt.Errorf("sgl_key_config.url is required")
 		}
 	case schemas.GithubCopilot:
-		// Key.Value holds a Copilot API token, GitHub's documented "direct API token"
-		// method. Copilot tokens live about 30 minutes, so this suits testing and
-		// short-lived setups.
-		if key.Value.GetValue() == "" {
-			return fmt.Errorf("value is required and must be a GitHub Copilot API token")
+		// Two auth modes, either is sufficient.
+		//
+		//   1. Key.Value holds a Copilot API token, GitHub's documented "direct API token"
+		//      method. Those live about 30 minutes, so this suits testing.
+		//   2. GithubCopilotKeyConfig holds GitHub App credentials and Bifrost mints its own
+		//      tokens server-to-server. This is the mode for real deployments.
+		// Trim before every check. resolveCredentials and validateKeyConfig trim too, so an
+		// untrimmed check here would accept a key that fails at the first inference call
+		// instead of at setup, where the operator can still act on it.
+		if strings.TrimSpace(key.Value.GetValue()) != "" {
+			break
+		}
+		if key.GithubCopilotKeyConfig == nil {
+			return fmt.Errorf("github_copilot_key_config is required when value is not set")
+		}
+		// Ordered, so the reported field is deterministic when several are missing.
+		for _, field := range []struct {
+			name  string
+			value string
+		}{
+			{"app_id", key.GithubCopilotKeyConfig.AppID.GetValue()},
+			{"installation_id", key.GithubCopilotKeyConfig.InstallationID.GetValue()},
+			{"repository_id", key.GithubCopilotKeyConfig.RepositoryID.GetValue()},
+			{"private_key", key.GithubCopilotKeyConfig.PrivateKey.GetValue()},
+		} {
+			if strings.TrimSpace(field.value) == "" {
+				return fmt.Errorf("github_copilot_key_config.%s is required", field.name)
+			}
 		}
 	case schemas.Databricks:
 		// The workspace URL is not required here: an SDK caller may set it once as the
@@ -381,7 +419,14 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyAttemptTrail)
 	ctx.ClearValue(schemas.BifrostContextKeyStreamEndIndicator)
 	ctx.ClearValue(schemas.BifrostContextKeyConnectionClosed)
+	ctx.ClearValue(schemas.BifrostContextKeyStreamBodyExhausted)
+	ctx.ClearValue(schemas.BifrostContextKeyStreamParkedAfterFinish)
 	ctx.ClearValue(schemas.BifrostContextKeySupportsAssistantPrefill)
+	// Provider response headers belong to the provider that produced them.
+	// If a fallback attempt fails pre-flight (no HTTP request issued), the
+	// previous provider's headers would otherwise survive on the context and
+	// be forwarded with the fallback's error response (#6973).
+	ctx.ClearValue(schemas.BifrostContextKeyProviderResponseHeaders)
 }
 
 // ClearContextForInternalRequest clears context state that is specific to the
@@ -452,6 +497,27 @@ func ClearContextForInternalRequest(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyExtraHeaders)
 	ctx.ClearValue(schemas.BifrostContextKeyPassthroughHeaders)
 	ctx.ClearValue(schemas.BifrostContextKeyURLPath)
+}
+
+// PrepareContextForInternalRequest marks ctx as an internal sub-request issued
+// by a plugin on its own behalf. It skips the plugin pipeline — the request
+// cannot recurse back into the plugin that issued it — and sheds the
+// caller-specific key-routing and body-transport state documented on
+// ClearContextForInternalRequest. Plugins should call this instead of setting
+// BifrostContextKeySkipPluginPipeline (a reserved core key) themselves.
+func PrepareContextForInternalRequest(ctx *schemas.BifrostContext) {
+	ctx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
+	ClearContextForInternalRequest(ctx)
+}
+
+// PrepareContextForInternalEmbeddingRequest prepares a plugin-owned embedding request without capturing its raw payloads.
+func PrepareContextForInternalEmbeddingRequest(ctx *schemas.BifrostContext) {
+	PrepareContextForInternalRequest(ctx)
+	ctx.SetValue(schemas.BifrostContextKeyAllowPerRequestRawOverride, true)
+	ctx.SetValue(schemas.BifrostContextKeySendBackRawRequest, false)
+	ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, false)
+	ctx.SetValue(schemas.BifrostContextKeyAllowPerRequestStorageOverride, true)
+	ctx.SetValue(schemas.BifrostContextKeyStoreRawRequestResponse, false)
 }
 
 var supportedBaseProvidersSet = func() map[schemas.ModelProvider]struct{} {

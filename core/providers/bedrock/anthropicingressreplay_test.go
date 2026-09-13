@@ -347,3 +347,131 @@ func TestAnthropicIngressBedrockToolErrorKeepsErrorStatus(t *testing.T) {
 	require.NotNil(t, result.Status, "Converse requires a readable status for a failed tool call")
 	require.Equal(t, "error", *result.Status, "is_error must not be reported to the model as a success")
 }
+
+// TestAnthropicIngressBedrockReplayKeepsReasoningInItsOwnTurn pins the invariant PR
+// #6854 restores: every assistant turn reaches Converse carrying exactly the reasoning
+// blocks the client sent for THAT turn, and no others.
+//
+// Measured against Bedrock Converse with real signed blocks, the refusal
+//
+//	messages.N.content.M: `thinking` or `redacted_thinking` blocks in the latest
+//	assistant message cannot be modified.
+//
+// fires on exactly one mutation: an EXTRA reasoning block in an assistant turn that is
+// a tool continuation. Removing a block, reordering blocks and fusing turns are all
+// accepted, so a block that migrates from turn N into turn N+1 is the shape that breaks
+// a replay -- turn N+1 ends up with two where the model produced one.
+//
+// Two directions are covered, because fixing one broke the other once already:
+//
+//   - "thinking last" is the shape that migrated. pendingReasoningContentBlocks was
+//     consumed by an assistant message or a tool-call flush and by nothing else, so
+//     reasoning still buffered when a user turn arrived was carried into the next
+//     assistant message.
+//   - "thinking first" is the shape the first attempt at that fix deleted outright. It
+//     settled the buffer before the tool-call flush could claim it, and the message
+//     behind it is the user turn that opened the loop, so the block was dropped from
+//     every ordinary agent turn. Bedrock accepts a missing block with a 200, which is
+//     why this direction needs a converter-level test: it is invisible from the wire.
+func TestAnthropicIngressBedrockReplayKeepsReasoningInItsOwnTurn(t *testing.T) {
+	thinking := func(step int) map[string]any {
+		return map[string]any{
+			"type":      "thinking",
+			"thinking":  fmt.Sprintf("deliberating on step %d", step),
+			"signature": fmt.Sprintf("ErUBCkYIBxgCKkA_signature_%d", step),
+		}
+	}
+	text := func(step int) map[string]any {
+		return map[string]any{"type": "text", "text": fmt.Sprintf("working on step %d", step)}
+	}
+	toolUse := func(step int) map[string]any {
+		return map[string]any{
+			"type": "tool_use", "id": fmt.Sprintf("toolu_01Step%02d", step),
+			"name": "get_weather", "input": map[string]any{"city": "tokyo"},
+		}
+	}
+
+	shapes := []struct {
+		name   string
+		blocks func(step int) []map[string]any
+	}{
+		// The order Anthropic emits by default.
+		{"thinking first", func(s int) []map[string]any {
+			return []map[string]any{thinking(s), text(s), toolUse(s)}
+		}},
+		// Adaptive thinking, a max_tokens truncation, or a trailing block the ingress
+		// dropped all leave the thinking block last.
+		{"thinking last", func(s int) []map[string]any {
+			return []map[string]any{text(s), toolUse(s), thinking(s)}
+		}},
+		// Interleaved: the model thought again after its first call.
+		{"interleaved", func(s int) []map[string]any {
+			return []map[string]any{thinking(s), toolUse(s), text(s)}
+		}},
+	}
+
+	const rounds = 3
+	for _, shape := range shapes {
+		t.Run(shape.name, func(t *testing.T) {
+			messages := []map[string]any{
+				{"role": "user", "content": []map[string]any{{"type": "text", "text": "run the tool"}}},
+			}
+			for step := 0; step < rounds; step++ {
+				messages = append(messages,
+					map[string]any{"role": "assistant", "content": shape.blocks(step)},
+					map[string]any{"role": "user", "content": []map[string]any{{
+						"type": "tool_result", "tool_use_id": fmt.Sprintf("toolu_01Step%02d", step),
+						"content": "18C, foggy",
+					}}},
+				)
+			}
+
+			body, err := json.Marshal(map[string]any{
+				"model":      "bedrock/global.anthropic.claude-opus-5",
+				"max_tokens": 4096,
+				"thinking":   map[string]any{"type": "adaptive"},
+				"tools": []map[string]any{{
+					"name": "get_weather", "description": "look up the weather",
+					"input_schema": map[string]any{"type": "object",
+						"properties": map[string]any{"city": map[string]any{"type": "string"}}},
+				}},
+				"messages": messages,
+			})
+			require.NoError(t, err)
+
+			var ingressReq anthropic.AnthropicMessageRequest
+			require.NoError(t, json.Unmarshal(body, &ingressReq))
+
+			ctx := &schemas.BifrostContext{}
+			converseReq, err := bedrock.ToBedrockResponsesRequest(ctx, ingressReq.ToBifrostResponsesRequest(ctx))
+			require.NoError(t, err)
+
+			require.Equalf(t, len(messages), len(converseReq.Messages),
+				"turn boundaries must survive (converse roles: %s)", converseRoles(converseReq.Messages))
+
+			for step := 0; step < rounds; step++ {
+				msg := converseReq.Messages[step*2+1]
+				require.Equal(t, bedrock.BedrockMessageRoleAssistant, msg.Role, "message %d", step*2+1)
+
+				var signatures []string
+				for _, block := range msg.Content {
+					if block.ReasoningContent == nil || block.ReasoningContent.ReasoningText == nil {
+						continue
+					}
+					require.NotNilf(t, block.ReasoningContent.ReasoningText.Signature,
+						"step %d: a reasoning block reached Converse unsigned", step)
+					signatures = append(signatures, *block.ReasoningContent.ReasoningText.Signature)
+				}
+
+				// Exactly one, and it is this turn's own. Zero means the block was dropped;
+				// more than one means another turn's block migrated in, which is what
+				// Bedrock refuses with "cannot be modified".
+				require.Lenf(t, signatures, 1,
+					"step %d: expected exactly the one reasoning block this turn was sent, got %d (%v)",
+					step, len(signatures), signatures)
+				require.Equalf(t, fmt.Sprintf("ErUBCkYIBxgCKkA_signature_%d", step), signatures[0],
+					"step %d: this turn is carrying another turn's signature", step)
+			}
+		})
+	}
+}

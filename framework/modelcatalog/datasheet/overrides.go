@@ -582,10 +582,17 @@ func patchPricing(pricing configstoreTables.TableModelPricing, override Options)
 		{dst: &patched.OutputCostPerImageAutoQuality, src: override.OutputCostPerImageAutoQuality},
 		{dst: &patched.OCRCostPerPage, src: override.OCRCostPerPage},
 		{dst: &patched.AnnotationCostPerPage, src: override.AnnotationCostPerPage},
+		{dst: &patched.OffPeakCostMultiplier, src: override.OffPeakCostMultiplier},
 	} {
 		if field.src != nil {
 			*field.dst = field.src
 		}
+	}
+	// PeakHours is a struct pointer, not a *float64, so it cannot ride the
+	// loop above. Same nil-means-inherit semantics: an override that sets only
+	// the multiplier keeps the datasheet's schedule.
+	if override.PeakHours != nil {
+		patched.PeakHours = override.PeakHours
 	}
 	return patched
 }

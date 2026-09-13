@@ -1,6 +1,7 @@
 import { BudgetOverrideDialog } from "@/components/budgetOverrideDialog";
 import { BudgetOverrideManagerDialog, type BudgetOverrideSection } from "@/components/budgetOverrideManagerDialog";
 import { CopyableId } from "@/components/copyableId";
+import { ModelAccessBadges } from "@/components/modelAccess";
 import { SheetNavigationButtons } from "@/components/sheetNavigationButtons";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
@@ -271,46 +272,14 @@ export default function VirtualKeyDetailSheet({
 														<div className="grid grid-cols-1 items-start gap-4 md:grid-cols-3">
 															<span className="text-muted-foreground pt-0.5 text-sm font-medium">Allowed Models</span>
 															<div className="col-span-2">
-																{config.allowed_models?.includes("*") ? (
-																	<Badge variant="success" className="text-xs">
-																		All Models
-																	</Badge>
-																) : config.allowed_models && config.allowed_models.length > 0 ? (
-																	<div className="flex flex-wrap gap-1">
-																		{config.allowed_models.map((model) => (
-																			<Badge key={model} variant="secondary" className="text-xs">
-																				{model}
-																			</Badge>
-																		))}
-																	</div>
-																) : (
-																	<Badge variant="destructive" className="text-xs">
-																		No models (deny all)
-																	</Badge>
-																)}
+																<ModelAccessBadges value={config.allowed_models} patterns={config.allowed_models_patterns} mode="allow" />
 															</div>
 														</div>
 
 														<div className="grid grid-cols-1 items-start gap-4 md:grid-cols-3">
 															<span className="text-muted-foreground pt-0.5 text-sm font-medium">Blocked Models</span>
 															<div className="col-span-2">
-																{config.blacklisted_models?.includes("*") ? (
-																	<Badge variant="destructive" className="text-xs">
-																		All Models Blocked
-																	</Badge>
-																) : config.blacklisted_models && config.blacklisted_models.length > 0 ? (
-																	<div className="flex flex-wrap gap-1">
-																		{config.blacklisted_models.map((model) => (
-																			<Badge key={model} variant="destructive" className="text-xs">
-																				{model}
-																			</Badge>
-																		))}
-																	</div>
-																) : (
-																	<Badge variant="secondary" className="text-xs">
-																		No models blocked
-																	</Badge>
-																)}
+																<ModelAccessBadges value={config.blacklisted_models} patterns={config.blacklisted_models_patterns} mode="block" />
 															</div>
 														</div>
 
@@ -451,31 +420,31 @@ export default function VirtualKeyDetailSheet({
 																			{/* Budgets */}
 																			{mb.budgets && mb.budgets.length > 0
 																				? mb.budgets.map((b, bIdx) => (
-																					<div key={bIdx} className="space-y-2">
-																						<UsageLine
-																							current={b.current_usage}
-																							max={getEffectiveBudgetLimit(b)}
-																							format={formatCurrency}
-																						/>
-																						{hasActiveBudgetOverride(b) ? (
-																							<p className="text-muted-foreground text-xs">
-																								Base {formatCurrency(b.max_limit)} + {formatCurrency(b.override_amount ?? 0)} override
-																							</p>
-																						) : null}
-																						<div className="text-muted-foreground flex items-center justify-between text-xs">
-																							<span>
-																								Resets {parseResetPeriod(b.reset_duration)}
-																								{virtualKey.calendar_aligned &&
-																									supportsCalendarAlignment(b.reset_duration) &&
-																									" (calendar)"}
-																								{fiscalQuarterNote(b.reset_duration, b.reset_config)}
-																							</span>
-																							{b.last_reset ? (
-																								<span>Last reset {formatDistanceToNow(new Date(b.last_reset), { addSuffix: true })}</span>
+																						<div key={bIdx} className="space-y-2">
+																							<UsageLine
+																								current={b.current_usage}
+																								max={getEffectiveBudgetLimit(b)}
+																								format={formatCurrency}
+																							/>
+																							{hasActiveBudgetOverride(b) ? (
+																								<p className="text-muted-foreground text-xs">
+																									Base {formatCurrency(b.max_limit)} + {formatCurrency(b.override_amount ?? 0)} override
+																								</p>
 																							) : null}
+																							<div className="text-muted-foreground flex items-center justify-between text-xs">
+																								<span>
+																									Resets {parseResetPeriod(b.reset_duration)}
+																									{virtualKey.calendar_aligned &&
+																										supportsCalendarAlignment(b.reset_duration) &&
+																										" (calendar)"}
+																									{fiscalQuarterNote(b.reset_duration, b.reset_config)}
+																								</span>
+																								{b.last_reset ? (
+																									<span>Last reset {formatDistanceToNow(new Date(b.last_reset), { addSuffix: true })}</span>
+																								) : null}
+																							</div>
 																						</div>
-																					</div>
-																				))
+																					))
 																				: null}
 
 																			{/* Token Limits */}
@@ -526,19 +495,19 @@ export default function VirtualKeyDetailSheet({
 								</div>
 							</div>
 
-							{/* MCP Client Configurations */}
+							{/* MCP Server Configurations */}
 							<div className="space-y-4">
-								<h3 className="font-semibold">MCP Client Configurations</h3>
+								<h3 className="font-semibold">MCP Server Configurations</h3>
 
 								<div className="space-y-3">
 									{!virtualKey.mcp_configs || virtualKey.mcp_configs.length === 0 ? (
-										<span className="text-muted-foreground text-sm">No MCP clients configured (deny-by-default)</span>
+										<span className="text-muted-foreground text-sm">No MCP servers configured</span>
 									) : (
 										<div className="rounded-md border">
 											<Table>
 												<TableHeader>
 													<TableRow>
-														<TableHead>MCP Client</TableHead>
+														<TableHead>MCP Server</TableHead>
 														<TableHead>Allowed Tools</TableHead>
 													</TableRow>
 												</TableHeader>

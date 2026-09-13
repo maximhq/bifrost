@@ -145,58 +145,66 @@ func toolSyncIntervalDurationToStoredSeconds(interval time.Duration) (int, error
 // schemaKeyFromTableKey converts a database key to a schema key.
 func schemaKeyFromTableKey(dbKey tables.TableKey) schemas.Key {
 	return schemas.Key{
-		ID:                     dbKey.KeyID,
-		Name:                   dbKey.Name,
-		Value:                  dbKey.Value,
-		Models:                 dbKey.Models,
-		BlacklistedModels:      dbKey.BlacklistedModels,
-		Weight:                 getWeight(dbKey.Weight),
-		Enabled:                dbKey.Enabled,
-		UseForBatchAPI:         dbKey.UseForBatchAPI,
-		UseAnthropicEndpoints:  dbKey.UseAnthropicEndpoints,
-		AzureKeyConfig:         dbKey.AzureKeyConfig,
-		VertexKeyConfig:        dbKey.VertexKeyConfig,
-		BedrockKeyConfig:       dbKey.BedrockKeyConfig,
-		BedrockMantleKeyConfig: dbKey.BedrockMantleKeyConfig,
-		Aliases:                dbKey.Aliases,
-		VLLMKeyConfig:          dbKey.VLLMKeyConfig,
-		ReplicateKeyConfig:     dbKey.ReplicateKeyConfig,
-		OllamaKeyConfig:        dbKey.OllamaKeyConfig,
-		SGLKeyConfig:           dbKey.SGLKeyConfig,
-		DatabricksKeyConfig:    dbKey.DatabricksKeyConfig,
-		ConfigHash:             dbKey.ConfigHash,
-		Status:                 schemas.KeyStatusType(dbKey.Status),
-		Description:            dbKey.Description,
+		ID:                        dbKey.KeyID,
+		Name:                      dbKey.Name,
+		Value:                     dbKey.Value,
+		Models:                    dbKey.Models,
+		BlacklistedModels:         dbKey.BlacklistedModels,
+		ModelsPatterns:            dbKey.ModelsPatterns,
+		BlacklistedModelsPatterns: dbKey.BlacklistedModelsPatterns,
+		Weight:                    getWeight(dbKey.Weight),
+		Enabled:                   dbKey.Enabled,
+		UseForBatchAPI:            dbKey.UseForBatchAPI,
+		UseAnthropicEndpoints:     dbKey.UseAnthropicEndpoints,
+		UseOpenAIEndpoints:        dbKey.UseOpenAIEndpoints,
+		AzureKeyConfig:            dbKey.AzureKeyConfig,
+		VertexKeyConfig:           dbKey.VertexKeyConfig,
+		BedrockKeyConfig:          dbKey.BedrockKeyConfig,
+		BedrockMantleKeyConfig:    dbKey.BedrockMantleKeyConfig,
+		Aliases:                   dbKey.Aliases,
+		VLLMKeyConfig:             dbKey.VLLMKeyConfig,
+		ReplicateKeyConfig:        dbKey.ReplicateKeyConfig,
+		OllamaKeyConfig:           dbKey.OllamaKeyConfig,
+		SGLKeyConfig:              dbKey.SGLKeyConfig,
+		DatabricksKeyConfig:       dbKey.DatabricksKeyConfig,
+		GithubCopilotKeyConfig:    dbKey.GithubCopilotKeyConfig,
+		ConfigHash:                dbKey.ConfigHash,
+		Status:                    schemas.KeyStatusType(dbKey.Status),
+		Description:               dbKey.Description,
 	}
 }
 
 // tableKeyFromSchemaKey converts a schema key to a database key.
 func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tables.TableKey, error) {
 	dbKey := tables.TableKey{
-		Provider:               provider.Name,
-		ProviderID:             provider.ID,
-		KeyID:                  key.ID,
-		Name:                   key.Name,
-		Value:                  key.Value,
-		Models:                 key.Models,
-		BlacklistedModels:      key.BlacklistedModels,
-		Weight:                 &key.Weight,
-		Enabled:                key.Enabled,
-		UseForBatchAPI:         key.UseForBatchAPI,
-		UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
-		AzureKeyConfig:         key.AzureKeyConfig,
-		VertexKeyConfig:        key.VertexKeyConfig,
-		BedrockKeyConfig:       key.BedrockKeyConfig,
-		BedrockMantleKeyConfig: key.BedrockMantleKeyConfig,
-		Aliases:                key.Aliases,
-		VLLMKeyConfig:          key.VLLMKeyConfig,
-		ReplicateKeyConfig:     key.ReplicateKeyConfig,
-		OllamaKeyConfig:        key.OllamaKeyConfig,
-		SGLKeyConfig:           key.SGLKeyConfig,
-		DatabricksKeyConfig:    key.DatabricksKeyConfig,
-		ConfigHash:             key.ConfigHash,
-		Status:                 string(key.Status),
-		Description:            key.Description,
+		Provider:                  provider.Name,
+		ProviderID:                provider.ID,
+		KeyID:                     key.ID,
+		Name:                      key.Name,
+		Value:                     key.Value,
+		Models:                    key.Models,
+		BlacklistedModels:         key.BlacklistedModels,
+		ModelsPatterns:            key.ModelsPatterns,
+		BlacklistedModelsPatterns: key.BlacklistedModelsPatterns,
+		Weight:                    &key.Weight,
+		Enabled:                   key.Enabled,
+		UseForBatchAPI:            key.UseForBatchAPI,
+		UseAnthropicEndpoints:     key.UseAnthropicEndpoints,
+		UseOpenAIEndpoints:        key.UseOpenAIEndpoints,
+		AzureKeyConfig:            key.AzureKeyConfig,
+		VertexKeyConfig:           key.VertexKeyConfig,
+		BedrockKeyConfig:          key.BedrockKeyConfig,
+		BedrockMantleKeyConfig:    key.BedrockMantleKeyConfig,
+		Aliases:                   key.Aliases,
+		VLLMKeyConfig:             key.VLLMKeyConfig,
+		ReplicateKeyConfig:        key.ReplicateKeyConfig,
+		OllamaKeyConfig:           key.OllamaKeyConfig,
+		SGLKeyConfig:              key.SGLKeyConfig,
+		DatabricksKeyConfig:       key.DatabricksKeyConfig,
+		GithubCopilotKeyConfig:    key.GithubCopilotKeyConfig,
+		ConfigHash:                key.ConfigHash,
+		Status:                    string(key.Status),
+		Description:               key.Description,
 	}
 
 	if key.AzureKeyConfig != nil {
@@ -291,6 +299,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		LoggingHeaders:                        config.LoggingHeaders,
 		WhitelistedRoutes:                     config.WhitelistedRoutes,
 		HideDeletedVirtualKeysInFilters:       config.HideDeletedVirtualKeysInFilters,
+		HiddenRequestTypes:                    config.HiddenRequestTypes,
 		RoutingChainMaxDepth:                  config.RoutingChainMaxDepth,
 		MCPExternalClientURL:                  mcpExternalURLToString(config.MCPExternalClientURL),
 		HeaderFilterConfig:                    config.HeaderFilterConfig,
@@ -577,6 +586,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		LoggingHeaders:                        dbConfig.LoggingHeaders,
 		WhitelistedRoutes:                     dbConfig.WhitelistedRoutes,
 		HideDeletedVirtualKeysInFilters:       dbConfig.HideDeletedVirtualKeysInFilters,
+		HiddenRequestTypes:                    dbConfig.HiddenRequestTypes,
 		RoutingChainMaxDepth:                  dbConfig.RoutingChainMaxDepth,
 		MCPExternalClientURL:                  schemas.NewSecretVar(dbConfig.MCPExternalClientURL),
 		HeaderFilterConfig:                    dbConfig.HeaderFilterConfig,
@@ -703,6 +713,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 			StoreRawRequestResponse:  providerConfig.StoreRawRequestResponse,
 			CustomProviderConfig:     providerConfig.CustomProviderConfig,
 			OpenAIConfig:             providerConfig.OpenAIConfig,
+			PromptCache:              providerConfig.PromptCache,
 			ConfigHash:               providerConfig.ConfigHash,
 			Status:                   providerConfig.Status,
 			Description:              providerConfig.Description,
@@ -741,30 +752,34 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				}
 			}
 			dbKey := tables.TableKey{
-				Provider:               dbProvider.Name,
-				ProviderID:             dbProvider.ID,
-				KeyID:                  key.ID,
-				Name:                   key.Name,
-				Value:                  key.Value,
-				Models:                 key.Models,
-				BlacklistedModels:      key.BlacklistedModels,
-				Weight:                 &key.Weight,
-				Enabled:                key.Enabled,
-				UseForBatchAPI:         key.UseForBatchAPI,
-				UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
-				AzureKeyConfig:         key.AzureKeyConfig,
-				VertexKeyConfig:        key.VertexKeyConfig,
-				BedrockKeyConfig:       key.BedrockKeyConfig,
-				BedrockMantleKeyConfig: key.BedrockMantleKeyConfig,
-				Aliases:                key.Aliases,
-				VLLMKeyConfig:          key.VLLMKeyConfig,
-				ReplicateKeyConfig:     key.ReplicateKeyConfig,
-				OllamaKeyConfig:        key.OllamaKeyConfig,
-				SGLKeyConfig:           key.SGLKeyConfig,
-				DatabricksKeyConfig:    key.DatabricksKeyConfig,
-				ConfigHash:             keyHash,
-				Status:                 string(key.Status),
-				Description:            key.Description,
+				Provider:                  dbProvider.Name,
+				ProviderID:                dbProvider.ID,
+				KeyID:                     key.ID,
+				Name:                      key.Name,
+				Value:                     key.Value,
+				Models:                    key.Models,
+				BlacklistedModels:         key.BlacklistedModels,
+				ModelsPatterns:            key.ModelsPatterns,
+				BlacklistedModelsPatterns: key.BlacklistedModelsPatterns,
+				Weight:                    &key.Weight,
+				Enabled:                   key.Enabled,
+				UseForBatchAPI:            key.UseForBatchAPI,
+				UseAnthropicEndpoints:     key.UseAnthropicEndpoints,
+				UseOpenAIEndpoints:        key.UseOpenAIEndpoints,
+				AzureKeyConfig:            key.AzureKeyConfig,
+				VertexKeyConfig:           key.VertexKeyConfig,
+				BedrockKeyConfig:          key.BedrockKeyConfig,
+				BedrockMantleKeyConfig:    key.BedrockMantleKeyConfig,
+				Aliases:                   key.Aliases,
+				VLLMKeyConfig:             key.VLLMKeyConfig,
+				ReplicateKeyConfig:        key.ReplicateKeyConfig,
+				OllamaKeyConfig:           key.OllamaKeyConfig,
+				SGLKeyConfig:              key.SGLKeyConfig,
+				DatabricksKeyConfig:       key.DatabricksKeyConfig,
+				GithubCopilotKeyConfig:    key.GithubCopilotKeyConfig,
+				ConfigHash:                keyHash,
+				Status:                    string(key.Status),
+				Description:               key.Description,
 			}
 
 			// Handle Azure config
@@ -944,6 +959,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 	dbProvider.StoreRawRequestResponse = configCopy.StoreRawRequestResponse
 	dbProvider.CustomProviderConfig = configCopy.CustomProviderConfig
 	dbProvider.OpenAIConfig = configCopy.OpenAIConfig
+	dbProvider.PromptCache = configCopy.PromptCache
 	dbProvider.ConfigHash = configCopy.ConfigHash
 
 	// Save the updated provider
@@ -983,30 +999,34 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			return fmt.Errorf("failed to generate key hash: %w", err)
 		}
 		dbKey := tables.TableKey{
-			Provider:               dbProvider.Name,
-			ProviderID:             dbProvider.ID,
-			KeyID:                  key.ID,
-			Name:                   key.Name,
-			Value:                  key.Value,
-			Models:                 key.Models,
-			BlacklistedModels:      key.BlacklistedModels,
-			Weight:                 &key.Weight,
-			Enabled:                key.Enabled,
-			UseForBatchAPI:         key.UseForBatchAPI,
-			UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
-			AzureKeyConfig:         key.AzureKeyConfig,
-			VertexKeyConfig:        key.VertexKeyConfig,
-			BedrockKeyConfig:       key.BedrockKeyConfig,
-			BedrockMantleKeyConfig: key.BedrockMantleKeyConfig,
-			Aliases:                key.Aliases,
-			VLLMKeyConfig:          key.VLLMKeyConfig,
-			ReplicateKeyConfig:     key.ReplicateKeyConfig,
-			OllamaKeyConfig:        key.OllamaKeyConfig,
-			SGLKeyConfig:           key.SGLKeyConfig,
-			DatabricksKeyConfig:    key.DatabricksKeyConfig,
-			ConfigHash:             keyHash,
-			Status:                 string(key.Status),
-			Description:            key.Description,
+			Provider:                  dbProvider.Name,
+			ProviderID:                dbProvider.ID,
+			KeyID:                     key.ID,
+			Name:                      key.Name,
+			Value:                     key.Value,
+			Models:                    key.Models,
+			BlacklistedModels:         key.BlacklistedModels,
+			ModelsPatterns:            key.ModelsPatterns,
+			BlacklistedModelsPatterns: key.BlacklistedModelsPatterns,
+			Weight:                    &key.Weight,
+			Enabled:                   key.Enabled,
+			UseForBatchAPI:            key.UseForBatchAPI,
+			UseAnthropicEndpoints:     key.UseAnthropicEndpoints,
+			UseOpenAIEndpoints:        key.UseOpenAIEndpoints,
+			AzureKeyConfig:            key.AzureKeyConfig,
+			VertexKeyConfig:           key.VertexKeyConfig,
+			BedrockKeyConfig:          key.BedrockKeyConfig,
+			BedrockMantleKeyConfig:    key.BedrockMantleKeyConfig,
+			Aliases:                   key.Aliases,
+			VLLMKeyConfig:             key.VLLMKeyConfig,
+			ReplicateKeyConfig:        key.ReplicateKeyConfig,
+			OllamaKeyConfig:           key.OllamaKeyConfig,
+			SGLKeyConfig:              key.SGLKeyConfig,
+			DatabricksKeyConfig:       key.DatabricksKeyConfig,
+			GithubCopilotKeyConfig:    key.GithubCopilotKeyConfig,
+			ConfigHash:                keyHash,
+			Status:                    string(key.Status),
+			Description:               key.Description,
 		}
 
 		// Handle Azure config
@@ -1128,6 +1148,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 		StoreRawRequestResponse:  configCopy.StoreRawRequestResponse,
 		CustomProviderConfig:     configCopy.CustomProviderConfig,
 		OpenAIConfig:             configCopy.OpenAIConfig,
+		PromptCache:              configCopy.PromptCache,
 		ConfigHash:               configCopy.ConfigHash,
 	}
 	// Create the provider
@@ -1137,30 +1158,34 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 	// Create keys for this provider
 	for _, key := range configCopy.Keys {
 		dbKey := tables.TableKey{
-			Provider:               dbProvider.Name,
-			ProviderID:             dbProvider.ID,
-			KeyID:                  key.ID,
-			Name:                   key.Name,
-			Value:                  key.Value,
-			Models:                 key.Models,
-			BlacklistedModels:      key.BlacklistedModels,
-			Weight:                 &key.Weight,
-			Enabled:                key.Enabled,
-			UseForBatchAPI:         key.UseForBatchAPI,
-			UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
-			AzureKeyConfig:         key.AzureKeyConfig,
-			VertexKeyConfig:        key.VertexKeyConfig,
-			BedrockKeyConfig:       key.BedrockKeyConfig,
-			BedrockMantleKeyConfig: key.BedrockMantleKeyConfig,
-			Aliases:                key.Aliases,
-			VLLMKeyConfig:          key.VLLMKeyConfig,
-			ReplicateKeyConfig:     key.ReplicateKeyConfig,
-			OllamaKeyConfig:        key.OllamaKeyConfig,
-			SGLKeyConfig:           key.SGLKeyConfig,
-			DatabricksKeyConfig:    key.DatabricksKeyConfig,
-			ConfigHash:             key.ConfigHash,
-			Status:                 string(key.Status),
-			Description:            key.Description,
+			Provider:                  dbProvider.Name,
+			ProviderID:                dbProvider.ID,
+			KeyID:                     key.ID,
+			Name:                      key.Name,
+			Value:                     key.Value,
+			Models:                    key.Models,
+			BlacklistedModels:         key.BlacklistedModels,
+			ModelsPatterns:            key.ModelsPatterns,
+			BlacklistedModelsPatterns: key.BlacklistedModelsPatterns,
+			Weight:                    &key.Weight,
+			Enabled:                   key.Enabled,
+			UseForBatchAPI:            key.UseForBatchAPI,
+			UseAnthropicEndpoints:     key.UseAnthropicEndpoints,
+			UseOpenAIEndpoints:        key.UseOpenAIEndpoints,
+			AzureKeyConfig:            key.AzureKeyConfig,
+			VertexKeyConfig:           key.VertexKeyConfig,
+			BedrockKeyConfig:          key.BedrockKeyConfig,
+			BedrockMantleKeyConfig:    key.BedrockMantleKeyConfig,
+			Aliases:                   key.Aliases,
+			VLLMKeyConfig:             key.VLLMKeyConfig,
+			ReplicateKeyConfig:        key.ReplicateKeyConfig,
+			OllamaKeyConfig:           key.OllamaKeyConfig,
+			SGLKeyConfig:              key.SGLKeyConfig,
+			DatabricksKeyConfig:       key.DatabricksKeyConfig,
+			GithubCopilotKeyConfig:    key.GithubCopilotKeyConfig,
+			ConfigHash:                key.ConfigHash,
+			Status:                    string(key.Status),
+			Description:               key.Description,
 		}
 		// Handle Azure config
 		if key.AzureKeyConfig != nil {
@@ -1300,6 +1325,7 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 			StoreRawRequestResponse:  dbProvider.StoreRawRequestResponse,
 			CustomProviderConfig:     dbProvider.CustomProviderConfig,
 			OpenAIConfig:             dbProvider.OpenAIConfig,
+			PromptCache:              dbProvider.PromptCache,
 			ConfigHash:               dbProvider.ConfigHash,
 			Status:                   dbProvider.Status,
 			Description:              dbProvider.Description,
@@ -1333,6 +1359,7 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 		StoreRawRequestResponse:  dbProvider.StoreRawRequestResponse,
 		CustomProviderConfig:     dbProvider.CustomProviderConfig,
 		OpenAIConfig:             dbProvider.OpenAIConfig,
+		PromptCache:              dbProvider.PromptCache,
 		ConfigHash:               dbProvider.ConfigHash,
 		Status:                   dbProvider.Status,
 		Description:              dbProvider.Description,
@@ -1603,6 +1630,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 				clientConfigs[i] = &schemas.MCPClientConfig{
 					ID:                        dbClient.ClientID,
 					Name:                      dbClient.Name,
+					EndpointSlug:              dbClient.EndpointSlug,
 					IsCodeModeClient:          dbClient.IsCodeModeClient,
 					ConnectionType:            schemas.MCPConnectionType(dbClient.ConnectionType),
 					ConnectionString:          dbClient.ConnectionString,
@@ -1654,6 +1682,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 		clientConfigs[i] = &schemas.MCPClientConfig{
 			ID:                        dbClient.ClientID,
 			Name:                      dbClient.Name,
+			EndpointSlug:              dbClient.EndpointSlug,
 			IsCodeModeClient:          dbClient.IsCodeModeClient,
 			ConnectionType:            schemas.MCPConnectionType(dbClient.ConnectionType),
 			ConnectionString:          dbClient.ConnectionString,
@@ -2091,6 +2120,7 @@ func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) 
 	return &schemas.MCPClientConfig{
 		ID:                        dbClient.ClientID,
 		Name:                      dbClient.Name,
+		EndpointSlug:              dbClient.EndpointSlug,
 		IsCodeModeClient:          dbClient.IsCodeModeClient,
 		ConnectionType:            schemas.MCPConnectionType(dbClient.ConnectionType),
 		ConnectionString:          dbClient.ConnectionString,
@@ -2220,6 +2250,23 @@ func (s *RDBConfigStore) ClearMCPClientPendingOAuthConfig(ctx context.Context, c
 
 // CreateMCPClientConfig creates a new MCP client configuration in the database.
 func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig *schemas.MCPClientConfig) error {
+	// Derive the slug (caller's, else name) and reject a cross-entity collision. Immutable after create.
+	// Checked before the transaction so the read isn't on the write connection (matters for SQLite tests).
+	base := clientConfig.EndpointSlug
+	if base == "" {
+		base = clientConfig.Name
+	}
+	endpointSlug := Slugify(base)
+	if endpointSlug == "" {
+		return ErrMCPEndpointSlugInvalid
+	}
+	if taken, err := s.MCPEndpointSlugTaken(ctx, endpointSlug); err != nil {
+		return err
+	} else if taken {
+		return ErrMCPEndpointSlugExists
+	}
+	// Write the slug back so the in-memory registration serves /mcp/<slug> without a restart.
+	clientConfig.EndpointSlug = endpointSlug
 	return s.DB().Transaction(func(tx *gorm.DB) error {
 		// Check if a client with the same name already exists
 		if _, err := s.GetMCPClientByName(ctx, clientConfig.Name); err == nil {
@@ -2239,6 +2286,7 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 		dbClient := tables.TableMCPClient{
 			ClientID:               clientConfigCopy.ID,
 			Name:                   clientConfigCopy.Name,
+			EndpointSlug:           endpointSlug,
 			IsCodeModeClient:       clientConfigCopy.IsCodeModeClient,
 			ConnectionType:         string(clientConfigCopy.ConnectionType),
 			ConnectionString:       clientConfigCopy.ConnectionString,
@@ -2864,6 +2912,9 @@ var pricingSyncUpdateColumns = []string{
 	// Costs - OCR
 	"ocr_cost_per_page",
 	"annotation_cost_per_page",
+	// Costs - Time of day
+	"off_peak_cost_multiplier",
+	"peak_hours",
 }
 
 // UpsertModelPrices creates or updates a model pricing record in the database.
@@ -3336,6 +3387,7 @@ func (s *RDBConfigStore) UpdatePlugin(ctx context.Context, plugin *tables.TableP
 		if plugin.Version == 0 {
 			plugin.Version = existing.Version
 		}
+		plugin.CreatedAt = existing.CreatedAt
 		if err := txDB.WithContext(ctx).Delete(&existing).Error; err != nil {
 			if localTx {
 				txDB.Rollback()
@@ -3833,7 +3885,7 @@ func (s *RDBConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *table
 			virtualKey.RotatedAt = existing.RotatedAt
 		}
 		if err := txDB.WithContext(ctx).
-			Select("name", "description", "value", "is_active", "expires_at", "team_id", "customer_id", "rate_limit_id", "calendar_aligned", "config_hash", "updated_at", "encryption_status", "value_hash", "previous_value", "previous_value_hash", "previous_value_expires_at", "rotated_at").
+			Select("name", "description", "value", "is_active", "expires_at", "team_id", "customer_id", "rate_limit_id", "calendar_aligned", "allow_all_providers", "config_hash", "updated_at", "encryption_status", "value_hash", "previous_value", "previous_value_hash", "previous_value_expires_at", "rotated_at").
 			Updates(virtualKey).Error; err != nil {
 			return s.parseGormError(err)
 		}
@@ -3866,12 +3918,12 @@ func (s *RDBConfigStore) GetKeysByProvider(ctx context.Context, provider string)
 func (s *RDBConfigStore) GetAllRedactedKeys(ctx context.Context, ids []string) ([]schemas.Key, error) {
 	var keys []tables.TableKey
 	if len(ids) > 0 {
-		err := s.DB().WithContext(ctx).Select("id, key_id, name, models_json, blacklisted_models_json, weight").Where("key_id IN ?", ids).Find(&keys).Error
+		err := s.DB().WithContext(ctx).Select("id, key_id, name, models_json, blacklisted_models_json, models_patterns_json, blacklisted_models_patterns_json, weight").Where("key_id IN ?", ids).Find(&keys).Error
 		if err != nil {
 			return nil, err
 		}
 	} else {
-		err := s.DB().WithContext(ctx).Select("id, key_id, name, models_json, blacklisted_models_json, weight").Find(&keys).Error
+		err := s.DB().WithContext(ctx).Select("id, key_id, name, models_json, blacklisted_models_json, models_patterns_json, blacklisted_models_patterns_json, weight").Find(&keys).Error
 		if err != nil {
 			return nil, err
 		}
@@ -3886,12 +3938,22 @@ func (s *RDBConfigStore) GetAllRedactedKeys(ctx context.Context, ids []string) (
 		if blacklisted == nil {
 			blacklisted = []string{}
 		}
+		modelsPatterns := key.ModelsPatterns
+		if modelsPatterns == nil {
+			modelsPatterns = []string{}
+		}
+		blacklistedPatterns := key.BlacklistedModelsPatterns
+		if blacklistedPatterns == nil {
+			blacklistedPatterns = []string{}
+		}
 		redactedKeys[i] = schemas.Key{
-			ID:                key.KeyID,
-			Name:              key.Name,
-			Models:            models,
-			BlacklistedModels: blacklisted,
-			Weight:            getWeight(key.Weight),
+			ID:                        key.KeyID,
+			Name:                      key.Name,
+			Models:                    models,
+			BlacklistedModels:         blacklisted,
+			ModelsPatterns:            modelsPatterns,
+			BlacklistedModelsPatterns: blacklistedPatterns,
+			Weight:                    getWeight(key.Weight),
 		}
 	}
 	return redactedKeys, nil
@@ -4470,6 +4532,182 @@ func (s *RDBConfigStore) GetVirtualKeyMCPConfigsByMCPClientID(ctx context.Contex
 		return nil, err
 	}
 	return configs, nil
+}
+
+// GetVirtualMCPs returns every definition (enabled and disabled); AfterFind decodes each row's
+// ParsedTools.
+func (s *RDBConfigStore) GetVirtualMCPs(ctx context.Context) ([]tables.TableVirtualMCP, error) {
+	var defs []tables.TableVirtualMCP
+	if err := s.DB().WithContext(ctx).Find(&defs).Error; err != nil {
+		return nil, err
+	}
+	return defs, nil
+}
+
+// GetVirtualMCPAssignments returns each VK's assigned Virtual MCP IDs, keyed by VK row ID.
+func (s *RDBConfigStore) GetVirtualMCPAssignments(ctx context.Context) (map[string][]uint, error) {
+	var assignments []tables.TableVirtualKeyVirtualMCP
+	if err := s.DB().WithContext(ctx).Find(&assignments).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[string][]uint, len(assignments))
+	for _, a := range assignments {
+		out[a.VirtualKeyID] = append(out[a.VirtualKeyID], a.VirtualMCPID)
+	}
+	return out, nil
+}
+
+// CreateVirtualMCP inserts a Virtual MCP. The endpoint_slug is taken from the caller's slug when set,
+// else derived from the name; a slug collision is reported as ErrMCPEndpointSlugExists rather than
+// auto-suffixed. Name uniqueness is left to the table's own unique index.
+func (s *RDBConfigStore) CreateVirtualMCP(ctx context.Context, def *tables.TableVirtualMCP) error {
+	db := s.DB().WithContext(ctx)
+	base := def.EndpointSlug
+	if base == "" {
+		base = def.Name
+	}
+	def.EndpointSlug = Slugify(base)
+	if def.EndpointSlug == "" {
+		return ErrMCPEndpointSlugInvalid
+	}
+
+	if taken, err := s.MCPEndpointSlugTaken(ctx, def.EndpointSlug); err != nil {
+		return err
+	} else if taken {
+		return ErrMCPEndpointSlugExists
+	}
+
+	// Capture intent before Create: enabled has a default:true, which gorm applies to a false and
+	// writes back into the struct, so the check must use the pre-insert value.
+	wantEnabled := def.Enabled
+	return db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(def).Error; err != nil {
+			if isUniqueConstraintError(err) {
+				if taken, checkErr := s.MCPEndpointSlugTaken(ctx, def.EndpointSlug); checkErr == nil && taken {
+					return ErrMCPEndpointSlugExists
+				}
+			}
+			return err
+		}
+		if !wantEnabled {
+			return tx.Model(def).Update("enabled", false).Error
+		}
+		return nil
+	})
+}
+
+// MCPEndpointSlugTaken reports whether a Virtual MCP or MCP client already uses the slug, across both
+// tables (the /mcp/<slug> namespace is shared). Create-time check: no self-exclusion.
+func (s *RDBConfigStore) MCPEndpointSlugTaken(ctx context.Context, slug string) (bool, error) {
+	db := s.DB().WithContext(ctx)
+	var count int64
+	if err := db.Model(&tables.TableVirtualMCP{}).Where("endpoint_slug = ?", slug).Count(&count).Error; err != nil {
+		return false, err
+	}
+	if count > 0 {
+		return true, nil
+	}
+	if err := db.Model(&tables.TableMCPClient{}).Where("endpoint_slug = ?", slug).Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func (s *RDBConfigStore) GetVirtualMCPByID(ctx context.Context, id uint) (*tables.TableVirtualMCP, error) {
+	var def tables.TableVirtualMCP
+	err := s.ScopedDB(ctx).First(&def, id).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &def, nil
+}
+
+func (s *RDBConfigStore) GetVirtualMCPsPaginated(ctx context.Context, params VirtualMCPsQueryParams) ([]tables.TableVirtualMCP, int64, error) {
+	q := s.ScopedDB(ctx).Model(&tables.TableVirtualMCP{})
+	if params.Search != "" {
+		q = q.Where("LOWER(name) LIKE ?", "%"+strings.ToLower(params.Search)+"%")
+	}
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	var defs []tables.TableVirtualMCP
+	// id DESC breaks ties so rows sharing a created_at keep a stable order across offset pages.
+	q = q.Order("created_at DESC").Order("id DESC").Offset(params.Offset)
+	if params.Limit > 0 {
+		q = q.Limit(params.Limit)
+	}
+	if err := q.Find(&defs).Error; err != nil {
+		return nil, 0, err
+	}
+	return defs, total, nil
+}
+
+// UpdateVirtualMCP persists a Virtual MCP, keeping endpoint_slug and created_at immutable. Name
+// uniqueness is enforced by the table's own unique index.
+func (s *RDBConfigStore) UpdateVirtualMCP(ctx context.Context, def *tables.TableVirtualMCP) error {
+	return s.DB().WithContext(ctx).Omit("endpoint_slug", "created_at").Save(def).Error
+}
+
+// DeleteVirtualMCP removes a Virtual MCP and its VK assignments (explicit, so it holds on any DB
+// regardless of FK cascade support).
+func (s *RDBConfigStore) DeleteVirtualMCP(ctx context.Context, id uint) error {
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("tool_group_id = ?", id).Delete(&tables.TableVirtualKeyVirtualMCP{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&tables.TableVirtualMCP{}, id).Error
+	})
+}
+
+// AttachVirtualMCPToVirtualKey links a Virtual MCP to a VK, idempotently.
+func (s *RDBConfigStore) AttachVirtualMCPToVirtualKey(ctx context.Context, vmcpID uint, virtualKeyID string) error {
+	assoc := tables.TableVirtualKeyVirtualMCP{VirtualMCPID: vmcpID, VirtualKeyID: virtualKeyID}
+	return s.DB().WithContext(ctx).Where(assoc).FirstOrCreate(&assoc).Error
+}
+
+func (s *RDBConfigStore) DetachVirtualMCPFromVirtualKey(ctx context.Context, vmcpID uint, virtualKeyID string) error {
+	return s.DB().WithContext(ctx).
+		Where("tool_group_id = ? AND virtual_key_id = ?", vmcpID, virtualKeyID).
+		Delete(&tables.TableVirtualKeyVirtualMCP{}).Error
+}
+
+func (s *RDBConfigStore) GetVirtualKeyIDsForVirtualMCP(ctx context.Context, vmcpID uint) ([]string, error) {
+	var ids []string
+	err := s.DB().WithContext(ctx).Model(&tables.TableVirtualKeyVirtualMCP{}).
+		Where("tool_group_id = ?", vmcpID).
+		Pluck("virtual_key_id", &ids).Error
+	return ids, err
+}
+
+func (s *RDBConfigStore) GetVirtualMCPIDsForVirtualKey(ctx context.Context, virtualKeyID string) ([]uint, error) {
+	var ids []uint
+	err := s.DB().WithContext(ctx).Model(&tables.TableVirtualKeyVirtualMCP{}).
+		Where("virtual_key_id = ?", virtualKeyID).
+		Pluck("tool_group_id", &ids).Error
+	return ids, err
+}
+
+// GetVirtualKeyIDsForVirtualMCPs returns assigned virtual-key IDs for a set of Virtual MCPs in one
+// query, grouped by Virtual MCP ID.
+func (s *RDBConfigStore) GetVirtualKeyIDsForVirtualMCPs(ctx context.Context, vmcpIDs []uint) (map[uint][]string, error) {
+	result := make(map[uint][]string, len(vmcpIDs))
+	if len(vmcpIDs) == 0 {
+		return result, nil
+	}
+	var rows []tables.TableVirtualKeyVirtualMCP
+	if err := s.DB().WithContext(ctx).
+		Where("tool_group_id IN ?", vmcpIDs).
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		result[row.VirtualMCPID] = append(result[row.VirtualMCPID], row.VirtualKeyID)
+	}
+	return result, nil
 }
 
 // GetVirtualKeyMCPConfigsByMCPClientIDs retrieves all VK MCP configs for a set of MCP client IDs in one query.
@@ -5740,8 +5978,12 @@ func (s *RDBConfigStore) GetModelConfigsPaginated(ctx context.Context, params Mo
 		search := "%" + strings.ToLower(params.Search) + "%"
 		baseQuery = baseQuery.Where("LOWER(model_name) LIKE ?", search)
 	}
-	if params.Scope != "" {
-		baseQuery = baseQuery.Where("scope = ?", params.Scope)
+	// Scope (deprecated, single) and Scopes are OR-ed together, so a caller still
+	// setting only Scope filters exactly as it always did.
+	if scopes := params.effectiveScopes(); len(scopes) == 1 {
+		baseQuery = baseQuery.Where("scope = ?", scopes[0])
+	} else if len(scopes) > 1 {
+		baseQuery = baseQuery.Where("scope IN ?", scopes)
 	}
 	if params.ScopeID != "" {
 		baseQuery = baseQuery.Where("scope_id = ?", params.ScopeID)
@@ -6124,6 +6366,7 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 	}
 	var authConfig *AuthConfig
 	var complexityAnalyzerConfig *ComplexityAnalyzerConfig
+	var complexitySemanticConfig *complexitySemanticConfigRecord
 	if len(governanceConfigs) > 0 {
 		// Checking if username and password is present
 		var username *string
@@ -6149,6 +6392,43 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 					continue
 				}
 				complexityAnalyzerConfig = decoded
+			case tables.ConfigComplexitySemanticConfigKey:
+				if strings.TrimSpace(entry.Value) == "" {
+					continue
+				}
+				decoded, err := decodeComplexitySemanticConfigRow([]byte(entry.Value))
+				if err != nil {
+					if s.logger != nil {
+						s.logger.Warn("failed to load complexity semantic config from governance_config: %v", err)
+					}
+					continue
+				}
+				complexitySemanticConfig = decoded
+			}
+		}
+		// Attached after the loop because governance_config rows arrive in no
+		// particular order, so the semantic row may be read before the analyzer
+		// row it belongs to. A semantic section that fails validation is dropped
+		// rather than discarding the analyzer config with it, matching how a
+		// bad analyzer row degrades to defaults instead of failing the load.
+		// The analyzer row alone is not a usable config: it carries tier
+		// boundaries, while the exemplars every classification needs live in the
+		// semantic row. Without that row there is nothing to route with, so the
+		// caller falls back to defaults exactly as it would on a fresh install.
+		if complexityAnalyzerConfig != nil {
+			combined := applyComplexitySemanticConfigRow(complexityAnalyzerConfig, complexitySemanticConfig)
+			if combined == nil {
+				complexityAnalyzerConfig = nil
+			} else {
+				normalized := combined.Normalized()
+				if err := normalized.Validate(); err != nil {
+					if s.logger != nil {
+						s.logger.Warn("failed to apply complexity semantic config from governance_config: %v", err)
+					}
+					complexityAnalyzerConfig = nil
+				} else {
+					complexityAnalyzerConfig = &normalized
+				}
 			}
 		}
 		if username != nil && password != nil {
@@ -6179,6 +6459,10 @@ func (s *RDBConfigStore) GetComplexityAnalyzerConfig(ctx context.Context) (*Comp
 	return s.getComplexityAnalyzerConfigWithDB(ctx, s.DB())
 }
 
+// getComplexityAnalyzerConfigWithDB reads the analyzer row and the semantic row
+// and combines them into one runtime config. Both are required: the analyzer row
+// holds the tier boundaries and the semantic row holds the exemplars, and a
+// config missing either cannot classify anything.
 func (s *RDBConfigStore) getComplexityAnalyzerConfigWithDB(ctx context.Context, db *gorm.DB) (*ComplexityAnalyzerConfig, error) {
 	if db == nil {
 		db = s.DB()
@@ -6199,7 +6483,51 @@ func (s *RDBConfigStore) getComplexityAnalyzerConfigWithDB(ctx context.Context, 
 	if err != nil {
 		return nil, err
 	}
-	return decoded, nil
+	if decoded == nil {
+		return nil, nil
+	}
+
+	semantic, err := s.getComplexitySemanticConfigWithDB(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+	combined := applyComplexitySemanticConfigRow(decoded, semantic)
+	if combined == nil {
+		// Boundaries without exemplars cannot classify anything. Report it the
+		// same way an absent analyzer row is reported, so callers fall back to
+		// defaults rather than to a config that would fail validation.
+		return nil, nil
+	}
+
+	normalized := combined.Normalized()
+	if err := normalized.Validate(); err != nil {
+		// The rows are present but do not combine into something this version
+		// can run. That is an unreadable stored config, not an unreachable
+		// store, and callers with defaults should degrade rather than fail.
+		return nil, fmt.Errorf("%w: invalid complexity analyzer config: %w", ErrConfigUnreadable, err)
+	}
+	return &normalized, nil
+}
+
+// getComplexitySemanticConfigWithDB reads the semantic row. An absent or empty
+// row means semantic classification is not configured, which is not an error.
+func (s *RDBConfigStore) getComplexitySemanticConfigWithDB(ctx context.Context, db *gorm.DB) (*complexitySemanticConfigRecord, error) {
+	if db == nil {
+		db = s.DB()
+	}
+
+	var configEntry tables.TableGovernanceConfig
+	err := db.WithContext(ctx).First(&configEntry, "key = ?", tables.ConfigComplexitySemanticConfigKey).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if strings.TrimSpace(configEntry.Value) == "" {
+		return nil, nil
+	}
+	return decodeComplexitySemanticConfigRow([]byte(configEntry.Value))
 }
 
 // UpdateComplexityAnalyzerConfig normalizes, validates, and persists the typed analyzer config.
@@ -6213,29 +6541,211 @@ func (s *RDBConfigStore) UpdateComplexityAnalyzerConfig(ctx context.Context, con
 		return err
 	}
 
-	txDB := s.DB()
 	if len(tx) > 0 && tx[0] != nil {
-		txDB = tx[0]
+		return s.updateComplexityAnalyzerConfigWithTx(ctx, &normalized, tx[0], true)
+	}
+	// Standalone calls own the transaction so the carry-over read below and the save
+	// that follows it cannot interleave with a concurrent update.
+	return s.DB().WithContext(ctx).Transaction(func(txDB *gorm.DB) error {
+		return s.updateComplexityAnalyzerConfigWithTx(ctx, &normalized, txDB, true)
+	})
+}
+
+// ResetComplexityAnalyzerConfig restores the tier boundaries and the phrase lists from
+// defaults, invalidates the embedding fingerprint since it named the exemplars just
+// replaced, and keeps every other section of the stored record — the semantic block,
+// the section hashes — returning what was persisted.
+//
+// The read and the save share one transaction, and the read takes the same FOR UPDATE lock
+// as updateComplexityAnalyzerConfigWithTx, for the same reason that function does: a reset
+// that read the record outside the transaction would hold a stale copy of the very sections
+// it means to preserve, and would write that stale copy back over an edit committed in
+// between. Which sections count as "default" is the caller's to define, so they arrive as an
+// argument rather than being rebuilt here.
+func (s *RDBConfigStore) ResetComplexityAnalyzerConfig(ctx context.Context, defaults *ComplexityAnalyzerConfig) (*ComplexityAnalyzerConfig, error) {
+	if defaults == nil {
+		return nil, fmt.Errorf("complexity analyzer defaults are nil")
 	}
 
-	if normalized.ConfigHashes.Empty() {
-		existing, err := s.getComplexityAnalyzerConfigWithDB(ctx, txDB)
+	var persisted ComplexityAnalyzerConfig
+	err := s.DB().WithContext(ctx).Transaction(func(txDB *gorm.DB) error {
+		// Lock before reading, so the read is serialized against a concurrent save even
+		// when no row exists yet — otherwise a first-time save committed in between is
+		// invisible here and gets overwritten by the defaults below.
+		if err := s.lockComplexityAnalyzerConfigRow(ctx, txDB); err != nil {
+			return err
+		}
+		existing, err := s.getComplexityAnalyzerConfigWithDB(ctx, dbForUpdate(txDB))
+		if err != nil && !errors.Is(err, ErrConfigUnreadable) {
+			return err
+		}
+		// A stored config this version cannot read is the state reset exists to
+		// recover from, so it resets to the defaults rather than reporting the
+		// error back and leaving the operator with no way out.
+		restored := *defaults
+		if existing != nil {
+			restored = *existing
+			restored.TierBoundaries = defaults.TierBoundaries
+			restored.Keywords = defaults.Keywords
+			// The fingerprint records which exemplars were embedded, and the phrase
+			// lists were just replaced, so it is stale.
+			restored.EmbeddingFingerprint = ""
+		}
+		normalized := restored.Normalized()
+		if err := normalized.Validate(); err != nil {
+			return err
+		}
+		// carryOverFingerprint is false: an empty fingerprint here means the reset
+		// just invalidated it, not that the caller forgot to set it, so the
+		// still-stale row on disk must not be read back in to fill it.
+		if err := s.updateComplexityAnalyzerConfigWithTx(ctx, &normalized, txDB, false); err != nil {
+			return err
+		}
+		persisted = normalized
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &persisted, nil
+}
+
+// lockComplexityAnalyzerConfigRow takes the row lock that serializes the reset and update
+// paths against each other, and is what makes that serialization hold on a fresh install.
+//
+// FOR UPDATE locks a row, so it locks nothing at all when the row does not exist yet: a
+// reset and a first-time save would both read "absent" and proceed, letting the reset write
+// its defaults over the semantic block the save had just committed — the one section reset
+// exists to preserve. Inserting a placeholder first gives both transactions the same row to
+// contend for. An empty value still reads back as "no stored config" through
+// getComplexityAnalyzerConfigWithDB, so the placeholder changes no caller's view, and the
+// caller's own save overwrites it before the transaction commits.
+//
+// Both rows are locked, always analyzer first, because a save and a reset each
+// write both and would otherwise be free to take them in opposite orders.
+//
+// txDB must be a transaction, otherwise the lock is released before the caller can use it.
+func (s *RDBConfigStore) lockComplexityAnalyzerConfigRow(ctx context.Context, txDB *gorm.DB) error {
+	for _, key := range []string{
+		tables.ConfigComplexityAnalyzerConfigKey,
+		tables.ConfigComplexitySemanticConfigKey,
+	} {
+		if err := txDB.WithContext(ctx).
+			Clauses(clause.OnConflict{DoNothing: true}).
+			Create(&tables.TableGovernanceConfig{Key: key}).Error; err != nil {
+			return err
+		}
+		var row tables.TableGovernanceConfig
+		if err := dbForUpdate(txDB.WithContext(ctx)).
+			First(&row, "key = ?", key).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// readComplexityCarryOverWithDB reads the section hashes and the embedding fingerprint
+// off the two stored rows, for a save that arrives without them.
+//
+// It reads the rows rather than going through getComplexityAnalyzerConfigWithDB, which
+// reports "nothing stored" whenever the analyzer row is absent or blank: that is what a
+// freshly inserted lock placeholder looks like, and what an installation whose only write
+// was the exemplar backfill migration looks like, and in both the semantic row still holds
+// the keyword hashes and the fingerprint. An unreadable row is treated as no previous
+// state for the same reason: bookkeeping this version cannot decode must not stop a valid
+// config from being saved over it.
+func (s *RDBConfigStore) readComplexityCarryOverWithDB(ctx context.Context, db *gorm.DB) (ComplexityAnalyzerConfigHashes, string, error) {
+	var hashes ComplexityAnalyzerConfigHashes
+
+	// The tier-boundaries hash is the analyzer row's; every other hash, and the
+	// fingerprint, belong to the semantic row.
+	var analyzerEntry tables.TableGovernanceConfig
+	switch err := db.WithContext(ctx).First(&analyzerEntry, "key = ?", tables.ConfigComplexityAnalyzerConfigKey).Error; {
+	case err == nil:
+		if strings.TrimSpace(analyzerEntry.Value) != "" {
+			decoded, err := DecodeComplexityAnalyzerConfig([]byte(analyzerEntry.Value))
+			if err != nil && !errors.Is(err, ErrConfigUnreadable) {
+				return hashes, "", err
+			}
+			if decoded != nil {
+				hashes.TierBoundaries = decoded.ConfigHashes.TierBoundaries
+			}
+		}
+	case errors.Is(err, gorm.ErrRecordNotFound), errors.Is(err, ErrNotFound):
+	default:
+		return hashes, "", err
+	}
+
+	semanticRow, err := s.getComplexitySemanticConfigWithDB(ctx, db)
+	if err != nil {
+		if errors.Is(err, ErrConfigUnreadable) {
+			return hashes, "", nil
+		}
+		return hashes, "", err
+	}
+	if semanticRow == nil {
+		return hashes, "", nil
+	}
+	hashes.SimpleKeywords = semanticRow.ConfigHashes.SimpleKeywords
+	hashes.MediumKeywords = semanticRow.ConfigHashes.MediumKeywords
+	hashes.ComplexKeywords = semanticRow.ConfigHashes.ComplexKeywords
+	hashes.SemanticSettings = semanticRow.ConfigHashes.SemanticSettings
+	hashes.LLMSettings = semanticRow.ConfigHashes.LLMSettings
+	hashes.SessionSettings = semanticRow.ConfigHashes.SessionSettings
+	return hashes, semanticRow.EmbeddingFingerprint, nil
+}
+
+// updateComplexityAnalyzerConfigWithTx carries over ConfigHashes and EmbeddingFingerprint
+// from the stored config when the incoming one omits them, then persists the result. The
+// row is locked first (a plain read on SQLite, whose writer serialization already prevents
+// the interleave) so a concurrent updater cannot save a stale copy of either field between
+// this read and the save. txDB must be a transaction.
+//
+// carryOverFingerprint gates only the fingerprint half of the carry-over: an empty
+// ConfigHashes always reads the stored hashes back in, but an empty fingerprint is
+// ambiguous between "the caller omitted it" (carry the stored one forward) and "a
+// reset just invalidated it" (leave it empty). Callers that intend the latter pass
+// false so this does not read the still-stale row it is racing to overwrite.
+func (s *RDBConfigStore) updateComplexityAnalyzerConfigWithTx(ctx context.Context, normalized *ComplexityAnalyzerConfig, txDB *gorm.DB, carryOverFingerprint bool) error {
+	// Taken unconditionally, not just when the carry-over read below runs: a save that
+	// already carries both fields still has to serialize against a concurrent reset.
+	if err := s.lockComplexityAnalyzerConfigRow(ctx, txDB); err != nil {
+		return err
+	}
+	needsHashes := normalized.ConfigHashes.Empty()
+	needsFingerprint := carryOverFingerprint && normalized.EmbeddingFingerprint == ""
+	if needsHashes || needsFingerprint {
+		hashes, fingerprint, err := s.readComplexityCarryOverWithDB(ctx, dbForUpdate(txDB))
 		if err != nil {
 			return err
 		}
-		if existing != nil {
-			normalized.ConfigHashes = existing.ConfigHashes
+		if needsHashes {
+			normalized.ConfigHashes = hashes
+		}
+		if needsFingerprint {
+			normalized.EmbeddingFingerprint = fingerprint
 		}
 	}
 
-	raw, err := encodeComplexityAnalyzerConfig(normalized)
+	raw, err := encodeComplexityAnalyzerConfig(*normalized)
+	if err != nil {
+		return err
+	}
+	if err := s.UpdateConfig(ctx, &tables.TableGovernanceConfig{
+		Key:   tables.ConfigComplexityAnalyzerConfigKey,
+		Value: string(raw),
+	}, txDB); err != nil {
+		return err
+	}
+
+	semanticRaw, err := encodeComplexitySemanticConfigRow(*normalized)
 	if err != nil {
 		return err
 	}
 	return s.UpdateConfig(ctx, &tables.TableGovernanceConfig{
-		Key:   tables.ConfigComplexityAnalyzerConfigKey,
-		Value: string(raw),
-	}, tx...)
+		Key:   tables.ConfigComplexitySemanticConfigKey,
+		Value: string(semanticRaw),
+	}, txDB)
 }
 
 // GetAuthConfig retrieves the auth configuration from the database.

@@ -1083,6 +1083,54 @@ func (m *MockConfigStore) GetVirtualKeyMCPConfigs(ctx context.Context, virtualKe
 	return nil, nil
 }
 
+func (m *MockConfigStore) GetVirtualMCPs(ctx context.Context) ([]tables.TableVirtualMCP, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetVirtualMCPAssignments(ctx context.Context) (map[string][]uint, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) CreateVirtualMCP(ctx context.Context, def *tables.TableVirtualMCP) error {
+	return nil
+}
+
+func (m *MockConfigStore) GetVirtualMCPByID(ctx context.Context, id uint) (*tables.TableVirtualMCP, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetVirtualMCPsPaginated(ctx context.Context, params configstore.VirtualMCPsQueryParams) ([]tables.TableVirtualMCP, int64, error) {
+	return nil, 0, nil
+}
+
+func (m *MockConfigStore) UpdateVirtualMCP(ctx context.Context, def *tables.TableVirtualMCP) error {
+	return nil
+}
+
+func (m *MockConfigStore) DeleteVirtualMCP(ctx context.Context, id uint) error {
+	return nil
+}
+
+func (m *MockConfigStore) AttachVirtualMCPToVirtualKey(ctx context.Context, vmcpID uint, virtualKeyID string) error {
+	return nil
+}
+
+func (m *MockConfigStore) DetachVirtualMCPFromVirtualKey(ctx context.Context, vmcpID uint, virtualKeyID string) error {
+	return nil
+}
+
+func (m *MockConfigStore) GetVirtualKeyIDsForVirtualMCP(ctx context.Context, vmcpID uint) ([]string, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetVirtualKeyIDsForVirtualMCPs(ctx context.Context, vmcpIDs []uint) (map[uint][]string, error) {
+	return map[uint][]string{}, nil
+}
+
+func (m *MockConfigStore) GetVirtualMCPIDsForVirtualKey(ctx context.Context, virtualKeyID string) ([]uint, error) {
+	return nil, nil
+}
+
 func (m *MockConfigStore) CreateVirtualKeyMCPConfig(ctx context.Context, virtualKeyMCPConfig *tables.TableVirtualKeyMCPConfig, tx ...*gorm.DB) error {
 	return nil
 }
@@ -1178,6 +1226,32 @@ func (m *MockConfigStore) UpdateComplexityAnalyzerConfig(ctx context.Context, co
 	}
 	m.governanceConfig.ComplexityAnalyzerConfig = config
 	return nil
+}
+
+// ResetComplexityAnalyzerConfig mirrors the store contract: the supplied
+// defaults replace the tier boundaries and the phrase lists, and every other
+// section of the stored record survives. Reset exists to restore the phrase
+// lists without discarding the semantic wiring alongside them, so a mock that
+// simply overwrote the record would let a regression in that behaviour pass.
+func (m *MockConfigStore) ResetComplexityAnalyzerConfig(ctx context.Context, defaults *configstore.ComplexityAnalyzerConfig) (*configstore.ComplexityAnalyzerConfig, error) {
+	if defaults == nil {
+		return nil, fmt.Errorf("complexity analyzer defaults are nil")
+	}
+	if m.governanceConfig == nil {
+		m.governanceConfig = &configstore.GovernanceConfig{}
+	}
+
+	restored := *defaults
+	if existing := m.governanceConfig.ComplexityAnalyzerConfig; existing != nil {
+		restored = *existing
+		restored.TierBoundaries = defaults.TierBoundaries
+		restored.Keywords = defaults.Keywords
+		// The fingerprint records which exemplars were embedded, and the phrase
+		// lists were just replaced, so it is stale.
+		restored.EmbeddingFingerprint = ""
+	}
+	m.governanceConfig.ComplexityAnalyzerConfig = &restored
+	return &restored, nil
 }
 
 // Plugins
@@ -2008,15 +2082,13 @@ func TestMergeGovernanceConfig_SyncsComplexityAnalyzerConfig(t *testing.T) {
 	}
 	fileConfig := &configstore.ComplexityAnalyzerConfig{
 		TierBoundaries: configstore.ComplexityTierBoundaries{
-			SimpleMedium:     0.11,
-			MediumComplex:    0.33,
-			ComplexReasoning: 0.77,
+			SimpleMedium:  0.11,
+			MediumComplex: 0.33,
 		},
 		Keywords: configstore.ComplexityEditableKeywordConfig{
-			CodeKeywords:      []string{" Function ", "api", "API", "file-code-seed"},
-			ReasoningKeywords: []string{"tradeoffs", "file-reason-seed"},
-			TechnicalKeywords: []string{"latency", "file-tech-seed"},
-			SimpleKeywords:    []string{"hello", "file-simple-seed"},
+			SimpleKeywords:  []string{"hello", "file-simple-seed"},
+			MediumKeywords:  []string{" Function ", "api", "API", "latency", "file-medium-seed"},
+			ComplexKeywords: []string{"tradeoffs", "file-complex-seed"},
 		},
 	}
 	configData := &ConfigData{
@@ -2030,11 +2102,11 @@ func TestMergeGovernanceConfig_SyncsComplexityAnalyzerConfig(t *testing.T) {
 	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
 	require.NoError(t, err)
 	require.NotNil(t, stored)
-	require.Equal(t, 0.77, stored.TierBoundaries.ComplexReasoning)
+	require.Equal(t, 0.11, stored.TierBoundaries.SimpleMedium)
+	require.Equal(t, 0.33, stored.TierBoundaries.MediumComplex)
 	defaults := complexity.DefaultAnalyzerConfig()
-	require.Equal(t, expectedMergedComplexityKeywords(defaults.Keywords.CodeKeywords, fileConfig.Keywords.CodeKeywords), stored.Keywords.CodeKeywords)
-	require.Equal(t, expectedMergedComplexityKeywords(defaults.Keywords.ReasoningKeywords, fileConfig.Keywords.ReasoningKeywords), stored.Keywords.ReasoningKeywords)
-	require.Equal(t, expectedMergedComplexityKeywords(defaults.Keywords.TechnicalKeywords, fileConfig.Keywords.TechnicalKeywords), stored.Keywords.TechnicalKeywords)
+	require.Equal(t, expectedMergedComplexityKeywords(defaults.Keywords.MediumKeywords, fileConfig.Keywords.MediumKeywords), stored.Keywords.MediumKeywords)
+	require.Equal(t, expectedMergedComplexityKeywords(defaults.Keywords.ComplexKeywords, fileConfig.Keywords.ComplexKeywords), stored.Keywords.ComplexKeywords)
 	require.Equal(t, expectedMergedComplexityKeywords(defaults.Keywords.SimpleKeywords, fileConfig.Keywords.SimpleKeywords), stored.Keywords.SimpleKeywords)
 	require.False(t, stored.ConfigHashes.Empty())
 	require.Equal(t, stored, config.GovernanceConfig.ComplexityAnalyzerConfig)
@@ -2046,7 +2118,7 @@ func TestMergeGovernanceConfig_AppliesComplexityAnalyzerConfigWhenHashesAreEmpty
 	store := NewMockConfigStore()
 	dbConfig := testRuntimeComplexityAnalyzerConfig()
 	dbConfig.TierBoundaries.SimpleMedium = 0.12
-	dbConfig.Keywords.CodeKeywords = []string{"ui-code"}
+	dbConfig.Keywords.MediumKeywords = []string{"ui-medium"}
 	dbConfig.ConfigHashes = configstore.ComplexityAnalyzerConfigHashes{}
 	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
 	store.governanceConfig = dbGovernance
@@ -2069,7 +2141,7 @@ func TestMergeGovernanceConfig_AppliesComplexityAnalyzerConfigWhenHashesAreEmpty
 	require.NoError(t, err)
 	require.NotNil(t, stored)
 	require.Equal(t, fileConfig.TierBoundaries, stored.TierBoundaries)
-	require.ElementsMatch(t, []string{"file-code", "ui-code"}, stored.Keywords.CodeKeywords)
+	require.ElementsMatch(t, []string{"file-medium", "ui-medium"}, stored.Keywords.MediumKeywords)
 	require.Equal(t, fileHashes, stored.ConfigHashes)
 }
 
@@ -2102,7 +2174,7 @@ func TestMergeGovernanceConfig_PreservesComplexityAnalyzerConfigWhenSectionHashe
 	dbConfig := testRuntimeComplexityAnalyzerConfig()
 	dbConfig.ConfigHashes = fileHashes
 	dbConfig.TierBoundaries.SimpleMedium = 0.21
-	dbConfig.Keywords.CodeKeywords = []string{"ui-code"}
+	dbConfig.Keywords.MediumKeywords = []string{"ui-medium"}
 	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
 	store.governanceConfig = dbGovernance
 	config := &Config{
@@ -2121,7 +2193,7 @@ func TestMergeGovernanceConfig_PreservesComplexityAnalyzerConfigWhenSectionHashe
 	require.NoError(t, err)
 	require.NotNil(t, stored)
 	require.Equal(t, 0.21, stored.TierBoundaries.SimpleMedium)
-	require.Equal(t, []string{"ui-code"}, stored.Keywords.CodeKeywords)
+	require.Equal(t, []string{"ui-medium"}, stored.Keywords.MediumKeywords)
 	require.Equal(t, fileHashes, stored.ConfigHashes)
 }
 
@@ -2131,15 +2203,13 @@ func TestMergeGovernanceConfig_MergesComplexityKeywordsWhenSectionHashesChange(t
 	store := NewMockConfigStore()
 	dbConfig := testRuntimeComplexityAnalyzerConfig()
 	dbConfig.ConfigHashes = configstore.ComplexityAnalyzerConfigHashes{
-		TierBoundaries:    "old-tier-hash",
-		CodeKeywords:      "old-code-hash",
-		ReasoningKeywords: "old-reason-hash",
-		TechnicalKeywords: "old-tech-hash",
-		SimpleKeywords:    "old-simple-hash",
+		TierBoundaries:  "old-tier-hash",
+		SimpleKeywords:  "old-simple-hash",
+		MediumKeywords:  "old-medium-hash",
+		ComplexKeywords: "old-complex-hash",
 	}
-	dbConfig.Keywords.CodeKeywords = []string{"ui-code"}
-	dbConfig.Keywords.ReasoningKeywords = []string{"ui-reason"}
-	dbConfig.Keywords.TechnicalKeywords = []string{"ui-tech"}
+	dbConfig.Keywords.MediumKeywords = []string{"ui-medium", "ui-technical"}
+	dbConfig.Keywords.ComplexKeywords = []string{"ui-complex"}
 	dbConfig.Keywords.SimpleKeywords = []string{"ui-simple"}
 	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
 	store.governanceConfig = dbGovernance
@@ -2162,11 +2232,53 @@ func TestMergeGovernanceConfig_MergesComplexityKeywordsWhenSectionHashesChange(t
 	require.NoError(t, err)
 	require.NotNil(t, stored)
 	require.Equal(t, fileConfig.TierBoundaries, stored.TierBoundaries)
-	require.ElementsMatch(t, []string{"file-code", "ui-code"}, stored.Keywords.CodeKeywords)
-	require.ElementsMatch(t, []string{"file-reason", "ui-reason"}, stored.Keywords.ReasoningKeywords)
-	require.ElementsMatch(t, []string{"file-tech", "ui-tech"}, stored.Keywords.TechnicalKeywords)
+	require.ElementsMatch(t, []string{"file-medium", "ui-medium", "ui-technical"}, stored.Keywords.MediumKeywords)
+	require.ElementsMatch(t, []string{"file-complex", "ui-complex"}, stored.Keywords.ComplexKeywords)
 	require.ElementsMatch(t, []string{"file-simple", "ui-simple"}, stored.Keywords.SimpleKeywords)
 	require.Equal(t, fileHashes, stored.ConfigHashes)
+}
+
+func TestMergeGovernanceConfig_RejectsComplexityKeywordMergeOverSemanticLimit(t *testing.T) {
+	initTestLogger()
+
+	store := NewMockConfigStore()
+	dbConfig := testRuntimeComplexityAnalyzerConfig()
+	dbConfig.Semantic = &configstore.ComplexitySemanticConfig{
+		Provider:       "openai",
+		EmbeddingModel: "text-embedding-3-small",
+	}
+	dbConfig.Keywords.SimpleKeywords = make([]string, 400)
+	for index := range dbConfig.Keywords.SimpleKeywords {
+		dbConfig.Keywords.SimpleKeywords[index] = fmt.Sprintf("db-simple-%d", index)
+	}
+	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
+	store.governanceConfig = dbGovernance
+	config := &Config{
+		ConfigStore:      store,
+		GovernanceConfig: dbGovernance,
+	}
+
+	fileConfig := testFileComplexityAnalyzerConfig()
+	fileConfig.Semantic = &configstore.ComplexitySemanticConfig{
+		Provider:       "openai",
+		EmbeddingModel: "text-embedding-3-small",
+	}
+	fileConfig.Keywords.SimpleKeywords = make([]string, 400)
+	for index := range fileConfig.Keywords.SimpleKeywords {
+		fileConfig.Keywords.SimpleKeywords[index] = fmt.Sprintf("file-simple-%d", index)
+	}
+	configData := &ConfigData{
+		Governance: &configstore.GovernanceConfig{
+			ComplexityAnalyzerConfig: fileConfig,
+		},
+	}
+
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	require.NoError(t, err)
+	require.Same(t, dbConfig, stored, "an over-limit additive merge must leave the stored runtime config unchanged")
+	require.Len(t, stored.Keywords.SimpleKeywords, 400)
 }
 
 func TestMergeGovernanceConfig_OnlyChangedComplexitySectionsApply(t *testing.T) {
@@ -2180,9 +2292,8 @@ func TestMergeGovernanceConfig_OnlyChangedComplexitySectionsApply(t *testing.T) 
 	dbConfig := testRuntimeComplexityAnalyzerConfig()
 	dbConfig.ConfigHashes = oldFileHashes
 	dbConfig.TierBoundaries.SimpleMedium = 0.21
-	dbConfig.Keywords.CodeKeywords = []string{"ui-code"}
-	dbConfig.Keywords.ReasoningKeywords = []string{"ui-reason"}
-	dbConfig.Keywords.TechnicalKeywords = []string{"ui-tech"}
+	dbConfig.Keywords.MediumKeywords = []string{"ui-medium", "ui-technical"}
+	dbConfig.Keywords.ComplexKeywords = []string{"ui-complex"}
 	dbConfig.Keywords.SimpleKeywords = []string{"ui-simple"}
 	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
 	store.governanceConfig = dbGovernance
@@ -2192,7 +2303,7 @@ func TestMergeGovernanceConfig_OnlyChangedComplexitySectionsApply(t *testing.T) 
 	}
 
 	newFileConfig := testFileComplexityAnalyzerConfig()
-	newFileConfig.Keywords.CodeKeywords = []string{"file-code", "file-code-new"}
+	newFileConfig.Keywords.MediumKeywords = []string{"file-medium", "file-medium-new"}
 	newFileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(newFileConfig)
 	require.NoError(t, err)
 	configData := &ConfigData{
@@ -2207,14 +2318,12 @@ func TestMergeGovernanceConfig_OnlyChangedComplexitySectionsApply(t *testing.T) 
 	require.NoError(t, err)
 	require.NotNil(t, stored)
 	require.Equal(t, 0.21, stored.TierBoundaries.SimpleMedium)
-	require.ElementsMatch(t, []string{"file-code", "file-code-new", "ui-code"}, stored.Keywords.CodeKeywords)
-	require.Equal(t, []string{"ui-reason"}, stored.Keywords.ReasoningKeywords)
-	require.Equal(t, []string{"ui-tech"}, stored.Keywords.TechnicalKeywords)
+	require.ElementsMatch(t, []string{"file-medium", "file-medium-new", "ui-medium", "ui-technical"}, stored.Keywords.MediumKeywords)
+	require.Equal(t, []string{"ui-complex"}, stored.Keywords.ComplexKeywords)
 	require.Equal(t, []string{"ui-simple"}, stored.Keywords.SimpleKeywords)
 	require.Equal(t, oldFileHashes.TierBoundaries, stored.ConfigHashes.TierBoundaries)
-	require.Equal(t, newFileHashes.CodeKeywords, stored.ConfigHashes.CodeKeywords)
-	require.Equal(t, oldFileHashes.ReasoningKeywords, stored.ConfigHashes.ReasoningKeywords)
-	require.Equal(t, oldFileHashes.TechnicalKeywords, stored.ConfigHashes.TechnicalKeywords)
+	require.Equal(t, newFileHashes.MediumKeywords, stored.ConfigHashes.MediumKeywords)
+	require.Equal(t, oldFileHashes.ComplexKeywords, stored.ConfigHashes.ComplexKeywords)
 	require.Equal(t, oldFileHashes.SimpleKeywords, stored.ConfigHashes.SimpleKeywords)
 }
 
@@ -2224,13 +2333,12 @@ func TestMergeGovernanceConfig_SourceOfTruthConfigJSONUsesComplexityFileConfig(t
 	store := NewMockConfigStore()
 	dbConfig := testRuntimeComplexityAnalyzerConfig()
 	dbConfig.ConfigHashes = configstore.ComplexityAnalyzerConfigHashes{
-		TierBoundaries:    "old-tier-hash",
-		CodeKeywords:      "old-code-hash",
-		ReasoningKeywords: "old-reason-hash",
-		TechnicalKeywords: "old-tech-hash",
-		SimpleKeywords:    "old-simple-hash",
+		TierBoundaries:  "old-tier-hash",
+		SimpleKeywords:  "old-simple-hash",
+		MediumKeywords:  "old-medium-hash",
+		ComplexKeywords: "old-complex-hash",
 	}
-	dbConfig.Keywords.CodeKeywords = []string{"ui-code"}
+	dbConfig.Keywords.MediumKeywords = []string{"ui-medium"}
 	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
 	store.governanceConfig = dbGovernance
 	config := &Config{
@@ -2253,7 +2361,7 @@ func TestMergeGovernanceConfig_SourceOfTruthConfigJSONUsesComplexityFileConfig(t
 	require.NoError(t, err)
 	require.NotNil(t, stored)
 	require.Equal(t, fileConfig.TierBoundaries, stored.TierBoundaries)
-	require.Equal(t, []string{"file-code"}, stored.Keywords.CodeKeywords)
+	require.Equal(t, []string{"file-medium"}, stored.Keywords.MediumKeywords)
 	require.Equal(t, fileHashes, stored.ConfigHashes)
 }
 
@@ -2263,11 +2371,10 @@ func TestMergeGovernanceConfig_SourceOfTruthConfigJSONMissingComplexityLeavesDBC
 	store := NewMockConfigStore()
 	dbConfig := testRuntimeComplexityAnalyzerConfig()
 	dbConfig.ConfigHashes = configstore.ComplexityAnalyzerConfigHashes{
-		TierBoundaries:    "old-tier-hash",
-		CodeKeywords:      "old-code-hash",
-		ReasoningKeywords: "old-reason-hash",
-		TechnicalKeywords: "old-tech-hash",
-		SimpleKeywords:    "old-simple-hash",
+		TierBoundaries:  "old-tier-hash",
+		SimpleKeywords:  "old-simple-hash",
+		MediumKeywords:  "old-medium-hash",
+		ComplexKeywords: "old-complex-hash",
 	}
 	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
 	store.governanceConfig = dbGovernance
@@ -2292,15 +2399,13 @@ func TestMergeGovernanceConfig_SourceOfTruthConfigJSONMissingComplexityLeavesDBC
 func testRuntimeComplexityAnalyzerConfig() *configstore.ComplexityAnalyzerConfig {
 	return &configstore.ComplexityAnalyzerConfig{
 		TierBoundaries: configstore.ComplexityTierBoundaries{
-			SimpleMedium:     0.10,
-			MediumComplex:    0.30,
-			ComplexReasoning: 0.70,
+			SimpleMedium:  0.10,
+			MediumComplex: 0.30,
 		},
 		Keywords: configstore.ComplexityEditableKeywordConfig{
-			CodeKeywords:      []string{"runtime-code"},
-			ReasoningKeywords: []string{"runtime-reason"},
-			TechnicalKeywords: []string{"runtime-tech"},
-			SimpleKeywords:    []string{"runtime-simple"},
+			SimpleKeywords:  []string{"runtime-simple"},
+			MediumKeywords:  []string{"runtime-medium", "runtime-technical"},
+			ComplexKeywords: []string{"runtime-complex"},
 		},
 	}
 }
@@ -2308,15 +2413,13 @@ func testRuntimeComplexityAnalyzerConfig() *configstore.ComplexityAnalyzerConfig
 func testFileComplexityAnalyzerConfig() *configstore.ComplexityAnalyzerConfig {
 	return &configstore.ComplexityAnalyzerConfig{
 		TierBoundaries: configstore.ComplexityTierBoundaries{
-			SimpleMedium:     0.20,
-			MediumComplex:    0.40,
-			ComplexReasoning: 0.80,
+			SimpleMedium:  0.20,
+			MediumComplex: 0.40,
 		},
 		Keywords: configstore.ComplexityEditableKeywordConfig{
-			CodeKeywords:      []string{"file-code"},
-			ReasoningKeywords: []string{"file-reason"},
-			TechnicalKeywords: []string{"file-tech"},
-			SimpleKeywords:    []string{"file-simple"},
+			SimpleKeywords:  []string{"file-simple"},
+			MediumKeywords:  []string{"file-medium"},
+			ComplexKeywords: []string{"file-complex"},
 		},
 	}
 }
@@ -15712,7 +15815,7 @@ func TestUpdateGovernanceConfigInStore_RejectsSharedGovernanceIDs(t *testing.T) 
 			nil, nil, // customers
 			nil, nil, // teams
 			nil, nil, // virtual keys
-			nil, nil, // routing rules
+			nil, nil, nil, // routing rules (add, update, delete)
 			nil, nil, // pricing overrides
 			modelAdds, modelUpdates,
 			providerAdds, providerUpdates,
@@ -16101,6 +16204,7 @@ func TestGenerateMCPClientHash_RuntimeVsMigrationParity(t *testing.T) {
 		mcpToSave := tables.TableMCPClient{
 			ClientID:       uuid.New().String(),
 			Name:           "Test MCP StdioConfig " + uuid.New().String(),
+			EndpointSlug:   "stdio-" + uuid.New().String(),
 			ConnectionType: "stdio",
 			StdioConfig:    stdioConfig,
 			ToolsToExecute: []string{},
@@ -16148,6 +16252,7 @@ func TestGenerateMCPClientHash_RuntimeVsMigrationParity(t *testing.T) {
 		mcpToSave := tables.TableMCPClient{
 			ClientID:         uuid.New().String(),
 			Name:             "Test MCP Tools " + uuid.New().String(),
+			EndpointSlug:     "tools-" + uuid.New().String(),
 			ConnectionType:   "sse",
 			ConnectionString: schemas.NewSecretVar(connStr),
 			ToolsToExecute:   tools,
@@ -16182,6 +16287,7 @@ func TestGenerateMCPClientHash_RuntimeVsMigrationParity(t *testing.T) {
 		mcpToSave := tables.TableMCPClient{
 			ClientID:         uuid.New().String(),
 			Name:             "Test MCP Headers " + uuid.New().String(),
+			EndpointSlug:     "headers-" + uuid.New().String(),
 			ConnectionType:   "sse",
 			ConnectionString: schemas.NewSecretVar(connStr),
 			ToolsToExecute:   []string{},
@@ -16218,6 +16324,7 @@ func TestGenerateMCPClientHash_RuntimeVsMigrationParity(t *testing.T) {
 		mcpToSave := tables.TableMCPClient{
 			ClientID:       uuid.New().String(),
 			Name:           "Test MCP AllFields " + uuid.New().String(),
+			EndpointSlug:   "allfields-" + uuid.New().String(),
 			ConnectionType: "stdio",
 			StdioConfig:    stdioConfig,
 			ToolsToExecute: tools,
@@ -16245,6 +16352,7 @@ func TestGenerateMCPClientHash_RuntimeVsMigrationParity(t *testing.T) {
 		mcpToSave := tables.TableMCPClient{
 			ClientID:         uuid.New().String(),
 			Name:             "Test MCP TxFind " + uuid.New().String(),
+			EndpointSlug:     "txfind-" + uuid.New().String(),
 			ConnectionType:   "sse",
 			ConnectionString: schemas.NewSecretVar(connStr),
 			ToolsToExecute:   tools,
@@ -18814,6 +18922,16 @@ var excludedSchemaFields = map[string]map[string]bool{
 	"governance.auth_config": {
 		"disable_auth_on_inference": true, // Deprecated and ignored; kept in schema for backward-compatible config.json validation. Use enforce_auth_on_inference.
 	},
+	// The deprecated four-list keyword spelling has no struct field by design:
+	// ComplexityEditableKeywordConfig.UnmarshalJSON folds these onto the
+	// canonical three tiers (code+technical into medium, reasoning into
+	// complex), so an existing config.json keeps validating without the shape
+	// surviving into the runtime type.
+	"governance.complexity_analyzer_config.keywords": {
+		"code_keywords":      true,
+		"reasoning_keywords": true,
+		"technical_keywords": true,
+	},
 	"governance.teams": {
 		"budget_id":        true, // Replaced by budgets[] relationship with team_id FK on TableBudget
 		"business_unit_id": true, // Enterprise feature; not in OSS TableTeam
@@ -18827,6 +18945,9 @@ var excludedSchemaFields = map[string]map[string]bool{
 	},
 	"governance.virtual_keys.mcp_configs": {
 		"mcp_client_name": true, // Config-file format; captured via custom UnmarshalJSON and resolved to mcp_client_id at startup
+	},
+	"governance.complexity_analyzer_config.tier_boundaries": {
+		"complex_reasoning": true, // Deprecated config.json/Helm compatibility field; ignored by the runtime.
 	},
 	"mcp": {
 		"tool_groups": true, // Enterprise governance feature; not in OSS MCPConfig
@@ -18878,6 +18999,41 @@ func resolveSchemaRef(schema map[string]interface{}, ref string) map[string]inte
 }
 
 // getSchemaPropertiesAtPath gets the properties object at a given path in the schema
+// schemaObjectProperties returns the properties an object schema accepts.
+//
+// A plain object states them directly. An object that uses oneOf/anyOf states
+// one set per variant — the complexity keyword lists do this to say that the
+// canonical three-tier spelling and the deprecated four-list spelling are both
+// accepted but must not be mixed. The union across variants is the set of names
+// the schema will accept, which is what a field-by-field comparison against a Go
+// struct needs.
+func schemaObjectProperties(prop map[string]interface{}) map[string]interface{} {
+	if props, ok := prop["properties"].(map[string]interface{}); ok {
+		return props
+	}
+
+	merged := map[string]interface{}{}
+	for _, key := range []string{"oneOf", "anyOf", "allOf"} {
+		variants, ok := prop[key].([]interface{})
+		if !ok {
+			continue
+		}
+		for _, variant := range variants {
+			variantMap, ok := variant.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			for name, def := range schemaObjectProperties(variantMap) {
+				merged[name] = def
+			}
+		}
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	return merged
+}
+
 func getSchemaPropertiesAtPath(schema map[string]interface{}, path string) map[string]interface{} {
 	if path == "" {
 		// Root level
@@ -18920,8 +19076,7 @@ func getSchemaPropertiesAtPath(schema map[string]interface{}, path string) map[s
 				props, _ := items["properties"].(map[string]interface{})
 				return props
 			}
-			props, _ := prop["properties"].(map[string]interface{})
-			return props
+			return schemaObjectProperties(prop)
 		}
 
 		// Navigate deeper
@@ -22171,4 +22326,166 @@ func TestUpdateClientConfig_PersistsExplicitZeroToolSyncInterval(t *testing.T) {
 	persisted, err := store.GetClientConfig(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, 0, persisted.MCPToolSyncInterval)
+}
+
+// TestGetMCPClientBySlugSkipsDisabled pins that a disabled MCP client's endpoint slug does not
+// resolve, so /mcp/<slug> is not served (admit returns 403) for a disabled direct client.
+func TestGetMCPClientBySlugSkipsDisabled(t *testing.T) {
+	c := &Config{
+		MCPConfig: &schemas.MCPConfig{
+			ClientConfigs: []*schemas.MCPClientConfig{
+				{ID: "enabled-id", Name: "Enabled", EndpointSlug: "live-slug"},
+				{ID: "disabled-id", Name: "Disabled", EndpointSlug: "dead-slug", Disabled: true},
+			},
+		},
+	}
+
+	id, name, ok := c.GetMCPClientBySlug("live-slug")
+	require.True(t, ok)
+	require.Equal(t, "enabled-id", id)
+	require.Equal(t, "Enabled", name)
+
+	_, _, ok = c.GetMCPClientBySlug("dead-slug")
+	require.False(t, ok, "a disabled client's slug must not resolve")
+}
+
+// TestReconcileVirtualMCPsConfig covers the config.json → store reconciliation for
+// mcp.virtual_mcps: create (with explicit slug + name-resolved tool client + VK attach),
+// idempotent no-op on unchanged hash, update on change, and prune of absent entries.
+func TestReconcileVirtualMCPsConfig(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, createTempDir(t))
+
+	// Source MCP client (resolved by name) and a VK to attach to.
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID: "client-1", Name: "github", ConnectionType: schemas.MCPConnectionTypeHTTP,
+	}))
+	require.NoError(t, store.CreateVirtualKey(ctx, &tables.TableVirtualKey{
+		ID: "vk-1", Name: "test-vk", Value: *schemas.NewSecretVar("vk_test123"), IsActive: schemas.Ptr(true),
+	}))
+
+	fileVMCPs := []schemas.VirtualMCPConfig{
+		{
+			Name:         "Platform Tools",
+			EndpointSlug: "platform-tools",
+			Enabled:      schemas.Ptr(true),
+			Tools: []schemas.MCPToolSpecConfig{
+				{MCPClientName: "github", ToolNames: []string{"create_pull_request"}},
+			},
+			VirtualKeyIDs: []string{"vk-1"},
+		},
+	}
+
+	// Create.
+	require.NoError(t, reconcileVirtualMCPsConfig(ctx, store, fileVMCPs, true))
+
+	vmcps, _, err := store.GetVirtualMCPsPaginated(ctx, configstore.VirtualMCPsQueryParams{Limit: 100})
+	require.NoError(t, err)
+	require.Len(t, vmcps, 1)
+	created := vmcps[0]
+	require.Equal(t, "Platform Tools", created.Name)
+	require.Equal(t, "platform-tools", created.EndpointSlug)
+	require.True(t, created.Enabled)
+	require.Len(t, created.ParsedTools, 1)
+	require.Equal(t, "client-1", created.ParsedTools[0].MCPClientID, "tool client name should resolve to client ID")
+	require.NotEmpty(t, created.ConfigHash)
+
+	vkIDs, err := store.GetVirtualKeyIDsForVirtualMCP(ctx, created.ID)
+	require.NoError(t, err)
+	require.Equal(t, []string{"vk-1"}, vkIDs)
+
+	// Idempotent: unchanged file, hash matches, no error and slug unchanged.
+	require.NoError(t, reconcileVirtualMCPsConfig(ctx, store, fileVMCPs, false))
+	after, _, err := store.GetVirtualMCPsPaginated(ctx, configstore.VirtualMCPsQueryParams{Limit: 100})
+	require.NoError(t, err)
+	require.Len(t, after, 1)
+	require.Equal(t, created.ConfigHash, after[0].ConfigHash)
+
+	// Update: disable it and detach the VK.
+	fileVMCPs[0].Enabled = schemas.Ptr(false)
+	fileVMCPs[0].VirtualKeyIDs = nil
+	require.NoError(t, reconcileVirtualMCPsConfig(ctx, store, fileVMCPs, true))
+	updated, err := store.GetVirtualMCPByID(ctx, created.ID)
+	require.NoError(t, err)
+	require.False(t, updated.Enabled)
+	require.Equal(t, "platform-tools", updated.EndpointSlug, "endpoint_slug is immutable across updates")
+	vkIDs, err = store.GetVirtualKeyIDsForVirtualMCP(ctx, created.ID)
+	require.NoError(t, err)
+	require.Empty(t, vkIDs)
+
+	// Prune: absent from file removes it.
+	require.NoError(t, pruneVirtualMCPsConfigToFile(ctx, store, nil))
+	remaining, _, err := store.GetVirtualMCPsPaginated(ctx, configstore.VirtualMCPsQueryParams{Limit: 100})
+	require.NoError(t, err)
+	require.Empty(t, remaining)
+}
+
+// TestReconcileVirtualMCPsConfig_DerivesSlugFromName verifies an omitted endpoint_slug is
+// derived from the name.
+func TestReconcileVirtualMCPsConfig_DerivesSlugFromName(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, createTempDir(t))
+
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID: "client-1", Name: "github", ConnectionType: schemas.MCPConnectionTypeHTTP,
+	}))
+
+	require.NoError(t, reconcileVirtualMCPsConfig(ctx, store, []schemas.VirtualMCPConfig{
+		{
+			Name:  "My Tools",
+			Tools: []schemas.MCPToolSpecConfig{{MCPClientID: "client-1", ToolNames: []string{"*"}}},
+		},
+	}, true))
+
+	vmcps, _, err := store.GetVirtualMCPsPaginated(ctx, configstore.VirtualMCPsQueryParams{Limit: 100})
+	require.NoError(t, err)
+	require.Len(t, vmcps, 1)
+	require.Equal(t, "my-tools", vmcps[0].EndpointSlug)
+}
+
+// TestGenerateVirtualMCPHash_StableOrdering verifies the hash is independent of tool,
+// tool-name, and virtual-key-id declaration order, so reconcile treats reordered configs
+// as unchanged.
+func TestGenerateVirtualMCPHash_StableOrdering(t *testing.T) {
+	desc := "bundle"
+	tools1 := []configstoreTables.MCPToolSpec{
+		{MCPClientID: "a", ToolNames: []string{"t2", "t1"}},
+		{MCPClientID: "b", ToolNames: []string{"t3"}},
+	}
+	tools2 := []configstoreTables.MCPToolSpec{
+		{MCPClientID: "b", ToolNames: []string{"t3"}},
+		{MCPClientID: "a", ToolNames: []string{"t1", "t2"}},
+	}
+	h1 := GenerateVirtualMCPHash("vmcp", &desc, true, tools1, []string{"vk-2", "vk-1"})
+	h2 := GenerateVirtualMCPHash("vmcp", &desc, true, tools2, []string{"vk-1", "vk-2"})
+	require.Equal(t, h1, h2, "hash must be stable across ordering")
+
+	// A material change (enabled) must change the hash.
+	require.NotEqual(t, h1, GenerateVirtualMCPHash("vmcp", &desc, false, tools1, []string{"vk-1", "vk-2"}))
+}
+
+// TestReconcileVirtualMCPsConfig_DedupeNameAndID verifies duplicate names are rejected even when
+// the entries carry different IDs (not just repeated IDs), so a second write never races the DB's
+// unique-name constraint.
+func TestReconcileVirtualMCPsConfig_DedupeNameAndID(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, createTempDir(t))
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID: "client-1", Name: "github", ConnectionType: schemas.MCPConnectionTypeHTTP,
+	}))
+
+	tool := []schemas.MCPToolSpecConfig{{MCPClientID: "client-1", ToolNames: []string{"*"}}}
+	// Same name, different ID-ness: the second must be skipped by name, not slip through on the ID key.
+	require.NoError(t, reconcileVirtualMCPsConfig(ctx, store, []schemas.VirtualMCPConfig{
+		{Name: "Dup", Tools: tool},
+		{Name: "Dup", ID: 5, Tools: tool},
+	}, true))
+
+	vmcps, _, err := store.GetVirtualMCPsPaginated(ctx, configstore.VirtualMCPsQueryParams{Limit: 100})
+	require.NoError(t, err)
+	require.Len(t, vmcps, 1, "duplicate name with a different ID must be deduped")
+	require.Equal(t, "Dup", vmcps[0].Name)
 }

@@ -71,11 +71,33 @@
 	--color-sidebar-primary: var(--sidebar-primary);
 	--color-sidebar-foreground: var(--sidebar-foreground);
 	--color-sidebar: var(--sidebar);
-	--color-chart-5: var(--chart-5);
-	--color-chart-4: var(--chart-4);
-	--color-chart-3: var(--chart-3);
-	--color-chart-2: var(--chart-2);
-	--color-chart-1: var(--chart-1);
+	--color-chart-success: var(--chart-success);
+	--color-chart-error: var(--chart-error);
+	--color-chart-warning: var(--chart-warning);
+	--color-chart-neutral: var(--chart-neutral);
+	--color-chart-success-ink: var(--chart-success-ink);
+	--color-chart-error-ink: var(--chart-error-ink);
+	--color-chart-warning-ink: var(--chart-warning-ink);
+	--color-chart-seq-1: var(--chart-seq-1);
+	--color-chart-seq-2: var(--chart-seq-2);
+	--color-chart-seq-3: var(--chart-seq-3);
+	--color-chart-seq-4: var(--chart-seq-4);
+	--color-chart-seq-5: var(--chart-seq-5);
+	--color-chart-token-input: var(--chart-token-input);
+	--color-chart-token-output: var(--chart-token-output);
+	--color-chart-token-cached: var(--chart-token-cached);
+	--color-chart-ord-1: var(--chart-ord-1);
+	--color-chart-ord-2: var(--chart-ord-2);
+	--color-chart-ord-3: var(--chart-ord-3);
+	--color-chart-ord-4: var(--chart-ord-4);
+	--color-chart-cat-1: var(--chart-cat-1);
+	--color-chart-cat-2: var(--chart-cat-2);
+	--color-chart-cat-3: var(--chart-cat-3);
+	--color-chart-cat-4: var(--chart-cat-4);
+	--color-chart-cat-5: var(--chart-cat-5);
+	--color-chart-cat-6: var(--chart-cat-6);
+	--color-chart-cat-other: var(--chart-cat-other);
+	--color-chart-track: var(--chart-track);
 	--color-ring: var(--ring);
 	--color-input: var(--input);
 	--color-border: var(--border);
@@ -166,11 +188,40 @@
 	--border: oklch(0.92 0.004 286.32);
 	--input: oklch(0.92 0.004 286.32);
 	--ring: oklch(0.705 0.015 286.067);
-	--chart-1: oklch(0.646 0.222 41.116);
-	--chart-2: oklch(0.6 0.118 184.704);
-	--chart-3: oklch(0.398 0.07 227.392);
-	--chart-4: oklch(0.828 0.189 84.429);
-	--chart-5: oklch(0.769 0.188 70.08);
+	/* Chart color system. Semantic: status only. Sequential: one hue, stepped
+	   lightness, for ordered series (seq = teal, ord = indigo percentiles).
+	   Categorical: six hues assigned by rank, then grey for "Other". Hues 0-70
+	   are reserved for status, so no category can look like an error. */
+	--chart-success: oklch(0.63 0.11 182);
+	--chart-error: oklch(0.6 0.16 27);
+	--chart-warning: oklch(0.74 0.13 62);
+	--chart-neutral: oklch(0.8 0.012 200);
+	/* Text-safe versions of the status hues: same hue, lightness set so 12px
+	   text clears WCAG 4.5:1 on the card and on a 10% tint of itself. Fills,
+	   swatches and bars keep the base tokens. */
+	--chart-success-ink: oklch(0.45 0.1 182);
+	--chart-error-ink: oklch(0.48 0.16 27);
+	--chart-warning-ink: oklch(0.5 0.12 62);
+	--chart-seq-1: oklch(0.38 0.085 205);
+	--chart-seq-2: oklch(0.48 0.115 200);
+	--chart-seq-3: oklch(0.6 0.115 190);
+	--chart-seq-4: oklch(0.72 0.095 186);
+	--chart-seq-5: oklch(0.86 0.055 184);
+	--chart-token-input: oklch(0.48 0.115 200);
+	--chart-token-output: oklch(0.68 0.1 188);
+	--chart-token-cached: oklch(0.86 0.055 184);
+	--chart-ord-1: oklch(0.82 0.055 265);
+	--chart-ord-2: oklch(0.7 0.095 265);
+	--chart-ord-3: oklch(0.57 0.125 267);
+	--chart-ord-4: oklch(0.44 0.135 270);
+	--chart-cat-1: oklch(0.55 0.13 255);
+	--chart-cat-2: oklch(0.63 0.13 300);
+	--chart-cat-3: oklch(0.67 0.13 340);
+	--chart-cat-4: oklch(0.66 0.12 135);
+	--chart-cat-5: oklch(0.42 0.1 225);
+	--chart-cat-6: oklch(0.45 0.09 155);
+	--chart-cat-other: oklch(0.78 0.012 200);
+	--chart-track: oklch(0.965 0.004 195);
 	--sidebar: color-mix(in oklch, var(--color-cream-100) 20%, transparent);
 	--sidebar-foreground: oklch(0.141 0.005 285.823);
 	--sidebar-primary: oklch(0.21 0.006 285.885);
@@ -201,11 +252,35 @@
 	--border: oklch(1 0 0 / 10%);
 	--input: oklch(1 0 0 / 15%);
 	--ring: oklch(0.552 0.016 285.938);
-	--chart-1: oklch(0.488 0.243 264.376);
-	--chart-2: oklch(0.696 0.17 162.48);
-	--chart-3: oklch(0.769 0.188 70.08);
-	--chart-4: oklch(0.627 0.265 303.9);
-	--chart-5: oklch(0.645 0.246 16.439);
+	/* Same hues, lightness re-anchored: the teal ramp inverts so brightest is
+	   largest, and the two darkest categoricals lift. */
+	--chart-success: oklch(0.72 0.115 182);
+	--chart-error: oklch(0.68 0.155 27);
+	--chart-warning: oklch(0.8 0.125 62);
+	--chart-neutral: oklch(0.55 0.015 220);
+	--chart-success-ink: oklch(0.84 0.1 182);
+	--chart-error-ink: oklch(0.82 0.12 27);
+	--chart-warning-ink: oklch(0.86 0.11 62);
+	--chart-seq-1: oklch(0.9 0.05 184);
+	--chart-seq-2: oklch(0.8 0.085 186);
+	--chart-seq-3: oklch(0.68 0.11 190);
+	--chart-seq-4: oklch(0.56 0.11 198);
+	--chart-seq-5: oklch(0.44 0.09 205);
+	--chart-token-input: oklch(0.8 0.085 186);
+	--chart-token-output: oklch(0.62 0.11 194);
+	--chart-token-cached: oklch(0.44 0.09 205);
+	--chart-ord-1: oklch(0.88 0.05 265);
+	--chart-ord-2: oklch(0.78 0.09 265);
+	--chart-ord-3: oklch(0.68 0.12 267);
+	--chart-ord-4: oklch(0.58 0.13 270);
+	--chart-cat-1: oklch(0.68 0.12 255);
+	--chart-cat-2: oklch(0.72 0.12 300);
+	--chart-cat-3: oklch(0.75 0.12 340);
+	--chart-cat-4: oklch(0.76 0.115 135);
+	--chart-cat-5: oklch(0.62 0.1 225);
+	--chart-cat-6: oklch(0.64 0.09 155);
+	--chart-cat-other: oklch(0.55 0.015 220);
+	--chart-track: oklch(0.29 0.012 220);
 	--sidebar: color-mix(in oklch, var(--color-ink-900) 20%, transparent);
 	--sidebar-foreground: oklch(0.985 0 0);
 	--sidebar-primary: oklch(0.488 0.243 264.376);
@@ -325,6 +400,23 @@ div.content-container main.content-container-inner:has(.no-padding-parent) {
 
 div.content-container:has(.no-border-parent) {
 	@apply border-0!;
+}
+
+/* The shell's .custom-scrollbar utility sets `overflow: auto !important`, which
+   defeats the `overflow-y-hidden` on main.content-container-inner and turns both
+   shell wrappers into scroll containers. A page that owns its own scrolling then
+   gets a second, outer scrollbar - drawn with the utility's near-white thumb, so
+   it does not even match the app's own. Opt out with .own-scroll-parent.
+
+   This has to sit inside @layer utilities to win. For `!important` declarations
+   the cascade-layer order is reversed, so a layered `!important` beats an
+   unlayered one no matter how specific the unlayered selector is - and @utility
+   compiles into the utilities layer. Same layer, so specificity decides. */
+@layer utilities {
+	div.content-container:has(.own-scroll-parent),
+	div.content-container main.content-container-inner:has(.own-scroll-parent) {
+		overflow: hidden !important;
+	}
 }
 
 /* // trial-notification-banner style*/

@@ -25,20 +25,22 @@ const (
 //   - Empty list means nothing is allowed.
 //   - Non-empty list (without "*") means only the listed values are allowed.
 //
+// Entries are exact names compared case-insensitively. Shape-based matching
+// lives in ModelPatternList, kept in a separate field next to the list.
+//
 // This type is used generically for any field that needs whitelist behavior
 // (e.g., allowed models, allowed tools).
 type WhiteList []string
 
-// Contains reports whether value is in the whitelist.
-// Returns true if value is in the list.
+// Contains reports whether value is in the whitelist (case-insensitive).
 func (wl WhiteList) Contains(value string) bool {
 	return slices.ContainsFunc(wl, func(s string) bool {
 		return strings.EqualFold(s, value)
 	})
 }
 
-// IsAllowed reports whether value is in the whitelist.
-// Returns true if value is in the list.
+// IsAllowed reports whether value is allowed: the list is unrestricted, or
+// names value.
 func (wl WhiteList) IsAllowed(value string) bool {
 	return wl.IsUnrestricted() || wl.Contains(value)
 }
@@ -82,8 +84,12 @@ func (wl WhiteList) Validate() error {
 //   - "*" (alone) means all values are blocked.
 //   - Empty list means nothing is blocked.
 //   - Non-empty list (without "*") means only the listed values are blocked.
+//
+// Entries are exact names compared case-insensitively. Shape-based matching
+// lives in ModelPatternList, kept in a separate field next to the list.
 type BlackList []string
 
+// Contains reports whether value is in the blacklist (case-insensitive).
 func (bl BlackList) Contains(value string) bool {
 	return slices.ContainsFunc(bl, func(s string) bool {
 		return strings.EqualFold(s, value)
@@ -124,28 +130,43 @@ func (bl BlackList) Validate() error {
 // Key represents an API key and its associated configuration for a provider.
 // It contains the key value, supported models, and a weight for load balancing.
 type Key struct {
-	ID                     string                  `json:"id"`                                  // The unique identifier for the key (used by bifrost to identify the key)
-	Name                   string                  `json:"name"`                                // The name of the key (used by users to identify the key, not used by bifrost)
-	Value                  SecretVar               `json:"value"`                               // The actual API key value
-	Models                 WhiteList               `json:"models"`                              // List of models this key can access
-	BlacklistedModels      BlackList               `json:"blacklisted_models"`                  // List of models this key cannot access
-	Weight                 float64                 `json:"weight"`                              // Weight for load balancing between multiple keys
-	Aliases                KeyAliases              `json:"aliases,omitempty"`                   // Mapping of model identifiers to inference profiles
-	AzureKeyConfig         *AzureKeyConfig         `json:"azure_key_config,omitempty"`          // Azure-specific key configuration
-	VertexKeyConfig        *VertexKeyConfig        `json:"vertex_key_config,omitempty"`         // Vertex-specific key configuration
-	BedrockKeyConfig       *BedrockKeyConfig       `json:"bedrock_key_config,omitempty"`        // AWS Bedrock-specific key configuration
-	BedrockMantleKeyConfig *BedrockMantleKeyConfig `json:"bedrock_mantle_key_config,omitempty"` // Bedrock Mantle-specific key configuration
-	VLLMKeyConfig          *VLLMKeyConfig          `json:"vllm_key_config,omitempty"`           // vLLM-specific key configuration
-	ReplicateKeyConfig     *ReplicateKeyConfig     `json:"replicate_key_config,omitempty"`      // Replicate-specific key configuration
-	OllamaKeyConfig        *OllamaKeyConfig        `json:"ollama_key_config,omitempty"`         // Ollama-specific key configuration
-	SGLKeyConfig           *SGLKeyConfig           `json:"sgl_key_config,omitempty"`            // SGLang-specific key configuration
-	DatabricksKeyConfig    *DatabricksKeyConfig    `json:"databricks_key_config,omitempty"`     // Databricks-specific key configuration
-	Enabled                *bool                   `json:"enabled,omitempty"`                   // Whether the key is active (default:true)
-	UseForBatchAPI         *bool                   `json:"use_for_batch_api,omitempty"`         // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
-	UseAnthropicEndpoints  *bool                   `json:"use_anthropic_endpoints,omitempty"`   // Whether to use anthropic endpoints for this key
-	ConfigHash             string                  `json:"config_hash,omitempty"`               // Hash of config.json version, used for change detection
-	Status                 KeyStatusType           `json:"status,omitempty"`                    // Status of key
-	Description            string                  `json:"description,omitempty"`               // Description of key
+	ID                        string                  `json:"id"`                                    // The unique identifier for the key (used by bifrost to identify the key)
+	Name                      string                  `json:"name"`                                  // The name of the key (used by users to identify the key, not used by bifrost)
+	Value                     SecretVar               `json:"value"`                                 // The actual API key value
+	Models                    WhiteList               `json:"models"`                                // List of models this key can access
+	BlacklistedModels         BlackList               `json:"blacklisted_models"`                    // List of models this key cannot access
+	ModelsPatterns            ModelPatternList        `json:"models_patterns,omitempty"`             // RE2 patterns admitting models by shape, alongside Models
+	BlacklistedModelsPatterns ModelPatternList        `json:"blacklisted_models_patterns,omitempty"` // RE2 patterns blocking models by shape, alongside BlacklistedModels
+	Weight                    float64                 `json:"weight"`                                // Weight for load balancing between multiple keys
+	Aliases                   KeyAliases              `json:"aliases,omitempty"`                     // Mapping of model identifiers to inference profiles
+	AzureKeyConfig            *AzureKeyConfig         `json:"azure_key_config,omitempty"`            // Azure-specific key configuration
+	VertexKeyConfig           *VertexKeyConfig        `json:"vertex_key_config,omitempty"`           // Vertex-specific key configuration
+	BedrockKeyConfig          *BedrockKeyConfig       `json:"bedrock_key_config,omitempty"`          // AWS Bedrock-specific key configuration
+	BedrockMantleKeyConfig    *BedrockMantleKeyConfig `json:"bedrock_mantle_key_config,omitempty"`   // Bedrock Mantle-specific key configuration
+	VLLMKeyConfig             *VLLMKeyConfig          `json:"vllm_key_config,omitempty"`             // vLLM-specific key configuration
+	ReplicateKeyConfig        *ReplicateKeyConfig     `json:"replicate_key_config,omitempty"`        // Replicate-specific key configuration
+	OllamaKeyConfig           *OllamaKeyConfig        `json:"ollama_key_config,omitempty"`           // Ollama-specific key configuration
+	SGLKeyConfig              *SGLKeyConfig           `json:"sgl_key_config,omitempty"`              // SGLang-specific key configuration
+	DatabricksKeyConfig       *DatabricksKeyConfig    `json:"databricks_key_config,omitempty"`       // Databricks-specific key configuration
+	GithubCopilotKeyConfig    *GithubCopilotKeyConfig `json:"github_copilot_key_config,omitempty"`   // GitHub Copilot-specific key configuration
+	Enabled                   *bool                   `json:"enabled,omitempty"`                     // Whether the key is active (default:true)
+	UseForBatchAPI            *bool                   `json:"use_for_batch_api,omitempty"`           // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
+	UseAnthropicEndpoints     *bool                   `json:"use_anthropic_endpoints,omitempty"`     // Whether to use anthropic endpoints for this key
+	UseOpenAIEndpoints        *bool                   `json:"use_openai_endpoints,omitempty"`        // Whether to use OpenAI-compatible endpoints for this key
+	ConfigHash                string                  `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
+	Status                    KeyStatusType           `json:"status,omitempty"`                      // Status of key
+	Description               string                  `json:"description,omitempty"`                 // Description of key
+}
+
+// ModelAccess returns the key's model rule: exact lists plus their pattern
+// twins, so callers decide with one Allows call.
+func (k Key) ModelAccess() ModelAccessRule {
+	return ModelAccessRule{
+		Allowed:         k.Models,
+		Blocked:         k.BlacklistedModels,
+		AllowedPatterns: k.ModelsPatterns,
+		BlockedPatterns: k.BlacklistedModelsPatterns,
+	}
 }
 
 // ModelFamily is a typed enum identifying the underlying model family of an alias target.
@@ -233,6 +254,7 @@ type AliasConfig struct {
 	// a field name shared by multiple same-depth anonymous structs.
 	ProjectID             *SecretVar `json:"project_id,omitempty"`
 	UseAnthropicEndpoints *bool      `json:"use_anthropic_endpoints,omitempty"` // Whether to use anthropic endpoints for this alias
+	UseOpenAIEndpoints    *bool      `json:"use_openai_endpoints,omitempty"`    // Whether to use OpenAI-compatible endpoints for this alias
 
 	*AzureAliasCfg
 	*VertexAliasCfg
@@ -251,6 +273,7 @@ func (ac AliasConfig) isLegacyShape() bool {
 		ac.Region == nil &&
 		ac.ProjectID == nil &&
 		ac.UseAnthropicEndpoints == nil &&
+		ac.UseOpenAIEndpoints == nil &&
 		ac.AzureAliasCfg == nil &&
 		ac.VertexAliasCfg == nil &&
 		ac.BedrockAliasCfg == nil &&
@@ -829,9 +852,11 @@ type SGLKeyConfig struct {
 type DatabricksAPIFormat string
 
 const (
-	// DatabricksAPIFormatAuto picks the surface from the model name: a dotted name
+	// DatabricksAPIFormatAuto picks the surface from the model name: a catalog-qualified name
 	// (system.ai.*, or a <catalog>.<schema>.<service> Unity Catalog model service) goes to the
-	// Unity AI Gateway; anything else is treated as a Model Serving endpoint name.
+	// Unity AI Gateway; a databricks-* name or an alias model_id is a Model Serving endpoint;
+	// any other bare name is a short name for a system.ai model and goes to the Unity AI
+	// Gateway with the system.ai. prefix added.
 	DatabricksAPIFormatAuto DatabricksAPIFormat = "auto"
 	// DatabricksAPIFormatModelServing targets /serving-endpoints — the Foundation Model APIs,
 	// covering pay-per-token endpoints (databricks-*) and provisioned-throughput endpoints.
@@ -854,6 +879,25 @@ type DatabricksKeyConfig struct {
 	ClientID           *SecretVar          `json:"client_id,omitempty"`            // OAuth M2M service principal client ID
 	ClientSecret       *SecretVar          `json:"client_secret,omitempty"`        // OAuth M2M service principal client secret
 	ForwardGatewayTags bool                `json:"forward_gateway_tags,omitempty"` // Whether to forward Bifrost governance labels as Databricks-Ai-Gateway-Request-Tags
+}
+
+// GithubCopilotKeyConfig holds GitHub App credentials for server-to-server Copilot access.
+//
+// A GitHub App carrying the "Copilot Requests" permission mints short-lived installation
+// tokens, and Copilot usage is billed to the account that owns the installation. No
+// individual Copilot seat is involved, which is what makes this the correct auth mode for
+// a shared gateway.
+//
+// The organization must also have the "Allow use of Copilot CLI billed to the
+// organization" policy enabled, and the installation needs All repositories access.
+//
+// See https://docs.github.com/en/copilot/how-tos/copilot-sdk/auth/server-to-server-tokens
+type GithubCopilotKeyConfig struct {
+	AppID          SecretVar `json:"app_id"`                  // GitHub App ID or Client ID; the App JWT issuer (required)
+	InstallationID SecretVar `json:"installation_id"`         // Installation to mint tokens for; digits only (required)
+	RepositoryID   SecretVar `json:"repository_id"`           // Repository the installation token is scoped to; digits only (required)
+	PrivateKey     SecretVar `json:"private_key"`             // GitHub App private key, PKCS#1 or PKCS#8 PEM (required)
+	GithubDomain   SecretVar `json:"github_domain,omitempty"` // GitHub Enterprise domain, e.g. "acme.ghe.com". Empty means github.com.
 }
 
 // Account defines the interface for managing provider accounts and their configurations.

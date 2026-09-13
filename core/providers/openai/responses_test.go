@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"context"
 	"encoding/json"
 	"net/url"
 	"strings"
@@ -2779,4 +2780,249 @@ func TestReasoningContentBlocksGateReadsDatasheet(t *testing.T) {
 		require.Len(t, out, 1)
 		require.Nil(t, out[0].Content, "summaries must stay as summaries")
 	})
+}
+
+// Bedrock (mantle and runtime) rejects a user-defined namespace tool whose name
+// it reserves for its own server-side tools with HTTP 400 "User-defined
+// namespace 'web' collides with an existing tool namespace". Codex sends such a
+// "web" namespace (web.run) whenever it believes the provider is OpenAI, so the
+// serializer must drop it, and on Mantle replace it with the hosted web_search
+// tool AWS documents for Codex.
+func TestToOpenAIResponsesRequest_DropsReservedNamespaceForBedrock(t *testing.T) {
+	webNS := schemas.ResponsesTool{
+		Type: schemas.ResponsesToolTypeNamespace,
+		Name: schemas.Ptr("web"),
+		ResponsesToolNamespace: &schemas.ResponsesToolNamespace{Tools: []schemas.ResponsesTool{{
+			Type:                  schemas.ResponsesToolTypeFunction,
+			Name:                  schemas.Ptr("run"),
+			ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+		}}},
+	}
+	keepNS := webNS
+	keepNS.Name = schemas.Ptr("multi_agent_v1")
+	hostedWebSearch := schemas.ResponsesTool{
+		Type:                   schemas.ResponsesToolTypeWebSearch,
+		ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{ExternalWebAccess: schemas.Ptr(true)},
+	}
+
+	tests := []struct {
+		name     string
+		provider schemas.ModelProvider
+		// baseProvider, when set, is stamped on the context the way core does for
+		// a custom provider, so provider reads as a user-defined key.
+		baseProvider schemas.ModelProvider
+		tools        []schemas.ResponsesTool
+		wantTypes    []schemas.ResponsesToolType
+		wantNames    []string
+		// wantExternalWebAccess asserts the external_web_access flag on the
+		// resulting web_search tool when non-nil.
+		wantExternalWebAccess *bool
+	}{
+		{
+			name:                  "mantle drops web namespace and substitutes hosted web_search",
+			provider:              schemas.BedrockMantle,
+			tools:                 []schemas.ResponsesTool{keepNS, webNS},
+			wantTypes:             []schemas.ResponsesToolType{schemas.ResponsesToolTypeNamespace, schemas.ResponsesToolTypeWebSearch},
+			wantNames:             []string{"multi_agent_v1", ""},
+			wantExternalWebAccess: schemas.Ptr(false),
+		},
+		{
+			name:                  "mantle keeps a caller-supplied web_search untouched",
+			provider:              schemas.BedrockMantle,
+			tools:                 []schemas.ResponsesTool{webNS, hostedWebSearch},
+			wantTypes:             []schemas.ResponsesToolType{schemas.ResponsesToolTypeWebSearch},
+			wantNames:             []string{""},
+			wantExternalWebAccess: schemas.Ptr(true),
+		},
+		{
+			name:      "bedrock runtime drops web namespace without substitution",
+			provider:  schemas.Bedrock,
+			tools:     []schemas.ResponsesTool{keepNS, webNS},
+			wantTypes: []schemas.ResponsesToolType{schemas.ResponsesToolTypeNamespace},
+			wantNames: []string{"multi_agent_v1"},
+		},
+		{
+			name:      "openai keeps the web namespace",
+			provider:  schemas.OpenAI,
+			tools:     []schemas.ResponsesTool{keepNS, webNS},
+			wantTypes: []schemas.ResponsesToolType{schemas.ResponsesToolTypeNamespace, schemas.ResponsesToolTypeNamespace},
+			wantNames: []string{"multi_agent_v1", "web"},
+		},
+		{
+			name:                  "custom provider on a mantle base drops web namespace and substitutes",
+			provider:              schemas.ModelProvider("my-mantle"),
+			baseProvider:          schemas.BedrockMantle,
+			tools:                 []schemas.ResponsesTool{keepNS, webNS},
+			wantTypes:             []schemas.ResponsesToolType{schemas.ResponsesToolTypeNamespace, schemas.ResponsesToolTypeWebSearch},
+			wantNames:             []string{"multi_agent_v1", ""},
+			wantExternalWebAccess: schemas.Ptr(false),
+		},
+		{
+			name:         "custom provider on a bedrock base drops web namespace without substitution",
+			provider:     schemas.ModelProvider("my-bedrock"),
+			baseProvider: schemas.Bedrock,
+			tools:        []schemas.ResponsesTool{keepNS, webNS},
+			wantTypes:    []schemas.ResponsesToolType{schemas.ResponsesToolTypeNamespace},
+			wantNames:    []string{"multi_agent_v1"},
+		},
+		{
+			name:         "custom provider on an openai base keeps the web namespace",
+			provider:     schemas.ModelProvider("my-openai"),
+			baseProvider: schemas.OpenAI,
+			tools:        []schemas.ResponsesTool{keepNS, webNS},
+			wantTypes:    []schemas.ResponsesToolType{schemas.ResponsesToolTypeNamespace, schemas.ResponsesToolTypeNamespace},
+			wantNames:    []string{"multi_agent_v1", "web"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostResponsesRequest{
+				Provider: tc.provider,
+				Model:    "openai.gpt-5.6-luna",
+				Input: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+				}},
+				Params: &schemas.ResponsesParameters{Tools: tc.tools},
+			}
+			var ctx *schemas.BifrostContext
+			if tc.baseProvider != "" {
+				ctx = schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline,
+					schemas.BifrostContextKeyBaseProviderType, tc.baseProvider)
+			}
+			result := ToOpenAIResponsesRequest(ctx, bifrostReq)
+			require.NotNil(t, result)
+
+			gotTypes := make([]schemas.ResponsesToolType, 0, len(result.Tools))
+			gotNames := make([]string, 0, len(result.Tools))
+			for _, tool := range result.Tools {
+				gotTypes = append(gotTypes, tool.Type)
+				name := ""
+				if tool.Name != nil {
+					name = *tool.Name
+				}
+				gotNames = append(gotNames, name)
+			}
+			require.Equal(t, tc.wantTypes, gotTypes)
+			require.Equal(t, tc.wantNames, gotNames)
+
+			if tc.wantExternalWebAccess != nil {
+				var ws *schemas.ResponsesToolWebSearch
+				for _, tool := range result.Tools {
+					if tool.Type == schemas.ResponsesToolTypeWebSearch {
+						ws = tool.ResponsesToolWebSearch
+					}
+				}
+				require.NotNil(t, ws)
+				require.NotNil(t, ws.ExternalWebAccess)
+				require.Equal(t, *tc.wantExternalWebAccess, *ws.ExternalWebAccess)
+			}
+
+			// The caller's slice must not be mutated.
+			require.Len(t, bifrostReq.Params.Tools, len(tc.tools))
+		})
+	}
+}
+
+// The reserved-namespace list is datasheet-first: a row's reserved_tool_namespaces
+// replaces the hardcoded per-provider fallback for that (provider, model), and a
+// provider with no fallback at all can still reserve names through a row. The row
+// is looked up on the BASE provider so a custom provider wrapping Mantle reads
+// the bedrock_mantle row.
+func TestToOpenAIResponsesRequest_ReservedNamespacesFromDatasheet(t *testing.T) {
+	rows := map[schemas.ModelProvider]map[string][]string{
+		schemas.BedrockMantle: {"openai.gpt-5.6-luna": {"only_this"}},
+		schemas.XAI:           {"grok-4.6": {"x_tools"}},
+	}
+	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		reserved, ok := rows[provider][model]
+		if !ok {
+			return nil
+		}
+		return &schemas.ModelCapabilities{ReservedToolNamespaces: reserved}
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	namespace := func(name string) schemas.ResponsesTool {
+		return schemas.ResponsesTool{
+			Type: schemas.ResponsesToolTypeNamespace,
+			Name: schemas.Ptr(name),
+			ResponsesToolNamespace: &schemas.ResponsesToolNamespace{Tools: []schemas.ResponsesTool{{
+				Type:                  schemas.ResponsesToolTypeFunction,
+				Name:                  schemas.Ptr("run"),
+				ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+			}}},
+		}
+	}
+
+	tests := []struct {
+		name         string
+		provider     schemas.ModelProvider
+		baseProvider schemas.ModelProvider
+		model        string
+		tools        []schemas.ResponsesTool
+		wantNames    []string
+	}{
+		{
+			name:      "mantle row replaces the hardcoded list, so web survives and only_this is dropped",
+			provider:  schemas.BedrockMantle,
+			model:     "openai.gpt-5.6-luna",
+			tools:     []schemas.ResponsesTool{namespace("web"), namespace("only_this"), namespace("keep")},
+			wantNames: []string{"web", "keep"},
+		},
+		{
+			name:      "mantle model without a row keeps the hardcoded fallback",
+			provider:  schemas.BedrockMantle,
+			model:     "openai.gpt-5.6-terra",
+			tools:     []schemas.ResponsesTool{namespace("web"), namespace("only_this"), namespace("keep")},
+			wantNames: []string{"only_this", "keep", ""},
+		},
+		{
+			name:      "a provider with no hardcoded entry reserves names through its row",
+			provider:  schemas.XAI,
+			model:     "grok-4.6",
+			tools:     []schemas.ResponsesTool{namespace("x_tools"), namespace("keep")},
+			wantNames: []string{"keep"},
+		},
+		{
+			name:         "custom provider on a mantle base reads the bedrock_mantle row",
+			provider:     schemas.ModelProvider("my-mantle"),
+			baseProvider: schemas.BedrockMantle,
+			model:        "openai.gpt-5.6-luna",
+			tools:        []schemas.ResponsesTool{namespace("web"), namespace("only_this")},
+			wantNames:    []string{"web"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostResponsesRequest{
+				Provider: tc.provider,
+				Model:    tc.model,
+				Input: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+				}},
+				Params: &schemas.ResponsesParameters{Tools: tc.tools},
+			}
+			var ctx *schemas.BifrostContext
+			if tc.baseProvider != "" {
+				ctx = schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline,
+					schemas.BifrostContextKeyBaseProviderType, tc.baseProvider)
+			}
+			result := ToOpenAIResponsesRequest(ctx, bifrostReq)
+			require.NotNil(t, result)
+
+			gotNames := make([]string, 0, len(result.Tools))
+			for _, tool := range result.Tools {
+				name := ""
+				if tool.Name != nil {
+					name = *tool.Name
+				}
+				gotNames = append(gotNames, name)
+			}
+			require.Equal(t, tc.wantNames, gotNames)
+		})
+	}
 }

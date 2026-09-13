@@ -19,27 +19,34 @@ type IntegrationHandler struct {
 	realtimeClientSecrets *RealtimeClientSecretsHandler
 }
 
+// AccessResolver narrows the provider fan-out of a models listing to what the request may reach
+type AccessResolver interface {
+	NarrowListModelsProviders(bifrostCtx *schemas.BifrostContext)
+}
+
 // NewIntegrationHandler creates a new integration handler instance.
 // WebSocket handlers may be nil if WebSocket support is not configured.
-func NewIntegrationHandler(client *bifrost.Bifrost, handlerStore lib.HandlerStore, wsResponses *WSResponsesHandler, wsRealtime *WSRealtimeHandler, webrtcRealtime *WebRTCRealtimeHandler, realtimeClientSecrets *RealtimeClientSecretsHandler) *IntegrationHandler {
+// accessResolver answers what a request may reach, the same way the inference handler's models
+// manager does; nil leaves every listing with the fan-out it already had.
+func NewIntegrationHandler(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, wsResponses *WSResponsesHandler, wsRealtime *WSRealtimeHandler, webrtcRealtime *WebRTCRealtimeHandler, realtimeClientSecrets *RealtimeClientSecretsHandler) *IntegrationHandler {
 	// Initialize all available integration routers
 	extensions := []integrations.ExtensionRouter{
-		integrations.NewOpenAIRouter(client, handlerStore, logger),
-		integrations.NewAnthropicRouter(client, handlerStore, logger),
-		integrations.NewGenAIRouter(client, handlerStore, logger),
-		integrations.NewLiteLLMRouter(client, handlerStore, logger),
-		integrations.NewCohereRouter(client, handlerStore, logger),
-		integrations.NewLangChainRouter(client, handlerStore, logger),
-		integrations.NewPydanticAIRouter(client, handlerStore, logger),
-		integrations.NewBedrockRouter(client, handlerStore, logger),
+		integrations.NewOpenAIRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewAnthropicRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewGenAIRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewLiteLLMRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewCohereRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewLangChainRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewPydanticAIRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewBedrockRouter(client, handlerStore, accessResolver, logger),
 		// passthrough routers
-		integrations.NewGenAIPassthroughRouter(client, handlerStore, logger),
-		integrations.NewChatGPTPassthroughRouter(client, handlerStore, logger),
-		integrations.NewOpenAIPassthroughRouter(client, handlerStore, logger),
-		integrations.NewAnthropicPassthroughRouter(client, handlerStore, logger),
-		integrations.NewAzurePassthroughRouter(client, handlerStore, logger),
-		integrations.NewRunwarePassthroughRouter(client, handlerStore, logger),
-		integrations.NewCursorRouter(client, handlerStore, logger),
+		integrations.NewGenAIPassthroughRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewChatGPTPassthroughRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewOpenAIPassthroughRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewAnthropicPassthroughRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewAzurePassthroughRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewRunwarePassthroughRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewCursorRouter(client, handlerStore, accessResolver, logger),
 	}
 
 	return &IntegrationHandler{

@@ -17,6 +17,7 @@ export enum RbacResource {
 	Plugins = "Plugins",
 	MCPGateway = "MCPGateway",
 	MCPToolGroups = "MCPToolGroups",
+	VirtualMCPs = "VirtualMCPs",
 	MCPLogs = "MCPLogs",
 	AdaptiveRouter = "AdaptiveRouter",
 	AuditLogs = "AuditLogs",
@@ -50,6 +51,7 @@ export enum RbacOperation {
 	Delete = "Delete",
 	Reveal = "Reveal",
 	Download = "Download",
+	CreateStandalone = "CreateStandalone",
 }
 
 interface RbacContextType {

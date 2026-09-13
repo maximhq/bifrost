@@ -99,6 +99,10 @@ const (
 	anthropicInputJSONBufferToolSearch anthropicInputJSONBufferKind = "tool_search"
 )
 
+// Each Anthropic thinking block becomes its own reasoning item, so it holds a single
+// summary block. summary_index is required on every reasoning_summary_* event.
+const anthropicReasoningSummaryIndex = 0
+
 func (state *AnthropicResponsesStreamState) beginInputJSONBuffer(index *int, kind anthropicInputJSONBufferKind) {
 	if index == nil {
 		return
@@ -238,6 +242,11 @@ type anthropicToResponsesStreamState struct {
 	// split at output_item.done consults this so the payload is not sent twice: once
 	// in `data` on the closed block and again as a fresh redacted_thinking block.
 	reasoningPayloadSentByItem map[string]bool
+
+	// Bedrock also places a thinking signature in the completed item's
+	// encrypted_content. Track emitted signature fragments so output_item.done
+	// does not duplicate that same payload as a redacted_thinking block.
+	reasoningSignaturesByItem map[string]string
 
 	// codeExecServerClosedByItem marks code_interpreter_call items whose
 	// server_tool_use block was already closed early on code.done (python/bash,
@@ -1839,6 +1848,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 						SequenceNumber: sequenceNumber,
 						OutputIndex:    schemas.Ptr(outputIndex),
 						ContentIndex:   chunk.Index,
+						SummaryIndex:   schemas.Ptr(anthropicReasoningSummaryIndex),
 						Delta:          chunk.Delta.Thinking,
 					}
 					if itemID != "" {
@@ -1859,6 +1869,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 						SequenceNumber: sequenceNumber,
 						OutputIndex:    schemas.Ptr(outputIndex),
 						ContentIndex:   chunk.Index,
+						SummaryIndex:   schemas.Ptr(anthropicReasoningSummaryIndex),
 						Signature:      chunk.Delta.Signature, // Use signature field instead of delta
 					}
 					if itemID != "" {
@@ -2440,6 +2451,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 						SequenceNumber: sequenceNumber + len(responses),
 						OutputIndex:    schemas.Ptr(outputIndex),
 						ContentIndex:   chunk.Index,
+						SummaryIndex:   schemas.Ptr(anthropicReasoningSummaryIndex),
 						Text:           &doneText,
 					}
 					if itemID != "" {
@@ -3391,6 +3403,10 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 		// Check if this is a signature delta or text delta
 		if bifrostResp.Signature != nil {
 			// This is a signature_delta
+			if state.reasoningSignaturesByItem == nil {
+				state.reasoningSignaturesByItem = make(map[string]string)
+			}
+			state.reasoningSignaturesByItem[key] += *bifrostResp.Signature
 			streamResp.Delta = &AnthropicStreamDelta{
 				Type:      AnthropicStreamDeltaTypeSignature,
 				Signature: bifrostResp.Signature,
@@ -3716,12 +3732,14 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 			}}
 
 			encrypted, _ := reasoningPayloadAndSummary(bifrostResp.Item)
+			signatureSent := state.reasoningSignaturesByItem[key]
+			delete(state.reasoningSignaturesByItem, key)
 			openedAsThinking := idx != nil && state.blockType(*idx) == AnthropicContentBlockTypeThinking
 			// An item upgraded mid-stream (upgradeLateSummaryToThinkingBlock) also reads
 			// as "opened as thinking" here, because its key now points at the reopened
 			// block -- but its payload already went out in `data` on the redacted block
 			// that was closed. Emitting it again would duplicate the reasoning state.
-			if encrypted != "" && openedAsThinking && !state.reasoningPayloadSent(key) {
+			if encrypted != "" && encrypted != signatureSent && openedAsThinking && !state.reasoningPayloadSent(key) {
 				data := encrypted
 				if providerUtils.ShouldEmbedReasoningItemID(ctx, attemptProvider(bifrostResp.ExtraFields), bifrostResp.ExtraFields.RoutingInfo.Model) {
 					data = providerUtils.EmbedReasoningItemID(bifrostResp.Item.ID, data)
@@ -4225,6 +4243,10 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 	// lookups; the wire Model below stays exactly as the caller sent it.
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
 	caps := schemas.ResolveModelCaps(bifrostReq.Provider, capModel)
+	// Fable 5.1+ rejects tool_choice "any"/"tool" outright, so every forced
+	// choice below — the caller's and the synthetic structured-output pin — is
+	// dropped and the model answers under the default "auto".
+	forcedToolChoiceSupported := caps.SupportsForcedToolChoice(schemas.DefaultSupportsForcedToolChoice(capModel))
 
 	anthropicReq := &AnthropicMessageRequest{
 		Model:     bifrostReq.Model,
@@ -4269,7 +4291,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 						thinkingEnabled := bifrostReq.Params.Reasoning != nil &&
 							(bifrostReq.Params.Reasoning.MaxTokens != nil ||
 								(bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none"))
-						if !thinkingEnabled {
+						if !thinkingEnabled && forcedToolChoiceSupported {
 							anthropicReq.ToolChoice = &AnthropicToolChoice{
 								Type: "tool",
 								Name: responseFormatTool.Name,
@@ -4585,8 +4607,10 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 			}
 		}
 
+		forcedToolChoiceRejected := !forcedToolChoiceSupported && bifrostReq.Params.ToolChoice.IsForced()
+
 		// Convert tool choice
-		if bifrostReq.Params.ToolChoice != nil {
+		if bifrostReq.Params.ToolChoice != nil && !forcedToolChoiceRejected {
 			anthropicToolChoice := convertResponsesToolChoiceToAnthropic(bifrostReq.Params.ToolChoice)
 			if anthropicToolChoice != nil {
 				anthropicReq.ToolChoice = anthropicToolChoice
@@ -5785,15 +5809,19 @@ func convertSingleAnthropicMessageToBifrostMessages(ctx *schemas.BifrostContext,
 	// Handle text content (simple case)
 	if msg.Content.ContentStr != nil {
 		roleVal := schemas.ResponsesMessageRoleType(msg.Role)
-		return []schemas.ResponsesMessage{
-			{
-				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
-				Role: &roleVal,
-				Content: &schemas.ResponsesMessageContent{
-					ContentStr: msg.Content.ContentStr,
-				},
+		bifrostMsg := schemas.ResponsesMessage{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role: &roleVal,
+			Content: &schemas.ResponsesMessageContent{
+				ContentStr: msg.Content.ContentStr,
 			},
 		}
+		if isOutput {
+			// Replayed assistant items need status on strict OpenAI-compatible
+			// validators (Bedrock Mantle, #7074), same as the block-content paths.
+			bifrostMsg.Status = schemas.Ptr("completed")
+		}
+		return []schemas.ResponsesMessage{bifrostMsg}
 	}
 
 	// Handle content blocks
@@ -5815,15 +5843,19 @@ func convertSingleAnthropicMessageToBifrostMessagesGrouped(msg *AnthropicMessage
 	// Handle text content (simple case)
 	if msg.Content.ContentStr != nil {
 		roleVal := schemas.ResponsesMessageRoleType(msg.Role)
-		return []schemas.ResponsesMessage{
-			{
-				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
-				Role: &roleVal,
-				Content: &schemas.ResponsesMessageContent{
-					ContentStr: msg.Content.ContentStr,
-				},
+		bifrostMsg := schemas.ResponsesMessage{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role: &roleVal,
+			Content: &schemas.ResponsesMessageContent{
+				ContentStr: msg.Content.ContentStr,
 			},
 		}
+		if isOutput {
+			// Replayed assistant items need status on strict OpenAI-compatible
+			// validators (Bedrock Mantle, #7074), same as the block-content paths.
+			bifrostMsg.Status = schemas.Ptr("completed")
+		}
+		return []schemas.ResponsesMessage{bifrostMsg}
 	}
 
 	// Handle content blocks with grouping for text and tool calls
@@ -5926,9 +5958,10 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 		}
 		if isOutputMessage {
 			bifrostMessages = append(bifrostMessages, schemas.ResponsesMessage{
-				ID:   schemas.Ptr("msg_" + schemas.GetRandomString(50)),
-				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
-				Role: role,
+				ID:     schemas.Ptr("msg_" + schemas.GetRandomString(50)),
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role:   role,
+				Status: schemas.Ptr("completed"),
 				Content: &schemas.ResponsesMessageContent{
 					ContentBlocks: accumulatedTextContent,
 				},
@@ -5973,20 +6006,21 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 						},
 					})
 				} else {
-					// For input messages, emit text immediately as separate message
+					// For input messages, emit text immediately as separate message.
+					// input_text, not output_text: the Responses API matches `input`
+					// against a union of input-item variants, and an output-side block on
+					// a user message matches none of them ("Invalid 'input': value did not
+					// match any expected variant"). Annotations and logprobs are
+					// output-only for the same reason. Mirrors the ungrouped converter.
 					bifrostMsg := schemas.ResponsesMessage{
 						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
 						Role: role,
 						Content: &schemas.ResponsesMessageContent{
 							ContentBlocks: []schemas.ResponsesMessageContentBlock{
 								{
-									Type:         schemas.ResponsesOutputMessageContentTypeText,
+									Type:         schemas.ResponsesInputMessageContentBlockTypeText,
 									Text:         block.Text,
 									CacheControl: block.CacheControl,
-									ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
-										LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
-										Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
-									},
 								},
 							},
 						},
@@ -6007,6 +6041,7 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 				}
 				if isOutputMessage {
 					bifrostMsg.ID = schemas.Ptr("msg_" + schemas.GetRandomString(50))
+					bifrostMsg.Status = schemas.Ptr("completed")
 				}
 				bifrostMessages = append(bifrostMessages, bifrostMsg)
 			}
@@ -6023,6 +6058,7 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 				}
 				if isOutputMessage {
 					bifrostMsg.ID = schemas.Ptr("msg_" + schemas.GetRandomString(50))
+					bifrostMsg.Status = schemas.Ptr("completed")
 				}
 				bifrostMessages = append(bifrostMessages, bifrostMsg)
 			}
@@ -6038,6 +6074,7 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 				}
 				if isOutputMessage {
 					bifrostMsg.ID = schemas.Ptr("msg_" + schemas.GetRandomString(50))
+					bifrostMsg.Status = schemas.Ptr("completed")
 				}
 				bifrostMessages = append(bifrostMessages, bifrostMsg)
 			}
@@ -6370,6 +6407,7 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 				}
 				if isOutputMessage {
 					bifrostMsg.ID = schemas.Ptr("msg_" + schemas.GetRandomString(50))
+					bifrostMsg.Status = schemas.Ptr("completed")
 				}
 				bifrostMessages = append(bifrostMessages, bifrostMsg)
 			}
@@ -6384,6 +6422,7 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 				}
 				if isOutputMessage {
 					bifrostMsg.ID = schemas.Ptr("msg_" + schemas.GetRandomString(50))
+					bifrostMsg.Status = schemas.Ptr("completed")
 				}
 				bifrostMessages = append(bifrostMessages, bifrostMsg)
 			}
@@ -6398,6 +6437,7 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 				}
 				if isOutputMessage {
 					bifrostMsg.ID = schemas.Ptr("msg_" + schemas.GetRandomString(50))
+					bifrostMsg.Status = schemas.Ptr("completed")
 				}
 				bifrostMessages = append(bifrostMessages, bifrostMsg)
 			}

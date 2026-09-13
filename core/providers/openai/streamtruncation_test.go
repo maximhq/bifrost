@@ -248,7 +248,7 @@ func TestChatStreamDoneWithoutFinishReasonIsNotTruncated(t *testing.T) {
 }
 
 // finish_reason alone is terminal too — providers listed as not sending [DONE]
-// (Cerebras, Perplexity, HuggingFace, Bedrock mantle) rely on exactly this.
+// (Cerebras, Perplexity) rely on exactly this.
 func TestChatStreamFinishReasonWithoutDoneIsNotTruncated(t *testing.T) {
 	stop := "stop"
 	server := completeSSEServer(t, chatChunk("hello", nil)+chatChunk("", &stop))
@@ -264,6 +264,180 @@ func TestChatStreamFinishReasonWithoutDoneIsNotTruncated(t *testing.T) {
 		if chunk.BifrostError != nil {
 			t.Fatalf("chunk %d unexpectedly carried an error: %+v", i, chunk.BifrostError)
 		}
+	}
+}
+
+// heartbeatSSEServer writes body and then keeps the connection alive with SSE
+// comment frames until the client goes away. It never sends [DONE] and never
+// closes: the shape an upstream has when it ends generation but leaves the
+// connection parked. Write errors are swallowed rather than reported through t,
+// since the handler outlives the test body once the client disconnects.
+func heartbeatSSEServer(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			return
+		}
+		if _, err := w.Write([]byte(body)); err != nil {
+			return
+		}
+		flusher.Flush()
+
+		ticker := time.NewTicker(20 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-ticker.C:
+				if _, err := w.Write([]byte(": ping\n\n")); err != nil {
+					return
+				}
+				flusher.Flush()
+			}
+		}
+	}))
+}
+
+// https://github.com/maximhq/bifrost/issues/6784: heartbeat comments reset the raw-read
+// idle timer before SSE framing is interpreted, so an upstream that finishes generating
+// and then parks the connection holds the read loop open forever — the client waits on a
+// finish_reason chunk that was already received. custom_provider_config.does_not_send_done_marker
+// is the operator's declaration that this upstream ends on finish_reason, and core stamps it
+// on the context per attempt.
+func TestChatStreamHeartbeatAfterFinishReasonEndsOnOptIn(t *testing.T) {
+	toolCalls := "tool_calls"
+	server := heartbeatSSEServer(t, chatChunk("hello", nil)+chatChunk("", &toolCalls))
+	defer server.Close()
+
+	ctx := newStreamTestContext()
+	ctx.SetValue(schemas.BifrostContextKeyDoesNotSendDoneMarker, true)
+
+	provider := newStreamTestProvider(server.URL)
+	stream, bifrostErr := provider.ChatCompletionStream(ctx, passthroughPostHook, nil, testKey(), basicChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	chunks := collectChunks(t, stream)
+	if len(chunks) == 0 {
+		t.Fatal("expected chunks from a stream that reached finish_reason")
+	}
+	for i, chunk := range chunks {
+		if chunk.BifrostError != nil {
+			t.Fatalf("chunk %d unexpectedly carried an error: %+v", i, chunk.BifrostError)
+		}
+	}
+	final := chunks[len(chunks)-1]
+	if final.BifrostChatResponse == nil {
+		t.Fatalf("expected a synthesized final chat chunk, got %+v", final)
+	}
+	if len(final.BifrostChatResponse.Choices) == 0 ||
+		final.BifrostChatResponse.Choices[0].FinishReason == nil ||
+		*final.BifrostChatResponse.Choices[0].FinishReason != toolCalls {
+		t.Errorf("expected the final chunk to carry finish_reason %q, got %+v", toolCalls, final.BifrostChatResponse.Choices)
+	}
+}
+
+// The opt-in only reaches providers an operator has already diagnosed. The reported
+// shape - a built-in or unconfigured custom provider that omits [DONE] and parks -
+// has to terminate on its own, so the first heartbeat after finish_reason ends the
+// read loop with no configuration at all.
+func TestChatStreamHeartbeatAfterFinishReasonEndsWithoutOptIn(t *testing.T) {
+	toolCalls := "tool_calls"
+	server := heartbeatSSEServer(t, chatChunk("hello", nil)+chatChunk("", &toolCalls))
+	defer server.Close()
+
+	provider := newStreamTestProvider(server.URL)
+	stream, bifrostErr := provider.ChatCompletionStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), basicChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	chunks := collectChunks(t, stream)
+	if len(chunks) == 0 {
+		t.Fatal("expected chunks from a stream that reached finish_reason")
+	}
+	for i, chunk := range chunks {
+		if chunk.BifrostError != nil {
+			t.Fatalf("chunk %d unexpectedly carried an error: %+v", i, chunk.BifrostError)
+		}
+	}
+	final := chunks[len(chunks)-1]
+	if final.BifrostChatResponse == nil {
+		t.Fatalf("expected a synthesized final chat chunk, got %+v", final)
+	}
+	if len(final.BifrostChatResponse.Choices) == 0 ||
+		final.BifrostChatResponse.Choices[0].FinishReason == nil ||
+		*final.BifrostChatResponse.Choices[0].FinishReason != toolCalls {
+		t.Errorf("expected the final chunk to carry finish_reason %q, got %+v", toolCalls, final.BifrostChatResponse.Choices)
+	}
+}
+
+// The reported upstream sends its usage-only chunk between finish_reason and the
+// heartbeats. Ending on the heartbeat rather than on finish_reason is what keeps
+// that chunk - and the cost derived from it - on a stream nobody configured.
+func TestChatStreamHeartbeatAfterFinishReasonKeepsTrailingUsage(t *testing.T) {
+	toolCalls := "tool_calls"
+	usageChunk := `data: {"id":"chatcmpl-repro","object":"chat.completion.chunk","created":1,"model":"repro-model",` +
+		`"choices":[],"usage":{"prompt_tokens":1000,"completion_tokens":100,"total_tokens":1100}}` + "\n\n"
+	server := heartbeatSSEServer(t, chatChunk("hello", nil)+chatChunk("", &toolCalls)+usageChunk)
+	defer server.Close()
+
+	provider := newStreamTestProvider(server.URL)
+	stream, bifrostErr := provider.ChatCompletionStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), basicChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	chunks := collectChunks(t, stream)
+	if len(chunks) == 0 {
+		t.Fatal("expected chunks from a stream that reached finish_reason")
+	}
+	final := chunks[len(chunks)-1]
+	if final.BifrostChatResponse == nil || final.BifrostChatResponse.Usage == nil {
+		t.Fatalf("expected the final chunk to carry the trailing usage, got %+v", final)
+	}
+	if final.BifrostChatResponse.Usage.TotalTokens != 1100 {
+		t.Errorf("expected total_tokens 1100 from the chunk after finish_reason, got %d", final.BifrostChatResponse.Usage.TotalTokens)
+	}
+}
+
+// The text-completion loop terminates on the same switch, so the opt-in has to
+// reach it too.
+func TestTextCompletionStreamHeartbeatAfterFinishReasonEndsOnOptIn(t *testing.T) {
+	server := heartbeatSSEServer(t, `data: {"id":"cmpl-repro","object":"text_completion","created":1,"model":"repro-model","choices":[{"index":0,"text":"hello","finish_reason":null}]}`+"\n\n"+
+		`data: {"id":"cmpl-repro","object":"text_completion","created":1,"model":"repro-model","choices":[{"index":0,"text":"","finish_reason":"stop"}]}`+"\n\n")
+	defer server.Close()
+
+	ctx := newStreamTestContext()
+	ctx.SetValue(schemas.BifrostContextKeyDoesNotSendDoneMarker, true)
+
+	provider := newStreamTestProvider(server.URL)
+	request := &schemas.BifrostTextCompletionRequest{
+		Provider: schemas.OpenAI,
+		Model:    "repro-model",
+		Input:    &schemas.TextCompletionInput{PromptStr: schemas.Ptr("hi")},
+	}
+	stream, bifrostErr := provider.TextCompletionStream(ctx, passthroughPostHook, nil, testKey(), request)
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	chunks := collectChunks(t, stream)
+	if len(chunks) == 0 {
+		t.Fatal("expected chunks from a stream that reached finish_reason")
+	}
+	for i, chunk := range chunks {
+		if chunk.BifrostError != nil {
+			t.Fatalf("chunk %d unexpectedly carried an error: %+v", i, chunk.BifrostError)
+		}
+	}
+	if chunks[len(chunks)-1].BifrostTextCompletionResponse == nil {
+		t.Fatalf("expected a synthesized final text completion chunk, got %+v", chunks[len(chunks)-1])
 	}
 }
 
@@ -552,4 +726,157 @@ func TestImageEditStreamReadErrorReportsOnce(t *testing.T) {
 	}
 
 	assertSingleReadError(t, collectChunks(t, stream))
+}
+
+// silentParkSSEServer writes body and then holds the connection open without
+// sending another byte until the client goes away: no [DONE], no heartbeat
+// comments, no close. This is the one parked-upstream shape neither the
+// post-finish comment rule nor custom_provider_config.does_not_send_done_marker
+// reaches, so stream_idle_timeout_in_seconds is the only thing that can end it.
+func silentParkSSEServer(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			return
+		}
+		if _, err := w.Write([]byte(body)); err != nil {
+			return
+		}
+		flusher.Flush()
+		<-r.Context().Done()
+	}))
+}
+
+// https://github.com/maximhq/bifrost/issues/7108: an upstream that omits [DONE] and
+// parks silently after finish_reason has already delivered a complete response, so
+// the idle timeout that finally unblocks the read must end the stream cleanly with
+// the buffered finish_reason. Surfacing it as a read error tells the client a
+// response it has fully received failed.
+func TestChatStreamSilentParkAfterFinishReasonEndsCleanlyOnIdleTimeout(t *testing.T) {
+	stop := "stop"
+	server := silentParkSSEServer(t, chatChunk("hello", nil)+chatChunk("", &stop))
+	defer server.Close()
+
+	ctx := newStreamTestContext()
+	ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, 300*time.Millisecond)
+
+	provider := newStreamTestProvider(server.URL)
+	stream, bifrostErr := provider.ChatCompletionStream(ctx, passthroughPostHook, nil, testKey(), basicChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	chunks := collectChunks(t, stream)
+	if len(chunks) == 0 {
+		t.Fatal("expected chunks from a stream that reached finish_reason")
+	}
+	for i, chunk := range chunks {
+		if chunk.BifrostError != nil {
+			t.Fatalf("chunk %d unexpectedly carried an error: %+v", i, chunk.BifrostError.Error)
+		}
+	}
+	final := chunks[len(chunks)-1]
+	if final.BifrostChatResponse == nil {
+		t.Fatalf("expected a synthesized final chat chunk, got %+v", final)
+	}
+	if len(final.BifrostChatResponse.Choices) == 0 ||
+		final.BifrostChatResponse.Choices[0].FinishReason == nil ||
+		*final.BifrostChatResponse.Choices[0].FinishReason != stop {
+		t.Errorf("expected the final chunk to carry finish_reason %q, got %+v", stop, final.BifrostChatResponse.Choices)
+	}
+}
+
+// The text-completion loop handles the idle-timeout read error on the same switch.
+func TestTextCompletionStreamSilentParkAfterFinishReasonEndsCleanlyOnIdleTimeout(t *testing.T) {
+	server := silentParkSSEServer(t, `data: {"id":"cmpl-repro","object":"text_completion","created":1,"model":"repro-model","choices":[{"index":0,"text":"hello","finish_reason":null}]}`+"\n\n"+
+		`data: {"id":"cmpl-repro","object":"text_completion","created":1,"model":"repro-model","choices":[{"index":0,"text":"","finish_reason":"stop"}]}`+"\n\n")
+	defer server.Close()
+
+	ctx := newStreamTestContext()
+	ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, 300*time.Millisecond)
+
+	provider := newStreamTestProvider(server.URL)
+	request := &schemas.BifrostTextCompletionRequest{
+		Provider: schemas.OpenAI,
+		Model:    "repro-model",
+		Input:    &schemas.TextCompletionInput{PromptStr: schemas.Ptr("hi")},
+	}
+	stream, bifrostErr := provider.TextCompletionStream(ctx, passthroughPostHook, nil, testKey(), request)
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	chunks := collectChunks(t, stream)
+	if len(chunks) == 0 {
+		t.Fatal("expected chunks from a stream that reached finish_reason")
+	}
+	for i, chunk := range chunks {
+		if chunk.BifrostError != nil {
+			t.Fatalf("chunk %d unexpectedly carried an error: %+v", i, chunk.BifrostError.Error)
+		}
+	}
+	final := chunks[len(chunks)-1]
+	if final.BifrostTextCompletionResponse == nil {
+		t.Fatalf("expected a synthesized final text completion chunk, got %+v", final)
+	}
+	if len(final.BifrostTextCompletionResponse.Choices) == 0 ||
+		final.BifrostTextCompletionResponse.Choices[0].FinishReason == nil ||
+		*final.BifrostTextCompletionResponse.Choices[0].FinishReason != "stop" {
+		t.Errorf("expected the final chunk to carry finish_reason \"stop\", got %+v", final.BifrostTextCompletionResponse.Choices)
+	}
+}
+
+// The Responses-to-Chat fallback reaches the same loop through ResponsesStream with native
+// Responses disabled. There the terminal signal is the pending completed event synthesized
+// from finish_reason, not finishReason itself, so the idle-timeout branch has to honour it
+// too or the parked stream is reported as an error and the completed event is never flushed.
+func TestResponsesStreamFallbackSilentParkAfterFinishReasonEndsCleanlyOnIdleTimeout(t *testing.T) {
+	server := silentParkSSEServer(t, chatChunk("hello", nil)+chatChunkNullDeltaFinish("stop"))
+	defer server.Close()
+
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			AllowedRequests: &schemas.AllowedRequests{
+				ChatCompletionStream: true,
+				ResponsesStream:      false,
+			},
+		},
+	}, testNoopLogger{})
+
+	ctx := newStreamTestContext()
+	ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, 300*time.Millisecond)
+
+	request := &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "repro-model",
+		Input: []schemas.ResponsesMessage{{
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+		}},
+	}
+	stream, bifrostErr := provider.ResponsesStream(ctx, passthroughPostHook, nil, testKey(), request)
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	var completed *schemas.BifrostResponsesStreamResponse
+	for i, chunk := range collectChunks(t, stream) {
+		if chunk.BifrostError != nil {
+			t.Fatalf("chunk %d unexpectedly carried an error: %+v", i, chunk.BifrostError.Error)
+		}
+		if chunk.BifrostResponsesStreamResponse != nil && chunk.BifrostResponsesStreamResponse.Type == schemas.ResponsesStreamResponseTypeCompleted {
+			completed = chunk.BifrostResponsesStreamResponse
+		}
+	}
+	if completed == nil {
+		t.Fatal("expected a completed Responses stream event from a parked fallback stream")
+	}
+	if completed.Response == nil || completed.Response.StopReason == nil || *completed.Response.StopReason != "stop" {
+		t.Fatalf("expected stop_reason stop on the completed event, got %+v", completed.Response)
+	}
 }

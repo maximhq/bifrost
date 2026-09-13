@@ -16,6 +16,7 @@ roles:
       - RBAC
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -49,6 +50,7 @@ roles:
             $ref: '../../schemas/management/rbac.yaml#/CreateRoleRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Role created
@@ -82,6 +84,7 @@ roles-by-id:
           type: integer
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -123,6 +126,7 @@ roles-by-id:
             $ref: '../../schemas/management/rbac.yaml#/UpdateRoleRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Role updated
@@ -159,6 +163,7 @@ roles-by-id:
           type: integer
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Role deleted
@@ -202,6 +207,7 @@ roles-permissions:
           type: integer
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -243,6 +249,7 @@ roles-permissions:
             $ref: '../../schemas/management/rbac.yaml#/UpdateRolePermissionsRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Permissions updated
@@ -273,6 +280,7 @@ resources:
       - RBAC
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -299,6 +307,7 @@ operations:
       - RBAC
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -325,6 +334,7 @@ permissions:
       - RBAC
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response

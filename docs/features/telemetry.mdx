@@ -53,6 +53,8 @@ These metrics track requests forwarded to AI providers:
 | `bifrost_success_requests_total`   | Counter   | Total successful requests to upstream providers                   | Base Labels, custom labels                            |
 | `bifrost_error_requests_total`     | Counter   | Total failed requests to upstream providers                       | Base Labels, `status_code`, custom labels             |
 | `bifrost_upstream_latency_seconds` | Histogram | Latency of upstream provider requests                             | Base Labels, `is_success`, custom labels              |
+| `bifrost_overhead_latency_microseconds`   | Histogram | Total Bifrost overhead per request in microseconds (Bifrost's own work, excluding upstream provider time) | Base Labels, custom labels                            |
+| `bifrost_overhead_component_microseconds` | Histogram | Same overhead broken down by internal component. Opt-in via `overhead_breakdown_enabled`; populated only when tracing is active | Base Labels, `overhead_component`, custom labels      |
 | `bifrost_input_tokens_total`       | Counter   | Total input tokens sent to upstream providers                     | Base Labels, custom labels                            |
 | `bifrost_output_tokens_total`      | Counter   | Total output tokens received from upstream providers              | Base Labels, custom labels                            |
 | `bifrost_cache_hits_total`         | Counter   | Total cache hits by type (direct/semantic)                        | Base Labels, `cache_type`, custom labels              |
@@ -61,6 +63,8 @@ These metrics track requests forwarded to AI providers:
 | `bifrost_provider_key_up`          | Gauge     | Per-key health: `1` after a successful attempt, `0` after a failure | `provider`, `key_id`, `key_name`                    |
 | `bifrost_key_rotation_events_total`| Counter   | Key rotations triggered by per-key failures — rate-limit (429), auth (401/403), or billing (402) — one increment per actual swap | `provider`, `requested_model`, `key_id`, `key_name`, `fail_reason` |
 | `bifrost_request_retries`          | Histogram | Number of retries used per request (observed once per request; buckets `0,1,2,3,5,10`). | Base Labels |
+| `bifrost_routing_embedding_requests_total` | Counter | Embedding calls made by semantic complexity routing | `provider`, `model`, `phase` (`request` or `warmup`) |
+| `bifrost_routing_embedding_cost_total` | Counter | Cost in USD of semantic complexity routing embeddings | `provider`, `model`, `phase` (`request` or `warmup`) |
 
 Base Labels:
 
@@ -73,12 +77,18 @@ Base Labels:
 - `routing_engine_used`: Comma-separated routing engines used (`routing-rule`, `governance`, `loadbalancing`, `model-catalog`, `core`). `core` is emitted when the Bifrost orchestrator itself makes a routing decision — i.e. a fallback transition or a retry transition.
 - `routing_rule_id`: Routing rule ID that matched the request
 - `routing_rule_name`: Routing rule name that matched the request
+- `complexity_tier`: Complexity tier used for routing (`SIMPLE` / `MEDIUM` / `COMPLEX`); empty when no routing rule referenced `complexity_tier`
+- `complexity_mechanism`: How the effective complexity tier was determined (`semantic`, `llm`, `session`, or `skipped` when no tier was produced). The raw complexity score is deliberately not a label because it has unbounded cardinality; it is recorded in request logs and traces
 - `selected_key_id`: ID of the key that successfully served the request (empty string `""` on final errors)
 - `selected_key_name`: Name of the key that successfully served the request (empty string `""` on final errors)
 - `fallback_index`: Fallback index (0 for first attempt, 1 for second attempt, etc.)
 - `team_id` / `team_name`: Team identifiers (empty when governance is not used)
 - `customer_id` / `customer_name`: Customer identifiers (empty when governance is not used)
 - custom labels: Custom labels configured in the Bifrost configuration
+
+<Note>
+`bifrost_overhead_component_microseconds` is off by default. Enable it with the telemetry plugin's `overhead_breakdown_enabled` config field (a sibling of `metrics_enabled`). It carries the Base Labels above plus an `overhead_component` label whose value is one of ten fixed categories (`serialization`, `conversion`, `plugins`, `middleware`, `routing`, `processing`, `networking`, `streaming`, `miscellaneous`, `other`), the same categories the Bifrost UI's log-detail overhead breakdown groups into; summing the components for a given label set reconstructs `bifrost_overhead_latency_microseconds`. Because the breakdown is derived from completed trace spans, it only populates when tracing is active for the request. See [Prometheus → Overhead Breakdown](/features/observability/prometheus#overhead-breakdown).
+</Note>
 
 ### Streaming Metrics
 

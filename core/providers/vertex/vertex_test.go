@@ -59,7 +59,7 @@ func TestVertex(t *testing.T) {
 		RerankModel:          rerankModel,
 		ReasoningModel:       "claude-4.5-haiku",
 		ImageGenerationModel: "gemini-2.5-flash-image",
-		ImageEditModel:       "imagen-3.0-capability-001",
+		ImageEditModel:       "gemini-2.5-flash-image",
 		VideoGenerationModel: "veo-3.1-generate-preview",
 		FileStorageConfig:    fileStorageConfig,
 		BatchOutputFolder:    batchOutputFolder,

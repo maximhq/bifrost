@@ -34,6 +34,7 @@ type githubCopilotProvider struct {
 	logger              schemas.Logger
 	client              *fasthttp.Client
 	streamingClient     *fasthttp.Client
+	exchangeClient      *fasthttp.Client
 	networkConfig       schemas.NetworkConfig
 	sendBackRawRequest  bool
 	sendBackRawResponse bool
@@ -65,12 +66,29 @@ func NewGithubCopilotProvider(config *schemas.ProviderConfig, logger schemas.Log
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 
+	// Credential exchanges talk to api.github.com, not to Copilot. Cloning the configured
+	// client inherits its dial policy, proxy and TLS config without re-running any of them,
+	// so the exchange is governed by exactly the same rules as inference.
+	//
+	// On a direct connection that policy resolves DNS and refuses private, link-local and
+	// unspecified addresses. It does not when a proxy is configured: ConfigureDialer
+	// delegates to the proxy dialer and performs no address checks on that path, because
+	// the proxy resolves the target itself and we never see the address. An operator
+	// pointing Bifrost at a proxy is trusting that proxy with egress control.
+	//
+	// The body cap is enforced at read time, so a runaway response is refused before it is
+	// allocated rather than truncated afterwards.
+	exchangeClient := providerUtils.CloneFastHTTPClientConfig(client)
+	exchangeClient.MaxResponseBodySize = maxExchangeBodyBytes
+	exchangeClient.StreamResponseBody = false
+
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &githubCopilotProvider{
 		logger:              logger,
 		client:              client,
 		streamingClient:     streamingClient,
+		exchangeClient:      exchangeClient,
 		networkConfig:       config.NetworkConfig,
 		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
@@ -92,7 +110,7 @@ func (p *githubCopilotProvider) ListModels(ctx *schemas.BifrostContext, keys []s
 		return nil, configurationError("github copilot: no keys configured")
 	}
 
-	creds, bErr := resolveCredentials(keys[0], p.networkConfig.BaseURL)
+	creds, bErr := resolveCredentials(ctx, keys[0], p.exchangeClient, p.networkConfig.BaseURL, p.logger)
 	if bErr != nil {
 		return nil, bErr
 	}
@@ -145,7 +163,7 @@ func (p *githubCopilotProvider) TextCompletionStream(ctx *schemas.BifrostContext
 
 // ChatCompletion performs a chat completion request to the Copilot API.
 func (p *githubCopilotProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	creds, bErr := resolveCredentials(key, p.networkConfig.BaseURL)
+	creds, bErr := resolveCredentials(ctx, key, p.exchangeClient, p.networkConfig.BaseURL, p.logger)
 	if bErr != nil {
 		return nil, bErr
 	}
@@ -169,7 +187,7 @@ func (p *githubCopilotProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 
 // ChatCompletionStream performs a streaming chat completion request to the Copilot API.
 func (p *githubCopilotProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	creds, bErr := resolveCredentials(key, p.networkConfig.BaseURL)
+	creds, bErr := resolveCredentials(ctx, key, p.exchangeClient, p.networkConfig.BaseURL, p.logger)
 	if bErr != nil {
 		return nil, bErr
 	}

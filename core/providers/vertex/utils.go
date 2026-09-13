@@ -302,27 +302,29 @@ func vertexServiceTierHeaderValue(region string, model string, tier schemas.Bifr
 	}
 }
 
-// buildResponseFromConfig builds a list models response from configured deployments and allowedModels.
-// This is used when the user has explicitly configured which models they want to use.
-func buildResponseFromConfig(deployments schemas.KeyAliases, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList) *schemas.BifrostListModelsResponse {
+// buildResponseFromConfig builds a list models response from configured deployments and the
+// key's model access rule. This is used when the user has explicitly configured which models
+// they want to use.
+func buildResponseFromConfig(deployments schemas.KeyAliases, access schemas.ModelAccessRule) *schemas.BifrostListModelsResponse {
 	response := &schemas.BifrostListModelsResponse{
 		Data: make([]schemas.Model, 0),
 	}
 
-	if blacklistedModels.IsBlockAll() {
+	if access.Blocked.IsBlockAll() {
 		return response
 	}
 
 	addedModelIDs := make(map[string]bool)
 
-	restrictAllowed := allowedModels.IsRestricted()
+	provider := string(schemas.Vertex)
+	restrictAllowed := access.Allowed.IsRestricted()
 
-	// First add models from deployments (filtered by allowedModels when set)
+	// First add models from deployments (filtered by the allow side when set)
 	for alias, deploymentValue := range deployments {
-		if restrictAllowed && !allowedModels.Contains(alias) {
+		if restrictAllowed && !access.Admits(provider, alias) {
 			continue
 		}
-		if blacklistedModels.IsBlocked(alias) {
+		if access.Blocks(provider, alias) {
 			continue
 		}
 		modelID := string(schemas.Vertex) + "/" + alias
@@ -341,16 +343,17 @@ func buildResponseFromConfig(deployments schemas.KeyAliases, allowedModels schem
 		addedModelIDs[modelID] = true
 	}
 
-	// Then add models from allowedModels that aren't already in deployments (only when restricted)
+	// Then add exact allow entries that aren't already in deployments (only when
+	// restricted). Allow patterns name no model, so there is nothing to surface.
 	if !restrictAllowed {
 		return response
 	}
-	for _, allowedModel := range allowedModels {
-		modelID := string(schemas.Vertex) + "/" + allowedModel
+	for _, allowedModel := range access.Allowed {
+		modelID := provider + "/" + allowedModel
 		if addedModelIDs[modelID] {
 			continue
 		}
-		if blacklistedModels.IsBlocked(allowedModel) {
+		if access.Blocks(provider, allowedModel) {
 			continue
 		}
 

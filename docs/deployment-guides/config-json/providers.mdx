@@ -50,13 +50,13 @@ Per-provider `network_config` options (applies to all standard providers):
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `default_request_timeout_in_seconds` | integer | Per-request timeout |
+| `default_request_timeout_in_seconds` | integer | Per-request timeout. For streaming requests it bounds the connection, request write and wait for response headers; the body is governed by `stream_idle_timeout_in_seconds` |
 | `max_retries` | integer | Retry attempts on transient errors |
 | `retry_backoff_initial` | integer | Initial backoff in milliseconds |
 | `retry_backoff_max` | integer | Maximum backoff in milliseconds |
 | `max_conns_per_host` | integer | Max TCP connections to the provider endpoint (default: 5000) |
 | `extra_headers` | object | Static headers added to every provider request |
-| `stream_idle_timeout_in_seconds` | integer | Idle timeout per stream chunk (default: 60) |
+| `stream_idle_timeout_in_seconds` | integer | Idle timeout per stream chunk (default: 120) |
 | `insecure_skip_verify` | boolean | Disable TLS verification (last resort only) |
 | `ca_cert_pem` | string | PEM-encoded CA for self-signed or private CA endpoints |
 
@@ -66,6 +66,14 @@ Concurrency and buffering per provider:
 |-------|------|-------------|
 | `concurrency_and_buffer_size.concurrency` | integer | Max concurrent requests to this provider |
 | `concurrency_and_buffer_size.buffer_size` | integer | Request queue depth |
+
+Prompt-cache breakpoint injection per provider (see [Auto Prompt Caching](/features/prompt-caching)):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `prompt_cache.auto_inject` | boolean | Mark the first cacheable block when the caller sent no cache markers. Off by default |
+| `prompt_cache.ttl` | string | Lifetime for injected markers. Only `"1h"` is accepted; omit for the provider default |
+| `prompt_cache.cache_control_injection_points` | array | Target specific messages by `role` and/or `index`. Replaces the first-block strategy when set |
 
 ---
 

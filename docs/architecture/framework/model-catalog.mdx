@@ -67,6 +67,14 @@ It integrates with semantic caching to provide accurate cost calculations:
 
 The system automatically applies different pricing rates for high-token contexts, reflecting real provider pricing models. Two tiers are supported: above 128k tokens and above 200k tokens, with the higher tier taking precedence when both are configured.
 
+### **6. Time-of-Day Pricing**
+
+Models can declare recurring weekly peak windows (`peak_hours`) and a discount (`off_peak_cost_multiplier`) that scales every usage-based charge outside them — DeepSeek's V4 lineup, for instance, bills at half rate outside Monday-Friday `01:00-04:00` and `06:00-10:00` UTC.
+
+The mechanism is generic: nothing in the cost engine names a provider, so any model whose datasheet row carries the two fields is priced this way. Base rates are the peak prices and the multiplier only ever scales downward, so a row with an incomplete or unparseable schedule bills at the full rate rather than under-billing. Flat per-request and per-query fees are excluded from the discount.
+
+Peak vs off-peak is decided by the request's **start time**, carried on `LookupScopes.BilledAt`, so pricing is deterministic and a stream crossing a boundary bills entirely at its start-time rate.
+
 ## Configuration
 
 The `ModelCatalog` can be configured during initialization by passing a `Config` struct.
@@ -206,6 +214,10 @@ type PricingEntry struct {
     InputCostPerQuery             *float64 `json:"input_cost_per_query,omitempty"`
     CodeInterpreterCostPerSession *float64 `json:"code_interpreter_cost_per_session,omitempty"`
     CostPerRequest                *float64 `json:"cost_per_request,omitempty"`
+
+    // Costs - Time of day
+    OffPeakCostMultiplier *float64           `json:"off_peak_cost_multiplier,omitempty"`
+    PeakHours             *PeakHoursSchedule `json:"peak_hours,omitempty"`
 }
 ```
 

@@ -16,7 +16,9 @@ import {
 	OTHER_SERIES_COLOR,
 	OTHER_SERIES_KEY,
 	pickTopSeries,
+	TOP_SERIES_LIMIT,
 } from "../utils/chartUtils";
+import { CappedBarStack } from "./charts/barShape";
 import { ChartCard } from "./charts/chartCard";
 import { ChartErrorBoundary } from "./charts/chartErrorBoundary";
 import { formatCost, SortableHeader, TrendBadge } from "./rankingsShared";
@@ -132,7 +134,10 @@ function TopModelsChart({
 		return sum;
 	}, [modelData]);
 
-	// Compute totals per model for the ranked legend (aggregate across providers)
+	// Totals per model for the ranked legend (aggregated across providers). The
+	// legend is a key to the chart: the same TOP_SERIES_LIMIT named series in
+	// chart-color order, then one explicit "Other" row for everything the chart
+	// rolled up. OTHER_SERIES_COLOR is never given to a named model.
 	const modelTotals = useMemo(() => {
 		if (!rankingsData?.rankings) return [];
 		const byModel = new Map<string, number>();
@@ -140,15 +145,16 @@ function TopModelsChart({
 			byModel.set(r.model, (byModel.get(r.model) || 0) + r.total_requests);
 		}
 		const totalRequests = [...byModel.values()].reduce((sum, v) => sum + v, 0);
-		return [...byModel.entries()]
-			.sort((a, b) => b[1] - a[1])
-			.slice(0, 10)
-			.map(([model, total], idx) => ({
-				model,
-				total,
-				pct: totalRequests > 0 ? (total / totalRequests) * 100 : 0,
-				colorIdx: displayModels.indexOf(model) >= 0 ? displayModels.indexOf(model) : idx,
-			}));
+		const pct = (total: number) => (totalRequests > 0 ? (total / totalRequests) * 100 : 0);
+		const ranked = [...byModel.entries()].sort((a, b) => b[1] - a[1]);
+		const named = ranked.slice(0, TOP_SERIES_LIMIT).map(([model, total], idx) => {
+			const chartIdx = displayModels.indexOf(model);
+			return { model, total, pct: pct(total), color: getModelColor(chartIdx >= 0 ? chartIdx : idx) };
+		});
+		const rest = ranked.slice(TOP_SERIES_LIMIT);
+		if (rest.length === 0) return named;
+		const otherTotal = rest.reduce((sum, [, total]) => sum + total, 0);
+		return [...named, { model: OTHER_SERIES_KEY, total: otherTotal, pct: pct(otherTotal), color: OTHER_SERIES_COLOR }];
 	}, [rankingsData, displayModels]);
 
 	return (
@@ -191,18 +197,18 @@ function TopModelsChart({
 									content={<UsageShareTooltip models={displayModels} modelLabels={modelLabels} />}
 									cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }}
 								/>
-								{displayModels.map((model, idx) => (
-									<Bar
-										key={model}
-										dataKey={`model_${idx}`}
-										stackId="models"
-										fill={model === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx)}
-										fillOpacity={0.9}
-										isAnimationActive={false}
-										barSize={30}
-										radius={idx === displayModels.length - 1 ? [2, 2, 0, 0] : [0, 0, 0, 0]}
-									/>
-								))}
+								<CappedBarStack buckets={chartData.length}>
+									{displayModels.map((model, idx) => (
+										<Bar
+											key={model}
+											dataKey={`model_${idx}`}
+											fill={model === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx)}
+											fillOpacity={0.9}
+											isAnimationActive={false}
+											barSize={30}
+										/>
+									))}
+								</CappedBarStack>
 							</BarChart>
 						</ResponsiveContainer>
 					</ChartErrorBoundary>
@@ -216,8 +222,8 @@ function TopModelsChart({
 					<div className="mt-3 grid grid-cols-1 gap-x-8 gap-y-1.5 px-2 pb-1 sm:grid-cols-2">
 						{modelTotals.map((m, idx) => (
 							<div key={m.model} className="flex items-center gap-2 text-sm">
-								<span className="text-muted-foreground w-4 text-right text-xs">{idx + 1}.</span>
-								<span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(m.colorIdx) }} />
+								<span className="text-muted-foreground w-4 text-right text-xs">{m.model === OTHER_SERIES_KEY ? "" : `${idx + 1}.`}</span>
+								<span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: m.color }} />
 								<span className="min-w-0 flex-1 truncate font-medium">{displayModelLabel(m.model, modelLabels)}</span>
 								<span className="shrink-0 text-right text-xs tabular-nums">
 									<span className="font-medium">{formatNumber(m.total)}</span>
@@ -376,10 +382,10 @@ function ModelRankingsTabImpl({ rankingsData, loading, modelData, loadingModels,
 										<span
 											className={
 												entry.success_rate >= 99
-													? "text-emerald-600 dark:text-emerald-400"
+													? "text-chart-success-ink"
 													: entry.success_rate >= 95
 														? "text-yellow-600 dark:text-yellow-400"
-														: "text-red-600 dark:text-red-400"
+														: "text-chart-error-ink"
 											}
 										>
 											{entry.success_rate.toFixed(1)}%

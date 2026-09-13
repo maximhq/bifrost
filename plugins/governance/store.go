@@ -46,6 +46,10 @@ type LocalGovernanceStore struct {
 	rateLimits      sync.Map // string -> *RateLimit (RateLimit ID -> RateLimit)
 	modelConfigs    sync.Map // string -> *ModelConfig (key: "modelName" or "modelName:provider" -> ModelConfig)
 	providers       sync.Map // string -> *Provider (Provider name -> Provider with preloaded relationships)
+	// Keying definitions by ID (not by VK) makes an edit one Store that every assigned VK reads at once.
+	virtualMCPs        sync.Map   // uint (vMCP ID) -> *configstoreTables.TableVirtualMCP
+	virtualMCPIDsByVK  sync.Map   // string (VK row ID) -> []uint (assigned vMCP IDs)
+	virtualMCPAssignMu sync.Mutex // serializes the assignment-slice read-modify-write in attach/detach
 
 	// Last DB usages for budgets and rate limits
 	LastDBUsagesBudgetsMu            sync.RWMutex       // Last DB usages for budgets
@@ -700,6 +704,29 @@ func (gs *LocalGovernanceStore) BumpRateLimitUsage(ctx context.Context, rateLimi
 			clone.RequestCurrentUsage++
 		}
 		if gs.rateLimits.CompareAndSwap(rateLimitID, raw, &clone) {
+			return nil
+		}
+	}
+}
+
+// BumpBudgetUsageBy atomically adds an arbitrary delta without applying a
+// window reset. The CAS retry preserves concurrent request increments.
+func (gs *LocalGovernanceStore) BumpBudgetUsageBy(_ context.Context, budgetID string, delta float64) error {
+	if delta == 0 {
+		return nil
+	}
+	for {
+		raw, exists := gs.budgets.Load(budgetID)
+		if !exists || raw == nil {
+			return nil
+		}
+		old, ok := raw.(*configstoreTables.TableBudget)
+		if !ok || old == nil {
+			return nil
+		}
+		clone := *old
+		clone.CurrentUsage = max(clone.CurrentUsage+delta, 0)
+		if gs.budgets.CompareAndSwap(budgetID, raw, &clone) {
 			return nil
 		}
 	}
@@ -1417,60 +1444,265 @@ func (gs *LocalGovernanceStore) permitForVirtualKey(ctx context.Context, vk *con
 	for i := range vk.ProviderConfigs {
 		config := vk.ProviderConfigs[i]
 		providerPermits = append(providerPermits, schemas.ProviderPermit{
-			Provider:          config.Provider,
-			AllowedModels:     config.AllowedModels,
-			BlacklistedModels: config.BlacklistedModels,
-			KeyIDs:            config.KeyIDs(),
-			Weight:            config.Weight,
+			Provider:                  config.Provider,
+			AllowedModels:             config.AllowedModels,
+			BlacklistedModels:         config.BlacklistedModels,
+			AllowedModelsPatterns:     config.AllowedModelsPatterns,
+			BlacklistedModelsPatterns: config.BlacklistedModelsPatterns,
+			KeyIDs:                    config.KeyIDs(),
+			Weight:                    config.Weight,
 		})
 	}
 
-	// The key's own MCP configs come first, so they own their clients.
-	mcpPermits := make([]schemas.MCPPermit, 0, len(vk.MCPConfigs)+len(allowedByDefaultClients))
-	configured := make(map[string]struct{}, len(vk.MCPConfigs))
-	for _, mcpConfig := range vk.MCPConfigs {
-		configured[mcpConfig.MCPClient.ClientID] = struct{}{}
-		mcpPermits = append(mcpPermits, schemas.MCPPermit{
-			Client:     mcpConfig.MCPClient.ClientID,
-			ClientName: mcpConfig.MCPClient.Name,
-			Tools:      mcpConfig.ToolsToExecute,
-		})
+	// A key's own MCP configs and its Virtual MCPs build one accumulator, so a Virtual MCP grants
+	// exactly like a config: owns the clients it names, unions per client, blocks allowed-by-default.
+	vmcpIDs := gs.assignedVirtualMCPIDs(vk.ID)
+	acc := NewMCPToolAccumulator(len(vk.MCPConfigs) + len(vmcpIDs))
+	for i := range vk.MCPConfigs {
+		acc.addMCPConfig(&vk.MCPConfigs[i])
 	}
-
-	mcpPermits = AppendMCPPermitsAllowedByDefault(mcpPermits, configured, allowedByDefaultClients)
-
-	return grant.NewPermit(grant.PermitVirtualKey, vk.ID, vk.Name, vk.IsActiveValue(), vk.IsExpiredAt(time.Now().UTC()), providerPermits, mcpPermits)
-}
-
-// AppendMCPPermitsAllowedByDefault adds a permit for every client allowed by default that the holder
-// has not configured itself: all of the client's tools, under the client's name. A client in
-// configured is left alone whatever it was configured with, since an explicit assignment decides for
-// its holder even when it grants nothing.
-//
-// One function because every kind of holder appends the same way: a holder that has built its own
-// list hands over the clients it named and gets the list back with the defaults added. Appended in
-// id order, so the permit, and everything derived from it, is stable regardless of map iteration
-// order.
-func AppendMCPPermitsAllowedByDefault(mcpPermits []schemas.MCPPermit, configured map[string]struct{}, allowedByDefault map[string]string) []schemas.MCPPermit {
-	if len(allowedByDefault) == 0 {
-		return mcpPermits
-	}
-	clientIDs := make([]string, 0, len(allowedByDefault))
-	for clientID := range allowedByDefault {
-		if _, ok := configured[clientID]; ok {
+	for _, id := range vmcpIDs {
+		def := gs.virtualMCPByID(id)
+		if def == nil || !def.Enabled {
 			continue
 		}
-		clientIDs = append(clientIDs, clientID)
+		acc.AddVirtualMCP(def)
+		// A key's direct assignment makes the vMCP addressable at /mcp/<slug>.
+		RecordGrantedVirtualMCP(ctx, def)
 	}
-	sort.Strings(clientIDs)
-	for _, clientID := range clientIDs {
-		mcpPermits = append(mcpPermits, schemas.MCPPermit{
-			Client:     clientID,
-			ClientName: allowedByDefault[clientID],
-			Tools:      []string{grant.Wildcard},
-		})
+	mcpPermits := MCPPermitsFromAccumulator(acc, "virtual key", vk.Name, gs.mcpClientNames(), gs.logger)
+	mcpPermits = AppendMCPPermitsAllowedByDefault(mcpPermits, acc.ConfiguredClients(), allowedByDefaultClients)
+
+	return grant.NewPermit(grant.PermitVirtualKey, vk.ID, vk.Name, vk.IsActiveValue(), vk.IsExpiredAt(time.Now().UTC()), providerPermits, mcpPermits, grant.WithAllowAllProviders(vk.AllowAllProviders))
+}
+
+// virtualMCPByID returns a cached Virtual MCP definition, or nil if none is cached for the id.
+func (gs *LocalGovernanceStore) virtualMCPByID(id uint) *configstoreTables.TableVirtualMCP {
+	if v, ok := gs.virtualMCPs.Load(id); ok {
+		return v.(*configstoreTables.TableVirtualMCP)
 	}
-	return mcpPermits
+	return nil
+}
+
+// GetVirtualMCPFromCache returns the live cached Virtual MCP definition for id, or nil. Enterprise
+// access-profile / project resolution uses this so it serves the current definition (Enabled and
+// tool specs) rather than a snapshot captured at propagate time, which goes stale on a vMCP edit.
+func (gs *LocalGovernanceStore) GetVirtualMCPFromCache(id uint) *configstoreTables.TableVirtualMCP {
+	return gs.virtualMCPByID(id)
+}
+
+// assignedVirtualMCPIDs returns a VK's assigned Virtual MCP IDs, or nil if none.
+func (gs *LocalGovernanceStore) assignedVirtualMCPIDs(vkID string) []uint {
+	if v, ok := gs.virtualMCPIDsByVK.Load(vkID); ok {
+		return v.([]uint)
+	}
+	return nil
+}
+
+// grantedVirtualMCPsKey keys the per-request set of addressable Virtual MCPs.
+type grantedVirtualMCPsKey struct{}
+
+// grantedVirtualMCPs is the per-request set of vMCPs reachable at /mcp/<slug>, keyed by slug. Only the
+// addressable paths record here (direct key assignment; enterprise access profiles); legacy
+// team/customer/provider scopes don't, so those grant on /mcp but not /mcp/<slug>.
+type grantedVirtualMCPs struct {
+	bySlug map[string]configstoreTables.TableVirtualMCP
+}
+
+// grantedVirtualMCPsMu guards the per-request set's get-or-create and its bySlug map. Resolution is
+// single-goroutine per request today, so it is uncontended; it stops a concurrent-map panic if a
+// record path is ever parallelized.
+var grantedVirtualMCPsMu sync.Mutex
+
+// RecordGrantedVirtualMCP records an enabled vMCP as reachable at /mcp/<slug> for this request. No-op
+// off the gateway path or for a disabled/slug-less vMCP. Exported so enterprise records profile vMCPs.
+func RecordGrantedVirtualMCP(ctx context.Context, vmcp *configstoreTables.TableVirtualMCP) {
+	if vmcp == nil || !vmcp.Enabled || vmcp.EndpointSlug == "" {
+		return
+	}
+	bctx, ok := ctx.(*schemas.BifrostContext)
+	if !ok {
+		return
+	}
+	if gateway, _ := bctx.Value(schemas.BifrostContextKeyIsMCPGateway).(bool); !gateway {
+		return
+	}
+	grantedVirtualMCPsMu.Lock()
+	defer grantedVirtualMCPsMu.Unlock()
+	set, _ := bctx.Value(grantedVirtualMCPsKey{}).(*grantedVirtualMCPs)
+	if set == nil {
+		set = &grantedVirtualMCPs{bySlug: make(map[string]configstoreTables.TableVirtualMCP)}
+		bctx.SetValue(grantedVirtualMCPsKey{}, set)
+	}
+	set.bySlug[vmcp.EndpointSlug] = *vmcp
+}
+
+// grantedVirtualMCP returns the Virtual MCP recorded under slug for the request, if any.
+func grantedVirtualMCP(ctx context.Context, slug string) (*configstoreTables.TableVirtualMCP, bool) {
+	bctx, ok := ctx.(*schemas.BifrostContext)
+	if !ok {
+		return nil, false
+	}
+	grantedVirtualMCPsMu.Lock()
+	defer grantedVirtualMCPsMu.Unlock()
+	set, _ := bctx.Value(grantedVirtualMCPsKey{}).(*grantedVirtualMCPs)
+	if set == nil {
+		return nil, false
+	}
+	v, ok := set.bySlug[slug]
+	if !ok {
+		return nil, false
+	}
+	return &v, true
+}
+
+// VirtualMCPToolAccess resolves the tool include-list a /mcp/<slug> request may see. The slug must
+// have been recorded addressable during resolution (assigned=false → the caller answers 403); its
+// tools are then narrowed to what the request's access grants, so an excluded tool can't leak. A nil
+// access restricts nothing, so the vMCP's own tools are served as-is.
+func (gs *LocalGovernanceStore) VirtualMCPToolAccess(ctx *schemas.BifrostContext, slug string, access schemas.Access) (served []string, assigned bool) {
+	target, ok := grantedVirtualMCP(ctx, slug)
+	if !ok {
+		return nil, false
+	}
+
+	var clientNames map[string]string
+	if gs.inMemoryStore != nil {
+		clientNames = gs.inMemoryStore.GetMCPClientNames()
+	}
+	requested := make([]string, 0, len(target.ParsedTools))
+	for _, spec := range target.ParsedTools {
+		name := clientNames[spec.MCPClientID]
+		if name == "" {
+			// Client no longer configured (or unnamed): nothing to serve for it.
+			continue
+		}
+		// WhiteList semantics: ["*"] serves the whole client (name-*), [] serves nothing, a named list
+		// serves those tools. grant.Wildcard is "*", so the loop below produces name-* for the all case.
+		for _, tool := range spec.ToolNames {
+			if tool == "" {
+				continue
+			}
+			requested = append(requested, name+"-"+tool)
+		}
+	}
+	if access == nil {
+		return requested, true
+	}
+	return access.NarrowMCPToolIncludeList(requested), true
+}
+
+// MCPClientToolAccess resolves what a /mcp/<slug> request may see for one MCP client: the client's tools
+// narrowed to the caller's access (empty → not granted → the caller answers 403). Nil access serves the
+// whole client. No per-request recording (unlike a Virtual MCP): the access already names the clients.
+func (gs *LocalGovernanceStore) MCPClientToolAccess(ctx *schemas.BifrostContext, slug string, access schemas.Access) (served []string, ok bool) {
+	if gs.inMemoryStore == nil {
+		return nil, false
+	}
+	_, clientName, found := gs.inMemoryStore.GetMCPClientBySlug(slug)
+	if !found || clientName == "" {
+		return nil, false
+	}
+	// Narrow the whole client (name-*) to what access grants; empty means not granted.
+	whole := []string{clientName + "-" + grant.Wildcard}
+	if access == nil {
+		return whole, true
+	}
+	served = access.NarrowMCPToolIncludeList(whole)
+	return served, len(served) > 0
+}
+
+// loadVirtualMCPs fills both caches from the store at startup; surgical updates keep them current
+// after. On error the caches are left as-is, not cleared.
+func (gs *LocalGovernanceStore) loadVirtualMCPs(ctx context.Context) error {
+	if gs.configStore == nil {
+		return nil
+	}
+	defs, err := gs.configStore.GetVirtualMCPs(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to load virtual MCP definitions: %w", err)
+	}
+	for i := range defs {
+		def := defs[i]
+		gs.virtualMCPs.Store(def.ID, &def)
+	}
+	assignments, err := gs.configStore.GetVirtualMCPAssignments(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to load virtual MCP assignments: %w", err)
+	}
+	for vkID, ids := range assignments {
+		// Sorted so resolution processes a VK's vMCPs in a stable order, keeping the permit's per-client
+		// tool union deterministic across nodes and rebuilds.
+		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+		gs.virtualMCPIDsByVK.Store(vkID, ids)
+	}
+	return nil
+}
+
+// CreateVirtualMCPInMemory stores one definition by ID. Definitions are shared, so this one Store is
+// the whole ripple across every VK the definition is assigned to.
+func (gs *LocalGovernanceStore) CreateVirtualMCPInMemory(vmcp *configstoreTables.TableVirtualMCP) {
+	if vmcp == nil {
+		return
+	}
+	clone := *vmcp
+	// Deep-copy the tool slices so the cached definition is independent of the caller's struct (a plain
+	// struct copy shares the ParsedTools and ToolNames backing arrays). Matches the *InMemory siblings.
+	clone.ParsedTools = make([]configstoreTables.MCPToolSpec, len(vmcp.ParsedTools))
+	for i, spec := range vmcp.ParsedTools {
+		spec.ToolNames = append([]string(nil), spec.ToolNames...)
+		clone.ParsedTools[i] = spec
+	}
+	gs.virtualMCPs.Store(clone.ID, &clone)
+}
+
+// UpdateVirtualMCPInMemory replaces a cached definition.
+func (gs *LocalGovernanceStore) UpdateVirtualMCPInMemory(vmcp *configstoreTables.TableVirtualMCP) {
+	gs.CreateVirtualMCPInMemory(vmcp)
+}
+
+// DeleteVirtualMCPInMemory drops a definition; resolution skips assignment IDs whose definition is
+// gone, so VK slices need no prune.
+func (gs *LocalGovernanceStore) DeleteVirtualMCPInMemory(vmcpID uint) {
+	gs.virtualMCPs.Delete(vmcpID)
+}
+
+// AttachVirtualMCPInMemory adds an assignment; DetachVirtualMCPInMemory removes one. Both rewrite the
+// VK's ID slice under virtualMCPAssignMu so concurrent same-VK writes don't lose an update.
+func (gs *LocalGovernanceStore) AttachVirtualMCPInMemory(vkID string, vmcpID uint) {
+	gs.virtualMCPAssignMu.Lock()
+	defer gs.virtualMCPAssignMu.Unlock()
+	ids := gs.assignedVirtualMCPIDs(vkID)
+	for _, id := range ids {
+		if id == vmcpID {
+			return
+		}
+	}
+	next := make([]uint, len(ids)+1)
+	copy(next, ids)
+	next[len(ids)] = vmcpID
+	sort.Slice(next, func(i, j int) bool { return next[i] < next[j] })
+	gs.virtualMCPIDsByVK.Store(vkID, next)
+}
+
+func (gs *LocalGovernanceStore) DetachVirtualMCPInMemory(vkID string, vmcpID uint) {
+	gs.virtualMCPAssignMu.Lock()
+	defer gs.virtualMCPAssignMu.Unlock()
+	ids := gs.assignedVirtualMCPIDs(vkID)
+	if len(ids) == 0 {
+		return
+	}
+	next := make([]uint, 0, len(ids))
+	for _, id := range ids {
+		if id != vmcpID {
+			next = append(next, id)
+		}
+	}
+	if len(next) == 0 {
+		gs.virtualMCPIDsByVK.Delete(vkID)
+		return
+	}
+	gs.virtualMCPIDsByVK.Store(vkID, next)
 }
 
 // virtualKeyOf is the key row behind a permit, when the permit is a key's. Nothing else this store
@@ -2924,6 +3156,13 @@ func (gs *LocalGovernanceStore) loadFromDatabase(ctx context.Context) error {
 	gs.rebuildInMemoryStructures(ctx, customers, teams, virtualKeys, budgets, rateLimits, modelConfigs, providers)
 	gs.logger.Info("[startup-timing] loadFromDatabase rebuildInMemoryStructures took %v", time.Since(rebuildStart))
 
+	// Load the Virtual MCP caches (DB-only: vMCPs have no config-memory form, and the config-memory
+	// init path carries no config store). A failure is logged, not fatal: it withholds Virtual MCP
+	// tools, never denies a key what it already has.
+	if err := gs.loadVirtualMCPs(ctx); err != nil {
+		gs.logger.Warn("failed to load virtual MCP assignments: %v", err)
+	}
+
 	return nil
 }
 
@@ -3273,9 +3512,9 @@ func (gs *LocalGovernanceStore) CollectModelScopedGovernanceIDs(ctx context.Cont
 }
 
 // ScopedID names a (scope, scope_id) pair for a model-config lookup, and the holder kind its
-// per-model limits are attributed to when used to resolve request-time enforcement scopes (see
-// modelConfigScopesFor). Left empty by a caller that only wants CollectModelScopedGovernanceIDs's
-// budget/rate-limit IDs, since that path never attributes a limit to a holder.
+// per-model limits are attributed to when the scope is enforced by name (see ScopedModelLimits).
+// Left empty by a caller that only wants CollectModelScopedGovernanceIDs's budget/rate-limit IDs,
+// since that path never attributes a limit to a holder.
 type ScopedID struct {
 	Scope   string
 	ScopeID string
@@ -3289,8 +3528,9 @@ type ScopedID struct {
 // virtual_key set without this package needing to know their scope semantics.
 // Must be fast and non-blocking (in-memory only) — called on every request.
 //
-// When used to resolve request-time enforcement scopes (modelConfigScopesFor), each ScopedID's Kind
-// is what a refusal names as the holder of the limit that ran out — see ScopedID.
+// modelConfigScopesFor does not consult these resolvers: a caller wanting one of these scopes
+// enforced passes it to ScopedModelLimits / ProviderScopedModelLimitsInScope, where the ScopedID's
+// Kind is what a refusal names as the holder of the limit that ran out — see ScopedID.
 type ExtraScopedIDsResolver func(ctx context.Context, virtualKeyID, userID string) []ScopedID
 
 var (
@@ -4483,17 +4723,35 @@ func (gs *LocalGovernanceStore) GlobalProviderLimits(ctx context.Context, provid
 // provider, exact pair and all-models-on-the-provider, in the scope the permit selects (the
 // deployment's own for nil, the holder's otherwise).
 //
-// The provider-less tiers are deliberately absent, and this method rather than
-// ProviderAndModelLimits is what routing asks so they stay absent: a limit covering every provider
+// The provider-less tiers are deliberately absent, and this method rather than GlobalModelLimits
+// or PermitModelLimits is what routing asks so they stay absent: a limit covering every provider
 // answers the same for every candidate, so it can only exclude all of them at once, which is a
 // refusal for the funnel to state with a reason rather than load balancing quietly running out of
 // options.
-//
-// The walk is collectModelConfigsFor's, filtered rather than reimplemented, so which configs cover
-// a pair has exactly one answer and routing's subset of it cannot drift from the funnel's.
 func (gs *LocalGovernanceStore) ProviderScopedModelLimits(ctx context.Context, permit schemas.Permit, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
+	return gs.providerScopedModelLimitsInScopes(ctx, modelConfigScopesFor(permit), provider, model)
+}
+
+// ProviderScopedModelLimitsInScope is ProviderScopedModelLimits over one named scope, attributed to
+// the given holder kind: the routing-side counterpart of ScopedModelLimits, and there for the same
+// reason. A store layered on this one may impose per-model limits on the caller themselves, under
+// a scope no permit stands for, and a provider-scoped one of those prices the caller out of that
+// provider exactly as a permit's would. Load balancing has to ask about it the same way, or it
+// routes to a provider the funnel then refuses.
+func (gs *LocalGovernanceStore) ProviderScopedModelLimitsInScope(ctx context.Context, scope, scopeID string, kind grant.LimitHolderKind, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
+	if scope == "" || scopeID == "" {
+		return nil, nil
+	}
+	return gs.providerScopedModelLimitsInScopes(ctx, []limitScope{{name: scope, id: scopeID, kind: kind}}, provider, model)
+}
+
+// providerScopedModelLimitsInScopes is modelLimitsInScopes narrowed to the configs that name the
+// provider. The walk is collectModelConfigsFor's, filtered rather than reimplemented, so which
+// configs cover a pair has exactly one answer and routing's subset of it cannot drift from the
+// funnel's.
+func (gs *LocalGovernanceStore) providerScopedModelLimitsInScopes(ctx context.Context, scopes []limitScope, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
 	providerName := string(provider)
-	for _, scope := range modelConfigScopesFor(permit) {
+	for _, scope := range scopes {
 		for _, mc := range gs.collectModelConfigsFor(ctx, scope.name, scope.id, model, &providerName) {
 			if mc == nil || mc.Provider == nil {
 				continue

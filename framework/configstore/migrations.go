@@ -468,6 +468,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_needs_session_stickiness_column"}, run: migrationAddNeedsSessionStickinessColumn},
 	{IDs: []string{"add_bedrock_endpoints_columns"}, run: migrationAddBedrockEndpointsColumns},
 	{IDs: []string{"add_cost_per_request_pricing_column"}, run: migrationAddCostPerRequestPricingColumn},
+	{IDs: []string{"backfill_default_complexity_exemplars_v2"}, run: migrationBackfillDefaultComplexityExemplars},
 	{IDs: []string{"add_notifications_table"}, run: migrationAddNotificationsTable},
 	{IDs: []string{"add_batch_jobs_table"}, run: migrationAddBatchJobsTable},
 	{IDs: []string{"add_image_megapixel_tier_pricing_columns"}, run: migrationAddImageMegapixelTierPricingColumns},
@@ -478,12 +479,23 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_vk_rotation_cooldown_columns"}, run: migrationAddVKRotationCooldownColumns},
 	{IDs: []string{"add_vk_rotation_cooldown_client_column"}, run: migrationAddVKRotationCooldownClientColumn},
 	{IDs: []string{"drop_legacy_oauth_user_fk_constraints"}, run: migrationDropLegacyOauthUserFKConstraints},
+	{IDs: []string{"add_virtual_mcp_tables"}, run: migrationAddVirtualMCPTables},
 	{IDs: []string{"add_video_resolution_pricing_columns"}, run: migrationAddVideoResolutionPricingColumns},
 	{IDs: []string{"add_provider_job_kind_columns", "swap_provider_job_indexes"}, run: migrationAddProviderJobKindColumns},
 	{IDs: []string{"add_compat_azure_deepseek_column"}, run: migrationAddCompatAzureDeepseekColumn},
 	{IDs: []string{"clear_plugin_config_hashes"}, run: migrationClearPluginConfigHashes},
 	{IDs: []string{"add_mcp_oauth_token_status_reason_column"}, run: migrationAddMCPOauthTokenStatusReasonColumn},
 	{IDs: []string{"add_databricks_key_config_columns"}, run: migrationAddDatabricksKeyConfigColumns},
+	{IDs: []string{"add_github_copilot_config_columns"}, run: migrationAddGithubCopilotConfigColumns},
+	{IDs: []string{"add_mcp_client_endpoint_slug"}, run: migrationAddMCPClientEndpointSlug},
+	{IDs: []string{"add_allow_all_providers_to_virtual_key"}, run: migrationAddAllowAllProvidersToVirtualKey},
+	{IDs: []string{"backfill_vk_allow_all_providers_hash"}, run: migrationBackfillVirtualKeyAllowAllProvidersHash},
+	{IDs: []string{"add_prompt_cache_json_column"}, run: migrationAddPromptCacheJSONColumn},
+	{IDs: []string{"add_hidden_request_types_json_column"}, run: migrationAddHiddenRequestTypesJSONColumn},
+	{IDs: []string{"add_use_openai_endpoints_column"}, run: migrationAddUseOpenAIEndpointsColumn},
+	{IDs: []string{"add_time_of_day_pricing_columns"}, run: migrationAddTimeOfDayPricingColumns},
+	{IDs: []string{"add_key_model_patterns_json_columns"}, run: migrationAddKeyModelPatternsJSONColumns},
+	{IDs: []string{"add_vk_provider_config_model_patterns_columns"}, run: migrationAddVirtualKeyModelPatternsColumns},
 }
 
 // videoResolutionPricingColumns are the resolution-banded video output rate columns.
@@ -559,6 +571,85 @@ func migrationAddCompatAzureDeepseekColumn(ctx context.Context, db *gorm.DB, log
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running compat_azure_deepseek migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddAllowAllProvidersToVirtualKey adds the allow_all_providers column to the virtual
+// key table. Default false preserves the existing deny-by-default behaviour, so the column needs
+// no data backfill: existing VKs keep allowing only the providers in their ProviderConfigs. The
+// config_hash is refreshed separately by migrationBackfillVirtualKeyAllowAllProvidersHash, since
+// allow_all_providers now feeds GenerateVirtualKeyHash.
+func migrationAddAllowAllProvidersToVirtualKey(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_allow_all_providers_to_virtual_key"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableVirtualKey{}, "allow_all_providers"); err != nil {
+				return err
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableVirtualKey{}, "allow_all_providers"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running add allow_all_providers to virtual key migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationBackfillVirtualKeyAllowAllProvidersHash recomputes config_hash for every virtual key
+// after allow_all_providers joined GenerateVirtualKeyHash. Existing rows carry a hash computed
+// without that field, so without this backfill config synchronization would see false drift on the
+// first boot after upgrade. It is a separate migration from the column-add so the DDL's lock is
+// never held across this SELECT + UPDATE backfill. The hash is deterministic, so this is safe to
+// re-run.
+func migrationBackfillVirtualKeyAllowAllProvidersHash(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "backfill_vk_allow_all_providers_hash"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			var virtualKeys []tables.TableVirtualKey
+			if err := tx.
+				Preload("ProviderConfigs").
+				Preload("ProviderConfigs.Keys").
+				Preload("MCPConfigs").
+				Find(&virtualKeys).Error; err != nil {
+				return fmt.Errorf("failed to fetch virtual keys for hash recomputation: %w", err)
+			}
+			logger.Info("[configstore] %s: processing %d virtualKeys", migrationName, len(virtualKeys))
+			for _, vk := range virtualKeys {
+				newHash, err := GenerateVirtualKeyHash(vk)
+				if err != nil {
+					return fmt.Errorf("failed to generate hash for VK %s: %w", vk.ID, err)
+				}
+				if err := tx.Model(&tables.TableVirtualKey{}).
+					Where("id = ?", vk.ID).
+					Update("config_hash", newHash).Error; err != nil {
+					return fmt.Errorf("failed to update config_hash for VK %s: %w", vk.ID, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running backfill_vk_allow_all_providers_hash migration: %s", err.Error())
 	}
 	return nil
 }
@@ -1828,6 +1919,218 @@ func migrationAddVirtualKeyMCPConfigsTable(ctx context.Context, db *gorm.DB, log
 		return fmt.Errorf("error while running db migration: %s", err.Error())
 	}
 	return nil
+}
+
+// migrationAddVirtualMCPTables creates the Virtual MCP tables, reusing the
+// existing enterprise tool-group tables in place when present (no data
+// migration), and adds and backfills the new endpoint_slug column.
+func migrationAddVirtualMCPTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_virtual_mcp_tables"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			// Reuse the table if present (enterprise), else create it (fresh install).
+			if !mg.HasTable(&tables.TableVirtualMCP{}) {
+				logger.Info("[configstore] %s: creating table TableVirtualMCP", migrationName)
+				if err := mg.CreateTable(&tables.TableVirtualMCP{}); err != nil {
+					return err
+				}
+			}
+			if !mg.HasTable(&tables.TableVirtualKeyVirtualMCP{}) {
+				logger.Info("[configstore] %s: creating table TableVirtualKeyVirtualMCP", migrationName)
+				if err := mg.CreateTable(&tables.TableVirtualKeyVirtualMCP{}); err != nil {
+					return err
+				}
+			}
+
+			// Add endpoint_slug, backfill unique slugs, then the unique index (which
+			// must come after backfill de-duplicates).
+			if err := addColumnIfNotExists(tx, logger, &tables.TableVirtualMCP{}, "endpoint_slug"); err != nil {
+				return fmt.Errorf("failed to add endpoint_slug column: %w", err)
+			}
+			if err := backfillVirtualMCPEndpointSlugs(tx); err != nil {
+				return fmt.Errorf("failed to backfill endpoint slugs: %w", err)
+			}
+			if !mg.HasIndex(&tables.TableVirtualMCP{}, "EndpointSlug") {
+				if err := mg.CreateIndex(&tables.TableVirtualMCP{}, "EndpointSlug"); err != nil {
+					return fmt.Errorf("failed to create endpoint_slug index: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+// backfillVirtualMCPEndpointSlugs gives every slug-less Virtual MCP a unique
+// slug from its name. No-ops on a fresh table.
+func backfillVirtualMCPEndpointSlugs(tx *gorm.DB) error {
+	var rows []tables.TableVirtualMCP
+	if err := tx.Where("endpoint_slug IS NULL OR endpoint_slug = ?", "").Find(&rows).Error; err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+
+	taken := map[string]bool{}
+	var existing []string
+	if err := tx.Model(&tables.TableVirtualMCP{}).
+		Where("endpoint_slug IS NOT NULL AND endpoint_slug <> ?", "").
+		Pluck("endpoint_slug", &existing).Error; err != nil {
+		return err
+	}
+	for _, s := range existing {
+		taken[s] = true
+	}
+
+	for i := range rows {
+		slug := uniqueSlug(Slugify(rows[i].Name), fmt.Sprintf("vmcp-%d", rows[i].ID), taken)
+		taken[slug] = true
+		if err := tx.Model(&tables.TableVirtualMCP{}).
+			Where("id = ?", rows[i].ID).
+			Update("endpoint_slug", slug).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// migrationAddMCPClientEndpointSlug adds and backfills endpoint_slug on config_mcp_clients. Runs after
+// add_virtual_mcp_tables so the backfill can seed uniqueness from existing Virtual MCP slugs.
+func migrationAddMCPClientEndpointSlug(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_endpoint_slug"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	// Column + backfill run transactionally; the backfill must de-duplicate before the unique index.
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "endpoint_slug"); err != nil {
+				return fmt.Errorf("failed to add endpoint_slug column: %w", err)
+			}
+			if err := backfillMCPClientEndpointSlugs(tx); err != nil {
+				return fmt.Errorf("failed to backfill MCP client endpoint slugs: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	// The unique index is built non-transactionally (UseTransaction=false) with CREATE UNIQUE INDEX
+	// CONCURRENTLY on postgres so it does not take a ShareLock that blocks writes to
+	// config_mcp_clients for the duration of the build. SQLite does not support CONCURRENTLY, so it
+	// uses the plain form. Idempotent via IF NOT EXISTS. The name matches gorm's uniqueIndex tag.
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	if err := RunSingleMigration(ctx, &noTxOpts, db, logger, &migrator.Migration{
+		ID: migrationName + "_index",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			var stmt string
+			if tx.Dialector.Name() == "sqlite" {
+				stmt = "CREATE UNIQUE INDEX IF NOT EXISTS idx_config_mcp_clients_endpoint_slug ON config_mcp_clients (endpoint_slug)"
+			} else {
+				stmt = "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_config_mcp_clients_endpoint_slug ON config_mcp_clients (endpoint_slug)"
+			}
+			return tx.Exec(stmt).Error
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return tx.Exec(`DROP INDEX IF EXISTS idx_config_mcp_clients_endpoint_slug`).Error
+		},
+	}); err != nil {
+		return fmt.Errorf("failed to create endpoint_slug index: %w", err)
+	}
+	return nil
+}
+
+// backfillMCPClientEndpointSlugs gives every slug-less MCP client a unique slug from its name. The
+// taken-set includes existing Virtual MCP slugs, since both serve at /mcp/<slug>. No-ops on a fresh table.
+func backfillMCPClientEndpointSlugs(tx *gorm.DB) error {
+	var rows []tables.TableMCPClient
+	if err := tx.Where("endpoint_slug IS NULL OR endpoint_slug = ?", "").Find(&rows).Error; err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+
+	taken := map[string]bool{}
+	var clientSlugs, vmcpSlugs []string
+	if err := tx.Model(&tables.TableMCPClient{}).
+		Where("endpoint_slug IS NOT NULL AND endpoint_slug <> ?", "").
+		Pluck("endpoint_slug", &clientSlugs).Error; err != nil {
+		return err
+	}
+	if err := tx.Model(&tables.TableVirtualMCP{}).
+		Where("endpoint_slug IS NOT NULL AND endpoint_slug <> ?", "").
+		Pluck("endpoint_slug", &vmcpSlugs).Error; err != nil {
+		return err
+	}
+	for _, s := range clientSlugs {
+		taken[s] = true
+	}
+	for _, s := range vmcpSlugs {
+		taken[s] = true
+	}
+
+	for i := range rows {
+		slug := uniqueSlug(Slugify(rows[i].Name), fmt.Sprintf("mcp-%d", rows[i].ID), taken)
+		taken[slug] = true
+		if err := tx.Model(&tables.TableMCPClient{}).
+			Where("id = ?", rows[i].ID).
+			Update("endpoint_slug", slug).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Slugify lowercases a name and collapses non-alphanumeric runs to single
+// hyphens, trimmed at the ends.
+func Slugify(name string) string {
+	var b strings.Builder
+	prevHyphen := false
+	for _, r := range strings.ToLower(strings.TrimSpace(name)) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			prevHyphen = false
+			continue
+		}
+		if !prevHyphen {
+			b.WriteRune('-')
+			prevHyphen = true
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+// uniqueSlug returns base, a numbered variant if base is taken, or fallback
+// (then numbered) when base is empty. taken records slugs already in use.
+func uniqueSlug(base, fallback string, taken map[string]bool) string {
+	if base == "" {
+		base = fallback
+	}
+	if !taken[base] {
+		return base
+	}
+	for n := 2; ; n++ {
+		cand := fmt.Sprintf("%s-%d", base, n)
+		if !taken[cand] {
+			return cand
+		}
+	}
 }
 
 // migrationAddProviderConfigBudgetRateLimit adds budget_id and rate_limit_id columns with proper foreign key constraints
@@ -7149,6 +7452,39 @@ func migrationAddOpenAIConfigJSONColumn(ctx context.Context, db *gorm.DB, logger
 	return nil
 }
 
+// migrationAddPromptCacheJSONColumn adds the prompt_cache_json column to the provider
+// table, backing ProviderConfig.PromptCache.
+//
+// Provider config is stored as one text column per sub-struct rather than a single
+// JSON blob, so a new config struct needs its own column. Without this the field
+// round-trips through the API and the UI but is dropped at the database boundary.
+func migrationAddPromptCacheJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_prompt_cache_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableProvider{}, "PromptCacheJSON"); err != nil {
+				return err
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableProvider{}, "prompt_cache_json"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running add_prompt_cache_json_column migration: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddPromptVariablesColumns adds variables_json column to prompt_sessions and prompt_versions
 func migrationAddPromptVariablesColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_prompt_variables_columns"
@@ -12287,6 +12623,280 @@ func migrationAddBatchJobsTable(ctx context.Context, db *gorm.DB, logger schemas
 	return nil
 }
 
+// readComplexityConfigRow returns a governance_config value, or "" when the row
+// is absent or blank.
+func readComplexityConfigRow(tx *gorm.DB, key string) (string, error) {
+	var entry tables.TableGovernanceConfig
+	err := tx.First(&entry, "key = ?", key).Error
+	if err == gorm.ErrRecordNotFound {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("query persisted %s: %w", key, err)
+	}
+	return strings.TrimSpace(entry.Value), nil
+}
+
+// preSplitComplexityAnalyzerRow is an analyzer row written before the lexical
+// and semantic configs moved into separate rows.
+type preSplitComplexityAnalyzerRow struct {
+	Keywords     ComplexityEditableKeywordConfig
+	Semantic     *ComplexitySemanticConfig
+	LLM          *ComplexityLLMConfig
+	ConfigHashes ComplexityAnalyzerConfigHashes
+	// semanticUnreadable and llmUnreadable hold the reason a block was skipped,
+	// if it was present but could not be decoded.
+	semanticUnreadable string
+	llmUnreadable      string
+}
+
+// complexityConfigFromPreSplitAnalyzerRow reads everything worth carrying out of
+// a pre-split analyzer row.
+//
+// Both keyword spellings are accepted: an installation upgrading from a release
+// carries the four-list lexical shape, and one upgrading from a pre-split build
+// of this version carries the canonical three.
+//
+// The semantic block is decoded on a best-effort basis and reported rather than
+// returned as an error. A build further up the stack may have written fields
+// this version has no name for, and refusing to migrate at all would be a worse
+// outcome than continuing without a section that was never readable here.
+func complexityConfigFromPreSplitAnalyzerRow(data []byte) (preSplitComplexityAnalyzerRow, error) {
+	var row struct {
+		Keywords     ComplexityEditableKeywordConfig `json:"keywords"`
+		Semantic     json.RawMessage                 `json:"semantic"`
+		LLM          json.RawMessage                 `json:"llm"`
+		ConfigHashes ComplexityAnalyzerConfigHashes  `json:"_config_hashes"`
+	}
+	if err := json.Unmarshal(data, &row); err != nil {
+		return preSplitComplexityAnalyzerRow{}, err
+	}
+
+	out := preSplitComplexityAnalyzerRow{
+		Keywords:     row.Keywords,
+		ConfigHashes: row.ConfigHashes,
+	}
+	if len(row.Semantic) > 0 && string(row.Semantic) != "null" {
+		var semantic ComplexitySemanticConfig
+		if err := json.Unmarshal(row.Semantic, &semantic); err != nil {
+			out.semanticUnreadable = err.Error()
+			out.ConfigHashes.SemanticSettings = ""
+		} else {
+			out.Semantic = &semantic
+		}
+	}
+	// The llm block travels with the semantic settings it backs: without it, a
+	// carried-over "fallback": "llm" would name a classifier that is not there,
+	// which Validate rejects.
+	if len(row.LLM) > 0 && string(row.LLM) != "null" {
+		var llm ComplexityLLMConfig
+		if err := json.Unmarshal(row.LLM, &llm); err != nil {
+			out.llmUnreadable = err.Error()
+			out.ConfigHashes.LLMSettings = ""
+			if out.Semantic != nil && strings.EqualFold(strings.TrimSpace(out.Semantic.Fallback), ComplexitySemanticFallbackLLM) {
+				// The selector goes with the block it selects. Left alone it
+				// names a classifier that is not there, which is what Validate
+				// rejects -- and the caller drops the whole carried config over
+				// it, not just the block that could not be read. Its section
+				// hash goes too, so a config.json that still asks for the llm
+				// fallback re-applies both blocks on the next boot.
+				out.Semantic.Fallback = ComplexitySemanticFallbackNone
+				out.ConfigHashes.SemanticSettings = ""
+			}
+		} else {
+			out.LLM = &llm
+		}
+	}
+	return out, nil
+}
+
+// migrationBackfillDefaultComplexityExemplars appends the curated semantic
+// exemplars to persisted complexity configurations created before those
+// defaults existed. Existing phrases and tier assignments always win.
+func migrationBackfillDefaultComplexityExemplars(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "backfill_default_complexity_exemplars_v2"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			analyzerRaw, err := readComplexityConfigRow(tx, tables.ConfigComplexityAnalyzerConfigKey)
+			if err != nil {
+				return err
+			}
+			semanticRaw, err := readComplexityConfigRow(tx, tables.ConfigComplexitySemanticConfigKey)
+			if err != nil {
+				return err
+			}
+			if analyzerRaw == "" && semanticRaw == "" {
+				// Fresh install: nothing has been persisted for either
+				// classifier, so the defaults apply without being written down.
+				return nil
+			}
+
+			semanticRow, err := decodeComplexitySemanticConfigRow([]byte(semanticRaw))
+			if err != nil {
+				// The row is there but this version cannot read it, most often
+				// because a build further up the stack wrote a field this one has
+				// no name for: ComplexitySemanticConfig rejects unknown fields.
+				// Failing would abort this migration and every migration queued
+				// behind it, and treating the row as absent would rebuild it from
+				// the pre-split analyzer row, overwriting whatever it actually
+				// holds. The backfill is dropped instead and the row is left
+				// exactly as it was, the same trade the validation failure below
+				// makes.
+				logger.Warn("[configstore] %s: skipped exemplar backfill, the persisted semantic config is unreadable: %v",
+					migrationName, err)
+				return nil
+			}
+
+			var config ComplexityAnalyzerConfig
+			if semanticRow != nil {
+				config.Keywords = semanticRow.Keywords
+				config.Semantic = semanticRow.Semantic
+			} else if analyzerRaw != "" {
+				// Nothing has been written to the semantic row yet, so this
+				// installation predates the split. Whatever its analyzer row
+				// holds is what it has been routing with, so it seeds the
+				// semantic row rather than being dropped for the defaults.
+				preSplit, err := complexityConfigFromPreSplitAnalyzerRow([]byte(analyzerRaw))
+				if err != nil {
+					return fmt.Errorf("read exemplars from persisted complexity analyzer config: %w", err)
+				}
+				config.Keywords = preSplit.Keywords
+				config.Semantic = preSplit.Semantic
+				// The semantic row owns the keyword sections after the split, so it
+				// owns their section hashes too. Dropping them here would leave the
+				// row looking like the config file's keyword sections had never been
+				// applied, and the next sync would reapply them over the phrases this
+				// installation has been routing with.
+				config.ConfigHashes.SimpleKeywords = preSplit.ConfigHashes.SimpleKeywords
+				config.ConfigHashes.MediumKeywords = preSplit.ConfigHashes.MediumKeywords
+				config.ConfigHashes.ComplexKeywords = preSplit.ConfigHashes.ComplexKeywords
+				config.LLM = preSplit.LLM
+				config.ConfigHashes.SemanticSettings = preSplit.ConfigHashes.SemanticSettings
+				config.ConfigHashes.LLMSettings = preSplit.ConfigHashes.LLMSettings
+				if preSplit.llmUnreadable != "" {
+					logger.Warn("[configstore] %s: could not carry the pre-split llm block forward: %s",
+						migrationName, preSplit.llmUnreadable)
+				}
+				if preSplit.semanticUnreadable != "" {
+					// A semantic block this version cannot parse comes from a
+					// build further up the stack. Dropping it is better than
+					// failing the migration, but it is not silent.
+					logger.Warn("[configstore] %s: could not carry the pre-split semantic block forward: %s",
+						migrationName, preSplit.semanticUnreadable)
+				}
+			}
+
+			added := appendMissingDefaultComplexityExemplars(&config, legacyComplexityExemplarsV2())
+			if added == 0 && semanticRow != nil {
+				return nil
+			}
+
+			// Normalize before persisting: appendMissingDefaultComplexityExemplars
+			// adds the curated phrases in their authored form, and persisted
+			// phrases are stored lowercased and deduplicated.
+			normalized := config.Normalized()
+			if err := normalized.Validate(); err != nil {
+				// The stored config is what this installation has been routing
+				// with, and the backfill only meant to add phrases to it.
+				// Failing here would abort this migration and every migration
+				// queued behind it, so the backfill is dropped and the stored
+				// config is left exactly as it was.
+				logger.Warn("[configstore] %s: skipped exemplar backfill, the result does not validate: %v",
+					migrationName, err)
+				return nil
+			}
+
+			record := complexitySemanticConfigRecord{
+				Keywords: normalized.Keywords,
+				Semantic: normalized.Semantic,
+				LLM:      normalized.LLM,
+				ConfigHashes: complexitySemanticRowHashes{
+					SimpleKeywords:   config.ConfigHashes.SimpleKeywords,
+					MediumKeywords:   config.ConfigHashes.MediumKeywords,
+					ComplexKeywords:  config.ConfigHashes.ComplexKeywords,
+					SemanticSettings: config.ConfigHashes.SemanticSettings,
+					LLMSettings:      config.ConfigHashes.LLMSettings,
+				},
+			}
+			if semanticRow != nil {
+				record.ConfigHashes = semanticRow.ConfigHashes
+				// The fingerprint records which exemplars were embedded, and
+				// those just changed, so whatever it names is stale. It is left
+				// blank rather than carried over.
+			}
+			raw, err := json.Marshal(record)
+			if err != nil {
+				return fmt.Errorf("encode complexity semantic config after exemplar backfill: %w", err)
+			}
+
+			if err := tx.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "key"}},
+				DoUpdates: clause.AssignmentColumns([]string{"value"}),
+			}).Create(&tables.TableGovernanceConfig{
+				Key:   tables.ConfigComplexitySemanticConfigKey,
+				Value: string(raw),
+			}).Error; err != nil {
+				return fmt.Errorf("persist complexity semantic exemplar backfill: %w", err)
+			}
+
+			logger.Info("[configstore] %s: added %d default complexity exemplars", migrationName, added)
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			// Removing phrases later would also remove administrator-owned data
+			// that happens to match a default exemplar.
+			return fmt.Errorf("%s is non-rollbackable: appended default phrases cannot be distinguished safely from administrator-owned phrases", migrationName)
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+func appendMissingDefaultComplexityExemplars(config *ComplexityAnalyzerConfig, defaults ComplexityEditableKeywordConfig) int {
+	type tierPhrases struct {
+		values   *[]string
+		defaults []string
+	}
+	tiers := []tierPhrases{
+		{values: &config.Keywords.SimpleKeywords, defaults: defaults.SimpleKeywords},
+		{values: &config.Keywords.MediumKeywords, defaults: defaults.MediumKeywords},
+		{values: &config.Keywords.ComplexKeywords, defaults: defaults.ComplexKeywords},
+	}
+
+	seen := make(map[string]struct{})
+	for _, tier := range tiers {
+		for _, phrase := range *tier.values {
+			seen[normalizeComplexityExemplarKey(phrase)] = struct{}{}
+		}
+	}
+
+	added := 0
+	for _, tier := range tiers {
+		for _, phrase := range tier.defaults {
+			key := normalizeComplexityExemplarKey(phrase)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			*tier.values = append(*tier.values, phrase)
+			seen[key] = struct{}{}
+			added++
+		}
+	}
+	return added
+}
+
+func normalizeComplexityExemplarKey(phrase string) string {
+	return strings.ToLower(strings.Join(strings.Fields(phrase), " "))
+}
+
 // migrationAddImageMegapixelTierPricingColumns adds the megapixel-banded output
 // image cost tier columns (output_cost_per_image_above_{4,8,16,32,64}_megapixels),
 // used by providers (e.g. Replicate's upscaler models) that publish tiered
@@ -12808,6 +13418,222 @@ func migrationAddDatabricksKeyConfigColumns(ctx context.Context, db *gorm.DB, lo
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running databricks key config columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// githubCopilotConfigColumns are the GitHub App credential columns on the key table.
+var githubCopilotConfigColumns = []string{
+	"github_copilot_app_id",
+	"github_copilot_installation_id",
+	"github_copilot_repository_id",
+	"github_copilot_private_key",
+	"github_copilot_github_domain",
+}
+
+// migrationAddGithubCopilotConfigColumns adds the GitHub App credential columns to the key
+// table. There is nothing to backfill: github-copilot is a new provider, so no existing row
+// can carry these values.
+func migrationAddGithubCopilotConfigColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_github_copilot_config_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, column := range githubCopilotConfigColumns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableKey{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: rollbackGithubCopilotConfigColumns,
+	}})
+
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// rollbackGithubCopilotConfigColumns refuses rather than dropping, unlike most column
+// migrations in this file. github_copilot_private_key holds a GitHub App private key, which
+// GitHub lets you download exactly once: dropping it does not lose a recomputable config
+// value, it forces the operator to generate a new key on GitHub and re-install the App. The
+// columns are additive, so an older binary ignores them and there is nothing to undo.
+func rollbackGithubCopilotConfigColumns(*gorm.DB) error {
+	return fmt.Errorf("add_github_copilot_config_columns is non-rollbackable: dropping the github_copilot_* columns would permanently delete every stored GitHub App private key, which GitHub only issues once and cannot re-supply; the columns are additive and older binaries safely ignore them")
+}
+
+// migrationAddHiddenRequestTypesJSONColumn adds the hidden_request_types_json column to
+// config_client so hidden request types can be edited from the UI as well as config.json.
+// Existing rows get an empty list; a value in config.json's client section reconciles in on boot.
+func migrationAddHiddenRequestTypesJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_hidden_request_types_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "HiddenRequestTypesJSON"); err != nil {
+				return fmt.Errorf("failed to add hidden_request_types_json column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "hidden_request_types_json"); err != nil {
+				return fmt.Errorf("failed to drop hidden_request_types_json column: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddUseOpenAIEndpointsColumn adds the use_openai_endpoints column to the config_keys table.
+func migrationAddUseOpenAIEndpointsColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_use_openai_endpoints_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableKey{}, "use_openai_endpoints"); err != nil {
+				return fmt.Errorf("failed to add use_openai_endpoints column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "use_openai_endpoints"); err != nil {
+				return fmt.Errorf("failed to drop use_openai_endpoints column: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("failed to run migration %s: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddTimeOfDayPricingColumns adds the peak/off-peak pricing columns to
+// governance_model_pricing. Providers such as DeepSeek bill the same model at
+// two different rates depending on the time of day; off_peak_cost_multiplier
+// scales usage-based charges outside the windows declared in peak_hours.
+func migrationAddTimeOfDayPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_time_of_day_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{
+		"off_peak_cost_multiplier",
+		"peak_hours",
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddKeyModelPatternsJSONColumns adds models_patterns_json and
+// blacklisted_models_patterns_json to config_keys: the RE2 pattern twins of
+// models_json and blacklisted_models_json. No backfill: a NULL or empty column
+// reads as no patterns.
+func migrationAddKeyModelPatternsJSONColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_key_model_patterns_json_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{"models_patterns_json", "blacklisted_models_patterns_json"}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, column := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableKey{}, column); err != nil {
+					return fmt.Errorf("failed to add %s column: %w", column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, column := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, column); err != nil {
+					return fmt.Errorf("failed to drop %s column: %w", column, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// migrationAddVirtualKeyModelPatternsColumns adds allowed_models_patterns and
+// blacklisted_models_patterns to governance_virtual_key_provider_configs: the
+// RE2 pattern twins of allowed_models and blacklisted_models. No backfill: a
+// NULL column reads as no patterns, and config hashes only include the
+// patterns when set, so existing virtual keys keep their hash.
+func migrationAddVirtualKeyModelPatternsColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_vk_provider_config_model_patterns_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{"allowed_models_patterns", "blacklisted_models_patterns"}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, column := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableVirtualKeyProviderConfig{}, column); err != nil {
+					return fmt.Errorf("failed to add %s column: %w", column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, column := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableVirtualKeyProviderConfig{}, column); err != nil {
+					return fmt.Errorf("failed to drop %s column: %w", column, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
 	}
 	return nil
 }

@@ -618,21 +618,32 @@ func (a *Access) permitAllowsModel(p schemas.Permit, provider string, model stri
 		return false
 	}
 	pps := p.ProviderPermits()
+	found := false
 	for i := range pps {
 		pp := &pps[i]
 		if pp.Provider != provider {
 			continue
 		}
+		found = true
 		if a.permitsModel(pp, model) {
 			return true
 		}
 	}
+	// A provider the permit lists keeps its own model rules even under allow-all; only a provider it
+	// lists no permit for is opened up by allow-all, and then every model of it is allowed.
+	if !found && p.AllowsAllProviders() {
+		return true
+	}
 	return false
 }
 
-// permitsModel applies one provider permit's allowed-models rule, through the matcher when there is
-// one and by name otherwise.
+// permitsModel applies one provider permit's allow side: an allow pattern admits the model
+// outright, otherwise the exact list decides, through the matcher when there is one and by
+// name otherwise. Patterns need no catalog, which is why they skip the matcher.
 func (a *Access) permitsModel(pp *schemas.ProviderPermit, model string) bool {
+	if pp.AllowedModelsPatterns.Matches(pp.Provider, model) {
+		return true
+	}
 	if a.matcher == nil {
 		return pp.AllowedModels.IsAllowed(model)
 	}

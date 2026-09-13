@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -827,8 +828,8 @@ func TestDrainNonSSEStreamReader_SSEWithoutContentTypeStillReadable(t *testing.T
 	defer fasthttp.ReleaseResponse(resp)
 
 	body := []byte("event: response.created\n\ndata: {\"type\":\"response.completed\"}\n\n")
-	reader, drained := DrainNonSSEStreamReader(resp, bytes.NewReader(body))
-	if drained {
+	reader, nonSSE := DrainNonSSEStreamReader(resp, bytes.NewReader(body))
+	if nonSSE != nil {
 		t.Fatal("expected SSE-looking response without content type to remain readable")
 	}
 
@@ -853,8 +854,8 @@ func TestDrainNonSSEStreamReader_GzipSSEWithoutContentTypeStillReadable(t *testi
 	decompressed, releaseGzip := DecompressStreamBody(resp)
 	defer releaseGzip()
 
-	reader, drained := DrainNonSSEStreamReader(resp, decompressed)
-	if drained {
+	reader, nonSSE := DrainNonSSEStreamReader(resp, decompressed)
+	if nonSSE != nil {
 		t.Fatal("expected decompressed SSE-looking response without content type to remain readable")
 	}
 
@@ -872,8 +873,8 @@ func TestDrainNonSSEStreamReader_JSONWithoutContentTypeDrains(t *testing.T) {
 	defer fasthttp.ReleaseResponse(resp)
 
 	body := []byte(`{"error":"not stream"}`)
-	reader, drained := DrainNonSSEStreamReader(resp, bytes.NewReader(body))
-	if !drained {
+	reader, nonSSE := DrainNonSSEStreamReader(resp, bytes.NewReader(body))
+	if nonSSE == nil {
 		t.Fatal("expected JSON response without content type to be drained")
 	}
 	if reader != nil {
@@ -881,17 +882,23 @@ func TestDrainNonSSEStreamReader_JSONWithoutContentTypeDrains(t *testing.T) {
 	}
 }
 
-func TestDrainNonSSEStreamReader_UppercaseSSEPrefixDrains(t *testing.T) {
+func TestDrainNonSSEStreamReader_UppercaseSSEPrefixIsReadable(t *testing.T) {
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseResponse(resp)
 
+	// Case folding was added deliberately: an upstream that capitalises its field
+	// names still sends usable SSE, and discarding it lost a working stream.
 	body := []byte("DATA: {\"type\":\"response.completed\"}\n\n")
-	reader, drained := DrainNonSSEStreamReader(resp, bytes.NewReader(body))
-	if !drained {
-		t.Fatal("expected uppercase SSE-like prefix to be treated as non-SSE")
+	reader, nonSSE := DrainNonSSEStreamReader(resp, bytes.NewReader(body))
+	if nonSSE != nil {
+		t.Fatalf("expected uppercase SSE prefix to remain readable, drained as %v", nonSSE.Kind)
 	}
-	if reader != nil {
-		t.Fatal("expected drained response to return nil reader")
+	remaining, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("failed to read body: %v", err)
+	}
+	if string(remaining) != string(body) {
+		t.Fatalf("expected body %q, got %q", body, remaining)
 	}
 }
 
@@ -900,8 +907,8 @@ func TestDrainNonSSEStreamReader_ShortReadSSEPrefix(t *testing.T) {
 	defer fasthttp.ReleaseResponse(resp)
 
 	body := []byte("event: response.created\n\ndata: {}\n\n")
-	reader, drained := DrainNonSSEStreamReader(resp, &shortReadReader{data: body, chunkSize: 3})
-	if drained {
+	reader, nonSSE := DrainNonSSEStreamReader(resp, &shortReadReader{data: body, chunkSize: 3})
+	if nonSSE != nil {
 		t.Fatal("expected SSE stream with short-read prefix to remain readable")
 	}
 
@@ -911,6 +918,73 @@ func TestDrainNonSSEStreamReader_ShortReadSSEPrefix(t *testing.T) {
 	}
 	if string(remaining) != string(body) {
 		t.Fatalf("expected body %q, got %q", body, remaining)
+	}
+}
+
+// TestDrainNonSSEStreamReader_TrimmableOnlyFirstReadIsStillSSE covers an
+// upstream whose first read carries nothing but a UTF-8 BOM or leading
+// horizontal whitespace. hasSSEPrefix only inspects what Peek(1) happened to
+// buffer, so trimSSELeading emptied that window and the stream was written off
+// as non-SSE - draining a perfectly valid SSE body and reporting
+// StreamBodyNonSSE.
+func TestDrainNonSSEStreamReader_TrimmableOnlyFirstReadIsStillSSE(t *testing.T) {
+	tests := []struct {
+		name string
+		body []byte
+		// chunkSize 3 makes the first Read deliver exactly the trimmable bytes
+		// and nothing else, which is what an upstream flushing the BOM
+		// separately from the first field name looks like on the wire.
+		// chunkSize 1 goes further and splits the BOM itself: trimSSELeading
+		// cannot strip a 3-byte prefix it has only seen one byte of, so the
+		// window is neither empty nor conclusive and a single extra Peek is not
+		// enough to resolve it.
+		chunkSize int
+	}{
+		{
+			name:      "bom alone in the first read",
+			body:      append([]byte{0xEF, 0xBB, 0xBF}, []byte("data: {\"id\":\"1\"}\n\n")...),
+			chunkSize: 3,
+		},
+		{
+			name:      "whitespace alone in the first read",
+			body:      []byte("   data: {\"id\":\"1\"}\n\n"),
+			chunkSize: 3,
+		},
+		{
+			name:      "bom fragmented one byte at a time",
+			body:      append([]byte{0xEF, 0xBB, 0xBF}, []byte("data: {\"id\":\"1\"}\n\n")...),
+			chunkSize: 1,
+		},
+		{
+			name:      "bom then whitespace fragmented one byte at a time",
+			body:      append([]byte{0xEF, 0xBB, 0xBF}, []byte("  data: {\"id\":\"1\"}\n\n")...),
+			chunkSize: 1,
+		},
+		{
+			name:      "whitespace fragmented one byte at a time",
+			body:      []byte("   data: {\"id\":\"1\"}\n\n"),
+			chunkSize: 1,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := fasthttp.AcquireResponse()
+			defer fasthttp.ReleaseResponse(resp)
+
+			reader, nonSSE := DrainNonSSEStreamReader(resp, &shortReadReader{data: tc.body, chunkSize: tc.chunkSize})
+			if nonSSE != nil {
+				t.Fatalf("expected a readable SSE stream, got non-SSE verdict %v with sample %q", nonSSE.Kind, nonSSE.Sample)
+			}
+
+			remaining, err := io.ReadAll(reader)
+			if err != nil {
+				t.Fatalf("failed to read after the trimmable-prefix guard: %v", err)
+			}
+			if string(remaining) != string(tc.body) {
+				t.Fatalf("expected body %q, got %q", tc.body, remaining)
+			}
+		})
 	}
 }
 
@@ -942,11 +1016,11 @@ func TestDrainNonSSEStreamReader_TinyOpenSSEPrefixReturnsPromptly(t *testing.T) 
 				drained bool
 			}, 1)
 			go func() {
-				reader, drained := DrainNonSSEStreamReader(resp, pr)
+				reader, nonSSE := DrainNonSSEStreamReader(resp, pr)
 				result <- struct {
 					reader  io.Reader
 					drained bool
-				}{reader: reader, drained: drained}
+				}{reader: reader, drained: nonSSE != nil}
 			}()
 
 			var got struct {
@@ -1014,11 +1088,11 @@ func TestDrainNonSSEStreamReader_FragmentedFieldPrefixReturnsPromptly(t *testing
 				drained bool
 			}, 1)
 			go func() {
-				reader, drained := DrainNonSSEStreamReader(resp, pr)
+				reader, nonSSE := DrainNonSSEStreamReader(resp, pr)
 				result <- struct {
 					reader  io.Reader
 					drained bool
-				}{reader: reader, drained: drained}
+				}{reader: reader, drained: nonSSE != nil}
 			}()
 
 			var got struct {
@@ -1124,8 +1198,8 @@ func TestDrainNonSSEStreamReader_CodexNoContentType(t *testing.T) {
 	reader, releaseGzip := DecompressStreamBody(resp)
 	defer releaseGzip()
 
-	reader, drained := DrainNonSSEStreamReader(resp, reader)
-	if drained {
+	reader, nonSSE := DrainNonSSEStreamReader(resp, reader)
+	if nonSSE != nil {
 		t.Fatal("SSE body without Content-Type was drained — reproduces the original Codex hang")
 	}
 
@@ -2216,10 +2290,12 @@ func TestProviderSendsDoneMarker(t *testing.T) {
 		// Providers that don't send a [DONE] marker; stream ends on finish_reason.
 		{schemas.Cerebras, false},
 		{schemas.Perplexity, false},
-		{schemas.Bedrock, false},
-		{schemas.BedrockMantle, false},
 		// Providers that do send a [DONE] marker.
 		{schemas.OpenAI, true},
+		// Bedrock Mantle sends [DONE] and, with include_usage, a usage-only chunk after
+		// finish_reason. schemas.Bedrock only reaches this loop via the legacy Mantle route.
+		{schemas.Bedrock, true},
+		{schemas.BedrockMantle, true},
 		{schemas.Azure, true},
 		{schemas.Anthropic, true},
 		{schemas.Groq, true},
@@ -2233,9 +2309,836 @@ func TestProviderSendsDoneMarker(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(string(tt.provider), func(t *testing.T) {
-			if got := ProviderSendsDoneMarker(tt.provider); got != tt.want {
+			if got := ProviderSendsDoneMarker(nil, tt.provider); got != tt.want {
 				t.Errorf("ProviderSendsDoneMarker(%s) = %v, want %v", tt.provider, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestProviderSendsDoneMarkerCustomProviderOptIn covers custom_provider_config.does_not_send_done_marker,
+// which core stamps on the context per attempt. An OpenAI-compatible upstream that ends its stream on
+// finish_reason without [DONE] otherwise keeps the read loop open for as long as it sends SSE heartbeats,
+// since heartbeat bytes reset the idle timeout without making semantic progress.
+func TestProviderSendsDoneMarkerCustomProviderOptIn(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	if !ProviderSendsDoneMarker(ctx, schemas.OpenAI) {
+		t.Fatal("without the opt-in, an OpenAI-based custom provider must still wait for [DONE]")
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyDoesNotSendDoneMarker, true)
+	if ProviderSendsDoneMarker(ctx, schemas.OpenAI) {
+		t.Error("opt-in must end the stream on finish_reason instead of waiting for [DONE]")
+	}
+	// The opt-in only ever ends the loop earlier; it can never make a provider that
+	// already terminates on finish_reason start waiting for a marker it never sends.
+	if ProviderSendsDoneMarker(ctx, schemas.Cerebras) {
+		t.Error("opt-in must not flip a provider that never sends [DONE] back to waiting for one")
+	}
+
+	// A fallback attempt onto a provider without the opt-in clears the key.
+	ctx.ClearValue(schemas.BifrostContextKeyDoesNotSendDoneMarker)
+	if !ProviderSendsDoneMarker(ctx, schemas.OpenAI) {
+		t.Error("cleared opt-in must fall back to the built-in provider default")
+	}
+}
+
+// namespaceFunctionTool builds a nested function tool for a namespace fixture.
+func namespaceFunctionTool(name string) schemas.ResponsesTool {
+	return schemas.ResponsesTool{
+		Type:                  schemas.ResponsesToolTypeFunction,
+		Name:                  new(name),
+		Description:           new("Run JavaScript"),
+		ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+	}
+}
+
+// namespaceTool builds a namespace tool wrapping the given nested tools.
+func namespaceTool(name string, nested ...schemas.ResponsesTool) schemas.ResponsesTool {
+	return schemas.ResponsesTool{
+		Type:                   schemas.ResponsesToolTypeNamespace,
+		Name:                   new(name),
+		ResponsesToolNamespace: &schemas.ResponsesToolNamespace{Tools: nested},
+	}
+}
+
+// issue7048Request is the reproduction from GitHub issue #7048: two namespaces that
+// both contain a function named "js". Flattening without a prefix produces two
+// top-level tools named "js", which the upstream rejects with "Tool names must be
+// unique".
+func issue7048Request() *schemas.BifrostResponsesRequest {
+	return &schemas.BifrostResponsesRequest{
+		Provider: schemas.DeepSeek,
+		Model:    "deepseek-v4.1-flash",
+		Input: []schemas.ResponsesMessage{{
+			Role:    new(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: new("Test the tools")},
+		}},
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				namespaceTool("namespace_a", namespaceFunctionTool("js")),
+				namespaceTool("namespace_b", namespaceFunctionTool("js")),
+			},
+		},
+	}
+}
+
+func toolNames(tools []schemas.ResponsesTool) []string {
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		if tool.Name != nil {
+			names = append(names, *tool.Name)
+		} else {
+			names = append(names, "")
+		}
+	}
+	return names
+}
+
+func TestFlattenResponsesNamespaceTools_IssuePayloadGetsUniquePrefixedNames(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := issue7048Request()
+
+	out, bifrostErr := FlattenResponsesNamespaceTools(ctx, req)
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr.Error.Message)
+	}
+	if out == req {
+		t.Fatal("a flattening attempt must dispatch a copy, not the shared request")
+	}
+
+	got := toolNames(out.Params.Tools)
+	want := []string{"namespace_a__js", "namespace_b__js"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("flattened tool names = %v, want %v", got, want)
+	}
+	for _, tool := range out.Params.Tools {
+		if tool.Type != schemas.ResponsesToolTypeFunction {
+			t.Errorf("flattened tool %q has type %q, want function", *tool.Name, tool.Type)
+		}
+	}
+
+	aliases := out.NamespaceToolAliases
+	if aliases["namespace_a__js"] != (schemas.NamespaceToolAlias{Namespace: "namespace_a", Name: "js"}) {
+		t.Errorf("alias map missing namespace_a__js, got %+v", aliases)
+	}
+	if aliases["namespace_b__js"] != (schemas.NamespaceToolAlias{Namespace: "namespace_b", Name: "js"}) {
+		t.Errorf("alias map missing namespace_b__js, got %+v", aliases)
+	}
+
+	// Fallback isolation: the shared request still carries the caller's namespaces.
+	if len(req.Params.Tools) != 2 || req.Params.Tools[0].Type != schemas.ResponsesToolTypeNamespace {
+		t.Fatalf("the shared request was mutated: %v", toolNames(req.Params.Tools))
+	}
+}
+
+func TestFlattenResponsesNamespaceTools_NoNamespaceReturnsSamePointer(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := issue7048Request()
+	req.Params.Tools = []schemas.ResponsesTool{namespaceFunctionTool("plain")}
+
+	out, bifrostErr := FlattenResponsesNamespaceTools(ctx, req)
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr.Error.Message)
+	}
+	if out != req {
+		t.Fatal("a request without namespace tools must pass through untouched")
+	}
+	if out.NamespaceToolAliases != nil {
+		t.Fatal("no alias map may be set when nothing was flattened")
+	}
+}
+
+// The alias map rides on the prepared copy only. The shared request, which survives
+// across retries and fallbacks, never carries one, so a later attempt on a wire that
+// accepts namespaces has nothing to restore.
+func TestFlattenResponsesNamespaceTools_AliasesLiveOnThePreparedCopyOnly(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := issue7048Request()
+
+	out, bifrostErr := FlattenResponsesNamespaceTools(ctx, req)
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr.Error.Message)
+	}
+	if len(out.NamespaceToolAliases) != 2 {
+		t.Fatalf("the prepared copy must carry the alias map, got %v", out.NamespaceToolAliases)
+	}
+	if req.NamespaceToolAliases != nil {
+		t.Fatal("the shared request must never carry an alias map")
+	}
+}
+
+func TestFlattenResponsesNamespaceTools_RewritesInputHistoryAndToolChoice(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := issue7048Request()
+	req.Params.Tools = []schemas.ResponsesTool{
+		namespaceTool("namespace_a", namespaceFunctionTool("js")),
+		namespaceTool("namespace_b", namespaceFunctionTool("js_reset")),
+	}
+	// Second turn: the caller echoes the namespaced call OpenAI-style, plus its output.
+	req.Input = append(req.Input,
+		schemas.ResponsesMessage{
+			Type: new(schemas.ResponsesMessageTypeFunctionCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID:    new("call_1"),
+				Name:      new("js"),
+				Namespace: new("namespace_a"),
+				Arguments: new("{}"),
+			},
+		},
+		schemas.ResponsesMessage{
+			Type: new(schemas.ResponsesMessageTypeFunctionCallOutput),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: new("call_1"),
+				Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: new("ok")},
+			},
+		},
+	)
+	req.Params.ToolChoice = &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+		Type: schemas.ResponsesToolChoiceTypeFunction,
+		Name: new("js_reset"),
+	}}
+
+	out, bifrostErr := FlattenResponsesNamespaceTools(ctx, req)
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr.Error.Message)
+	}
+
+	call := out.Input[1].ResponsesToolMessage
+	if call.Name == nil || *call.Name != "namespace_a__js" || call.Namespace != nil {
+		t.Fatalf("history function_call not re-aliased: name=%v namespace=%v", call.Name, call.Namespace)
+	}
+	if out.Input[2].ResponsesToolMessage.Output == nil {
+		t.Fatal("function_call_output must pass through untouched")
+	}
+	if got := *out.Params.ToolChoice.ResponsesToolChoiceStruct.Name; got != "namespace_b__js_reset" {
+		t.Fatalf("tool_choice name = %q, want namespace_b__js_reset", got)
+	}
+
+	// The shared request keeps the caller's shape.
+	orig := req.Input[1].ResponsesToolMessage
+	if *orig.Name != "js" || orig.Namespace == nil || *orig.Namespace != "namespace_a" {
+		t.Fatal("the shared request's history was mutated")
+	}
+	if *req.Params.ToolChoice.ResponsesToolChoiceStruct.Name != "js_reset" {
+		t.Fatal("the shared request's tool_choice was mutated")
+	}
+}
+
+func TestFlattenResponsesNamespaceTools_ResidualDuplicateReturns400(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := issue7048Request()
+	req.Params.Tools = []schemas.ResponsesTool{
+		namespaceTool("a", namespaceFunctionTool("x")),
+		namespaceFunctionTool("a__x"),
+	}
+
+	out, bifrostErr := FlattenResponsesNamespaceTools(ctx, req)
+	if bifrostErr == nil {
+		t.Fatalf("expected a 400, got tools %v", toolNames(out.Params.Tools))
+	}
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 {
+		t.Fatalf("status = %v, want 400", bifrostErr.StatusCode)
+	}
+	if !strings.Contains(bifrostErr.Error.Message, `"a__x"`) {
+		t.Fatalf("error message should name the colliding tool, got %q", bifrostErr.Error.Message)
+	}
+}
+
+func TestFlattenResponsesNamespaceTools_AmbiguousToolChoiceReturns400(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := issue7048Request()
+	req.Params.ToolChoice = &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+		Type: schemas.ResponsesToolChoiceTypeFunction,
+		Name: new("js"),
+	}}
+
+	_, bifrostErr := FlattenResponsesNamespaceTools(ctx, req)
+	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 {
+		t.Fatalf("expected a 400 for a tool_choice that matches two namespaces, got %+v", bifrostErr)
+	}
+	if !strings.Contains(bifrostErr.Error.Message, "namespace_a") || !strings.Contains(bifrostErr.Error.Message, "namespace_b") {
+		t.Fatalf("error should list both namespaces, got %q", bifrostErr.Error.Message)
+	}
+}
+
+func TestFlattenResponsesNamespaceTools_DropsNonFunctionNestedTools(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := issue7048Request()
+	req.Params.Tools = []schemas.ResponsesTool{
+		namespaceTool("a", namespaceFunctionTool("x"), schemas.ResponsesTool{Type: schemas.ResponsesToolTypeWebSearch}),
+		namespaceTool("", namespaceFunctionTool("orphan")),
+	}
+
+	out, bifrostErr := FlattenResponsesNamespaceTools(ctx, req)
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr.Error.Message)
+	}
+	if got := toolNames(out.Params.Tools); strings.Join(got, ",") != "a__x" {
+		t.Fatalf("flattened tool names = %v, want [a__x]", got)
+	}
+	dropped, _ := ctx.Value(schemas.BifrostContextKeyDroppedUnsupportedTools).([]string)
+	if len(dropped) != 2 {
+		t.Fatalf("dropped tools = %v, want the nested web_search and the nameless namespace", dropped)
+	}
+}
+
+// Codex >= 0.147 wraps its default tools in a namespace literally named
+// "functions" (openai/codex#37022), which it treats as identical to no namespace.
+// Bedrock Mantle reserves that name and 400s. Unwrapping is identity-preserving,
+// so it runs for every provider, before the support check.
+func TestUnwrapDefaultNamespaceTools(t *testing.T) {
+	codexExec := schemas.ResponsesTool{
+		Type:                schemas.ResponsesToolTypeCustom,
+		Name:                new("exec"),
+		ResponsesToolCustom: &schemas.ResponsesToolCustom{},
+	}
+	functionsNS := namespaceTool("functions", codexExec, namespaceFunctionTool("wait"))
+	collab := namespaceTool("collaboration", namespaceFunctionTool("spawn"))
+
+	t.Run("hoists nested tools verbatim and keeps other namespaces", func(t *testing.T) {
+		req := issue7048Request()
+		req.Params.Tools = []schemas.ResponsesTool{functionsNS, collab, namespaceFunctionTool("plain")}
+
+		out, bifrostErr := UnwrapDefaultNamespaceTools(req)
+		if bifrostErr != nil {
+			t.Fatalf("unexpected error: %v", bifrostErr.Error.Message)
+		}
+		if out == req {
+			t.Fatal("an unwrapping attempt must dispatch a copy, not the shared request")
+		}
+		got := toolNames(out.Params.Tools)
+		if strings.Join(got, ",") != "exec,wait,collaboration,plain" {
+			t.Fatalf("tool names = %v, want [exec wait collaboration plain]", got)
+		}
+		if out.Params.Tools[0].Type != schemas.ResponsesToolTypeCustom {
+			t.Errorf("custom nested tool must keep its type, got %q", out.Params.Tools[0].Type)
+		}
+		if out.Params.Tools[2].Type != schemas.ResponsesToolTypeNamespace {
+			t.Errorf("a non-default namespace must be left intact, got %q", out.Params.Tools[2].Type)
+		}
+		if len(req.Params.Tools) != 3 || req.Params.Tools[0].Type != schemas.ResponsesToolTypeNamespace {
+			t.Fatal("the shared request was mutated")
+		}
+	})
+
+	t.Run("no functions namespace returns the same pointer", func(t *testing.T) {
+		req := issue7048Request()
+		req.Params.Tools = []schemas.ResponsesTool{collab}
+		out, bifrostErr := UnwrapDefaultNamespaceTools(req)
+		if bifrostErr != nil || out != req {
+			t.Fatal("a request without a functions namespace must pass through untouched")
+		}
+	})
+
+	t.Run("prepends the namespace description like flatten does", func(t *testing.T) {
+		described := functionsNS
+		described.Description = new("Default tools for this session")
+		req := issue7048Request()
+		req.Params.Tools = []schemas.ResponsesTool{described}
+
+		out, bifrostErr := UnwrapDefaultNamespaceTools(req)
+		if bifrostErr != nil {
+			t.Fatalf("unexpected error: %v", bifrostErr.Error.Message)
+		}
+		wait := out.Params.Tools[1]
+		if wait.Description == nil || *wait.Description != "Default tools for this session\n\nRun JavaScript" {
+			t.Fatalf("hoisted member description = %v, want the namespace description prepended", wait.Description)
+		}
+		if orig := req.Params.Tools[0].ResponsesToolNamespace.Tools[1].Description; orig == nil || *orig != "Run JavaScript" {
+			t.Fatal("the shared request's nested tool description was mutated")
+		}
+	})
+
+	t.Run("duplicate against a top-level tool is a 400", func(t *testing.T) {
+		req := issue7048Request()
+		req.Params.Tools = []schemas.ResponsesTool{functionsNS, namespaceFunctionTool("wait")}
+		_, bifrostErr := UnwrapDefaultNamespaceTools(req)
+		if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 {
+			t.Fatalf("expected a 400 for a name duplicated after unwrapping, got %+v", bifrostErr)
+		}
+	})
+}
+
+// The namespace's own description is context the nested tool loses when it is
+// hoisted, so it is prepended, blank-line separated, the way LiteLLM does it.
+func TestFlattenResponsesNamespaceTools_PrependsNamespaceDescription(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	described := namespaceTool("crm", namespaceFunctionTool("lookup"))
+	described.Description = new("CRM tools for customer lookup")
+	bare := namespaceFunctionTool("undescribed")
+	bare.Description = nil
+	describedOnlyNS := namespaceTool("billing", bare)
+	describedOnlyNS.Description = new("Billing tools")
+	req := issue7048Request()
+	req.Params.Tools = []schemas.ResponsesTool{
+		described,
+		describedOnlyNS,
+		namespaceTool("nodesc", namespaceFunctionTool("run")),
+	}
+
+	out, bifrostErr := FlattenResponsesNamespaceTools(ctx, req)
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr.Error.Message)
+	}
+	want := map[string]string{
+		"crm__lookup":          "CRM tools for customer lookup\n\nRun JavaScript",
+		"billing__undescribed": "Billing tools",
+		"nodesc__run":          "Run JavaScript",
+	}
+	for _, tool := range out.Params.Tools {
+		if tool.Description == nil {
+			t.Errorf("%s: description is nil", *tool.Name)
+			continue
+		}
+		if *tool.Description != want[*tool.Name] {
+			t.Errorf("%s: description = %q, want %q", *tool.Name, *tool.Description, want[*tool.Name])
+		}
+	}
+	if *req.Params.Tools[0].ResponsesToolNamespace.Tools[0].Description != "Run JavaScript" {
+		t.Fatal("the shared request's nested tool description was mutated")
+	}
+}
+
+// A model sometimes calls the bare nested name even though the definition was
+// prefixed. When that bare name lives in exactly one namespace and is not a
+// top-level tool, it is restored to that namespace; otherwise it is left alone.
+func TestRestoreResponsesNamespaceToolCalls_BareNameFallback(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := issue7048Request()
+	req.Params.Tools = []schemas.ResponsesTool{
+		namespaceTool("namespace_a", namespaceFunctionTool("js"), namespaceFunctionTool("unique_fn")),
+		namespaceTool("namespace_b", namespaceFunctionTool("js"), namespaceFunctionTool("shadowed")),
+		namespaceFunctionTool("shadowed"),
+	}
+	prepared, bifrostErr := FlattenResponsesNamespaceTools(ctx, req)
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr.Error.Message)
+	}
+	call := func(name string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Type:                 new(schemas.ResponsesMessageTypeFunctionCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: new("c"), Name: new(name), Arguments: new("{}")},
+		}
+	}
+	resp := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+		Output: []schemas.ResponsesMessage{call("unique_fn"), call("js"), call("shadowed")},
+	}}
+
+	RestoreResponsesNamespaceToolCalls(prepared.NamespaceToolAliases, resp)
+
+	out := resp.ResponsesResponse.Output
+	if *out[0].Name != "unique_fn" || out[0].Namespace == nil || *out[0].Namespace != "namespace_a" {
+		t.Errorf("unique bare name: got name=%q namespace=%v, want unique_fn in namespace_a", *out[0].Name, out[0].Namespace)
+	}
+	if out[1].Namespace != nil {
+		t.Errorf("ambiguous bare name js must not be assigned a namespace, got %q", *out[1].Namespace)
+	}
+	if out[2].Namespace != nil {
+		t.Errorf("a bare name that is also a top-level tool must not be assigned a namespace, got %q", *out[2].Namespace)
+	}
+}
+
+func TestRestoreResponsesNamespaceToolCalls(t *testing.T) {
+	aliasesFor := func(withAliases bool) map[string]schemas.NamespaceToolAlias {
+		if !withAliases {
+			return nil
+		}
+		return map[string]schemas.NamespaceToolAlias{"namespace_a__js": {Namespace: "namespace_a", Name: "js"}}
+	}
+	functionCall := func(name string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Type:                 new(schemas.ResponsesMessageTypeFunctionCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: new("call_1"), Name: new(name), Arguments: new("{}")},
+		}
+	}
+	assertRestored := func(t *testing.T, msg *schemas.ResponsesMessage) {
+		t.Helper()
+		if msg.Name == nil || *msg.Name != "js" || msg.Namespace == nil || *msg.Namespace != "namespace_a" {
+			t.Fatalf("function_call not restored: name=%v namespace=%v", msg.Name, msg.Namespace)
+		}
+	}
+
+	t.Run("unary output", func(t *testing.T) {
+		resp := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+			Output: []schemas.ResponsesMessage{functionCall("namespace_a__js"), functionCall("plain")},
+		}}
+		RestoreResponsesNamespaceToolCalls(aliasesFor(true), resp)
+		assertRestored(t, &resp.ResponsesResponse.Output[0])
+		if plain := resp.ResponsesResponse.Output[1]; *plain.Name != "plain" || plain.Namespace != nil {
+			t.Fatal("a tool that was never aliased must not be touched")
+		}
+	})
+
+	t.Run("stream output_item.added", func(t *testing.T) {
+		item := functionCall("namespace_a__js")
+		resp := &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type: schemas.ResponsesStreamResponseTypeOutputItemAdded,
+			Item: &item,
+		}}
+		RestoreResponsesNamespaceToolCalls(aliasesFor(true), resp)
+		assertRestored(t, resp.ResponsesStreamResponse.Item)
+	})
+
+	t.Run("stream response.completed", func(t *testing.T) {
+		resp := &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type:     schemas.ResponsesStreamResponseTypeCompleted,
+			Response: &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{functionCall("namespace_a__js")}},
+		}}
+		RestoreResponsesNamespaceToolCalls(aliasesFor(true), resp)
+		assertRestored(t, &resp.ResponsesStreamResponse.Response.Output[0])
+	})
+
+	t.Run("no alias map is a no-op", func(t *testing.T) {
+		resp := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+			Output: []schemas.ResponsesMessage{functionCall("namespace_a__js")},
+		}}
+		RestoreResponsesNamespaceToolCalls(aliasesFor(false), resp)
+		if got := resp.ResponsesResponse.Output[0]; *got.Name != "namespace_a__js" || got.Namespace != nil {
+			t.Fatal("without an alias map nothing may be rewritten")
+		}
+	})
+}
+
+func TestResponsesNamespaceToolsSupported(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	cases := []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		want     bool
+	}{
+		{"openai", schemas.OpenAI, "gpt-5.4", true},
+		{"azure openai", schemas.Azure, "gpt-5.4", true},
+		{"azure claude goes to the anthropic wire", schemas.Azure, "claude-sonnet-4", false},
+		{"bedrock mantle gpt", schemas.BedrockMantle, "openai.gpt-oss-120b", true},
+		{"bedrock mantle claude goes to the anthropic wire", schemas.BedrockMantle, "anthropic.claude-opus-5", false},
+		{"anthropic", schemas.Anthropic, "claude-sonnet-4", false},
+		{"gemini", schemas.Gemini, "gemini-2.5-pro", false},
+		{"deepseek (the issue)", schemas.DeepSeek, "deepseek-v4.1-flash", false},
+		{"unknown custom base", schemas.ModelProvider("my-custom"), "whatever", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ResponsesNamespaceToolsSupported(ctx, tc.provider, tc.model); got != tc.want {
+				t.Fatalf("ResponsesNamespaceToolsSupported(%s, %s) = %v, want %v", tc.provider, tc.model, got, tc.want)
+			}
+		})
+	}
+}
+
+// A datasheet row overrides the per-provider default in either direction, and is
+// looked up by the canonical model so an alias resolves to its real row.
+func TestResponsesNamespaceToolsSupported_DatasheetRowWins(t *testing.T) {
+	rows := map[schemas.ModelProvider]map[string]bool{
+		schemas.DeepSeek: {"deepseek-v4.1-flash": true},
+		schemas.OpenAI:   {"gpt-legacy": false},
+	}
+	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		supported, ok := rows[provider][model]
+		if !ok {
+			return nil
+		}
+		return &schemas.ModelCapabilities{SupportsNamespaceTools: new(supported)}
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	if !ResponsesNamespaceToolsSupported(ctx, schemas.DeepSeek, "deepseek-v4.1-flash") {
+		t.Error("a row saying supported must override the third-party default of false")
+	}
+	if ResponsesNamespaceToolsSupported(ctx, schemas.OpenAI, "gpt-legacy") {
+		t.Error("a row saying unsupported must override the OpenAI default of true")
+	}
+	if ResponsesNamespaceToolsSupported(ctx, schemas.DeepSeek, "deepseek-flash") {
+		t.Error("a model with no row must fall back to the per-provider default")
+	}
+
+	aliasCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	aliasCtx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: "fast", Config: &schemas.AliasConfig{ModelID: "deepseek-v4.1-flash"}})
+	if !ResponsesNamespaceToolsSupported(aliasCtx, schemas.DeepSeek, "fast") {
+		t.Error("the row must be looked up by the canonical model behind an alias")
+	}
+}
+
+// Every wire the flatten serves caps tool names: OpenAI-compatible and Bedrock Converse
+// at 64 characters of [A-Za-z0-9_-], Anthropic and Gemini at 128. A Codex MCP namespace
+// plus a tool name can exceed 64, so the alias must be capped and still deterministic:
+// history re-alias and tool_choice re-alias recompute it from (namespace, name) with no
+// state, so the same inputs must yield the same string every time.
+func TestFlattenResponsesNamespaceTools_CapsAliasLength(t *testing.T) {
+	validToolName := regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+	longNamespace := "mcp__" + strings.Repeat("server_with_a_very_long_name_", 2) // 63 chars
+	longFunction := "read_repository_file_contents_v2"                            // 32 chars
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := issue7048Request()
+	req.Params.Tools = []schemas.ResponsesTool{
+		namespaceTool(longNamespace, namespaceFunctionTool(longFunction)),
+		namespaceTool(longNamespace+"_two", namespaceFunctionTool(longFunction)),
+	}
+	req.Input = append(req.Input, schemas.ResponsesMessage{
+		Type: new(schemas.ResponsesMessageTypeFunctionCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: new("call_1"), Name: new(longFunction), Namespace: new(longNamespace), Arguments: new("{}"),
+		},
+	})
+
+	out, bifrostErr := FlattenResponsesNamespaceTools(ctx, req)
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr.Error.Message)
+	}
+	names := toolNames(out.Params.Tools)
+	if len(names) != 2 || names[0] == names[1] {
+		t.Fatalf("two long namespaces sharing a function must flatten to two distinct names, got %v", names)
+	}
+	for _, name := range names {
+		if !validToolName.MatchString(name) {
+			t.Errorf("flattened name %q (len %d) is outside the 64-char [A-Za-z0-9_-] wire contract", name, len(name))
+		}
+		if !strings.HasSuffix(name, longFunction) && !strings.Contains(name, longFunction[:20]) {
+			t.Errorf("flattened name %q must keep the function name readable", name)
+		}
+	}
+
+	aliases := out.NamespaceToolAliases
+	if got := aliases[names[0]]; got != (schemas.NamespaceToolAlias{Namespace: longNamespace, Name: longFunction}) {
+		t.Fatalf("alias map for %q = %+v, want the original namespace and name", names[0], got)
+	}
+
+	// Determinism: the history item re-aliases to the very same string.
+	call := out.Input[1].ResponsesToolMessage
+	if call.Name == nil || *call.Name != names[0] || call.Namespace != nil {
+		t.Fatalf("history function_call re-aliased to %v, want %q with namespace cleared", call.Name, names[0])
+	}
+
+	// And the response side maps it back.
+	resp := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{{
+		Type:                 new(schemas.ResponsesMessageTypeFunctionCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: new("c"), Name: new(names[0]), Arguments: new("{}")},
+	}}}}
+	RestoreResponsesNamespaceToolCalls(out.NamespaceToolAliases, resp)
+	restored := resp.ResponsesResponse.Output[0]
+	if *restored.Name != longFunction || restored.Namespace == nil || *restored.Namespace != longNamespace {
+		t.Fatalf("restore gave name=%q namespace=%v", *restored.Name, restored.Namespace)
+	}
+}
+
+// Characters outside [A-Za-z0-9_-] are rejected by OpenAI-compatible wires and Bedrock,
+// so an alias built from an MCP-style namespace such as "mcp:cua.repl" must be sanitized
+// even when it is short enough.
+func TestFlattenResponsesNamespaceTools_SanitizesAliasCharacters(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := issue7048Request()
+	req.Params.Tools = []schemas.ResponsesTool{namespaceTool("mcp:cua.repl", namespaceFunctionTool("js"))}
+
+	out, bifrostErr := FlattenResponsesNamespaceTools(ctx, req)
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr.Error.Message)
+	}
+	if got := toolNames(out.Params.Tools); strings.Join(got, ",") != "mcp_cua_repl__js" {
+		t.Fatalf("flattened names = %v, want [mcp_cua_repl__js]", got)
+	}
+	aliases := out.NamespaceToolAliases
+	if aliases["mcp_cua_repl__js"] != (schemas.NamespaceToolAlias{Namespace: "mcp:cua.repl", Name: "js"}) {
+		t.Fatalf("alias map must restore the caller's unsanitized namespace, got %+v", aliases)
+	}
+}
+
+// Tool-name limits differ per wire, so the alias cap is per provider. Documented
+// limits: OpenAI, Bedrock Converse and Fireworks 64 chars of [A-Za-z0-9_-]; Anthropic
+// 128 of the same charset; Gemini and Vertex 128 with "." and ":" also allowed.
+// Providers that document no limit (Mistral, Groq, xAI, Cohere, DeepSeek, Cerebras,
+// Ollama, custom) fall back to the OpenAI-compatible 64.
+func TestToolNameLimitForProvider(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	cases := []struct {
+		provider     schemas.ModelProvider
+		wantMax      int
+		dotAllowed   bool
+		colonAllowed bool
+	}{
+		{schemas.OpenAI, 64, false, false},
+		{schemas.Bedrock, 64, false, false},
+		{schemas.BedrockMantle, 64, false, false},
+		{schemas.Fireworks, 64, false, false},
+		{schemas.Anthropic, 128, false, false},
+		{schemas.Gemini, 128, true, true},
+		{schemas.Vertex, 128, true, true},
+		{schemas.DeepSeek, 64, false, false},
+		{schemas.Mistral, 64, false, false},
+		{schemas.ModelProvider("my-custom"), 64, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.provider), func(t *testing.T) {
+			limit := ResolveToolNameLimit(ctx, tc.provider, "any-model")
+			if limit.MaxLength != tc.wantMax {
+				t.Errorf("max = %d, want %d", limit.MaxLength, tc.wantMax)
+			}
+			if got := limit.Sanitize("a.b:c-d_e"); (strings.Contains(got, ".") != tc.dotAllowed) || (strings.Contains(got, ":") != tc.colonAllowed) {
+				t.Errorf("sanitize(a.b:c-d_e) = %q, dotAllowed=%v colonAllowed=%v", got, tc.dotAllowed, tc.colonAllowed)
+			}
+		})
+	}
+}
+
+// A datasheet row's tool_name_max_length overrides the per-provider default, in either
+// direction; absent keeps the default.
+func TestResolveToolNameLimit_DatasheetRowWins(t *testing.T) {
+	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if provider == schemas.Anthropic && model == "claude-short-names" {
+			return &schemas.ModelCapabilities{ToolNameMaxLength: new(40)}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if got := ResolveToolNameLimit(ctx, schemas.Anthropic, "claude-short-names").MaxLength; got != 40 {
+		t.Fatalf("row must override the Anthropic default, got %d", got)
+	}
+	if got := ResolveToolNameLimit(ctx, schemas.Anthropic, "claude-no-row").MaxLength; got != 128 {
+		t.Fatalf("no row must keep the Anthropic default 128, got %d", got)
+	}
+}
+
+// The same long alias is kept plain on a 128-char wire and hashed on a 64-char wire,
+// and Gemini keeps a "." that Anthropic must replace.
+func TestFlattenResponsesNamespaceTools_AppliesProviderLimit(t *testing.T) {
+	longNamespace := "mcp__" + strings.Repeat("server_with_a_very_long_name_", 2) // 63 chars
+	longFunction := "read_repository_file_contents_v2"                            // 32 chars; full alias 97 chars
+	flatten := func(provider schemas.ModelProvider, ns string) []string {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req := issue7048Request()
+		req.Provider = provider
+		req.Params.Tools = []schemas.ResponsesTool{namespaceTool(ns, namespaceFunctionTool(longFunction))}
+		out, bifrostErr := FlattenResponsesNamespaceTools(ctx, req)
+		if bifrostErr != nil {
+			t.Fatalf("%s: unexpected error: %v", provider, bifrostErr.Error.Message)
+		}
+		return toolNames(out.Params.Tools)
+	}
+
+	if got := flatten(schemas.Anthropic, longNamespace); got[0] != longNamespace+"__"+longFunction {
+		t.Errorf("Anthropic allows 128 chars; a 97-char alias must stay plain, got %q", got[0])
+	}
+	if got := flatten(schemas.DeepSeek, longNamespace); len(got[0]) > 64 || got[0] == longNamespace+"__"+longFunction {
+		t.Errorf("DeepSeek falls back to 64; a 97-char alias must be hashed, got %q (len %d)", got[0], len(got[0]))
+	}
+	if got := flatten(schemas.Gemini, "mcp.cua"); got[0] != "mcp.cua__"+longFunction {
+		t.Errorf("Gemini allows '.'; got %q", got[0])
+	}
+	if got := flatten(schemas.Anthropic, "mcp.cua"); got[0] != "mcp_cua__"+longFunction {
+		t.Errorf("Anthropic rejects '.'; got %q", got[0])
+	}
+}
+
+// A datasheet row can only enable namespace tools on a wire that can carry them. Where
+// Bifrost itself picks a converter with no namespace container (the Anthropic Messages
+// API for Anthropic, Claude on Azure and Claude on Bedrock Mantle; the Gemini API for
+// Gemini and Vertex), a row saying "supported" must be ignored or the container would
+// reach a wire that rejects it. Third-party OpenAI-shaped wires remain row-enableable.
+func TestResponsesNamespaceToolsSupported_RowCannotEnableAWireWithoutNamespaces(t *testing.T) {
+	rows := map[schemas.ModelProvider]map[string]bool{
+		schemas.Anthropic:     {"claude-sonnet-4": true},
+		schemas.Azure:         {"claude-sonnet-4": true},
+		schemas.BedrockMantle: {"anthropic.claude-opus-5": true},
+		schemas.Gemini:        {"gemini-2.5-pro": true},
+		schemas.Vertex:        {"gemini-2.5-pro": true},
+		schemas.DeepSeek:      {"deepseek-v4.1-flash": true},
+	}
+	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		supported, ok := rows[provider][model]
+		if !ok {
+			return nil
+		}
+		return &schemas.ModelCapabilities{SupportsNamespaceTools: new(supported)}
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	for _, tc := range []struct {
+		provider schemas.ModelProvider
+		model    string
+		want     bool
+	}{
+		{schemas.Anthropic, "claude-sonnet-4", false},
+		{schemas.Azure, "claude-sonnet-4", false},
+		{schemas.BedrockMantle, "anthropic.claude-opus-5", false},
+		{schemas.Gemini, "gemini-2.5-pro", false},
+		{schemas.Vertex, "gemini-2.5-pro", false},
+		{schemas.DeepSeek, "deepseek-v4.1-flash", true},
+	} {
+		if got := ResponsesNamespaceToolsSupported(ctx, tc.provider, tc.model); got != tc.want {
+			t.Errorf("%s/%s with a row saying supported: got %v, want %v", tc.provider, tc.model, got, tc.want)
+		}
+	}
+}
+
+// A datasheet row cannot make the hashed alias form impossible. The over-limit
+// alias is "<8-hex hash>_<function>", so any row below 10 leaves no room for a
+// readable tail (and a negative slice window). Such a row is ignored in favour of
+// the provider default; a hand-built limit still never panics or exceeds itself.
+func TestResolveToolNameLimit_RowBelowHashFloorKeepsDefault(t *testing.T) {
+	schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, _ string) *schemas.ModelCapabilities {
+		return &schemas.ModelCapabilities{ToolNameMaxLength: new(5)}
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	if got := ResolveToolNameLimit(ctx, schemas.OpenAI, "gpt-5-mini").MaxLength; got != 64 {
+		t.Fatalf("a row of 5 must be ignored in favour of the 64 default, got %d", got)
+	}
+
+	req := issue7048Request()
+	req.Params.Tools = []schemas.ResponsesTool{namespaceTool("mcp__"+strings.Repeat("long_", 12), namespaceFunctionTool("read_repository_file_contents_v2"))}
+	out, bifrostErr := FlattenResponsesNamespaceTools(ctx, req)
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr.Error.Message)
+	}
+	if name := toolNames(out.Params.Tools)[0]; len(name) > 64 {
+		t.Errorf("flattened name must honour the default limit, got %q (len %d)", name, len(name))
+	}
+}
+
+func TestNamespaceToolAlias_TinyLimitNeverPanicsOrExceeds(t *testing.T) {
+	for _, max := range []int{1, 5, 8, 9, 10} {
+		limit := ToolNameLimit{MaxLength: max, unsafe: toolNameUnsafeStrict}
+		got := namespaceToolAlias("mcp__"+strings.Repeat("long_", 12), "read_repository_file_contents_v2", limit)
+		if got == "" || len(got) > max {
+			t.Errorf("limit %d: alias %q (len %d) must be non-empty and within the limit", max, got, len(got))
+		}
+	}
+}
+
+// Sanitization is many-to-one on strict wires: "a:b" and "a.b" both flatten to "a_b".
+// Alias existence alone therefore does not prove a history call belongs to the tool
+// that owns the alias. A call from a namespace that merely collides must keep its own
+// name and namespace; only the exact (namespace, function) owner is rewritten.
+func TestRealiasNamespacedFunctionCalls_RequiresExactNamespaceOwner(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	call := func(namespace string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Type: new(schemas.ResponsesMessageTypeFunctionCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: new("c1"), Name: new("x"), Arguments: new("{}"), Namespace: new(namespace),
+			},
+		}
+	}
+	req := issue7048Request()
+	req.Provider = schemas.Anthropic // strict charset: ':' and '.' both sanitize to '_'
+	req.Params.Tools = []schemas.ResponsesTool{namespaceTool("a:b", namespaceFunctionTool("x"))}
+	req.Input = []schemas.ResponsesMessage{call("a.b"), call("a:b")}
+
+	out, bifrostErr := FlattenResponsesNamespaceTools(ctx, req)
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr.Error.Message)
+	}
+	collided := out.Input[0].ResponsesToolMessage
+	if *collided.Name != "x" || collided.Namespace == nil || *collided.Namespace != "a.b" {
+		t.Errorf("a call from the colliding namespace a.b must not be re-attributed to a:b, got name=%q namespace=%v", *collided.Name, collided.Namespace)
+	}
+	owner := out.Input[1].ResponsesToolMessage
+	if *owner.Name != "a_b__x" || owner.Namespace != nil {
+		t.Errorf("the exact owner a:b must still be rewritten to its alias, got name=%q namespace=%v", *owner.Name, owner.Namespace)
 	}
 }

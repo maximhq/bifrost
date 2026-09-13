@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -29,6 +30,95 @@ func TestShouldUseFilterDataCacheAllowsUnscopedEmptyQuery(t *testing.T) {
 	}
 	if !shouldUseFilterDataCache(context.Background(), "   ") {
 		t.Fatal("expected whitespace-only query to use filterdata cache")
+	}
+}
+
+// TestParseComplexityFilters verifies complexity-specific query filters are
+// parsed independently from generic log filters.
+func TestParseComplexityFilters(t *testing.T) {
+	t.Run("parses tier and mechanism", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.QueryArgs().Set("complexity_tiers", "SIMPLE,COMPLEX")
+		ctx.QueryArgs().Set("complexity_mechanisms", "semantic,lexical")
+		filters := &logstore.SearchFilters{}
+
+		parseComplexityFilters(ctx, filters)
+
+		if got, want := filters.ComplexityTiers, []string{"SIMPLE", "COMPLEX"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("complexity tiers = %#v, want %#v", got, want)
+		}
+		if got, want := filters.ComplexityMechanisms, []string{"semantic", "lexical"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("complexity mechanisms = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("leaves filters unchanged when parameters are absent", func(t *testing.T) {
+		filters := &logstore.SearchFilters{
+			ComplexityTiers:      []string{"MEDIUM"},
+			ComplexityMechanisms: []string{"skipped"},
+		}
+
+		parseComplexityFilters(&fasthttp.RequestCtx{}, filters)
+
+		if got, want := filters.ComplexityTiers, []string{"MEDIUM"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("complexity tiers = %#v, want %#v", got, want)
+		}
+		if got, want := filters.ComplexityMechanisms, []string{"skipped"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("complexity mechanisms = %#v, want %#v", got, want)
+		}
+	})
+}
+
+// TestParseToolCallNamesFilter verifies the tool_call_names query param is
+// parsed as a comma-separated list and left alone when absent.
+func TestParseToolCallNamesFilter(t *testing.T) {
+	t.Run("parses comma-separated names", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.QueryArgs().Set("tool_call_names", "get_weather,search")
+		filters := &logstore.SearchFilters{}
+
+		parseToolCallNamesFilter(ctx, filters)
+
+		if got, want := filters.ToolCallNames, []string{"get_weather", "search"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("tool call names = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("leaves filters unchanged when parameter is absent", func(t *testing.T) {
+		filters := &logstore.SearchFilters{ToolCallNames: []string{"search"}}
+
+		parseToolCallNamesFilter(&fasthttp.RequestCtx{}, filters)
+
+		if got, want := filters.ToolCallNames, []string{"search"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("tool call names = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("histogram filters honour it", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.QueryArgs().Set("tool_call_names", "search")
+		filters := parseHistogramFilters(ctx)
+		if got, want := filters.ToolCallNames, []string{"search"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("histogram tool call names = %#v, want %#v", got, want)
+		}
+	})
+}
+
+// TestParseParentRequestIDFilter verifies the explicit parent-request filter
+// does not consume the distinct generic session_id query parameter.
+func TestParseParentRequestIDFilter(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.QueryArgs().Set("parent_request_id", "parent-abc")
+	ctx.QueryArgs().Set("session_id", "session-abc")
+
+	if got, want := parseParentRequestIDFilter(ctx), "parent-abc"; got != want {
+		t.Fatalf("parent request ID = %q, want %q", got, want)
+	}
+
+	ctx = &fasthttp.RequestCtx{}
+	ctx.QueryArgs().Set("session_id", "session-abc")
+	if got := parseParentRequestIDFilter(ctx); got != "" {
+		t.Fatalf("parent request ID = %q, want empty", got)
 	}
 }
 
@@ -666,6 +756,9 @@ func (m *dashboardLogManager) GetAvailableRoutingEngines(ctx context.Context, li
 	return nil, nil
 }
 func (m *dashboardLogManager) GetAvailableStopReasons(ctx context.Context, limit int, query string) ([]string, error) {
+	return nil, nil
+}
+func (m *dashboardLogManager) GetAvailableToolCallNames(ctx context.Context, limit int, query string) ([]string, error) {
 	return nil, nil
 }
 func (m *dashboardLogManager) GetAvailableTeams(ctx context.Context, limit int, query string) ([]loggingplugin.KeyPair, error) {

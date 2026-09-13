@@ -259,18 +259,64 @@ func normalizeBedrockFilename(filename string) string {
 	return normalized
 }
 
-// bedrockDocumentFormat maps a MIME type or bare file extension to a Bedrock Converse
-// document format. Media type parameters (e.g. "; charset=utf-8") are ignored. ok is
-// false when the input maps to no format Bedrock supports, so callers can fall through
-// to the next available hint.
-func bedrockDocumentFormat(fileType string) (format string, isText bool, ok bool) {
+// bedrockMaxDocumentNameLen is the Converse API's limit on
+// DocumentBlock.name. Suffixes must fit inside it, so the base name is
+// trimmed before a suffix is appended.
+const bedrockMaxDocumentNameLen = 200
+
+// bedrockDocNamer assigns unique document names within a single Bedrock
+// request: the Converse API rejects duplicate document names, so untitled
+// documents (which all normalize to the same default) get numbered suffixes.
+type bedrockDocNamer struct {
+	used map[string]int
+}
+
+func newBedrockDocNamer() *bedrockDocNamer {
+	return &bedrockDocNamer{used: make(map[string]int)}
+}
+
+// name returns the normalized filename, or the default "document", made
+// unique within the request ("document", "document-2", "document-3", ...).
+// Emitted names are tracked, so a later explicit "document-2" cannot
+// collide with a generated one.
+func (n *bedrockDocNamer) name(filename string) string {
+	base := normalizeBedrockFilename(filename)
+	if n.used[base] == 0 {
+		n.used[base] = 1
+		return base
+	}
+	for count := n.used[base] + 1; ; count++ {
+		suffix := fmt.Sprintf("-%d", count)
+		trimmed := base
+		if len(trimmed)+len(suffix) > bedrockMaxDocumentNameLen {
+			trimmed = strings.TrimRight(trimmed[:bedrockMaxDocumentNameLen-len(suffix)], " ")
+		}
+		candidate := trimmed + suffix
+		if _, taken := n.used[candidate]; taken {
+			continue
+		}
+		n.used[base] = count
+		n.used[candidate] = 1
+		return candidate
+	}
+}
+
+func normalizeBedrockDocumentType(fileType string) string {
 	fileType = strings.ToLower(strings.TrimSpace(fileType))
 	if mediaType, _, err := mime.ParseMediaType(fileType); err == nil {
 		fileType = mediaType
 	} else if idx := strings.Index(fileType, ";"); idx >= 0 {
 		fileType = strings.TrimSpace(fileType[:idx])
 	}
-	fileType = strings.TrimPrefix(fileType, ".")
+	return strings.TrimPrefix(fileType, ".")
+}
+
+// bedrockDocumentFormat maps a MIME type or bare file extension to a Bedrock Converse
+// document format. Media type parameters (e.g. "; charset=utf-8") are ignored. ok is
+// false when the input maps to no format Bedrock supports, so callers can fall through
+// to the next available hint.
+func bedrockDocumentFormat(fileType string) (format string, isText bool, ok bool) {
+	fileType = normalizeBedrockDocumentType(fileType)
 
 	switch fileType {
 	case "text/plain", "txt":
@@ -299,6 +345,154 @@ func bedrockDocumentFormat(fileType string) (format string, isText bool, ok bool
 	}
 
 	return "", false, false
+}
+
+func isOpaqueBedrockDocumentType(fileType string) bool {
+	switch normalizeBedrockDocumentType(fileType) {
+	case "", "application/octet-stream", "binary/octet-stream", "octet-stream":
+		return true
+	default:
+		return false
+	}
+}
+
+type bedrockDocumentSourceRequirement uint8
+
+const (
+	bedrockDocumentSourceRequired bedrockDocumentSourceRequirement = iota
+	// Chat file blocks can carry a provider-native file ID without inline data.
+	// Preserve the historical document placeholder for that path until Bedrock
+	// has a native representation for the ID.
+	bedrockDocumentSourceOptional
+)
+
+// materializeBedrockDocument converts Bifrost's canonical file fields into the
+// document shape required by Bedrock Converse. All callers use this
+// boundary so chat files, Responses files, and tool-result files share format
+// inference, data-URL parsing, and bounded URL fetching behavior.
+func materializeBedrockDocument(
+	ctx context.Context,
+	model string,
+	fileData *string,
+	fileURL *string,
+	filename *string,
+	fileType *string,
+	sourceRequirement bedrockDocumentSourceRequirement,
+) (*BedrockDocumentSource, error) {
+	document := &BedrockDocumentSource{
+		Name:   "document",
+		Format: "pdf",
+		Source: &BedrockDocumentSourceData{},
+	}
+	if filename != nil {
+		document.Name = normalizeBedrockFilename(*filename)
+	}
+
+	dataURLMediaType, dataURLPayload := "", ""
+	dataURLIsBase64, isDataURL := false, false
+	if fileData != nil && len(*fileData) >= len("data:") && strings.EqualFold((*fileData)[:len("data:")], "data:") {
+		normalizedDataURL := "data:" + (*fileData)[len("data:"):]
+		dataURLMediaType, dataURLIsBase64, dataURLPayload, isDataURL = schemas.ParseDataURL(normalizedDataURL)
+		if !isDataURL {
+			return nil, fmt.Errorf("invalid document data URL")
+		}
+	}
+
+	// Resolve the document format from the most authoritative available hint.
+	// An unidentifiable document retains Bedrock's historical PDF default.
+	format, isText := "", false
+	if fileType != nil && strings.TrimSpace(*fileType) != "" {
+		var matched bool
+		format, isText, matched = bedrockDocumentFormat(*fileType)
+		if !matched && !isOpaqueBedrockDocumentType(*fileType) {
+			return nil, fmt.Errorf("unsupported Bedrock document format %q", *fileType)
+		}
+	}
+	if isDataURL {
+		dataURLFormat, sourceIsText, matched := bedrockDocumentFormat(dataURLMediaType)
+		if !matched && !isOpaqueBedrockDocumentType(dataURLMediaType) {
+			return nil, fmt.Errorf("unsupported Bedrock document format %q", dataURLMediaType)
+		}
+		if format == "" && matched {
+			format, isText = dataURLFormat, sourceIsText
+		}
+	}
+	if format == "" && filename != nil {
+		if dot := strings.LastIndex(*filename, "."); dot >= 0 {
+			format, isText, _ = bedrockDocumentFormat((*filename)[dot+1:])
+		}
+	}
+	if format != "" {
+		document.Format = format
+	}
+
+	if fileURL != nil && *fileURL != "" {
+		if s3Location, ok := bedrockS3LocationFromURL(*fileURL); ok {
+			if !schemas.BedrockModelSupportsS3Location(model) {
+				return nil, bedrockS3LocationUnsupportedError(model, "document", *fileURL, "as base64 file_data")
+			}
+			if format == "" {
+				if resolvedFormat, resolved := bedrockDocumentFormatFromPath(*fileURL); resolved {
+					format = resolvedFormat
+					document.Format = resolvedFormat
+				}
+			}
+			if format == "" {
+				return nil, providerUtils.InvalidRequestErrorf("cannot determine document format for %q: set file_type or give the object a file extension", *fileURL)
+			}
+			document.Source.S3Location = s3Location
+			return document, nil
+		}
+		if strings.HasPrefix(*fileURL, "s3://") {
+			return nil, providerUtils.InvalidRequestErrorf("invalid s3:// document reference %q: expected s3://bucket/key", *fileURL)
+		}
+
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		fetchedMediaType, fetchedBase64, err := providerUtils.FetchAndEncodeURL(ctx, *fileURL)
+		if err != nil {
+			return nil, err
+		}
+		if fetchedFormat, _, ok := bedrockDocumentFormat(fetchedMediaType); ok {
+			document.Format = fetchedFormat
+		} else if !isOpaqueBedrockDocumentType(fetchedMediaType) {
+			return nil, fmt.Errorf("unsupported Bedrock document format %q", fetchedMediaType)
+		}
+		document.Source.Bytes = &fetchedBase64
+		return document, nil
+	}
+
+	if fileData == nil {
+		if sourceRequirement == bedrockDocumentSourceOptional {
+			return document, nil
+		}
+		return nil, fmt.Errorf("bedrock document requires file_data or file_url")
+	}
+
+	if isDataURL {
+		if dataURLIsBase64 {
+			document.Source.Bytes = &dataURLPayload
+			return document, nil
+		}
+
+		decoded, err := url.PathUnescape(dataURLPayload)
+		if err != nil {
+			return nil, fmt.Errorf("invalid percent-encoded document data URL payload: %w", err)
+		}
+		encoded := base64.StdEncoding.EncodeToString([]byte(decoded))
+		document.Source.Bytes = &encoded
+		return document, nil
+	}
+
+	// Text file_data arrives as literal text; binary file_data is already base64.
+	if isText {
+		encoded := base64.StdEncoding.EncodeToString([]byte(*fileData))
+		document.Source.Bytes = &encoded
+	} else {
+		document.Source.Bytes = fileData
+	}
+	return document, nil
 }
 
 // bedrockAliasToolName returns a Bedrock-safe tool name and records a reverse mapping.
@@ -368,13 +562,20 @@ func bedrockAliasToolUseID(id string) string {
 
 // convertParameters handles parameter conversion
 func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest, bedrockReq *BedrockConverseRequest, caps schemas.ModelCaps) error {
-	// Parameters are optional - if not provided, just skip conversion
 	if bifrostReq.Params == nil {
+		if maxTokens := providerUtils.GetMaxOutputTokensOrDefault(caps.Provider(), caps.Model(), 0); maxTokens > 0 {
+			bedrockReq.InferenceConfig = &BedrockInferenceConfig{MaxTokens: schemas.Ptr(maxTokens)}
+		}
 		return nil
 	}
 
 	// Convert inference config
 	if inferenceConfig := convertInferenceConfig(bifrostReq.Params, caps); inferenceConfig != nil {
+		if inferenceConfig.MaxTokens == nil {
+			if maxTokens := providerUtils.GetMaxOutputTokensOrDefault(caps.Provider(), caps.Model(), 0); maxTokens > 0 {
+				inferenceConfig.MaxTokens = schemas.Ptr(maxTokens)
+			}
+		}
 		inferenceConfig.MaxTokens = clampMaxTokens(ctx, inferenceConfig.MaxTokens, caps)
 		bedrockReq.InferenceConfig = inferenceConfig
 	}
@@ -632,7 +833,10 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 		thinkingEnabled := bifrostReq.Params.Reasoning != nil &&
 			(bifrostReq.Params.Reasoning.MaxTokens != nil ||
 				(bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none"))
-		if !caps.SyntheticSOToolChoiceOmitted(schemas.IsLlamaModelFamily(ctx, bifrostReq.Model)) && !thinkingEnabled {
+		// Fable 5.1+ rejects a forced tool_choice outright, so the synthetic tool
+		// is left unpinned there too and reached under Converse's default "auto".
+		if !caps.SyntheticSOToolChoiceOmitted(schemas.IsLlamaModelFamily(ctx, bifrostReq.Model)) && !thinkingEnabled &&
+			caps.SupportsForcedToolChoice(schemas.DefaultSupportsForcedToolChoice(caps.Model())) {
 			bedrockReq.ToolConfig.ToolChoice = &BedrockToolChoice{
 				Tool: &BedrockToolChoiceTool{
 					Name: responseFormatTool.ToolSpec.Name,
@@ -903,6 +1107,8 @@ func ensureChatToolConfigForConversation(ctx context.Context, bifrostReq *schema
 // model is the canonical model id, carried down to the content-block converters because
 // two source unions are model-dependent: see schemas.BedrockModelSupportsS3Location.
 func convertMessages(ctx context.Context, model string, bifrostMessages []schemas.ChatMessage) ([]BedrockMessage, []BedrockSystemMessage, error) {
+
+	docNamer := newBedrockDocNamer()
 	var messages []BedrockMessage
 	var systemMessages []BedrockSystemMessage
 
@@ -910,7 +1116,7 @@ func convertMessages(ctx context.Context, model string, bifrostMessages []schema
 	if len(bifrostMessages) == 1 && (bifrostMessages[0].Role == schemas.ChatMessageRoleSystem || bifrostMessages[0].Role == schemas.ChatMessageRoleDeveloper) {
 		msg := bifrostMessages[0]
 		msg.Role = schemas.ChatMessageRoleUser
-		bedrockMsg, err := convertMessage(ctx, model, msg)
+		bedrockMsg, err := convertMessage(ctx, model, msg, docNamer)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to convert message: %w", err)
 		}
@@ -932,7 +1138,7 @@ func convertMessages(ctx context.Context, model string, bifrostMessages []schema
 
 		case schemas.ChatMessageRoleUser, schemas.ChatMessageRoleAssistant:
 			// Convert regular message
-			bedrockMsg, err := convertMessage(ctx, model, msg)
+			bedrockMsg, err := convertMessage(ctx, model, msg, docNamer)
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to convert message: %w", err)
 			}
@@ -1060,7 +1266,7 @@ func leadingBedrockReasoningBlockCount(blocks []BedrockContentBlock) int {
 
 // convertMessage converts a Bifrost message to Bedrock format.
 // The ctx is propagated to URL fetches inside content blocks.
-func convertMessage(ctx context.Context, model string, msg schemas.ChatMessage) (BedrockMessage, error) {
+func convertMessage(ctx context.Context, model string, msg schemas.ChatMessage, docNamer *bedrockDocNamer) (BedrockMessage, error) {
 	bedrockMsg := BedrockMessage{
 		Role: BedrockMessageRole(msg.Role),
 	}
@@ -1069,8 +1275,29 @@ func convertMessage(ctx context.Context, model string, msg schemas.ChatMessage) 
 
 	// Add reasoning content first
 	if msg.ChatAssistantMessage != nil && len(msg.ChatAssistantMessage.ReasoningDetails) > 0 {
+		shape := converseReasoningShape(model)
 		for _, detail := range msg.ChatAssistantMessage.ReasoningDetails {
+			if shape == schemas.BedrockReasoningShapeRedacted {
+				// These models reject reasoningText in every form -- with a
+				// signature, without one, empty or not -- with an opaque 500. The
+				// encrypted blob is the only replayable detail, and dropping the
+				// rest beats sending a shape that cannot be accepted.
+				if detail.Type == schemas.BifrostReasoningDetailsTypeEncrypted && detail.Data != nil {
+					contentBlocks = append(contentBlocks, BedrockContentBlock{
+						ReasoningContent: &BedrockReasoningContent{RedactedContent: detail.Data},
+					})
+				}
+				continue
+			}
 			if detail.Type == schemas.BifrostReasoningDetailsTypeText {
+				// Claude verifies the signature on every thinking block it is
+				// handed back and rejects an unsigned one in every serialisation
+				// (#6624), so the block cannot be replayed at all; the turn's
+				// text and tool calls still go through. Nova keeps receiving
+				// unsigned blocks with the field omitted, as before.
+				if reasoningSignatureForBedrock(detail.Signature) == nil && converseRequiresSignedReasoning(model) {
+					continue
+				}
 				// Text must never reach Bedrock as nil. It is
 				// `*string json:"text,omitempty"`, so a nil pointer drops the key
 				// from the request rather than sending an explicit null, and
@@ -1101,7 +1328,7 @@ func convertMessage(ctx context.Context, model string, msg schemas.ChatMessage) 
 
 	// Convert text/image content
 	if msg.Content != nil {
-		textBlocks, err := convertContent(ctx, model, *msg.Content)
+		textBlocks, err := convertContent(ctx, model, *msg.Content, docNamer)
 		if err != nil {
 			return BedrockMessage{}, fmt.Errorf("failed to convert content: %w", err)
 		}
@@ -1271,7 +1498,7 @@ func convertToolMessages(ctx context.Context, model string, msgs []schemas.ChatM
 // convertContent converts Bifrost message content to Bedrock content blocks.
 // The ctx is propagated to URL fetches inside individual content blocks; model reaches the
 // per-block converter for the model-dependent s3Location source union.
-func convertContent(ctx context.Context, model string, content schemas.ChatMessageContent) ([]BedrockContentBlock, error) {
+func convertContent(ctx context.Context, model string, content schemas.ChatMessageContent, docNamer *bedrockDocNamer) ([]BedrockContentBlock, error) {
 	var contentBlocks []BedrockContentBlock
 	if content.ContentStr != nil && *content.ContentStr != "" {
 		// Simple text content (skip empty strings as Bedrock rejects blank text)
@@ -1281,7 +1508,7 @@ func convertContent(ctx context.Context, model string, content schemas.ChatMessa
 	} else if content.ContentBlocks != nil {
 		// Multi-modal content
 		for _, block := range content.ContentBlocks {
-			bedrockBlocks, err := convertContentBlock(ctx, model, block)
+			bedrockBlocks, err := convertContentBlock(ctx, model, block, docNamer)
 			if err != nil {
 				return nil, fmt.Errorf("failed to convert content block: %w", err)
 			}
@@ -1295,7 +1522,7 @@ func convertContent(ctx context.Context, model string, content schemas.ChatMessa
 // convertContentBlock converts a Bifrost content block to Bedrock format.
 // The ctx is propagated to URL fetches for image and document blocks; model gates the
 // s3Location source union, which only some Converse backends resolve.
-func convertContentBlock(ctx context.Context, model string, block schemas.ChatContentBlock) ([]BedrockContentBlock, error) {
+func convertContentBlock(ctx context.Context, model string, block schemas.ChatContentBlock, docNamer *bedrockDocNamer) ([]BedrockContentBlock, error) {
 	// Handle Bedrock native format where type may be empty but text is set directly
 	// This occurs when requests are sent in Bedrock's native format (e.g., from Claude Code)
 	// In Bedrock format: {"text": "hello"} vs OpenAI format: {"type": "text", "text": "hello"}
@@ -1353,149 +1580,22 @@ func convertContentBlock(ctx context.Context, model string, block schemas.ChatCo
 			return nil, fmt.Errorf("file block missing file field")
 		}
 
-		documentSource := &BedrockDocumentSource{
-			Name:   "document",
-			Format: "pdf",
-			Source: &BedrockDocumentSourceData{},
+		document, err := materializeBedrockDocument(
+			ctx,
+			model,
+			block.File.FileData,
+			block.File.FileURL,
+			block.File.Filename,
+			block.File.FileType,
+			bedrockDocumentSourceOptional,
+		)
+		if err != nil {
+			return nil, err
 		}
-
-		// Set filename (normalized for Bedrock)
-		if block.File.Filename != nil {
-			documentSource.Name = normalizeBedrockFilename(*block.File.Filename)
-		}
-
-		// Parse the data URL once; it carries both the payload and (for standard
-		// OpenAI clients, which have no file_type field) the document's MIME type.
-		dataURLMediaType, dataURLPayload := "", ""
-		dataURLIsBase64, isDataURL := false, false
-		if block.File.FileData != nil && strings.HasPrefix(*block.File.FileData, "data:") {
-			dataURLMediaType, dataURLIsBase64, dataURLPayload, isDataURL = schemas.ParseDataURL(*block.File.FileData)
-		}
-		// Resolve the document format, most authoritative hint first. Falls back to
-		// the "pdf" default only when nothing identifies the document.
-		format, isText := "", false
-		if block.File.FileType != nil {
-			format, isText, _ = bedrockDocumentFormat(*block.File.FileType)
-		}
-		if format == "" && isDataURL {
-			format, isText, _ = bedrockDocumentFormat(dataURLMediaType)
-		}
-		if format == "" && block.File.Filename != nil {
-			if dot := strings.LastIndex(*block.File.Filename, "."); dot >= 0 {
-				format, isText, _ = bedrockDocumentFormat((*block.File.Filename)[dot+1:])
-			}
-		}
-		if format != "" {
-			documentSource.Format = format
-		}
-
-		// s3:// document: hand Converse the object reference. Bytes and s3Location are
-		// alternative members of the same DocumentSource union, and Converse reads the
-		// object itself, so there is nothing to download here. Format has to come from
-		// the declared type / filename resolved above -- there is no Content-Type to
-		// refine it from.
-		if block.File.FileURL != nil {
-			if s3Loc, ok := bedrockS3LocationFromURL(*block.File.FileURL); ok {
-				// Ahead of format resolution: a model that cannot read the reference at all
-				// has no use for its format, and "cannot determine document format" would
-				// send the caller off renaming their object for no gain.
-				if !schemas.BedrockModelSupportsS3Location(model) {
-					return nil, bedrockS3LocationUnsupportedError(model, "document", *block.File.FileURL, "as base64 file_data")
-				}
-				// Last resort: the object key's own extension. Nothing is downloaded for
-				// an s3:// reference, so there is no Content-Type to read and no bytes to
-				// sniff -- the key is the only signal left, and the refusal below already
-				// tells the caller to use it. bedrockImageFormatFromPath does the same for
-				// the image twin.
-				if format == "" {
-					if resolved, ok := bedrockDocumentFormatFromPath(*block.File.FileURL); ok {
-						format = resolved
-						documentSource.Format = format
-					}
-				}
-				if format == "" {
-					return nil, providerUtils.InvalidRequestErrorf("cannot determine document format for %q: set file_type or give the object a file extension", *block.File.FileURL)
-				}
-				documentSource.Source.S3Location = s3Loc
-				return []BedrockContentBlock{
-					{
-						Document: documentSource,
-					},
-				}, nil
-			} else if strings.HasPrefix(*block.File.FileURL, "s3://") {
-				// The scheme is right but the reference is not: bedrockS3LocationFromURL
-				// rejects a bucket with no object key. Falling through would hand it to
-				// the http(s) fetch path, whose "unsupported URL scheme" refusal is
-				// actively misleading -- s3:// is supported, this one is just malformed.
-				return nil, providerUtils.InvalidRequestErrorf("invalid s3:// document reference %q: expected s3://bucket/key", *block.File.FileURL)
-			}
-		}
-		if format != "" {
-			documentSource.Format = format
-		}
-
-		// URL-sourced document: fetch and inline the bytes. Converse has no url member
-		// on DocumentSource, so an http(s) reference must travel as bytes.
-		if block.File.FileURL != nil && *block.File.FileURL != "" {
-			fetchedMediaType, fetchedB64, fetchErr := providerUtils.FetchAndEncodeURL(ctx, *block.File.FileURL)
-			if fetchErr != nil {
-				return nil, fetchErr
-			}
-			// Refine format from response Content-Type when present (more reliable
-			// than file extension or upstream-declared media type).
-			if fetchedFormat, _, ok := bedrockDocumentFormat(fetchedMediaType); ok {
-				documentSource.Format = fetchedFormat
-			}
-			documentSource.Source.Bytes = &fetchedB64
-			return []BedrockContentBlock{
-				{
-					Document: documentSource,
-				},
-			}, nil
-		}
-
-		// Handle file data - strip data URL prefix if present
-		if block.File.FileData != nil {
-			fileData := *block.File.FileData
-
-			if isDataURL {
-				if dataURLIsBase64 {
-					documentSource.Source.Bytes = &dataURLPayload
-				} else {
-					// Inline percent-encoded payload (data:text/plain,Hello%20World)
-					decoded, err := url.PathUnescape(dataURLPayload)
-					if err != nil {
-						return nil, fmt.Errorf("invalid percent-encoded data URL payload: %w", err)
-					}
-					dataURLPayload = decoded
-					if isText {
-						documentSource.Source.Text = &dataURLPayload
-					}
-					encoded := base64.StdEncoding.EncodeToString([]byte(dataURLPayload))
-					documentSource.Source.Bytes = &encoded
-				}
-				return []BedrockContentBlock{
-					{
-						Document: documentSource,
-					},
-				}, nil
-			}
-
-			// Set text or bytes based on file type
-			if isText {
-				documentSource.Source.Text = &fileData // Plain text
-				encoded := base64.StdEncoding.EncodeToString([]byte(fileData))
-				documentSource.Source.Bytes = &encoded // Also sets Bytes
-			} else {
-				documentSource.Source.Bytes = &fileData
-			}
-		}
-
-		return []BedrockContentBlock{
-			{
-				Document: documentSource,
-			},
-		}, nil
+		// The Converse API rejects duplicate document names within a
+		// request (#7003): disambiguate via the request-scoped namer.
+		document.Name = docNamer.name(document.Name)
+		return []BedrockContentBlock{{Document: document}}, nil
 	case schemas.ChatContentBlockTypeInputAudio:
 		// Bedrock doesn't support audio input in Converse API
 		return nil, fmt.Errorf("audio input not supported in Bedrock Converse API")
@@ -1880,6 +1980,37 @@ func converseReasoningEffortLevels(ctx *schemas.BifrostContext, caps schemas.Mod
 		return bedrockConverseOpenAIEffortLevels, true
 	}
 	return nil, false
+}
+
+// converseReasoningShape reports which reasoning content variant the model uses
+// on Converse, preferring the datasheet and falling back to family detection.
+//
+// Verified against bedrock-runtime: gpt-5.6 and Grok return
+// reasoningContent.redactedContent, an opaque blob; Anthropic (through 4.8
+// adaptive thinking) and DeepSeek R1 return reasoningContent.reasoningText.
+// Replaying the wrong variant is rejected either way — 400 on Anthropic, an
+// opaque 500 on OpenAI and xAI.
+//
+// Takes the canonical model id rather than ModelCaps because the message
+// converters that need it hold exactly that and no BifrostContext; they resolve
+// caps inline the same way convertToolConfig does.
+func converseReasoningShape(model string) schemas.BedrockReasoningShape {
+	fallback := schemas.BedrockReasoningShapeText
+	if schemas.IsGrokModel(model) || schemas.IsOpenAIModel(model) {
+		fallback = schemas.BedrockReasoningShapeRedacted
+	}
+	return schemas.ResolveModelCaps(schemas.Bedrock, model).BedrockReasoningShape(fallback)
+}
+
+// converseRequiresSignedReasoning reports whether the model verifies reasoning
+// signatures on Converse, in which case a reasoningText block with no signature
+// must be dropped from the replay rather than sent (#6624). Claude does; Nova,
+// MiniMax and DeepSeek accept an unsigned block with the field omitted.
+//
+// Same resolution as converseReasoningShape: the datasheet row wins when it
+// says anything, the model family answers otherwise.
+func converseRequiresSignedReasoning(model string) bool {
+	return schemas.ResolveModelCaps(schemas.Bedrock, model).BedrockRequiresSignedReasoning(schemas.IsAnthropicModel(model))
 }
 
 // setConverseReasoningEffort writes the OpenAI-shaped reasoning field, mapping
@@ -2300,6 +2431,12 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 			// (mirrors the synthetic-tool gate in convertChatParameters).
 			if toolChoice != nil && toolChoice.Tool != nil &&
 				!caps.ToolChoiceStructSupported(!schemas.IsLlamaModelFamily(ctx, model)) {
+				toolChoice = nil
+			}
+			// Fable 5.1+ rejects forced tool use outright; drop both spellings so
+			// the model answers under Converse's default "auto".
+			if toolChoice != nil && (toolChoice.Any != nil || toolChoice.Tool != nil) &&
+				!caps.SupportsForcedToolChoice(schemas.DefaultSupportsForcedToolChoice(caps.Model())) {
 				toolChoice = nil
 			}
 			if toolChoice != nil {

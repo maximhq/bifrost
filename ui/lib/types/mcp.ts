@@ -119,6 +119,7 @@ export interface OAuthConfigUpdate {
 export interface MCPClientConfig {
 	client_id: string; // Maps to ClientID in TableMCPClient
 	name: string;
+	endpoint_slug?: string; // URL-safe, immutable after creation; served at /mcp/<slug>
 	is_code_mode_client?: boolean;
 	connection_type: MCPConnectionType;
 	connection_string?: SecretVar;
@@ -224,6 +225,7 @@ export interface MCPClient {
 
 export interface CreateMCPClientRequest {
 	name: string;
+	endpoint_slug?: string; // Optional on create (derived from name when blank); immutable after
 	is_code_mode_client?: boolean;
 	connection_type: MCPConnectionType;
 	connection_string?: SecretVar;

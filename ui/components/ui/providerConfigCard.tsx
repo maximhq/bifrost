@@ -1,5 +1,6 @@
 import { AsyncMultiSelect } from "@/components/ui/asyncMultiselect";
 import { Label } from "@/components/ui/label";
+import { ModelAccessSelector, summarizeModelAccess } from "@/components/modelAccess";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
 import MultiBudgetLines, { BudgetLineEntry } from "@/components/ui/multibudgets";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
@@ -39,6 +40,9 @@ export interface ProviderConfigCardValue {
 	providerName: string;
 	allowedModels: string[];
 	blacklistedModels: string[];
+	/** RE2 pattern twins of the two lists above. */
+	allowedModelsPatterns: string[];
+	blacklistedModelsPatterns: string[];
 	weight?: number | null;
 	keyIds: string[];
 	budgets: ProviderConfigBudgetLine[];
@@ -85,9 +89,10 @@ function clampWeight(n: number | undefined): number | undefined {
 	return Math.max(0, Math.min(1, n));
 }
 
-// Shared wildcard-selection logic for the keys / allowed-models / blocked-models
-// pickers: selecting "*" collapses to just ["*"]; adding anything else while "*"
-// is present drops the "*"; any other selection passes through unchanged.
+// Wildcard-selection logic for the keys picker: selecting "*" collapses to just
+// ["*"]; adding anything else while "*" is present drops the "*"; any other
+// selection passes through unchanged. The model pickers get the same rule from
+// components/modelAccess.
 function resolveWildcardSelection(current: string[], next: string[]): string[] {
 	const hadStar = current.includes("*");
 	const hasStar = next.includes("*");
@@ -202,11 +207,7 @@ export function ProviderConfigCard({
 		: value.keyIds.length > 0
 			? `${value.keyIds.length} key${value.keyIds.length > 1 ? "s" : ""}`
 			: "No keys";
-	const modelsSummary = value.allowedModels.includes("*")
-		? "All models"
-		: value.allowedModels.length > 0
-			? `${value.allowedModels.length} models`
-			: "Deny all";
+	const modelsSummary = summarizeModelAccess(value.allowedModels, value.allowedModelsPatterns, "allow");
 	const hasRl = value.rateLimit?.token_max_limit != null || value.rateLimit?.request_max_limit != null;
 	const rlSummary = hasRl ? "Rate limits set" : "No rate limits";
 
@@ -396,14 +397,14 @@ export function ProviderConfigCard({
 																modelBudgets: modelBudgets.map((m, i) =>
 																	i === mbIndex
 																		? {
-																			...m,
-																			budgets: lines.map((l) => ({
-																				id: l.id,
-																				max_limit: l.max_limit,
-																				reset_duration: l.reset_duration,
-																				reset_config: l.reset_config,
-																			})),
-																		}
+																				...m,
+																				budgets: lines.map((l) => ({
+																					id: l.id,
+																					max_limit: l.max_limit,
+																					reset_duration: l.reset_duration,
+																					reset_config: l.reset_config,
+																				})),
+																			}
 																		: m,
 																),
 															});
@@ -422,13 +423,13 @@ export function ProviderConfigCard({
 																modelBudgets: modelBudgets.map((m, i) =>
 																	i === mbIndex
 																		? {
-																			...m,
-																			rate_limit: {
-																				...(m.rate_limit || {}),
-																				token_max_limit: v,
-																				token_reset_duration: m.rate_limit?.token_reset_duration || "1h",
-																			},
-																		}
+																				...m,
+																				rate_limit: {
+																					...(m.rate_limit || {}),
+																					token_max_limit: v,
+																					token_reset_duration: m.rate_limit?.token_reset_duration || "1h",
+																				},
+																			}
 																		: m,
 																),
 															});
@@ -455,13 +456,13 @@ export function ProviderConfigCard({
 																modelBudgets: modelBudgets.map((m, i) =>
 																	i === mbIndex
 																		? {
-																			...m,
-																			rate_limit: {
-																				...(m.rate_limit || {}),
-																				request_max_limit: v,
-																				request_reset_duration: m.rate_limit?.request_reset_duration || "1h",
-																			},
-																		}
+																				...m,
+																				rate_limit: {
+																					...(m.rate_limit || {}),
+																					request_max_limit: v,
+																					request_reset_duration: m.rate_limit?.request_reset_duration || "1h",
+																				},
+																			}
 																		: m,
 																),
 															});
@@ -553,15 +554,15 @@ export function ProviderConfigCard({
 									const selectedProviderKeys = hasWildcard
 										? [allKeyOptions[0]]
 										: keys
-											.filter((key) => configKeyIds.includes(key.key_id))
-											.map((key) => ({
-												label: key.name,
-												value: key.key_id,
-												description:
-													key.models == null || key.models.includes("*")
-														? "All models"
-														: key.models.filter((m) => m !== "*").join(", ") || "No models (deny all)",
-											}));
+												.filter((key) => configKeyIds.includes(key.key_id))
+												.map((key) => ({
+													label: key.name,
+													value: key.key_id,
+													description:
+														key.models == null || key.models.includes("*")
+															? "All models"
+															: key.models.filter((m) => m !== "*").join(", ") || "No models (deny all)",
+												}));
 									return (
 										<div className="w-[260px] shrink-0 space-y-1.5">
 											<div className="flex h-5 items-center">
@@ -631,35 +632,19 @@ export function ProviderConfigCard({
 									);
 								})()}
 
-								{/* ALLOWED MODELS — single textbox with an in-dropdown "All Models" option */}
-								{(() => {
-									const hasWildcardModels = value.allowedModels.includes("*");
-									return (
-										<div className="min-w-0 flex-1 space-y-1.5">
-											<div className="flex h-5 items-center">
-												<Label>Allowed models</Label>
-											</div>
-											<ModelMultiselect
-												allowAllOption
-												hideSearchIcon
-												data-testid={`${tid}-models-multiselect-${index}`}
-												provider={value.providerName}
-												keys={modelKeyScope}
-												value={hasWildcardModels ? ["*"] : value.allowedModels}
-												onChange={(models: string[]) => {
-													update({ allowedModels: resolveWildcardSelection(value.allowedModels, models) });
-												}}
-												placeholder={
-													hasWildcardModels
-														? "All models allowed"
-														: value.allowedModels.length === 0
-															? "No models (deny all)"
-															: "Add model…"
-												}
-											/>
-										</div>
-									);
-								})()}
+								{/* ALLOWED MODELS — models picker or regex patterns, one list */}
+								<ModelAccessSelector
+									className="flex-1"
+									mode="allow"
+									label={<Label>Allowed models</Label>}
+									data-testid={`${tid}-models-multiselect-${index}`}
+									provider={value.providerName}
+									keys={modelKeyScope}
+									value={value.allowedModels}
+									onChange={(allowedModels) => update({ allowedModels })}
+									patterns={value.allowedModelsPatterns ?? []}
+									onPatternsChange={(allowedModelsPatterns) => update({ allowedModelsPatterns })}
+								/>
 							</div>
 
 							{/* Weight + blocked models */}
@@ -675,34 +660,18 @@ export function ProviderConfigCard({
 										onChange={(n) => update({ weight: n })}
 									/>
 								</div>
-								<div className="min-w-0 flex-1 space-y-1.5">
-									<div className="flex h-5 items-center">
-										<Label>Blocked models</Label>
-									</div>
-									{(() => {
-										const hasWildcardBlocked = value.blacklistedModels.includes("*");
-										return (
-											<ModelMultiselect
-												allowAllOption
-												hideSearchIcon
-												data-testid={`${tid}-blocked-models-multiselect-${index}`}
-												provider={value.providerName}
-												keys={modelKeyScope}
-												value={hasWildcardBlocked ? ["*"] : value.blacklistedModels}
-												onChange={(models: string[]) => {
-													update({ blacklistedModels: resolveWildcardSelection(value.blacklistedModels, models) });
-												}}
-												placeholder={
-													hasWildcardBlocked
-														? "All models blocked"
-														: value.blacklistedModels.length === 0
-															? "No blocked models"
-															: "Search models..."
-												}
-											/>
-										);
-									})()}
-								</div>
+								<ModelAccessSelector
+									className="flex-1"
+									mode="block"
+									label={<Label>Blocked models</Label>}
+									data-testid={`${tid}-blocked-models-multiselect-${index}`}
+									provider={value.providerName}
+									keys={modelKeyScope}
+									value={value.blacklistedModels}
+									onChange={(blacklistedModels) => update({ blacklistedModels })}
+									patterns={value.blacklistedModelsPatterns ?? []}
+									onPatternsChange={(blacklistedModelsPatterns) => update({ blacklistedModelsPatterns })}
+								/>
 							</div>
 
 							{/* Per-provider rate limits */}

@@ -179,7 +179,9 @@ func TestEmptyCandidatesRegression(t *testing.T) {
 			var bifrostResp *schemas.BifrostChatResponse
 
 			if tt.isStream {
-				bifrostResp, _, _ = tt.response.ToBifrostChatCompletionStream(gemini.NewGeminiStreamState())
+				chunks, _, _ := tt.response.ToBifrostChatCompletionStream(gemini.NewGeminiStreamState())
+				require.Len(t, chunks, 1, "a chunk without inline media converts to exactly one delta")
+				bifrostResp = chunks[0]
 			} else {
 				bifrostResp = tt.response.ToBifrostChatResponse()
 			}
@@ -297,7 +299,9 @@ func TestThoughtSignatureInToolCalls(t *testing.T) {
 			var bifrostResp *schemas.BifrostChatResponse
 
 			if tt.isStream {
-				bifrostResp, _, _ = tt.response.ToBifrostChatCompletionStream(gemini.NewGeminiStreamState())
+				chunks, _, _ := tt.response.ToBifrostChatCompletionStream(gemini.NewGeminiStreamState())
+				require.Len(t, chunks, 1, "a chunk without inline media converts to exactly one delta")
+				bifrostResp = chunks[0]
 			} else {
 				bifrostResp = tt.response.ToBifrostChatResponse()
 			}
@@ -4993,9 +4997,11 @@ func TestGroundingMetadataToChatAnnotations(t *testing.T) {
 
 	t.Run("stream emits annotations on the finish-reason chunk", func(t *testing.T) {
 		state := gemini.NewGeminiStreamState()
-		bifrostResp, bifrostErr, isLast := response.ToBifrostChatCompletionStream(state)
+		chunks, bifrostErr, isLast := response.ToBifrostChatCompletionStream(state)
 		require.Nil(t, bifrostErr)
 		assert.True(t, isLast)
+		require.Len(t, chunks, 1)
+		bifrostResp := chunks[0]
 		require.Len(t, bifrostResp.Choices, 1)
 		delta := bifrostResp.Choices[0].ChatStreamResponseChoice.Delta
 		require.Len(t, delta.Annotations, 3)
@@ -5017,9 +5023,11 @@ func TestGroundingMetadataToChatAnnotations(t *testing.T) {
 				},
 			},
 		}
-		bifrostResp, bifrostErr, isLast := intermediate.ToBifrostChatCompletionStream(gemini.NewGeminiStreamState())
+		chunks, bifrostErr, isLast := intermediate.ToBifrostChatCompletionStream(gemini.NewGeminiStreamState())
 		require.Nil(t, bifrostErr)
 		assert.False(t, isLast)
+		require.Len(t, chunks, 1)
+		bifrostResp := chunks[0]
 		require.Len(t, bifrostResp.Choices, 1)
 		assert.Empty(t, bifrostResp.Choices[0].ChatStreamResponseChoice.Delta.Annotations)
 	})
@@ -5558,11 +5566,13 @@ func TestGoogleSearchBillingUnits(t *testing.T) {
 
 		var billed *int
 		for _, chunk := range chunks {
-			resp, bifrostErr, _ := chunk.ToBifrostChatCompletionStream(state)
+			resps, bifrostErr, _ := chunk.ToBifrostChatCompletionStream(state)
 			require.Nil(t, bifrostErr)
-			if resp != nil && resp.Usage != nil && resp.Usage.CompletionTokensDetails != nil &&
-				resp.Usage.CompletionTokensDetails.NumSearchQueries != nil {
-				billed = resp.Usage.CompletionTokensDetails.NumSearchQueries
+			for _, resp := range resps {
+				if resp.Usage != nil && resp.Usage.CompletionTokensDetails != nil &&
+					resp.Usage.CompletionTokensDetails.NumSearchQueries != nil {
+					billed = resp.Usage.CompletionTokensDetails.NumSearchQueries
+				}
 			}
 		}
 		require.NotNil(t, billed, "streaming must bill search queries on the finish chunk")

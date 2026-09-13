@@ -19,10 +19,12 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import {
 	getErrorMessage,
 	useDeleteMCPClientMutation,
+	useGetCoreConfigQuery,
 	useInitiateMCPClientVerificationMutation,
 	useReauthorizeMCPClientMutation,
 	useReconnectMCPClientMutation,
@@ -30,13 +32,17 @@ import {
 	useVerifyMCPClientExchangeMutation,
 	useVerifyMCPClientHeadersMutation,
 } from "@/lib/store";
+import { getExternalBaseUrl } from "@/app/workspace/mcp-registry/views/mcpUsageGuide/utils";
+import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { MCPAuthType, MCPClient } from "@/lib/types/mcp";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
 import {
 	Box,
+	Check,
 	ChevronLeft,
 	ChevronRight,
+	Copy,
 	Info,
 	KeyRound,
 	Loader2,
@@ -255,6 +261,32 @@ interface MCPClientsTableProps {
 	onOffsetChange: (offset: number) => void;
 }
 
+// ClientEndpointCell shows the /mcp/<slug> path and copies the full external URL on click.
+// Matches the Virtual MCPs table cell: the copy icon reveals on row hover (group-hover).
+function ClientEndpointCell({ slug, baseUrl }: { slug?: string; baseUrl: string }) {
+	const { copy, copied } = useCopyToClipboard({ successMessage: "Endpoint copied" });
+	if (!slug) return <span className="text-muted-foreground text-sm">-</span>;
+	return (
+		<Tooltip>
+			<TooltipTrigger asChild>
+				<button
+					type="button"
+					onClick={() => copy(`${baseUrl}/mcp/${slug}`)}
+					className="text-muted-foreground hover:text-foreground flex w-full min-w-0 cursor-pointer items-center gap-1.5 font-mono text-sm transition-colors"
+					aria-label="Copy endpoint URL"
+					data-testid={`mcp-client-endpoint-copy-${slug}`}
+				>
+					<span className="truncate">/mcp/{slug}</span>
+					<span className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100">
+						{copied ? <Check className="size-3.5 shrink-0" /> : <Copy className="size-3.5 shrink-0" />}
+					</span>
+				</button>
+			</TooltipTrigger>
+			<TooltipContent className="font-mono">/mcp/{slug}</TooltipContent>
+		</Tooltip>
+	);
+}
+
 export default function MCPClientsTable({
 	mcpClients,
 	totalCount,
@@ -273,6 +305,9 @@ export default function MCPClientsTable({
 	const hasCreateMCPClientAccess = useRbac(RbacResource.MCPGateway, RbacOperation.Create);
 	const hasUpdateMCPClientAccess = useRbac(RbacResource.MCPGateway, RbacOperation.Update);
 	const hasDeleteMCPClientAccess = useRbac(RbacResource.MCPGateway, RbacOperation.Delete);
+	// Externally reachable base URL, so the endpoint cell copies the full URL callers use.
+	const { data: coreConfig } = useGetCoreConfigQuery({ fromDB: true });
+	const baseUrl = getExternalBaseUrl(coreConfig?.client_config);
 	const [selectedMCPClient, setSelectedMCPClient] = useState<MCPClient | null>(null);
 	const [clientToDelete, setClientToDelete] = useState<MCPClient | null>(null);
 	// Drives the token_exchange "Re-verify as me" confirm dialog. Unlike
@@ -922,6 +957,7 @@ export default function MCPClientsTable({
 						<TableHeader className="bg-muted sticky top-0 z-20">
 							<TableRow>
 								<TableHead className="w-[260px] font-semibold">Name</TableHead>
+								<TableHead className="w-[180px] font-semibold">Endpoint</TableHead>
 								<TableHead className="w-[150px] font-semibold">Connection Type</TableHead>
 								<TableHead className="w-[150px] font-semibold">Auth Type</TableHead>
 								<TableHead className="w-[140px] font-semibold">Auth Scope</TableHead>
@@ -961,7 +997,7 @@ export default function MCPClientsTable({
 						<TableBody>
 							{mcpClients.length === 0 ? (
 								<TableRow>
-									<TableCell colSpan={11} className="h-24 text-center">
+									<TableCell colSpan={12} className="h-24 text-center">
 										<span className="text-muted-foreground text-sm">No matching MCP servers found.</span>
 									</TableCell>
 								</TableRow>
@@ -999,6 +1035,9 @@ export default function MCPClientsTable({
 												<div className="truncate" title={c.config.name}>
 													{c.config.name}
 												</div>
+											</TableCell>
+											<TableCell>
+												<ClientEndpointCell slug={c.config.endpoint_slug} baseUrl={baseUrl} />
 											</TableCell>
 											<TableCell data-testid="mcp-client-connection-type">
 												<Badge variant="outline" className="font-mono">

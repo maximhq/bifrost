@@ -36,21 +36,16 @@
   COPY plugins/ ./plugins/
   COPY transports/ ./transports/
 
-  # Set up go workspace to resolve local module dependencies
+  # Discover all plugin modules so both architectures use local sources.
   RUN go work init && \
     go work use ./core && \
     go work use ./framework && \
-    go work use ./plugins/compat && \
-    go work use ./plugins/governance && \
-    go work use ./plugins/jsonparser && \
-    go work use ./plugins/logging && \
-    go work use ./plugins/maxim && \
-    go work use ./plugins/mocker && \
-    go work use ./plugins/otel && \
-    go work use ./plugins/prompts && \
-    go work use ./plugins/semanticcache && \
-    go work use ./plugins/telemetry && \
-    go work use ./transports
+    go work use ./transports && \
+    for plugin_dir in ./plugins/*/; do \
+      if [ -f "$plugin_dir/go.mod" ]; then \
+        go work use "$plugin_dir" || exit 1; \
+      fi; \
+    done
 
   # Copy UI build output into transports
   COPY --from=ui-builder /app/out ./transports/bifrost-http/ui

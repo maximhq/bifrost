@@ -34,18 +34,17 @@ USE_NODE = NVM_SH="$${NVM_DIR:-$$HOME/.nvm}/nvm.sh"; \
 	[ -s "$$NVM_SH" ] || NVM_SH="$$(brew --prefix nvm 2>/dev/null)/nvm.sh"; \
 	if [ -s "$$NVM_SH" ]; then . "$$NVM_SH" >/dev/null && nvm install >/dev/null 2>&1 && nvm use >/dev/null 2>&1; fi
 
-# Loads secrets into the current recipe shell. Infisical is the default source (Reads
-# USE_INFISICAL env var):
-#   USE_INFISICAL=0|n|N|no|NO|false|FALSE  -> source ./.env instead (explicit opt-out)
-#   anything else (including unset)        -> source secrets from Infisical (`infisical export --path <p>`)
+# Loads secrets into the current recipe shell. Reads USE_INFISICAL env var:
+#   USE_INFISICAL=1|y|Y|yes|YES|true|TRUE  -> source secrets from Infisical (`infisical export --path <p>`)
+#   anything else                          -> source ./.env
 # Honors INFISICAL_PATH (default /local) when sourcing from Infisical.
 # After invoking `$(EXPOSE_ENV);`, all subsequent commands inherit the secrets
 # - no per-command prefix needed.
 # Use as: `$(EXPOSE_ENV); <your command>`
 define EXPOSE_ENV
 	case "$$USE_INFISICAL" in \
-		0|n|N|no|NO|false|FALSE) USE_INFISICAL_RESOLVED=0 ;; \
-		*) USE_INFISICAL_RESOLVED=1 ;; \
+		1|y|Y|yes|YES|true|TRUE) USE_INFISICAL_RESOLVED=1 ;; \
+		*) USE_INFISICAL_RESOLVED=0 ;; \
 	esac; \
 	if [ "$$USE_INFISICAL_RESOLVED" = "1" ]; then \
 		if ! which infisical > /dev/null 2>&1; then \
@@ -68,7 +67,7 @@ define EXPOSE_ENV
 	fi
 endef
 
-.PHONY: all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed run-e2e-api format ui install-newman run-provider-harness-test smoke-provider-harness-test run-cli-harness-test cli-harness-report test-harness-runner-lib test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index install-microsocks socks5-proxy install-tinyproxy http-proxy
+.PHONY: all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed run-e2e-api format ui install-newman run-provider-harness-test smoke-provider-harness-test run-cli-harness-test cli-harness-report test-harness-runner-lib run-video-costing-test list-video-costing-cases test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index install-microsocks socks5-proxy install-tinyproxy http-proxy
 
 all: help
 
@@ -615,7 +614,7 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 		$(ECHO) "$(YELLOW)Attach your debugger to localhost:2345$(NC)"; \
 	fi; \
 	if [ -n "$(PROVIDER)" ]; then \
-		PROVIDER_TEST_NAME=$$($(ECHO) "$(PROVIDER)" | awk '{print toupper(substr($$0,1,1)) tolower(substr($$0,2))}' | sed 's/openai/OpenAI/i; s/openrouter/OpenRouter/i; s/sgl/SGL/i; s/xai/XAI/i; s/vllm/VLLM/i'); \
+		PROVIDER_TEST_NAME=$$($(ECHO) "$(PROVIDER)" | awk '{print toupper(substr($$0,1,1)) tolower(substr($$0,2))}' | sed 's/openai/OpenAI/i; s/openrouter/OpenRouter/i; s/sgl/SGL/i; s/xai/XAI/i; s/vllm/VLLM/i; s/githubcopilot/GithubCopilot/i'); \
 		if [ -n "$(TESTCASE)" ]; then \
 			CLEAN_TESTCASE="$(TESTCASE)"; \
 			CLEAN_TESTCASE=$${CLEAN_TESTCASE#Test$${PROVIDER_TEST_NAME}/}; \
@@ -1886,6 +1885,16 @@ test-harness-runner-lib: ## Run the provider-harness runner unit tests (tests/e2
 	if [ "$$RC" -ne 0 ]; then $(ECHO) "$(RED)harness runner lib tests failed$(NC)"; else $(ECHO) "$(GREEN)harness runner lib tests passed$(NC)"; fi; \
 	exit $$RC
 
+# Video bills at SETTLEMENT, minutes after the POST returns, so neither newman
+# (no way to wait for an out-of-band row) nor a Go test (no provider) can check
+# the figure. This runner does the whole submit -> poll -> settle -> assert loop.
+run-video-costing-test: ## Verify async video jobs bill correctly against real providers (Usage: make run-video-costing-test ARGS="--group Runware --seed-pricing"). Needs a running Bifrost with video provider keys.
+	@$(ECHO) "$(GREEN)Running video costing checks...$(NC)"
+	@$(USE_NODE); cd tests/e2e/api && node runners/run-video-costing.mjs $(ARGS)
+
+list-video-costing-cases: ## List the video costing cases and which checklist line each covers. No network, no Bifrost.
+	@$(USE_NODE); cd tests/e2e/api && node runners/run-video-costing.mjs --list
+
 # Named target rather than documentation telling people to type SMOKE=1: a smoke
 # set nobody can invoke in one word does not get used before a release.
 smoke-provider-harness-test: ## Run the curated ~100-request provider-harness smoke set (tests/e2e/api/collections/smoke-manifest.json). Same flags as run-provider-harness-test; equivalent to SMOKE=1.
@@ -2032,6 +2041,12 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' "HARNESS_JOBS=N"  "Cap on concurrently running newman shards (default 100). The grid is ~168 live cells with sub-shards"; \
 		printf '  %-18s %s\n' ""                "  on, so the cap does block - which is why HARNESS_CLASSES is ordered slowest-first, to keep the long"; \
 		printf '  %-18s %s\n' ""                "  shards holding slots from the start. Lower it if a provider starts returning 429s."; \
+		printf '  %-18s %s\n' "HARNESS_MAX_REQUESTS=N" ""; \
+		printf '  %-18s %s\n' ""                "  Approved ceiling on paid requests for this run. Checked with each newman launch's EXACT filtered"; \
+		printf '  %-18s %s\n' ""                "  request count (main shards, 429 replays, the deferred cache-parity pass, sequential mode) before it"; \
+		printf '  %-18s %s\n' ""                "  starts: a launch that would cross the cap is refused, so the live total never exceeds N. Running"; \
+		printf '  %-18s %s\n' ""                "  shards drain and the report merges as usual; the target exits 3. Stream-cancellation probes are"; \
+		printf '  %-18s %s\n' ""                "  never sent under a cap (their count is not known up front). Unset = no cap (default)."; \
 		printf '  %-18s %s\n' "RETRY_429=N"     "Max transient-failure retry attempts per shard (default 3; 0 disables). Covers 429 plus the two"; \
 		printf '  %-18s %s\n' ""                "  overload codes - 503 (OpenAI 'engine is currently overloaded') and 529 (Anthropic"; \
 		printf '  %-18s %s\n' ""                "  overloaded_error, which is its whole equivalent of 503; its error table has no 503). Other 5xx"; \
@@ -2043,6 +2058,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' ""                "  Retry reports merge LAST, so a successful attempt supersedes its own failure in tmp/newman-report.json."; \
 		printf '  %-18s %s\n' "SHARD_LINES=0"  "Drop the per-shard completion lines (<shard> N total/pass/fail) and show only the provider table."; \
 		printf '  %-18s %s\n' "SKIP_STREAM_CANCEL=1" "Skip the post-Newman stream-abort probes that verify server-side cancellation on client disconnect."; \
+		printf '  %-18s %s\n' "HARNESS_SERVER_CWD" "Server working directory for relative logs_store SQLite paths (default: transports/bifrost-http, matching make dev). BIFROST_LOGS_DB_URL overrides config resolution."; \
 		printf '  %-18s %s\n' "DB_VERIFY=0"      "Disable the dbverify reporter (ON by default). When on, [Costing]/[Accounting] requests assert the logs DB cost matches the getbifrost.ai/datasheet-computed cost (resolves DB from APP_DIR/config.json or BIFROST_LOGS_DB_URL); skips gracefully if no logs DB is reachable."; \
 		printf '  %-18s %s\n' "USE_INFISICAL=1" "Source secrets from Infisical CLI ('infisical export --path /local --format dotenv') instead of .env."; \
 		printf '  %-18s %s\n' "VERTEX_GCS_BUCKET" "Env-sourced (.env/Infisical): GCS bucket for Vertex file ops (forwarded to Newman as vertexGcsBucket)."; \
@@ -2147,6 +2163,26 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		if [ "$$HARNESS_QUIET" = "1" ] || [ "$$MONITOR_LIVE" = "1" ]; then "$$@" >> "$$QUIET_LOG" 2>&1; \
 		else "$$@"; fi; \
 	}; \
+	: "HARNESS_MAX_REQUESTS is the approved paid-request ceiling for this run. Every newman"; \
+	: "launch below passes its exact filtered request count here first; a launch that would"; \
+	: "cross the cap is refused and later launches are refused too, so the live total is"; \
+	: "bounded by construction rather than estimated from the preflight. Shards already"; \
+	: "running drain normally and the report still merges; the target then exits 3."; \
+	BUDGET_USED=0; BUDGET_EXCEEDED=0; \
+	: "tmp/harness-budget-used mirrors BUDGET_USED so a COMPAT=both parent can hand the"; \
+	: "remaining budget to its second sub-run instead of letting both spend the full cap."; \
+	mkdir -p tmp; printf '0' > tmp/harness-budget-used; \
+	budget_ok() { \
+		if [ -z "$(HARNESS_MAX_REQUESTS)" ]; then return 0; fi; \
+		if [ "$$BUDGET_EXCEEDED" = "1" ] || [ $$((BUDGET_USED + $$1)) -gt "$(HARNESS_MAX_REQUESTS)" ]; then \
+			BUDGET_EXCEEDED=1; \
+			say "$(RED)[$$2] not launched: $$1 request(s) would push the total to $$((BUDGET_USED + $$1)), past HARNESS_MAX_REQUESTS=$(HARNESS_MAX_REQUESTS) (launched so far: $$BUDGET_USED)$(NC)"; \
+			return 1; \
+		fi; \
+		BUDGET_USED=$$((BUDGET_USED + $$1)); \
+		printf '%s' "$$BUDGET_USED" > tmp/harness-budget-used; \
+		return 0; \
+	}; \
 	start_monitor() { \
 		if [ -f tmp/harness-monitor.pid ]; then return 0; fi; \
 		if [ "$$HARNESS_QUIET" != "1" ] && [ ! -t 1 ]; then return 0; fi; \
@@ -2190,10 +2226,20 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	if [ "$(COMPAT)" = "both" ]; then \
 		mkdir -p tmp; \
 		say "$(CYAN)COMPAT=both: running harness with compat OFF then ON (sub-runs forced CI=1 to skip the interactive viewer)...$(NC)"; \
+		: "Both sub-runs share one HARNESS_MAX_REQUESTS: the second gets what the first left."; \
+		BOTH_REMAINING="$(HARNESS_MAX_REQUESTS)"; BOTH_USED=0; \
 		for mode in off on; do \
+			if [ -n "$$BOTH_REMAINING" ] && [ "$$BOTH_REMAINING" -le 0 ]; then \
+				say "$(RED)compat $$mode not run: HARNESS_MAX_REQUESTS=$(HARNESS_MAX_REQUESTS) already spent by the earlier sub-run ($$BOTH_USED launched)$(NC)"; \
+				BOTH_RC=3; continue; \
+			fi; \
 			say "$(CYAN)=== Harness run: compat $$mode ===$(NC)"; \
-			$(MAKE) run-provider-harness-test COMPAT=$$mode CI=1; \
+			$(MAKE) run-provider-harness-test COMPAT=$$mode CI=1 HARNESS_MAX_REQUESTS="$$BOTH_REMAINING"; \
 			RC=$$?; \
+			if [ -n "$$BOTH_REMAINING" ]; then \
+				SUB_USED="$$(cat tmp/harness-budget-used 2>/dev/null || echo 0)"; \
+				BOTH_USED=$$((BOTH_USED + SUB_USED)); BOTH_REMAINING=$$((BOTH_REMAINING - SUB_USED)); \
+			fi; \
 			mv -f tmp/newman-report.json "tmp/newman-report-compat-$$mode.json" 2>/dev/null || true; \
 			mv -f tmp/newman-report.html "tmp/newman-report-compat-$$mode.html" 2>/dev/null || true; \
 			mv -f tmp/harness-failures.md "tmp/harness-failures-compat-$$mode.md" 2>/dev/null || true; \
@@ -2232,10 +2278,10 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	if [ "$(DB_VERIFY)" != "0" ] && [ "$$E2E_DEPS_READY" = "1" ]; then \
 		DBVERIFY_READY=1; \
 		DBVERIFY_REPORTER=",dbverify"; \
-		LOGS_DB_VAL="$${BIFROST_LOGS_DB_URL:-sqlite://$(CURDIR)/$$APP_DIR_VAL/logs.db}"; \
+		LOGS_DB_VAL="$$(node tests/e2e/api/lib/logs-db-url.js "$$APP_DIR_VAL/config.json" "$(or $(HARNESS_SERVER_CWD),$(CURDIR)/transports/bifrost-http)")"; \
 		export BIFROST_LOGS_DB_URL="$$LOGS_DB_VAL"; \
 		DBVERIFY_ARGS="--reporter-dbverify-config $$APP_DIR_VAL/config.json"; \
-		say "$(CYAN)dbverify reporter enabled (logs DB: $$LOGS_DB_VAL). Set DB_VERIFY=0 to disable.$(NC)"; \
+		say "$(CYAN)dbverify reporter enabled (logs DB resolved from configuration or BIFROST_LOGS_DB_URL). Set DB_VERIFY=0 to disable.$(NC)"; \
 	fi; \
 	TOKEN_PARITY_REPORTER=""; \
 	CACHE_PARITY_REPORTER=""; \
@@ -2331,6 +2377,14 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			exit 1; \
 		fi; \
 	fi; \
+	: "Rows that assert on extra_fields.raw_request send x-bf-send-back-raw-*; core ignores those"; \
+	: "headers unless client_config.allow_per_request_raw_override is on. The harness config.json"; \
+	: "already enables it for a gateway we start ourselves; an already-running one may not have it."; \
+	say "$(CYAN)Ensuring allow_per_request_raw_override is on (x-bf-send-back-raw-* headers)...$(NC)"; \
+	BIFROST_BASE_URL="$$BASE_URL_VAL" node tests/e2e/api/runners/set-raw-override-config.mjs enable || { \
+		say "$(RED)Could not enable allow_per_request_raw_override; raw_request assertions would fail. Set BIFROST_E2E_AUTH_HEADER if auth is on.$(NC)"; \
+		exit 1; \
+	}; \
 	say "$(CYAN)Augmenting provider harness with generated streaming/thinking cases...$(NC)"; \
 	: "VERTEX_ACCESS_TOKEN_VAL is exported so the token-parity matrix can skip the Vertex"; \
 	: "direct legs when gcloud could not mint a token, instead of emitting cells that post an"; \
@@ -2569,6 +2623,9 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				rm -f "tmp/harness-filtered-$$SHARD.json"; \
 				continue; \
 			fi; \
+			: "A refused shard must not leave its filtered file behind: the status table counts"; \
+			: "every tmp/harness-filtered-*.json as planned work, so it would show rows that never ran."; \
+			budget_ok "$$P_ITEM_COUNT" "$$SHARD" || { rm -f "tmp/harness-filtered-$$SHARD.json"; continue; }; \
 			: "Block until a slot frees. 'wait -n' reaps one arbitrary child, which is why shard"; \
 			: "exit codes are recorded by the subshell into tmp/parallel-exit-<shard> instead of"; \
 			: "being collected later with 'wait <pid>' - that pid may already have been reaped here."; \
@@ -2585,6 +2642,10 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		done; \
 		done; \
 		if [ "$$LAUNCHED" -eq 0 ]; then \
+			if [ "$$BUDGET_EXCEEDED" = "1" ]; then \
+				say "$(RED)Aborted before any launch: every shard would exceed HARNESS_MAX_REQUESTS=$(HARNESS_MAX_REQUESTS). Raise the cap or narrow PROVIDER/FEATURE.$(NC)"; \
+				exit 3; \
+			fi; \
 			say "$(RED)No provider runs were launched. Check PROVIDER/FEATURE/FOLDER filters.$(NC)"; \
 			exit 1; \
 		fi; \
@@ -2645,7 +2706,9 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 					say "$(YELLOW)[$$rs] retry filter failed - keeping the original verdict$(NC)"; \
 					continue; \
 				fi; \
-				[ "$$(grep -c '"request":' "$$RETRY_COLL" 2>/dev/null || echo 0)" -eq 0 ] && continue; \
+				RETRY_COUNT="$$(grep -c '"request":' "$$RETRY_COLL" 2>/dev/null || true)"; RETRY_COUNT="$${RETRY_COUNT:-0}"; \
+				[ "$$RETRY_COUNT" -eq 0 ] && continue; \
+				budget_ok "$$RETRY_COUNT" "$$rs-retry$$RETRY_ATTEMPT" || { rm -f "$$RETRY_COLL"; continue; }; \
 				while [ "$$(shard_jobs)" -ge "$$JOBS_CAP" ]; do wait -n 2>/dev/null || true; done; \
 				( \
 					newman_shard "$$rs-retry$$RETRY_ATTEMPT" "$$RETRY_COLL" "tmp/newman-report-$$rs-retry$$RETRY_ATTEMPT.json" "$$rp"; \
@@ -2715,6 +2778,8 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	else \
 		SEQ_PROVIDERS="$(or $(PROVIDER),$(HARNESS_PROVIDERS))"; \
 		: > tmp/newman-cli.log; \
+		SEQ_COUNT="$$(grep -c '"request":' "$$COLLECTION_FILE" 2>/dev/null || true)"; SEQ_COUNT="$${SEQ_COUNT:-0}"; \
+		if budget_ok "$$SEQ_COUNT" main; then \
 		add_pass "$$(printf '{"t":"pass","id":"main","mode":"sequential","log":"tmp/newman-cli.log","collection":"%s"}' "$$COLLECTION_FILE")"; \
 		newman run "$$COLLECTION_FILE" \
 				--env-var "baseUrl=$$BASE_URL_VAL" \
@@ -2744,6 +2809,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				--reporter-htmlextra-darkTheme > tmp/newman-cli.log 2>&1; \
 		NEWMAN_EXIT=$$?; \
 		end_pass main; \
+		else NEWMAN_EXIT=0; fi; \
 		if [ "$$HARNESS_MONITORED" != "1" ] && [ "$$HARNESS_QUIET" != "1" ]; then cat tmp/newman-cli.log; fi; \
 		if command -v jq >/dev/null 2>&1 && [ -f tmp/newman-report.json ]; then \
 			say "$(CYAN)Sanitizing tmp/newman-report.json (newman embeds the whole parent folder in every failure)...$(NC)"; \
@@ -2764,7 +2830,8 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			$(if $(FOLDER),--folder "$(FOLDER)",) \
 			$${SMOKE_MANIFEST:+--smoke "$$SMOKE_MANIFEST"} \
 			$(if $(PROVIDER),--provider $(PROVIDER),) || { say "$(RED)Cache parity filter step failed$(NC)"; }; \
-		if [ -f tmp/harness-cache-filtered.json ]; then \
+		CACHE_COUNT="$$(grep -c '"request":' tmp/harness-cache-filtered.json 2>/dev/null || true)"; CACHE_COUNT="$${CACHE_COUNT:-0}"; \
+		if [ -f tmp/harness-cache-filtered.json ] && budget_ok "$$CACHE_COUNT" cache-parity; then \
 			CACHE_PROVIDERS="$(or $(PROVIDER),$(HARNESS_PROVIDERS))"; \
 			: > tmp/newman-cli-cache-parity.log; \
 			add_pass '{"t":"pass","id":"cache-parity","mode":"sequential","log":"tmp/newman-cli-cache-parity.log","collection":"tmp/harness-cache-filtered.json"}'; \
@@ -2807,10 +2874,14 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	: "prints normally to a restored main screen."; \
 	say "$(GREEN)Newman finished. Reports: tmp/newman-report.{json,html} + tmp/newman-cli.log$(NC)"; \
 	STREAM_CANCEL_EXIT=0; \
-	if [ -z "$(SKIP_STREAM_CANCEL)" ] && [ -z "$(RERUN_FAILED)" ] && [ "$(PROVIDER)" != "passthrough" ] && { [ -z "$(FOLDER)" ] || printf '%s' "$(FOLDER)" | grep -qi 'stream'; }; then \
+	if [ -n "$(HARNESS_MAX_REQUESTS)" ]; then \
+		say "$(YELLOW)Skipping stream cancellation probes: their request count is not known before they run, so they are never sent under HARNESS_MAX_REQUESTS.$(NC)"; \
+	elif [ -z "$(SKIP_STREAM_CANCEL)" ] && [ -z "$(RERUN_FAILED)" ] && [ "$(PROVIDER)" != "passthrough" ] && { [ -z "$(FOLDER)" ] || printf '%s' "$(FOLDER)" | grep -qi 'stream'; }; then \
 		say "$(CYAN)Running stream cancellation probes...$(NC)"; \
 		$(USE_NODE); node tests/e2e/api/runners/run-stream-cancellation.mjs \
 			--base-url "$$BASE_URL_VAL" \
+			--config "$$APP_DIR_VAL/config.json" \
+			--server-working-dir "$(or $(HARNESS_SERVER_CWD),$(CURDIR)/transports/bifrost-http)" \
 			$(if $(PROVIDER),--provider "$(PROVIDER)",) \
 			--out tmp/stream-cancel-report.json > tmp/stream-cancel-cli.log 2>&1; \
 		STREAM_CANCEL_EXIT=$$?; \
@@ -2863,6 +2934,10 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		else \
 			say "$(GREEN)Viewer closed.$(NC)"; \
 		fi; \
+	fi; \
+	if [ "$$BUDGET_EXCEEDED" = "1" ]; then \
+		say "$(RED)Aborted: HARNESS_MAX_REQUESTS=$(HARNESS_MAX_REQUESTS) reached; $$BUDGET_USED request(s) were launched. The provider table above is the actual total.$(NC)"; \
+		exit 3; \
 	fi; \
 	if [ "$$NEWMAN_EXIT" -ne 0 ]; then exit $$NEWMAN_EXIT; fi; \
 	exit $$STREAM_CANCEL_EXIT

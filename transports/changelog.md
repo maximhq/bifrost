@@ -1,7 +1,2 @@
-## ✨ Features
-
-- **Virtual Key Rotation Cooldown** - New `client.vk_rotation_cooldown` setting (duration string, e.g. "5m"): after a rotation the previous key value keeps authenticating until the grace window expires. config.json VK sync now treats a changed value as an explicit rotation (with console warning) and recognizes the previously rotated-out value as "no change".
-
-## 🐞 Fixed
-
-- **Bedrock Null Content on Empty Assistant Messages** - An assistant message with no text and no tool calls no longer serializes as `content:null`, which Converse rejected outright (#2765)
+- feat: virtual key and provider key APIs accept `allowed_models_patterns` / `blacklisted_models_patterns` and `models_patterns` / `blacklisted_models_patterns`: RE2 patterns that allow or block model families next to the exact lists. Invalid, empty, duplicate or `*` patterns are refused with 400. The model picker gains a Regex tab that edits the pattern fields
+- fix: a client that closes its socket while Bifrost is still waiting on core (silent upstream header wait, retry backoff) now cancels the request. `ConvertToBifrostContext` starts a socket watcher that peeks the client connection every 500 ms with `MSG_PEEK` and cancels the context on FIN or RST, so upstream retries stop as soon as nobody is listening; previously fasthttp offered no per-request `Done` and a disconnect was only noticed when an SSE write failed. No-op on non-unix platforms and on in-memory test connections (#7035)

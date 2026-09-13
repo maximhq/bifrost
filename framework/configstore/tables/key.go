@@ -21,10 +21,13 @@ type TableKey struct {
 	Value                 schemas.SecretVar `gorm:"type:text;not null" json:"value"`
 	ModelsJSON            string            `gorm:"type:text" json:"-"` // JSON serialized []string
 	BlacklistedModelsJSON string            `gorm:"type:text" json:"-"` // JSON serialized []string
-	Weight                *float64          `json:"weight"`
-	Enabled               *bool             `gorm:"default:true" json:"enabled,omitempty"`
-	CreatedAt             time.Time         `gorm:"index;not null" json:"created_at"`
-	UpdatedAt             time.Time         `gorm:"index;not null" json:"updated_at"`
+	// Pattern twins of the two lists above: RE2 patterns, JSON serialized []string.
+	ModelsPatternsJSON            string    `gorm:"column:models_patterns_json;type:text" json:"-"`
+	BlacklistedModelsPatternsJSON string    `gorm:"column:blacklisted_models_patterns_json;type:text" json:"-"`
+	Weight                        *float64  `json:"weight"`
+	Enabled                       *bool     `gorm:"default:true" json:"enabled,omitempty"`
+	CreatedAt                     time.Time `gorm:"index;not null" json:"created_at"`
+	UpdatedAt                     time.Time `gorm:"index;not null" json:"updated_at"`
 
 	// Config hash is used to detect changes synced from config.json file
 	ConfigHash string `gorm:"type:varchar(255);null" json:"config_hash"`
@@ -98,28 +101,53 @@ type TableKey struct {
 	// endpoints instead of its OpenAI-compatible ones.
 	UseAnthropicEndpoints *bool `gorm:"default:false" json:"use_anthropic_endpoints,omitempty"`
 
+	// UseOpenAIEndpoints routes Bedrock inference through the OpenAI-compatible endpoints
+	// instead of Converse. Column name is pinned: the default naming strategy does not
+	// split OpenAI the way the JSON tag does.
+	UseOpenAIEndpoints *bool `gorm:"column:use_openai_endpoints;default:false" json:"use_openai_endpoints,omitempty"`
+
 	Status      string `gorm:"type:varchar(50);default:'unknown'" json:"status"`
 	Description string `gorm:"type:text" json:"description,omitempty"`
 
 	EncryptionStatus string `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
 
+	// GitHub Copilot config fields (embedded)
+	GithubCopilotAppID          *schemas.SecretVar `gorm:"type:text" json:"github_copilot_app_id,omitempty"`
+	GithubCopilotInstallationID *schemas.SecretVar `gorm:"type:text" json:"github_copilot_installation_id,omitempty"`
+	GithubCopilotRepositoryID   *schemas.SecretVar `gorm:"type:text" json:"github_copilot_repository_id,omitempty"`
+	GithubCopilotPrivateKey     *schemas.SecretVar `gorm:"type:text" json:"github_copilot_private_key,omitempty"`
+	GithubCopilotGithubDomain   *schemas.SecretVar `gorm:"type:text" json:"github_copilot_github_domain,omitempty"`
+
 	// Virtual fields for runtime use (not stored in DB)
-	Models                 schemas.WhiteList               `gorm:"-" json:"models"` // ["*"] allows all models; empty denies all (deny-by-default)
-	BlacklistedModels      schemas.BlackList               `gorm:"-" json:"blacklisted_models"`
-	Aliases                schemas.KeyAliases              `gorm:"-" json:"aliases,omitempty"`
-	AzureKeyConfig         *schemas.AzureKeyConfig         `gorm:"-" json:"azure_key_config,omitempty"`
-	VertexKeyConfig        *schemas.VertexKeyConfig        `gorm:"-" json:"vertex_key_config,omitempty"`
-	BedrockKeyConfig       *schemas.BedrockKeyConfig       `gorm:"-" json:"bedrock_key_config,omitempty"`
-	BedrockMantleKeyConfig *schemas.BedrockMantleKeyConfig `gorm:"-" json:"bedrock_mantle_key_config,omitempty"`
-	VLLMKeyConfig          *schemas.VLLMKeyConfig          `gorm:"-" json:"vllm_key_config,omitempty"`
-	ReplicateKeyConfig     *schemas.ReplicateKeyConfig     `gorm:"-" json:"replicate_key_config,omitempty"`
-	OllamaKeyConfig        *schemas.OllamaKeyConfig        `gorm:"-" json:"ollama_key_config,omitempty"`
-	SGLKeyConfig           *schemas.SGLKeyConfig           `gorm:"-" json:"sgl_key_config,omitempty"`
-	DatabricksKeyConfig    *schemas.DatabricksKeyConfig    `gorm:"-" json:"databricks_key_config,omitempty"`
+	Models                    schemas.WhiteList               `gorm:"-" json:"models"` // ["*"] allows all models; empty denies all (deny-by-default)
+	BlacklistedModels         schemas.BlackList               `gorm:"-" json:"blacklisted_models"`
+	ModelsPatterns            schemas.ModelPatternList        `gorm:"-" json:"models_patterns"`             // RE2 patterns admitting models alongside Models
+	BlacklistedModelsPatterns schemas.ModelPatternList        `gorm:"-" json:"blacklisted_models_patterns"` // RE2 patterns blocking models alongside BlacklistedModels
+	Aliases                   schemas.KeyAliases              `gorm:"-" json:"aliases,omitempty"`
+	AzureKeyConfig            *schemas.AzureKeyConfig         `gorm:"-" json:"azure_key_config,omitempty"`
+	VertexKeyConfig           *schemas.VertexKeyConfig        `gorm:"-" json:"vertex_key_config,omitempty"`
+	BedrockKeyConfig          *schemas.BedrockKeyConfig       `gorm:"-" json:"bedrock_key_config,omitempty"`
+	BedrockMantleKeyConfig    *schemas.BedrockMantleKeyConfig `gorm:"-" json:"bedrock_mantle_key_config,omitempty"`
+	VLLMKeyConfig             *schemas.VLLMKeyConfig          `gorm:"-" json:"vllm_key_config,omitempty"`
+	ReplicateKeyConfig        *schemas.ReplicateKeyConfig     `gorm:"-" json:"replicate_key_config,omitempty"`
+	OllamaKeyConfig           *schemas.OllamaKeyConfig        `gorm:"-" json:"ollama_key_config,omitempty"`
+	SGLKeyConfig              *schemas.SGLKeyConfig           `gorm:"-" json:"sgl_key_config,omitempty"`
+	DatabricksKeyConfig       *schemas.DatabricksKeyConfig    `gorm:"-" json:"databricks_key_config,omitempty"`
+	GithubCopilotKeyConfig    *schemas.GithubCopilotKeyConfig `gorm:"-" json:"github_copilot_key_config,omitempty"`
 }
 
 // TableName sets the table name for each model
 func (TableKey) TableName() string { return "config_keys" }
+
+// ModelAccess returns the key's model rule: exact lists plus their pattern twins.
+func (k *TableKey) ModelAccess() schemas.ModelAccessRule {
+	return schemas.ModelAccessRule{
+		Allowed:         k.Models,
+		Blocked:         k.BlacklistedModels,
+		AllowedPatterns: k.ModelsPatterns,
+		BlockedPatterns: k.BlacklistedModelsPatterns,
+	}
+}
 
 // BeforeSave is a GORM hook that serializes runtime config structs into JSON columns and
 // encrypts sensitive fields (API key value, Azure endpoint/client ID/secret/tenant ID/API version,
@@ -128,7 +156,7 @@ func (TableKey) TableName() string { return "config_keys" }
 // operates on the final serialized values.
 func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 	if err := k.Models.Validate(); err != nil {
-		return err
+		return fmt.Errorf("invalid models: %w", err)
 	}
 	data, err := json.Marshal(k.Models)
 	if err != nil {
@@ -136,13 +164,35 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 	}
 	k.ModelsJSON = string(data)
 	if err := k.BlacklistedModels.Validate(); err != nil {
-		return err
+		return fmt.Errorf("invalid blacklisted_models: %w", err)
 	}
 	data, err = json.Marshal(k.BlacklistedModels)
 	if err != nil {
 		return err
 	}
 	k.BlacklistedModelsJSON = string(data)
+	if err := k.ModelsPatterns.Validate(); err != nil {
+		return fmt.Errorf("invalid models_patterns: %w", err)
+	}
+	if k.ModelsPatterns == nil {
+		k.ModelsPatterns = schemas.ModelPatternList{}
+	}
+	data, err = json.Marshal(k.ModelsPatterns)
+	if err != nil {
+		return err
+	}
+	k.ModelsPatternsJSON = string(data)
+	if err := k.BlacklistedModelsPatterns.Validate(); err != nil {
+		return fmt.Errorf("invalid blacklisted_models_patterns: %w", err)
+	}
+	if k.BlacklistedModelsPatterns == nil {
+		k.BlacklistedModelsPatterns = schemas.ModelPatternList{}
+	}
+	data, err = json.Marshal(k.BlacklistedModelsPatterns)
+	if err != nil {
+		return err
+	}
+	k.BlacklistedModelsPatternsJSON = string(data)
 	if k.Enabled == nil {
 		enabled := true // DB default
 		k.Enabled = &enabled
@@ -154,6 +204,10 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 	if k.UseAnthropicEndpoints == nil {
 		useAnthropicEndpoints := false // DB default
 		k.UseAnthropicEndpoints = &useAnthropicEndpoints
+	}
+	if k.UseOpenAIEndpoints == nil {
+		useOpenAIEndpoints := false // DB default
+		k.UseOpenAIEndpoints = &useOpenAIEndpoints
 	}
 	// IMPORTANT: All *SecretVar fields assigned from provider config structs (AzureKeyConfig,
 	// VertexKeyConfig, BedrockKeyConfig) MUST be value-copied before assignment. The caller
@@ -491,6 +545,48 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.DatabricksAPIFormat = nil
 		k.DatabricksForwardGatewayTags = nil
 	}
+	// GitHub Copilot. Every SecretVar is value-copied before assignment, per the invariant
+	// above: the caller may retain the config struct pointer, and encryption mutates in
+	// place, so sharing one would corrupt the caller's in-memory config.
+	if k.GithubCopilotKeyConfig != nil {
+		if k.GithubCopilotKeyConfig.AppID.IsSet() {
+			v := k.GithubCopilotKeyConfig.AppID
+			k.GithubCopilotAppID = &v
+		} else {
+			k.GithubCopilotAppID = nil
+		}
+		if k.GithubCopilotKeyConfig.InstallationID.IsSet() {
+			v := k.GithubCopilotKeyConfig.InstallationID
+			k.GithubCopilotInstallationID = &v
+		} else {
+			k.GithubCopilotInstallationID = nil
+		}
+		if k.GithubCopilotKeyConfig.RepositoryID.IsSet() {
+			v := k.GithubCopilotKeyConfig.RepositoryID
+			k.GithubCopilotRepositoryID = &v
+		} else {
+			k.GithubCopilotRepositoryID = nil
+		}
+		if k.GithubCopilotKeyConfig.PrivateKey.IsSet() {
+			v := k.GithubCopilotKeyConfig.PrivateKey
+			k.GithubCopilotPrivateKey = &v
+		} else {
+			k.GithubCopilotPrivateKey = nil
+		}
+		if k.GithubCopilotKeyConfig.GithubDomain.IsSet() {
+			v := k.GithubCopilotKeyConfig.GithubDomain
+			k.GithubCopilotGithubDomain = &v
+		} else {
+			k.GithubCopilotGithubDomain = nil
+		}
+	} else {
+		k.GithubCopilotAppID = nil
+		k.GithubCopilotInstallationID = nil
+		k.GithubCopilotRepositoryID = nil
+		k.GithubCopilotPrivateKey = nil
+		k.GithubCopilotGithubDomain = nil
+
+	}
 
 	// Store plaintext SecretVar columns into the vault and rewrite them to vault refs.
 	// This must run after the columns are populated (above) and before encryption (below):
@@ -626,6 +722,23 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		if err := encryptSecretVarPtr(&k.DatabricksClientSecret); err != nil {
 			return fmt.Errorf("failed to encrypt databricks client secret: %w", err)
 		}
+		// GitHub Copilot. The private key is the whole credential, so it must never sit
+		// in the database in plaintext when encryption is enabled.
+		if err := encryptSecretVarPtr(&k.GithubCopilotAppID); err != nil {
+			return fmt.Errorf("failed to encrypt github copilot app id: %w", err)
+		}
+		if err := encryptSecretVarPtr(&k.GithubCopilotInstallationID); err != nil {
+			return fmt.Errorf("failed to encrypt github copilot installation id: %w", err)
+		}
+		if err := encryptSecretVarPtr(&k.GithubCopilotRepositoryID); err != nil {
+			return fmt.Errorf("failed to encrypt github copilot repository id: %w", err)
+		}
+		if err := encryptSecretVarPtr(&k.GithubCopilotPrivateKey); err != nil {
+			return fmt.Errorf("failed to encrypt github copilot private key: %w", err)
+		}
+		if err := encryptSecretVarPtr(&k.GithubCopilotGithubDomain); err != nil {
+			return fmt.Errorf("failed to encrypt github copilot github domain: %w", err)
+		}
 		k.EncryptionStatus = EncryptionStatusEncrypted
 	}
 	return nil
@@ -747,6 +860,7 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		if err := decryptSecretVarPtr(&k.SGLUrl); err != nil {
 			return fmt.Errorf("failed to decrypt sgl url: %w", err)
 		}
+
 		// Databricks
 		if err := decryptSecretVarPtr(&k.DatabricksWorkspaceURL); err != nil {
 			return fmt.Errorf("failed to decrypt databricks workspace url: %w", err)
@@ -757,6 +871,22 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		if err := decryptSecretVarPtr(&k.DatabricksClientSecret); err != nil {
 			return fmt.Errorf("failed to decrypt databricks client secret: %w", err)
 		}
+		// GitHub Copilot
+		if err := decryptSecretVarPtr(&k.GithubCopilotAppID); err != nil {
+			return fmt.Errorf("failed to decrypt github copilot app id: %w", err)
+		}
+		if err := decryptSecretVarPtr(&k.GithubCopilotInstallationID); err != nil {
+			return fmt.Errorf("failed to decrypt github copilot installation id: %w", err)
+		}
+		if err := decryptSecretVarPtr(&k.GithubCopilotRepositoryID); err != nil {
+			return fmt.Errorf("failed to decrypt github copilot repository id: %w", err)
+		}
+		if err := decryptSecretVarPtr(&k.GithubCopilotPrivateKey); err != nil {
+			return fmt.Errorf("failed to decrypt github copilot private key: %w", err)
+		}
+		if err := decryptSecretVarPtr(&k.GithubCopilotGithubDomain); err != nil {
+			return fmt.Errorf("failed to decrypt github copilot github domain: %w", err)
+		}
 	}
 
 	if k.ModelsJSON != "" {
@@ -766,6 +896,16 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 	}
 	if k.BlacklistedModelsJSON != "" {
 		if err := json.Unmarshal([]byte(k.BlacklistedModelsJSON), &k.BlacklistedModels); err != nil {
+			return err
+		}
+	}
+	if k.ModelsPatternsJSON != "" {
+		if err := json.Unmarshal([]byte(k.ModelsPatternsJSON), &k.ModelsPatterns); err != nil {
+			return err
+		}
+	}
+	if k.BlacklistedModelsPatternsJSON != "" {
+		if err := json.Unmarshal([]byte(k.BlacklistedModelsPatternsJSON), &k.BlacklistedModelsPatterns); err != nil {
 			return err
 		}
 	}
@@ -780,6 +920,10 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 	if k.UseAnthropicEndpoints == nil {
 		useAnthropicEndpoints := false // DB default
 		k.UseAnthropicEndpoints = &useAnthropicEndpoints
+	}
+	if k.UseOpenAIEndpoints == nil {
+		useOpenAIEndpoints := false // DB default
+		k.UseOpenAIEndpoints = &useOpenAIEndpoints
 	}
 	// Reconstruct Azure config if fields are present
 	if k.AzureEndpoint != nil || k.AzureClientID != nil || k.AzureClientSecret != nil || k.AzureTenantID != nil || (k.AzureScopesJSON != nil && *k.AzureScopesJSON != "") {
@@ -936,6 +1080,7 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 	} else {
 		k.SGLKeyConfig = nil
 	}
+
 	// Reconstruct Databricks config if fields are present
 	if k.DatabricksWorkspaceURL != nil || k.DatabricksClientID != nil || k.DatabricksClientSecret != nil ||
 		(k.DatabricksAPIFormat != nil && *k.DatabricksAPIFormat != "") || k.DatabricksForwardGatewayTags != nil {
@@ -955,6 +1100,30 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		k.DatabricksKeyConfig = databricksConfig
 	} else {
 		k.DatabricksKeyConfig = nil
+	}
+	// Reconstruct GitHub Copilot config if any field is present
+	if k.GithubCopilotAppID != nil || k.GithubCopilotInstallationID != nil ||
+		k.GithubCopilotRepositoryID != nil || k.GithubCopilotPrivateKey != nil ||
+		k.GithubCopilotGithubDomain != nil {
+		config := &schemas.GithubCopilotKeyConfig{}
+		if k.GithubCopilotAppID != nil {
+			config.AppID = *k.GithubCopilotAppID
+		}
+		if k.GithubCopilotInstallationID != nil {
+			config.InstallationID = *k.GithubCopilotInstallationID
+		}
+		if k.GithubCopilotRepositoryID != nil {
+			config.RepositoryID = *k.GithubCopilotRepositoryID
+		}
+		if k.GithubCopilotPrivateKey != nil {
+			config.PrivateKey = *k.GithubCopilotPrivateKey
+		}
+		if k.GithubCopilotGithubDomain != nil {
+			config.GithubDomain = *k.GithubCopilotGithubDomain
+		}
+		k.GithubCopilotKeyConfig = config
+	} else {
+		k.GithubCopilotKeyConfig = nil
 	}
 	return nil
 }

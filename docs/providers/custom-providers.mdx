@@ -257,6 +257,28 @@ Custom providers can be built on these supported providers:
 - `gemini` - Gemini
 - `replicate` - Replicate
 
+### Streaming Termination
+
+Most OpenAI-compatible providers end a stream with a `data: [DONE]` marker, and Bifrost reads until it arrives so that a trailing usage-only chunk — which many providers send after `finish_reason` — is not lost.
+
+Bifrost also ends the stream on its own, with no configuration, when an upstream omits `[DONE]` after `finish_reason`:
+
+- the upstream closes the connection: the stream ends immediately
+- the upstream keeps the connection open and sends SSE heartbeat comments: the stream ends on the second consecutive comment after `finish_reason`, so a trailing usage chunk is still collected
+- the upstream keeps the connection open and sends nothing: the stream ends cleanly once `stream_idle_timeout_in_seconds` elapses, with the buffered `finish_reason`. Usage is unavailable for that request if it never arrived
+
+Set `does_not_send_done_marker` to `true` when your upstream instead ends streams on `finish_reason` and never sends `[DONE]`:
+
+```json
+{
+    "custom_provider_config": {
+        "base_provider_type": "openai",
+        "does_not_send_done_marker": true
+    }
+}
+```
+
+
 ### Request Path Overrides
 
 The `request_path_overrides` field allows you to override the default API endpoint paths for specific request types. This is useful when:

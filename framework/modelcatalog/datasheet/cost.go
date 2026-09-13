@@ -5,13 +5,15 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
 // CalculateCost calculates the cost of a Bifrost response.
-// It handles all request types, cache and guardrail billing, and tiered pricing.
+// It handles all request types, cache, guardrail, and routing billing, and tiered pricing.
 // If scopes is nil, an empty LookupScopes is used; global and provider-scoped
 // overrides may still apply since the provider is derived from the response.
 func (s *Store) CalculateCost(result *schemas.BifrostResponse, scopes *LookupScopes) float64 {
@@ -39,25 +41,43 @@ func (s *Store) CalculateCostBreakdown(result *schemas.BifrostResponse, scopes *
 	extraFields := result.GetExtraFields()
 
 	// Handle semantic cache billing
-	cacheDebug := extraFields.CacheDebug
 	var requestCost *schemas.BifrostCost
-	if cacheDebug != nil {
-		requestCost = s.calculateCostWithCache(result, cacheDebug, lookupScopes)
+	if extraFields != nil && extraFields.CacheDebug != nil {
+		requestCost = s.calculateCostWithCache(result, extraFields.CacheDebug, lookupScopes)
 	} else {
 		requestCost = s.calculateBaseCost(result, lookupScopes)
 	}
-
-	// Handle guardrail judge-call billing
-	if extraFields.GuardrailDebug == nil {
+	if extraFields == nil {
 		return requestCost
 	}
+
+	// The main request and each internal sidecar are independently billable, so
+	// price every debug stamp rather than returning on the first one present:
+	// cache, guardrail, and routing metadata can coexist on one response.
 	guardrailCost := s.CalculateGuardrailCost(extraFields.GuardrailDebug, &lookupScopes)
-	if guardrailCost == 0 {
+
+	// Each routing-classification call is billed independently: a request that
+	// classifies via semantic and then falls back to the llm classifier makes
+	// two billable calls, and each carries its own count_toward_budgets flag.
+	// A call's cost only folds in here when that flag is set; telemetry prices
+	// every call unconditionally via RoutingCallCost directly, without this gate.
+	var routingCost float64
+	if extraFields.RoutingMetadata != nil {
+		for _, call := range extraFields.RoutingMetadata.Calls {
+			if call.CountTowardBudgets {
+				routingCost += s.RoutingCallCost(call, &lookupScopes)
+			}
+		}
+	}
+
+	sidecarCost := guardrailCost + routingCost
+	if sidecarCost == 0 {
 		return requestCost
 	}
 	// Copy rather than mutate: requestCost may alias the provider-supplied
-	// usage.Cost. The judge call is a separate internal cost with no input/output
-	// token category, so it lands on the additional side (and the total).
+	// usage.Cost. The judge and classification calls are separate internal costs
+	// with no input/output token category, so they land on the additional side
+	// (and the total).
 	merged := &schemas.BifrostCost{}
 	if requestCost != nil {
 		*merged = *requestCost
@@ -69,10 +89,81 @@ func (s *Store) CalculateCostBreakdown(result *schemas.BifrostResponse, scopes *
 	if merged.AdditionalCostDetails == nil {
 		merged.AdditionalCostDetails = &schemas.AdditionalCostDetails{}
 	}
-	merged.AdditionalCost += guardrailCost
+	merged.AdditionalCost += sidecarCost
 	merged.AdditionalCostDetails.GuardrailCost += guardrailCost
-	merged.TotalCost += guardrailCost
+	merged.AdditionalCostDetails.RoutingCost += routingCost
+	merged.TotalCost += sidecarCost
 	return merged
+}
+
+// RoutingCallCost calculates the cost of one routing-classification call — a
+// semantic classification embed, or an llm classification completion when the
+// call carries OutputTokens. Exported (unlike the cache equivalent) so
+// telemetry can price each call independently and unconditionally, while
+// CalculateCost folds a call's cost into the request's cost only when that
+// call's CountTowardBudgets is set. If scopes is nil, an empty LookupScopes is
+// used.
+func (s *Store) RoutingCallCost(call schemas.BifrostRoutingCall, scopes *LookupScopes) float64 {
+	if call.ProviderUsed == nil || call.ModelUsed == nil || call.InputTokens == nil {
+		return 0
+	}
+	// Malformed usage must never create a negative sidecar cost that subtracts
+	// from the request's budget attribution.
+	if *call.InputTokens < 0 {
+		return 0
+	}
+	if call.OutputTokens != nil && *call.OutputTokens < 0 {
+		return 0
+	}
+	var lookupScopes LookupScopes
+	if scopes != nil {
+		lookupScopes = *scopes
+	}
+	// The classification call may use a different configured provider key, so
+	// do not let the parent request's key-specific override price this call.
+	lookupScopes.SelectedKeyID = ""
+	// Caller scopes carry the main request's provider; the classification ran
+	// against ProviderUsed, so provider-scoped overrides must key on it.
+	// The embedding can use a different provider from the main request, so its
+	// provider-scoped overrides must be resolved against the embedding provider.
+	lookupScopes.Provider = *call.ProviderUsed
+	// A present OutputTokens marks the call as a chat completion (the llm
+	// classifier); an embedding call never carries one. The two price on
+	// different rate tables, so the request type must follow the call shape.
+	requestType := schemas.EmbeddingRequest
+	if call.OutputTokens != nil {
+		requestType = schemas.ChatCompletionRequest
+	}
+	// Mirrors computeCacheEmbeddingCost: a single model identifier maps to
+	// RoutingInfo.Model — no alias resolution context exists for the internal
+	// classification call.
+	pricing := s.resolvePricing(schemas.RoutingInfo{
+		Provider: schemas.ModelProvider(*call.ProviderUsed),
+		Model:    *call.ModelUsed,
+	}, requestType, lookupScopes)
+	if pricing == nil {
+		return 0
+	}
+	usage := &schemas.BifrostLLMUsage{PromptTokens: *call.InputTokens}
+	// The compute helpers return a per-category breakdown; a routing call is an
+	// internal sidecar with no category of its own, so only the total is kept.
+	var breakdown *schemas.BifrostCost
+	if requestType == schemas.EmbeddingRequest {
+		breakdown = computeEmbeddingCost(pricing, usage, serviceTier{})
+	} else {
+		usage.CompletionTokens = *call.OutputTokens
+		breakdown = computeTextCost(pricing, usage, serviceTier{})
+	}
+	var cost float64
+	if breakdown != nil {
+		cost = breakdown.TotalCost
+	}
+	// Each routing classification is a distinct provider request, so its flat
+	// fee applies once on top of the usage-based cost.
+	if pricing.CostPerRequest != nil {
+		cost += *pricing.CostPerRequest
+	}
+	return cost
 }
 
 // CalculateCostForUsage computes the dollar cost from a bare usage object plus
@@ -134,13 +225,13 @@ func (s *Store) CalculateCostBreakdownForUsage(usage *schemas.BifrostLLMUsage, p
 // CalculateCost uses this for normal responses. Logging also calls it directly
 // for input guardrail blocks, where the main provider call never produced a
 // BifrostResponse.
-func (s *Store) CalculateGuardrailCost(debug *schemas.BifrostGuardrailDebug, scopes *LookupScopes) float64 {
-	if debug == nil || len(debug.JudgeCalls) == 0 {
+func (s *Store) CalculateGuardrailCost(metadata *schemas.BifrostGuardrailMetadata, scopes *LookupScopes) float64 {
+	if metadata == nil || len(metadata.JudgeCalls) == 0 {
 		return 0
 	}
 
 	var total float64
-	for _, call := range debug.JudgeCalls {
+	for _, call := range metadata.JudgeCalls {
 		total += s.computeGuardrailJudgeCost(call, scopes)
 	}
 	return total
@@ -158,6 +249,10 @@ func (s *Store) computeGuardrailJudgeCost(call schemas.BifrostGuardrailJudgeCall
 	judgeScopes := LookupScopes{Provider: string(call.JudgeProvider)}
 	if scopes != nil {
 		judgeScopes.VirtualKeyID = scopes.VirtualKeyID
+		// The judge call is part of the same request, so it prices against the
+		// same instant. Dropping this would silently fall back to wall-clock
+		// time-of-day pricing for judge calls only.
+		judgeScopes.BilledAt = scopes.BilledAt
 	}
 
 	usage := &schemas.BifrostLLMUsage{
@@ -288,18 +383,18 @@ func cloneFloat64Pointer(value *float64) *float64 {
 	return &clone
 }
 
-// calculateCostWithCache handles cost calculation when semantic cache debug info is present.
-func (s *Store) calculateCostWithCache(result *schemas.BifrostResponse, cacheDebug *schemas.BifrostCacheDebug, scopes LookupScopes) *schemas.BifrostCost {
-	if cacheDebug.CacheHit {
+// calculateCostWithCache handles cost calculation when semantic cache metadata is present.
+func (s *Store) calculateCostWithCache(result *schemas.BifrostResponse, cacheMetadata *schemas.BifrostCacheMetadata, scopes LookupScopes) *schemas.BifrostCost {
+	if cacheMetadata.CacheHit {
 		// Direct cache hit — no LLM call, no cost
-		if cacheDebug.HitType != nil && *cacheDebug.HitType == "direct" {
+		if cacheMetadata.HitType != nil && *cacheMetadata.HitType == "direct" {
 			return nil
 		}
 		// Semantic cache hit — only the embedding lookup cost. It's an internal
 		// sidecar cost (a separate embedding call), so it lands on the additional
 		// side, alongside guardrail/MCP, not folded into the request's input.
-		if cacheDebug.ProviderUsed != nil && cacheDebug.ModelUsed != nil && cacheDebug.InputTokens != nil {
-			c := s.computeCacheEmbeddingCost(cacheDebug, scopes)
+		if cacheMetadata.ProviderUsed != nil && cacheMetadata.ModelUsed != nil && cacheMetadata.InputTokens != nil {
+			c := s.computeCacheEmbeddingCost(cacheMetadata, scopes)
 			if c == 0 {
 				return nil
 			}
@@ -314,7 +409,7 @@ func (s *Store) calculateCostWithCache(result *schemas.BifrostResponse, cacheDeb
 
 	// Cache miss — full LLM cost + embedding lookup cost (a sidecar additional cost)
 	base := s.calculateBaseCost(result, scopes)
-	embeddingCost := s.computeCacheEmbeddingCost(cacheDebug, scopes)
+	embeddingCost := s.computeCacheEmbeddingCost(cacheMetadata, scopes)
 	if embeddingCost == 0 {
 		return base
 	}
@@ -337,24 +432,24 @@ func (s *Store) calculateCostWithCache(result *schemas.BifrostResponse, cacheDeb
 }
 
 // computeCacheEmbeddingCost calculates the embedding cost for a semantic cache lookup.
-func (s *Store) computeCacheEmbeddingCost(cacheDebug *schemas.BifrostCacheDebug, scopes LookupScopes) float64 {
-	if cacheDebug == nil || cacheDebug.ProviderUsed == nil || cacheDebug.ModelUsed == nil || cacheDebug.InputTokens == nil {
+func (s *Store) computeCacheEmbeddingCost(cacheMetadata *schemas.BifrostCacheMetadata, scopes LookupScopes) float64 {
+	if cacheMetadata == nil || cacheMetadata.ProviderUsed == nil || cacheMetadata.ModelUsed == nil || cacheMetadata.InputTokens == nil {
 		return 0
 	}
 	if scopes.Provider == "" {
-		scopes.Provider = *cacheDebug.ProviderUsed
+		scopes.Provider = *cacheMetadata.ProviderUsed
 	}
-	// Cache-debug pricing has only a single model identifier (whatever the
+	// Cache metadata pricing has only a single model identifier (whatever the
 	// cache recorded). Maps to RoutingInfo.Model — no alias resolution
 	// context exists for the cache-replayed request.
 	pricing := s.resolvePricing(schemas.RoutingInfo{
-		Provider: schemas.ModelProvider(*cacheDebug.ProviderUsed),
-		Model:    *cacheDebug.ModelUsed,
+		Provider: schemas.ModelProvider(*cacheMetadata.ProviderUsed),
+		Model:    *cacheMetadata.ModelUsed,
 	}, schemas.EmbeddingRequest, scopes)
 	if pricing == nil {
 		return 0
 	}
-	cost := float64(*cacheDebug.InputTokens) * tieredInputRate(pricing, *cacheDebug.InputTokens, serviceTier{})
+	cost := float64(*cacheMetadata.InputTokens) * tieredInputRate(pricing, *cacheMetadata.InputTokens, serviceTier{})
 	// The lookup is a separate embedding call, so the embedding model's flat
 	// per-request fee applies once, mirroring the synchronous/batch paths.
 	if pricing.CostPerRequest != nil {
@@ -364,12 +459,12 @@ func (s *Store) computeCacheEmbeddingCost(cacheDebug *schemas.BifrostCacheDebug,
 }
 
 // CalculateCacheEmbeddingCost computes the semantic-cache embedding lookup cost.
-func (s *Store) CalculateCacheEmbeddingCost(cacheDebug *schemas.BifrostCacheDebug, scopes *LookupScopes) float64 {
+func (s *Store) CalculateCacheEmbeddingCost(cacheMetadata *schemas.BifrostCacheMetadata, scopes *LookupScopes) float64 {
 	var lookupScopes LookupScopes
 	if scopes != nil {
 		lookupScopes = *scopes
 	}
-	return s.computeCacheEmbeddingCost(cacheDebug, lookupScopes)
+	return s.computeCacheEmbeddingCost(cacheMetadata, lookupScopes)
 }
 
 // computeContainerCreationCost returns the cost for creating a container from an already-resolved pricing entry.
@@ -406,6 +501,9 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 		}
 	}
 	requestType := extraFields.RequestType
+	if extraFields.PricingRequestType != "" {
+		requestType = extraFields.PricingRequestType
+	}
 
 	// A retrieve is a status read, not a generation. Providers that report the job's cost on the
 	// polled response (e.g. Runware, which echoes it on every getResponse once the task has
@@ -547,9 +645,20 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 		return nil
 	}
 
+	// Time-of-day pricing: providers that discount outside declared peak windows
+	// (e.g. DeepSeek's 50% off-peak rate) scale every usage-based charge by a
+	// flat multiplier. Applied here rather than inside each compute*Cost so one
+	// branch covers every modality. It lands after computeTextCost's
+	// inference_geo multiplier, so the two compose multiplicatively.
+	if m, ok := offPeakMultiplier(pricing, scopes.BilledAt); ok {
+		scaleUsageCost(cost, m)
+	}
+
 	// Flat per-request surcharge, billed once on top of usage-based cost whenever
 	// the resolved pricing row carries one. It maps to no token category, so it
 	// folds into the input side (InputCostDetails.RequestCost) and the total.
+	// Deliberately added after the off-peak scaling: a flat per-request fee is
+	// not a usage charge and is not discounted.
 	if pricing.CostPerRequest != nil {
 		if cost == nil {
 			cost = &schemas.BifrostCost{}
@@ -584,14 +693,29 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 
 	case result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil:
 		input.usage = responsesUsageToBifrostUsage(result.ResponsesResponse.Usage)
+		input.audioSeconds = input.usage.AudioSeconds
 		input.tier = tierFromResponse(result.ResponsesResponse.ServiceTier, result.ResponsesResponse.Speed, result.ResponsesResponse.InferenceGeo)
+		if details := result.ResponsesResponse.Usage.InputTokensDetails; details != nil {
+			input.audioTokenDetails = &schemas.TranscriptionUsageInputTokenDetails{
+				AudioTokens: details.AudioTokens,
+				TextTokens:  details.TextTokens,
+			}
+		}
 
 	case result.CompactionResponse != nil && result.CompactionResponse.Usage != nil:
 		input.usage = responsesUsageToBifrostUsage(result.CompactionResponse.Usage)
 
 	case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil && result.ResponsesStreamResponse.Response.Usage != nil:
-		input.usage = responsesUsageToBifrostUsage(result.ResponsesStreamResponse.Response.Usage)
-		input.tier = tierFromResponse(result.ResponsesStreamResponse.Response.ServiceTier, result.ResponsesStreamResponse.Response.Speed, result.ResponsesStreamResponse.Response.InferenceGeo)
+		response := result.ResponsesStreamResponse.Response
+		input.usage = responsesUsageToBifrostUsage(response.Usage)
+		input.audioSeconds = input.usage.AudioSeconds
+		input.tier = tierFromResponse(response.ServiceTier, response.Speed, response.InferenceGeo)
+		if details := response.Usage.InputTokensDetails; details != nil {
+			input.audioTokenDetails = &schemas.TranscriptionUsageInputTokenDetails{
+				AudioTokens: details.AudioTokens,
+				TextTokens:  details.TextTokens,
+			}
+		}
 
 	case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
 		input.usage = result.EmbeddingResponse.Usage
@@ -690,6 +814,7 @@ func responsesUsageToBifrostUsage(u *schemas.ResponsesResponseUsage) *schemas.Bi
 		PromptTokens:     u.InputTokens,
 		CompletionTokens: u.OutputTokens,
 		TotalTokens:      u.TotalTokens,
+		AudioSeconds:     u.AudioSeconds,
 		Cost:             u.Cost,
 	}
 	// Map token details for cache and search query pricing
@@ -723,7 +848,7 @@ func speechUsageToBifrostUsage(u *schemas.SpeechUsage) *schemas.BifrostLLMUsage 
 	}
 }
 
-func extractTranscriptionUsage(u *schemas.TranscriptionUsage) (*schemas.BifrostLLMUsage, *int, *schemas.TranscriptionUsageInputTokenDetails) {
+func extractTranscriptionUsage(u *schemas.TranscriptionUsage) (*schemas.BifrostLLMUsage, *float64, *schemas.TranscriptionUsageInputTokenDetails) {
 	usage := &schemas.BifrostLLMUsage{}
 	if u.InputTokens != nil {
 		usage.PromptTokens = *u.InputTokens
@@ -745,9 +870,10 @@ func extractTranscriptionUsage(u *schemas.TranscriptionUsage) (*schemas.BifrostL
 		}
 	}
 
-	var audioSeconds *int
+	var audioSeconds *float64
 	if u.Seconds != nil {
-		audioSeconds = new(int(*u.Seconds))
+		seconds := float64(*u.Seconds)
+		audioSeconds = &seconds
 	}
 
 	return usage, audioSeconds, audioTokenDetails
@@ -1127,7 +1253,7 @@ func newInputOutputCostWithDetails(inputCost, outputCost float64, inputDetails *
 // input text rather than per token. PromptTokens from usage is treated as the character count
 // since TTS providers report their billable unit in that field.
 // Output falls back to per-second duration when no audio token rate is configured.
-func computeSpeechCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *int, audioTextInputChars int, tier serviceTier) *schemas.BifrostCost {
+func computeSpeechCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *float64, audioTextInputChars int, tier serviceTier) *schemas.BifrostCost {
 	tierTokens := inputTierTokens(usage)
 
 	// Input: per-character rate takes precedence for TTS/audio models
@@ -1160,7 +1286,7 @@ func computeSpeechCost(pricing *configstoreTables.TableModelPricing, usage *sche
 // computeTranscriptionCost handles transcription (STT) requests.
 // Input is audio, output is text (CompletionTokens).
 // Input and output are calculated independently — tokens first, then per-second fallback.
-func computeTranscriptionCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *int, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails, tier serviceTier) *schemas.BifrostCost {
+func computeTranscriptionCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *float64, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails, tier serviceTier) *schemas.BifrostCost {
 	tierTokens := inputTierTokens(usage)
 
 	// Input: audio tokens/details first, then per-second fallback
@@ -1192,7 +1318,7 @@ func computeTranscriptionCost(pricing *configstoreTables.TableModelPricing, usag
 
 // computeAudioInputCost calculates input cost for audio: audio token details first,
 // then generic input tokens, then per-second duration fallback.
-func computeAudioInputCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *int, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails, totalTokens int, tier serviceTier) float64 {
+func computeAudioInputCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *float64, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails, totalTokens int, tier serviceTier) float64 {
 	// Audio token detail pricing (audio + text token breakdown)
 	if audioTokenDetails != nil && (audioTokenDetails.AudioTokens > 0 || audioTokenDetails.TextTokens > 0) {
 		return float64(audioTokenDetails.AudioTokens)*tieredAudioTokenInputRate(pricing, totalTokens, tier) +
@@ -1207,7 +1333,7 @@ func computeAudioInputCost(pricing *configstoreTables.TableModelPricing, usage *
 	// Per-second duration fallback
 	if audioSeconds != nil && *audioSeconds > 0 {
 		if rate := tieredAudioInputPerSecondRate(pricing, totalTokens); rate > 0 {
-			return float64(*audioSeconds) * rate
+			return *audioSeconds * rate
 		}
 	}
 
@@ -1216,7 +1342,7 @@ func computeAudioInputCost(pricing *configstoreTables.TableModelPricing, usage *
 
 // computeAudioOutputCost calculates output cost for audio: audio tokens first,
 // then generic output tokens, then per-second duration fallback.
-func computeAudioOutputCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *int, totalTokens int, tier serviceTier) float64 {
+func computeAudioOutputCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *float64, totalTokens int, tier serviceTier) float64 {
 	// Audio-specific output tokens
 	if usage != nil && usage.CompletionTokens > 0 {
 		return float64(usage.CompletionTokens) * tieredAudioTokenOutputRate(pricing, totalTokens, tier)
@@ -1225,7 +1351,7 @@ func computeAudioOutputCost(pricing *configstoreTables.TableModelPricing, usage 
 	// Per-second duration fallback
 	if audioSeconds != nil && *audioSeconds > 0 {
 		if pricing.OutputCostPerSecond != nil {
-			return float64(*audioSeconds) * *pricing.OutputCostPerSecond
+			return *audioSeconds * *pricing.OutputCostPerSecond
 		}
 	}
 
@@ -2318,7 +2444,8 @@ func passthroughUsageToCostInput(su *schemas.BifrostPassthroughUsage) costInput 
 		input.audioTextInputChars = su.AudioInputChars
 	}
 	if su.AudioSeconds != nil {
-		input.audioSeconds = su.AudioSeconds
+		seconds := float64(*su.AudioSeconds)
+		input.audioSeconds = &seconds
 	}
 	if su.AudioTokenDetails != nil {
 		input.audioTokenDetails = su.AudioTokenDetails
@@ -2343,4 +2470,195 @@ func passthroughUsageToCostInput(su *schemas.BifrostPassthroughUsage) costInput 
 		}
 	}
 	return input
+}
+
+// ---------------------------------------------------------------------------
+// Time-of-day (peak / off-peak) pricing
+// ---------------------------------------------------------------------------
+
+// peakHoursLocations caches resolved IANA locations. time.LoadLocation hits the
+// filesystem (or the embedded tzdata) on every call, which is far too expensive
+// to repeat per priced request. A nil value memoizes a failed lookup so a bad
+// timezone string is not retried forever.
+var peakHoursLocations sync.Map // string -> *time.Location
+
+// peakHoursLocation resolves a schedule's timezone. An empty name means UTC.
+// An unknown name returns nil, which callers must treat as "cannot evaluate".
+func peakHoursLocation(name string) *time.Location {
+	if name == "" {
+		return time.UTC
+	}
+	if cached, ok := peakHoursLocations.Load(name); ok {
+		loc, _ := cached.(*time.Location)
+		return loc
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		peakHoursLocations.Store(name, (*time.Location)(nil))
+		return nil
+	}
+	peakHoursLocations.Store(name, loc)
+	return loc
+}
+
+// parseClockMinutes parses an "HH:MM" wall-clock string into minutes since
+// midnight. Returns false for anything malformed or out of range. "24:00" is
+// accepted as an end-of-day marker so a window can span a full day.
+func parseClockMinutes(v string) (int, bool) {
+	hh, mm, ok := strings.Cut(v, ":")
+	if !ok {
+		return 0, false
+	}
+	h, err := strconv.Atoi(hh)
+	if err != nil || h < 0 || h > 24 {
+		return 0, false
+	}
+	m, err := strconv.Atoi(mm)
+	if err != nil || m < 0 || m > 59 {
+		return 0, false
+	}
+	if h == 24 && m != 0 {
+		return 0, false
+	}
+	return h*60 + m, true
+}
+
+// isWithinPeakWindows reports whether at falls inside any window of sched, and
+// whether the schedule could be evaluated at all. A schedule that cannot be
+// evaluated — no windows, unknown timezone, every window malformed — returns
+// ok=false, and callers bill at peak. That direction matters: base rates are
+// the peak (higher) prices, so failing closed over-bills rather than handing
+// out a discount that was never configured.
+func isWithinPeakWindows(sched *PeakHoursSchedule, at time.Time) (peak bool, ok bool) {
+	if sched == nil || len(sched.Windows) == 0 {
+		return false, false
+	}
+	loc := peakHoursLocation(sched.Timezone)
+	if loc == nil {
+		return false, false
+	}
+
+	local := at.In(loc)
+	weekday := int(local.Weekday())
+	minutes := local.Hour()*60 + local.Minute()
+
+	// A window that wraps past midnight is also matched against the previous
+	// day: 22:00-02:00 on Monday still covers Tuesday 01:00.
+	prevWeekday := (weekday + 6) % 7
+	prevMinutes := minutes + 24*60
+
+	valid := false
+	for _, w := range sched.Windows {
+		start, startOK := parseClockMinutes(w.Start)
+		end, endOK := parseClockMinutes(w.End)
+		if !startOK || !endOK || len(w.Days) == 0 {
+			continue
+		}
+		wrapped := end <= start
+		if wrapped {
+			end += 24 * 60
+		}
+
+		for _, d := range w.Days {
+			if d < 0 || d > 6 {
+				continue
+			}
+			// Only a weekday inside 0..6 makes the window usable. Marking the
+			// schedule valid before this point let a window whose every Days
+			// entry is out of range (say []int{7}) report "evaluated, not
+			// peak", which hands out the off-peak discount on garbage input.
+			// Base rates are the peak prices, so an unusable schedule has to
+			// bill at peak.
+			valid = true
+			// Half-open [start, end): a window ending at 04:00 does not cover
+			// 04:00:00 itself, so adjacent windows never double-count.
+			if d == weekday && minutes >= start && minutes < end {
+				return true, true
+			}
+			if wrapped && d == prevWeekday && prevMinutes >= start && prevMinutes < end {
+				return true, true
+			}
+		}
+	}
+	if !valid {
+		return false, false
+	}
+	return false, true
+}
+
+// offPeakMultiplier returns the multiplier to scale usage-based costs by when
+// at falls outside pricing's declared peak windows, and whether a discount
+// applies at all.
+//
+// Both off_peak_cost_multiplier and peak_hours must be present: a multiplier
+// with no schedule has no way to know when to apply, and a schedule with no
+// multiplier has nothing to apply. Either alone bills at peak. A multiplier
+// outside (0, 1] is rejected for the same reason — every base rate on the row
+// is the peak price, so a discount can only ever scale downward, and a bogus
+// value must not silently zero out or inflate a bill.
+//
+// A zero at means the caller never learned the request's start time; fall back
+// to the wall clock rather than mispricing everything as peak.
+func offPeakMultiplier(pricing *configstoreTables.TableModelPricing, at time.Time) (float64, bool) {
+	if pricing == nil || pricing.OffPeakCostMultiplier == nil || pricing.PeakHours == nil {
+		return 0, false
+	}
+	m := *pricing.OffPeakCostMultiplier
+	if !(m > 0 && m <= 1) {
+		return 0, false
+	}
+	if at.IsZero() {
+		at = time.Now()
+	}
+	peak, ok := isWithinPeakWindows(pricing.PeakHours, at)
+	if !ok || peak {
+		return 0, false
+	}
+	return m, true
+}
+
+// scaleUsageCost multiplies every usage-based charge on cost by m, in place.
+//
+// RequestCost and SearchQueriesCost are deliberately excluded: they are flat
+// per-request and per-query fees rather than usage categories, matching how the
+// inference_geo multiplier in computeTextCost already treats the search fee.
+// AdditionalCost is excluded too — guardrail and MCP sidecar costs are priced
+// through their own computeCostFromInput call and are discounted there on
+// their own pricing rows.
+func scaleUsageCost(cost *schemas.BifrostCost, m float64) {
+	if cost == nil {
+		return
+	}
+
+	if cost.InputCostDetails != nil {
+		d := cost.InputCostDetails
+		cost.InputCost -= d.RequestCost
+		d.TextCost *= m
+		d.AudioCost *= m
+		d.ImageCost *= m
+		d.CachedReadCost *= m
+		d.CachedWriteCost *= m
+		cost.InputCost *= m
+		cost.InputCost += d.RequestCost
+	} else {
+		cost.InputCost *= m
+	}
+
+	if cost.OutputCostDetails != nil {
+		d := cost.OutputCostDetails
+		cost.OutputCost -= d.SearchQueriesCost
+		d.TextCost *= m
+		d.AudioCost *= m
+		d.ImageCost *= m
+		d.ReasoningCost *= m
+		d.CitationCost *= m
+		cost.OutputCost *= m
+		cost.OutputCost += d.SearchQueriesCost
+	} else {
+		cost.OutputCost *= m
+	}
+
+	// Recompute rather than scaling: TotalCost also carries AdditionalCost,
+	// which is not discounted here.
+	cost.TotalCost = cost.InputCost + cost.OutputCost + cost.AdditionalCost
 }

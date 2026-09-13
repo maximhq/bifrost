@@ -492,6 +492,15 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 	if engines, ok := ctx.Value(schemas.BifrostContextKeyRoutingEnginesUsed).([]string); ok && len(engines) > 0 {
 		span.SetAttribute(schemas.AttrBifrostRoutingEngineUsed, strings.Join(engines, ","))
 	}
+	if tier, ok := ctx.Value(schemas.BifrostContextKeyGovernanceComplexityTier).(string); ok && tier != "" {
+		span.SetAttribute(schemas.AttrBifrostComplexityTier, tier)
+	}
+	if mechanism, ok := ctx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism).(string); ok && mechanism != "" {
+		span.SetAttribute(schemas.AttrBifrostComplexityMechanism, mechanism)
+	}
+	if score, ok := ctx.Value(schemas.BifrostContextKeyGovernanceComplexityScore).(float64); ok {
+		span.SetAttribute(schemas.AttrBifrostComplexityScore, score)
+	}
 
 	// Populate cost attribute using pricing manager. BilledUsage wins when it is
 	// present: it is what the provider actually charged for a failed or cancelled

@@ -6,6 +6,100 @@ import (
 	"testing"
 )
 
+// TestBifrostResponsesStreamResponseOmitsEmptyItem verifies that events without
+// an item object (response.created, output_text.delta, response.completed, ...)
+// do not serialize "item": null. Strict Responses API clients (e.g. opencode's
+// open-responses protocol) reject events where "item" is present but null —
+// the field only belongs on output_item.added / output_item.done.
+func TestBifrostResponsesStreamResponseOmitsEmptyItem(t *testing.T) {
+	for _, typ := range []ResponsesStreamResponseType{
+		ResponsesStreamResponseTypeCreated,
+		ResponsesStreamResponseTypeInProgress,
+		ResponsesStreamResponseTypeOutputTextDelta,
+		ResponsesStreamResponseTypeContentPartAdded,
+		ResponsesStreamResponseTypeCompleted,
+	} {
+		ev := &BifrostResponsesStreamResponse{Type: typ, SequenceNumber: 0}
+		encoded, err := MarshalSorted(ev)
+		if err != nil {
+			t.Fatalf("%s: marshal: %v", typ, err)
+		}
+		var decoded map[string]json.RawMessage
+		if err := json.Unmarshal(encoded, &decoded); err != nil {
+			t.Fatalf("%s: unmarshal encoded event: %v", typ, err)
+		}
+		if _, ok := decoded["item"]; ok {
+			t.Errorf("%s: event without item serializes an item field:\n%s", typ, encoded)
+		}
+	}
+
+	for _, typ := range []ResponsesStreamResponseType{
+		ResponsesStreamResponseTypeOutputItemAdded,
+		ResponsesStreamResponseTypeOutputItemDone,
+	} {
+		withItem := &BifrostResponsesStreamResponse{
+			Type: typ,
+			Item: &ResponsesMessage{Type: Ptr(ResponsesMessageTypeMessage), ID: Ptr("msg_1")},
+		}
+		encoded, err := MarshalSorted(withItem)
+		if err != nil {
+			t.Fatalf("%s: marshal: %v", typ, err)
+		}
+		var decoded map[string]json.RawMessage
+		if err := json.Unmarshal(encoded, &decoded); err != nil {
+			t.Fatalf("%s: unmarshal encoded event: %v", typ, err)
+		}
+		itemJSON, ok := decoded["item"]
+		if !ok {
+			t.Errorf("%s: lost item object:\n%s", typ, encoded)
+			continue
+		}
+		var item ResponsesMessage
+		if err := json.Unmarshal(itemJSON, &item); err != nil {
+			t.Fatalf("%s: unmarshal item: %v", typ, err)
+		}
+		if item.ID == nil || *item.ID != "msg_1" {
+			t.Errorf("%s: unexpected item payload: %#v", typ, item)
+		}
+	}
+}
+
+func TestBifrostResponsesStreamResponseLogProbsScopedToApplicableEvents(t *testing.T) {
+	created := &BifrostResponsesStreamResponse{Type: ResponsesStreamResponseTypeCreated, SequenceNumber: 0}
+	encoded, err := MarshalSorted(created)
+	if err != nil {
+		t.Fatalf("created: marshal: %v", err)
+	}
+	var createdDecoded map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &createdDecoded); err != nil {
+		t.Fatalf("created: unmarshal encoded event: %v", err)
+	}
+	if _, ok := createdDecoded["logprobs"]; ok {
+		t.Fatalf("created: unexpected logprobs field: %s", encoded)
+	}
+
+	delta := (&BifrostResponsesStreamResponse{Type: ResponsesStreamResponseTypeOutputTextDelta}).WithDefaults()
+	encoded, err = MarshalSorted(delta)
+	if err != nil {
+		t.Fatalf("output_text.delta: marshal: %v", err)
+	}
+	var deltaDecoded map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &deltaDecoded); err != nil {
+		t.Fatalf("output_text.delta: unmarshal encoded event: %v", err)
+	}
+	logprobsJSON, ok := deltaDecoded["logprobs"]
+	if !ok {
+		t.Fatalf("output_text.delta: missing logprobs field: %s", encoded)
+	}
+	var logprobs []ResponsesOutputMessageContentTextLogProb
+	if err := json.Unmarshal(logprobsJSON, &logprobs); err != nil {
+		t.Fatalf("output_text.delta: unmarshal logprobs: %v", err)
+	}
+	if logprobs == nil || len(logprobs) != 0 {
+		t.Fatalf("output_text.delta: expected empty logprobs array, got %#v", logprobs)
+	}
+}
+
 func TestBifrostResponsesStreamResponsePreservesOpenAIStreamMetadata(t *testing.T) {
 	raw := []byte(`{"type":"response.reasoning_summary_text.delta","delta":"thinking","item_id":"rs_123","obfuscation":"opaque","output_index":0,"sequence_number":4,"summary_index":0}`)
 

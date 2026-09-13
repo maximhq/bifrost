@@ -2,10 +2,12 @@ package complexity
 
 // --- Dimension weights ---
 
+// The positive weights (medium + complex + token count) sum to
+// 1.00 so a prompt maxing every signal reaches the full score range. The
+// simple weight is a penalty and deliberately not part of that budget.
 const (
-	codeWeight                         = 0.30
-	reasoningWeight                    = 0.25
-	technicalWeight                    = 0.25
+	mediumWeight                       = 0.40
+	complexWeight                      = 0.50
 	simpleWeight                       = 0.05
 	tokenCountWeight                   = 0.10
 	systemPromptAssistFactor           = 0.25
@@ -14,12 +16,23 @@ const (
 	referentialLastMessageBlendWeight  = 0.35
 	referentialConversationBlendWeight = 0.65
 	referentialMinContextScore         = 0.20
+	referentialShortMessageMaxWords    = 12
 	wordPresenceSetMinBytes            = 8 * 1024
 )
 
+// Match saturation points define when each normalized keyword score reaches 1.
+// Two Complex matches bypass the numeric boundary and force COMPLEX.
+const (
+	mediumMatchSaturation     = 4
+	complexMatchSaturation    = 3
+	simpleMatchSaturation     = 2
+	complexOverrideMatchCount = 2
+)
+
 // --- Keyword lists ---
-// CodePresence: implementation/code syntax/workflow signals
-var codeKeywords = []string{
+// Medium indicators combine implementation/code signals with technical,
+// architecture, infrastructure, security, and operational terminology.
+var mediumKeywords = []string{
 	"function", "class", "api", "database", "algorithm", "code", "implement",
 	"debug", "error", "syntax", "compile", "runtime", "library", "framework",
 	"variable", "loop", "array", "object", "method", "interface",
@@ -31,18 +44,6 @@ var codeKeywords = []string{
 	"retry", "fallback", "middleware", "patch", "diff", "pr", "pull request",
 	"commit", "commit message", "behavior change",
 	"cel", "auto-routing", "rwmutex", "goroutine",
-}
-
-var strongReasoningKeywords = []string{
-	"step by step", "think through", "tradeoffs", "pros and cons",
-	"justify", "critique", "implications", "explain why",
-	"root cause analysis", "reconstruct the sequence",
-	"reconstruct the most likely sequence", "what should have happened instead",
-	"explain your reasoning", "weigh the tradeoffs", "recommend a design",
-}
-
-// TechnicalTerms: architecture/distributed/security/infrastructure signals
-var technicalKeywords = []string{
 	"architecture", "distributed", "encryption", "authentication", "scalability",
 	"microservices", "kubernetes", "infrastructure", "protocol", "latency",
 	"throughput", "concurrency", "optimization", "load balancer", "caching",
@@ -64,6 +65,16 @@ var technicalKeywords = []string{
 	"deterministic replay", "tamper evidence", "hash chain",
 	"approval workflow", "vpc", "soc 2", "data residency",
 	"disaster recovery", "data race", "struct copy", "hybrid search",
+}
+
+// Complex indicators are intentionally narrow, high-confidence phrases that
+// signal deeper analysis or reasoning. Two matches force the COMPLEX tier.
+var complexKeywords = []string{
+	"step by step", "think through", "tradeoffs", "pros and cons",
+	"justify", "critique", "implications", "explain why",
+	"root cause analysis", "reconstruct the sequence",
+	"reconstruct the most likely sequence", "what should have happened instead",
+	"explain your reasoning", "weigh the tradeoffs", "recommend a design",
 }
 
 // SimpleIndicators: signals for trivial/greeting-type requests

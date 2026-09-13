@@ -196,12 +196,44 @@ Key:
       type: array
       items:
         type: string
-      description: List of models this key can access (whitelist)
+      description: >-
+        Models this key can serve (allowlist). `["*"]` allows every model; an
+        empty list denies all. A list may not mix `*` with named entries.
     blacklisted_models:
       type: array
       items:
         type: string
-      description: List of models this key cannot access (blacklist)
+      description: >-
+        Models this key must never serve (denylist, wins over the allowlist).
+        `["*"]` blocks every model. A list may not mix `*` with named entries.
+    models_patterns:
+      type: array
+      uniqueItems: true
+      items:
+        type: string
+        minLength: 1
+        not:
+          const: "*"
+      description: >-
+        RE2 patterns that allow models by name shape, next to the exact allowlist.
+        Each pattern is matched case-insensitively as a full match against the model
+        name and `provider/model`. `*` is not a valid pattern. Blank or
+        whitespace-only entries, duplicate patterns, and patterns RE2 rejects are
+        refused when the key is saved.
+    blacklisted_models_patterns:
+      type: array
+      uniqueItems: true
+      items:
+        type: string
+        minLength: 1
+        not:
+          const: "*"
+      description: >-
+        RE2 patterns that block models by name shape, next to the exact denylist.
+        Each pattern is matched case-insensitively as a full match against the model
+        name and `provider/model`.
+        Block patterns win over the allowlist and the allow patterns.
+        `*` is not a valid pattern, and blank or duplicate entries are refused.
     weight:
       type: number
       description: Weight for load balancing
@@ -304,6 +336,12 @@ CustomProviderConfig:
   properties:
     is_key_less:
       type: boolean
+    does_not_send_done_marker:
+      type: boolean
+      description: >-
+        Provider ends streams on finish_reason without sending a data: [DONE] marker.
+        Without this, a provider that also keeps the connection open leaves the stream
+        waiting for a marker it never sends.
     base_provider_type:
       $ref: '../../schemas/inference/common.yaml#/ModelProvider'
     allowed_requests:
@@ -333,6 +371,8 @@ ProviderResponse:
       type: boolean
     custom_provider_config:
       $ref: '#/CustomProviderConfig'
+    prompt_cache:
+      $ref: '#/PromptCacheConfig'
     provider_status:
       $ref: '#/ProviderStatus'
     status:
@@ -378,6 +418,41 @@ AddProviderRequest:
       type: boolean
     custom_provider_config:
       $ref: '#/CustomProviderConfig'
+    prompt_cache:
+      $ref: '#/PromptCacheConfig'
+
+CacheControlInjectionPoint:
+  type: object
+  description: One place to add a cache breakpoint. Must set role, index, or both.
+  properties:
+    location:
+      type: string
+      enum: [message]
+    role:
+      type: string
+      enum: [system, developer, user, assistant]
+    index:
+      type: integer
+      description: Negative values count from the end, so -1 is the last message.
+
+PromptCacheConfig:
+  type: object
+  description: >-
+    Synthesize prompt-cache breakpoints for requests that carry none. Off by default.
+    Requests that already carry their own cache markers are never modified.
+  properties:
+    auto_inject:
+      type: boolean
+      description: Mark the first cacheable content block, keeping the cached prefix stable across agent turns.
+    ttl:
+      type: string
+      enum: ["1h"]
+      description: Lifetime for injected markers. Omit for the provider default.
+    cache_control_injection_points:
+      type: array
+      description: Target specific messages instead. When set, replaces auto_inject rather than adding to it.
+      items:
+        $ref: '#/CacheControlInjectionPoint'
 
 UpdateProviderRequest:
   type: object
@@ -397,6 +472,8 @@ UpdateProviderRequest:
       type: boolean
     custom_provider_config:
       $ref: '#/CustomProviderConfig'
+    prompt_cache:
+      $ref: '#/PromptCacheConfig'
 
 ListProviderKeysResponse:
   type: object

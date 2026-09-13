@@ -9,6 +9,7 @@ import {
 	getModelColor,
 	THROUGHPUT_COLOR,
 } from "../../utils/chartUtils";
+import { barShape } from "./barShape";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 
@@ -157,7 +158,7 @@ function ProviderThroughputChartImpl({ data, chartType, startTime, endTime, sele
 									fill={THROUGHPUT_COLOR}
 									fillOpacity={0.9}
 									barSize={8}
-									radius={[2, 2, 0, 0]}
+									shape={barShape}
 								/>
 							</>
 						) : (
@@ -174,7 +175,7 @@ function ProviderThroughputChartImpl({ data, chartType, startTime, endTime, sele
 										isAnimationActive={false}
 										fillOpacity={0.9}
 										barSize={8}
-										radius={[2, 2, 0, 0]}
+										shape={barShape}
 									/>
 								))}
 							</>

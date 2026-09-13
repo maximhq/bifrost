@@ -8,13 +8,66 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+func TestExtractRealtimeTurnUsageSupportsTranscriptionCompletion(t *testing.T) {
+	t.Parallel()
+
+	provider := &OpenAIProvider{}
+	usage := provider.ExtractRealtimeTurnUsage([]byte(`{
+		"type":"conversation.item.input_audio_transcription.completed",
+		"usage":{
+			"type":"tokens",
+			"total_tokens":11,
+			"input_tokens":7,
+			"output_tokens":4,
+			"input_token_details":{"text_tokens":2,"audio_tokens":5},
+			"output_token_details":{"text_tokens":4}
+		}
+	}`))
+	if usage == nil {
+		t.Fatal("expected transcription usage")
+	}
+	if usage.PromptTokens != 7 || usage.CompletionTokens != 4 || usage.TotalTokens != 11 {
+		t.Fatalf("usage = %+v, want input=7 output=4 total=11", usage)
+	}
+	if usage.PromptTokensDetails == nil || usage.PromptTokensDetails.AudioTokens != 5 {
+		t.Fatalf("prompt token details = %+v, want audio_tokens=5", usage.PromptTokensDetails)
+	}
+}
+
+func TestExtractRealtimeTurnUsageSupportsDurationTranscriptionCompletion(t *testing.T) {
+	t.Parallel()
+
+	provider := &OpenAIProvider{}
+	usage := provider.ExtractRealtimeTurnUsage([]byte(`{
+		"type":"conversation.item.input_audio_transcription.completed",
+		"usage":{"type":"duration","seconds":3.4}
+	}`))
+	if usage == nil || usage.AudioSeconds == nil || *usage.AudioSeconds != 3.4 {
+		t.Fatalf("usage = %+v, want audio_seconds=3.4", usage)
+	}
+	if usage.PromptTokens != 0 || usage.CompletionTokens != 0 || usage.TotalTokens != 0 {
+		t.Fatalf("usage = %+v, want zero token counts", usage)
+	}
+}
+
+func TestRealtimeWebSocketURL(t *testing.T) {
+	t.Parallel()
+
+	provider := &OpenAIProvider{networkConfig: schemas.NetworkConfig{BaseURL: "https://api.openai.com"}}
+	if got, err := provider.RealtimeWebSocketURL(schemas.Key{}, "gpt-4o transcribe", ""); err != nil || got != "wss://api.openai.com/v1/realtime?model=gpt-4o+transcribe" {
+		t.Fatalf("RealtimeWebSocketURL() = %q, %v", got, err)
+	}
+	if got, err := provider.RealtimeWebSocketURL(schemas.Key{}, "gpt-4o transcribe", "transcription"); err != nil || got != "wss://api.openai.com/v1/realtime?intent=transcription" {
+		t.Fatalf("RealtimeWebSocketURL() = %q, %v", got, err)
+	}
+}
+
 func TestNormalizeRealtimeClientSecretRequest(t *testing.T) {
 	t.Parallel()
 
 	body, model, bifrostErr := NormalizeRealtimeClientSecretRequest(
 		json.RawMessage(`{"model":"openai/gpt-4o-realtime-preview","voice":"alloy"}`),
 		schemas.OpenAI,
-		schemas.RealtimeSessionEndpointClientSecrets,
 	)
 	if bifrostErr != nil {
 		t.Fatalf("NormalizeRealtimeClientSecretRequest() error = %v", bifrostErr)
@@ -49,7 +102,6 @@ func TestNormalizeRealtimeClientSecretRequestGATranscriptionSession(t *testing.T
 	body, model, bifrostErr := NormalizeRealtimeClientSecretRequest(
 		json.RawMessage(`{"session":{"type":"transcription","audio":{"input":{"transcription":{"model":"openai/gpt-4o-transcribe","language":"en"},"format":{"type":"audio/pcm","rate":24000}}}}}`),
 		schemas.OpenAI,
-		schemas.RealtimeSessionEndpointClientSecrets,
 	)
 	if bifrostErr != nil {
 		t.Fatalf("NormalizeRealtimeClientSecretRequest() error = %v", bifrostErr)
@@ -104,7 +156,6 @@ func TestNormalizeRealtimeClientSecretRequestGATranscriptionSessionNoExplicitTyp
 	body, model, bifrostErr := NormalizeRealtimeClientSecretRequest(
 		json.RawMessage(`{"session":{"audio":{"input":{"transcription":{"model":"openai/whisper-1"}}}}}`),
 		schemas.OpenAI,
-		schemas.RealtimeSessionEndpointClientSecrets,
 	)
 	if bifrostErr != nil {
 		t.Fatalf("NormalizeRealtimeClientSecretRequest() error = %v", bifrostErr)
@@ -142,7 +193,6 @@ func TestNormalizeRealtimeClientSecretRequestLegacyRootModelWithTranscriptionSib
 	body, model, bifrostErr := NormalizeRealtimeClientSecretRequest(
 		json.RawMessage(`{"model":"openai/gpt-4o-realtime-preview","session":{"audio":{"input":{"transcription":{"model":"openai/whisper-1"}}}}}`),
 		schemas.OpenAI,
-		schemas.RealtimeSessionEndpointClientSecrets,
 	)
 	if bifrostErr != nil {
 		t.Fatalf("NormalizeRealtimeClientSecretRequest() error = %v", bifrostErr)
@@ -200,7 +250,6 @@ func TestNormalizeRealtimeClientSecretRequestTranscriptionTypeDropsStaleSessionM
 	body, model, bifrostErr := NormalizeRealtimeClientSecretRequest(
 		json.RawMessage(`{"session":{"type":"transcription","model":"openai/gpt-4o-transcribe","audio":{"input":{"transcription":{}}}}}`),
 		schemas.OpenAI,
-		schemas.RealtimeSessionEndpointClientSecrets,
 	)
 	if bifrostErr != nil {
 		t.Fatalf("NormalizeRealtimeClientSecretRequest() error = %v", bifrostErr)
@@ -228,7 +277,6 @@ func TestNormalizeRealtimeClientSecretRequestUsesDefaultProvider(t *testing.T) {
 	body, model, bifrostErr := NormalizeRealtimeClientSecretRequest(
 		json.RawMessage(`{"session":{"model":"gpt-4o-realtime-preview"}}`),
 		schemas.OpenAI,
-		schemas.RealtimeSessionEndpointClientSecrets,
 	)
 	if bifrostErr != nil {
 		t.Fatalf("NormalizeRealtimeClientSecretRequest() error = %v", bifrostErr)
@@ -251,36 +299,6 @@ func TestNormalizeRealtimeClientSecretRequestUsesDefaultProvider(t *testing.T) {
 	}
 	if session["type"] != "realtime" {
 		t.Fatalf("session.type = %v, want %q", session["type"], "realtime")
-	}
-}
-
-func TestNormalizeRealtimeSessionsRequest(t *testing.T) {
-	t.Parallel()
-
-	body, model, bifrostErr := NormalizeRealtimeClientSecretRequest(
-		json.RawMessage(`{"session":{"model":"openai/gpt-4o-realtime-preview","voice":"alloy"}}`),
-		schemas.OpenAI,
-		schemas.RealtimeSessionEndpointSessions,
-	)
-	if bifrostErr != nil {
-		t.Fatalf("NormalizeRealtimeClientSecretRequest() error = %v", bifrostErr)
-	}
-	if model != "gpt-4o-realtime-preview" {
-		t.Fatalf("model = %q, want %q", model, "gpt-4o-realtime-preview")
-	}
-
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
-		t.Fatalf("failed to unmarshal normalized body: %v", err)
-	}
-	if _, ok := payload["session"]; ok {
-		t.Fatal("legacy sessions endpoint should not forward nested session object")
-	}
-	if payload["model"] != "gpt-4o-realtime-preview" {
-		t.Fatalf("model = %v, want %q", payload["model"], "gpt-4o-realtime-preview")
-	}
-	if payload["voice"] != "alloy" {
-		t.Fatalf("voice = %v, want %q", payload["voice"], "alloy")
 	}
 }
 

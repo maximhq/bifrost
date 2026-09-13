@@ -1,0 +1,857 @@
+# Schemas for Project management.
+
+ProjectAccessRule:
+  type: string
+  enum:
+    - intersect
+    - union
+  description: >-
+    How the project's own access composes with the access the caller already
+    holds. `intersect` permits only what both allow, so a project with no
+    provider config permits nothing. `union` leaves the caller's access
+    untouched and adds to it, so a project with no provider or MCP config only
+    attributes and caps spend.
+
+ProjectMembershipMode:
+  type: string
+  enum:
+    - explicit
+    - open
+  default: explicit
+  description: >-
+    `explicit` admits only the users on the roster. `open` admits every
+    authenticated caller and has no membership rows, which is why it cannot
+    divide a budget between members.
+
+ProjectAccountingMode:
+  type: string
+  enum:
+    - both
+    - project_only
+    - principal_only
+  default: both
+  description: >-
+    Which ledgers a request's spend lands on. `both` charges the project and the
+    caller. `project_only` takes the request off everything the caller funds,
+    including the teams and business units above them. `principal_only` leaves
+    the project's caps on record but checks and charges none of them. The
+    deployment's own global caps always apply.
+
+ProjectSplitPolicy:
+  type: string
+  enum:
+    - none
+    - equal
+  default: none
+  description: >-
+    `none` keeps the project's caps shared, and individual members can still be
+    capped by hand. `equal` gives every member an equal slice of every budget
+    and rate limit the project holds, at every tier, as a second cap within it.
+
+ProjectShareType:
+  type: string
+  enum:
+    - percent
+    - amount
+  description: >-
+    Whether a member's authored share is a percentage of the source cap or an
+    absolute figure. Budget shares must state this explicitly; a rate-limit
+    share left blank settles to `amount`.
+
+ProjectBudgetResetConfig:
+  type: object
+  description: >-
+    Window settings the reset duration cannot express. Only valid when
+    `reset_duration` is quarterly (`1Q`).
+  properties:
+    quarter_start_month:
+      type: integer
+      minimum: 1
+      maximum: 12
+      description: >-
+        First month of Q1 as 1-12. Omitted means January. Only the value modulo
+        3 changes the reset dates, so January, April, July and October all reset
+        on calendar quarters.
+  additionalProperties: false
+
+ProjectBudget:
+  type: object
+  description: >-
+    A spend cap on a project, on a provider inside it, or on a model under that
+    provider. On an update, restating `id` pairs the declaration with its stored
+    row so accumulated spend and the window anchor carry over; omit `id` to
+    create a new cap.
+  required:
+    - max_limit
+    - reset_duration
+  properties:
+    id:
+      type: string
+      description: >-
+        Omit to create. Restate to update in place. An id the project does not
+        hold is refused.
+    max_limit:
+      type: number
+      minimum: 0
+      description: Cap in dollars.
+    reset_duration:
+      type: string
+      description: >-
+        Reset window as a number and a unit, for example `30s`, `5m`, `1h`,
+        `1d`, `1w`, `1M`, `1Q`, `1Y`. Only day-or-longer windows can be
+        calendar-aligned.
+      example: 1M
+    reset_config:
+      $ref: '#/ProjectBudgetResetConfig'
+    current_usage:
+      type: number
+      readOnly: true
+      description: Spend recorded in the current window.
+    last_reset:
+      type: string
+      format: date-time
+      readOnly: true
+    override_amount:
+      type: number
+      readOnly: true
+      description: >-
+        Operator top-up added to `max_limit` while active. Projects have no
+        endpoint that sets one; the field is reported for completeness.
+    override_mode:
+      type: string
+      readOnly: true
+    override_cycles_remaining:
+      type: integer
+      readOnly: true
+    override_cycles_total:
+      type: integer
+      readOnly: true
+    override_anchor_reset:
+      type: string
+      format: date-time
+      readOnly: true
+    config_hash:
+      type: string
+      readOnly: true
+    created_at:
+      type: string
+      format: date-time
+      readOnly: true
+    updated_at:
+      type: string
+      format: date-time
+      readOnly: true
+
+ProjectRateLimit:
+  type: object
+  description: >-
+    A token and request rate limit on a project, on a provider inside it, or on
+    a model under that provider. The two dimensions run independent windows, and
+    a cap is enforced only together with its window.
+  properties:
+    id:
+      type: string
+      description: Omit to create. Restate to update in place.
+    token_max_limit:
+      type: integer
+      minimum: 0
+      description: >-
+        Maximum tokens per window. Requires `token_reset_duration`. On a project
+        with `split_policy: equal`, a cap below the member count is refused,
+        since a slice is a whole number of tokens.
+    token_reset_duration:
+      type: string
+      example: 1h
+    request_max_limit:
+      type: integer
+      minimum: 0
+      description: >-
+        Maximum requests per window. Requires `request_reset_duration`. Subject
+        to the same lower bound under `split_policy: equal`.
+    request_reset_duration:
+      type: string
+      example: 1h
+    token_current_usage:
+      type: integer
+      readOnly: true
+    token_last_reset:
+      type: string
+      format: date-time
+      readOnly: true
+    request_current_usage:
+      type: integer
+      readOnly: true
+    request_last_reset:
+      type: string
+      format: date-time
+      readOnly: true
+    config_hash:
+      type: string
+      readOnly: true
+    created_at:
+      type: string
+      format: date-time
+      readOnly: true
+    updated_at:
+      type: string
+      format: date-time
+      readOnly: true
+
+ProjectProviderModelBudget:
+  type: object
+  description: >-
+    Caps for one model under a provider configuration. A provider may carry up
+    to 100 of these, and the `*` tier is not accepted here because the provider
+    configuration's own caps cover it.
+  required:
+    - model_name
+  properties:
+    model_name:
+      type: string
+      description: Concrete model name. `*` is refused.
+    budgets:
+      type: array
+      items:
+        $ref: '#/ProjectBudget'
+    rate_limit:
+      $ref: '#/ProjectRateLimit'
+  additionalProperties: false
+
+ProjectProviderConfig:
+  type: object
+  description: >-
+    What the project allows on one provider, and the money that provider's use
+    answers to. A project names each provider at most once.
+  required:
+    - provider_name
+  properties:
+    id:
+      type: integer
+      description: >-
+        Omit or send `0` to create. Restate to update in place. An id the
+        project does not hold is refused.
+    provider_name:
+      type: string
+      example: openai
+    all_models_allowed:
+      type: boolean
+      default: false
+      description: Allows every model the provider offers.
+    allowed_models:
+      type: array
+      nullable: true
+      items:
+        type: string
+      description: >-
+        Allowlist. `["*"]` allows every model; an empty or omitted list denies
+        all. A list may not mix `*` with named entries.
+    blacklisted_models:
+      type: array
+      nullable: true
+      items:
+        type: string
+      description: >-
+        Denylist, which wins over the allowlist. `["*"]` blocks everything; an
+        empty or omitted list blocks no models. A list may not mix `*` with named
+        entries.
+    allowed_models_patterns:
+      type: array
+      uniqueItems: true
+      items:
+        type: string
+        minLength: 1
+        not:
+          const: "*"
+      description: >-
+        RE2 patterns that allow models by name shape, next to the exact allowlist.
+        Each pattern is matched case-insensitively as a full match against the model
+        name and `provider/model`. `*` is not a valid pattern. Blank or
+        whitespace-only entries, duplicate patterns, and patterns RE2 rejects are
+        refused when the project is saved. Ignored when `all_models_allowed` is true.
+    blacklisted_models_patterns:
+      type: array
+      uniqueItems: true
+      items:
+        type: string
+        minLength: 1
+        not:
+          const: "*"
+      description: >-
+        RE2 patterns that block models by name shape, next to the exact denylist.
+        Each pattern is matched case-insensitively as a full match against the model
+        name and `provider/model`.
+        Block patterns win over the allowlist and the allow patterns.
+        `*` is not a valid pattern, and blank or duplicate entries are refused.
+    key_ids:
+      type: array
+      nullable: true
+      items:
+        type: string
+      description: >-
+        Provider keys that may serve the request. `["*"]` allows all; an empty
+        list allows none. Each id must exist and belong to this provider.
+    weight:
+      type: number
+      nullable: true
+      description: >-
+        Load-balancing preference for this provider inside the project. Null
+        leaves the caller's own preference standing. Negative values are
+        refused.
+    budgets:
+      type: array
+      nullable: true
+      items:
+        $ref: '#/ProjectBudget'
+    rate_limit:
+      $ref: '#/ProjectRateLimit'
+    model_budgets:
+      type: array
+      items:
+        $ref: '#/ProjectProviderModelBudget'
+      description: >-
+        Per-model caps under this provider. Stored as project-scoped model
+        configurations and reassembled on read, so this field is absent from
+        `GET /api/governance/users/{user_id}/projects`.
+
+ProjectMCPConfig:
+  type: object
+  description: >-
+    The tools of one MCP client the project may execute. Naming a client with an
+    empty tool list still counts as the project having named it, so a client the
+    project closes off cannot be reopened by a default-allowed rule.
+  properties:
+    id:
+      type: integer
+      description: Omit or send `0` to create. Restate to update in place.
+    mcp_client_id:
+      type: integer
+      description: >-
+        The stored MCP client. May be omitted when `mcp_client_name` is given,
+        which is resolved to this id on write.
+    mcp_client_name:
+      type: string
+      description: >-
+        Write-only convenience. Resolved to `mcp_client_id`; a name that matches
+        no client is refused. Never returned on a read.
+    mcp_client:
+      readOnly: true
+      allOf:
+        - $ref: './mcp.yaml#/MCPClient'
+      description: The resolved client, included on reads.
+    tools_to_execute:
+      type: array
+      nullable: true
+      items:
+        type: string
+      description: >-
+        `["*"]` allows every tool the client exposes, including ones added
+        later. An empty list allows none. A list may not mix `*` with named
+        entries.
+
+ProjectVirtualMCP:
+  type: object
+  description: >-
+    A virtual MCP assigned to the project. A scoped request can reach each one
+    at its `/mcp/<slug>` endpoint. Assignments are a set, so a repeated id is
+    ignored rather than doubled, and the list is replaced wholesale on update
+    rather than diffed.
+  required:
+    - virtual_mcp_id
+  properties:
+    virtual_mcp_id:
+      type: integer
+      minimum: 1
+  additionalProperties: false
+
+ProjectMemberBudgetShare:
+  type: object
+  description: >-
+    One member's cap on a budget the project holds. The share is a second cap,
+    not a replacement: the budget it slices still caps the whole, and whichever
+    binds first refuses the request.
+  required:
+    - source_budget_id
+  properties:
+    id:
+      type: string
+      readOnly: true
+    project_id:
+      type: string
+      readOnly: true
+    user_id:
+      type: string
+      readOnly: true
+    source_budget_id:
+      type: string
+      description: >-
+        The budget being sliced. Must be one the project holds, at any tier.
+    budget_id:
+      type: string
+      readOnly: true
+      description: The derived governance budget that enforces the slice.
+    share_value:
+      type: number
+      description: >-
+        The authored figure. A percent share must be greater than 0 and at most
+        100; an amount share must be greater than 0. Null on every slice derived
+        by an equal split.
+    share_type:
+      $ref: '#/ProjectShareType'
+    budget:
+      readOnly: true
+      allOf:
+        - $ref: '#/ProjectBudget'
+      description: The derived budget row, with its own usage.
+    created_at:
+      type: string
+      format: date-time
+      readOnly: true
+    updated_at:
+      type: string
+      format: date-time
+      readOnly: true
+
+ProjectMemberRateLimitShare:
+  type: object
+  description: >-
+    One member's cap on a rate limit the project holds. The token and request
+    dimensions are authored independently, so a member may hold a percentage of
+    tokens and a flat count of requests.
+  required:
+    - source_rate_limit_id
+  properties:
+    id:
+      type: string
+      readOnly: true
+    project_id:
+      type: string
+      readOnly: true
+    user_id:
+      type: string
+      readOnly: true
+    source_rate_limit_id:
+      type: string
+      description: >-
+        The rate limit being sliced. Must be one the project holds, at any tier.
+    rate_limit_id:
+      type: string
+      readOnly: true
+      description: The derived governance rate limit that enforces the slice.
+    token_share:
+      type: integer
+      description: >-
+        Authored token share. Requires the source to cap tokens. A percent share
+        that comes to no whole tokens is refused.
+    token_share_type:
+      allOf:
+        - $ref: '#/ProjectShareType'
+      description: Settles to `amount` when a token share is given without one.
+    request_share:
+      type: integer
+      description: >-
+        Authored request share. Requires the source to cap requests. A percent
+        share that comes to no whole requests is refused.
+    request_share_type:
+      allOf:
+        - $ref: '#/ProjectShareType'
+      description: Settles to `amount` when a request share is given without one.
+    rate_limit:
+      readOnly: true
+      allOf:
+        - $ref: '#/ProjectRateLimit'
+      description: The derived rate limit row, with its own counters.
+    created_at:
+      type: string
+      format: date-time
+      readOnly: true
+    updated_at:
+      type: string
+      format: date-time
+      readOnly: true
+
+ProjectMember:
+  type: object
+  description: >-
+    A user on a project's roster. Members are users, never keys or teams: a key
+    authenticates a request, and the user behind it is who belongs to a project.
+  required:
+    - user_id
+  properties:
+    id:
+      type: string
+      readOnly: true
+      description: >-
+        The membership row id, which is the `{member_id}` of the member routes.
+    user_id:
+      type: string
+      description: Immutable after creation. Changing it is a remove and an add.
+    budget_shares:
+      type: array
+      items:
+        $ref: '#/ProjectMemberBudgetShare'
+    rate_limit_shares:
+      type: array
+      items:
+        $ref: '#/ProjectMemberRateLimitShare'
+    user_name:
+      type: string
+      readOnly: true
+    user_email:
+      type: string
+      readOnly: true
+    created_at:
+      type: string
+      format: date-time
+      readOnly: true
+    updated_at:
+      type: string
+      format: date-time
+      readOnly: true
+
+Project:
+  type: object
+  description: >-
+    A per-request access scope and accounting ledger that callers opt into with
+    a header.
+  properties:
+    id:
+      type: string
+      readOnly: true
+    name:
+      type: string
+      description: >-
+        Globally unique. Requests reference it with the `x-bf-project-name`
+        header.
+    description:
+      type: string
+      nullable: true
+    is_active:
+      type: boolean
+      default: true
+      description: A disabled project refuses every request that names it.
+    expires_at:
+      type: string
+      format: date-time
+      nullable: true
+      description: >-
+        An expired project refuses every request that names it. The comparison
+        is inclusive.
+    access_rule:
+      $ref: '#/ProjectAccessRule'
+    membership_mode:
+      $ref: '#/ProjectMembershipMode'
+    accounting_mode:
+      $ref: '#/ProjectAccountingMode'
+    split_policy:
+      $ref: '#/ProjectSplitPolicy'
+    calendar_aligned:
+      type: boolean
+      default: false
+      description: >-
+        Snaps every window the project holds, including each member's derived
+        slice, onto calendar boundaries instead of running from creation.
+    allow_all_providers:
+      type: boolean
+      default: false
+      description: >-
+        When true, grants access to every provider, including ones without a
+        provider_configs entry and providers added later. Listed providers keep
+        their own model, key, budget, and rate-limit rules.
+    budgets:
+      type: array
+      nullable: true
+      items:
+        $ref: '#/ProjectBudget'
+    rate_limit:
+      $ref: '#/ProjectRateLimit'
+    provider_configs:
+      type: array
+      items:
+        $ref: '#/ProjectProviderConfig'
+    mcp_configs:
+      type: array
+      items:
+        $ref: '#/ProjectMCPConfig'
+    virtual_mcps:
+      type: array
+      items:
+        $ref: '#/ProjectVirtualMCP'
+    members:
+      type: array
+      readOnly: true
+      items:
+        $ref: '#/ProjectMember'
+      description: >-
+        Narrowed to what the caller's data access permits, so two operators can
+        read the same project and see different rosters. Managed through the
+        member routes, never through the project body.
+    created_by_user_id:
+      type: string
+      nullable: true
+      readOnly: true
+      description: Taken from the calling identity, never from the body.
+    created_at:
+      type: string
+      format: date-time
+      readOnly: true
+    updated_at:
+      type: string
+      format: date-time
+      readOnly: true
+
+CreateProjectRequest:
+  type: object
+  description: >-
+    A project starts with no members: the roster is written through the member
+    routes, so this body has no `members` field.
+  required:
+    - name
+    - access_rule
+  properties:
+    name:
+      type: string
+    description:
+      type: string
+      nullable: true
+    is_active:
+      type: boolean
+      default: true
+    expires_at:
+      type: string
+      format: date-time
+      nullable: true
+    access_rule:
+      $ref: '#/ProjectAccessRule'
+    membership_mode:
+      $ref: '#/ProjectMembershipMode'
+    accounting_mode:
+      $ref: '#/ProjectAccountingMode'
+    split_policy:
+      $ref: '#/ProjectSplitPolicy'
+    calendar_aligned:
+      type: boolean
+      default: false
+    allow_all_providers:
+      type: boolean
+      default: false
+      description: When true, grants access to every provider, including ones without a provider_configs entry and providers added later. Listed providers keep their own model, key, budget, and rate-limit rules.
+    budgets:
+      type: array
+      items:
+        $ref: '#/ProjectBudget'
+    rate_limit:
+      $ref: '#/ProjectRateLimit'
+    provider_configs:
+      type: array
+      items:
+        $ref: '#/ProjectProviderConfig'
+    mcp_configs:
+      type: array
+      items:
+        $ref: '#/ProjectMCPConfig'
+    virtual_mcps:
+      type: array
+      items:
+        $ref: '#/ProjectVirtualMCP'
+  additionalProperties: false
+
+UpdateProjectRequest:
+  type: object
+  description: >-
+    Read-then-patch. A field this body omits is left as stored. For
+    `description`, `expires_at`, `rate_limit`, `budgets`, `provider_configs`,
+    `mcp_configs` and `virtual_mcps`, an explicit `null` clears what is stored,
+    and for the four list fields that means deleting every stored child. The
+    remaining fields cannot be cleared: `null` reads the same as omitted. Child
+    lists are matched to their stored rows by `id`, so restate the ids you read;
+    a stored child the body does not name is deleted. A `members` field is
+    ignored rather than refused.
+  properties:
+    name:
+      type: string
+    description:
+      type: string
+      nullable: true
+    is_active:
+      type: boolean
+    expires_at:
+      type: string
+      format: date-time
+      nullable: true
+    access_rule:
+      $ref: '#/ProjectAccessRule'
+    membership_mode:
+      $ref: '#/ProjectMembershipMode'
+    accounting_mode:
+      $ref: '#/ProjectAccountingMode'
+    split_policy:
+      $ref: '#/ProjectSplitPolicy'
+    calendar_aligned:
+      type: boolean
+    allow_all_providers:
+      type: boolean
+      description: When true, grants access to every provider, including ones without a provider_configs entry and providers added later. Listed providers keep their own model, key, budget, and rate-limit rules. Omit to leave unchanged.
+    budgets:
+      type: array
+      nullable: true
+      items:
+        $ref: '#/ProjectBudget'
+    rate_limit:
+      oneOf:
+        - $ref: '#/ProjectRateLimit'
+        - type: 'null'
+    provider_configs:
+      type: array
+      nullable: true
+      items:
+        $ref: '#/ProjectProviderConfig'
+    mcp_configs:
+      type: array
+      nullable: true
+      items:
+        $ref: '#/ProjectMCPConfig'
+    virtual_mcps:
+      type: array
+      nullable: true
+      items:
+        $ref: '#/ProjectVirtualMCP'
+    reset_budget_usage:
+      type: boolean
+      description: >-
+        Clears recorded spend on the budgets this body restates that the project
+        already held, and on each member's slice of them. A budget the edit
+        introduces has no spend to clear, and one the body does not name is left
+        alone.
+  additionalProperties: false
+
+AddProjectMembersRequest:
+  type: object
+  description: >-
+    Create-only. A user already on the roster keeps their existing membership
+    and caps, and the entry for them is discarded.
+  required:
+    - members
+  properties:
+    members:
+      type: array
+      minItems: 1
+      items:
+        $ref: '#/ProjectMember'
+  additionalProperties: false
+
+UpdateProjectMemberRequest:
+  type: object
+  description: >-
+    The member's complete statement of caps. A source this body does not name
+    loses its cap, and an empty body clears every cap the member holds. Only
+    available on a project with `split_policy: none`.
+  properties:
+    budget_shares:
+      type: array
+      items:
+        $ref: '#/ProjectMemberBudgetShare'
+    rate_limit_shares:
+      type: array
+      items:
+        $ref: '#/ProjectMemberRateLimitShare'
+  additionalProperties: false
+
+ProjectResponse:
+  type: object
+  properties:
+    project:
+      $ref: '#/Project'
+
+ProjectUpdateResponse:
+  type: object
+  properties:
+    project:
+      $ref: '#/Project'
+    redivision_job_id:
+      type: string
+      description: >-
+        Present only when the edit queued a redivision, which happens on a
+        project with `split_policy: equal` whose roster or divided caps changed.
+        A pending job for the same project is reused rather than queued behind,
+        so this may name a job an earlier request created. Progress is reported
+        on the `redivision_progress` WebSocket channel under this id.
+
+ProjectListResponse:
+  type: object
+  properties:
+    projects:
+      type: array
+      items:
+        $ref: '#/Project'
+    pagination:
+      type: object
+      properties:
+        total:
+          type: integer
+          format: int64
+          description: >-
+            Matching projects visible to the caller, before pagination.
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+ProjectsForUserResponse:
+  type: object
+  description: >-
+    Projects the named user belongs to that the caller may also see. This
+    listing is assembled without the per-model caps, the member shares or the
+    member display names, so `provider_configs[].model_budgets`,
+    `members[].budget_shares`, `members[].rate_limit_shares`,
+    `members[].user_name` and `members[].user_email` are absent.
+  properties:
+    projects:
+      type: array
+      items:
+        $ref: '#/Project'
+
+ProjectMemberListResponse:
+  type: object
+  properties:
+    members:
+      type: array
+      items:
+        $ref: '#/ProjectMember'
+
+ProjectMemberResponse:
+  type: object
+  properties:
+    member:
+      $ref: '#/ProjectMember'
+
+AddProjectMembersResponse:
+  type: object
+  properties:
+    message:
+      type: string
+      example: 2 member(s) added
+      description: Counts the entries submitted, including any already on the roster.
+    redivision_job_id:
+      type: string
+      description: >-
+        Present only on a project with `split_policy: equal`, whose every
+        member's slice of every cap is recalculated in the background.
+
+RemoveProjectMemberResponse:
+  type: object
+  properties:
+    message:
+      type: string
+      example: project member removed
+    redivision_job_id:
+      type: string
+      description: >-
+        Present only on a project with `split_policy: equal`, where removal
+        enlarges every remaining member's slice.
+
+DeleteProjectResponse:
+  type: object
+  properties:
+    message:
+      type: string
+      example: project deleted

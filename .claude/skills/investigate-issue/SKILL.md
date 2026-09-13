@@ -761,8 +761,62 @@ Once all approved changes are applied:
    make run-e2e FLOW=<feature>
    ```
 
-2. Report results to the user, including the red-then-green transcript/summary for Bug issues (what failed before, what passes now)
-3. If tests fail, investigate and propose fixes (with approval)
+2. Run the provider harness (mandatory for every non-exempt wire-visible change, always scoped;
+   the exemptions are AGENTS.md's: no wire-visible effect, or behaviour no HTTP request can
+   reach, and an exempt change must say so in the report). It is a paid live sweep
+   against real provider accounts: the unfiltered collection is ~1,900 requests. The scope keeps
+   the run small and `HARNESS_MAX_REQUESTS` (below) is the enforced ceiling. Always use the shared
+   integration config via `APP_DIR=tests/integrations/python` (that is
+   `tests/integrations/python/config.json`) and scope the run to the change with `PROVIDER` and
+   `FEATURE`, or `SMOKE=1` for a cross-cutting change. Never run the unscoped sweep, and never
+   widen the scope beyond the change, without a separate explicit yes from the user that names
+   the scope.
+
+   Before launching, resolve the exact request count for the chosen scope (the same filter the
+   recipe applies) and put the command, the scope, and that count in the plan the user approves:
+   ```bash
+   node tests/e2e/api/runners/augment-provider-harness.mjs --source tests/e2e/api/collections/provider-harness.json --out tmp/harness-augmented.json
+   # PROVIDER/FEATURE scope: one pass
+   node tests/e2e/api/runners/filter-collection.mjs --source tmp/harness-augmented.json --out tmp/harness-preflight.json --provider <provider> --feature "<keyword>"
+   # SMOKE=1: the recipe runs a parallel main pass plus a deferred cache-parity pass, so count both
+   node tests/e2e/api/runners/filter-collection.mjs --source tmp/harness-augmented.json --out tmp/harness-smoke-main.json --smoke tests/e2e/api/collections/smoke-manifest.json --exclude-feature-any cache-parity
+   node tests/e2e/api/runners/filter-collection.mjs --source tmp/harness-augmented.json --out tmp/harness-smoke-cache.json --smoke tests/e2e/api/collections/smoke-manifest.json --feature-any cache-parity
+   # stderr of each command ends with: [filter-collection] wrote ... with N requests after filter
+   ```
+   State N for a scoped run, or N_main + N_cache for SMOKE=1, in the plan. When SMOKE=1 is
+   combined with PROVIDER, FEATURE or FOLDER, apply the same filters to both smoke commands.
+   The preflight is an estimate: the main pass forks one newman per provider and a producer
+   shared by several forks runs once per fork, so the live total can exceed the preflight sum
+   (observed: 102 preflight, 122 live for SMOKE=1). The enforced bound is
+   `HARNESS_MAX_REQUESTS`: always pass it with the ceiling the user approved. The recipe checks
+   every newman launch against its exact filtered count before it starts (main shards, 429
+   replays, the cache-parity pass, sequential mode); a launch that would cross the cap is
+   refused and the run exits 3, so the live total can never exceed the approved number. The
+   stream-cancellation probes are never sent under a cap because their count is not known up
+   front; if they are wanted, run them as a separately approved `SKIP_STREAM_CANCEL=` run
+   without the cap. After the run, quote the provider table's Total column as the actual.
+
+   Port 8080 is a blocking precondition. The recipe reuses any server whose `/health` answers
+   and then never starts the `APP_DIR` one, so a stale listener silently tests old code. Run
+   `lsof -nP -iTCP:8080 -sTCP:LISTEN` first: if it reports a listener you did not start on the
+   current working tree in this session, stop, ask the user to shut it down (never kill a
+   process you did not start), and recheck; do not run the target while `lsof` still reports
+   it. The one acceptable listener is Bifrost you started yourself from the code under test,
+   which is also the reliable way to run it, because a cold `make dev` from this config can
+   take longer than the recipe's 60s health wait:
+   ```bash
+   make dev APP_DIR=tests/integrations/python   # in the background; wait for /health = 200
+   ```
+   ```bash
+   make run-provider-harness-test APP_DIR=tests/integrations/python CI=1 HARNESS_MAX_REQUESTS=<approved ceiling> PROVIDER=<provider> FEATURE="<keyword>"
+   # cross-cutting change: the curated smoke set instead
+   make run-provider-harness-test APP_DIR=tests/integrations/python CI=1 HARNESS_MAX_REQUESTS=<approved ceiling> SMOKE=1
+   ```
+   Report the provider status table and `tmp/harness-failures.md` findings, and state exactly
+   which scope ran. See AGENTS.md "Every fix ends with a provider-harness run".
+
+3. Report results to the user, including the red-then-green transcript/summary for Bug issues (what failed before, what passes now)
+4. If tests fail, investigate and propose fixes (with approval)
 
 ## Error Handling
 

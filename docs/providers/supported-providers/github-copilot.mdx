@@ -1,0 +1,274 @@
+---
+title: "GitHub Copilot"
+description: "Route requests to GitHub Copilot through Bifrost, billed to your organization"
+icon: "github"
+---
+
+## Overview
+
+GitHub Copilot is an **OpenAI-compatible provider** with a dedicated Bifrost provider
+implementation. Two things make it unlike the other OpenAI-compatible providers, and both
+are handled for you:
+
+- **Organization billing** - Bifrost authenticates as a GitHub App, so Copilot usage bills to the organization that owns the App installation. No individual Copilot seat is consumed.
+- **Per-account API host** - the Copilot API host differs by plan tier and arrives with the token, so it is resolved per request rather than configured.
+- **Editor identity** - Copilot rejects requests that look like generic API clients. Bifrost sends the required headers on every call.
+- **Automatic token refresh** - GitHub App installation tokens live one hour and Copilot tokens about thirty minutes. Bifrost mints and refreshes both.
+
+<Warning>
+The Copilot token exchange endpoint and the editor-identity headers are not part of any
+published GitHub API contract. They are derived from the behaviour of GitHub's own Copilot
+clients and can change without notice. The OAuth and GitHub App layers underneath are
+documented and stable.
+</Warning>
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+| --------- | ------------- | --------- | -------- |
+| Chat Completions | ✅ | ✅ | `/chat/completions` |
+| Responses API | ✅ | ✅ | converted through `/chat/completions` |
+| List Models | ✅ | - | `/models` |
+| Text Completions | ❌ | ❌ | - |
+| Embeddings | ❌ | - | - |
+| Image Generation | ❌ | ❌ | - |
+| Speech (TTS) | ❌ | ❌ | - |
+| Transcriptions (STT) | ❌ | ❌ | - |
+| Batch | ❌ | - | - |
+
+<Note>
+Which models you can reach depends on your plan tier and your organization's Copilot
+policy. Two operators with valid credentials can see different catalogs, so check
+`/v1/models` rather than assuming a model is available.
+</Note>
+
+---
+
+## Before you start
+
+Server-to-server access needs three things set up on the GitHub side. All three are
+prerequisites, not optional hardening.
+
+1. Create a **GitHub App** with the **Copilot Requests** repository permission set to **Read & write**.
+2. Install it on the **organization that should be billed**. The Copilot permission check currently requires **All repositories** access.
+3. Enable the organization for **Copilot requests from GitHub App installations**.
+
+Then collect four values:
+
+| Value | Form |
+| ----- | ---- |
+| App ID **or** Client ID | Either works as the JWT issuer; GitHub recommends the Client ID, which looks like `Iv1.b507a08c87ecfe98` |
+| Installation ID | Digits only |
+| Repository ID | Digits only |
+| Private key | A PKCS#1 (`BEGIN RSA PRIVATE KEY`) or PKCS#8 (`BEGIN PRIVATE KEY`) PEM block |
+
+Bifrost validates these shapes when you save the key, so a typo is caught in the form rather
+than at the first request. Values supplied as `env.` or vault references are checked when
+they resolve, not at save time.
+
+<Note>
+The **Allow use of Copilot CLI billed to the organization** policy is not part of this flow.
+It applies to running Copilot CLI in GitHub Actions with the built-in `GITHUB_TOKEN`, which
+is a different path from the GitHub App credentials described here.
+</Note>
+
+<Note>
+A repository ID is needed even though step 2 already grants All repositories access.
+Copilot's permission check looks for one in the token request, so it is a required part of
+the request shape rather than a scoping choice. Any repository the installation can see
+works.
+</Note>
+
+---
+
+## Setup & Configuration
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**.
+2. Click **Add Provider** and choose **GitHub Copilot**.
+3. Leave **API Key** blank.
+4. Under **GitHub App Credentials**, fill in **App ID**, **Installation ID**, **Repository ID** and **Private Key**.
+5. Leave **GitHub Enterprise Domain** blank unless you run GitHub Enterprise.
+6. Click **Save**.
+
+Each field accepts an `env.` reference, so the private key can stay in your secret manager
+rather than in the database.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "github-copilot": {
+      "keys": [
+        {
+          "name": "copilot-org",
+          "models": ["*"],
+          "weight": 1.0,
+          "github_copilot_key_config": {
+            "app_id": "env.GITHUB_COPILOT_APP_ID",
+            "installation_id": "env.GITHUB_COPILOT_INSTALLATION_ID",
+            "repository_id": "env.GITHUB_COPILOT_REPOSITORY_ID",
+            "private_key": "env.GITHUB_COPILOT_PRIVATE_KEY"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+For GitHub Enterprise, add `"github_domain": "acme.ghe.com"` to the same block. Bifrost
+then talks to your instance for the token exchange and refuses to fall back to the public
+Copilot host.
+
+</Tab>
+<Tab title="API">
+
+See [Create a key for a provider](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.GithubCopilot:
+	return []schemas.Key{
+		{
+			Name:   "copilot-org",
+			Models: []string{"*"},
+			Weight: 1.0,
+			GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{
+				AppID:          *schemas.NewSecretVar("env.GITHUB_COPILOT_APP_ID"),
+				InstallationID: *schemas.NewSecretVar("env.GITHUB_COPILOT_INSTALLATION_ID"),
+				RepositoryID:   *schemas.NewSecretVar("env.GITHUB_COPILOT_REPOSITORY_ID"),
+				PrivateKey:     *schemas.NewSecretVar("env.GITHUB_COPILOT_PRIVATE_KEY"),
+			},
+		},
+	}, nil
+```
+
+</Tab>
+</Tabs>
+
+### Using a Copilot API token instead
+
+If you already hold a Copilot API token, put it in `value` and leave
+`github_copilot_key_config` out. Copilot tokens expire after roughly thirty minutes and
+Bifrost cannot refresh one it did not mint, so this suits testing rather than a running
+gateway.
+
+```json
+{
+  "providers": {
+    "github-copilot": {
+      "network_config": { "base_url": "https://api.business.githubcopilot.com" },
+      "keys": [{ "name": "copilot-token", "value": "env.GITHUB_COPILOT_API_KEY", "models": ["*"], "weight": 1.0 }]
+    }
+  }
+}
+```
+
+<Warning>
+`base_url` is required with a token, and there is no safe default. A Copilot token does not
+carry its own host: paid plans are served from `api.individual`, `api.business` or
+`api.enterprise.githubcopilot.com`, and only the token exchange reveals which. Guessing
+would turn a Business token into a 401 that reads like a bad credential. The GitHub App mode
+needs no `base_url` because it learns the host from the exchange.
+</Warning>
+
+---
+
+# 1. Chat Completions
+
+Identical to [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions),
+including tool calls, streaming and vision.
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "github-copilot/gpt-5.5",
+    "messages": [{ "role": "user", "content": "Explain a Go channel in two sentences." }]
+  }'
+```
+
+<Note>
+A long stream started within the last minute of a Copilot token's life can fail partway.
+Bifrost refreshes with a sixty second margin, which covers ordinary traffic; a very long
+agentic stream is the exposed case.
+</Note>
+
+---
+
+# 2. Responses API
+
+Converted through chat completions, so it works on every account regardless of whether your
+plan exposes a native Responses endpoint.
+
+---
+
+# 3. List Models
+
+```bash
+curl http://localhost:8080/v1/models?provider=github-copilot
+```
+
+Returns what your plan and organization policy actually allow, which may be narrower than
+GitHub's published catalog.
+
+---
+
+# 4. Cost tracking
+
+<Warning>
+**Bifrost logs $0 for every Copilot request today.** No `github-copilot` pricing rows exist
+in the Bifrost datasheet, so there is nothing for the cost engine to apply. That is a
+reporting gap, not free usage: GitHub still bills you.
+</Warning>
+
+Copilot bills **GitHub AI Credits** at 1 credit = $0.01, converted from token counts at
+per-model rates. The rate card is per model and covers input, output and cached-input
+tokens, with some models (the GPT-5.6 family, and Anthropic models) adding a separate
+cache-write cost. Code completions and next edit suggestions are not billed in credits at
+all. Separately, subscribers who stayed on a legacy annual plan are still billed in premium
+requests rather than credits.
+
+Bifrost's cost engine can express that shape: `input_cost_per_token`,
+`output_cost_per_token`, `cache_read_input_token_cost` and `cache_creation_input_token_cost`
+map onto GitHub's four token categories, so no new pricing field is needed. What is missing
+is the data. Until per-model rows are published, or you add
+<u>[custom pricing](/providers/custom-pricing)</u> for the models you use, cost stays $0.
+
+See <u>[Models and pricing for GitHub Copilot](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing)</u>
+for the current per-model rate card.
+
+---
+
+# 5. Troubleshooting
+
+Every Copilot error from Bifrost is prefixed `github copilot:` and names the field to change.
+
+| Message mentions | Fix |
+| ---------------- | --- |
+| rejected the App JWT (401) | `app_id` does not match the App owning `private_key`, the key was rotated, or this host's clock has drifted. Bifrost logs a warning when it detects drift over thirty seconds. |
+| cannot mint installation tokens (403) | The credentials belong to an OAuth app or a personal access token, not a GitHub App. |
+| installation ... was not found (404) | The App is not installed on that account, or `installation_id` belongs to a different App. |
+| repository_id ... not one this installation can access (422) | Use a repository ID the installation actually covers. |
+| organization does not support GitHub App installation authentication (401) | An organization owner must enable Copilot requests from GitHub App installations. |
+| lacks the Copilot Requests permission or All repositories access (403) | Re-approve the App's permissions, and widen the installation to All repositories. |
+| refusing to use the Copilot host GitHub returned | Only on GitHub Enterprise. Bifrost will not fall back to the public Copilot host, because that would send your prompts outside your instance. |
+
+Every Copilot setup fault blocks fallbacks. That covers auth failures from GitHub (a revoked
+credential, a policy excluding a model) and configuration faults Bifrost catches itself
+before any request goes out: missing credentials, a non-numeric installation ID, a private
+key that will not parse, an implausible token expiry.
+
+All of them mean the same thing, and quietly draining that traffic onto another paid
+provider is the wrong outcome: you would be billed elsewhere for a request you asked Copilot
+to serve, and the setup mistake would never surface.
+
+Rate limits and server errors are transient rather than faults, so those still fall back
+normally.

@@ -16,6 +16,23 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+func TestRealtimeSessionRoutesOnlyExposeGAClientSecrets(t *testing.T) {
+	handler := &RealtimeClientSecretsHandler{}
+	routes := handler.realtimeSessionRoutes()
+	want := map[string]bool{
+		"/v1/realtime/client_secrets":        true,
+		"/openai/v1/realtime/client_secrets": true,
+	}
+	if len(routes) != len(want) {
+		t.Fatalf("routes = %v, want exactly %d GA routes", routes, len(want))
+	}
+	for _, route := range routes {
+		if !want[route.Path] {
+			t.Fatalf("unexpected realtime client secret route %q", route.Path)
+		}
+	}
+}
+
 func TestResolveRealtimeClientSecretTarget(t *testing.T) {
 	t.Parallel()
 
@@ -29,40 +46,33 @@ func TestResolveRealtimeClientSecretTarget(t *testing.T) {
 	}{
 		{
 			name:         "base route with session model",
-			route:        schemas.RealtimeSessionRoute{Path: "/v1/realtime/client_secrets", EndpointType: schemas.RealtimeSessionEndpointClientSecrets},
+			route:        schemas.RealtimeSessionRoute{Path: "/v1/realtime/client_secrets"},
 			body:         []byte(`{"session":{"model":"openai/gpt-4o-realtime-preview"}}`),
 			wantProvider: schemas.OpenAI,
 			wantModel:    "gpt-4o-realtime-preview",
 		},
 		{
-			name:         "base route with top level model",
-			route:        schemas.RealtimeSessionRoute{Path: "/v1/realtime/sessions", EndpointType: schemas.RealtimeSessionEndpointSessions},
-			body:         []byte(`{"model":"openai/gpt-4o-realtime-preview"}`),
-			wantProvider: schemas.OpenAI,
-			wantModel:    "gpt-4o-realtime-preview",
-		},
-		{
 			name:         "openai alias uses bare model",
-			route:        schemas.RealtimeSessionRoute{Path: "/openai/v1/realtime/client_secrets", EndpointType: schemas.RealtimeSessionEndpointClientSecrets, DefaultProvider: schemas.OpenAI},
+			route:        schemas.RealtimeSessionRoute{Path: "/openai/v1/realtime/client_secrets", DefaultProvider: schemas.OpenAI},
 			body:         []byte(`{"session":{"model":"gpt-4o-realtime-preview"}}`),
 			wantProvider: schemas.OpenAI,
 			wantModel:    "gpt-4o-realtime-preview",
 		},
 		{
 			name:    "base route rejects bare model",
-			route:   schemas.RealtimeSessionRoute{Path: "/v1/realtime/client_secrets", EndpointType: schemas.RealtimeSessionEndpointClientSecrets},
+			route:   schemas.RealtimeSessionRoute{Path: "/v1/realtime/client_secrets"},
 			body:    []byte(`{"session":{"model":"gpt-4o-realtime-preview"}}`),
 			wantErr: true,
 		},
 		{
 			name:    "missing model",
-			route:   schemas.RealtimeSessionRoute{Path: "/openai/v1/realtime/client_secrets", EndpointType: schemas.RealtimeSessionEndpointClientSecrets, DefaultProvider: schemas.OpenAI},
+			route:   schemas.RealtimeSessionRoute{Path: "/openai/v1/realtime/client_secrets", DefaultProvider: schemas.OpenAI},
 			body:    []byte(`{"session":{}}`),
 			wantErr: true,
 		},
 		{
 			name:         "GA transcription session resolves model from nested audio path",
-			route:        schemas.RealtimeSessionRoute{Path: "/v1/realtime/client_secrets", EndpointType: schemas.RealtimeSessionEndpointClientSecrets},
+			route:        schemas.RealtimeSessionRoute{Path: "/v1/realtime/client_secrets"},
 			body:         []byte(`{"session":{"type":"transcription","audio":{"input":{"transcription":{"model":"openai/gpt-4o-transcribe"}}}}}`),
 			wantProvider: schemas.OpenAI,
 			wantModel:    "gpt-4o-transcribe",
@@ -105,19 +115,13 @@ func TestResolveRealtimeClientSecretTarget_NormalizesModel(t *testing.T) {
 	}{
 		{
 			name:      "session.model provider prefix stripped",
-			route:     schemas.RealtimeSessionRoute{Path: "/v1/realtime/client_secrets", EndpointType: schemas.RealtimeSessionEndpointClientSecrets},
+			route:     schemas.RealtimeSessionRoute{Path: "/v1/realtime/client_secrets"},
 			body:      `{"session":{"model":"openai/gpt-4o-realtime-preview","voice":"alloy"}}`,
 			wantModel: "gpt-4o-realtime-preview",
 		},
 		{
-			name:      "top-level model provider prefix stripped",
-			route:     schemas.RealtimeSessionRoute{Path: "/v1/realtime/sessions", EndpointType: schemas.RealtimeSessionEndpointSessions},
-			body:      `{"model":"openai/gpt-4o-realtime-preview"}`,
-			wantModel: "gpt-4o-realtime-preview",
-		},
-		{
 			name:      "bare model unchanged on alias route",
-			route:     schemas.RealtimeSessionRoute{Path: "/openai/v1/realtime/client_secrets", EndpointType: schemas.RealtimeSessionEndpointClientSecrets, DefaultProvider: schemas.OpenAI},
+			route:     schemas.RealtimeSessionRoute{Path: "/openai/v1/realtime/client_secrets", DefaultProvider: schemas.OpenAI},
 			body:      `{"session":{"model":"gpt-4o-realtime-preview"}}`,
 			wantModel: "gpt-4o-realtime-preview",
 		},
@@ -181,7 +185,7 @@ func TestGATranscriptionSessionEndToEndThroughFullNormalizationPath(t *testing.T
 	t.Parallel()
 
 	var ctx fasthttp.RequestCtx
-	route := schemas.RealtimeSessionRoute{Path: "/v1/realtime/client_secrets", EndpointType: schemas.RealtimeSessionEndpointClientSecrets}
+	route := schemas.RealtimeSessionRoute{Path: "/v1/realtime/client_secrets"}
 	body := []byte(`{"session":{"type":"transcription","audio":{"input":{"format":{"type":"audio/pcm","rate":24000},"transcription":{"model":"openai/whisper-1","language":"en"}}}}}`)
 
 	providerKey, model, handlerBody, err := resolveRealtimeClientSecretTarget(&ctx, &lib.Config{}, route, body)
@@ -192,7 +196,7 @@ func TestGATranscriptionSessionEndToEndThroughFullNormalizationPath(t *testing.T
 		t.Fatalf("provider/model = %q/%q, want %q/%q", providerKey, model, schemas.OpenAI, "whisper-1")
 	}
 
-	finalBody, finalModel, bifrostErr := openaiProvider.NormalizeRealtimeClientSecretRequest(handlerBody, schemas.OpenAI, schemas.RealtimeSessionEndpointClientSecrets)
+	finalBody, finalModel, bifrostErr := openaiProvider.NormalizeRealtimeClientSecretRequest(handlerBody, schemas.OpenAI)
 	if bifrostErr != nil {
 		t.Fatalf("NormalizeRealtimeClientSecretRequest() error = %v", bifrostErr)
 	}
@@ -245,7 +249,7 @@ func TestFullRealtimeSessionWithTranscriptionSiblingEndToEnd(t *testing.T) {
 	t.Parallel()
 
 	var ctx fasthttp.RequestCtx
-	route := schemas.RealtimeSessionRoute{Path: "/v1/realtime/client_secrets", EndpointType: schemas.RealtimeSessionEndpointClientSecrets}
+	route := schemas.RealtimeSessionRoute{Path: "/v1/realtime/client_secrets"}
 	body := []byte(`{"model":"openai/gpt-4o-realtime-preview","session":{"audio":{"input":{"transcription":{"model":"openai/whisper-1"}}}}}`)
 
 	providerKey, model, handlerBody, err := resolveRealtimeClientSecretTarget(&ctx, &lib.Config{}, route, body)
@@ -256,7 +260,7 @@ func TestFullRealtimeSessionWithTranscriptionSiblingEndToEnd(t *testing.T) {
 		t.Fatalf("provider/model = %q/%q, want %q/%q", providerKey, model, schemas.OpenAI, "gpt-4o-realtime-preview")
 	}
 
-	finalBody, finalModel, bifrostErr := openaiProvider.NormalizeRealtimeClientSecretRequest(handlerBody, schemas.OpenAI, schemas.RealtimeSessionEndpointClientSecrets)
+	finalBody, finalModel, bifrostErr := openaiProvider.NormalizeRealtimeClientSecretRequest(handlerBody, schemas.OpenAI)
 	if bifrostErr != nil {
 		t.Fatalf("NormalizeRealtimeClientSecretRequest() error = %v", bifrostErr)
 	}
@@ -407,13 +411,9 @@ func TestCacheRealtimeEphemeralKeyMappingStoresKeyID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store.Get() error = %v", err)
 	}
-	value, ok := raw.([]byte)
+	mapping, ok := raw.(realtimeEphemeralKeyMapping)
 	if !ok {
-		t.Fatalf("cached value type = %T, want []byte", raw)
-	}
-	var mapping realtimeEphemeralKeyMapping
-	if err := json.Unmarshal(value, &mapping); err != nil {
-		t.Fatalf("json.Unmarshal() error = %v", err)
+		t.Fatalf("cached value type = %T, want realtimeEphemeralKeyMapping", raw)
 	}
 	if mapping.KeyID != "key_123" {
 		t.Fatalf("mapping.KeyID = %q, want %q", mapping.KeyID, "key_123")
@@ -457,6 +457,14 @@ func TestIsJSONContentType(t *testing.T) {
 		t.Fatal("expected text/plain content type to fail")
 	}
 }
+
+// The handler finds the governance plugin by type-asserting each base plugin
+// against governance.BaseGovernancePlugin, so a mock that falls behind the
+// interface stops being found — silently, and without a build failure. Minting
+// then skips governance entirely and every assertion below still reads as a
+// passing "no governance configured" path. This line turns that drift into a
+// compile error at the point the interface grows.
+var _ governance.BaseGovernancePlugin = (*mockRealtimeMintingGovernancePlugin)(nil)
 
 type mockRealtimeMintingGovernancePlugin struct {
 	err            *schemas.BifrostError

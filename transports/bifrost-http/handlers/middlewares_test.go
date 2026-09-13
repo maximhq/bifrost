@@ -463,9 +463,7 @@ func TestIsRealtimeTransportEndpoint(t *testing.T) {
 
 	nonTransportPaths := []string{
 		"/v1/realtime/client_secrets",
-		"/v1/realtime/sessions",
 		"/openai/v1/realtime/client_secrets",
-		"/openai/v1/realtime/sessions",
 		"/v1/chat/completions",
 	}
 
@@ -748,6 +746,10 @@ func TestAuthMiddleware_WhitelistedRoutes(t *testing.T) {
 	whitelistedRoutes := []string{
 		"/api/session/is-auth-enabled",
 		"/api/session/login",
+		// Logout is idempotent (clears the cookie, revokes the session if a
+		// token is present) and must never 401, or a repeat logout cascades
+		// into a redirect loop in the dashboard.
+		"/api/session/logout",
 		"/api/oauth/callback",
 		"/health",
 	}
@@ -881,7 +883,6 @@ func TestAuthMiddleware_InferenceMiddleware_DelegatesAuthToGovernance(t *testing
 		{name: "chat completion with virtual key", uri: "/v1/chat/completions", headerKey: "x-bf-vk", headerVal: "sk-bf-abc123"},
 		{name: "chat completion without credentials", uri: "/v1/chat/completions"},
 		{name: "realtime minting (client_secrets)", uri: "/v1/realtime/client_secrets"},
-		{name: "realtime minting (sessions)", uri: "/openai/v1/realtime/sessions"},
 	}
 
 	for _, tc := range cases {
@@ -1723,7 +1724,13 @@ func TestRequestDecompressionMiddleware_UnsupportedEncoding(t *testing.T) {
 	if err := json.Unmarshal(ctx.Response.Body(), &bifrostErr); err != nil {
 		t.Fatalf("failed to decode error response: %v", err)
 	}
-	if bifrostErr.Error == nil || !strings.Contains(bifrostErr.Error.Message, "unsupported Content-Encoding") {
+	// The wording is fasthttp's, wrapped by the middleware with %v, so match it
+	// case-insensitively rather than pinning an upstream string. fasthttp changed
+	// it from "unsupported Content-Encoding: snappy" to
+	// `unsupported content-encoding: "snappy"`; what this test cares about is that
+	// the unsupported encoding is reported, not how upstream capitalises it.
+	if bifrostErr.Error == nil ||
+		!strings.Contains(strings.ToLower(bifrostErr.Error.Message), "unsupported content-encoding") {
 		t.Fatalf("unexpected error message: %#v", bifrostErr.Error)
 	}
 }
@@ -2674,5 +2681,39 @@ func TestTransportPreAuthInterceptorMiddleware_NoPlugins(t *testing.T) {
 
 	if !nextCalled {
 		t.Error("expected the request to pass straight through when no plugin implements the hook")
+	}
+}
+
+// TestSecurityHeadersMiddleware_APINoStore verifies that /api/ responses carry
+// Cache-Control: no-store unless the handler sets its own policy, so a CDN never serves
+// one user's session or config data to another. Non-API paths are left alone.
+func TestSecurityHeadersMiddleware_APINoStore(t *testing.T) {
+	tests := []struct {
+		name        string
+		path        string
+		handlerSets string
+		want        string
+	}{
+		{name: "api path gets no-store", path: "/api/session/is-auth-enabled", want: "no-store"},
+		{name: "api path keeps handler policy", path: "/api/branding/logo", handlerSets: "private, max-age=86400", want: "private, max-age=86400"},
+		{name: "non-api path untouched", path: "/ui/assets/app.js", want: ""},
+		{name: "non-api path keeps handler policy", path: "/ui/assets/app.js", handlerSets: "public, max-age=3600", want: "public, max-age=3600"},
+		{name: "prefix must match a segment", path: "/apiary", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := SecurityHeadersMiddleware()(func(ctx *fasthttp.RequestCtx) {
+				if tt.handlerSets != "" {
+					ctx.Response.Header.Set("Cache-Control", tt.handlerSets)
+				}
+				ctx.SetStatusCode(fasthttp.StatusOK)
+			})
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetRequestURI(tt.path)
+			handler(ctx)
+			if got := string(ctx.Response.Header.Peek("Cache-Control")); got != tt.want {
+				t.Fatalf("Cache-Control for %s = %q, want %q", tt.path, got, tt.want)
+			}
+		})
 	}
 }

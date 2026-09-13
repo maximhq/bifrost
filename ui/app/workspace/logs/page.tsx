@@ -82,6 +82,7 @@ export default function LogsPage() {
 			aliases: parseAsSafeArrayOf.withDefault([]),
 			status: parseAsSafeArrayOf.withDefault([]),
 			stop_reasons: parseAsSafeArrayOf.withDefault([]),
+			tool_call_names: parseAsSafeArrayOf.withDefault([]),
 			objects: parseAsSafeArrayOf.withDefault([]),
 			selected_key_ids: parseAsSafeArrayOf.withDefault([]),
 			virtual_key_ids: parseAsSafeArrayOf.withDefault([]),
@@ -89,6 +90,9 @@ export default function LogsPage() {
 			routing_engine_used: parseAsSafeArrayOf.withDefault([]),
 			apps: parseAsSafeArrayOf.withDefault([]),
 			user_agents: parseAsSafeArrayOf.withDefault([]),
+			complexity_tiers: parseAsSafeArrayOf.withDefault([]),
+			complexity_mechanisms: parseAsSafeArrayOf.withDefault([]),
+			session_id: parseAsSafeString.withDefault(""),
 			user_ids: parseAsSafeArrayOf.withDefault([]),
 			team_ids: parseAsSafeArrayOf.withDefault([]),
 			customer_ids: parseAsSafeArrayOf.withDefault([]),
@@ -122,7 +126,7 @@ export default function LogsPage() {
 	const polling = urlState.polling;
 	// Grouped view collapses fallback chains under their root. Disabled while a
 	// session filter is active — that view is already scoped to one chain/session.
-	const grouped = urlState.grouped && !urlState.parent_request_id;
+	const grouped = urlState.grouped && !urlState.parent_request_id && !urlState.session_id;
 
 	// Convert URL state to filters and pagination for API calls
 	const filters: LogFilters = useMemo(
@@ -133,6 +137,7 @@ export default function LogsPage() {
 			aliases: urlState.aliases,
 			status: urlState.status,
 			stop_reasons: urlState.stop_reasons,
+			tool_call_names: urlState.tool_call_names,
 			objects: urlState.objects,
 			selected_key_ids: urlState.selected_key_ids,
 			virtual_key_ids: urlState.virtual_key_ids,
@@ -140,6 +145,9 @@ export default function LogsPage() {
 			routing_engine_used: urlState.routing_engine_used,
 			apps: urlState.apps,
 			user_agents: urlState.user_agents,
+			complexity_tiers: urlState.complexity_tiers,
+			complexity_mechanisms: urlState.complexity_mechanisms,
+			session_id: urlState.session_id,
 			user_ids: urlState.user_ids,
 			team_ids: urlState.team_ids,
 			customer_ids: urlState.customer_ids,
@@ -173,6 +181,7 @@ export default function LogsPage() {
 			urlState.aliases,
 			urlState.status,
 			urlState.stop_reasons,
+			urlState.tool_call_names,
 			urlState.objects,
 			urlState.selected_key_ids,
 			urlState.virtual_key_ids,
@@ -180,6 +189,9 @@ export default function LogsPage() {
 			urlState.routing_engine_used,
 			urlState.apps,
 			urlState.user_agents,
+			urlState.complexity_tiers,
+			urlState.complexity_mechanisms,
+			urlState.session_id,
 			urlState.user_ids,
 			urlState.team_ids,
 			urlState.customer_ids,
@@ -234,6 +246,7 @@ export default function LogsPage() {
 				aliases: newFilters.aliases || [],
 				status: newFilters.status || [],
 				stop_reasons: newFilters.stop_reasons || [],
+				tool_call_names: newFilters.tool_call_names || [],
 				objects: newFilters.objects || [],
 				selected_key_ids: newFilters.selected_key_ids || [],
 				virtual_key_ids: newFilters.virtual_key_ids || [],
@@ -241,6 +254,9 @@ export default function LogsPage() {
 				routing_engine_used: newFilters.routing_engine_used || [],
 				apps: newFilters.apps || [],
 				user_agents: newFilters.user_agents || [],
+				complexity_tiers: newFilters.complexity_tiers || [],
+				complexity_mechanisms: newFilters.complexity_mechanisms || [],
+				session_id: newFilters.session_id || "",
 				user_ids: newFilters.user_ids || [],
 				team_ids: newFilters.team_ids || [],
 				customer_ids: newFilters.customer_ids || [],
@@ -421,7 +437,20 @@ export default function LogsPage() {
 				parent_request_id: parentRequestId,
 			});
 		},
-		[filters, setFilters],
+		[filters, setFilters, setUrlState],
+	);
+
+	const handleFilterBySessionId = useCallback(
+		(sessionId: string) => {
+			setSelectedSessionId(null);
+			setSessionHighlightedLogId(null);
+			setUrlState({ selected_log: "" }, { history: "replace" });
+			setFilters({
+				...filters,
+				session_id: sessionId,
+			});
+		},
+		[filters, setFilters, setUrlState],
 	);
 
 	// --- Grouped view: chain expansion state -------------------------------
@@ -856,6 +885,7 @@ export default function LogsPage() {
 						hasPrev={selectedLogIndex > 0 || (selectedLogIndex !== -1 && pagination.offset > 0)}
 						hasNext={selectedLogIndex !== -1 && (selectedLogIndex < logs.length - 1 || pagination.offset + pagination.limit < totalItems)}
 						onFilterByParentRequestId={handleFilterByParentRequestId}
+						onFilterBySessionId={handleFilterBySessionId}
 						onViewSession={(sessionId, logId) => {
 							setUrlState({ selected_log: "" }, { history: "replace" });
 							setSessionHighlightedLogId(logId);

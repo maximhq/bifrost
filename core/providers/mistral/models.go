@@ -7,7 +7,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func (response *MistralListModelsResponse) ToBifrostListModelsResponse(allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, aliases schemas.KeyAliases, unfiltered bool) *schemas.BifrostListModelsResponse {
+func (response *MistralListModelsResponse) ToBifrostListModelsResponse(access schemas.ModelAccessRule, aliases schemas.KeyAliases, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -17,12 +17,11 @@ func (response *MistralListModelsResponse) ToBifrostListModelsResponse(allowedMo
 	}
 
 	pipeline := &providerUtils.ListModelsPipeline{
-		AllowedModels:     allowedModels,
-		BlacklistedModels: blacklistedModels,
-		Aliases:           aliases,
-		Unfiltered:        unfiltered,
-		ProviderKey:       schemas.Mistral,
-		MatchFns:          providerUtils.DefaultMatchFns(),
+		Access:      access,
+		Aliases:     aliases,
+		Unfiltered:  unfiltered,
+		ProviderKey: schemas.Mistral,
+		MatchFns:    providerUtils.DefaultMatchFns(),
 	}
 	if pipeline.ShouldEarlyExit() {
 		return bifrostResponse

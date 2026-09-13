@@ -112,7 +112,7 @@ func (h *WebRTCRealtimeHandler) handleRequest(ctx *fasthttp.RequestCtx) {
 // Raw SDP bodies (application/sdp) fall back to ?model= for the legacy
 // raw-SDP path only; the multipart contract has no ?model= fallback.
 func (h *WebRTCRealtimeHandler) handleCallsRequest(ctx *fasthttp.RequestCtx) {
-	sdpOffer, providerKey, model, normalizedSession, bifrostErr := parseCallsWebRTCRequest(ctx, h.config)
+	sdpOffer, providerKey, model, normalizedSession, transcriptionSession, bifrostErr := parseCallsWebRTCRequest(ctx, h.config)
 	if bifrostErr != nil {
 		SendBifrostError(ctx, bifrostErr)
 		return
@@ -124,46 +124,46 @@ func (h *WebRTCRealtimeHandler) handleCallsRequest(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	exchangeSDP := func(rCtx *schemas.BifrostContext, key schemas.Key, upstreamOffer string) (string, *schemas.BifrostError) {
-		return rtProvider.ExchangeRealtimeWebRTCSDP(rCtx, key, model, upstreamOffer, normalizedSession)
+	exchangeSDP := func(rCtx *schemas.BifrostContext, key schemas.Key, upstreamOffer string, session []byte) (string, *schemas.BifrostError) {
+		return rtProvider.ExchangeRealtimeWebRTCSDP(rCtx, key, model, upstreamOffer, session)
 	}
 
-	h.runWebRTCRelay(ctx, rtProvider, providerKey, model, sdpOffer, exchangeSDP)
+	h.runWebRTCRelay(ctx, rtProvider, providerKey, model, sdpOffer, normalizedSession, transcriptionSession, exchangeSDP)
 }
 
-func parseCallsWebRTCRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (string, schemas.ModelProvider, string, []byte, *schemas.BifrostError) {
+func parseCallsWebRTCRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (string, schemas.ModelProvider, string, []byte, bool, *schemas.BifrostError) {
 	contentType := strings.ToLower(string(ctx.Request.Header.ContentType()))
 	path := string(ctx.Path())
 	if strings.HasPrefix(contentType, "multipart/form-data") {
 		form, err := ctx.MultipartForm()
 		if err != nil {
-			return "", "", "", nil, newRealtimeWebRTCError(fasthttp.StatusBadRequest, "invalid_request_error", "failed to parse multipart form", err)
+			return "", "", "", nil, false, newRealtimeWebRTCError(fasthttp.StatusBadRequest, "invalid_request_error", "failed to parse multipart form", err)
 		}
 
 		sdpOffer := firstMultipartValue(form.Value, "sdp")
 		if strings.TrimSpace(sdpOffer) == "" {
-			return "", "", "", nil, newRealtimeWebRTCError(fasthttp.StatusBadRequest, "invalid_request_error", "sdp form field is required", nil)
+			return "", "", "", nil, false, newRealtimeWebRTCError(fasthttp.StatusBadRequest, "invalid_request_error", "sdp form field is required", nil)
 		}
 
 		sessionField := firstMultipartValue(form.Value, "session")
 		if strings.TrimSpace(sessionField) == "" {
-			return "", "", "", nil, newRealtimeWebRTCError(fasthttp.StatusBadRequest, "invalid_request_error", "session form field is required", nil)
+			return "", "", "", nil, false, newRealtimeWebRTCError(fasthttp.StatusBadRequest, "invalid_request_error", "session form field is required", nil)
 		}
-		providerKey, model, normalizedSession, bifrostErr := resolveRealtimeSDPTarget(ctx, config, path, []byte(sessionField))
+		providerKey, model, normalizedSession, transcriptionSession, bifrostErr := resolveRealtimeSDPTarget(ctx, config, path, []byte(sessionField))
 		if bifrostErr != nil {
-			return "", "", "", nil, bifrostErr
+			return "", "", "", nil, false, bifrostErr
 		}
-		return sdpOffer, providerKey, model, normalizedSession, nil
+		return sdpOffer, providerKey, model, normalizedSession, transcriptionSession, nil
 	}
 
 	sdpOffer := string(ctx.Request.Body())
 	if strings.TrimSpace(sdpOffer) == "" {
-		return "", "", "", nil, newRealtimeWebRTCError(fasthttp.StatusBadRequest, "invalid_request_error", "SDP is required", nil)
+		return "", "", "", nil, false, newRealtimeWebRTCError(fasthttp.StatusBadRequest, "invalid_request_error", "SDP is required", nil)
 	}
 
 	rawModel := strings.TrimSpace(string(ctx.QueryArgs().Peek("model")))
 	if rawModel == "" {
-		return "", "", "", nil, newRealtimeWebRTCError(fasthttp.StatusBadRequest, "invalid_request_error", "model query param is required", nil)
+		return "", "", "", nil, false, newRealtimeWebRTCError(fasthttp.StatusBadRequest, "invalid_request_error", "model query param is required", nil)
 	}
 
 	providerKey, model := schemas.ParseModelString(rawModel, realtimeDefaultProviderForPath(path))
@@ -181,12 +181,12 @@ func parseCallsWebRTCRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (stri
 	}
 	if providerKey == "" || strings.TrimSpace(model) == "" {
 		if realtimeDefaultProviderForPath(path) == "" {
-			return "", "", "", nil, newRealtimeWebRTCError(fasthttp.StatusBadRequest, "invalid_request_error", "model must use provider/model on /v1 realtime routes", nil)
+			return "", "", "", nil, false, newRealtimeWebRTCError(fasthttp.StatusBadRequest, "invalid_request_error", "model must use provider/model on /v1 realtime routes", nil)
 		}
-		return "", "", "", nil, newRealtimeWebRTCError(fasthttp.StatusBadRequest, "invalid_request_error", "invalid model: "+rawModel, nil)
+		return "", "", "", nil, false, newRealtimeWebRTCError(fasthttp.StatusBadRequest, "invalid_request_error", "invalid model: "+rawModel, nil)
 	}
 
-	return sdpOffer, providerKey, model, nil, nil
+	return sdpOffer, providerKey, model, nil, false, nil
 }
 
 // handleLegacyRequest handles the beta /realtime endpoint.
@@ -238,11 +238,11 @@ func (h *WebRTCRealtimeHandler) handleLegacyRequest(ctx *fasthttp.RequestCtx, de
 		}
 	}
 
-	exchangeSDP := func(rCtx *schemas.BifrostContext, key schemas.Key, upstreamOffer string) (string, *schemas.BifrostError) {
+	exchangeSDP := func(rCtx *schemas.BifrostContext, key schemas.Key, upstreamOffer string, _ []byte) (string, *schemas.BifrostError) {
 		return legacyProvider.ExchangeLegacyRealtimeWebRTCSDP(rCtx, key, upstreamOffer, sessionJSON, model)
 	}
 
-	h.runWebRTCRelay(ctx, rtProvider, providerKey, model, sdpOffer, exchangeSDP)
+	h.runWebRTCRelay(ctx, rtProvider, providerKey, model, sdpOffer, sessionJSON, false, exchangeSDP)
 }
 
 // parseLegacyWebRTCRequest extracts SDP, model, and optional session from a legacy request.
@@ -291,7 +291,9 @@ func (h *WebRTCRealtimeHandler) runWebRTCRelay(
 	providerKey schemas.ModelProvider,
 	model string,
 	sdpOffer string,
-	exchangeSDP func(ctx *schemas.BifrostContext, key schemas.Key, upstreamOffer string) (string, *schemas.BifrostError),
+	sessionJSON []byte,
+	transcriptionSession bool,
+	exchangeSDP func(ctx *schemas.BifrostContext, key schemas.Key, upstreamOffer string, session []byte) (string, *schemas.BifrostError),
 ) {
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore)
 	defer cancel()
@@ -330,18 +332,27 @@ func (h *WebRTCRealtimeHandler) runWebRTCRelay(
 		model = authKey.Aliases.Resolve(model)
 	}
 
+	if transcriptionSession {
+		var normalizeErr *schemas.BifrostError
+		sessionJSON, normalizeErr = pinRealtimeSDPTranscriptionModel(sessionJSON, model)
+		if normalizeErr != nil {
+			SendBifrostError(ctx, normalizeErr)
+			return
+		}
+	}
+
 	// Compute raw storage flag from provider config + per-request header overrides.
 	// Normal inference computes this inside bifrost.executeRequest, which is bypassed
 	// for realtime WebRTC connections.
 	applyRealtimeRawStorageContext(bifrostCtx, h.client.ComputeRawStorageForProvider(bifrostCtx, providerKey))
 
 	boundExchange := func(rCtx *schemas.BifrostContext, upstreamOffer string) (string, *schemas.BifrostError) {
-		return exchangeSDP(rCtx, authKey, upstreamOffer)
+		return exchangeSDP(rCtx, authKey, upstreamOffer, sessionJSON)
 	}
 
 	relayCtx, relayCancel := newRealtimeRelayContext(bifrostCtx)
 	session := bfws.NewSession(nil)
-	browserAnswer, relayErr := h.establishRelay(relayCtx, relayCancel, session, rtProvider, providerKey, model, selectedKey, sdpOffer, boundExchange)
+	browserAnswer, relayErr := h.establishRelay(relayCtx, relayCancel, session, rtProvider, providerKey, model, selectedKey, sdpOffer, transcriptionSession, boundExchange)
 	if relayErr != nil {
 		relayCancel()
 		SendBifrostError(ctx, relayErr)
@@ -400,6 +411,8 @@ func lookupRealtimeEphemeralKeyMapping(kv schemas.KVStore, token string) (realti
 	}
 
 	switch value := raw.(type) {
+	case realtimeEphemeralKeyMapping:
+		return value, true
 	case string:
 		return parseRealtimeEphemeralKeyMappingValue([]byte(value))
 	case []byte:
@@ -504,6 +517,7 @@ func (h *WebRTCRealtimeHandler) establishRelay(
 	model string,
 	key *schemas.Key,
 	browserOffer string,
+	transcriptionSession bool,
 	exchangeSDP func(ctx *schemas.BifrostContext, upstreamOffer string) (string, *schemas.BifrostError),
 ) (string, *schemas.BifrostError) {
 	downstreamPC, err := newRealtimePeerConnection()
@@ -517,16 +531,17 @@ func (h *WebRTCRealtimeHandler) establishRelay(
 	}
 
 	relay := &webrtcRealtimeRelay{
-		client:       h.client,
-		downstreamPC: downstreamPC,
-		upstreamPC:   upstreamPC,
-		session:      session,
-		bifrostCtx:   relayCtx,
-		cancel:       relayCancel,
-		provider:     provider,
-		providerKey:  providerKey,
-		model:        model,
-		key:          key,
+		client:               h.client,
+		downstreamPC:         downstreamPC,
+		upstreamPC:           upstreamPC,
+		session:              session,
+		bifrostCtx:           relayCtx,
+		cancel:               relayCancel,
+		provider:             provider,
+		providerKey:          providerKey,
+		model:                model,
+		key:                  key,
+		transcriptionSession: transcriptionSession,
 	}
 	relay.onClose = func() {
 		h.unregisterRelay(session.ID())
@@ -625,14 +640,15 @@ type webrtcRealtimeRelay struct {
 	providerToBrowserTrack *webrtc.TrackLocalStaticRTP
 	browserToProviderTrack *webrtc.TrackLocalStaticRTP
 
-	session     *bfws.Session
-	bifrostCtx  *schemas.BifrostContext
-	cancel      context.CancelFunc
-	provider    schemas.RealtimeProvider
-	providerKey schemas.ModelProvider
-	model       string
-	key         *schemas.Key
-	onClose     func()
+	session              *bfws.Session
+	bifrostCtx           *schemas.BifrostContext
+	cancel               context.CancelFunc
+	provider             schemas.RealtimeProvider
+	providerKey          schemas.ModelProvider
+	model                string
+	key                  *schemas.Key
+	transcriptionSession bool
+	onClose              func()
 
 	closeOnce sync.Once
 
@@ -935,9 +951,13 @@ func (r *webrtcRealtimeRelay) handleUpstreamMessage(msg webrtc.DataChannelMessag
 		if !r.provider.ShouldForwardRealtimeEvent(event) {
 			return
 		}
-		if event.Type == r.provider.RealtimeTurnFinalEvent() {
-			contentOverride := r.session.ConsumeRealtimeOutputText()
-			if bifrostErr := finalizeRealtimeTurnHooks(r.client, r.bifrostCtx, r.session, r.provider, r.providerKey, r.model, r.key, msg.Data, contentOverride); bifrostErr != nil {
+		terminalEventType := realtimeTurnFinalEvent(r.provider, r.transcriptionSession)
+		if event.Type == terminalEventType {
+			inputItemID, inputSummary, contentOverride := realtimeTurnCompletionContent(r.session, event, r.transcriptionSession)
+			if inputSummary != "" {
+				r.session.RecordRealtimeInput(inputItemID, inputSummary, string(msg.Data))
+			}
+			if bifrostErr := finalizeRealtimeTurnHooks(r.client, r.bifrostCtx, r.session, r.provider, r.providerKey, r.model, r.key, msg.Data, contentOverride, terminalEventType, r.transcriptionSession); bifrostErr != nil {
 				r.closeWithErrorEvent(newRealtimeTurnErrorEventPayload(bifrostErr))
 				return
 			}
@@ -1245,20 +1265,25 @@ func sendDataChannelMessage(dc *webrtc.DataChannel, payload []byte, isString boo
 	}
 }
 
-func resolveRealtimeSDPTarget(ctx *fasthttp.RequestCtx, config *lib.Config, path string, sessionJSON []byte) (schemas.ModelProvider, string, []byte, *schemas.BifrostError) {
+func resolveRealtimeSDPTarget(ctx *fasthttp.RequestCtx, config *lib.Config, path string, sessionJSON []byte) (schemas.ModelProvider, string, []byte, bool, *schemas.BifrostError) {
 	root, err := schemas.ParseRealtimeClientSecretBody(sessionJSON)
 	if err != nil {
-		return "", "", nil, err
+		return "", "", nil, false, err
 	}
 
-	modelJSON, ok := root["model"]
-	if !ok {
-		return "", "", nil, newRealtimeWebRTCError(fasthttp.StatusBadRequest, "invalid_request_error", "session.model is required", nil)
+	modelJSON, hasRootModel := root["model"]
+	transcriptionSession := false
+	if !hasRootModel {
+		modelJSON = nestedRealtimeTranscriptionModel(root)
+		transcriptionSession = len(modelJSON) > 0
+	}
+	if len(modelJSON) == 0 {
+		return "", "", nil, false, newRealtimeWebRTCError(fasthttp.StatusBadRequest, "invalid_request_error", "session.model or session.audio.input.transcription.model is required", nil)
 	}
 
 	var rawModel string
 	if err := json.Unmarshal(modelJSON, &rawModel); err != nil {
-		return "", "", nil, newRealtimeWebRTCError(fasthttp.StatusBadRequest, "invalid_request_error", "session.model must be a string", err)
+		return "", "", nil, false, newRealtimeWebRTCError(fasthttp.StatusBadRequest, "invalid_request_error", "session.model must be a string", err)
 	}
 
 	providerKey, model := schemas.ParseModelString(strings.TrimSpace(rawModel), realtimeDefaultProviderForPath(path))
@@ -1276,23 +1301,61 @@ func resolveRealtimeSDPTarget(ctx *fasthttp.RequestCtx, config *lib.Config, path
 	}
 	if providerKey == "" || strings.TrimSpace(model) == "" {
 		if realtimeDefaultProviderForPath(path) == "" {
-			return "", "", nil, newRealtimeWebRTCError(fasthttp.StatusBadRequest, "invalid_request_error", "session.model must use provider/model on /v1 realtime routes", nil)
+			return "", "", nil, false, newRealtimeWebRTCError(fasthttp.StatusBadRequest, "invalid_request_error", "session.model must use provider/model on /v1 realtime routes", nil)
 		}
-		return "", "", nil, newRealtimeWebRTCError(fasthttp.StatusBadRequest, "invalid_request_error", "session.model is required", nil)
+		return "", "", nil, false, newRealtimeWebRTCError(fasthttp.StatusBadRequest, "invalid_request_error", "session.model is required", nil)
 	}
 
 	normalizedModel, marshalErr := json.Marshal(model)
 	if marshalErr != nil {
-		return "", "", nil, newRealtimeWebRTCError(fasthttp.StatusInternalServerError, "server_error", "failed to encode normalized session model", marshalErr)
+		return "", "", nil, false, newRealtimeWebRTCError(fasthttp.StatusInternalServerError, "server_error", "failed to encode normalized session model", marshalErr)
 	}
-	root["model"] = normalizedModel
-	openai.StripNestedModelPrefixes(root)
+	if transcriptionSession {
+		root["type"] = json.RawMessage(`"transcription"`)
+	} else {
+		root["model"] = normalizedModel
+		openai.StripNestedModelPrefixes(root)
+	}
 	normalizedSession, marshalErr := json.Marshal(root)
 	if marshalErr != nil {
-		return "", "", nil, newRealtimeWebRTCError(fasthttp.StatusInternalServerError, "server_error", "failed to encode normalized realtime session", marshalErr)
+		return "", "", nil, false, newRealtimeWebRTCError(fasthttp.StatusInternalServerError, "server_error", "failed to encode normalized realtime session", marshalErr)
 	}
 
-	return providerKey, strings.TrimSpace(model), normalizedSession, nil
+	return providerKey, strings.TrimSpace(model), normalizedSession, transcriptionSession, nil
+}
+
+func nestedRealtimeTranscriptionModel(root map[string]json.RawMessage) json.RawMessage {
+	var audio struct {
+		Input struct {
+			Transcription map[string]json.RawMessage `json:"transcription"`
+		} `json:"input"`
+	}
+	if json.Unmarshal(root["audio"], &audio) != nil {
+		return nil
+	}
+	return audio.Input.Transcription["model"]
+}
+
+func pinRealtimeSDPTranscriptionModel(sessionJSON []byte, model string) ([]byte, *schemas.BifrostError) {
+	root, err := schemas.ParseRealtimeClientSecretBody(sessionJSON)
+	if err != nil {
+		return nil, err
+	}
+	var audio map[string]json.RawMessage
+	var input map[string]json.RawMessage
+	var transcription map[string]json.RawMessage
+	if json.Unmarshal(root["audio"], &audio) != nil || json.Unmarshal(audio["input"], &input) != nil || json.Unmarshal(input["transcription"], &transcription) != nil {
+		return nil, newRealtimeWebRTCError(fasthttp.StatusBadRequest, "invalid_request_error", "session.audio.input.transcription must be an object", nil)
+	}
+	transcription["model"] = json.RawMessage(strconv.Quote(model))
+	input["transcription"], _ = json.Marshal(transcription)
+	audio["input"], _ = json.Marshal(input)
+	root["audio"], _ = json.Marshal(audio)
+	normalized, marshalErr := json.Marshal(root)
+	if marshalErr != nil {
+		return nil, newRealtimeWebRTCError(fasthttp.StatusInternalServerError, "server_error", "failed to encode normalized realtime session", marshalErr)
+	}
+	return normalized, nil
 }
 
 func firstMultipartValue(values map[string][]string, key string) string {

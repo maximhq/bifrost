@@ -590,20 +590,21 @@ if [ "$AUTH_ENABLED_BY_RUN" = "1" ]; then
     fi
 fi
 
-# Governance suites (virtual key quota, rate limit / budget enforcement, and
-# rotation cooldown). These run as their own newman invocations rather than
-# through --extra-collection: merging folds them into the management collection,
+# Governance suites (virtual key quota, rate limit / budget enforcement,
+# rotation cooldown, and time-of-day pricing). These run as their own newman
+# invocations rather than through --extra-collection: merging folds them into the management collection,
 # which would drop their collection variables, subject their deliberate 401/403/
 # 429/402 assertions to that collection's 2xx gate, and run them a second time in
 # the authenticated pass. They also run after auth is restored to disabled,
 # because they provision virtual keys through the unauthenticated management API.
-# Roughly 7 minutes, most of it the rotation suite waiting out real 1m and 3m
+# Roughly 8 minutes, most of it the rotation suite waiting out real 1m and 3m
 # grace windows; set BIFROST_E2E_SKIP_GOVERNANCE=1 to skip them.
 if [ $EXIT_CODE -eq 0 ] && [ "${BIFROST_E2E_SKIP_GOVERNANCE:-0}" != "1" ]; then
     for governance_suite in \
         "vk-quota:run-newman-vk-quota-tests.sh" \
         "rate-limit:run-newman-rate-limit-tests.sh" \
-        "vk-rotation-cooldown:run-newman-vk-rotation-cooldown-tests.sh"; do
+        "vk-rotation-cooldown:run-newman-vk-rotation-cooldown-tests.sh" \
+        "pricing-time-of-day:run-newman-pricing-time-of-day-tests.sh"; do
         suite_name="${governance_suite%%:*}"
         suite_runner="${governance_suite##*:}"
         echo "" | tee -a "$LOG_FILE"

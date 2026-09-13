@@ -250,6 +250,12 @@
           "description": "When true, deleted virtual keys are omitted from logs and MCP logs filter data.",
           "default": false
         },
+        "hidden_request_types": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Request types excluded from dashboard and log API reads. Logs are still stored; an empty array shows all request types. Editable from the UI under Logs Settings."
+        },
         "allowed_headers": {
           "type": "array",
           "items": {
@@ -482,7 +488,7 @@
           "$ref": "#/$defs/provider"
         },
         "github-copilot": {
-          "$ref": "#/$defs/provider"
+          "$ref": "#/$defs/provider_with_github_copilot_config"
         }
       },
       "additionalProperties": true
@@ -874,9 +880,24 @@
                 "enum": ["own-data", "team-data", "all-data"],
                 "default": "all-data"
               },
+              "entity_dac": {
+                "type": "object",
+                "description": "Per-entity Data Access Control overrides, keyed by resource name. Each entry narrows or widens the role's global dac for that one entity; entities not listed follow dac. Resources accepting an override as of this release: Logs, MCPLogs, AuditLogs, VirtualKeys, Users, Teams, Customers, BusinessUnits, RBAC, APIKeys, AccessProfiles, PromptRepository, RoutingRules, GuardrailsConfig, MCPGateway, VirtualMCPs, Projects. ",
+                "additionalProperties": {
+                  "type": "string",
+                  "enum": ["own-data", "team-data", "all-data"]
+                }
+              },
               "access_profile": {
                 "type": "string",
                 "description": "Name of the access profile (defined in access_profiles) to attach as the default for this role. Changing this field triggers a re-sync on next startup. Leave unset to let the dashboard manage the assignment."
+              },
+              "access_profiles": {
+                "type": "array",
+                "description": "Names of all access profiles granted by this role. When present, this field takes precedence over access_profile; an empty list removes all profile grants.",
+                "items": {
+                  "type": "string"
+                }
               },
               "permissions": {
                 "type": "array",
@@ -944,6 +965,11 @@
               "calendar_aligned": {
                 "type": "boolean",
                 "description": "Snap all budget resets to calendar boundaries (day, week, month, year)",
+                "default": false
+              },
+              "allow_all_providers": {
+                "type": "boolean",
+                "description": "Grant this virtual key access to every provider, including ones added later. Coexists with provider_configs: a provider that also has a config row still has that config's model allow/blacklist, budgets, rate limits, and key selection applied; providers without a config get all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs.",
                 "default": false
               },
               "team_id": {
@@ -1109,6 +1135,9 @@
               },
               "openai_config": {
                 "$ref": "#/$defs/openai_config"
+              },
+              "prompt_cache": {
+                "$ref": "#/$defs/prompt_cache"
               }
             },
             "required": ["name"]
@@ -1540,9 +1569,17 @@
             }
           ]
         },
+        "virtual_mcps": {
+          "type": "array",
+          "description": "Virtual MCPs: named bundles of tools from one or more MCP clients, served at /mcp/<endpoint_slug> and attachable to virtual keys. Canonical key; supersedes the deprecated tool_groups alias.",
+          "items": {
+            "$ref": "#/$defs/virtual_mcp_config"
+          }
+        },
         "tool_groups": {
           "type": "array",
-          "description": "Enterprise MCP tool groups with optional governance associations",
+          "description": "DEPRECATED: use virtual_mcps instead. Enterprise MCP tool groups with optional governance associations. Kept for backward compatibility.",
+          "deprecated": true,
           "items": {
             "$ref": "#/$defs/mcp_tool_group_config"
           }
@@ -1560,62 +1597,121 @@
         },
         "type": {
           "type": "string",
-          "enum": ["weaviate", "redis", "qdrant", "pinecone"],
-          "description": "Vector store type (use \"redis\" for Redis or Valkey-compatible endpoints)"
+          "enum": ["weaviate", "redis", "qdrant", "pinecone", "chromem"],
+          "description": "Vector store type (use \"redis\" for Redis or Valkey-compatible endpoints). \"chromem\" runs in-process rather than against a service, so its data is local to one node and is not shared between replicas"
         },
         "config": {
+          "description": "Backend-specific settings. The block must match the backend named by the sibling \"type\"; the conditionals below pin it to that backend rather than accepting any backend's shape",
           "anyOf": [
             {
-              "if": {
-                "properties": {
-                  "type": {
-                    "const": "weaviate"
-                  }
-                }
-              },
-              "then": {
-                "$ref": "#/$defs/weaviate_config"
-              }
+              "$ref": "#/$defs/weaviate_config"
             },
             {
-              "if": {
-                "properties": {
-                  "type": {
-                    "const": "redis"
-                  }
-                }
-              },
-              "then": {
-                "$ref": "#/$defs/redis_config"
-              }
+              "$ref": "#/$defs/redis_config"
             },
             {
-              "if": {
-                "properties": {
-                  "type": {
-                    "const": "qdrant"
-                  }
-                }
-              },
-              "then": {
-                "$ref": "#/$defs/qdrant_config"
-              }
+              "$ref": "#/$defs/qdrant_config"
             },
             {
-              "if": {
-                "properties": {
-                  "type": {
-                    "const": "pinecone"
-                  }
-                }
-              },
-              "then": {
-                "$ref": "#/$defs/pinecone_config"
-              }
+              "$ref": "#/$defs/pinecone_config"
+            },
+            {
+              "$ref": "#/$defs/chromem_config"
             }
           ]
         }
       },
+      "allOf": [
+        {
+          "if": {
+            "required": ["type"],
+            "properties": {
+              "type": {
+                "const": "weaviate"
+              }
+            }
+          },
+          "then": {
+            "required": ["config"],
+            "properties": {
+              "config": {
+                "$ref": "#/$defs/weaviate_config"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["type"],
+            "properties": {
+              "type": {
+                "const": "redis"
+              }
+            }
+          },
+          "then": {
+            "required": ["config"],
+            "properties": {
+              "config": {
+                "$ref": "#/$defs/redis_config"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["type"],
+            "properties": {
+              "type": {
+                "const": "qdrant"
+              }
+            }
+          },
+          "then": {
+            "required": ["config"],
+            "properties": {
+              "config": {
+                "$ref": "#/$defs/qdrant_config"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["type"],
+            "properties": {
+              "type": {
+                "const": "pinecone"
+              }
+            }
+          },
+          "then": {
+            "required": ["config"],
+            "properties": {
+              "config": {
+                "$ref": "#/$defs/pinecone_config"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["type"],
+            "properties": {
+              "type": {
+                "const": "chromem"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "$ref": "#/$defs/chromem_config"
+              }
+            }
+          }
+        }
+      ],
       "additionalProperties": false
     },
     "config_store": {
@@ -2370,6 +2466,11 @@
                         "type": "string"
                       },
                       "description": "Custom labels to add to Prometheus metrics"
+                    },
+                    "overhead_breakdown_enabled": {
+                      "type": "boolean",
+                      "description": "Export the per-component overhead histogram bifrost_overhead_component_microseconds (overhead latency split by the overhead_component label). Off by default. Requires tracing to be active, since the breakdown is computed from completed trace spans.",
+                      "default": false
                     },
                     "push_gateway": {
                       "type": "object",
@@ -3421,6 +3522,11 @@
           "minimum": 1,
           "maximum": 300
         },
+        "overhead_breakdown_enabled": {
+          "type": "boolean",
+          "description": "Export the per-component overhead histogram bifrost_overhead_component_microseconds (overhead latency split by the overhead_component attribute). Off by default. Requires metrics_enabled and an active trace, since the breakdown is computed from completed spans.",
+          "default": false
+        },
         "request_headers": {
           "type": "array",
           "items": {
@@ -3742,6 +3848,26 @@
             "type": "string"
           }
         },
+        "allowed_models_patterns": {
+          "type": "array",
+          "uniqueItems": true,
+          "description": "RE2 patterns that allow models by shape, alongside allowed_models. Each pattern is matched case-insensitively as a full match against the model name and \"provider/model\". \"*\" is not a valid pattern.",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "not": { "const": "*" }
+          }
+        },
+        "blacklisted_models_patterns": {
+          "type": "array",
+          "uniqueItems": true,
+          "description": "RE2 patterns that block models by shape, alongside blacklisted_models. Each pattern is matched case-insensitively as a full match against the model name and \"provider/model\". \"*\" is not a valid pattern. Block patterns win over allowed_models and allowed_models_patterns.",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "not": { "const": "*" }
+          }
+        },
         "rate_limit_id": {
           "type": "string",
           "description": "Associated rate limit ID"
@@ -3789,87 +3915,294 @@
     },
     "complexity_tier_boundaries": {
       "type": "object",
-      "description": "Score thresholds used to classify complexity_tier values",
+      "description": "Lexical score thresholds. simple_medium and medium_complex are applied by the complexity analyzer; complex_reasoning is retired and accepted for backward compatibility only.",
       "properties": {
         "simple_medium": {
           "type": "number",
           "exclusiveMinimum": 0,
           "exclusiveMaximum": 1,
-          "description": "Scores below this threshold are SIMPLE"
+          "description": "Active lexical boundary applied by the complexity analyzer: a request scoring below this classifies as SIMPLE."
         },
         "medium_complex": {
           "type": "number",
           "exclusiveMinimum": 0,
           "exclusiveMaximum": 1,
-          "description": "Scores below this threshold and at or above simple_medium are MEDIUM"
+          "description": "Active lexical boundary applied by the complexity analyzer: a request scoring below this classifies as MEDIUM, and at or above it as COMPLEX. Must remain greater than simple_medium when supplied, both for the analyzer and for backward compatibility."
         },
         "complex_reasoning": {
           "type": "number",
           "exclusiveMinimum": 0,
           "exclusiveMaximum": 1,
-          "description": "Scores below this threshold and at or above medium_complex are COMPLEX"
+          "deprecated": true,
+          "description": "Retired REASONING-tier boundary. Accepted for backward compatibility but ignored because REASONING is merged into COMPLEX."
         }
       },
-      "required": ["simple_medium", "medium_complex", "complex_reasoning"],
+      "required": ["simple_medium", "medium_complex"],
       "additionalProperties": false
     },
     "complexity_analyzer_keywords": {
       "type": "object",
-      "description": "User-editable keyword lists for complexity analysis",
-      "properties": {
-        "code_keywords": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
+      "description": "User-editable keyword scoring signals. The legacy four-list shape remains accepted for config.json compatibility. When the semantic block is present, the three normalized tier lists may contain at most 750 phrases combined; additive config.json merges are checked against that combined limit.",
+      "oneOf": [
+        {
+          "title": "Three-tier complexity keywords",
+          "properties": {
+            "simple_keywords": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              }
+            },
+            "medium_keywords": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              }
+            },
+            "complex_keywords": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              }
+            }
+          },
+          "required": ["simple_keywords", "medium_keywords", "complex_keywords"],
+          "additionalProperties": false
         },
-        "reasoning_keywords": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "technical_keywords": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "simple_keywords": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
+        {
+          "title": "Deprecated legacy complexity keywords",
+          "deprecated": true,
+          "properties": {
+            "code_keywords": {
+              "type": "array",
+              "minItems": 1,
+              "deprecated": true,
+              "description": "Deprecated legacy field. Values are merged into medium_keywords.",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "reasoning_keywords": {
+              "type": "array",
+              "minItems": 1,
+              "deprecated": true,
+              "description": "Deprecated legacy field. Values are migrated to complex_keywords.",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "technical_keywords": {
+              "type": "array",
+              "minItems": 1,
+              "deprecated": true,
+              "description": "Deprecated legacy field. Values are merged into medium_keywords.",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "simple_keywords": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "required": ["code_keywords", "reasoning_keywords", "technical_keywords", "simple_keywords"],
+          "additionalProperties": false
         }
-      },
-      "required": [
-        "code_keywords",
-        "reasoning_keywords",
-        "technical_keywords",
-        "simple_keywords"
-      ],
-      "additionalProperties": false
+      ]
     },
     "complexity_analyzer_config": {
       "type": "object",
-      "description": "Runtime configuration for complexity_tier CEL routing",
+      "description": "Runtime configuration for semantic complexity_tier CEL routing",
       "properties": {
         "tier_boundaries": {
           "$ref": "#/$defs/complexity_tier_boundaries"
         },
         "keywords": {
           "$ref": "#/$defs/complexity_analyzer_keywords"
+        },
+        "semantic": {
+          "$ref": "#/$defs/complexity_semantic_config"
+        },
+        "llm": {
+          "$ref": "#/$defs/complexity_llm_config"
+        },
+        "session": {
+          "$ref": "#/$defs/complexity_session_config"
         }
       },
-      "required": ["tier_boundaries", "keywords"],
+      "required": ["keywords"],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "session": {
+                "properties": {
+                  "enabled": {
+                    "const": true
+                  }
+                },
+                "required": ["enabled"]
+              }
+            },
+            "required": ["session"]
+          },
+          "then": {
+            "required": ["semantic"]
+          }
+        },
+        {
+          "description": "Selecting the llm fallback without configuring the classifier it names loads a semantic classifier whose non-answers have nothing to fall back to; the loader rejects it for the same reason.",
+          "if": {
+            "required": ["semantic"],
+            "properties": {
+              "semantic": {
+                "required": ["fallback"],
+                "properties": {
+                  "fallback": {
+                    "const": "llm"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "required": ["llm"]
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "complexity_session_config": {
+      "type": "object",
+      "description": "Session-aware complexity routing. When enabled and a request carries a supported session identity, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. Overlapping requests for the same session are best-effort and resolve by last writer wins.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable monotonic session tier retention. Requires semantic complexity classification; default: false."
+        }
+      },
+      "required": ["enabled"],
+      "additionalProperties": false
+    },
+    "complexity_semantic_config": {
+      "type": "object",
+      "description": "Embedding-based (semantic) complexity classification settings. Presence of this block enables the semantic classifier. The classifier embeds the analyzer's shared per-tier keyword lists as its exemplars.",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider used to generate embeddings for complexity classification"
+        },
+        "embedding_model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Model used to generate embeddings for complexity classification"
+        },
+        "timeout": {
+          "description": "Per-request embedding timeout (duration string like '1.5s' or '1500ms', or milliseconds as a number; default: 1500ms). Zero, in either form, means the default. On timeout no complexity tier is published and the request is recorded as 'skipped'.",
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+            },
+            {
+              "type": "number",
+              "minimum": 0
+            }
+          ],
+          "default": "1500ms"
+        },
+        "min_similarity": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMaximum": 1,
+          "description": "Similarity floor a nearest-exemplar match must clear before its tier is used; a match below it publishes no tier and is recorded as 'skipped' (default: 0, meaning the nearest exemplar always wins however unrelated it is). Compared against the backend's own score: chromem, Qdrant, Pinecone, and Redis report raw cosine similarity, Weaviate reports certainty ((cosine+1)/2), so retune when switching backends."
+        },
+        "message_history_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "description": "How many of the most recent user messages are combined (oldest first) into the text that gets embedded (default: 1, the latest message only). Higher values let a short follow-up inherit the intent of earlier turns, at the cost of diluting the latest message and embedding more input tokens per request. Only user turns count; system prompts and assistant replies are never embedded."
+        },
+        "count_toward_budgets": {
+          "type": "boolean",
+          "description": "Record classification embedding cost against governance budgets (record-only, never enforced; default: false)"
+        },
+        "vector_store": {
+          "type": "string",
+          "enum": ["embedded", "vector_store"],
+          "description": "Where exemplar embeddings are stored: 'embedded' uses the built-in chromem store, 'vector_store' uses the store configured in the top-level vector_store section and falls back to embedded when none is configured (default: embedded)"
+        },
+        "fallback": {
+          "type": "string",
+          "enum": ["none", "llm"],
+          "description": "What answers when semantic classification produces no tier (a match below min_similarity, a timeout, an unfinished warmup): 'none' (the default) records the request as 'skipped'; 'llm' asks the chat model configured in the analyzer's llm block, which is required when this is set."
+        }
+      },
+      "required": ["provider", "embedding_model"],
+      "additionalProperties": false
+    },
+    "complexity_llm_config": {
+      "type": "object",
+      "description": "Chat-completion (LLM) fallback classifier settings. The block is inert unless complexity_semantic_config.fallback selects 'llm'; the classifier runs only after semantic classification produces no tier. Tier names (SIMPLE, MEDIUM, COMPLEX) and the response format are fixed: the gateway always appends a non-editable reinforcement stating them.",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider used to run the classification chat completion"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Chat model asked to name the tier. Every fallback classification waits on one completion from this model, so pick a small, fast one."
+        },
+        "timeout": {
+          "description": "Per-request classification timeout (duration string like '2s' or milliseconds as a number; default: 4s). Zero, in either form, means the default. On timeout no complexity tier is published and the request is recorded as 'skipped'.",
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"
+            },
+            {
+              "type": "number",
+              "minimum": 0
+            }
+          ],
+          "default": "4s"
+        },
+        "prompt": {
+          "type": "string",
+          "maxLength": 4000,
+          "description": "Replaces the shipped classification guidance (max 4000 characters); empty means the shipped guidance is used. The tier-name and response-format reinforcement is appended by the gateway either way and cannot be edited."
+        },
+        "message_history_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "description": "How many of the most recent user messages are given to the classifier, oldest first (default: 1, the latest message only). Only user turns count; system prompts and assistant replies are never sent."
+        },
+        "count_toward_budgets": {
+          "type": "boolean",
+          "description": "Record classification completion cost against governance budgets (record-only, never enforced; default: false)"
+        }
+      },
+      "required": ["provider", "model"],
       "additionalProperties": false
     },
     "auth_config": {
@@ -3959,7 +4292,7 @@
         "default_request_timeout_in_seconds": {
           "type": "integer",
           "minimum": 1,
-          "description": "Default request timeout in seconds"
+          "description": "Default request timeout in seconds. For streaming requests this bounds the connection, the request write and the wait for response headers; once headers arrive, stream_idle_timeout_in_seconds governs the body."
         },
         "max_retries": {
           "type": "integer",
@@ -4040,7 +4373,7 @@
         "default_request_timeout_in_seconds": {
           "type": "integer",
           "minimum": 1,
-          "description": "Default request timeout in seconds"
+          "description": "Default request timeout in seconds. For streaming requests this bounds the connection, the request write and the wait for response headers; once headers arrive, stream_idle_timeout_in_seconds governs the body."
         },
         "max_retries": {
           "type": "integer",
@@ -4119,6 +4452,50 @@
       },
       "additionalProperties": false
     },
+    "cache_control_injection_point": {
+      "type": "object",
+      "description": "One place to add a cache breakpoint. Must set role, index, or both; a point with neither matches nothing.",
+      "properties": {
+        "location": {
+          "type": "string",
+          "enum": ["message"],
+          "description": "What to target. Only conversation messages are supported today."
+        },
+        "role": {
+          "type": "string",
+          "enum": ["system", "developer", "user", "assistant"],
+          "description": "Match messages with this role."
+        },
+        "index": {
+          "type": "integer",
+          "description": "Match the message at this position. Negative values count from the end, so -1 is the last message. An index past either end matches nothing."
+        }
+      },
+      "additionalProperties": false
+    },
+    "prompt_cache": {
+      "type": "object",
+      "description": "Synthesize prompt-cache breakpoints for requests that carry none. Off by default. Agentic clients such as Codex send no cache markers, so providers that cache implicitly slide the cached prefix onto the latest message and bill a cache write every turn. Requests that already carry their own cache_control or prompt_cache_breakpoint are never modified.",
+      "properties": {
+        "auto_inject": {
+          "type": "boolean",
+          "description": "Mark the first cacheable content block. That block is the prefix an agent loop replays verbatim each turn, so the cached region stays stable and turn 2 onward is a cache read."
+        },
+        "ttl": {
+          "type": "string",
+          "enum": ["1h"],
+          "description": "Lifetime for injected markers. Omit for the provider default (5 minutes on Anthropic). Providers that cannot carry a TTL ignore it."
+        },
+        "cache_control_injection_points": {
+          "type": "array",
+          "description": "Target specific messages instead of the first cacheable block. When set, this REPLACES auto_inject rather than adding to it. At most four markers are injected, matching the Anthropic ceiling.",
+          "items": {
+            "$ref": "#/$defs/cache_control_injection_point"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "concurrency_and_buffer_size": {
       "type": "object",
       "properties": {
@@ -4153,6 +4530,26 @@
             "type": "string"
           },
           "description": "Models this key can access. Use [\"*\"] to allow all models; empty array denies all (deny-by-default)."
+        },
+        "models_patterns": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "not": { "const": "*" }
+          },
+          "description": "RE2 patterns that allow models by shape, alongside models. Each pattern is matched case-insensitively as a full match against the model name and \"provider/model\". \"*\" is not a valid pattern."
+        },
+        "blacklisted_models_patterns": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "not": { "const": "*" }
+          },
+          "description": "RE2 patterns that block models by shape, alongside blacklisted_models. Each pattern is matched case-insensitively as a full match against the model name and \"provider/model\". \"*\" is not a valid pattern. Block patterns win over models and models_patterns."
         },
         "weight": {
           "type": "number",
@@ -4240,6 +4637,10 @@
                   "use_anthropic_endpoints": {
                     "type": "boolean",
                     "description": "Routes chat completions and responses requests through Anthropic-compatible endpoints."
+                  },
+                  "use_openai_endpoints": {
+                    "type": "boolean",
+                    "description": "Per-alias override of use_openai_endpoints."
                   }
                 },
                 "required": ["model_id"],
@@ -4371,6 +4772,10 @@
               },
               "required": ["region"],
               "additionalProperties": false
+            },
+            "use_openai_endpoints": {
+              "type": "boolean",
+              "description": "Routes chat completions and responses requests through Bedrock's OpenAI-compatible endpoints (/openai/v1) instead of Converse, for models that serve them. Converse is used for everything else. Bedrock Guardrails, performanceConfig and requestMetadata apply only on Converse: the OpenAI-compatible endpoints accept and ignore them."
             }
           }
         }
@@ -4493,6 +4898,60 @@
               "additionalProperties": false
             }
           }
+        }
+      ]
+    },
+    "github_copilot_key": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base_key"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "github_copilot_key_config": {
+              "type": "object",
+              "properties": {
+                "app_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "GitHub App ID or Client ID; the App JWT issuer (can use env. prefix)"
+                },
+                "installation_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Installation to mint tokens for, digits only (can use env. prefix)"
+                },
+                "repository_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Repository the installation token is scoped to, digits only (can use env. prefix)"
+                },
+                "private_key": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "GitHub App private key in PKCS#1 or PKCS#8 PEM form (can use env. prefix)"
+                },
+                "github_domain": {
+                  "type": "string",
+                  "description": "GitHub Enterprise domain, e.g. acme.ghe.com. Leave unset for github.com."
+                }
+              },
+              "required": ["app_id", "installation_id", "repository_id", "private_key"],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "anyOf": [
+            {
+              "properties": { "value": { "minLength": 1 } },
+              "required": ["value"]
+            },
+            {
+              "required": ["github_copilot_key_config"]
+            }
+          ]
         }
       ]
     },
@@ -4734,6 +5193,9 @@
         },
         "openai_config": {
           "$ref": "#/$defs/openai_config"
+        },
+        "prompt_cache": {
+          "$ref": "#/$defs/prompt_cache"
         },
         "network_config": {
           "$ref": "#/$defs/network_config"
@@ -4997,6 +5459,45 @@
       "required": ["keys"],
       "additionalProperties": false
     },
+    "provider_with_github_copilot_config": {
+      "type": "object",
+      "properties": {
+        "keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/github_copilot_key"
+          },
+          "minItems": 1,
+          "description": "API keys for this provider"
+        },
+        "network_config": {
+          "$ref": "#/$defs/network_config"
+        },
+        "concurrency_and_buffer_size": {
+          "$ref": "#/$defs/concurrency_and_buffer_size"
+        },
+        "proxy_config": {
+          "$ref": "#/$defs/proxy_config"
+        },
+        "send_back_raw_request": {
+          "type": "boolean",
+          "description": "Include raw request in BifrostResponse (default: false)"
+        },
+        "send_back_raw_response": {
+          "type": "boolean",
+          "description": "Include raw response in BifrostResponse (default: false)"
+        },
+        "store_raw_request_response": {
+          "type": "boolean",
+          "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "custom_provider_config": {
+          "$ref": "#/$defs/custom_provider_config"
+        }
+      },
+      "required": ["keys"],
+      "additionalProperties": false
+    },
     "provider_with_vertex_config": {
       "type": "object",
       "properties": {
@@ -5200,6 +5701,11 @@
         "name": {
           "type": "string",
           "description": "Name of the MCP client"
+        },
+        "endpoint_slug": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "description": "URL-safe, immutable slug that serves this client at /mcp/<slug>. Derived from the name when omitted; must be unique across MCP clients and Virtual MCPs."
         },
         "is_code_mode_client": {
           "type": "boolean",
@@ -5600,8 +6106,82 @@
         }
       }
     },
+    "virtual_mcp_config": {
+      "type": "object",
+      "description": "A Virtual MCP: a named bundle of tools from one or more MCP clients, served at /mcp/<endpoint_slug> and attachable to virtual keys.",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "DB ID of this Virtual MCP. When set, the reconciler updates the existing Virtual MCP with this ID rather than matching by name."
+        },
+        "name": {
+          "type": "string",
+          "description": "Virtual MCP display name (unique)"
+        },
+        "endpoint_slug": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "description": "URL-safe path the Virtual MCP is served at (/mcp/<endpoint_slug>). Honored on create only (immutable after); derived from the name when omitted. Unique across Virtual MCPs and MCP clients."
+        },
+        "description": {
+          "type": "string",
+          "description": "Virtual MCP description"
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether the Virtual MCP is enabled. A disabled Virtual MCP is not served.",
+          "default": true
+        },
+        "tools": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Per-client tool specs the Virtual MCP exposes",
+          "items": {
+            "type": "object",
+            "properties": {
+              "mcp_client_id": {
+                "type": "string",
+                "description": "MCP client ID"
+              },
+              "mcp_client_name": {
+                "type": "string",
+                "description": "MCP client name (resolved to client_id at startup)"
+              },
+              "tool_names": {
+                "type": "array",
+                "description": "Tool names to expose. [\"*\"] means all tools (including future ones); [] means none; a named list means only those tools.",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "oneOf": [
+              {
+                "required": ["mcp_client_id"]
+              },
+              {
+                "required": ["mcp_client_name"]
+              }
+            ],
+            "additionalProperties": false
+          }
+        },
+        "virtual_key_ids": {
+          "type": "array",
+          "description": "Virtual keys this Virtual MCP is attached to.",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["name", "tools"],
+      "additionalProperties": false
+    },
     "mcp_tool_group_config": {
       "type": "object",
+      "description": "DEPRECATED: use virtual_mcp_config (mcp.virtual_mcps) instead.",
+      "deprecated": true,
       "properties": {
         "id": {
           "type": "integer",
@@ -5638,7 +6218,7 @@
               },
               "tool_names": {
                 "type": "array",
-                "description": "Tool names to allow. Empty means all tools from this MCP client.",
+                "description": "Tool names to expose. [\"*\"] means all tools (including future ones); [] means none; a named list means only those tools.",
                 "items": {
                   "type": "string"
                 }
@@ -5663,30 +6243,40 @@
         },
         "team_ids": {
           "type": "array",
+          "description": "DEPRECATED: attach Virtual MCPs to virtual keys via virtual_key_ids instead.",
+          "deprecated": true,
           "items": {
             "type": "string"
           }
         },
         "customer_ids": {
           "type": "array",
+          "description": "DEPRECATED: attach Virtual MCPs to virtual keys via virtual_key_ids instead.",
+          "deprecated": true,
           "items": {
             "type": "string"
           }
         },
         "user_ids": {
           "type": "array",
+          "description": "DEPRECATED: attach Virtual MCPs to virtual keys via virtual_key_ids instead.",
+          "deprecated": true,
           "items": {
             "type": "string"
           }
         },
         "provider_names": {
           "type": "array",
+          "description": "DEPRECATED: attach Virtual MCPs to virtual keys via virtual_key_ids instead.",
+          "deprecated": true,
           "items": {
             "type": "string"
           }
         },
         "api_key_ids": {
           "type": "array",
+          "description": "DEPRECATED: attach Virtual MCPs to virtual keys via virtual_key_ids instead.",
+          "deprecated": true,
           "items": {
             "type": "integer"
           }
@@ -5885,6 +6475,30 @@
       },
       "required": ["api_key", "index_host"],
       "additionalProperties": false
+    },
+    "chromem_config": {
+      "type": "object",
+      "description": "Embedded chromem configuration for vector store. Chromem runs in-process (pure Go, no external service), so its data lives on one node and is never shared between replicas, and every filtered read is a full scan of the namespace. Suited to small, node-local vector sets rather than a shared cache.",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Directory for on-disk persistence, reloaded on startup. Must hold a non-whitespace value - omit the field entirely for a memory-only store that starts empty after every restart.",
+          "pattern": "\\S"
+        },
+        "compress": {
+          "type": "boolean",
+          "description": "Compress persisted documents on disk. Requires path - a memory-only store has nothing to compress.",
+          "default": false
+        }
+      },
+      "additionalProperties": false,
+      "if": {
+        "properties": { "compress": { "const": true } },
+        "required": ["compress"]
+      },
+      "then": {
+        "required": ["path"]
+      }
     },
     "proxy_config": {
       "type": "object",
@@ -6131,6 +6745,25 @@
         "config": {
           "type": "object",
           "description": "Provider-specific configuration"
+        },
+        "trusted_networks": {
+          "type": "array",
+          "description": "Private IP/CIDR allowlist the SSRF guard consults before outbound discovery calls (the generic provider's discover-endpoints and discover-claims flows), so a self-hosted IdP on an internal network can be reached. Declaring this key makes config.json own the whole list: it replaces whatever is stored, and an explicit empty array clears dashboard-added entries. Omit the key to leave the stored allowlist untouched.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "cidr": {
+                "type": "string",
+                "description": "IP or CIDR range to trust, e.g. 10.20.0.0/16. A bare IP is treated as a single host (/32, or /128 for IPv6). Hostnames are not accepted, since DNS would then decide which requests bypass SSRF protection."
+              },
+              "description": {
+                "type": "string",
+                "description": "Optional admin-facing label for this range, e.g. On-prem Keycloak"
+              }
+            },
+            "required": ["cidr"],
+            "additionalProperties": false
+          }
         }
       },
       "required": ["enabled"],
@@ -6335,6 +6968,9 @@
         "attributeBusinessUnitMappings": {
           "$ref": "#/$defs/scim_attribute_business_unit_mappings"
         },
+        "attributeAccessProfileMappings": {
+          "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+        },
         "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
         "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" },
         "provisioningToken": { "$ref": "#/$defs/scim_provisioning_token" }
@@ -6388,12 +7024,20 @@
           "description": "JWT claim field for roles (default: 'roles')",
           "default": "roles"
         },
+        "enableBulkSync": {
+          "type": "boolean",
+          "description": "Whether Bifrost may bulk-sync users and groups from Microsoft Graph. Set automatically by the SCIM verify step (disabled when the app registration is missing the required Graph permissions); set it explicitly to opt out of bulk sync while keeping login-time claim sync.",
+          "default": true
+        },
         "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
         "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
         "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
         "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
         "attributeBusinessUnitMappings": {
           "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+        },
+        "attributeAccessProfileMappings": {
+          "$ref": "#/$defs/scim_attribute_access_profile_mappings"
         },
         "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
         "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" },
@@ -6448,6 +7092,9 @@
         "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
         "attributeBusinessUnitMappings": {
           "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+        },
+        "attributeAccessProfileMappings": {
+          "$ref": "#/$defs/scim_attribute_access_profile_mappings"
         },
         "authProxy": { "$ref": "#/$defs/scim_auth_proxy" }
       },
@@ -6511,6 +7158,9 @@
         "attributeBusinessUnitMappings": {
           "$ref": "#/$defs/scim_attribute_business_unit_mappings"
         },
+        "attributeAccessProfileMappings": {
+          "$ref": "#/$defs/scim_attribute_access_profile_mappings"
+        },
         "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
         "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" },
         "provisioningToken": { "$ref": "#/$defs/scim_provisioning_token" }
@@ -6563,6 +7213,9 @@
         "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
         "attributeBusinessUnitMappings": {
           "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+        },
+        "attributeAccessProfileMappings": {
+          "$ref": "#/$defs/scim_attribute_access_profile_mappings"
         },
         "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
         "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" }
@@ -6619,12 +7272,20 @@
           "description": "Claim field for team/group IDs (default: 'groups')",
           "default": "groups"
         },
+        "enableBulkSync": {
+          "type": "boolean",
+          "description": "Whether Bifrost may bulk-sync users and groups from the Google Workspace Directory API. Set automatically by the SCIM verify step (disabled when the service account is missing the required Directory API scopes); set it explicitly to opt out of bulk sync while keeping login-time claim sync.",
+          "default": true
+        },
         "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
         "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
         "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
         "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
         "attributeBusinessUnitMappings": {
           "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+        },
+        "attributeAccessProfileMappings": {
+          "$ref": "#/$defs/scim_attribute_access_profile_mappings"
         },
         "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
         "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" }
@@ -6713,6 +7374,9 @@
         "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
         "attributeBusinessUnitMappings": {
           "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+        },
+        "attributeAccessProfileMappings": {
+          "$ref": "#/$defs/scim_attribute_access_profile_mappings"
         },
         "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
         "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" },
@@ -7180,6 +7844,11 @@
           "description": "Snap budget and rate-limit reset windows to clean calendar boundaries (day, week, month, year) for this profile",
           "default": false
         },
+        "allow_all_providers": {
+          "type": "boolean",
+          "description": "Grant access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs.",
+          "default": false
+        },
         "provider_configs": {
           "type": "array",
           "description": "Per-provider restrictions and limits for this profile",
@@ -7229,7 +7898,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Allowed model names (ignored when all_models_allowed is true)"
+          "description": "Allowed model names. Use [\"*\"] to allow all models; empty array or omitted denies all unless an allowed_models_patterns entry matches (ignored when all_models_allowed is true)."
         },
         "budgets": {
           "type": "array",
@@ -7245,6 +7914,26 @@
           "description": "Models blocked for this provider even if matched by allowed_models (denylist wins). Use [\"*\"] to block all; empty array or omitted blocks none.",
           "items": {
             "type": "string"
+          }
+        },
+        "allowed_models_patterns": {
+          "type": "array",
+          "uniqueItems": true,
+          "description": "RE2 patterns that allow models by shape, alongside allowed_models. Each pattern is matched case-insensitively as a full match against the model name and \"provider/model\". \"*\" is not a valid pattern. Ignored when all_models_allowed is true.",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "not": { "const": "*" }
+          }
+        },
+        "blacklisted_models_patterns": {
+          "type": "array",
+          "uniqueItems": true,
+          "description": "RE2 patterns that block models by shape, alongside blacklisted_models. Each pattern is matched case-insensitively as a full match against the model name and \"provider/model\". \"*\" is not a valid pattern. Block patterns win over allowed_models and allowed_models_patterns.",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "not": { "const": "*" }
           }
         },
         "weight": {
@@ -7294,7 +7983,7 @@
     },
     "project": {
       "type": "object",
-      "description": "A project declared under governance.projects: what it grants, what it may spend, and how that is divided between its members. Members themselves are added from the dashboard.",
+      "description": "A project declared under governance.projects: what it allows, what it may spend, and how that is divided between its members. Members themselves are added from the dashboard or the API.",
       "allOf": [
         {
           "if": {
@@ -7325,17 +8014,17 @@
         },
         "is_active": {
           "type": "boolean",
-          "description": "Whether the project grants and accounts for anything",
+          "description": "Whether the project allows and accounts for anything",
           "default": true
         },
         "expires_at": {
           "type": "string",
           "format": "date-time",
-          "description": "When the project stops granting anything; omit to never expire"
+          "description": "When the project stops allowing anything; omit to never expire"
         },
         "access_rule": {
           "type": "string",
-          "description": "How the project's grants compose with the grants a caller already holds: union leaves the caller's own access untouched (a project with no provider or MCP config then only accounts for spend), intersect permits only what both allow.",
+          "description": "How the project's own access composes with the access a caller already holds: union leaves the caller's own access untouched (a project with no provider or MCP config then only accounts for spend), intersect permits only what both allow.",
           "enum": ["union", "intersect"]
         },
         "membership_mode": {
@@ -7358,7 +8047,12 @@
         },
         "calendar_aligned": {
           "type": "boolean",
-          "description": "Snap the project's budget and rate-limit reset windows to calendar boundaries (day, week, month, year) instead of rolling from first use",
+          "description": "Snap the project's budget and rate-limit reset windows to calendar boundaries (day, week, month, quarter, year) instead of rolling from first use. Windows shorter than a day cannot be aligned and stay rolling.",
+          "default": false
+        },
+        "allow_all_providers": {
+          "type": "boolean",
+          "description": "Grant access to every provider, including ones without a provider_configs entry and providers added later. Listed providers keep their own model, key, budget, and rate-limit rules.",
           "default": false
         },
         "budgets": {
@@ -7373,20 +8067,40 @@
         },
         "provider_configs": {
           "type": "array",
-          "description": "Per-provider grants and accounting, one entry per provider",
+          "description": "Per-provider access and accounting, one entry per provider",
           "items": {
             "$ref": "#/$defs/project_provider_config"
           }
         },
         "mcp_configs": {
           "type": "array",
-          "description": "MCP clients the project grants, one entry per client",
+          "description": "MCP clients the project allows, one entry per client",
           "items": {
             "$ref": "#/$defs/project_mcp_config"
+          }
+        },
+        "virtual_mcps": {
+          "type": "array",
+          "description": "Virtual MCPs assigned to the project, one entry per assignment. A request scoped to the project can reach each one at its /mcp/<slug> endpoint.",
+          "items": {
+            "$ref": "#/$defs/project_virtual_mcp"
           }
         }
       },
       "required": ["name", "access_rule"],
+      "additionalProperties": false
+    },
+    "project_virtual_mcp": {
+      "type": "object",
+      "description": "A virtual MCP assigned to a project. Assignments are a set, so a repeated id is ignored rather than doubled.",
+      "properties": {
+        "virtual_mcp_id": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Virtual MCP ID. Ids are assigned by the database, so a file that has to be portable across environments should assign virtual MCPs from the dashboard or the API instead."
+        }
+      },
+      "required": ["virtual_mcp_id"],
       "additionalProperties": false
     },
     "project_budget": {
@@ -7490,13 +8204,33 @@
           "items": {
             "type": "string"
           },
-          "description": "Allowed model names (ignored when all_models_allowed is true)"
+          "description": "Allowed model names. Use [\"*\"] to allow all models; empty array or omitted denies all unless an allowed_models_patterns entry matches (ignored when all_models_allowed is true)."
         },
         "blacklisted_models": {
           "type": "array",
           "description": "Models blocked for this provider even if matched by allowed_models (denylist wins). Use [\"*\"] to block all; empty array or omitted blocks none.",
           "items": {
             "type": "string"
+          }
+        },
+        "allowed_models_patterns": {
+          "type": "array",
+          "uniqueItems": true,
+          "description": "RE2 patterns that allow models by shape, alongside allowed_models. Each pattern is matched case-insensitively as a full match against the model name and \"provider/model\". \"*\" is not a valid pattern. Ignored when all_models_allowed is true.",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "not": { "const": "*" }
+          }
+        },
+        "blacklisted_models_patterns": {
+          "type": "array",
+          "uniqueItems": true,
+          "description": "RE2 patterns that block models by shape, alongside blacklisted_models. Each pattern is matched case-insensitively as a full match against the model name and \"provider/model\". \"*\" is not a valid pattern. Block patterns win over allowed_models and allowed_models_patterns.",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "not": { "const": "*" }
           }
         },
         "key_ids": {
@@ -7562,11 +8296,11 @@
       "properties": {
         "mcp_client_name": {
           "type": "string",
-          "description": "Name of the MCP client (as declared under mcp.client_configs) the project grants. Resolved to the stored client on startup; a name that matches no client is refused."
+          "description": "Name of the MCP client (as declared under mcp.client_configs) the project allows. Resolved to the stored client on startup; a name that matches no client is refused."
         },
         "tools_to_execute": {
           "type": "array",
-          "description": "Tools of the client the project grants. Use [\"*\"] to grant every tool; empty array or omitted grants none, regardless of the top-level version.",
+          "description": "Tools of the client the project may execute. Use [\"*\"] to allow every tool; empty array or omitted allows none, regardless of the top-level version.",
           "items": {
             "type": "string"
           }
@@ -7983,6 +8717,10 @@
           "type": "boolean",
           "description": "Whether the custom provider requires a key"
         },
+        "does_not_send_done_marker": {
+          "type": "boolean",
+          "description": "Whether the provider ends streams on finish_reason without sending a data: [DONE] marker"
+        },
         "base_provider_type": {
           "type": "string",
           "enum": [
@@ -8002,8 +8740,10 @@
             "parasail",
             "perplexity",
             "cerebras",
+            "databricks",
             "deepseek",
             "gemini",
+            "github-copilot",
             "openrouter",
             "elevenlabs",
             "huggingface",
@@ -8384,6 +9124,29 @@
           }
         },
         "required": ["attribute", "value"],
+        "additionalProperties": false
+      }
+    },
+    "scim_attribute_access_profile_mappings": {
+      "type": "array",
+      "description": "Attribute -> access-profile mappings. Every matching rule applies: the user is granted the union of the profiles it matches, on top of any profile assigned by role or from the dashboard. Bifrost keeps the tightest limit across the granted profiles.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "attribute": {
+            "type": "string",
+            "description": "JWT claim name (supports dot paths, e.g. 'realm_access.roles')"
+          },
+          "value": {
+            "type": "string",
+            "description": "Claim value to match (case-insensitive). '*' matches whenever the claim carries any non-empty value; glob patterns (e.g. 'bifrost-*') are also supported."
+          },
+          "accessProfile": {
+            "type": "string",
+            "description": "Name of the access profile (defined in access_profiles) to grant on match"
+          }
+        },
+        "required": ["attribute", "value", "accessProfile"],
         "additionalProperties": false
       }
     },

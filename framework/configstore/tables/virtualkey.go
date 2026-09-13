@@ -30,8 +30,12 @@ type TableVirtualKeyProviderConfig struct {
 	Weight            *float64          `json:"weight"`
 	AllowedModels     schemas.WhiteList `gorm:"type:text;serializer:json" json:"allowed_models"`     // ["*"] allows all models; empty denies all (deny-by-default)
 	BlacklistedModels schemas.BlackList `gorm:"type:text;serializer:json" json:"blacklisted_models"` // ["*"] blocks all models; empty blocks none
-	AllowAllKeys      bool              `gorm:"default:false" json:"allow_all_keys"`                 // True means all keys allowed; false with empty Keys means no keys allowed (deny-by-default)
-	RateLimitID       *string           `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
+	// Pattern twins of the two lists above: RE2 patterns matched case-insensitively as a full
+	// match against the model name and "<provider>/<model>". Block patterns win over allow.
+	AllowedModelsPatterns     schemas.ModelPatternList `gorm:"column:allowed_models_patterns;type:text;serializer:json" json:"allowed_models_patterns"`
+	BlacklistedModelsPatterns schemas.ModelPatternList `gorm:"column:blacklisted_models_patterns;type:text;serializer:json" json:"blacklisted_models_patterns"`
+	AllowAllKeys              bool                     `gorm:"default:false" json:"allow_all_keys"` // True means all keys allowed; false with empty Keys means no keys allowed (deny-by-default)
+	RateLimitID               *string                  `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
 
 	// Relationships
 	RateLimit *TableRateLimit `gorm:"foreignKey:RateLimitID;onDelete:CASCADE" json:"rate_limit,omitempty"`
@@ -103,7 +107,7 @@ func (pc *TableVirtualKeyProviderConfig) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// BeforeSave validates WhiteList and BlackList fields before GORM persists the record.
+// BeforeSave validates the model lists and their pattern twins before GORM persists the record.
 func (pc *TableVirtualKeyProviderConfig) BeforeSave(tx *gorm.DB) error {
 	if err := pc.AllowedModels.Validate(); err != nil {
 		return fmt.Errorf("invalid allowed_models: %w", err)
@@ -111,7 +115,23 @@ func (pc *TableVirtualKeyProviderConfig) BeforeSave(tx *gorm.DB) error {
 	if err := pc.BlacklistedModels.Validate(); err != nil {
 		return fmt.Errorf("invalid blacklisted_models: %w", err)
 	}
+	if err := pc.AllowedModelsPatterns.Validate(); err != nil {
+		return fmt.Errorf("invalid allowed_models_patterns: %w", err)
+	}
+	if err := pc.BlacklistedModelsPatterns.Validate(); err != nil {
+		return fmt.Errorf("invalid blacklisted_models_patterns: %w", err)
+	}
 	return nil
+}
+
+// ModelAccess returns the provider config's model rule: exact lists plus their pattern twins.
+func (pc *TableVirtualKeyProviderConfig) ModelAccess() schemas.ModelAccessRule {
+	return schemas.ModelAccessRule{
+		Allowed:         pc.AllowedModels,
+		Blocked:         pc.BlacklistedModels,
+		AllowedPatterns: pc.AllowedModelsPatterns,
+		BlockedPatterns: pc.BlacklistedModelsPatterns,
+	}
 }
 
 // MarshalJSON custom marshaller to ensure AllowedModels and BlacklistedModels are always arrays (never null)
@@ -127,15 +147,27 @@ func (pc TableVirtualKeyProviderConfig) MarshalJSON() ([]byte, error) {
 	if blacklistedModels == nil {
 		blacklistedModels = []string{}
 	}
+	allowedPatterns := pc.AllowedModelsPatterns
+	if allowedPatterns == nil {
+		allowedPatterns = []string{}
+	}
+	blacklistedPatterns := pc.BlacklistedModelsPatterns
+	if blacklistedPatterns == nil {
+		blacklistedPatterns = []string{}
+	}
 
 	return json.Marshal(&struct {
 		Alias
-		AllowedModels     []string `json:"allowed_models"`
-		BlacklistedModels []string `json:"blacklisted_models"`
+		AllowedModels             []string `json:"allowed_models"`
+		BlacklistedModels         []string `json:"blacklisted_models"`
+		AllowedModelsPatterns     []string `json:"allowed_models_patterns"`
+		BlacklistedModelsPatterns []string `json:"blacklisted_models_patterns"`
 	}{
-		Alias:             Alias(pc),
-		AllowedModels:     allowedModels,
-		BlacklistedModels: blacklistedModels,
+		Alias:                     Alias(pc),
+		AllowedModels:             allowedModels,
+		BlacklistedModels:         blacklistedModels,
+		AllowedModelsPatterns:     allowedPatterns,
+		BlacklistedModelsPatterns: blacklistedPatterns,
 	})
 }
 
@@ -256,6 +288,8 @@ type TableVirtualKey struct {
 	RateLimitID *string `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
 
 	CalendarAligned bool `gorm:"default:false" json:"calendar_aligned"`
+
+	AllowAllProviders bool `gorm:"default:false" json:"allow_all_providers"`
 
 	// Relationships
 	Team      *TableTeam      `gorm:"foreignKey:TeamID" json:"team,omitempty"`

@@ -141,8 +141,12 @@ func (c *LogsCleaner) cleanupOldLogs(ctx context.Context) {
 		batchCount++
 		c.logger.Debug("deleted batch %d: %d logs", batchCount, deleted)
 
-		// If we deleted fewer than the batch size, we're done
-		if deleted < int64(batchSize) {
+		// A full batch means more rows may remain; anything else means the
+		// store is done. The SQL stores return at most batchSize. ClickHouse
+		// deletes the whole expired range in one lightweight statement and
+		// returns that count, so a count above batchSize must end the loop
+		// too instead of re-issuing the delete (#7098).
+		if deleted != int64(batchSize) {
 			break
 		}
 	}

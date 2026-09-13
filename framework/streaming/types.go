@@ -22,22 +22,23 @@ const (
 
 // AccumulatedData contains the accumulated data for a stream
 type AccumulatedData struct {
-	RequestID             string
-	Model                 string
-	Status                string
-	Stream                bool
-	Latency               int64 // in milliseconds
-	TimeToFirstToken      int64 // Time to first token in milliseconds (streaming only)
-	StartTimestamp        time.Time
-	EndTimestamp          time.Time
-	OutputMessage         *schemas.ChatMessage
-	OutputMessages        []schemas.ResponsesMessage // For responses API
-	ToolCalls             []schemas.ChatAssistantMessageToolCall
-	ErrorDetails          *schemas.BifrostError
-	TokenUsage            *schemas.BifrostLLMUsage
-	ServiceTier           *schemas.BifrostServiceTier
-	CacheDebug            *schemas.BifrostCacheDebug
-	GuardrailDebug        *schemas.BifrostGuardrailDebug
+	RequestID        string
+	Model            string
+	Status           string
+	Stream           bool
+	Latency          int64 // in milliseconds
+	TimeToFirstToken int64 // Time to first token in milliseconds (streaming only)
+	StartTimestamp   time.Time
+	EndTimestamp     time.Time
+	OutputMessage    *schemas.ChatMessage
+	OutputMessages   []schemas.ResponsesMessage // For responses API
+	ToolCalls        []schemas.ChatAssistantMessageToolCall
+	ErrorDetails     *schemas.BifrostError
+	TokenUsage       *schemas.BifrostLLMUsage
+	ServiceTier      *schemas.BifrostServiceTier
+	// Debug spelling is retained for the established Go contract.
+	CacheDebug            *schemas.BifrostCacheMetadata
+	GuardrailDebug        *schemas.BifrostGuardrailMetadata
 	Cost                  *float64
 	AudioOutput           *schemas.BifrostSpeechResponse
 	TranscriptionOutput   *schemas.BifrostTranscriptionResponse
@@ -54,7 +55,7 @@ type AudioStreamChunk struct {
 	Delta              *schemas.BifrostSpeechStreamResponse // The actual delta content
 	FinishReason       *string                              // If this is the final chunk
 	TokenUsage         *schemas.SpeechUsage                 // Token usage if available
-	SemanticCacheDebug *schemas.BifrostCacheDebug           // Semantic cache debug if available
+	SemanticCacheDebug *schemas.BifrostCacheMetadata        // Semantic cache metadata if available
 	Cost               *float64                             // Cost in dollars from pricing plugin
 	ErrorDetails       *schemas.BifrostError                // Error if any
 	ChunkIndex         int                                  // Index of the chunk in the stream
@@ -67,7 +68,7 @@ type TranscriptionStreamChunk struct {
 	Delta              *schemas.BifrostTranscriptionStreamResponse // The actual delta content
 	FinishReason       *string                                     // If this is the final chunk
 	TokenUsage         *schemas.TranscriptionUsage                 // Token usage if available
-	SemanticCacheDebug *schemas.BifrostCacheDebug                  // Semantic cache debug if available
+	SemanticCacheDebug *schemas.BifrostCacheMetadata               // Semantic cache metadata if available
 	Cost               *float64                                    // Cost in dollars from pricing plugin
 	ErrorDetails       *schemas.BifrostError                       // Error if any
 	ChunkIndex         int                                         // Index of the chunk in the stream
@@ -82,8 +83,8 @@ type ChatStreamChunk struct {
 	LogProbs           *schemas.BifrostLogProbs               // LogProbs if available
 	TokenUsage         *schemas.BifrostLLMUsage               // Token usage if available
 	ServiceTier        *schemas.BifrostServiceTier            // Served OpenAI tier if available
-	SemanticCacheDebug *schemas.BifrostCacheDebug             // Semantic cache debug if available
-	GuardrailDebug     *schemas.BifrostGuardrailDebug         // Guardrail debug if available
+	SemanticCacheDebug *schemas.BifrostCacheMetadata          // Semantic cache metadata if available
+	GuardrailDebug     *schemas.BifrostGuardrailMetadata      // Guardrail metadata if available
 	Cost               *float64                               // Cost in dollars from pricing plugin
 	ErrorDetails       *schemas.BifrostError                  // Error if any
 	ChunkIndex         int                                    // Index of the chunk in the stream
@@ -97,8 +98,8 @@ type ResponsesStreamChunk struct {
 	FinishReason       *string                                 // If this is the final chunk
 	TokenUsage         *schemas.BifrostLLMUsage                // Token usage if available
 	ServiceTier        *schemas.BifrostServiceTier             // Served OpenAI tier if available
-	SemanticCacheDebug *schemas.BifrostCacheDebug              // Semantic cache debug if available
-	GuardrailDebug     *schemas.BifrostGuardrailDebug          // Guardrail debug if available
+	SemanticCacheDebug *schemas.BifrostCacheMetadata           // Semantic cache metadata if available
+	GuardrailDebug     *schemas.BifrostGuardrailMetadata       // Guardrail metadata if available
 	Cost               *float64                                // Cost in dollars from pricing plugin
 	ErrorDetails       *schemas.BifrostError                   // Error if any
 	ChunkIndex         int                                     // Index of the chunk in the stream
@@ -114,7 +115,7 @@ type ImageStreamChunk struct {
 	ImageIndex         int                                           // Index of the image in the stream
 	ErrorDetails       *schemas.BifrostError                         // Error if any
 	Cost               *float64                                      // Cost in dollars from pricing plugin
-	SemanticCacheDebug *schemas.BifrostCacheDebug                    // Semantic cache debug if available
+	SemanticCacheDebug *schemas.BifrostCacheMetadata                 // Semantic cache metadata if available
 	TokenUsage         *schemas.ImageUsage                           // Token usage if available
 	RawResponse        *string                                       // Raw response if available
 }

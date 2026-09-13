@@ -11,7 +11,7 @@ interface ExternalCacheTokenMeterChartProps {
 	data: TokenHistogramResponse | null;
 }
 
-const METER_COLORS = { cached: "#06b6d4", input: "#3b82f6" };
+const METER_COLORS = { cached: "var(--chart-seq-2)", input: "var(--chart-seq-5)" };
 
 function ExternalCacheTokenMeterChartImpl({ data }: ExternalCacheTokenMeterChartProps) {
 	const { ref, width, height } = useGaugeSize();

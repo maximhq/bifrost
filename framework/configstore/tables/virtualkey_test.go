@@ -34,3 +34,33 @@ func TestVirtualKeyProviderConfigKeyIDs(t *testing.T) {
 		}
 	})
 }
+
+// TestVirtualKeyProviderConfigBeforeSaveValidatesModelLists pins that the save hook applies the
+// shared list rules to the exact lists and their pattern twins.
+func TestVirtualKeyProviderConfigBeforeSaveValidatesModelLists(t *testing.T) {
+	ok := &TableVirtualKeyProviderConfig{Provider: "openai", AllowedModels: []string{"gpt-4o"}, AllowedModelsPatterns: []string{"^claude-3-.*"}, BlacklistedModelsPatterns: []string{".*-preview$"}}
+	if err := ok.BeforeSave(nil); err != nil {
+		t.Fatalf("valid patterns should save: %v", err)
+	}
+
+	badAllowed := &TableVirtualKeyProviderConfig{Provider: "openai", AllowedModelsPatterns: []string{"("}}
+	if err := badAllowed.BeforeSave(nil); err == nil {
+		t.Fatalf("an invalid allowed_models_patterns entry should be rejected")
+	}
+
+	badBlocked := &TableVirtualKeyProviderConfig{Provider: "openai", AllowedModels: []string{"*"}, BlacklistedModelsPatterns: []string{""}}
+	if err := badBlocked.BeforeSave(nil); err == nil {
+		t.Fatalf("an empty blacklisted_models_patterns entry should be rejected")
+	}
+
+	wildcard := &TableVirtualKeyProviderConfig{Provider: "openai", AllowedModelsPatterns: []string{"*"}}
+	if err := wildcard.BeforeSave(nil); err == nil {
+		t.Fatalf("the wildcard is not a pattern")
+	}
+
+	// A regex-looking string in the exact list is an ordinary literal and saves fine.
+	literal := &TableVirtualKeyProviderConfig{Provider: "openai", AllowedModels: []string{"regex:("}}
+	if err := literal.BeforeSave(nil); err != nil {
+		t.Fatalf("a regex-looking literal in allowed_models is just a name: %v", err)
+	}
+}

@@ -109,6 +109,24 @@ func (mc *ModelCatalog) BlacklistedModelsForProvider(provider schemas.ModelProvi
 	return mc.keyconf.BlacklistedFor(provider)
 }
 
+// AllowedModelsPatternsForProvider returns the union of enabled keys' allow
+// patterns for the provider.
+func (mc *ModelCatalog) AllowedModelsPatternsForProvider(provider schemas.ModelProvider) schemas.ModelPatternList {
+	return mc.keyconf.AllowedPatternsFor(provider)
+}
+
+// BlacklistedModelsPatternsForProvider returns the block patterns every enabled
+// key of the provider shares.
+func (mc *ModelCatalog) BlacklistedModelsPatternsForProvider(provider schemas.ModelProvider) schemas.ModelPatternList {
+	return mc.keyconf.BlacklistedPatternsFor(provider)
+}
+
+// ModelAccessForProvider returns the provider-wide model rule aggregated
+// across enabled keys: exact lists plus their pattern twins.
+func (mc *ModelCatalog) ModelAccessForProvider(provider schemas.ModelProvider) schemas.ModelAccessRule {
+	return mc.keyconf.AccessFor(provider)
+}
+
 // ConfiguredProviders returns every provider with at least one entry in
 // keyconfig. Used by the load balancer's provider selection where the
 // configured-provider set is the routing-eligible universe.

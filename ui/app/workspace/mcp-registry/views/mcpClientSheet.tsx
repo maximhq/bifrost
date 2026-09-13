@@ -30,8 +30,15 @@ import { useToast } from "@/hooks/use-toast";
 import { useSheetNavigation } from "@/hooks/useSheetNavigation";
 import { IS_ENTERPRISE, MCP_STATUS_COLORS } from "@/lib/constants/config";
 import { VirtualKeySelector } from "@/components/entitySelectors/virtualKeySelector";
-import { getErrorMessage, useGetCoreConfigQuery, useGetVirtualKeysQuery, useUpdateMCPClientMutation } from "@/lib/store";
+import {
+	getErrorMessage,
+	useGetCoreConfigQuery,
+	useGetVirtualKeysQuery,
+	useGetVirtualMCPsQuery,
+	useUpdateMCPClientMutation,
+} from "@/lib/store";
 import { MCPClient, MCPVKConfig } from "@/lib/types/mcp";
+import { VirtualMCP } from "@/lib/types/virtualMcps";
 import { mcpClientUpdateSchema, type MCPClientUpdateSchema } from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
 import { failureStageLabel, formatDurationSince, hasStateReason, stateReasonTitle } from "@/lib/utils/mcpConnectionFailure";
@@ -39,7 +46,9 @@ import { titleCaseFromSnakeCase } from "@/lib/utils/strings";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetSCIMProvidersQuery } from "@enterprise/lib/store/apis/scimApi";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { ChevronDown, ChevronRight, Info, Plus, Trash2 } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Copy, Info, Plus, Trash2 } from "lucide-react";
+import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
+import { getExternalBaseUrl } from "@/app/workspace/mcp-registry/views/mcpUsageGuide/utils";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { OAuthAdvancedFields } from "./oauthAdvancedFields";
@@ -172,6 +181,9 @@ export default function MCPClientSheet({
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const globalToolSyncInterval = bifrostConfig?.client_config?.mcp_tool_sync_interval ?? 10;
 	const globalToolExecutionTimeout = bifrostConfig?.client_config?.mcp_tool_execution_timeout ?? 30;
+	// External base URL + copy for the read-only endpoint the client is served at (/mcp/<slug>).
+	const baseUrl = getExternalBaseUrl(bifrostConfig?.client_config);
+	const { copy: copyEndpoint, copied: endpointCopied } = useCopyToClipboard({ successMessage: "Endpoint copied" });
 	const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
 
 	const allToolNames = useMemo(() => mcpClient.tools?.map((t) => t.name) ?? [], [mcpClient.tools]);
@@ -225,6 +237,20 @@ export default function MCPClientSheet({
 	}, [mcpClient.vk_configs, localVKNames]);
 
 	const configuredVKIDs = useMemo(() => vkConfigs.map((vc) => vc.virtual_key_id), [vkConfigs]);
+
+	// Reverse lookup for the Access tab: which Virtual MCPs bundle this server's
+	// tools. There's no dedicated endpoint, but the list response already carries
+	// every vMCP's tools[].mcp_client_id, so membership is derived client-side.
+	const { data: virtualMcpsData, isLoading: virtualMcpsLoading, isError: virtualMcpsError } = useGetVirtualMCPsQuery({ limit: 1000 });
+	const memberVirtualMcps = useMemo(() => {
+		const clientID = mcpClient.config.client_id;
+		const out: { vmcp: VirtualMCP; toolNames: string[] }[] = [];
+		for (const vmcp of virtualMcpsData?.virtual_mcps ?? []) {
+			const spec = vmcp.tools.find((t) => t.mcp_client_id === clientID);
+			if (spec) out.push({ vmcp, toolNames: spec.tool_names });
+		}
+		return out;
+	}, [virtualMcpsData, mcpClient.config.client_id]);
 
 	const toolOptions = useMemo(
 		() => [
@@ -759,6 +785,23 @@ export default function MCPClientSheet({
 													</span>
 												</div>
 											</div>
+											{mcpClient.config.endpoint_slug && (
+												<div className="flex flex-col gap-2">
+													<div className="text-sm font-medium">Endpoint</div>
+													<div className="bg-muted/40 text-muted-foreground flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-sm">
+														<span className="font-mono break-all">/mcp/{mcpClient.config.endpoint_slug}</span>
+														<button
+															type="button"
+															onClick={() => copyEndpoint(`${baseUrl}/mcp/${mcpClient.config.endpoint_slug}`)}
+															className="text-muted-foreground hover:text-foreground shrink-0 cursor-pointer"
+															aria-label="Copy endpoint URL"
+															data-testid={`mcp-client-sheet-endpoint-copy-${mcpClient.config.endpoint_slug}`}
+														>
+															{endpointCopied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+														</button>
+													</div>
+												</div>
+											)}
 											{mcpClient.config.connection_type === "stdio" &&
 												mcpClient.config.stdio_config?.envs &&
 												mcpClient.config.stdio_config.envs.length > 0 && (
@@ -1776,6 +1819,60 @@ export default function MCPClientSheet({
 											) : (
 												<div className="text-muted-foreground rounded-sm border p-6 text-center">
 													<p className="text-sm">No virtual keys have access to this MCP server</p>
+												</div>
+											)}
+										</div>
+
+										<DottedSeparator />
+
+										<div className="space-y-4">
+											<SectionHeader
+												title="Virtual MCPs"
+												description="Virtual MCPs that bundle this server's tools and re-serve them at their own endpoint."
+											/>
+											{virtualMcpsLoading ? (
+												<div className="text-muted-foreground rounded-sm border p-6 text-center">
+													<p className="text-sm">Loading virtual MCPs…</p>
+												</div>
+											) : virtualMcpsError ? (
+												<div className="text-muted-foreground rounded-sm border p-6 text-center">
+													<p className="text-sm">Couldn't load virtual MCPs.</p>
+												</div>
+											) : memberVirtualMcps.length > 0 ? (
+												<div className="rounded-md border">
+													<Table>
+														<TableHeader>
+															<TableRow>
+																<TableHead>Virtual MCP</TableHead>
+																<TableHead>Endpoint</TableHead>
+																<TableHead>Exposed Tools</TableHead>
+															</TableRow>
+														</TableHeader>
+														<TableBody>
+															{memberVirtualMcps.map(({ vmcp, toolNames }) => (
+																<TableRow key={vmcp.id}>
+																	<TableCell className="font-medium">
+																		<div className="flex items-center gap-2">
+																			{vmcp.name}
+																			{!vmcp.enabled && (
+																				<Badge variant="secondary" className="text-xs font-normal">
+																					Disabled
+																				</Badge>
+																			)}
+																		</div>
+																	</TableCell>
+																	<TableCell className="text-muted-foreground font-mono text-xs">/mcp/{vmcp.endpoint_slug}</TableCell>
+																	<TableCell className="text-muted-foreground text-sm">
+																		{toolNames.includes("*") ? "All tools" : toolNames.length === 0 ? "No tools" : toolNames.join(", ")}
+																	</TableCell>
+																</TableRow>
+															))}
+														</TableBody>
+													</Table>
+												</div>
+											) : (
+												<div className="text-muted-foreground rounded-sm border p-6 text-center">
+													<p className="text-sm">This server isn't part of any virtual MCP.</p>
 												</div>
 											)}
 										</div>

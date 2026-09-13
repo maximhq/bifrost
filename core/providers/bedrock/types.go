@@ -283,7 +283,7 @@ type BedrockDocumentSource struct {
 // See: https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_DocumentSource.html
 type BedrockDocumentSourceData struct {
 	Bytes      *string            `json:"bytes,omitempty"`      // Base64-encoded document bytes
-	Text       *string            `json:"text,omitempty"`       // Plain text content
+	Text       *string            `json:"text,omitempty"`       // Plain text content; Converse rejects it unless the block enables citations
 	S3Location *BedrockS3Location `json:"s3Location,omitempty"` // Optional: S3 location (model-dependent support)
 }
 
@@ -353,11 +353,18 @@ type BedrockGuardContent struct {
 
 type BedrockReasoningContent struct {
 	ReasoningText *BedrockReasoningContentText `json:"reasoningText,omitempty"`
+
+	// Opaque reasoning blob used by OpenAI and xAI instead of ReasoningText.
+	// The two are mutually exclusive; see schemas.BedrockReasoningShape.
+	RedactedContent *string `json:"redactedContent,omitempty"`
 }
 
+// BedrockReasoningContentText is both the reasoningText block and the streaming
+// reasoning delta, which is why RedactedContent appears here too.
 type BedrockReasoningContentText struct {
-	Text      *string `json:"text,omitempty"`
-	Signature *string `json:"signature,omitempty"`
+	Text            *string `json:"text,omitempty"`
+	Signature       *string `json:"signature,omitempty"`
+	RedactedContent *string `json:"redactedContent,omitempty"`
 }
 
 // BedrockGuardContentText represents text content for guardrails

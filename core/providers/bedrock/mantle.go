@@ -55,13 +55,10 @@ func isMantleModel(ctx *schemas.BifrostContext, model string) bool {
 // mantleOpenAIURL builds the Bedrock Mantle OpenAI-compatible endpoint URL for the given
 // region, model, and API path (e.g. "chat/completions", "responses"). Pass the canonical
 // (capability-resolved) model for correct path gating; the request body still carries the
-// wire request.Model. Frontier families (closed gpt-5.x, Gemma 4, Grok) live under the "openai/v1"
-// base path; gpt-oss uses the bare "v1" path.
+// wire request.Model. The base path comes from the datasheet, falling back to family
+// detection — see schemas.ResolveBedrockMantleBasePath.
 func mantleOpenAIURL(endpoints *schemas.BedrockEndpoints, region, model, path string) string {
-	base := "v1"
-	if strings.Contains(model, "gpt-5") || strings.Contains(model, "gemma-4") || schemas.IsGrokModel(model) {
-		base = "openai/v1"
-	}
+	base := schemas.ResolveBedrockMantleBasePath(model)
 	return fmt.Sprintf("https://%s/%s/%s", resolveBedrockHost(endpoints, bedrockServiceMantle, region), base, path)
 }
 
@@ -78,6 +75,21 @@ func SignMantleV4Headers(
 	key schemas.Key,
 	region string,
 	extraHeaders map[string]string,
+) (map[string]string, *schemas.BifrostError) {
+	return signOpenAIV4Headers(ctx, jsonData, requestURL, accept, key, region, extraHeaders, bedrockMantleSigningService)
+}
+
+// signOpenAIV4Headers is SignMantleV4Headers parameterised by signing service, so the
+// same OpenAI-compatible surface can be signed on bedrock-runtime ("bedrock") as on
+// mantle ("bedrock-mantle"). The two endpoints require different credential scopes.
+func signOpenAIV4Headers(
+	ctx *schemas.BifrostContext,
+	jsonData []byte,
+	requestURL, accept string,
+	key schemas.Key,
+	region string,
+	extraHeaders map[string]string,
+	signingService string,
 ) (map[string]string, *schemas.BifrostError) {
 	method := http.MethodPost
 	if jsonData == nil {
@@ -113,7 +125,7 @@ func SignMantleV4Headers(
 			RoleSessionName: key.BedrockMantleKeyConfig.RoleSessionName,
 		}
 	}
-	if bifrostErr := signAWSRequest(ctx, req, keyCfg, region, bedrockMantleSigningService); bifrostErr != nil {
+	if bifrostErr := signAWSRequest(ctx, req, keyCfg, region, signingService); bifrostErr != nil {
 		return nil, bifrostErr
 	}
 	// Return the headers exactly as signed: signAWSRequest defaults an empty Accept/Content-Type
@@ -141,6 +153,7 @@ func (provider *BedrockProvider) mantleChatCompletions(
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	region := resolveBedrockRegion(ctx, key, request.Model)
 	url := mantleOpenAIURL(bedrockEndpoints(key.BedrockKeyConfig), region, schemas.ResolveCanonicalModel(ctx, request.Model), "chat/completions")
+	_, request.Model = parseBedrockRegionAndModel(request.Model)
 
 	// SigV4 (empty key value): sign the exact body the handler builds via a signer closure.
 	// Bearer (key has a value): no signer; auth flows through the Authorization header.
@@ -179,6 +192,7 @@ func (provider *BedrockProvider) mantleChatCompletionsStream(
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	region := resolveBedrockRegion(ctx, key, request.Model)
 	url := mantleOpenAIURL(bedrockEndpoints(key.BedrockKeyConfig), region, schemas.ResolveCanonicalModel(ctx, request.Model), "chat/completions")
+	_, request.Model = parseBedrockRegionAndModel(request.Model)
 
 	// SigV4 (empty key value): sign the exact body the handler builds via a signer closure.
 	// Bearer (key has a value): no signer; auth flows through the Authorization header.
@@ -225,6 +239,7 @@ func (provider *BedrockProvider) mantleResponses(
 
 	region := resolveBedrockRegion(ctx, key, request.Model)
 	url := mantleOpenAIURL(bedrockEndpoints(key.BedrockKeyConfig), region, canonicalModel, "responses")
+	_, request.Model = parseBedrockRegionAndModel(request.Model)
 
 	// SigV4 (empty key value): sign the exact body the handler builds via a signer closure.
 	// Bearer (key has a value): no signer; auth flows through the Authorization header.
@@ -269,6 +284,7 @@ func (provider *BedrockProvider) mantleResponsesStream(
 
 	region := resolveBedrockRegion(ctx, key, request.Model)
 	url := mantleOpenAIURL(bedrockEndpoints(key.BedrockKeyConfig), region, canonicalModel, "responses")
+	_, request.Model = parseBedrockRegionAndModel(request.Model)
 
 	// SigV4 (empty key value): sign the exact body the handler builds via a signer closure.
 	// Bearer (key has a value): no signer; auth flows through the Authorization header.

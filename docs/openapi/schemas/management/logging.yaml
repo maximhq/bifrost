@@ -6,6 +6,18 @@ LogEntry:
   properties:
     id:
       type: string
+    project_id:
+      type: string
+      nullable: true
+      description: >-
+        The governance project the request was scoped to, or null when it named
+        none. This is the resolved project, not the header the caller sent.
+    project_name:
+      type: string
+      nullable: true
+      description: >-
+        The project's name as it stood when the request was served, kept on the
+        row so it still reads correctly after a rename or a delete.
     parent_request_id:
       type: string
     provider:
@@ -42,12 +54,34 @@ LogEntry:
       items:
         type: string
       description: Array of routing engines used for this request (routing-rule, governance, or loadbalancing)
+    tool_call_names:
+      type: array
+      items:
+        type: string
+      description: Distinct function names the response called. Always recorded, even when content logging is disabled, and kept on the log row in hybrid storage mode. Use the tool_call_names query filter to search on it. Full tool calls with arguments are in tool_calls and are available only when content is retained.
       nullable: true
     routing_rule_id:
       type: string
       nullable: true
     routing_rule_name:
       type: string
+      nullable: true
+    complexity_tier:
+      type: string
+      enum: ["SIMPLE", "MEDIUM", "COMPLEX", "REASONING"]
+      description: Complexity tier used for routing; null when no routing rule referenced complexity_tier. REASONING is historical-only — it was merged into COMPLEX and is never emitted for new requests, but survives in log rows recorded under the old scheme.
+      nullable: true
+    complexity_mechanism:
+      type: [string, 'null']
+      enum: [semantic, llm, session, skipped, null]
+      description: How the effective complexity tier was determined. session means retained session state supplied the tier; skipped means classification was demanded but produced no tier.
+    complexity_score:
+      type: number
+      description: Similarity score of the nearest reference phrase behind the tier. Absent for llm, session, and skipped decisions.
+      nullable: true
+    session_id:
+      type: string
+      description: Raw opaque Bifrost session ID resolved at ingress for key stickiness and request correlation.
       nullable: true
     stream:
       type: boolean
@@ -195,6 +229,17 @@ MCPToolLogEntry:
     llm_request_id:
       type: string
       description: Links to the LLM request that triggered this tool call
+    project_id:
+      type: string
+      nullable: true
+      description: >-
+        The governance project the tool call was scoped to, or null when it
+        named none. Recorded on the row, but the MCP log queries cannot filter
+        on it.
+    project_name:
+      type: string
+      nullable: true
+      description: The project's name as it stood when the tool call was served.
     timestamp:
       type: string
       format: date-time
@@ -393,6 +438,13 @@ SearchFilters:
   type: object
   description: Log search filters
   properties:
+    project_ids:
+      type: array
+      items:
+        type: string
+      description: >-
+        Governance projects to narrow to. A request is scoped to at most one
+        project, so this filter selects rows rather than intersecting sets.
     providers:
       type: array
       items:
@@ -559,6 +611,15 @@ DroppedRequestsResponse:
       type: integer
       format: int64
 
+FilterKeyPair:
+  type: object
+  description: An id and its display name, as offered by a filter dimension.
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+
 FilterDataResponse:
   type: object
   description: Available filter data response
@@ -585,6 +646,18 @@ FilterDataResponse:
       items:
         type: string
       description: Available routing engine types (routing-rule, governance, loadbalancing)
+    tool_call_names:
+      type: array
+      items:
+        type: string
+      description: Function names that logged responses have called, for the tool calls filter. Read from the persisted tool_call_names metadata, so it stays available when message content is not logged or is offloaded in hybrid storage mode.
+    projects:
+      type: array
+      items:
+        $ref: '#/FilterKeyPair'
+      description: >-
+        Governance projects that appear in the logs, for the `projects`
+        dimension. Only projects whose rows carry a name are listed.
 
 DeleteLogsRequest:
   type: object
@@ -602,10 +675,19 @@ RecalculateCostRequest:
   description: Recalculate cost request
   properties:
     filters:
-      $ref: '#/SearchFilters'
-    limit:
-      type: integer
-      description: Maximum number of logs to process (default 200, max 1000)
+      $ref: '#/RecalculateCostFilters'
+
+RecalculateCostFilters:
+  allOf:
+    - $ref: '#/SearchFilters'
+    - type: object
+      properties:
+        period:
+          type: string
+          enum: [1h, 6h, 24h, 7d, 30d]
+          description: >-
+            Relative time window resolved when the job is created. When recognized, it takes
+            precedence over start_time and end_time.
 
 RecalculateCostResponse:
   type: object
@@ -617,6 +699,7 @@ RecalculateCostResponse:
     status:
       type: string
       description: Current job status
+      enum: [pending, running, completed, failed, cancelled, idle]
     total:
       type: integer
       format: int64
@@ -633,6 +716,12 @@ RecalculateCostResponse:
       type: integer
       format: int64
       description: Logs skipped during processing
+    unpriceable:
+      type: integer
+      format: int64
+      description: >-
+        Subset of skipped logs whose pricing inputs could not be recovered, so their existing
+        cost was left unchanged.
     message:
       type: string
       description: Optional progress message
@@ -1426,3 +1515,114 @@ DashboardResult:
         $ref: '#/DimensionRankingResult'
     mcp:
       $ref: '#/DashboardMCP'
+
+ThroughputHistogramBucket:
+  type: object
+  description: One time bucket of token-generation throughput.
+  properties:
+    timestamp:
+      type: string
+      format: date-time
+    tokens_per_second:
+      type: number
+    total_completion_tokens:
+      type: integer
+      format: int64
+    total_requests:
+      type: integer
+      format: int64
+
+ThroughputHistogramResult:
+  type: object
+  description: Time-bucketed token-generation throughput.
+  properties:
+    buckets:
+      type: array
+      items:
+        $ref: '#/ThroughputHistogramBucket'
+    bucket_size_seconds:
+      type: integer
+      format: int64
+      description: Bucket width, derived from the requested window.
+
+ProviderThroughputStats:
+  type: object
+  description: Throughput figures for one provider within a bucket.
+  properties:
+    tokens_per_second:
+      type: number
+    total_completion_tokens:
+      type: integer
+      format: int64
+    total_requests:
+      type: integer
+      format: int64
+
+ProviderThroughputHistogramBucket:
+  type: object
+  description: One time bucket of throughput, broken down by provider.
+  properties:
+    timestamp:
+      type: string
+      format: date-time
+    by_provider:
+      type: object
+      description: Keyed by provider name.
+      additionalProperties:
+        $ref: '#/ProviderThroughputStats'
+
+ProviderThroughputHistogramResult:
+  type: object
+  description: Time-bucketed throughput with a per-provider breakdown.
+  properties:
+    buckets:
+      type: array
+      items:
+        $ref: '#/ProviderThroughputHistogramBucket'
+    bucket_size_seconds:
+      type: integer
+      format: int64
+    providers:
+      type: array
+      items:
+        type: string
+      description: Providers present across the returned buckets.
+
+UserRankingTrend:
+  type: object
+  description: Change versus the previous comparable period.
+  properties:
+    has_previous_period:
+      type: boolean
+      description: False when there is no earlier window to compare against.
+    requests_trend:
+      type: number
+    tokens_trend:
+      type: number
+    cost_trend:
+      type: number
+
+UserRankingEntry:
+  type: object
+  description: One user's usage totals, with its trend.
+  properties:
+    user_id:
+      type: string
+    total_requests:
+      type: integer
+      format: int64
+    total_tokens:
+      type: integer
+      format: int64
+    total_cost:
+      type: number
+    trend:
+      $ref: '#/UserRankingTrend'
+
+UserRankingResult:
+  type: object
+  properties:
+    rankings:
+      type: array
+      items:
+        $ref: '#/UserRankingEntry'

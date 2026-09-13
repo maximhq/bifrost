@@ -20,7 +20,7 @@ import { resetDurationLabels, supportsCalendarAlignment } from "@/lib/constants/
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import PageTitle from "@/components/pageTitle";
-import { getModelLimitScope, getModelLimitScopes } from "@/lib/registries/modelLimitScopes";
+import { getModelLimitScope, getModelLimitScopeFilterOptions } from "@/lib/registries/modelLimitScopes";
 import { getErrorMessage, useDeleteModelConfigMutation, useGetModelConfigQuery } from "@/lib/store";
 import { ModelProvider } from "@/lib/types/config";
 import { ModelConfig } from "@/lib/types/governance";
@@ -295,7 +295,7 @@ export default function ModelLimitsTable({
 						</SelectTrigger>
 						<SelectContent>
 							<SelectItem value="all">All Scopes</SelectItem>
-							{getModelLimitScopes().map((o) => (
+							{getModelLimitScopeFilterOptions().map((o) => (
 								<SelectItem key={o.value} value={o.value}>
 									{o.label}
 								</SelectItem>

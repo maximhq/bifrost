@@ -253,6 +253,21 @@ func (c ModelCaps) SupportsCachePoint(fallback bool) bool {
 	return fallback
 }
 
+// SupportsPromptCaching reports whether the model supports explicit prompt caching
+// at all. It is the base feature that SupportsPromptCachingScope and
+// SupportsExtendedCacheTTL refine, and it is what gates breakpoint injection: a
+// model that answers false must never be sent a marker it did not ask for.
+//
+// The datasheet field existed before this accessor did, so callers must pass a
+// meaningful fallback (see ModelSupportsPromptCaching) rather than relying on
+// datasheet coverage.
+func (c ModelCaps) SupportsPromptCaching(fallback bool) bool {
+	if c.record != nil && c.record.SupportsPromptCaching != nil {
+		return *c.record.SupportsPromptCaching
+	}
+	return fallback
+}
+
 // SupportsPromptCachingScope reports whether the model accepts
 // cache_control.scope (Anthropic's prompt-caching-scope beta). Distinct from
 // SupportsExtendedCacheTTL, which gates the cache TTL rather than its scope.
@@ -278,6 +293,25 @@ func (c ModelCaps) SupportsExtendedCacheTTL(fallback bool) bool {
 func (c ModelCaps) ToolChoiceStructSupported(fallback bool) bool {
 	if c.record != nil && c.record.ToolChoiceStructSupported != nil {
 		return *c.record.ToolChoiceStructSupported
+	}
+	return fallback
+}
+
+// ToolChoiceAnySupported reports whether the endpoint accepts the forced tool
+// choice "any" on the wire. Providers without it need it spelled "required".
+func (c ModelCaps) ToolChoiceAnySupported(fallback bool) bool {
+	if c.record != nil && c.record.ToolChoiceAnySupported != nil {
+		return *c.record.ToolChoiceAnySupported
+	}
+	return fallback
+}
+
+// SupportsForcedToolChoice reports whether the model accepts a forced tool
+// choice at all — Anthropic "any"/"tool", OpenAI "required"/named function.
+// Models without it need the choice dropped so they answer under "auto".
+func (c ModelCaps) SupportsForcedToolChoice(fallback bool) bool {
+	if c.record != nil && c.record.SupportsForcedToolChoice != nil {
+		return *c.record.SupportsForcedToolChoice
 	}
 	return fallback
 }
@@ -441,6 +475,38 @@ func (c ModelCaps) SupportsToolSearch(fallback bool) bool {
 	return fallback
 }
 
+// SupportsNamespaceTools reports whether the model accepts the OpenAI Responses
+// `namespace` tool container on the wire. A row decides in either direction;
+// with no row the caller's per-provider default is returned, which is what
+// decides whether core flattens namespaces before dispatch (#7048).
+func (c ModelCaps) SupportsNamespaceTools(fallback bool) bool {
+	if c.record != nil && c.record.SupportsNamespaceTools != nil {
+		return *c.record.SupportsNamespaceTools
+	}
+	return fallback
+}
+
+// ToolNameMaxLength returns the longest tool name the wire accepts. A row with a
+// positive tool_name_max_length wins; absent or non-positive returns fallback, the
+// caller's per-provider default.
+func (c ModelCaps) ToolNameMaxLength(fallback int) int {
+	if c.record != nil && c.record.ToolNameMaxLength != nil && *c.record.ToolNameMaxLength > 0 {
+		return *c.record.ToolNameMaxLength
+	}
+	return fallback
+}
+
+// ReservedToolNamespaces returns the namespace-tool names the provider reserves for
+// its own server tools. A non-empty row replaces fallback outright, so a row can
+// both add names and clear a hardcoded one; absent or empty returns fallback.
+func (c ModelCaps) ReservedToolNamespaces(fallback []string) []string {
+	if c.record != nil && len(c.record.ReservedToolNamespaces) > 0 {
+		return c.record.ReservedToolNamespaces
+
+	}
+	return fallback
+}
+
 // SupportsAdvisorTool reports whether the model accepts advisor_tool_result blocks.
 func (c ModelCaps) SupportsAdvisorTool(fallback bool) bool {
 	if c.record != nil && c.record.SupportsAdvisorTool != nil {
@@ -573,6 +639,38 @@ func (c ModelCaps) BedrockAPIs() []BedrockAPI {
 func (c ModelCaps) MinOutputTokens(fallback int) int {
 	if c.record != nil && c.record.MinOutputTokens != nil {
 		return *c.record.MinOutputTokens
+	}
+	return fallback
+}
+
+// BedrockReasoningShape returns the reasoning wire shape the datasheet says this
+// (provider, model) pair uses on Converse, falling back to the caller's
+// name-based answer when the row says nothing or publishes a value this binary
+// does not recognise.
+func (c ModelCaps) BedrockReasoningShape(fallback BedrockReasoningShape) BedrockReasoningShape {
+	if c.record != nil && c.record.BedrockReasoningShape.IsValid() {
+		return c.record.BedrockReasoningShape
+	}
+	return fallback
+}
+
+// BedrockMantleBasePath reports the URL base path Bedrock Mantle serves this
+// model's OpenAI-compatible APIs on. Falls back to the caller's name-based answer
+// when the row says nothing or publishes a value this binary does not recognise.
+func (c ModelCaps) BedrockMantleBasePath(fallback BedrockMantleBasePath) BedrockMantleBasePath {
+	if c.record != nil && c.record.BedrockMantleBasePath.IsValid() {
+		return c.record.BedrockMantleBasePath
+	}
+	return fallback
+}
+
+// BedrockRequiresSignedReasoning reports whether the (provider, model) pair
+// verifies reasoning signatures on Converse, so an unsigned reasoningText block
+// cannot be replayed to it. Falls back to the caller's name-based answer when
+// the row says nothing.
+func (c ModelCaps) BedrockRequiresSignedReasoning(fallback bool) bool {
+	if c.record != nil && c.record.BedrockRequiresSignedReasoning != nil {
+		return *c.record.BedrockRequiresSignedReasoning
 	}
 	return fallback
 }

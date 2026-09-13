@@ -44,6 +44,6 @@ export interface GetUserAccessProfilesResponse {
 }
 
 export interface VKCreationPolicyResponse {
-	governed: boolean;
+	has_access_profile: boolean;
 	profile_name?: string;
 }

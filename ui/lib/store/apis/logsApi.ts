@@ -63,6 +63,18 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	if (filters.stop_reasons && filters.stop_reasons.length > 0) {
 		params.stop_reasons = filters.stop_reasons.join(",");
 	}
+	if (filters.tool_call_names && filters.tool_call_names.length > 0) {
+		params.tool_call_names = filters.tool_call_names.join(",");
+	}
+	if (filters.complexity_tiers && filters.complexity_tiers.length > 0) {
+		params.complexity_tiers = filters.complexity_tiers.join(",");
+	}
+	if (filters.complexity_mechanisms && filters.complexity_mechanisms.length > 0) {
+		params.complexity_mechanisms = filters.complexity_mechanisms.join(",");
+	}
+	if (filters.session_id) {
+		params.session_id = filters.session_id;
+	}
 	if (filters.period) {
 		params.period = filters.period;
 	} else {
@@ -389,6 +401,7 @@ export const logsApi = baseApi.injectEndpoints({
 				routing_rules?: RoutingRule[];
 				routing_engines?: string[];
 				stop_reasons?: string[];
+				tool_call_names?: string[];
 				apps?: string[];
 				user_agents?: string[];
 				teams?: { id: string; name: string }[];

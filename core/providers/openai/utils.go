@@ -23,8 +23,8 @@ func defaultSupportsReasoningContentBlocks(model string) bool {
 }
 
 // IsOpenAIReasoningModel matches OpenAI-family models that accept
-// reasoning.effort: the o1/o3/o4 series, GPT-5.x, and gpt-oss. Broader than
-// isOSeriesModel, which covers the o-series alone.
+// reasoning.effort: the o1/o3/o4 series, GPT-5.x, GPT-6.x, and gpt-oss. Broader
+// than isOSeriesModel, which covers the o-series alone.
 func IsOpenAIReasoningModel(model string) bool {
 	_, parsedModel := schemas.ParseModelString(model, schemas.OpenAI)
 	if parsedModel != "" {
@@ -49,7 +49,7 @@ func IsOpenAIReasoningModel(model string) bool {
 			return true
 		}
 	}
-	return strings.Contains(modelLower, "gpt-5")
+	return strings.Contains(modelLower, "gpt-5") || strings.Contains(modelLower, "gpt-6")
 }
 
 // defaultEffortControl widens the base low/medium/high ladder with the effort
@@ -86,7 +86,8 @@ func acceptsXHighEffort(model string) bool {
 		strings.Contains(modelLower, "gpt-5.3-codex") ||
 		strings.Contains(modelLower, "gpt-5.4") ||
 		strings.Contains(modelLower, "gpt-5.5") ||
-		strings.Contains(modelLower, "gpt-5.6")
+		strings.Contains(modelLower, "gpt-5.6") ||
+		strings.Contains(modelLower, "gpt-6")
 }
 
 // acceptsMinimalEffort reports models that natively accept "minimal" effort:
@@ -113,6 +114,7 @@ func acceptsMinimalEffort(model string) bool {
 func acceptsMaxEffort(model string) bool {
 	modelLower := bareModelLower(model)
 	return strings.Contains(modelLower, "gpt-5.6") ||
+		strings.Contains(modelLower, "gpt-6") ||
 		strings.Contains(modelLower, "deepseek-v4") ||
 		strings.Contains(modelLower, "glm-5.2")
 }
@@ -125,7 +127,6 @@ func bareModelLower(model string) string {
 	}
 	return strings.ToLower(model)
 }
-
 
 func ConvertOpenAIMessagesToBifrostMessages(messages []OpenAIMessage) []schemas.ChatMessage {
 	bifrostMessages := make([]schemas.ChatMessage, len(messages))
@@ -245,4 +246,21 @@ func SanitizeUserField(user *string) *string {
 		return nil
 	}
 	return user
+}
+
+// toolChoiceAnySupported is the name-based fallback for
+// ModelCaps.ToolChoiceAnySupported, used when the datasheet says nothing. It
+// reports whether the target accepts the provider-generic forced tool choice
+// "any" on the wire. Mistral accepts it natively (including Mistral models
+// served through Vertex), and Fireworks documents it with "required" as an
+// alias; every other OpenAI-compatible destination rejects it with a 400.
+func toolChoiceAnySupported(provider schemas.ModelProvider, model string) bool {
+	switch provider {
+	case schemas.Mistral, schemas.Fireworks:
+		return true
+	case schemas.Vertex:
+		return schemas.IsMistralModel(model)
+	default:
+		return false
+	}
 }

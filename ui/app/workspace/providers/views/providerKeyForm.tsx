@@ -48,6 +48,8 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 				name: "",
 				models: ["*"],
 				blacklisted_models: [],
+				models_patterns: [],
+				blacklisted_models_patterns: [],
 				weight: 1.0,
 				enabled: true,
 			},
