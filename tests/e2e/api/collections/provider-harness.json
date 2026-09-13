@@ -148323,6 +148323,80 @@
           }
         }
       ]
+    },
+    {
+      "name": "84. Fallback re-targets image edit requests (#6966)",
+      "description": "prepareFallbackRequest had no arm for image edit, image variation and video edit, so a fallback attempt kept the primary sub-request pointer and was routed back to the primary while RoutingInfo reported it as a fallback. The case posts a multipart image edit whose primary model does not exist and whose only fallback is a model the harness already edits with. Red before the fix (the retry re-runs the invalid model and the request fails), green after (served by the fallback, reported as fallback index 1).",
+      "item": [
+        {
+          "name": "runware image edit fallback re-targets to runware:101@1 after an invalid primary model (#6966)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "runware/does-not-exist:0@0",
+                  "type": "text"
+                },
+                {
+                  "key": "fallbacks",
+                  "value": "runware/runware:101@1",
+                  "type": "text"
+                },
+                {
+                  "key": "prompt",
+                  "value": "make the background a deep blue",
+                  "type": "text"
+                },
+                {
+                  "key": "image",
+                  "src": "tests/e2e/api/fixtures/sample.png",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('served by the fallback instead of failing on the primary', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('routing headers name the fallback, not the primary', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback')).to.equal('true');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-fallback-index')).to.equal('1');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-model')).to.equal('runware:101@1');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-primary-model')).to.equal('does-not-exist:0@0');",
+                  "});",
+                  "pm.test('returns an edited image', function () {",
+                  "  var d = pm.response.json().data;",
+                  "  pm.expect(d, 'no data: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(!!(d[0].url || d[0].b64_json), 'no asset returned').to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

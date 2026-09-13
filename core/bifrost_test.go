@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -3672,5 +3673,55 @@ func TestApplyRawCaptureSignals_RunsAfterPassthroughClear(t *testing.T) {
 				t.Error("DropRawResponseFromClient = true, want false (store is off)")
 			}
 		})
+	}
+}
+
+// https://github.com/maximhq/bifrost/issues/6966: prepareFallbackRequest enumerates sub-request
+// types by hand, and the shallow copy shares any pointer it does not re-target with the
+// original request. A type it forgets therefore keeps the primary provider and model, so the
+// "fallback" attempt is routed back to the primary while RoutingInfo reports it as a fallback.
+// Deriving the cases from the schema (every sub-request that declares Fallbacks) pins every
+// fallback-capable type today and fails loudly for any type added later without an arm.
+func TestPrepareFallbackRequestRetargetsEveryFallbackCapableType(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	account.AddProvider(schemas.Azure, 1, 1)
+	bifrost := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError)}
+	fallback := schemas.Fallback{Provider: schemas.Azure, Model: "fallback-model"}
+
+	reqType := reflect.TypeOf(schemas.BifrostRequest{})
+	cases := 0
+	for i := 0; i < reqType.NumField(); i++ {
+		field := reqType.Field(i)
+		if field.Type.Kind() != reflect.Ptr || field.Type.Elem().Kind() != reflect.Struct {
+			continue
+		}
+		if _, ok := field.Type.Elem().FieldByName("Fallbacks"); !ok {
+			continue
+		}
+		cases++
+		t.Run(field.Name, func(t *testing.T) {
+			sub := reflect.New(field.Type.Elem())
+			sub.Elem().FieldByName("Provider").SetString(string(schemas.OpenAI))
+			sub.Elem().FieldByName("Model").SetString("primary-model")
+			req := &schemas.BifrostRequest{}
+			reflect.ValueOf(req).Elem().Field(i).Set(sub)
+
+			got := bifrost.prepareFallbackRequest(req, fallback)
+			if got == nil {
+				t.Fatal("prepareFallbackRequest returned nil for a configured fallback provider")
+			}
+			provider, model, _ := got.GetRequestFields()
+			if provider != fallback.Provider || model != fallback.Model {
+				t.Errorf("fallback request targets %s/%s, want %s/%s (the attempt would be routed back to the primary)", provider, model, fallback.Provider, fallback.Model)
+			}
+			origProvider, origModel, _ := req.GetRequestFields()
+			if origProvider != schemas.OpenAI || origModel != "primary-model" {
+				t.Errorf("original request was mutated to %s/%s", origProvider, origModel)
+			}
+		})
+	}
+	if cases == 0 {
+		t.Fatal("no fallback-capable sub-request types found on BifrostRequest; the reflection walk is broken")
 	}
 }
