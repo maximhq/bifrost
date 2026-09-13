@@ -290,3 +290,49 @@ func TestCustomProviderConfig_OperationGating(t *testing.T) {
 		t.Fatal("Responses: got nil error, want an operation-not-allowed error")
 	}
 }
+
+// TestNetworkConfigMapsAreCopied verifies NewTencentProvider takes provider-owned
+// copies of NetworkConfig.ExtraHeaders so post-construction mutations of the
+// caller's ProviderConfig cannot alias into in-flight Tencent requests.
+func TestNetworkConfigMapsAreCopied(t *testing.T) {
+	t.Parallel()
+
+	var gotHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader = r.Header.Get("X-Test-Header")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, newOpenAIChatResponse())
+	}))
+	defer server.Close()
+
+	config := &schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{
+			BaseURL:                        server.URL,
+			ExtraHeaders:                   map[string]string{"X-Test-Header": "original"},
+			DefaultRequestTimeoutInSeconds: 5,
+		},
+	}
+	provider, err := tencent.NewTencentProvider(config, testLogger{})
+	if err != nil {
+		t.Fatalf("NewTencentProvider: %v", err)
+	}
+
+	// The caller still holds config; mutate the map the constructor received.
+	config.NetworkConfig.ExtraHeaders["X-Test-Header"] = "mutated"
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	msg := "hello"
+	if _, bifrostErr := provider.ChatCompletion(ctx, schemas.Key{Value: schemas.SecretVar{Val: "test-api-key"}}, &schemas.BifrostChatRequest{
+		Provider: schemas.Tencent,
+		Model:    "deepseek-v4-pro",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: &msg},
+		}},
+	}); bifrostErr != nil {
+		t.Fatalf("ChatCompletion: %v", bifrostErr.Error.Message)
+	}
+	if gotHeader != "original" {
+		t.Fatalf("X-Test-Header = %q, want %q (caller mutation leaked into provider config)", gotHeader, "original")
+	}
+}
