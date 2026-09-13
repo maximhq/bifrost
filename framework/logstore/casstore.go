@@ -135,7 +135,7 @@ type CasLogStore struct {
 	LogStore
 	// db is captured from the CONSTRUCTION context and is used for writes,
 	// mirroring the inner store's unscoped s.db.WithContext write handle.
-	db            *gorm.DB
+	db *gorm.DB
 	// rdb is the inner store narrowed to its concrete RDB type; the unified
 	// read snapshot path (casstore_read.go) reads the root row inside a
 	// transaction through its tx-scoped helpers (findLogTx/findLogsTx) and
@@ -199,6 +199,9 @@ func newCasLogStore(ctx context.Context, inner LogStore, cfg *ContentAddressedCo
 	// hydration and cost recomputation must never depend on CAS.
 	excluded["token_usage"] = struct{}{}
 	excluded["cache_debug"] = struct{}{}
+	if err := initializeCASInventory(db.WithContext(ctx)); err != nil {
+		return nil, fmt.Errorf("logstore/cas: initialize inventory: %w", err)
+	}
 	return &CasLogStore{
 		LogStore:      inner,
 		db:            db,

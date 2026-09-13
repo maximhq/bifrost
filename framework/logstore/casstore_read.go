@@ -212,7 +212,15 @@ func (c *CasLogStore) FindAll(ctx context.Context, query any, fields ...string) 
 // extra visibility: the hydrated content is only ever attached to a row the
 // caller was already allowed to read.
 func (c *CasLogStore) hydrateFieldsTx(tx *gorm.DB, log *Log, includeHidden bool, requestedFields ...string) error {
-	if log == nil || !log.HasObject {
+	if log == nil {
+		return nil
+	}
+	if tx.Dialector.Name() == "sqlite" {
+		if err := VerifyCASInventory(tx, log.ID); err != nil {
+			return err
+		}
+	}
+	if !log.HasObject {
 		return nil
 	}
 	if log.ContentHidden && !includeHidden {
@@ -228,10 +236,6 @@ func (c *CasLogStore) hydrateFieldsTx(tx *gorm.DB, log *Log, includeHidden bool,
 		// serving the row anyway would silently present empty content as the
 		// real payload, so it must be an error.
 		//
-		// Known structural limit: a SINGLE missing pointer row among several
-		// is indistinguishable from a field that legitimately lives in the row
-		// (was downgraded with has_object left stale) and cannot be detected
-		// here; per-pointer integrity is enforced once the pointer is read.
 		return fmt.Errorf("logstore/cas: log %s: has_object is set but cas payloads are missing", log.ID)
 	}
 	if len(requestedFields) > 0 {

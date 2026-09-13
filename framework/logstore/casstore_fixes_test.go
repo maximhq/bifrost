@@ -294,6 +294,8 @@ func TestCas_ManifestNegativeOrigLenNoPanic(t *testing.T) {
 	require.NoError(t, cas.db.Model(&casPayload{}).
 		Where("log_id = ? AND field = ?", "neg-1", "input_history").
 		Update("blob_hash", evilHash).Error)
+	// Keep the inventory consistent so this test reaches manifest decoding.
+	require.NoError(t, writeCASInventory(cas.db, "neg-1", "native"))
 
 	_, err := cas.FindByID(ctx, "neg-1")
 	require.Error(t, err, "out-of-range manifest length must be an integrity error")

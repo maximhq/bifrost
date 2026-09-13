@@ -163,6 +163,9 @@ func (c *CasLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*Log
 			if err := c.casWriteFields(tx, p.entry.ID, p.toStore); err != nil {
 				return err
 			}
+			if err := writeCASInventory(tx, p.entry.ID, "native"); err != nil {
+				return err
+			}
 			p.entry.ContentSummary = p.dbEntry.ContentSummary
 		}
 		return nil
@@ -223,6 +226,9 @@ func (c *CasLogStore) createEntry(ctx context.Context, entry *Log, ifNotExists b
 			return nil
 		}
 		if err := c.casWriteFields(tx, p.entry.ID, p.toStore); err != nil {
+			return err
+		}
+		if err := writeCASInventory(tx, p.entry.ID, "native"); err != nil {
 			return err
 		}
 		p.entry.ContentSummary = p.dbEntry.ContentSummary
@@ -348,6 +354,11 @@ func (c *CasLogStore) updateFromMap(ctx context.Context, id string, updates map[
 		if err != nil {
 			return err
 		}
+		if tx.Dialector.Name() == "sqlite" {
+			if err := VerifyCASInventory(tx, id); err != nil {
+				return err
+			}
+		}
 		hidden := current.ContentHidden
 		if value, ok := normalized["content_hidden"]; ok {
 			var valid bool
@@ -462,7 +473,7 @@ func (c *CasLogStore) updateMapTx(tx *gorm.DB, id string, updates map[string]int
 	if res.RowsAffected == 0 {
 		return ErrNotFound
 	}
-	return nil
+	return writeCASInventory(tx, id, "native")
 }
 
 func (c *CasLogStore) updateFromStruct(ctx context.Context, id string, lg *Log) error {
@@ -578,6 +589,11 @@ func gcForManifests(tx *gorm.DB, manifestHashes []string) error {
 // Run from batch deletions and Flush; it scans the CAS tables.
 func (c *CasLogStore) gcOrphanCas(ctx context.Context) error {
 	return c.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if tx.Dialector.Name() == "sqlite" {
+			if err := tx.Where("NOT EXISTS (SELECT 1 FROM logs WHERE logs.id = cas_inventories.log_id)").Delete(&CASInventory{}).Error; err != nil {
+				return err
+			}
+		}
 		if err := tx.Where(
 			"NOT EXISTS (SELECT 1 FROM logs WHERE logs.id = cas_payloads.log_id)",
 		).Delete(&casPayload{}).Error; err != nil {
@@ -662,6 +678,11 @@ func (c *CasLogStore) deleteCasForLogs(ctx context.Context, ids []string) error 
 // the manifests they referenced. Callers that delete the log rows themselves
 // pass the same tx so row deletion and cleanup are atomic.
 func deleteCasForLogsTx(tx *gorm.DB, ids []string) error {
+	if tx.Dialector.Name() == "sqlite" {
+		if err := tx.Where("log_id IN ?", ids).Delete(&CASInventory{}).Error; err != nil {
+			return err
+		}
+	}
 	var manifests []string
 	if err := tx.Model(&casPayload{}).
 		Where("log_id IN ?", ids).
