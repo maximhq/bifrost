@@ -156,6 +156,7 @@
                   "providers/supported-providers/runway",
                   "providers/supported-providers/sarvam",
                   "providers/supported-providers/sgl",
+                  "providers/supported-providers/tencent",
                   "providers/supported-providers/typesafe",
                   "providers/supported-providers/vertex",
                   "providers/supported-providers/vllm",

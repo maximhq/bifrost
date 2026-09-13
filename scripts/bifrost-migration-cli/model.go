@@ -146,6 +146,7 @@ var standardProviders = map[string]bool{
 	"runway":         true,
 	"sarvam":         true,
 	"sgl":            true,
+	"tencent":        true,
 	"vertex":         true,
 	"vllm":           true,
 	"wafer":          true,

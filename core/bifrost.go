@@ -47,6 +47,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/runway"
 	"github.com/maximhq/bifrost/core/providers/sarvam"
 	"github.com/maximhq/bifrost/core/providers/sgl"
+	"github.com/maximhq/bifrost/core/providers/tencent"
 	"github.com/maximhq/bifrost/core/providers/typesafe"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/providers/vertex"
@@ -4732,6 +4733,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return fireworks.NewFireworksProvider(config, bifrost.logger)
 	case schemas.Sarvam:
 		return sarvam.NewSarvamProvider(config, bifrost.logger)
+	case schemas.Tencent:
+		return tencent.NewTencentProvider(config, bifrost.logger)
 	case schemas.Databricks:
 		return databricks.NewDatabricksProvider(config, bifrost.logger)
 	case schemas.Typesafe:

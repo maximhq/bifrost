@@ -4,6 +4,7 @@
 - **OpenAI Async Tool Execution** - The `async` flag on Responses tools and tool calls, `output_schema` on function tools and `tunnel_id` on MCP tools are now forwarded to OpenAI. `async` is stripped for models without support, and the datasheet `supports_async_tools` field can override this (#7242)
 - **GPT-6 Prompt Cache Breakpoints** - Prompt-cache breakpoints now cover the GPT-6 family on OpenAI, Azure, Bedrock and Bedrock Mantle. The datasheet `supports_prompt_cache_breakpoint` field can override this (#7240)
 - **GPT-6 Sol and Luna Reasoning Off** - `reasoning.effort: "none"` is forwarded for `gpt-6-sol` and `gpt-6-luna`. Other GPT-6 models keep reasoning on (#7492)
+- **Tencent TokenHub Provider** - `tencent` (Tencent TokenHub) is registered as a provider key and base provider type in `config.schema.json` and serves OpenAI-compatible chat, streaming, tool calls, Responses and token counting, with optional Anthropic-compatible `/v1/messages` routing (#7123)
 
 ## 🐞 Fixed
 
