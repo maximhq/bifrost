@@ -2,6 +2,7 @@ package integrations
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -158,6 +159,114 @@ func TestRewriteAnthropicRawRequestBodyRejectsDuplicateKeys(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatal("rewriteAnthropicRawRequestBody() error = nil, want duplicate-key error")
+	}
+}
+
+// TestRewriteAnthropicRawRequestBodyTransformsTargetsDuplicateText verifies provider transforms update one exact native field.
+func TestRewriteAnthropicRawRequestBodyTransformsTargetsDuplicateText(t *testing.T) {
+	rawBody := []byte(`{
+		"messages":[
+			{"role":"user","content":"email alice@example.com"},
+			{"role":"user","content":"email alice@example.com"}
+		],
+		"metadata":{"user_id":"alice@example.com"}
+	}`)
+
+	rewritten, err := rewriteAnthropicRawRequestBodyTransforms(rawBody, []schemas.TextRewrite{{
+		TargetID:    schemas.TextTargetIDForIndex(1),
+		Original:    "email alice@example.com",
+		Replacement: "email [EMAIL]",
+	}})
+	if err != nil {
+		t.Fatalf("rewriteAnthropicRawRequestBodyTransforms() error = %v", err)
+	}
+	if got := gjson.GetBytes(rewritten, "messages.0.content").String(); got != "email alice@example.com" {
+		t.Errorf("first duplicate = %q, want unchanged", got)
+	}
+	if got := gjson.GetBytes(rewritten, "messages.1.content").String(); got != "email [EMAIL]" {
+		t.Errorf("second duplicate = %q, want transformed", got)
+	}
+	if got := gjson.GetBytes(rewritten, "metadata.user_id").String(); got != "alice@example.com" {
+		t.Errorf("metadata.user_id = %q, want unchanged", got)
+	}
+}
+
+// TestRewriteAnthropicRawRequestBodyTransformsRejectsOriginalMismatch verifies stale normalized text cannot rewrite raw passthrough.
+func TestRewriteAnthropicRawRequestBodyTransformsRejectsOriginalMismatch(t *testing.T) {
+	rawBody := []byte(`{"messages":[{"role":"user","content":"email alice@example.com"}]}`)
+	_, err := rewriteAnthropicRawRequestBodyTransforms(rawBody, []schemas.TextRewrite{{
+		TargetID:    schemas.TextTargetIDForIndex(0),
+		Original:    "email bob@example.com",
+		Replacement: "email [EMAIL]",
+	}})
+	if err == nil {
+		t.Fatal("rewriteAnthropicRawRequestBodyTransforms() error = nil, want original mismatch")
+	}
+}
+
+// TestRewriteAnthropicRawRequestBodyTransformsPreservesHistory verifies a selected tool-result target does not rewrite adjacent history.
+func TestRewriteAnthropicRawRequestBodyTransformsPreservesHistory(t *testing.T) {
+	rawBody := []byte(`{
+		"system":"system secret",
+		"messages":[
+			{"role":"user","content":"history secret"},
+			{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"tool secret"}]}
+		]
+	}`)
+
+	rewritten, err := rewriteAnthropicRawRequestBodyTransforms(rawBody, []schemas.TextRewrite{{
+		TargetID:    schemas.TextTargetIDForIndex(2),
+		Original:    "tool secret",
+		Replacement: "tool [SAFE]",
+	}})
+	if err != nil {
+		t.Fatalf("rewriteAnthropicRawRequestBodyTransforms() error = %v", err)
+	}
+	if got := gjson.GetBytes(rewritten, "system").String(); got != "system secret" {
+		t.Errorf("system = %q, want unchanged", got)
+	}
+	if got := gjson.GetBytes(rewritten, "messages.0.content").String(); got != "history secret" {
+		t.Errorf("history = %q, want unchanged", got)
+	}
+	if got := gjson.GetBytes(rewritten, "messages.1.content.0.content").String(); got != "tool [SAFE]" {
+		t.Errorf("tool result = %q, want transformed", got)
+	}
+}
+
+// TestRewriteAnthropicRawResponseTransformsTargetsDuplicateText verifies native non-stream output preserves exact target identity.
+func TestRewriteAnthropicRawResponseTransformsTargetsDuplicateText(t *testing.T) {
+	rawResponse := json.RawMessage(`{
+		"id":"msg_1",
+		"content":[
+			{"type":"thinking","thinking":"email alice@example.com","signature":"sig"},
+			{"type":"text","text":"email alice@example.com"},
+			{"type":"text","text":"email alice@example.com"}
+		]
+	}`)
+
+	rewritten, err := rewriteAnthropicRawResponseTransforms(rawResponse, []schemas.TextRewrite{{
+		TargetID:    schemas.TextTargetIDForIndex(1),
+		Original:    "email alice@example.com",
+		Replacement: "email [EMAIL]",
+	}})
+	if err != nil {
+		t.Fatalf("rewriteAnthropicRawResponseTransforms() error = %v", err)
+	}
+	result, ok := rewritten.(json.RawMessage)
+	if !ok {
+		t.Fatalf("rewritten response type = %T, want json.RawMessage", rewritten)
+	}
+	if got := gjson.GetBytes(result, "content.0.thinking").String(); got != "email alice@example.com" {
+		t.Errorf("thinking = %q, want unchanged", got)
+	}
+	if got := gjson.GetBytes(result, "content.1.text").String(); got != "email alice@example.com" {
+		t.Errorf("first text = %q, want unchanged", got)
+	}
+	if got := gjson.GetBytes(result, "content.2.text").String(); got != "email [EMAIL]" {
+		t.Errorf("second text = %q, want transformed", got)
+	}
+	if got := gjson.GetBytes(rawResponse, "content.2.text").String(); got != "email alice@example.com" {
+		t.Errorf("provider-original raw response changed to %q", got)
 	}
 }
 
@@ -341,6 +450,8 @@ func TestCheckAnthropicPassthrough_OutputConfigEscapeHatch(t *testing.T) {
 				t.Errorf("expected UseRawRequestBody to stay true for %s, got false", tc.model)
 			}
 			_, hasRewriter := bifrostCtx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter).(schemas.RawRequestBodyTextRewriter)
+			_, hasRequestTransformer := bifrostCtx.Value(schemas.BifrostContextKeyRawRequestBodyTextTransformer).(schemas.RawRequestBodyTextTransformer)
+			_, hasResponseTransformer := bifrostCtx.Value(schemas.BifrostContextKeyRawResponseTextTransformer).(schemas.RawResponseTextTransformer)
 			_, hasStreamCodec := bifrostCtx.Value(schemas.BifrostContextKeyRawStreamTextCodec).(schemas.RawStreamTextCodec)
 			if tc.wantRawOff && hasRewriter {
 				t.Errorf("expected raw request body text rewriter to remain unset for %s", tc.model)
@@ -348,11 +459,23 @@ func TestCheckAnthropicPassthrough_OutputConfigEscapeHatch(t *testing.T) {
 			if !tc.wantRawOff && !hasRewriter {
 				t.Errorf("expected Anthropic raw request body text rewriter for %s", tc.model)
 			}
+			if tc.wantRawOff && hasRequestTransformer {
+				t.Errorf("expected raw request body text transformer to remain unset for %s", tc.model)
+			}
+			if !tc.wantRawOff && !hasRequestTransformer {
+				t.Errorf("expected Anthropic raw request body text transformer for %s", tc.model)
+			}
 			if tc.wantRawOff && hasStreamCodec {
 				t.Errorf("expected raw stream text codec to remain unset for %s", tc.model)
 			}
 			if !tc.wantRawOff && !hasStreamCodec {
 				t.Errorf("expected Anthropic raw stream text codec for %s", tc.model)
+			}
+			if tc.wantRawOff && hasResponseTransformer {
+				t.Errorf("expected raw response text transformer to remain unset for %s", tc.model)
+			}
+			if !tc.wantRawOff && !hasResponseTransformer {
+				t.Errorf("expected Anthropic raw response text transformer for %s", tc.model)
 			}
 		})
 	}
