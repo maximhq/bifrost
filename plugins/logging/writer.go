@@ -169,7 +169,19 @@ func (p *LoggerPlugin) processBatch(batch []*writeQueueEntry) {
 					// Last resort: strip the parsed payload fields (one of them
 					// failed serialization) and keep the scalar row — a log
 					// without content beats a silently dropped request.
+					payloadDegraded := !marshals(log)
 					stripUnserializablePayloads(log)
+					if payloadDegraded {
+						// Keep inference status separate from logging content fidelity.
+						// Copy metadata so caller-owned maps are not modified.
+						metadata := make(map[string]interface{}, len(log.MetadataParsed)+2)
+						for key, value := range log.MetadataParsed {
+							metadata[key] = value
+						}
+						metadata["logging_payload_status"] = "degraded"
+						metadata["logging_payload_reason"] = "serialization_failure"
+						log.MetadataParsed = metadata
+					}
 					if err := p.store.BatchCreateIfNotExists(p.ctx, []*logstore.Log{log}); err != nil {
 						p.logger.Warn("payload-stripped insert failed for log %s: %v", log.ID, err)
 						p.droppedRequests.Add(1)
