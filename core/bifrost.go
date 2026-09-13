@@ -5174,6 +5174,32 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		tmp.Model = fallback.Model
 		fallbackReq.VideoGenerationRequest = &tmp
 	}
+	if req.VideoEditRequest != nil {
+		tmp := *req.VideoEditRequest
+		tmp.Provider = fallback.Provider
+		tmp.Model = fallback.Model
+		fallbackReq.VideoEditRequest = &tmp
+	}
+	if req.ImageEditRequest != nil {
+		tmp := *req.ImageEditRequest
+		tmp.Provider = fallback.Provider
+		tmp.Model = fallback.Model
+		fallbackReq.ImageEditRequest = &tmp
+	}
+	if req.ImageVariationRequest != nil {
+		tmp := *req.ImageVariationRequest
+		tmp.Provider = fallback.Provider
+		tmp.Model = fallback.Model
+		fallbackReq.ImageVariationRequest = &tmp
+	}
+	// A sub-request type without an arm above keeps the primary's pointer through the
+	// shallow copy, so the "fallback" would be routed back to the primary while
+	// RoutingInfo reports it as a fallback (#6966). Skip it loudly instead of silently
+	// re-running the primary; the caller treats nil as a skipped fallback.
+	if provider, model, _ := fallbackReq.GetRequestFields(); provider != fallback.Provider || model != fallback.Model {
+		bifrost.logger.Warn("fallback %s/%s skipped: request type has no arm in prepareFallbackRequest (request still targets %s/%s)", fallback.Provider, fallback.Model, provider, model)
+		return nil
+	}
 	return &fallbackReq
 }
 
@@ -5325,7 +5351,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		fallbackReq := bifrost.prepareFallbackRequest(req, fallback)
 		if fallbackReq == nil {
 			bifrost.logger.Debug("fallback provider %s with model %s is nil", fallback.Provider, fallback.Model)
-			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelWarn, fmt.Sprintf("Fallback %s/%s skipped: missing provider config", fallback.Provider, fallback.Model))
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelWarn, fmt.Sprintf("Fallback %s/%s skipped: missing provider config or unsupported request type", fallback.Provider, fallback.Model))
 			tracer.SetAttribute(handle, "error", "fallback request preparation failed")
 			tracer.EndSpan(handle, schemas.SpanStatusError, "fallback request preparation failed")
 			continue
@@ -5462,7 +5488,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 
 		fallbackReq := bifrost.prepareFallbackRequest(req, fallback)
 		if fallbackReq == nil {
-			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelWarn, fmt.Sprintf("Fallback %s/%s skipped: missing provider config", fallback.Provider, fallback.Model))
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelWarn, fmt.Sprintf("Fallback %s/%s skipped: missing provider config or unsupported request type", fallback.Provider, fallback.Model))
 			tracer.SetAttribute(handle, "error", "fallback request preparation failed")
 			tracer.EndSpan(handle, schemas.SpanStatusError, "fallback request preparation failed")
 			continue
