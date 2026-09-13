@@ -20,7 +20,9 @@ package logstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 	"time"
 
@@ -329,12 +331,63 @@ func (c *CasLogStore) updateFromMap(ctx context.Context, id string, updates map[
 	if err != nil {
 		return err
 	}
-	updates = normalized
+	return c.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// SQLite has no SELECT FOR UPDATE. Acquire its writer reservation
+		// before reading, avoiding a deferred read-to-write upgrade that can
+		// fail immediately with SQLITE_BUSY under concurrent GC/writers.
+		if tx.Dialector.Name() == "sqlite" {
+			if err := tx.Model(&Log{}).Where("id = ?", id).UpdateColumn("has_object", gorm.Expr("has_object")).Error; err != nil {
+				return err
+			}
+		}
+		var current Log
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", id).Take(&current).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		hidden := current.ContentHidden
+		if value, ok := normalized["content_hidden"]; ok {
+			var valid bool
+			hidden, valid = value.(bool)
+			if !valid {
+				return fmt.Errorf("logstore/cas: Update: content_hidden must be a bool")
+			}
+		}
+		// Copy caller-owned maps before adding the fields that hiding must evacuate.
+		updates := make(map[string]interface{}, len(normalized)+len(payloadFields))
+		for k, v := range normalized {
+			updates[k] = v
+		}
+		if hidden {
+			var pointers []casPayload
+			if err := tx.Where("log_id = ?", id).Find(&pointers).Error; err != nil {
+				return err
+			}
+			stored := make(map[string]bool, len(pointers))
+			for _, pointer := range pointers {
+				stored[pointer.Field] = true
+			}
+			payload := ExtractPayload(&current)
+			for _, field := range payloadFields {
+				if _, supplied := updates[field]; !supplied && !stored[field] && payload[field] != "" {
+					updates[field] = payload[field]
+				}
+			}
+			updates["content_summary"] = ""
+		}
+		return c.updateMapTx(tx, id, updates, hidden)
+	})
+}
+
+func (c *CasLogStore) updateMapTx(tx *gorm.DB, id string, updates map[string]interface{}, hidden bool) error {
 	rowUpdates := make(map[string]interface{}, len(updates))
 	var toStore []casFieldContent
 	var downgrades []string // payload fields set to small/empty values: drop pointers
 	for k, val := range updates {
-		if _, isPayload := payloadFieldSet[k]; isPayload && !c.isExcludedPayload(k) {
+		if _, isPayload := payloadFieldSet[k]; isPayload {
 			if val == nil {
 				// A payload field set to nil is an explicit clear, same as the
 				// downgrade path: the pointer must be dropped and the row column
@@ -363,7 +416,7 @@ func (c *CasLogStore) updateFromMap(ctx context.Context, id string, updates map[
 						k, val)
 				}
 			}
-			if c.casEligible(k, s) {
+			if s != "" && (hidden || c.casEligible(k, s)) {
 				toStore = append(toStore, casFieldContent{k, s})
 				rowUpdates[k] = "" // empty the row column; CAS is now authoritative
 			} else {
@@ -383,110 +436,60 @@ func (c *CasLogStore) updateFromMap(ctx context.Context, id string, updates map[
 		// semantics observable with a self-assigning expression.
 		rowUpdates["has_object"] = gorm.Expr("has_object")
 	}
-	return c.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := c.casWriteFields(tx, id, toStore); err != nil {
+	if hidden {
+		// Clear previews as well as excluded and below-threshold payloads.
+		for _, field := range payloadFields {
+			rowUpdates[field] = ""
+		}
+	}
+	if err := c.casWriteFields(tx, id, toStore); err != nil {
+		return err
+	}
+	if err := c.dropFields(tx, id, downgrades); err != nil {
+		return err
+	}
+	if touchedCAS {
+		n, err := casCountPayloads(tx, id)
+		if err != nil {
 			return err
 		}
-		if err := c.dropFields(tx, id, downgrades); err != nil {
-			return err
-		}
-		if touchedCAS {
-			n, err := casCountPayloads(tx, id)
-			if err != nil {
-				return err
-			}
-			rowUpdates["has_object"] = n > 0
-		}
-		res := tx.Model(&Log{}).Where("id = ?", id).Updates(rowUpdates)
-		if res.Error != nil {
-			return res.Error
-		}
-		if res.RowsAffected == 0 {
-			return ErrNotFound
-		}
-		return nil
-	})
+		rowUpdates["has_object"] = n > 0
+	}
+	res := tx.Model(&Log{}).Where("id = ?", id).Updates(rowUpdates)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (c *CasLogStore) updateFromStruct(ctx context.Context, id string, lg *Log) error {
 	if lg == nil {
 		return fmt.Errorf("log entry is nil")
 	}
-	if err := lg.SerializeFields(); err != nil {
+	// Preserve GORM's nonzero struct update semantics, but route all payload
+	// decisions through the same locked snapshot as map updates. In particular,
+	// false does not unhide a row through a struct update; use an explicit map.
+	copyEntry := *lg
+	if err := copyEntry.SerializeFields(); err != nil {
 		return fmt.Errorf("logstore/cas: serialize before update: %w", err)
 	}
-	payload := ExtractPayloadFiltered(lg, c.excluded)
-	var toStore []casFieldContent
-	var downgrades []string
-	keep := make(map[string]struct{}, len(c.excluded)+len(payloadFields))
-	for f := range c.excluded {
-		keep[f] = struct{}{}
+	if _, err := c.normalizeUpdateMapKeys(nil); err != nil {
+		return err
 	}
-	for _, f := range payloadFields {
-		content, has := payload[f]
-		if !has || content == "" {
-			// Absent or empty: gorm struct updates omit zero fields, so an
-			// empty string means "not being updated" (same as the inner
-			// store) — the field and any existing pointer stay untouched.
-			keep[f] = struct{}{}
+	updates := make(map[string]interface{})
+	value := reflect.ValueOf(&copyEntry)
+	for _, field := range c.logSchema.Fields {
+		if field.DBName == "" || !field.Updatable {
 			continue
 		}
-		if !c.casEligible(f, content) {
-			keep[f] = struct{}{}
-			// Explicitly set to a small value: the row value (written by the
-			// struct update below) is authoritative; drop any stale pointer
-			// so hydration cannot resurrect the old content.
-			downgrades = append(downgrades, f)
-			continue
+		if v, zero := field.ValueOf(ctx, value); !zero {
+			updates[field.DBName] = v
 		}
-		toStore = append(toStore, casFieldContent{f, content})
 	}
-	dbEntry := *lg
-	ClearPayloadFiltered(&dbEntry, keep)
-	touchedCAS := len(toStore) > 0 || len(downgrades) > 0
-	return c.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := c.casWriteFields(tx, id, toStore); err != nil {
-			return err
-		}
-		if err := c.dropFields(tx, id, downgrades); err != nil {
-			return err
-		}
-		// Struct updates: gorm omits zero fields, so the CAS-cleared columns
-		// are emptied explicitly, and has_object is synced when pointers
-		// changed.
-		extra := make(map[string]interface{}, len(toStore)+1)
-		for _, s := range toStore {
-			extra[s.field] = ""
-		}
-		if touchedCAS {
-			n, err := casCountPayloads(tx, id)
-			if err != nil {
-				return err
-			}
-			extra["has_object"] = n > 0
-		}
-		res := tx.Model(&Log{}).Where("id = ?", id).Updates(&dbEntry)
-		if res.Error != nil {
-			return res.Error
-		}
-		if res.RowsAffected == 0 {
-			// An all-zero struct (only CAS'd payload fields were set) gives
-			// gorm nothing to write; distinguish that from a missing row.
-			var n int64
-			if err := tx.Model(&Log{}).Where("id = ?", id).Count(&n).Error; err != nil {
-				return err
-			}
-			if n == 0 {
-				return ErrNotFound
-			}
-		}
-		if len(extra) > 0 {
-			if err := tx.Model(&Log{}).Where("id = ?", id).Updates(extra).Error; err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+	return c.updateFromMap(ctx, id, updates)
 }
 
 func (c *CasLogStore) isExcludedPayload(field string) bool {
