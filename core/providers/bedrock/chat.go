@@ -88,6 +88,11 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 	if response == nil {
 		return nil, fmt.Errorf("bedrock response is nil")
 	}
+	// Output is required in a Converse response, but a body without it still
+	// unmarshals cleanly, so guard it like the nil receiver above.
+	if response.Output == nil {
+		return nil, fmt.Errorf("bedrock response has no output")
+	}
 
 	// Convert content blocks and tool calls
 	var contentStr *string
