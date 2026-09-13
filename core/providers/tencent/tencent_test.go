@@ -16,19 +16,37 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
+// testLogger is a no-op schemas.Logger used to construct providers in unit tests.
 type testLogger struct{}
 
-func (l testLogger) Debug(string, ...any)                   {}
-func (l testLogger) Info(string, ...any)                    {}
-func (l testLogger) Warn(string, ...any)                    {}
-func (l testLogger) Error(string, ...any)                   {}
-func (l testLogger) Fatal(string, ...any)                   {}
-func (l testLogger) SetLevel(schemas.LogLevel)              {}
+// Debug implements schemas.Logger.
+func (l testLogger) Debug(string, ...any) {}
+
+// Info implements schemas.Logger.
+func (l testLogger) Info(string, ...any) {}
+
+// Warn implements schemas.Logger.
+func (l testLogger) Warn(string, ...any) {}
+
+// Error implements schemas.Logger.
+func (l testLogger) Error(string, ...any) {}
+
+// Fatal implements schemas.Logger.
+func (l testLogger) Fatal(string, ...any) {}
+
+// SetLevel implements schemas.Logger.
+func (l testLogger) SetLevel(schemas.LogLevel) {}
+
+// SetOutputType implements schemas.Logger.
 func (l testLogger) SetOutputType(schemas.LoggerOutputType) {}
+
+// LogHTTPRequest implements schemas.Logger and returns a no-op event builder.
 func (l testLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
 	return schemas.NoopLogEvent
 }
 
+// newTestTencentProvider builds a TencentProvider pointed at baseURL with test
+// timeouts and concurrency limits.
 func newTestTencentProvider(baseURL string) (*tencent.TencentProvider, error) {
 	return tencent.NewTencentProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
@@ -44,6 +62,8 @@ func newTestTencentProvider(baseURL string) (*tencent.TencentProvider, error) {
 	}, testLogger{})
 }
 
+// TestTencent runs the shared comprehensive provider suite against Tencent
+// TokenHub when TENCENT_API_KEY is set.
 func TestTencent(t *testing.T) {
 	t.Parallel()
 	if strings.TrimSpace(os.Getenv("TENCENT_API_KEY")) == "" {
@@ -92,10 +112,14 @@ func TestTencent(t *testing.T) {
 	})
 }
 
+// newOpenAIChatResponse returns a minimal OpenAI-compatible chat completion
+// payload for the HTTP stubs.
 func newOpenAIChatResponse() string {
 	return `{"id":"chatcmpl_1","object":"chat.completion","model":"deepseek-v4-pro","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`
 }
 
+// newAnthropicResponse returns a minimal Anthropic Messages payload for the
+// HTTP stubs.
 func newAnthropicResponse() string {
 	return `{"id":"msg_1","type":"message","role":"assistant","model":"deepseek-v4-pro","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
 }
