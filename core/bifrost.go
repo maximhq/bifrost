@@ -1313,9 +1313,7 @@ func (bifrost *Bifrost) EmbeddingRequest(ctx *schemas.BifrostContext, req *schem
 			},
 		}
 	}
-	hasExtraInputs := req.Params != nil && req.Params.ExtraParams != nil &&
-		(req.Params.ExtraParams["inputs"] != nil || req.Params.ExtraParams["images"] != nil)
-	if (req.Input == nil || (req.Input.Text == nil && req.Input.Texts == nil && req.Input.Embedding == nil && req.Input.Embeddings == nil)) && !hasExtraInputs && !isLargePayloadPassthrough(ctx) {
+	if len(req.Input) == 0 && !isLargePayloadPassthrough(ctx) {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
@@ -1327,6 +1325,22 @@ func (bifrost *Bifrost) EmbeddingRequest(ctx *schemas.BifrostContext, req *schem
 				OriginalModelRequested: req.Model,
 				ResolvedModelUsed:      req.Model,
 			},
+		}
+	}
+	if len(req.Input) > 0 {
+		if err := schemas.ValidateEmbeddingInput(req.Input); err != nil {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Message: err.Error(),
+				},
+				ExtraFields: schemas.BifrostErrorExtraFields{
+					RequestType:            schemas.EmbeddingRequest,
+					Provider:               req.Provider,
+					OriginalModelRequested: req.Model,
+					ResolvedModelUsed:      req.Model,
+				},
+			}
 		}
 	}
 

@@ -133,8 +133,12 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 		},
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if cohereReq, ok := req.(*cohere.CohereEmbeddingRequest); ok {
+				embReq, err := cohereReq.ToBifrostEmbeddingRequest(ctx)
+				if err != nil {
+					return nil, err
+				}
 				return &schemas.BifrostRequest{
-					EmbeddingRequest: cohereReq.ToBifrostEmbeddingRequest(ctx),
+					EmbeddingRequest: embReq,
 				}, nil
 			}
 			return nil, errors.New("invalid embedding request type")
@@ -145,7 +149,7 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 					return resp.ExtraFields.RawResponse, nil
 				}
 			}
-			return resp, nil
+			return cohere.ToCohereEmbeddingResponse(resp), nil
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return cohere.ToCohereError(err)

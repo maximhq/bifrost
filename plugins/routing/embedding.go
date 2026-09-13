@@ -439,12 +439,10 @@ func (p *RoutingPlugin) generateEmbeddings(ctx *schemas.BifrostContext, semantic
 		timeout = configstore.DefaultComplexitySemanticTimeout
 	}
 
-	input := &schemas.EmbeddingInput{}
-	if len(texts) == 1 {
-		text := texts[0]
-		input.Text = &text
-	} else {
-		input.Texts = append([]string(nil), texts...)
+	input := make([]schemas.EmbeddingInputItem, len(texts))
+	for i := range texts {
+		text := texts[i]
+		input[i] = schemas.EmbeddingInputItem{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}
 	}
 	embeddingReq := &schemas.BifrostEmbeddingRequest{
 		Provider: semantic.Provider,
