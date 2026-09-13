@@ -1,14 +1,27 @@
 package bedrock
 
 import (
+	"bytes"
 	"context"
+	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/providers/anthropic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/valyala/fasthttp"
 )
 
 // anthropicToolMap builds an Anthropic-native tool map as it would arrive on the wire
@@ -1005,4 +1018,291 @@ func TestToBedrockConverseRequest_InvokeContentBlockCacheControlEndToEnd(t *test
 		foundToolResult = true
 	}
 	assert.True(t, foundToolResult, "expected the tool_result message to survive as a function_call_output message")
+}
+
+// usesAnthropicInvokePath decides which Claude requests leave Converse for
+// InvokeModel (#6825). Only a compact_20260112 edit on an Anthropic-family
+// model qualifies; everything else must keep the Converse path it has today.
+func TestUsesAnthropicInvokePath(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	compact := json.RawMessage(`{"edits":[{"type":"compact_20260112","trigger":{"type":"input_tokens","value":50000}}]}`)
+	clearOnly := json.RawMessage(`{"edits":[{"type":"clear_tool_uses_20250919"}]}`)
+	mixed := json.RawMessage(`{"edits":[{"type":"clear_tool_uses_20250919"},{"type":"compact_20260112"}]}`)
+
+	tests := []struct {
+		name  string
+		model string
+		cm    json.RawMessage
+		want  bool
+	}{
+		{"claude with compaction edit", "us.anthropic.claude-sonnet-4-6", compact, true},
+		{"claude with region prefix and compaction edit", "us-west-2/anthropic.claude-opus-4-6-v1", compact, true},
+		{"claude with compaction among other edits", "anthropic.claude-sonnet-4-6", mixed, true},
+		{"claude with clear_tool_uses only stays on converse", "anthropic.claude-sonnet-4-6", clearOnly, false},
+		{"claude without context_management stays on converse", "anthropic.claude-sonnet-4-6", nil, false},
+		{"claude with empty edits stays on converse", "anthropic.claude-sonnet-4-6", json.RawMessage(`{"edits":[]}`), false},
+		{"nova with compaction edit stays on converse", "amazon.nova-pro-v1:0", compact, false},
+		{"llama with compaction edit stays on converse", "meta.llama3-70b-instruct-v1:0", compact, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, usesAnthropicInvokePath(ctx, tt.model, tt.cm, nil))
+		})
+	}
+}
+
+func TestUsesAnthropicInvokePath_NilParams(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	require.False(t, chatUsesAnthropicInvokePath(ctx, &schemas.BifrostChatRequest{Model: "anthropic.claude-sonnet-4-6"}))
+	require.False(t, responsesUsesAnthropicInvokePath(ctx, &schemas.BifrostResponsesRequest{Model: "anthropic.claude-sonnet-4-6"}))
+	require.False(t, chatUsesAnthropicInvokePath(ctx, nil))
+	require.False(t, responsesUsesAnthropicInvokePath(ctx, nil))
+}
+
+func TestInvokeURL_UsesRuntimeHostAndAction(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	provider := &BedrockProvider{}
+	key := schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{Region: schemas.NewSecretVar("us-east-1")}}
+
+	url, region := provider.invokeURL(ctx, key, "us.anthropic.claude-sonnet-4-6", bedrockInvokeStreamAction)
+	require.Equal(t, "us-east-1", region)
+	require.Equal(t, "https://bedrock-runtime.us-east-1.amazonaws.com/model/us.anthropic.claude-sonnet-4-6/invoke-with-response-stream", url)
+
+	url, _ = provider.invokeURL(ctx, key, "eu-west-1/anthropic.claude-opus-4-6-v1", bedrockInvokeAction)
+	require.Equal(t, "https://bedrock-runtime.eu-west-1.amazonaws.com/model/anthropic.claude-opus-4-6-v1/invoke", url)
+}
+
+// The /anthropic/v1/messages ingress (the path in #6825) does not populate the
+// raw Params.ContextManagement field. AnthropicMessageRequest.ToBifrostResponsesRequest
+// stores a typed *anthropic.ContextManagement under ExtraParams["context_management"],
+// and older callers may store a plain map there. The routing predicate must see
+// all three shapes, or the reporter's traffic never leaves Converse.
+func TestUsesAnthropicInvokePath_ExtraParamsShapes(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	model := "us.anthropic.claude-opus-4-8"
+	typed := &anthropic.ContextManagement{
+		Edits: []anthropic.ContextManagementEdit{{Type: anthropic.ContextManagementEditTypeCompact}},
+	}
+	asMap := map[string]interface{}{
+		"edits": []interface{}{map[string]interface{}{"type": "compact_20260112"}},
+	}
+	clearTyped := &anthropic.ContextManagement{
+		Edits: []anthropic.ContextManagementEdit{{Type: anthropic.ContextManagementEditTypeClearToolUses}},
+	}
+
+	t.Run("responses typed pointer in extra params routes to invoke", func(t *testing.T) {
+		req := &schemas.BifrostResponsesRequest{Model: model, Params: &schemas.ResponsesParameters{
+			ExtraParams: map[string]interface{}{"context_management": typed},
+		}}
+		require.True(t, responsesUsesAnthropicInvokePath(ctx, req))
+	})
+	t.Run("responses map in extra params routes to invoke", func(t *testing.T) {
+		req := &schemas.BifrostResponsesRequest{Model: model, Params: &schemas.ResponsesParameters{
+			ExtraParams: map[string]interface{}{"context_management": asMap},
+		}}
+		require.True(t, responsesUsesAnthropicInvokePath(ctx, req))
+	})
+	t.Run("chat typed pointer in extra params routes to invoke", func(t *testing.T) {
+		req := &schemas.BifrostChatRequest{Model: model, Params: &schemas.ChatParameters{
+			ExtraParams: map[string]interface{}{"context_management": typed},
+		}}
+		require.True(t, chatUsesAnthropicInvokePath(ctx, req))
+	})
+	t.Run("clear-only typed pointer stays on converse", func(t *testing.T) {
+		req := &schemas.BifrostResponsesRequest{Model: model, Params: &schemas.ResponsesParameters{
+			ExtraParams: map[string]interface{}{"context_management": clearTyped},
+		}}
+		require.False(t, responsesUsesAnthropicInvokePath(ctx, req))
+	})
+	t.Run("raw field wins even when extra params is unrelated", func(t *testing.T) {
+		req := &schemas.BifrostResponsesRequest{Model: model, Params: &schemas.ResponsesParameters{
+			ContextManagement: json.RawMessage(`{"edits":[{"type":"compact_20260112"}]}`),
+			ExtraParams:       map[string]interface{}{"context_management": clearTyped},
+		}}
+		require.True(t, responsesUsesAnthropicInvokePath(ctx, req))
+	})
+}
+
+// The InvokeModel route (and Mantle) go through fasthttp, whose path
+// normalisation decodes a percent-encoded inference-profile ARN in the model
+// segment. The provider must build its fasthttp clients with that disabled;
+// the streaming client is a clone, so the flag must survive cloning too.
+func TestNewBedrockProvider_FasthttpClientsPreservePathEncoding(t *testing.T) {
+	provider, err := NewBedrockProvider(&schemas.ProviderConfig{
+		ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 1},
+	}, noopLogger{})
+	require.NoError(t, err)
+	require.True(t, provider.mantleClient.DisablePathNormalizing, "unary fasthttp client must preserve percent-encoded model paths")
+	require.True(t, provider.mantleStreamingClient.DisablePathNormalizing, "streaming fasthttp client (a clone) must preserve percent-encoded model paths")
+}
+
+// writeInvokeChunk frames one native Anthropic SSE event the way
+// InvokeModelWithResponseStream does: a "chunk" event whose payload is
+// {"bytes": base64(event JSON)}.
+func writeInvokeChunk(t *testing.T, w io.Writer, eventJSON string) {
+	t.Helper()
+	payload := []byte(`{"bytes":"` + base64.StdEncoding.EncodeToString([]byte(eventJSON)) + `"}`)
+	writeEventStreamEvent(t, w, "chunk", payload)
+}
+
+func TestInvokeEventStreamReader_YieldsAnthropicEvents(t *testing.T) {
+	var buf bytes.Buffer
+	writeInvokeChunk(t, &buf, `{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":[],"usage":{"input_tokens":12,"output_tokens":1}}}`)
+	writeInvokeChunk(t, &buf, `{"type":"content_block_start","index":0,"content_block":{"type":"compaction","content":""}}`)
+	writeInvokeChunk(t, &buf, `{"type":"content_block_delta","index":0,"delta":{"type":"compaction_delta","content":"summary"}}`)
+
+	reader := newInvokeEventStreamReader(&buf)
+
+	eventType, data, err := reader.ReadEvent()
+	require.NoError(t, err)
+	require.Equal(t, "message_start", eventType)
+	require.Contains(t, string(data), `"id":"msg_1"`)
+
+	eventType, data, err = reader.ReadEvent()
+	require.NoError(t, err)
+	require.Equal(t, "content_block_start", eventType)
+	require.Contains(t, string(data), `"type":"compaction"`)
+
+	eventType, data, err = reader.ReadEvent()
+	require.NoError(t, err)
+	require.Equal(t, "content_block_delta", eventType)
+	require.Contains(t, string(data), `"compaction_delta"`)
+
+	_, _, err = reader.ReadEvent()
+	require.ErrorIs(t, err, io.EOF)
+}
+
+func TestInvokeEventStreamReader_ExceptionFrameIsAnError(t *testing.T) {
+	var buf bytes.Buffer
+	enc := eventstream.NewEncoder()
+	headers := eventstream.Headers{
+		{Name: ":message-type", Value: eventstream.StringValue("exception")},
+		{Name: ":exception-type", Value: eventstream.StringValue("validationException")},
+		{Name: ":content-type", Value: eventstream.StringValue("application/json")},
+	}
+	require.NoError(t, enc.Encode(&buf, eventstream.Message{
+		Headers: headers,
+		Payload: []byte(`{"message":"compaction trigger must be at least 50000 tokens"}`),
+	}))
+
+	reader := newInvokeEventStreamReader(&buf)
+	_, _, err := reader.ReadEvent()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "compaction trigger must be at least 50000 tokens")
+
+	// The error must carry the classified BifrostError so the shared stream
+	// loop can forward it unchanged: validationException is terminal.
+	var carrier providerUtils.BifrostErrorCarrier
+	require.ErrorAs(t, err, &carrier)
+	typed := carrier.BifrostError()
+	require.NotNil(t, typed)
+	assert.True(t, typed.IsBifrostError, "validationException is not retryable")
+	require.NotNil(t, typed.Type)
+	assert.Equal(t, "validationException", *typed.Type)
+}
+
+func TestInvokeEventStreamReader_RetryableExceptionKeepsClassification(t *testing.T) {
+	var buf bytes.Buffer
+	writeEventStreamException(t, &buf, "throttlingException", "slow down")
+
+	_, _, err := newInvokeEventStreamReader(&buf).ReadEvent()
+	var carrier providerUtils.BifrostErrorCarrier
+	require.ErrorAs(t, err, &carrier)
+	typed := carrier.BifrostError()
+	require.NotNil(t, typed)
+	assert.False(t, typed.IsBifrostError, "throttlingException must stay retryable")
+	require.NotNil(t, typed.StatusCode)
+	assert.Equal(t, 429, *typed.StatusCode)
+}
+
+func TestInvokeEventStreamReader_SkipsEmptyChunks(t *testing.T) {
+	var buf bytes.Buffer
+	writeEventStreamEvent(t, &buf, "chunk", []byte(`{"bytes":""}`))
+	writeInvokeChunk(t, &buf, `{"type":"message_stop"}`)
+
+	reader := newInvokeEventStreamReader(&buf)
+	eventType, _, err := reader.ReadEvent()
+	require.NoError(t, err)
+	require.Equal(t, "message_stop", eventType)
+}
+
+// newTestInvokeStreamServer serves one AWS event-stream exception frame on any
+// request, over TLS because the InvokeModel URL is always https, and points the
+// provider's fasthttp streaming client at it.
+func newTestInvokeStreamServer(t *testing.T, excType, msg string) (*BedrockProvider, func()) {
+	t.Helper()
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		writeEventStreamException(t, w, excType, msg)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	}))
+	provider := newTestProviderWithServer(t, ts)
+	addr := strings.TrimPrefix(ts.URL, "https://")
+	provider.mantleStreamingClient = &fasthttp.Client{
+		Dial:                   func(string) (net.Conn, error) { return net.Dial("tcp", addr) },
+		TLSConfig:              &tls.Config{InsecureSkipVerify: true},
+		DisablePathNormalizing: true,
+		ReadTimeout:            5 * time.Second,
+		WriteTimeout:           5 * time.Second,
+	}
+	return provider, ts.Close
+}
+
+// A retryable AWS exception delivered as the first InvokeModelWithResponseStream
+// frame must reach the caller with the same classification the Converse path
+// gives it (IsBifrostError:false plus the mapped status), so the retry gate in
+// executeRequestWithRetries can act on it. Mirrors
+// TestChatCompletionStream_RetryableException_ChunkIsRetryable for the invoke route.
+func TestInvokeAnthropicResponsesStream_RetryableException_ChunkIsRetryable(t *testing.T) {
+	tests := []struct {
+		excType        string
+		expectedStatus int
+	}{
+		{"throttlingException", 429},
+		{"serviceUnavailableException", 503},
+	}
+	for _, tc := range tests {
+		t.Run(tc.excType, func(t *testing.T) {
+			provider, closeServer := newTestInvokeStreamServer(t, tc.excType, "please retry")
+			defer closeServer()
+
+			role := schemas.ResponsesInputMessageRoleUser
+			text := "hello"
+			req := &schemas.BifrostResponsesRequest{
+				Provider: schemas.Bedrock,
+				Model:    "anthropic.claude-sonnet-4-5",
+				Input:    []schemas.ResponsesMessage{{Role: &role, Content: &schemas.ResponsesMessageContent{ContentStr: &text}}},
+				Params: &schemas.ResponsesParameters{
+					ContextManagement: json.RawMessage(`{"edits":[{"type":"compact_20260112"}]}`),
+				},
+			}
+			streamChan, bifrostErr := provider.ResponsesStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), req)
+			require.Nil(t, bifrostErr, "expected the exception to surface as a stream chunk")
+			require.NotNil(t, streamChan)
+
+			var errChunk *schemas.BifrostStreamChunk
+			for chunk := range streamChan {
+				if chunk != nil && chunk.BifrostError != nil {
+					errChunk = chunk
+					break
+				}
+			}
+			for range streamChan {
+			}
+
+			require.NotNil(t, errChunk, "expected error chunk for %s", tc.excType)
+			assert.False(t, errChunk.BifrostError.IsBifrostError,
+				"%s must be IsBifrostError:false so the retry gate can retry it", tc.excType)
+			require.NotNil(t, errChunk.BifrostError.StatusCode,
+				"%s must carry a StatusCode for the retry gate", tc.excType)
+			assert.Equal(t, tc.expectedStatus, *errChunk.BifrostError.StatusCode,
+				"%s must map to HTTP %d", tc.excType, tc.expectedStatus)
+		})
+	}
 }

@@ -3588,6 +3588,18 @@ func ProcessAndSendNonSSEStreamError(
 // This utility reduces code duplication across streaming implementations by encapsulating
 // the common pattern of running post hooks, handling errors, and sending responses with
 // proper context cancellation handling.
+// BifrostErrorCarrier is implemented by stream-reader errors that already carry
+// a fully classified *schemas.BifrostError (retryability, status code, upstream
+// error type). ProcessAndSendError forwards such an error unchanged instead of
+// wrapping it in a terminal "Error reading stream" error, so a reader plugged
+// into a shared stream loop through SSEReaderFactory (e.g. the Bedrock
+// InvokeModel event-stream reader) keeps the same retry semantics as a provider
+// loop that calls ProcessAndSendBifrostError directly.
+type BifrostErrorCarrier interface {
+	error
+	BifrostError() *schemas.BifrostError
+}
+
 func ProcessAndSendError(
 	ctx *schemas.BifrostContext,
 	postHookRunner schemas.PostHookRunner,
@@ -3596,6 +3608,13 @@ func ProcessAndSendError(
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
 ) {
+	var carrier BifrostErrorCarrier
+	if errors.As(err, &carrier) {
+		if typed := carrier.BifrostError(); typed != nil {
+			ProcessAndSendBifrostError(ctx, postHookRunner, typed, responseChan, logger, postHookSpanFinalizer)
+			return
+		}
+	}
 	// Send scanner error through channel
 	bifrostError := &schemas.BifrostError{
 		IsBifrostError: true,
