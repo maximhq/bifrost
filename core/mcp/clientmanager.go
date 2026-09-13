@@ -2766,23 +2766,27 @@ func (m *MCPManager) createSTDIOConnection(_ context.Context, config *schemas.MC
 
 	cmdString := fmt.Sprintf("%s %s", cmd, strings.Join(args, " "))
 
-	// Check referenced environment variables are set. Inline KEY=value
-	// assignments are passed directly to the stdio transport.
+	// Resolve referenced environment variables to KEY=value entries: bare names
+	// make the subprocess environment invalid on Windows. Keep config unchanged.
+	envs := make([]string, 0, len(config.StdioConfig.Envs))
 	for _, env := range config.StdioConfig.Envs {
 		envName, _, hasInlineValue := strings.Cut(env, "=")
 		if envName == "" {
 			return nil, nil, fmt.Errorf("environment variable name is empty for MCP client %s", config.Name)
 		}
 		if hasInlineValue {
+			envs = append(envs, env)
 			continue
 		}
-		if os.Getenv(envName) == "" {
+		value := os.Getenv(envName)
+		if value == "" {
 			return nil, nil, fmt.Errorf("environment variable %s is not set for MCP client %s", envName, config.Name)
 		}
+		envs = append(envs, envName+"="+value)
 	}
 
 	// Create STDIO transport
-	stdioTransport := transport.NewStdio(cmd, config.StdioConfig.Envs, args...)
+	stdioTransport := transport.NewStdio(cmd, envs, args...)
 
 	// Prepare connection info
 	connectionInfo := &schemas.MCPClientConnectionInfo{
