@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -72,6 +73,30 @@ func releaseBedrockChatResponse(resp *BedrockConverseResponse) {
 	if resp != nil {
 		bedrockChatResponsePool.Put(resp)
 	}
+}
+
+func (provider *BedrockProvider) runtimeModelURL(region, path string, endpoints *schemas.BedrockEndpoints) string {
+	baseURL := ""
+	if endpoints != nil {
+		if host := schemas.NormalizeEndpointHost(endpoints.Runtime); host != "" {
+			baseURL = "https://" + host
+		}
+	}
+	if baseURL == "" {
+		baseURL = strings.TrimRight(provider.networkConfig.BaseURL, "/")
+	}
+	if baseURL == "" {
+		for _, envVar := range []string{"AWS_ENDPOINT_URL_BEDROCK_RUNTIME", "AWS_ENDPOINT_URL"} {
+			if baseURL = strings.TrimRight(os.Getenv(envVar), "/"); baseURL != "" {
+				break
+			}
+		}
+	}
+	if baseURL == "" {
+		baseURL = fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com", region)
+	}
+
+	return baseURL + "/model/" + path
 }
 
 // NewBedrockProvider creates a new Bedrock provider instance.
@@ -291,7 +316,7 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 	region := resolveBedrockRegion(ctx, key, model)
 
 	// Create the request with the JSON body
-	requestURL := fmt.Sprintf("https://%s/model/%s", resolveBedrockHost(bedrockEndpoints(config), bedrockServiceRuntime, region), path)
+	requestURL := provider.runtimeModelURL(region, path, bedrockEndpoints(config))
 	req, err := http.NewRequestWithContext(ctx, "POST", requestURL, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, 0, nil, &schemas.BifrostError{
@@ -507,7 +532,7 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 	path, region := provider.getModelPathAndRegion(ctx, action, model, key)
 
 	// Create HTTP request for streaming
-	requestURL := fmt.Sprintf("https://%s/model/%s", resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceRuntime, region), path)
+	requestURL := provider.runtimeModelURL(region, path, bedrockEndpoints(key.BedrockKeyConfig))
 	req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(jsonData))
 	if reqErr != nil {
 		return nil, providerUtils.NewBifrostOperationError("error creating request", reqErr)
