@@ -487,6 +487,9 @@
         "sarvam": {
           "$ref": "#/$defs/provider"
         },
+        "tencent": {
+          "$ref": "#/$defs/provider"
+        },
         "github-copilot": {
           "$ref": "#/$defs/provider_with_github_copilot_config"
         }
@@ -8755,7 +8758,8 @@
             "runware",
             "fireworks",
             "sarvam",
-            "wafer"
+            "wafer",
+            "tencent"
           ],
           "description": "Base provider type to extend"
         },

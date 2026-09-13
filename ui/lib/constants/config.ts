@@ -66,6 +66,7 @@ export const ModelPlaceholders = {
 	fireworks: "e.g. accounts/fireworks/models/deepseek-v3p2",
 	sarvam: "e.g. sarvam-30b, sarvam-105b",
 	wafer: "e.g. glm-5.2, kimi-k2.6",
+	tencent: "e.g. deepseek-v4-pro, deepseek-v4-flash, minimax-m3",
 	databricks: "e.g. databricks-claude-sonnet-4-5, system.ai.claude-sonnet-4-5",
 	"github-copilot": "e.g. gpt-5.5, claude-sonnet-4-6",
 };
@@ -101,6 +102,7 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	fireworks: true,
 	sarvam: true,
 	wafer: true,
+	tencent: true,
 	databricks: false,
 	"github-copilot": false,
 };
