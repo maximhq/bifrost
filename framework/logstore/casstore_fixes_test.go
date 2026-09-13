@@ -587,11 +587,13 @@ func TestCas_FindSkipsCorruptEntries(t *testing.T) {
 	assert.Positive(t, stats.HydrateErrors, "skipped entries must be counted as hydrate errors")
 }
 
-// Defect: the CAS create path kept hybrid's search summary (last user message,
-// truncated to 2048 bytes), so keywords that only appear in the output or in
-// early history were unfindable. The row summary must match the plain RDB
-// path's full BuildContentSummary range.
-func TestCas_SearchSummaryCoversOutput(t *testing.T) {
+// Behavior contract (hybrid parity): the CAS row's content_summary is
+// hybrid's last-user-message preview capped at 2048 bytes — the full payload
+// lives in CAS storage and comes back through hydration. Keywords that only
+// appear in the output or in early history are therefore NOT in the search
+// column; that is the same intended scope degradation hybrid mode has. See
+// TestCas_CreateSummaryMatchesHybrid for the byte-parity proof.
+func TestCas_SearchSummaryIsHybridPreview(t *testing.T) {
 	cas, inner := newTestCas(t)
 	defer cas.Close(context.Background())
 	ctx := context.Background()
@@ -608,13 +610,22 @@ func TestCas_SearchSummaryCoversOutput(t *testing.T) {
 
 	row, err := inner.FindByID(ctx, "search-1")
 	require.NoError(t, err)
-	assert.Contains(t, row.ContentSummary, "zanzibar unicorn",
-		"content summary must cover the output, not just the last user message")
+	assert.Contains(t, row.ContentSummary, "innocent question",
+		"content summary is the last-user-message preview")
+	assert.NotContains(t, row.ContentSummary, "zanzibar unicorn",
+		"content summary must not cover the output: hybrid-parity preview scope")
 
-	result, err := cas.SearchLogs(ctx, SearchFilters{ContentSearch: "zanzibar unicorn"}, PaginationOptions{Limit: 10})
+	// Preview keyword still hits...
+	result, err := cas.SearchLogs(ctx, SearchFilters{ContentSearch: "innocent question"}, PaginationOptions{Limit: 10})
 	require.NoError(t, err)
-	require.Len(t, result.Logs, 1, "output-only keyword must be searchable in CAS mode")
+	require.Len(t, result.Logs, 1, "preview keyword must be searchable in CAS mode")
 	assert.Equal(t, "search-1", result.Logs[0].ID)
+
+	// ...while the full output is still readable through CAS hydration.
+	found, err := cas.FindByID(ctx, "search-1")
+	require.NoError(t, err)
+	assert.Contains(t, found.OutputMessage, "zanzibar unicorn",
+		"output remains fully available through CAS hydration")
 }
 
 // --- round-3 review defects ---

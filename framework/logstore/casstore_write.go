@@ -100,10 +100,16 @@ func (c *CasLogStore) extractCasPayload(entry *Log) map[string]string {
 	return ExtractPayloadFiltered(entry, c.excluded)
 }
 
-// createRow inserts dbEntry inside tx, replicating the inner store's Create
-// (GORM model hooks, postgres inc_number omission).
+// createRow inserts an already serialized and preview-prepared entry. The Log
+// BeforeCreate hook only sets CreatedAt and calls SerializeFields; repeating
+// serialization here would rebuild an intentionally empty preview from retained
+// output. Preserve its timestamp responsibility and skip model hooks only for
+// this prepared insert (no callbacks or global hook changes).
 func (c *CasLogStore) createRow(tx *gorm.DB, dbEntry *Log, ifNotExists bool) (inserted bool, err error) {
-	db := tx
+	if dbEntry.CreatedAt.IsZero() {
+		dbEntry.CreatedAt = time.Now().UTC()
+	}
+	db := tx.Session(&gorm.Session{SkipHooks: true})
 	if c.db.Dialector.Name() == "postgres" {
 		db = db.Omit("inc_number")
 	}
@@ -191,19 +197,15 @@ func (c *CasLogStore) prepareCreate(entry *Log) (*casPreparedCreate, error) {
 	payload := c.extractCasPayload(entry)
 	cleared, toStore := c.casSplitPayload(payload, entry.ContentHidden)
 	dbEntry := *entry
-	// Search-index parity with the plain RDB path: SerializeFields built the
-	// FULL input+output summary, but prepareCasEntry inherits hybrid's
-	// last-user-message preview truncated to 2048 bytes, which hides keywords
-	// that only appear in the output or in early history. The full summary is
-	// captured before prepareCasEntry clears the parsed fields and written to
-	// the row afterwards. Hidden rows keep no summary (prepareCasEntry clears
-	// it and we must not put content back).
-	fullSummary := ""
-	if !entry.ContentHidden {
-		fullSummary = entry.ContentSummary
-	}
+	// Hybrid-parity content_summary: prepareCasEntry (via prepareDBEntry)
+	// overwrites the SerializeFields-built full input+output summary with
+	// hybrid's last-user-message preview truncated to 2048 bytes, and clears
+	// it entirely for hidden rows. That value stands: CAS mode keeps the same
+	// list-preview and search scope as hybrid mode, and the full payload
+	// remains available through CAS hydration. Writing the full summary back
+	// made the row grow with the whole conversation history (quadratic across
+	// agent turns) for no hybrid-equivalent benefit.
 	prepareCasEntry(&dbEntry, c.excluded, cleared)
-	dbEntry.ContentSummary = fullSummary
 	dbEntry.HasObject = len(cleared) > 0
 	return &casPreparedCreate{entry: entry, dbEntry: dbEntry, toStore: toStore}, nil
 }
@@ -236,8 +238,8 @@ func (c *CasLogStore) createEntry(ctx context.Context, entry *Log, ifNotExists b
 	})
 }
 
-// Update intercepts the three Log entry shapes the rest of the framework uses
-// and delegates anything else unchanged:
+// Update accepts the three Log entry shapes used by the framework. Other
+// shapes fail closed: delegating them would bypass CAS and preview bounds.
 //
 //   - map[string]interface{} with DB column keys ("output_message", ...): large
 //     string values of payload fields go to CAS and the row column is emptied;
@@ -259,7 +261,7 @@ func (c *CasLogStore) Update(ctx context.Context, id string, entry any) error {
 		copyEntry := v
 		return c.updateFromStruct(ctx, id, &copyEntry)
 	default:
-		return c.LogStore.Update(ctx, id, entry)
+		return fmt.Errorf("logstore/cas: Update: unsupported entry type %T; accepts map[string]interface{}, Log or *Log", entry)
 	}
 }
 
@@ -332,10 +334,42 @@ func (c *CasLogStore) normalizeUpdateMapKeys(updates map[string]interface{}) (ma
 	return out, nil
 }
 
+// normalizeCasSummary validates before the transaction's SQLite writer reservation
+// or hidden-row override. A typed nil *string is an explicit SQL NULL clear.
+func normalizeCasSummary(value any) (any, error) {
+	switch v := value.(type) {
+	case nil:
+		return nil, nil
+	case string:
+		return truncateTag(v, maxContentSummaryBytes), nil
+	case []byte:
+		return truncateTag(string(v), maxContentSummaryBytes), nil
+	case *string:
+		if v == nil {
+			return nil, nil
+		}
+		return truncateTag(*v, maxContentSummaryBytes), nil
+	default:
+		return nil, fmt.Errorf("logstore/cas: Update: content_summary has unsupported value type %T; accepts nil, string, []byte or *string", value)
+	}
+}
+
 func (c *CasLogStore) updateFromMap(ctx context.Context, id string, updates map[string]interface{}) error {
 	normalized, err := c.normalizeUpdateMapKeys(updates)
 	if err != nil {
 		return err
+	}
+	if value, ok := normalized["content_summary"]; ok {
+		summary, err := normalizeCasSummary(value)
+		if err != nil {
+			return err
+		}
+		copyUpdates := make(map[string]interface{}, len(normalized))
+		for k, v := range normalized {
+			copyUpdates[k] = v
+		}
+		copyUpdates["content_summary"] = summary
+		normalized = copyUpdates
 	}
 	return c.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// SQLite has no SELECT FOR UPDATE. Acquire its writer reservation
@@ -437,6 +471,20 @@ func (c *CasLogStore) updateMapTx(tx *gorm.DB, id string, updates map[string]int
 				rowUpdates[k] = s
 			}
 			continue
+		}
+		if k == "content_summary" {
+			// Hybrid-parity cap: hybrid's Update passthrough writes the update
+			// map verbatim (its create path is the only one that truncates), so
+			// callers like the logging plugin's output-only summary update can
+			// put a full response into the column there. CAS mode caps every
+			// update-path write at the same 2048-byte UTF-8-safe bound the
+			// create path uses, keeping row storage bounded; empty and hidden
+			// values (already "") pass through unchanged.
+			var err error
+			val, err = normalizeCasSummary(val)
+			if err != nil {
+				return err
+			}
 		}
 		rowUpdates[k] = val
 	}
