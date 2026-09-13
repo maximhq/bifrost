@@ -737,6 +737,7 @@ func (m *dashboardLogManager) GetDimensionRankings(ctx context.Context, filters 
 	return &logstore.DimensionRankingResult{Dimension: dimension}, nil
 }
 func (m *dashboardLogManager) GetDroppedRequests(ctx context.Context) int64 { return 0 }
+func (m *dashboardLogManager) GetQueueFullSyncPersists(ctx context.Context) int64 { return 0 }
 func (m *dashboardLogManager) GetAvailableModels(ctx context.Context, limit int, query string) ([]string, error) {
 	return nil, nil
 }

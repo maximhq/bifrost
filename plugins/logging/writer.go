@@ -308,8 +308,11 @@ func (p *LoggerPlugin) cleanupStalePendingLogs() {
 }
 
 // enqueueLogEntry pushes a complete log entry to the write queue.
-// If the queue is full, the entry is dropped to prevent Postgres slowness
-// from cascading into request handling goroutines.
+// If the queue is full, the entry is persisted synchronously in the caller's
+// goroutine instead of being dropped: queue saturation must never lose a
+// completed request log. The sync path reuses processBatch (including its
+// per-entry fallback chain), so a genuine store failure still counts the entry
+// in droppedRequests — the only remaining case where an entry is lost.
 func (p *LoggerPlugin) enqueueLogEntry(entry *logstore.Log, callback func(entry *logstore.Log)) {
 	if p.closed.Load() {
 		return
@@ -325,8 +328,9 @@ func (p *LoggerPlugin) enqueueLogEntry(entry *logstore.Log, callback func(entry 
 	case p.writeQueue <- &writeQueueEntry{log: entry, callback: callback}:
 		// enqueued successfully
 	default:
-		p.droppedRequests.Add(1)
-		p.logger.Warn("log write queue full, dropping log entry %s", entry.ID)
+		p.queueFullSyncPersists.Add(1)
+		p.logger.Warn("log write queue full, persisting log entry %s synchronously", entry.ID)
+		p.safeProcessBatch([]*writeQueueEntry{{log: entry, callback: callback}})
 	}
 }
 
@@ -337,8 +341,8 @@ func (p *LoggerPlugin) EnqueueLogEntry(entry *logstore.Log) {
 }
 
 // enqueueMCPToolLogEntry pushes a complete MCP tool log entry to the write queue.
-// If the queue is full, the entry is dropped to prevent store slowness from
-// cascading into request handling goroutines.
+// If the queue is full, the entry is persisted synchronously in the caller's
+// goroutine instead of being dropped, mirroring enqueueLogEntry.
 func (p *LoggerPlugin) enqueueMCPToolLogEntry(entry *logstore.MCPToolLog, callback func(entry *logstore.MCPToolLog)) {
 	if p.closed.Load() {
 		return
@@ -351,8 +355,9 @@ func (p *LoggerPlugin) enqueueMCPToolLogEntry(entry *logstore.MCPToolLog, callba
 	select {
 	case p.writeQueue <- &writeQueueEntry{mcpLog: entry, mcpCallback: callback}:
 	default:
-		p.droppedRequests.Add(1)
-		p.logger.Warn("log write queue full, dropping MCP tool log entry %s", entry.ID)
+		p.queueFullSyncPersists.Add(1)
+		p.logger.Warn("log write queue full, persisting MCP tool log entry %s synchronously", entry.ID)
+		p.safeProcessBatch([]*writeQueueEntry{{mcpLog: entry, mcpCallback: callback}})
 	}
 }
 

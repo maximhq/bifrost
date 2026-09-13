@@ -1163,6 +1163,7 @@ type LoggerPlugin struct {
 	settlementTracer             schemas.Tracer     // tracer for settled batch/video cost spans; nil disables the bridge
 	mcpToolLogCallback           MCPToolLogCallback // Callback for MCP tool log entries
 	droppedRequests              atomic.Int64
+	queueFullSyncPersists        atomic.Int64 // entries persisted synchronously because the write queue was full (not dropped)
 	cleanupTicker                *time.Ticker          // Ticker for cleaning up old processing logs
 	logMsgPool                   sync.Pool             // Pool for reusing LogMessage structs
 	updateDataPool               sync.Pool             // Pool for reusing UpdateLogData structs

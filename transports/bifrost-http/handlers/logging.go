@@ -1482,7 +1482,11 @@ func (h *LoggingHandler) getLogsDimensionLatencyHistogram(ctx *fasthttp.RequestC
 // getDroppedRequests handles GET /api/logs/dropped - Get the number of dropped requests
 func (h *LoggingHandler) getDroppedRequests(ctx *fasthttp.RequestCtx) {
 	droppedRequests := h.logManager.GetDroppedRequests(ctx)
-	SendJSON(ctx, map[string]int64{"dropped_requests": droppedRequests})
+	queueFullSyncPersists := h.logManager.GetQueueFullSyncPersists(ctx)
+	SendJSON(ctx, map[string]int64{
+		"dropped_requests":         droppedRequests,
+		"queue_full_sync_persists": queueFullSyncPersists,
+	})
 }
 
 // ParseRankingLimit reads the row-cap query parameters shared by the ranking

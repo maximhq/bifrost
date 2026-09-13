@@ -210,7 +210,13 @@ func TestLifecycleAsyncWriterOutage(t *testing.T) {
 		p.EnqueueLogEntry(&logstore.Log{ID: fmt.Sprintf("outage-%d", i), Timestamp: time.Now(), Status: "success"})
 	}
 	require.Equal(t, 4, len(p.writeQueue))
+	// The 60 entries that did not fit are now persisted synchronously in the
+	// enqueuing goroutine instead of being dropped; with the store down each
+	// consumes its three bounded attempts and still ends up counted as dropped
+	// (a genuine store failure, not a queue-full loss).
 	require.Equal(t, int64(60), p.droppedRequests.Load())
+	require.Equal(t, int64(60), p.queueFullSyncPersists.Load())
+	require.Equal(t, int64(181), store.attempts.Load())
 	close(store.release)
 	require.Eventually(t, func() bool { return p.droppedRequests.Load() == 65 }, 5*time.Second, time.Millisecond)
 	// Continue failing over multiple independent batches, rather than only draining
@@ -219,7 +225,9 @@ func TestLifecycleAsyncWriterOutage(t *testing.T) {
 		p.EnqueueLogEntry(&logstore.Log{ID: fmt.Sprintf("continuous-%d", round), Timestamp: time.Now(), Status: "success"})
 		require.Eventually(t, func() bool { return p.droppedRequests.Load() == int64(66+round) }, 5*time.Second, time.Millisecond)
 	}
-	require.Equal(t, int64(45), store.attempts.Load())
+	// blocked (3) + 60 sync fallbacks (180) + 4 drained queue entries (12) +
+	// 10 continuous rounds (30)
+	require.Equal(t, int64(225), store.attempts.Load())
 	require.Empty(t, events)
 	store.outage.Store(false)
 	p.EnqueueLogEntry(&logstore.Log{ID: "after-outage", Timestamp: time.Now(), Status: "success"})
@@ -234,6 +242,78 @@ func TestLifecycleAsyncWriterOutage(t *testing.T) {
 	result, err := real.SearchLogsForBilling(context.Background(), logstore.SearchFilters{}, logstore.PaginationOptions{Limit: 100})
 	require.NoError(t, err)
 	require.Len(t, result.Logs, 1)
+}
+
+// TestWriterQueueFullPersistsWithoutDrop is the core no-loss guarantee: with a
+// healthy store and a saturated queue, entries are persisted synchronously in
+// the caller's goroutine, counted in queueFullSyncPersists, and never counted
+// as dropped.
+func TestWriterQueueFullPersistsWithoutDrop(t *testing.T) {
+	s := lifecycleStore(t)
+	p := &LoggerPlugin{ctx: context.Background(), store: s, logger: testLogger{}, writeQueue: make(chan *writeQueueEntry, 1)}
+	p.writeQueue <- &writeQueueEntry{log: &logstore.Log{ID: "queued", Timestamp: time.Now(), Status: "success"}}
+	callbacks := make(chan string, 4)
+	p.enqueueLogEntry(&logstore.Log{ID: "synced", Timestamp: time.Now(), Status: "success"}, func(row *logstore.Log) { callbacks <- row.ID })
+	p.enqueueMCPToolLogEntry(&logstore.MCPToolLog{ID: "mcp-synced", Timestamp: time.Now(), Status: "success", ToolName: "test-tool"}, func(row *logstore.MCPToolLog) { callbacks <- row.ID })
+	require.Equal(t, int64(0), p.droppedRequests.Load())
+	require.Equal(t, int64(2), p.queueFullSyncPersists.Load())
+	saved, err := s.FindByID(context.Background(), "synced")
+	require.NoError(t, err)
+	require.Equal(t, "success", saved.Status)
+	seen := map[string]bool{}
+	for len(seen) < 2 {
+		select {
+		case id := <-callbacks:
+			seen[id] = true
+		case <-time.After(5 * time.Second):
+			t.Fatalf("sync persist callbacks timed out; got %v", seen)
+		}
+	}
+	require.Contains(t, seen, "synced")
+	require.Contains(t, seen, "mcp-synced")
+}
+
+// TestWriterQueueFullWithPausedWriterLosesNothing exercises the full plugin:
+// the batch writer is parked mid-transaction, the queue saturates, and further
+// enqueues must still reach the store via the synchronous fallback. Nothing is
+// dropped and every enqueued row is durable once the writer resumes.
+func TestWriterQueueFullWithPausedWriterLosesNothing(t *testing.T) {
+	real := lifecycleStore(t)
+	store := &lifecycleOutageStore{LogStore: real, entered: make(chan struct{}), release: make(chan struct{})}
+	p, err := Init(context.Background(), &Config{Writer: &logstore.WriterConfig{MaxBatchSize: 1, BatchInterval: "10ms", WriteQueueCapacity: 4}}, testLogger{}, store, nil, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, p.Cleanup()) })
+	p.EnqueueLogEntry(&logstore.Log{ID: "parked", Timestamp: time.Now(), Status: "success"})
+	select {
+	case <-store.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("writer did not start")
+	}
+	for i := 0; i < 4; i++ {
+		p.EnqueueLogEntry(&logstore.Log{ID: fmt.Sprintf("queued-%d", i), Timestamp: time.Now(), Status: "success"})
+	}
+	require.Equal(t, 4, len(p.writeQueue))
+	for i := 0; i < 8; i++ {
+		p.EnqueueLogEntry(&logstore.Log{ID: fmt.Sprintf("sync-%d", i), Timestamp: time.Now(), Status: "success"})
+	}
+	require.Equal(t, int64(8), p.queueFullSyncPersists.Load())
+	require.Equal(t, int64(0), p.droppedRequests.Load())
+	close(store.release)
+	for i := 0; i < 13; i++ {
+		id := ""
+		if i == 0 {
+			id = "parked"
+		} else if i <= 4 {
+			id = fmt.Sprintf("queued-%d", i-1)
+		} else {
+			id = fmt.Sprintf("sync-%d", i-5)
+		}
+		require.Eventually(t, func() bool {
+			_, err := real.FindByID(context.Background(), id)
+			return err == nil
+		}, 5*time.Second, 5*time.Millisecond, "row %s never became durable", id)
+	}
+	require.Equal(t, int64(0), p.droppedRequests.Load())
 }
 
 func TestLifecycleTransientFailureDoesNotClaimPayloadDegradation(t *testing.T) {

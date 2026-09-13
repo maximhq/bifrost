@@ -77,6 +77,10 @@ type LogManager interface {
 	// Get the number of dropped requests
 	GetDroppedRequests(ctx context.Context) int64
 
+	// GetQueueFullSyncPersists returns how many log entries were persisted
+	// synchronously because the write queue was full (saved, not dropped)
+	GetQueueFullSyncPersists(ctx context.Context) int64
+
 	// GetAvailableModels returns all unique models from logs
 	GetAvailableModels(ctx context.Context, limit int, query string) ([]string, error)
 
@@ -320,6 +324,10 @@ func (p *PluginLogManager) GetDimensionRankings(ctx context.Context, filters *lo
 
 func (p *PluginLogManager) GetDroppedRequests(ctx context.Context) int64 {
 	return p.plugin.droppedRequests.Load()
+}
+
+func (p *PluginLogManager) GetQueueFullSyncPersists(ctx context.Context) int64 {
+	return p.plugin.queueFullSyncPersists.Load()
 }
 
 // GetAvailableModels returns all unique models from logs
