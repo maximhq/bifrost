@@ -41,13 +41,12 @@ func TestAnthropicRawStreamTextCodecRewritesOnlyTextDelta(t *testing.T) {
 	}
 }
 
-// TestAnthropicRawStreamTextCodecIgnoresNonTextEvents verifies reasoning, tool JSON, and lifecycle events remain opaque.
+// TestAnthropicRawStreamTextCodecIgnoresNonTextEvents verifies reasoning and lifecycle events remain opaque.
 func TestAnthropicRawStreamTextCodecIgnoresNonTextEvents(t *testing.T) {
 	codec := anthropicRawStreamTextCodec{}
 	cases := []string{
 		`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"alice@example.com"}}`,
 		`{"type":"content_block_delta","index":1,"delta":{"type":"signature_delta","signature":"alice@example.com"}}`,
-		`{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"email\":\"alice@example.com\"}"}}`,
 		`{"type":"content_block_stop","index":2}`,
 		`{"type":"message_stop"}`,
 	}
@@ -73,7 +72,7 @@ func TestAnthropicRawStreamTextCodecRejectsMalformedEligibleEvents(t *testing.T)
 	}
 }
 
-// TestRewriteAnthropicRawRequestBodyRedactsOnlyContentFields verifies native redaction covers conversation content without touching request metadata or tool arguments.
+// TestRewriteAnthropicRawRequestBodyRedactsOnlyContentFields verifies native redaction covers conversation content and tool argument values without touching request metadata.
 func TestRewriteAnthropicRawRequestBodyRedactsOnlyContentFields(t *testing.T) {
 	rawBody := []byte(`{
 		"model":"claude-sonnet-4-5",
@@ -103,6 +102,7 @@ func TestRewriteAnthropicRawRequestBodyRedactsOnlyContentFields(t *testing.T) {
 	}
 
 	redactedPaths := []string{
+		"messages.1.content.4.input.email",
 		"prompt",
 		"system.0.text",
 		"messages.0.content",
@@ -117,13 +117,12 @@ func TestRewriteAnthropicRawRequestBodyRedactsOnlyContentFields(t *testing.T) {
 	}
 
 	untouchedPaths := map[string]string{
-		"messages.1.content.0.thinking":    "reason alice@example.com",
-		"messages.1.content.0.signature":   "alice@example.com",
-		"messages.1.content.1.data":        "alice@example.com",
-		"messages.1.content.2.content":     "summary alice@example.com",
-		"messages.1.content.4.input.email": "alice@example.com",
-		"metadata.user_id":                 "alice@example.com",
-		"tools.0.description":              "alice@example.com",
+		"messages.1.content.0.thinking":  "reason alice@example.com",
+		"messages.1.content.0.signature": "alice@example.com",
+		"messages.1.content.1.data":      "alice@example.com",
+		"messages.1.content.2.content":   "summary alice@example.com",
+		"metadata.user_id":               "alice@example.com",
+		"tools.0.description":            "alice@example.com",
 	}
 	for path, expected := range untouchedPaths {
 		if value := gjson.GetBytes(got, path).String(); value != expected {
@@ -587,5 +586,22 @@ func TestCheckAnthropicPassthrough_ProviderPrefixedClaudeModel(t *testing.T) {
 				t.Errorf("UseRawRequestBody = %v, want %v for %s", useRaw, tc.wantRawOn, tc.model)
 			}
 		})
+	}
+}
+
+// TestAnthropicRawArgumentDelta verifies partial JSON is replaced without changing its event envelope.
+func TestAnthropicRawArgumentDelta(t *testing.T) {
+	codec := anthropicRawStreamTextCodec{}
+	raw := `{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"grep alice@"}}`
+	event, eligible, err := codec.Inspect(raw)
+	if err != nil || !eligible || event.Text != `{"command":"grep alice@` {
+		t.Fatalf("unexpected inspection: %+v %v %v", event, eligible, err)
+	}
+	result, err := codec.Rewrite(raw, `{"command":"grep [EMAIL]"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gjson.Get(result, "delta.partial_json").String() != `{"command":"grep [EMAIL]"}` || gjson.Get(result, "index").Int() != 2 {
+		t.Fatal(result)
 	}
 }
