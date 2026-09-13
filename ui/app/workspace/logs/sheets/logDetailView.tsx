@@ -1673,7 +1673,7 @@ export function LogDetailView({
 						hasRightBorder
 					/>
 					<HeroStat
-						label={audioSeconds != null ? "Audio duration" : t("logs.detail.tokensInOut")}
+						label={audioSeconds != null ? t("logs.detail.audioDuration") : t("logs.detail.tokensInOut")}
 						mono
 						value={
 							audioSeconds != null
@@ -1684,7 +1684,7 @@ export function LogDetailView({
 						}
 						sub={
 							audioSeconds != null
-								? "duration billed"
+								? t("logs.detail.durationBilled")
 								: log.token_usage
 									? `total ${formatCompactNumber(log.token_usage.total_tokens ?? 0)}${
 											log.token_usage.completion_tokens_details?.reasoning_tokens
