@@ -177,6 +177,11 @@ func TestChatCompletion_UsesAnthropicEndpoint(t *testing.T) {
 			http.Error(w, "unexpected api key", http.StatusBadRequest)
 			return
 		}
+		if got := r.Header.Get("anthropic-version"); got != "2023-06-01" {
+			t.Errorf("anthropic-version = %q, want 2023-06-01", got)
+			http.Error(w, "missing anthropic-version", http.StatusBadRequest)
+			return
+		}
 		if got := r.Header.Get("Authorization"); got != "" {
 			t.Errorf("Authorization = %q, want empty for the Anthropic endpoint", got)
 		}
@@ -249,5 +254,39 @@ func TestUnsupportedOperations(t *testing.T) {
 	}
 	if _, bifrostErr := provider.Speech(ctx, key, &schemas.BifrostSpeechRequest{}); bifrostErr == nil {
 		t.Fatal("Speech: got nil error, want unsupported-operation error")
+	}
+}
+
+// TestCustomProviderConfig_OperationGating verifies a non-nil AllowedRequests
+// restriction is enforced for every implemented operation.
+func TestCustomProviderConfig_OperationGating(t *testing.T) {
+	t.Parallel()
+
+	provider, err := tencent.NewTencentProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{
+			BaseURL:                        "http://127.0.0.1:1",
+			DefaultRequestTimeoutInSeconds: 5,
+		},
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			AllowedRequests: &schemas.AllowedRequests{ListModels: true},
+		},
+	}, testLogger{})
+	if err != nil {
+		t.Fatalf("NewTencentProvider: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	key := schemas.Key{Value: schemas.SecretVar{Val: "test-api-key"}}
+	msg := "hello"
+
+	if _, bifrostErr := provider.ChatCompletion(ctx, key, &schemas.BifrostChatRequest{
+		Provider: schemas.Tencent,
+		Model:    "deepseek-v4-pro",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &msg}}},
+	}); bifrostErr == nil {
+		t.Fatal("ChatCompletion: got nil error, want an operation-not-allowed error")
+	}
+	if _, bifrostErr := provider.Responses(ctx, key, &schemas.BifrostResponsesRequest{Provider: schemas.Tencent, Model: "deepseek-v4-pro"}); bifrostErr == nil {
+		t.Fatal("Responses: got nil error, want an operation-not-allowed error")
 	}
 }
