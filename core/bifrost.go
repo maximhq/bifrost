@@ -67,6 +67,34 @@ type ChannelMessage struct {
 	Err            chan schemas.BifrostError
 	queueSpan      schemas.SpanHandle // "queue-wait" span opened at enqueue, closed when a worker dequeues (or on release if the send never landed)
 	sentAt         time.Time          // set by the worker immediately before sending the result/error, so tryRequest can measure the worker->caller goroutine-hop latency ("worker-handoff")
+	// handoff arbitrates who owns the terminal value of a NON-streaming request.
+	// Response/Err are cap-1 channels drained on acquire, so the worker's send is
+	// always ready; once the caller's context ends, ctx.Done() is ready too and a
+	// select picks between them uniformly at random (#6972). The claim makes it
+	// deterministic: the worker claims before it sends and the caller then must
+	// receive, or the caller abandons first and the worker bills and releases.
+	handoff atomic.Int32
+}
+
+const (
+	handoffOpen      int32 = iota // neither side has committed
+	handoffClaimed                // worker will send; tryRequest must receive
+	handoffAbandoned              // tryRequest left on ctx.Done; worker owns the value and the message
+)
+
+// claimDelivery is called by the worker before it sends a terminal value. False
+// means tryRequest already abandoned the message: nobody will read the channel,
+// so the worker bills the value itself and releases the message.
+func (m *ChannelMessage) claimDelivery() bool {
+	return m.handoff.CompareAndSwap(handoffOpen, handoffClaimed)
+}
+
+// abandonDelivery is called by tryRequest when its context ends before a value
+// arrived. False means the worker already claimed delivery: the value is in (or
+// about to enter) the buffer and the caller must receive it, since no one else
+// will. After a successful abandon the caller must not touch the message again.
+func (m *ChannelMessage) abandonDelivery() bool {
+	return m.handoff.CompareAndSwap(handoffOpen, handoffAbandoned)
 }
 
 // Bifrost manages providers and maintains specified open channels for concurrent processing.
@@ -5710,8 +5738,9 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	var result *schemas.BifrostResponse
 	var resp *schemas.BifrostResponse
 	pluginCount := len(*bifrost.llmPlugins.Load())
-	select {
-	case result = <-msg.Response:
+	// onResult / onError finish a terminal value: the normal receive path, and the
+	// path tryRequest takes on ctx.Done when the worker has already claimed delivery.
+	onResult := func(result *schemas.BifrostResponse) (*schemas.BifrostResponse, *schemas.BifrostError) {
 		// Worker->caller goroutine-hop latency: measure the instant we receive so the
 		// breakdown carves this scheduling gap out of the residual into "worker-handoff".
 		if !msg.sentAt.IsZero() {
@@ -5754,7 +5783,8 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 			}
 		}
 		return resp, nil
-	case bifrostErrVal := <-msg.Err:
+	}
+	onError := func(bifrostErrVal schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 		bifrostErrPtr := &bifrostErrVal
 		// Worker->caller goroutine-hop latency on the error path too.
 		if !msg.sentAt.IsZero() {
@@ -5798,14 +5828,29 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 			return nil, bifrostErrPtr
 		}
 		return resp, nil
+	}
+	select {
+	case result = <-msg.Response:
+		return onResult(result)
+	case bifrostErrVal := <-msg.Err:
+		return onError(bifrostErrVal)
 	case <-ctx.Done():
-		// Do NOT releaseChannelMessage here. The message is already enqueued and
-		// the worker still holds a reference to msg.Response and msg.Err. Returning
-		// those channels to the pool now would let the next request reuse them while
-		// the worker is still writing to them — stale data corruption. The worker
-		// never calls releaseChannelMessage itself, so this message leaks from the
-		// pool and is GC'd. That is intentional: a small pool leak on cancellation
-		// is far safer than corrupting another request's channels.
+		if !msg.abandonDelivery() {
+			// The worker claimed delivery first: the value is in (or about to enter)
+			// the buffer and nobody else will read it. Take it and finish normally so
+			// it is billed and logged exactly once (#6972). The send is buffered and
+			// the worker is committed, so this cannot block.
+			select {
+			case result = <-msg.Response:
+				return onResult(result)
+			case bifrostErrVal := <-msg.Err:
+				return onError(bifrostErrVal)
+			}
+		}
+		// Abandoned: the worker now owns the message. It bills the terminal value
+		// when it arrives and returns the message to the pool, so it must not be
+		// touched here (releasing it now would let the next request reuse channels
+		// the worker is still about to write to).
 		provider, model, _ := req.GetRequestFields()
 		bifrostErr := newBifrostCtxDoneError(ctx, "waiting for provider response")
 		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
@@ -7319,23 +7364,35 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			bifrost.endCoreSpan(miscSpan)
 			req.sentAt = time.Now()
 
-			// Send error with context awareness to prevent deadlock
-			deliveryTimer.Reset(5 * time.Second)
-			select {
-			case req.Err <- *bifrostError:
-				// Error sent successfully
-			case <-req.Context.Done():
-				// Client no longer listening, log and continue
-				bifrost.logger.Debug("Client context cancelled while sending error response")
-				// The provider already produced this error (possibly after
-				// processing input tokens). tryRequest returned on ctx.Done and will
-				// never receive it, so bill/log it here. Non-streaming only.
+			if !IsStreamRequestType(req.RequestType) && !req.claimDelivery() {
+				// tryRequest abandoned the handoff on ctx.Done: it will never read
+				// req.Err and does not touch the message again, so this side owns both
+				// the value and the message. The claim is what makes this deterministic:
+				// a buffered send and ctx.Done() are both ready once the caller is gone
+				// and select picks uniformly among ready cases (#6972). The provider
+				// already produced this error (possibly after processing input tokens).
+				bifrost.logger.Debug("Client context cancelled before error handoff")
 				bifrost.billAbandonedTerminal(req, nil, bifrostError)
-			case <-deliveryTimer.C:
-				// Timeout to prevent indefinite blocking
-				bifrost.logger.Warn("Timeout while sending error response, client may have disconnected")
+				bifrost.releaseChannelMessage(req)
+			} else {
+				// Claimed (or streaming, whose teardown bills via the provider goroutine):
+				// the caller is committed to receiving. Send with context awareness to
+				// prevent deadlock.
+				deliveryTimer.Reset(5 * time.Second)
+				select {
+				case req.Err <- *bifrostError:
+					// Error sent successfully
+				case <-req.Context.Done():
+					// Only reachable if the send could block, which a cap-1 channel drained
+					// on acquire never does. A claimed caller is receiving; nothing to bill.
+					bifrost.logger.Debug("Client context cancelled while sending error response")
+				case <-deliveryTimer.C:
+					// Unreachable while req.Err is a cap-1 channel drained on acquire;
+					// kept as the guard if that invariant ever changes.
+					bifrost.logger.Warn("Timeout while sending error response, client may have disconnected")
+				}
+				deliveryTimer.Stop()
 			}
-			deliveryTimer.Stop()
 		} else {
 			// Time the field population as "miscellaneous", then stamp sentAt just before
 			// the send so "worker-handoff" measures only the goroutine hop, not this work.
@@ -7362,21 +7419,28 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					drainAbandonedStream(stream)
 				}
 				deliveryTimer.Stop()
+			} else if !req.claimDelivery() {
+				// tryRequest abandoned the handoff on ctx.Done: it will never read
+				// req.Response (see the error path above for why the claim, not a
+				// select, decides this, #6972). The provider already produced this
+				// result and consumed tokens; bill it and release the message.
+				bifrost.logger.Debug("Client context cancelled before response handoff")
+				bifrost.billAbandonedTerminal(req, result, nil)
+				bifrost.releaseChannelMessage(req)
 			} else {
-				// Send response with context awareness to prevent deadlock
+				// Claimed: the caller is committed to receiving. Send with context
+				// awareness to prevent deadlock.
 				deliveryTimer.Reset(5 * time.Second)
 				select {
 				case req.Response <- result:
 					// Response sent successfully
 				case <-req.Context.Done():
-					// Client no longer listening, log and continue
+					// Only reachable if the send could block, which a cap-1 channel drained
+					// on acquire never does. A claimed caller is receiving; nothing to bill.
 					bifrost.logger.Debug("Client context cancelled while sending response")
-					// The provider already produced this non-streaming result
-					// (consuming tokens). tryRequest returned on ctx.Done and will never
-					// receive it, so bill/log it here.
-					bifrost.billAbandonedTerminal(req, result, nil)
 				case <-deliveryTimer.C:
-					// Timeout to prevent indefinite blocking
+					// Unreachable while req.Response is a cap-1 channel drained on
+					// acquire; kept as the guard if that invariant ever changes.
 					bifrost.logger.Warn("Timeout while sending response, client may have disconnected")
 				}
 				deliveryTimer.Stop()
@@ -8731,6 +8795,7 @@ func (bifrost *Bifrost) getChannelMessage(req schemas.BifrostRequest) *ChannelMe
 	msg.BifrostRequest = req
 	msg.Response = responseChan
 	msg.Err = errorChan
+	msg.handoff.Store(handoffOpen)
 	// Clear the previous user's send timestamp so a reused message can't report a
 	// stale worker-handoff duration on a path that never re-stamps it (e.g. the
 	// shutdown-drain error sends). The worker sets sentAt fresh before each normal send.

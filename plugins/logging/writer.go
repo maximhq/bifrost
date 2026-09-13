@@ -18,6 +18,12 @@ const (
 	// is never evicted mid-flight. Matches the 30-minute window used by
 	// cleanupOldProcessingLogs so the two reapers agree on what "stale" means.
 	pendingLogTTL = 15 * time.Minute
+	// injectedTraceTTL bounds how long a trace stays marked as already injected.
+	// The only late writer it protects is the worker's abandoned-billing hook,
+	// which lands within the upstream teardown of a disconnected request, so a
+	// couple of minutes is generous; anything longer just holds one map entry
+	// per completed request at high request rates (#6972).
+	injectedTraceTTL = 2 * time.Minute
 	// cleanupDrainTimeout caps how long Cleanup spends draining the write queue
 	// itself. Matches the outer server shutdown budget at server.go:1596 so the
 	// logging plugin can fully drain in the worst case; remaining entries beyond
@@ -50,6 +56,10 @@ type pendingInjectEntries struct {
 	mu        sync.Mutex
 	entries   []*logstore.Log
 	createdAt time.Time
+	// drained is set by Inject under mu once entries has been handed to the write
+	// queue. A storeOrEnqueueEntry that appends after that point would be writing
+	// into a slice nobody reads again; it writes directly instead.
+	drained bool
 }
 
 // writeQueueEntry is an entry pushed to the batch write queue.
@@ -254,6 +264,13 @@ func (p *LoggerPlugin) cleanupStalePendingLogs() {
 			if pending.createdAt.Before(cutoff) {
 				p.pendingLogsToInject.Delete(key)
 			}
+		}
+		return true
+	})
+	injectedCutoff := time.Now().Add(-injectedTraceTTL)
+	p.injectedTraces.Range(func(key, value any) bool {
+		if injectedAt, ok := value.(time.Time); ok && injectedAt.Before(injectedCutoff) {
+			p.injectedTraces.Delete(key)
 		}
 		return true
 	})

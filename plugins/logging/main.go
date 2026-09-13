@@ -1168,6 +1168,7 @@ type LoggerPlugin struct {
 	updateDataPool               sync.Pool             // Pool for reusing UpdateLogData structs
 	pendingLogsEntries           sync.Map              // Maps requestID -> *PendingLogData (PreLLMHook input data awaiting PostLLMHook)
 	pendingLogsToInject          sync.Map              // Maps traceID -> *pendingInjectEntries (log entries to inject, supports multiple per trace)
+	injectedTraces               sync.Map              // Maps traceID -> time.Time: traces already handed to Inject; a terminal hook that lands later writes directly instead of parking (#6972)
 	pendingMCPLogsToInject       sync.Map              // Maps mcpLogID -> *logstore.MCPToolLog (PreMCPHook input data awaiting PostMCPHook)
 	writerConfig                 logstore.WriterConfig // Resolved async writer queue and batch settings
 	writeQueue                   chan *writeQueueEntry // Buffered channel for batch write queue
@@ -2496,20 +2497,51 @@ func (p *LoggerPlugin) storeOrEnqueueEntry(ctx *schemas.BifrostContext, entry *l
 	// content is actually visible.
 	attachLogRedactionData(ctx, entry, policy.visible())
 	traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
-	if traceID != "" {
-		// Append to slice for Inject() to pick up — supports multiple attempts per trace
-		existing, loaded := p.pendingLogsToInject.LoadOrStore(traceID, &pendingInjectEntries{entries: []*logstore.Log{entry}, createdAt: time.Now()})
-		if !loaded {
-			return
-		}
-		pending := existing.(*pendingInjectEntries)
-		pending.mu.Lock()
-		pending.entries = append(pending.entries, entry)
-		pending.mu.Unlock()
-	} else {
+	if traceID == "" {
 		// Fallback: no tracing (Go SDK path), enqueue directly
 		p.enqueueLogEntry(entry, callback)
+		return
 	}
+	if _, injected := p.injectedTraces.Load(traceID); injected {
+		// The trace was already completed and handed to Inject: the transport
+		// flushed it when the client disconnected, before the worker's abandoned
+		// billing ran the terminal hooks (#6972). Nothing drains a parked slot
+		// twice, so write directly (without the trace's plugin logs, which are
+		// gone with the trace).
+		p.enqueueLogEntry(entry, callback)
+		return
+	}
+	// Append to slice for Inject() to pick up — supports multiple attempts per trace
+	existing, loaded := p.pendingLogsToInject.LoadOrStore(traceID, &pendingInjectEntries{entries: []*logstore.Log{entry}, createdAt: time.Now()})
+	if !loaded {
+		// Inject marks the trace before it drains, so a mark that appeared between
+		// the check above and this store means the drain may already have run and
+		// this fresh slot would be orphaned. Reclaim it; if Inject wins the race
+		// for the slot instead, it drains the entry itself.
+		if _, injected := p.injectedTraces.Load(traceID); injected {
+			if val, ok := p.pendingLogsToInject.LoadAndDelete(traceID); ok {
+				orphaned := val.(*pendingInjectEntries)
+				orphaned.mu.Lock()
+				orphaned.drained = true
+				late := orphaned.entries
+				orphaned.mu.Unlock()
+				for _, e := range late {
+					p.enqueueLogEntry(e, callback)
+				}
+			}
+		}
+		return
+	}
+	pending := existing.(*pendingInjectEntries)
+	pending.mu.Lock()
+	if pending.drained {
+		// Inject drained this slot between our load and this append.
+		pending.mu.Unlock()
+		p.enqueueLogEntry(entry, callback)
+		return
+	}
+	pending.entries = append(pending.entries, entry)
+	pending.mu.Unlock()
 }
 
 // ConsumesOverheadSpans opts this plugin into receiving the internal overhead-breakdown
@@ -2532,6 +2564,12 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 	if joinKey == "" {
 		joinKey = trace.TraceID
 	}
+	// Mark the trace as injected BEFORE draining. The transport completes the
+	// trace as soon as it has answered the client; on a client disconnect that
+	// runs ahead of the worker's abandoned-billing terminal hooks (#6972). A
+	// storeOrEnqueueEntry that sees this mark writes directly; one that parked
+	// just before it is drained below.
+	p.injectedTraces.Store(joinKey, time.Now())
 	entryVal, ok := p.pendingLogsToInject.LoadAndDelete(joinKey)
 	if !ok {
 		return nil
@@ -2540,6 +2578,12 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 	if !ok {
 		return nil
 	}
+	// Snapshot under the lock and close the slot, so a concurrent append cannot
+	// land in a slice this drain has already walked.
+	pending.mu.Lock()
+	pending.drained = true
+	entries := pending.entries
+	pending.mu.Unlock()
 	// Serialize plugin logs once for all entries
 	pluginLogsJSON := serializePluginLogs(trace.PluginLogs)
 	// Backfill upstream/overhead from the authoritative values the tracer stamped on
@@ -2555,7 +2599,7 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 	// row that receives the overhead number below.
 	overheadBreakdown, measuredOverheadMs, isStreaming := overhead.Compute(trace, overheadMs, ovOK, upstreamMs, upOK)
 
-	p.logger.Debug("Inject: enqueuing %d log entries", len(pending.entries))
+	p.logger.Debug("Inject: enqueuing %d log entries", len(entries))
 	// Upstream/overhead are request-level: put them on one row per trace, not all.
 	// A trace can log many rows (list_models fans out per provider; fallbacks add a
 	// row per attempt), and stamping every one would count the same overhead N times
@@ -2567,14 +2611,14 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 	// "last" would attach trace latency to a random provider row. For sequential
 	// fallbacks the latest Timestamp is still the terminal attempt.
 	stampIdx := 0
-	for i, entry := range pending.entries {
-		best := pending.entries[stampIdx]
+	for i, entry := range entries {
+		best := entries[stampIdx]
 		if entry.Timestamp.After(best.Timestamp) ||
 			(entry.Timestamp.Equal(best.Timestamp) && entry.ID > best.ID) {
 			stampIdx = i
 		}
 	}
-	for i, entry := range pending.entries {
+	for i, entry := range entries {
 		entry.PluginLogs = pluginLogsJSON
 		if i == stampIdx {
 			// Clear both provisional components before backfilling. A partial root

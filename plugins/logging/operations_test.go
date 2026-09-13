@@ -3590,3 +3590,59 @@ func TestRecordVideoJobLifecycle_MarksTheRequestRowWithTheVideo(t *testing.T) {
 		t.Fatal("only the settlement's aggregate cost row carries an accounting block")
 	}
 }
+
+// TestStoreOrEnqueueAfterInjectStillWrites pins the second drop behind maximhq/bifrost#6972.
+// When a client disconnects on a non-streaming request, the transport completes and
+// flushes the trace (Inject runs) as soon as it has written the 499, while the worker
+// is still tearing down the upstream call. The worker's abandoned-billing terminal hook
+// then reaches storeOrEnqueueEntry AFTER Inject already drained this trace. Parking the
+// entry under the trace id again leaves it for nothing but the TTL sweeper, so the
+// request is billed by governance but never gets a log row.
+func TestStoreOrEnqueueAfterInjectStillWrites(t *testing.T) {
+	plugin := &LoggerPlugin{
+		logger:     testLogger{},
+		writeQueue: make(chan *writeQueueEntry, 10),
+	}
+	traceID := "trace-late-terminal-hook"
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+
+	// The transport flushed the trace with nothing parked yet.
+	if err := plugin.Inject(context.Background(), &schemas.Trace{TraceID: traceID}); err != nil {
+		t.Fatalf("Inject() error = %v", err)
+	}
+
+	// The worker's late terminal hook lands afterwards.
+	plugin.storeOrEnqueueEntry(ctx, &logstore.Log{ID: "req-abandoned", Model: "gpt-4o-mini"}, nil)
+
+	if got := len(plugin.writeQueue); got != 1 {
+		t.Fatalf("expected the late entry to be enqueued for writing, writeQueue has %d entries", got)
+	}
+	if _, parked := plugin.pendingLogsToInject.Load(traceID); parked {
+		t.Fatal("late entry was parked under an already-injected trace; nothing will ever drain it")
+	}
+}
+
+// TestStoreOrEnqueueBeforeInjectStillParks guards the fix above against over-correcting:
+// an entry stored before the trace is injected must still be parked so Inject can attach
+// plugin logs and the trace's authoritative latency before it is written.
+func TestStoreOrEnqueueBeforeInjectStillParks(t *testing.T) {
+	plugin := &LoggerPlugin{
+		logger:     testLogger{},
+		writeQueue: make(chan *writeQueueEntry, 10),
+	}
+	traceID := "trace-normal-order"
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+
+	plugin.storeOrEnqueueEntry(ctx, &logstore.Log{ID: "req-normal", Model: "gpt-4o-mini"}, nil)
+	if got := len(plugin.writeQueue); got != 0 {
+		t.Fatalf("entry stored before Inject must be parked, but writeQueue has %d entries", got)
+	}
+	if err := plugin.Inject(context.Background(), &schemas.Trace{TraceID: traceID}); err != nil {
+		t.Fatalf("Inject() error = %v", err)
+	}
+	if got := len(plugin.writeQueue); got != 1 {
+		t.Fatalf("Inject must drain the parked entry, writeQueue has %d entries", got)
+	}
+}
