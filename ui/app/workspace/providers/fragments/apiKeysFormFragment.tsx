@@ -370,7 +370,6 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 					)}
 				/>
 			)}
-			{!isVLLM && (
 				<>
 					<FormField
 						control={control}
@@ -490,7 +489,6 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 						)}
 					/>
 				</>
-			)}
 			{supportsBatchAPI && !isBedrock && !isAzure && !isVertex && <BatchAPIFormField control={control} form={form} />}
 			{isAzure && (
 				<div className="space-y-4">

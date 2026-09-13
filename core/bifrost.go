@@ -9130,10 +9130,11 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 			// NOTE: Model filtering uses the original requested model (which may be an alias).
 			// key.Models and key.BlacklistedModels must therefore be expressed in alias keys.
 			// The provider-specific identifier is resolved later in the handler closure via key.Aliases.Resolve(model).
+			// vLLM also resolves a per-key copy below because ModelName contains the identifier served by that key.
 			modelSupported := hasValue && key.ModelAccess().Allows(string(providerKey), model)
 			if baseProviderType == schemas.VLLM && key.VLLMKeyConfig != nil {
 				if key.VLLMKeyConfig.ModelName != "" {
-					modelSupported = modelSupported && (key.VLLMKeyConfig.ModelName == model)
+					modelSupported = modelSupported && (key.VLLMKeyConfig.ModelName == key.Aliases.Resolve(model))
 				}
 			}
 			if modelSupported {
