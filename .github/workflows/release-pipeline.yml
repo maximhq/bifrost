@@ -372,6 +372,7 @@ jobs:
             router.huggingface.co:443
             storage.googleapis.com:443
             sum.golang.org:443
+            tokenhub-intl.tencentcloudmaas.com:443
             us-central1-aiplatform.googleapis.com:443
             www.berkshirehathaway.com:443
             www.getbifrost.ai:443
@@ -591,6 +592,7 @@ jobs:
             router.huggingface.co:443
             storage.googleapis.com:443
             sum.golang.org:443
+            tokenhub-intl.tencentcloudmaas.com:443
             us-central1-aiplatform.googleapis.com:443
             www.berkshirehathaway.com:443
             www.getbifrost.ai:443
@@ -1053,6 +1055,7 @@ jobs:
             statsig.anthropic.com:443
             storage.googleapis.com:443
             sum.golang.org:443
+            tokenhub-intl.tencentcloudmaas.com:443
             www.getbifrost.ai:443
 
       - name: Checkout repository
@@ -1279,6 +1282,7 @@ jobs:
             release-assets.githubusercontent.com:443
             storage.googleapis.com:443
             sum.golang.org:443
+            tokenhub-intl.tencentcloudmaas.com:443
             telemetry.qdrant.io:443
             uploader.codecov.io:443
 
@@ -1403,6 +1407,7 @@ jobs:
             release-assets.githubusercontent.com:443
             storage.googleapis.com:443
             sum.golang.org:443
+            tokenhub-intl.tencentcloudmaas.com:443
             telemetry.qdrant.io:443
             uploader.codecov.io:443
 
@@ -1521,6 +1526,7 @@ jobs:
             release-assets.githubusercontent.com:443
             storage.googleapis.com:443
             sum.golang.org:443
+            tokenhub-intl.tencentcloudmaas.com:443
             uploader.codecov.io:443
             www.getbifrost.ai:443
 
@@ -1592,6 +1598,7 @@ jobs:
             release-assets.githubusercontent.com:443
             storage.googleapis.com:443
             sum.golang.org:443
+            tokenhub-intl.tencentcloudmaas.com:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -1714,6 +1721,7 @@ jobs:
             release-assets.githubusercontent.com:443
             storage.googleapis.com:443
             sum.golang.org:443
+            tokenhub-intl.tencentcloudmaas.com:443
             telemetry.qdrant.io:443
             www.getbifrost.ai:443
 
@@ -1870,6 +1878,7 @@ jobs:
             release-assets.githubusercontent.com:443
             storage.googleapis.com:443
             sum.golang.org:443
+            tokenhub-intl.tencentcloudmaas.com:443
             www.getbifrost.ai:443
 
       - name: Checkout repository
@@ -1965,6 +1974,7 @@ jobs:
             release-assets.githubusercontent.com:443
             storage.googleapis.com:443
             sum.golang.org:443
+            tokenhub-intl.tencentcloudmaas.com:443
             www.getbifrost.ai:443
 
       - name: Checkout repository
@@ -2088,6 +2098,7 @@ jobs:
             release-assets.githubusercontent.com:443
             storage.googleapis.com:443
             sum.golang.org:443
+            tokenhub-intl.tencentcloudmaas.com:443
             telemetry.qdrant.io:443
             www.getbifrost.ai:443
 
@@ -2240,6 +2251,7 @@ jobs:
             release-assets.githubusercontent.com:443
             storage.googleapis.com:443
             sum.golang.org:443
+            tokenhub-intl.tencentcloudmaas.com:443
             telemetry.qdrant.io:443
             www.getbifrost.ai:443
 
