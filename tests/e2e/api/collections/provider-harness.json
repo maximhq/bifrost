@@ -148853,6 +148853,298 @@
           ]
         }
       ]
+    },
+    {
+      "name": "86. Tencent TokenHub Provider Coverage (chat, streaming, tools, responses, count tokens)",
+      "description": "Tencent TokenHub had zero harness coverage before this folder: no cases in the collection, no entry in PROVIDER_KEYWORDS, no provider_config env file, no provider-capabilities row, and the provider was not configured in the harness gateway config.\n\nTencent TokenHub (https://tokenhub-intl.tencentcloudmaas.com) exposes an OpenAI-compatible Chat Completions API and an Anthropic-compatible Messages API from the same host. Bifrost defaults to the OpenAI-compatible surface (/v1/chat/completions, /v1/models) and lets a key opt into /v1/messages via use_anthropic_endpoints; the Anthropic routing is key-config-gated and is pinned by Go tests in core/providers/tencent/tencent_test.go, so this folder pins the default OpenAI-compatible path end to end.\n\nResponses has no native Tencent route and is muxed through chat by Bifrost. Count tokens uses the Anthropic-compatible /v1/messages/count_tokens endpoint. Capabilities Tencent does not implement (text completion, embeddings, audio, image, batch, files, containers, video, rerank) are declared false in provider-capabilities.json and are covered by the shared documented-unsupported checks; they are deliberately not duplicated here.\n\nModels used are the datasheet-priced deepseek-v4-flash (cheap) and deepseek-v4-pro (tools).",
+      "item": [
+        {
+          "name": "86.1 Chat Completions (OpenAI-compatible /v1/chat/completions)",
+          "description": "Tencent serves chat completions at its OpenAI-compatible /v1/chat/completions endpoint with Bearer auth, so Bifrost reuses the OpenAI handlers unchanged.",
+          "item": [
+            {
+              "name": "tencent/deepseek-v4-flash chat completions",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"tencent/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: pong\"\n    }\n  ],\n  \"max_tokens\": 16\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/chat/completions",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "chat",
+                    "completions"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var INFRA = [401, 403, 429, 500, 502, 503, 504]; if (INFRA.indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('tencent: chat completion succeeds', function () {",
+                      "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                      "});",
+                      "pm.test('tencent: returns assistant content', function () {",
+                      "  var j = pm.response.json();",
+                      "  pm.expect(j.choices, 'no choices: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                      "  pm.expect(j.choices[0].message).to.have.property('content');",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "tencent/deepseek-v4-flash chat completions streaming",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"tencent/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Count: one two three\"\n    }\n  ],\n  \"max_tokens\": 24,\n  \"stream\": true\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/chat/completions",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "chat",
+                    "completions"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var INFRA = [401, 403, 429, 500, 502, 503, 504]; if (INFRA.indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('tencent: chat stream terminates with [DONE]', function () {",
+                      "  var t = pm.response.text();",
+                      "  pm.expect(pm.response.code, 'failed: ' + t).to.be.below(400);",
+                      "  pm.expect(t, 'no SSE chunks').to.include('data:');",
+                      "  pm.expect(t, 'stream not terminated').to.include('[DONE]');",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "tencent/deepseek-v4-pro chat tool calls",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"tencent/deepseek-v4-pro\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Paris? Use the tool.\"\n    }\n  ],\n  \"max_tokens\": 256,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get current weather for a city\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\",\n              \"description\": \"City name\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/chat/completions",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "chat",
+                    "completions"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var INFRA = [401, 403, 429, 500, 502, 503, 504]; if (INFRA.indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('tencent: tool-calling request succeeds', function () {",
+                      "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                      "});",
+                      "pm.test('tencent: model emits a tool call', function () {",
+                      "  var m = pm.response.json().choices[0].message;",
+                      "  pm.expect(m.tool_calls, 'no tool_calls: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                      "  pm.expect(m.tool_calls[0].function.name).to.eql('get_weather');",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "86.2 Responses API (/v1/responses, muxed through Chat Completions)",
+          "description": "Tencent has no native OpenAI Responses route; Bifrost converts the Responses request to Chat Completions and converts the result back (or uses /v1/messages when the key opts into Anthropic endpoints).",
+          "item": [
+            {
+              "name": "tencent/deepseek-v4-flash responses",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"tencent/deepseek-v4-flash\",\n  \"input\": \"Reply with the single word: pong\",\n  \"max_output_tokens\": 32\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/responses",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "responses"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var INFRA = [401, 403, 429, 500, 502, 503, 504]; if (INFRA.indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('tencent: responses succeeds', function () {",
+                      "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                      "});",
+                      "pm.test('tencent: responses returns output', function () {",
+                      "  var j = pm.response.json();",
+                      "  pm.expect(j.output, 'no output: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "tencent/deepseek-v4-flash responses streaming",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"tencent/deepseek-v4-flash\",\n  \"input\": \"Count to 5\",\n  \"max_output_tokens\": 32,\n  \"stream\": true\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/responses",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "responses"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var INFRA = [401, 403, 429, 500, 502, 503, 504]; if (INFRA.indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('tencent: responses stream is SSE', function () {",
+                      "  var t = pm.response.text();",
+                      "  pm.expect(pm.response.code, 'failed: ' + t).to.be.below(400);",
+                      "  var ct = pm.response.headers.get('content-type') || '';",
+                      "  pm.expect(ct, 'expected SSE, got ' + ct).to.include('event-stream');",
+                      "  pm.expect(t, 'no SSE chunks').to.include('data:');",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "86.3 Count tokens (/v1/responses/input_tokens)",
+          "description": "Token counting routes to Tencent's Anthropic-compatible /v1/messages/count_tokens endpoint and returns input_tokens.",
+          "item": [
+            {
+              "name": "tencent/deepseek-v4-flash count tokens",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"tencent/deepseek-v4-flash\",\n  \"input\": \"Count my tokens\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/responses/input_tokens",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "responses",
+                    "input_tokens"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var INFRA = [401, 403, 429, 500, 502, 503, 504]; if (INFRA.indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('tencent: count tokens succeeds', function () {",
+                      "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                      "});",
+                      "pm.test('tencent: returns input_tokens', function () {",
+                      "  pm.expect(pm.response.json()).to.have.property('input_tokens');",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
     }
   ]
 }
