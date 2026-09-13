@@ -734,7 +734,7 @@ func TestResolveAccessHoldsAcrossAttempts(t *testing.T) {
 	// A permit widened while the first attempt was in flight, and the next attempt starting.
 	store.scoping = permitWithProviders("other", "o1", "Other", "anthropic")
 	store.mode = grant.Union
-	resolveLimits(ctx, store, schemas.Anthropic, "claude-sonnet-4")
+	resolveLimits(ctx, store, schemas.Anthropic, "claude-sonnet-4", "claude-sonnet-4")
 
 	second, err := plugin.ResolveAccess(ctx)
 

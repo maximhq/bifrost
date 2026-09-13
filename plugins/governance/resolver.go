@@ -2,6 +2,8 @@
 package governance
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"strings"
 
@@ -36,6 +38,87 @@ type EvaluationRequest struct {
 	RequestType schemas.RequestType   `json:"request_type"`
 	Provider    schemas.ModelProvider `json:"provider"`
 	Model       string                `json:"model"`
+	// AccessModel is the caller-facing model before routing or key-alias resolution.
+	// It is used only for provider/model/key authorization; Model remains the physical
+	// model used for limits, accounting, and the provider request.
+	AccessModel string `json:"-"`
+}
+
+func (r *EvaluationRequest) modelForAccess() string {
+	if r != nil && r.AccessModel != "" {
+		return r.AccessModel
+	}
+	if r == nil {
+		return ""
+	}
+	return r.Model
+}
+
+// callerFallbackProvenance is the fixed-size identity of the fallback list that arrived with
+// the request. The list itself can grow with request content and therefore must not be retained
+// in BifrostContext.
+type callerFallbackProvenance struct {
+	present bool
+	digest  [sha256.Size]byte
+}
+
+func fingerprintFallbacks(fallbacks []schemas.Fallback) [sha256.Size]byte {
+	hasher := sha256.New()
+	var length [binary.MaxVarintLen64]byte
+
+	writeLength := func(value uint64) {
+		n := binary.PutUvarint(length[:], value)
+		_, _ = hasher.Write(length[:n])
+	}
+	writeString := func(value string) {
+		writeLength(uint64(len(value)))
+		_, _ = hasher.Write([]byte(value))
+	}
+
+	writeLength(uint64(len(fallbacks)))
+	for _, fallback := range fallbacks {
+		writeString(string(fallback.Provider))
+		writeString(fallback.Model)
+	}
+
+	var digest [sha256.Size]byte
+	_ = hasher.Sum(digest[:0])
+	return digest
+}
+
+func provenanceForCallerFallbacks(fallbacks []schemas.Fallback) callerFallbackProvenance {
+	if len(fallbacks) == 0 {
+		return callerFallbackProvenance{}
+	}
+	return callerFallbackProvenance{
+		present: true,
+		digest:  fingerprintFallbacks(fallbacks),
+	}
+}
+
+// accessModelForRequest returns the model name whose use the caller authorized.
+// PreRequestHook records it before routing rules run. ResolvedAlias covers callers
+// that enter an attempt-level hook without the normal request hook in front of it.
+func accessModelForRequest(ctx *schemas.BifrostContext, fallback string, currentFallbacks []schemas.Fallback) string {
+	if ctx != nil {
+		// A fallback already present when the request entered the pipeline is caller-controlled,
+		// so it must keep its own model authorization boundary. Fallbacks added later by routing
+		// or governance are operator-controlled implementations of the caller-facing primary alias.
+		// Compare fixed-size fingerprints because routing rules can replace a non-empty caller list;
+		// remembering only that the caller supplied something would misclassify the replacement.
+		fallbackIndex, _ := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int)
+		provenance, _ := ctx.Value(governanceCallerFallbacksContextKey).(callerFallbackProvenance)
+		if fallbackIndex > 0 && provenance.present && provenance.digest == fingerprintFallbacks(currentFallbacks) {
+			return fallback
+		}
+		if requested, ok := ctx.Value(governanceRequestedModelContextKey).(string); ok && requested != "" {
+			return requested
+		}
+		if alias := schemas.GetResolvedAlias(ctx); alias != nil && alias.Key != "" {
+			return alias.Key
+		}
+	}
+	return fallback
 }
 
 // EvaluationResult is a governance verdict: whether the request may proceed, and why not when it
@@ -91,7 +174,8 @@ func (r *BudgetResolver) evaluateAccess(ctx *schemas.BifrostContext, evaluationR
 	// picked, so the provider allowlist carries no meaning for them.
 	skipProviderCheck := bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipProviderCheck)
 
-	requestType, provider, model := evaluationRequest.RequestType, evaluationRequest.Provider, evaluationRequest.Model
+	requestType, provider := evaluationRequest.RequestType, evaluationRequest.Provider
+	accessModel := evaluationRequest.modelForAccess()
 
 	// A caller with no provider config for this provider also has no model allowlist for it,
 	// since allowed models hang off a provider config. When the provider gate is skipped the
@@ -115,16 +199,16 @@ func (r *BudgetResolver) evaluateAccess(ctx *schemas.BifrostContext, evaluationR
 	// still carries a model allowlist that would deny the request one step later.
 	skipModelCheck := bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipModelCheck)
 	checkModelIfPresent := IsModelCheckedWhenPresent(requestType)
-	if !skipModelCheck && !providerUnconfigured && (IsModelRequiredForRequest(requestType) || (checkModelIfPresent && model != "")) && !access.IsModelAllowed(string(provider), model) {
+	if !skipModelCheck && !providerUnconfigured && (IsModelRequiredForRequest(requestType) || (checkModelIfPresent && accessModel != "")) && !access.IsModelAllowed(string(provider), accessModel) {
 		return &EvaluationResult{
 			Decision: DecisionModelBlocked,
-			Reason:   denialReason(fmt.Sprintf("Model '%s' is not allowed", model), access.DeniedPermitsForModel(string(provider), model)),
+			Reason:   denialReason(fmt.Sprintf("Model '%s' is not allowed", accessModel), access.DeniedPermitsForModel(string(provider), accessModel)),
 		}
 	}
 
 	// Publish the provider keys the request may use, when its access restricts them at all.
 	// Downstream key selection consumes plain key ids, so it never has to know what a permit is.
-	if keyIDs, restricted := access.KeysForModel(string(provider), model); restricted {
+	if keyIDs, restricted := access.KeysForModel(string(provider), accessModel); restricted {
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys, keyIDs)
 	}
 

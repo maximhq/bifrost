@@ -2186,7 +2186,7 @@ func TestPostMCPHook_TracksVirtualKeyUsageWhenUserIDPresent(t *testing.T) {
 	// Evaluating the tool call settles the limits it answers to, and billing reads them from there.
 	// Tool execution names no provider and no model, so what it answers to is whatever funds the
 	// holder.
-	settled, settleErr := resolveLimits(ctx, store, "", "")
+	settled, settleErr := resolveLimits(ctx, store, "", "", "")
 	require.NoError(t, settleErr)
 	require.NotNil(t, settled)
 	resp := &schemas.BifrostMCPResponse{
@@ -2226,7 +2226,7 @@ func TestPostMCPHook_SkipVirtualKeyUsageTrackingFlag(t *testing.T) {
 	ctx := resolverCtx(store, "sk-bf-test")
 	ctx.SetValue(schemas.BifrostContextKeyUserID, "user1")
 	ctx.SetValue(schemas.BifrostContextKeySkipVirtualKeyUsageTracking, true)
-	settled, settleErr := resolveLimits(ctx, store, "", "")
+	settled, settleErr := resolveLimits(ctx, store, "", "", "")
 	require.NoError(t, settleErr)
 	require.NotNil(t, settled)
 	resp := &schemas.BifrostMCPResponse{

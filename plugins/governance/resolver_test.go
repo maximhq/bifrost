@@ -161,6 +161,280 @@ func TestBudgetResolver_EvaluateRequest_ModelBlocked(t *testing.T) {
 	assertDecision(t, DecisionModelBlocked, result)
 }
 
+// TestGovernancePlugin_PreLLMHook_UsesCallerFacingModelAfterRoutingRewrite
+// reproduces #7112: routing runs after governance's PreRequestHook and may
+// replace the caller-facing alias with the physical model before PreLLMHook.
+// Both sides of model access policy must remain scoped to what the caller requested.
+func TestGovernancePlugin_PreLLMHook_UsesCallerFacingModelAfterRoutingRewrite(t *testing.T) {
+	tests := []struct {
+		name              string
+		requestedModel    string
+		allowedModels     schemas.WhiteList
+		blacklistedModels schemas.BlackList
+		wantBlocked       bool
+	}{
+		{
+			name:           "allowed alias admits routed physical model",
+			requestedModel: "my.alias",
+			allowedModels:  schemas.WhiteList{"my.alias"},
+		},
+		{
+			name:              "physical-model blacklist does not block allowed alias",
+			requestedModel:    "my.alias",
+			allowedModels:     schemas.WhiteList{"my.alias"},
+			blacklistedModels: schemas.BlackList{"physical-model"},
+		},
+		{
+			name:              "alias blacklist blocks routed physical model",
+			requestedModel:    "my.alias",
+			allowedModels:     schemas.WhiteList{"*"},
+			blacklistedModels: schemas.BlackList{"my.alias"},
+			wantBlocked:       true,
+		},
+		{
+			name:           "direct physical request is not authorized by alias grant",
+			requestedModel: "physical-model",
+			allowedModels:  schemas.WhiteList{"my.alias"},
+			wantBlocked:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logger := NewMockLogger()
+			providerConfig := buildProviderConfig("vllm", tt.allowedModels)
+			providerConfig.BlacklistedModels = tt.blacklistedModels
+			vk := buildVirtualKeyWithProviders("vk1", "sk-bf-test", "Test VK", []configstoreTables.TableVirtualKeyProviderConfig{providerConfig})
+			store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+				VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+			}, nil, nil)
+			require.NoError(t, err)
+
+			plugin := &GovernancePlugin{
+				store:    store,
+				resolver: NewBudgetResolver(store, nil, logger, nil),
+				logger:   logger,
+			}
+			ctx := presentCtx("sk-bf-test")
+			req := &schemas.BifrostRequest{
+				RequestType: schemas.ChatCompletionRequest,
+				ChatRequest: &schemas.BifrostChatRequest{
+					Provider: schemas.VLLM,
+					Model:    tt.requestedModel,
+				},
+			}
+
+			require.NoError(t, plugin.PreRequestHook(ctx, req))
+			req.SetModel("physical-model") // routing rule target
+
+			_, shortCircuit, hookErr := plugin.PreLLMHook(ctx, req)
+			require.NoError(t, hookErr)
+			if !tt.wantBlocked {
+				require.Nil(t, shortCircuit, "access must be evaluated against the caller-facing model")
+				return
+			}
+			require.NotNil(t, shortCircuit)
+			require.NotNil(t, shortCircuit.Error)
+			require.NotNil(t, shortCircuit.Error.Type)
+			assert.Equal(t, string(DecisionModelBlocked), *shortCircuit.Error.Type)
+			assert.Contains(t, shortCircuit.Error.GetErrorString(), tt.requestedModel)
+			if tt.requestedModel != "physical-model" {
+				assert.NotContains(t, shortCircuit.Error.GetErrorString(), "physical-model")
+			}
+		})
+	}
+}
+
+// Large-payload requests can reach PreRequestHook with an empty request model because only the
+// small metadata prefix has been parsed. The caller-facing alias captured from that metadata must
+// still authorize the routed physical model and select the keys attached to the alias permit.
+func TestGovernancePlugin_PreLLMHook_LargePayloadAliasSelectsAuthorizedKeys(t *testing.T) {
+	logger := NewMockLogger()
+	providerConfig := buildProviderConfig("vllm", []string{"my.alias"})
+	providerConfig.Keys = []configstoreTables.TableKey{{KeyID: "vllm-alias-key"}}
+	vk := buildVirtualKeyWithProviders("vk1", "sk-bf-test", "Test VK", []configstoreTables.TableVirtualKeyProviderConfig{providerConfig})
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	plugin := &GovernancePlugin{
+		store:    store,
+		resolver: NewBudgetResolver(store, nil, logger, nil),
+		logger:   logger,
+	}
+	ctx := presentCtx("sk-bf-test")
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMetadata, &schemas.LargePayloadMetadata{Model: "vllm/my.alias"})
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.VLLM},
+	}
+
+	require.NoError(t, plugin.PreRequestHook(ctx, req))
+	req.SetModel("physical-model")
+
+	_, shortCircuit, hookErr := plugin.PreLLMHook(ctx, req)
+	require.NoError(t, hookErr)
+	require.Nil(t, shortCircuit)
+	assert.Equal(t, []string{"vllm-alias-key"}, ctx.Value(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys))
+}
+
+type accessModelAwareStoreProbe struct {
+	GovernanceStore
+	limitModel           string
+	limitAccessModel     string
+	candidateModel       string
+	candidateAccessModel string
+}
+
+func (s *accessModelAwareStoreProbe) GatherLimitsForAccessModel(_ *schemas.BifrostContext, _ schemas.Access, _ schemas.ModelProvider, model, accessModel string) ([]schemas.Limit, []schemas.Limit, error) {
+	s.limitModel = model
+	s.limitAccessModel = accessModel
+	return nil, nil, nil
+}
+
+func (s *accessModelAwareStoreProbe) CheckProviderCandidateExclusionForAccessModel(_ *schemas.BifrostContext, _ schemas.Access, _ schemas.ProviderCandidate, model, accessModel string) (Decision, error) {
+	s.candidateModel = model
+	s.candidateAccessModel = accessModel
+	return DecisionAllow, nil
+}
+
+// Stores can opt into the split identity without changing GovernanceStore: the physical model is
+// used for charging while the caller-facing alias is used to select the permit that funds it.
+// Existing stores remain source-compatible and continue through the legacy methods.
+func TestAccessModelAwareStoreReceivesPhysicalAndCallerModels(t *testing.T) {
+	store := &accessModelAwareStoreProbe{}
+	ctx := emptyCtx()
+
+	_, err := resolveLimits(ctx, store, schemas.VLLM, "physical-model", "my.alias")
+	require.NoError(t, err)
+	assert.Equal(t, "physical-model", store.limitModel)
+	assert.Equal(t, "my.alias", store.limitAccessModel)
+
+	decision, err := checkProviderCandidateExclusion(ctx, store, nil, schemas.ProviderCandidate{Provider: "vllm"}, "physical-model", "my.alias")
+	require.NoError(t, err)
+	assert.Equal(t, DecisionAllow, decision)
+	assert.Equal(t, "physical-model", store.candidateModel)
+	assert.Equal(t, "my.alias", store.candidateAccessModel)
+}
+
+// Authorizing through an alias must not detach the request from the limits owned by the
+// authorizing provider permit. The alias selects the payer; the routed physical model remains
+// the identity used for model-scoped limits and provider accounting.
+func TestGovernancePlugin_PreLLMHook_RoutedAliasKeepsProviderPermitLimits(t *testing.T) {
+	logger := NewMockLogger()
+	exhausted := buildBudgetWithUsage("vllm-budget", 5, 5, "1h")
+	providerConfig := buildProviderConfigWithBudgets("vllm", []string{"my.alias"}, []configstoreTables.TableBudget{*exhausted})
+	vk := buildVirtualKeyWithProviders("vk1", "sk-bf-test", "Test VK", []configstoreTables.TableVirtualKeyProviderConfig{providerConfig})
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Budgets:     []configstoreTables.TableBudget{*exhausted},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	plugin := &GovernancePlugin{
+		store:    store,
+		resolver: NewBudgetResolver(store, nil, logger, nil),
+		logger:   logger,
+	}
+	ctx := presentCtx("sk-bf-test")
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.VLLM, Model: "my.alias"},
+	}
+
+	require.NoError(t, plugin.PreRequestHook(ctx, req))
+	req.SetModel("physical-model")
+
+	_, shortCircuit, hookErr := plugin.PreLLMHook(ctx, req)
+	require.NoError(t, hookErr)
+	require.NotNil(t, shortCircuit)
+	require.NotNil(t, shortCircuit.Error)
+	require.NotNil(t, shortCircuit.Error.Type)
+	assert.Equal(t, string(DecisionBudgetExceeded), *shortCircuit.Error.Type)
+}
+
+// The caller-facing primary alias is not authority to run an arbitrary model supplied in the
+// request's fallback list. Server-generated fallbacks implement the primary alias and inherit it;
+// caller-provided fallbacks remain independently authorized.
+func TestGovernancePlugin_PreLLMHook_CallerProvidedFallbackKeepsOwnAccessModel(t *testing.T) {
+	logger := NewMockLogger()
+	vk := buildVirtualKeyWithProviders("vk1", "sk-bf-test", "Test VK", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("vllm", []string{"my.alias"}),
+	})
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil, nil)
+	require.NoError(t, err)
+	plugin := &GovernancePlugin{
+		store:    store,
+		resolver: NewBudgetResolver(store, nil, logger, nil),
+		logger:   logger,
+	}
+
+	t.Run("caller-provided fallback is checked as itself", func(t *testing.T) {
+		ctx := presentCtx("sk-bf-test")
+		req := &schemas.BifrostRequest{
+			RequestType: schemas.ChatCompletionRequest,
+			ChatRequest: &schemas.BifrostChatRequest{
+				Provider:  schemas.VLLM,
+				Model:     "my.alias",
+				Fallbacks: []schemas.Fallback{{Provider: schemas.VLLM, Model: "forbidden-model"}},
+			},
+		}
+		require.NoError(t, plugin.PreRequestHook(ctx, req))
+		ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, 1)
+		req.SetModel("forbidden-model")
+
+		_, shortCircuit, hookErr := plugin.PreLLMHook(ctx, req)
+		require.NoError(t, hookErr)
+		require.NotNil(t, shortCircuit)
+		require.NotNil(t, shortCircuit.Error)
+		require.NotNil(t, shortCircuit.Error.Type)
+		assert.Equal(t, string(DecisionModelBlocked), *shortCircuit.Error.Type)
+		assert.Contains(t, shortCircuit.Error.GetErrorString(), "forbidden-model")
+	})
+
+	t.Run("server-generated fallback inherits primary alias", func(t *testing.T) {
+		ctx := presentCtx("sk-bf-test")
+		req := &schemas.BifrostRequest{
+			RequestType: schemas.ChatCompletionRequest,
+			ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.VLLM, Model: "my.alias"},
+		}
+		require.NoError(t, plugin.PreRequestHook(ctx, req))
+		ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, 1)
+		req.SetModel("physical-fallback-model")
+
+		_, shortCircuit, hookErr := plugin.PreLLMHook(ctx, req)
+		require.NoError(t, hookErr)
+		require.Nil(t, shortCircuit)
+	})
+
+	t.Run("routing replacement inherits primary alias", func(t *testing.T) {
+		ctx := presentCtx("sk-bf-test")
+		req := &schemas.BifrostRequest{
+			RequestType: schemas.ChatCompletionRequest,
+			ChatRequest: &schemas.BifrostChatRequest{
+				Provider:  schemas.VLLM,
+				Model:     "my.alias",
+				Fallbacks: []schemas.Fallback{{Provider: schemas.VLLM, Model: "caller-fallback"}},
+			},
+		}
+		require.NoError(t, plugin.PreRequestHook(ctx, req))
+
+		// Routing rules replace the entire caller fallback list. The replacement is an
+		// operator-controlled implementation of the primary alias, not authority supplied
+		// by the caller for this physical model.
+		req.SetFallbacks([]schemas.Fallback{{Provider: schemas.VLLM, Model: "physical-rule-fallback"}})
+		ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, 1)
+		req.SetModel("physical-rule-fallback")
+
+		_, shortCircuit, hookErr := plugin.PreLLMHook(ctx, req)
+		require.NoError(t, hookErr)
+		require.Nil(t, shortCircuit)
+	})
+}
+
 // TestBudgetResolver_EvaluateRequest_SkipProviderCheckAllowsUnconfiguredProvider verifies
 // that skipProviderCheck drops the provider allowlist, and drops the model allowlist with
 // it when the VK has no config for that provider. Callers that are evaluated but never
