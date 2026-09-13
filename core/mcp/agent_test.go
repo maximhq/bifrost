@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -957,4 +958,189 @@ func TestExecuteAgentForResponsesRequest_OutputStructured(t *testing.T) {
 	} else if len(responsesMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks) != 2 {
 		t.Errorf("Expected 2 output blocks, got %d", len(responsesMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks))
 	}
+}
+
+// mockPartitionClientManager resolves only the named tools to an auto-executing client and
+// returns nil for the rest, so one partition call exercises both branches.
+type mockPartitionClientManager struct {
+	*MockAutoClientManager
+	autoTools map[string]bool
+}
+
+func (m *mockPartitionClientManager) GetClientForTool(toolName string) *schemas.MCPClientState {
+	if !m.autoTools[toolName] {
+		return nil
+	}
+	return m.MockAutoClientManager.GetClientForTool(toolName)
+}
+
+func partitionTestToolCall(name string) schemas.ChatAssistantMessageToolCall {
+	return schemas.ChatAssistantMessageToolCall{
+		ID: schemas.Ptr("call-" + name),
+		Function: schemas.ChatAssistantMessageToolCallFunction{
+			Name:      schemas.Ptr(name),
+			Arguments: "{}",
+		},
+	}
+}
+
+func assertToolCallNames(t *testing.T, label string, calls []schemas.ChatAssistantMessageToolCall, want []string) {
+	t.Helper()
+	got := make([]string, 0, len(calls))
+	for _, call := range calls {
+		if call.Function.Name == nil {
+			got = append(got, "")
+			continue
+		}
+		got = append(got, *call.Function.Name)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("%s: expected %v, got %v", label, want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("%s: expected %v, got %v", label, want, got)
+		}
+	}
+}
+
+// TestPartitionToolCalls pins the split every agent-mode caller depends on: a tool is
+// auto-executable only when a client claims it and its execution config allows it, while
+// read-only code-mode tools are allowed without a client.
+func TestPartitionToolCalls(t *testing.T) {
+	executor := &AgentModeExecutor{logger: &MockLogger{}}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	unnamed := schemas.ChatAssistantMessageToolCall{
+		Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: "{}"},
+	}
+
+	tests := []struct {
+		name        string
+		autoTools   map[string]bool
+		toolCalls   []schemas.ChatAssistantMessageToolCall
+		wantAuto    []string
+		wantNonAuto []string
+	}{
+		{
+			name:      "claimed tool is auto-executable",
+			autoTools: map[string]bool{"weather": true},
+			toolCalls: []schemas.ChatAssistantMessageToolCall{partitionTestToolCall("weather")},
+			wantAuto:  []string{"weather"},
+		},
+		{
+			name:        "unclaimed tool is left to the caller",
+			toolCalls:   []schemas.ChatAssistantMessageToolCall{partitionTestToolCall("client_side")},
+			wantNonAuto: []string{"client_side"},
+		},
+		{
+			name:      "mixed batch splits and preserves order within each group",
+			autoTools: map[string]bool{"weather": true, "search": true},
+			toolCalls: []schemas.ChatAssistantMessageToolCall{
+				partitionTestToolCall("weather"),
+				partitionTestToolCall("client_side"),
+				partitionTestToolCall("search"),
+			},
+			wantAuto:    []string{"weather", "search"},
+			wantNonAuto: []string{"client_side"},
+		},
+		{
+			name:        "tool call without a name is left to the caller",
+			toolCalls:   []schemas.ChatAssistantMessageToolCall{unnamed},
+			wantNonAuto: []string{""},
+		},
+		{
+			name: "read-only code mode tools need no client",
+			toolCalls: []schemas.ChatAssistantMessageToolCall{
+				partitionTestToolCall(ToolTypeListToolFiles),
+				partitionTestToolCall(ToolTypeReadToolFile),
+				partitionTestToolCall(ToolTypeGetToolDocs),
+			},
+			wantAuto: []string{ToolTypeListToolFiles, ToolTypeReadToolFile, ToolTypeGetToolDocs},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager := &mockPartitionClientManager{
+				MockAutoClientManager: &MockAutoClientManager{},
+				autoTools:             tt.autoTools,
+			}
+			auto, nonAuto := executor.partitionToolCalls(ctx, tt.toolCalls, manager)
+			assertToolCallNames(t, "auto-executable", auto, tt.wantAuto)
+			assertToolCallNames(t, "non-auto-executable", nonAuto, tt.wantNonAuto)
+		})
+	}
+}
+
+// TestExecuteToolCallsInParallel pins the batch contract: one result per call whatever the
+// completion order, a failed tool surfacing as a tool result rather than aborting the batch,
+// and a per-user auth failure aborting everything with a 401 the caller can act on.
+func TestExecuteToolCallsInParallel(t *testing.T) {
+	executor := &AgentModeExecutor{logger: &MockLogger{}}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	calls := []schemas.ChatAssistantMessageToolCall{
+		partitionTestToolCall("alpha"),
+		partitionTestToolCall("beta"),
+		partitionTestToolCall("gamma"),
+	}
+
+	t.Run("every call produces a result", func(t *testing.T) {
+		var mu sync.Mutex
+		executed := map[string]bool{}
+		results, err := executor.executeToolCallsInParallel(ctx, calls, func(_ *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
+			mu.Lock()
+			executed[*req.ChatAssistantMessageToolCall.Function.Name] = true
+			mu.Unlock()
+			return &schemas.BifrostMCPResponse{ChatMessage: &schemas.ChatMessage{Role: schemas.ChatMessageRoleTool}}, nil
+		})
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if len(results) != len(calls) {
+			t.Fatalf("expected %d results, got %d", len(calls), len(results))
+		}
+		if len(executed) != len(calls) {
+			t.Fatalf("expected every tool to run once, ran %d of %d", len(executed), len(calls))
+		}
+	})
+
+	t.Run("a failing tool becomes a tool result", func(t *testing.T) {
+		results, err := executor.executeToolCallsInParallel(ctx, calls[:1], func(_ *schemas.BifrostContext, _ *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
+			return nil, fmt.Errorf("upstream exploded")
+		})
+		if err != nil {
+			t.Fatalf("a failing tool must not abort the batch, got %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		content := results[0].Content.ContentStr
+		if content == nil || !strings.Contains(*content, "upstream exploded") {
+			t.Fatalf("expected the failure to reach the model as a tool result, got %v", content)
+		}
+	})
+
+	t.Run("auth required aborts the batch with a 401", func(t *testing.T) {
+		authErr := &schemas.MCPAuthRequiredError{
+			Kind:          "oauth",
+			MCPClientName: "test-client",
+			Message:       "reauthorization required",
+		}
+		results, err := executor.executeToolCallsInParallel(ctx, calls[:1], func(_ *schemas.BifrostContext, _ *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
+			return nil, authErr
+		})
+		if err == nil {
+			t.Fatal("expected an auth-required error")
+		}
+		if results != nil {
+			t.Fatalf("expected no results alongside an auth error, got %d", len(results))
+		}
+		if err.StatusCode == nil || *err.StatusCode != 401 {
+			t.Fatalf("expected a 401 status, got %v", err.StatusCode)
+		}
+		if err.ExtraFields.MCPAuthRequired == nil {
+			t.Fatal("expected the auth-required details to be carried on the error")
+		}
+	})
 }
