@@ -6,10 +6,13 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	mcpgo "github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -79,6 +82,65 @@ func TestCreateSTDIOConnectionRejectsEmptyEnvAssignmentName(t *testing.T) {
 	_, _, err := (&MCPManager{}).createSTDIOConnection(context.Background(), config, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "environment variable name is empty")
+}
+
+func TestCreateSTDIOConnectionStartsWithEnvVars(t *testing.T) {
+	t.Setenv("BIFROST_STDIO_TEST_HOST", "host=value")
+	t.Setenv("BIFROST_STDIO_TEST_INLINE", "host-inline")
+	executable, err := os.Executable()
+	require.NoError(t, err)
+
+	for _, tc := range []struct {
+		name string
+		envs []string
+		want string
+	}{
+		{"reference", []string{"BIFROST_STDIO_TEST_HOST"}, "host=value|host-inline"},
+		{"inline", []string{"BIFROST_STDIO_TEST_INLINE=inline=value"}, "host=value|inline=value"},
+		{"mixed", []string{"BIFROST_STDIO_TEST_HOST", "BIFROST_STDIO_TEST_INLINE=inline=value"}, "host=value|inline=value"},
+		{"empty inline", []string{"BIFROST_STDIO_TEST_HOST", "BIFROST_STDIO_TEST_INLINE="}, "host=value|"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			envs := append([]string{"BIFROST_STDIO_TEST_HELPER=1"}, tc.envs...)
+			config := &schemas.MCPClientConfig{
+				Name:           "test-stdio-client",
+				ConnectionType: schemas.MCPConnectionTypeSTDIO,
+				StdioConfig: &schemas.MCPStdioConfig{
+					Command: executable,
+					Args:    []string{"-test.run=^TestSTDIOEnvHelperProcess$"},
+					Envs:    append([]string(nil), envs...),
+				},
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			conn, _, err := (&MCPManager{}).createSTDIOConnection(ctx, config, nil)
+			require.NoError(t, err)
+			assert.Equal(t, envs, config.StdioConfig.Envs, "connection setup must not resolve references in the stored config")
+			require.NoError(t, conn.Start(ctx))
+			defer func() { assert.NoError(t, conn.Close()) }()
+
+			request := mcpgo.InitializeRequest{}
+			request.Params.ProtocolVersion = mcpgo.LATEST_PROTOCOL_VERSION
+			request.Params.ClientInfo = mcpgo.Implementation{Name: "stdio-env-test", Version: "1.0.0"}
+			result, err := conn.Initialize(ctx, request)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, result.ServerInfo.Name)
+		})
+	}
+}
+
+// Run the test binary as a real STDIO MCP server so the parent checks process
+// creation and the environment actually received by the child on every platform.
+func TestSTDIOEnvHelperProcess(t *testing.T) {
+	if os.Getenv("BIFROST_STDIO_TEST_HELPER") != "1" {
+		return
+	}
+	name := os.Getenv("BIFROST_STDIO_TEST_HOST") + "|" + os.Getenv("BIFROST_STDIO_TEST_INLINE")
+	err := server.NewStdioServer(server.NewMCPServer(name, "1.0.0")).Listen(context.Background(), os.Stdin, os.Stdout)
+	if err != nil {
+		os.Exit(1)
+	}
+	os.Exit(0)
 }
 
 // TestCloseAndMarkNeedsReauth_ClosesLiveConnectionAndFlipsState covers the
