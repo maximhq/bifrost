@@ -6,22 +6,22 @@ icon: "/media/runware-nav.svg"
 
 ## Overview
 
-Runware exposes a single endpoint (`https://api.runware.ai/v1`) that accepts an **array of tasks**, where a `taskType` field selects the operation. Bifrost wraps each request in this array envelope and maps its unified image and video schemas onto the matching task type. Image tasks return synchronously; video and 3D tasks are submitted asynchronously and polled to completion.
+Runware's task APIs accept an **array of tasks**, where a `taskType` field selects the operation. Bifrost uses this envelope for image, video, 3D, and model-listing operations, wrapping each request and mapping its unified schemas onto the matching task type. Image tasks return synchronously; video and 3D tasks are submitted asynchronously and polled to completion.
 
 Where an operation has no dedicated Bifrost endpoint, a neutral `type` parameter selects it on the closest one - for example `type: "upscale"` on `/v1/images/edits`.
 
-Bifrost routes chat completions (unary and streaming) and the Responses API (unary and streaming, translated to chat completions) through its shared OpenAI-compatible handlers, and lists models through Runware's paged `modelSearch` catalog task.
+Text inference takes the other path: Runware serves it at an **OpenAI-compatible `/v1/chat/completions`** endpoint, so Bifrost routes it through its shared OpenAI-compatible handlers rather than the task envelope. `/v1/responses` is translated to chat completions because Runware's own Responses route rejects every model.
 
 ### Supported Operations
 
 <Info>Upscaling, background removal, masking/segmentation, ControlNet preprocessing, and vectorize are available in **Bifrost v2.0.0 and above**.</Info>
 
-| Operation | Supported | Endpoint | Task Type |
-|-----------|-----------|----------|-----------|
-| Chat Completion | ✅ | `/v1/chat/completions` | `chat/completions` (OpenAI-compatible) |
-| Chat Completion (stream) | ✅ | `/v1/chat/completions` | `chat/completions` (SSE) |
-| Responses API | ✅ | `/v1/responses` | muxed through chat completions |
-| Responses API (stream) | ✅ | `/v1/responses` | muxed through chat completions (SSE) |
+| Operation | Supported | Endpoint | Provider request |
+|-----------|-----------|----------|------------------|
+| Chat Completion | ✅ | `/v1/chat/completions` | OpenAI-compatible (not a task) |
+| Chat Completion (stream) | ✅ | `/v1/chat/completions` | OpenAI-compatible (SSE, not a task) |
+| Responses API | ✅ | `/v1/responses` | translated to chat completions |
+| Responses API (stream) | ✅ | `/v1/responses` | translated to chat completions (SSE) |
 | List Models | ✅ | `/v1/models` | `modelSearch` (paged task) |
 | Image Generation | ✅ | `/v1/images/generations` | `imageInference` |
 | Image Edit (image-to-image, inpainting, outpainting) | ✅ | `/v1/images/edits` | `imageInference` |
