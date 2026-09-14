@@ -353,6 +353,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	// Tools lifted out of codex additional_tools items for providers that reject them.
 	var hoistedTools []schemas.ResponsesTool
 	keepAdditionalTools := supportsAdditionalToolsItem(bifrostReq.Provider)
+	replayAssistantTextAsInput := isMantleGPTOSSResponses(ctx, bifrostReq.Provider, capModel)
 	for _, message := range bifrostReq.Input {
 		if !keepAdditionalTools && message.Type != nil &&
 			*message.Type == schemas.ResponsesMessageTypeAdditionalTools {
@@ -414,6 +415,10 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		// requests without it. Blocks converted from non-OpenAI surfaces (Anthropic,
 		// Gemini, Cohere, chat bridge) never carry one, so default missing values to "auto".
 		message = defaultImageDetail(message)
+
+		if replayAssistantTextAsInput {
+			message = assistantOutputTextAsInputText(message)
+		}
 
 		// Strip provider reasoning signatures (e.g. Gemini thoughtSignatures smuggled into
 		// call_id as "<baseID>_ts_<sig>") from tool call IDs, but only when the id exceeds
@@ -807,6 +812,49 @@ func defaultImageDetail(message schemas.ResponsesMessage) schemas.ResponsesMessa
 			imageCopy := *block.ResponsesInputMessageContentBlockImage
 			imageCopy.Detail = schemas.Ptr("auto")
 			newBlocks[i].ResponsesInputMessageContentBlockImage = &imageCopy
+		}
+	}
+
+	contentCopy := *message.Content
+	contentCopy.ContentBlocks = newBlocks
+	message.Content = &contentCopy
+	return message
+}
+
+// isMantleGPTOSSResponses reports whether the request is gpt-oss served by Bedrock Mantle's
+// /v1 Responses backend; gpt-5.x on /openai/v1 and gpt-oss elsewhere keep output_text history.
+func isMantleGPTOSSResponses(ctx *schemas.BifrostContext, provider schemas.ModelProvider, capModel string) bool {
+	base := schemas.ResolveBaseProvider(ctx, provider)
+	return (base == schemas.Bedrock || base == schemas.BedrockMantle) &&
+		strings.Contains(strings.ToLower(capModel), "gpt-oss") &&
+		schemas.ResolveBedrockMantleBasePath(capModel) == schemas.BedrockMantleBasePathV1
+}
+
+// assistantOutputTextAsInputText retags a replayed assistant message's output_text blocks
+// as input_text. Mantle /v1 strips id, status and annotations from assistant items before
+// validating, so output_text history matches no input variant and the turn fails (#7074).
+func assistantOutputTextAsInputText(message schemas.ResponsesMessage) schemas.ResponsesMessage {
+	if message.Role == nil || *message.Role != schemas.ResponsesInputMessageRoleAssistant ||
+		message.Content == nil || len(message.Content.ContentBlocks) == 0 {
+		return message
+	}
+	fixNeeded := false
+	for _, block := range message.Content.ContentBlocks {
+		if block.Type == schemas.ResponsesOutputMessageContentTypeText {
+			fixNeeded = true
+			break
+		}
+	}
+	if !fixNeeded {
+		return message
+	}
+
+	newBlocks := make([]schemas.ResponsesMessageContentBlock, len(message.Content.ContentBlocks))
+	copy(newBlocks, message.Content.ContentBlocks)
+	for i := range newBlocks {
+		if newBlocks[i].Type == schemas.ResponsesOutputMessageContentTypeText {
+			newBlocks[i].Type = schemas.ResponsesInputMessageContentBlockTypeText
+			newBlocks[i].ResponsesOutputMessageContentText = nil
 		}
 	}
 

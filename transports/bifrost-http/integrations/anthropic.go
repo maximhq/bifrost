@@ -91,7 +91,21 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 				soToolName, _ := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string)
 				if soToolName == "" && isClaudeModel(ctx, resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed, string(resp.ExtraFields.Provider)) {
 					if resp.ExtraFields.RawResponse != nil {
-						return resp.ExtraFields.RawResponse, nil
+						passthrough, _ := ctx.Value(schemas.BifrostContextKeyPassthroughOverridesPresent).(bool)
+						raw, isRawJSON := resp.ExtraFields.RawResponse.(json.RawMessage)
+						if passthrough || !isRawJSON {
+							return resp.ExtraFields.RawResponse, nil
+						}
+						// Raw capture was requested: echo extra_fields as the converted path does, leaving Anthropic's bytes intact.
+						extraFields, err := sonic.Marshal(resp.ExtraFields)
+						if err != nil {
+							return nil, fmt.Errorf("marshal anthropic extra_fields: %w", err)
+						}
+						withExtraFields, err := sjson.SetRawBytes(raw, "extra_fields", extraFields)
+						if err != nil {
+							return nil, fmt.Errorf("attach anthropic extra_fields: %w", err)
+						}
+						return json.RawMessage(withExtraFields), nil
 					}
 				}
 				return anthropic.ToAnthropicResponsesResponse(ctx, resp), nil

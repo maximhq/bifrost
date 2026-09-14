@@ -654,6 +654,15 @@ func accumulateAnthropicResponsesUsage(usage *schemas.ResponsesResponseUsage, bi
 	if usage == nil || usageToProcess == nil {
 		return
 	}
+	// Keep the per-pass breakdown like the non-streaming converter; billable folding drops it.
+	if len(usageToProcess.Iterations) > 0 {
+		usage.Iterations = make([]schemas.ResponsesResponseUsage, len(usageToProcess.Iterations))
+		for i := range usageToProcess.Iterations {
+			if converted := ConvertAnthropicUsageToBifrostUsage(&usageToProcess.Iterations[i]); converted != nil {
+				usage.Iterations[i] = *converted
+			}
+		}
+	}
 	usageToProcess = billableAnthropicUsage(usageToProcess)
 	// Web search request count → billed as search queries (server tool use). The
 	// terminal chunk overwrites Response.Usage with this accumulator, so the count

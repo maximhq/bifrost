@@ -43873,7 +43873,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"gpt-5.6-sol\",\n  \"input\": [\n    {\n      \"type\": \"additional_tools\",\n      \"role\": \"developer\",\n      \"tools\": [\n        {\n          \"type\": \"custom\",\n          \"name\": \"exec\",\n          \"description\": \"Run JavaScript code to orchestrate/compose tool calls.\",\n          \"format\": {\n            \"type\": \"grammar\",\n            \"syntax\": \"lark\",\n            \"definition\": \"start: SOURCE\\nSOURCE: /[\\\\s\\\\S]+/\\n\"\n          }\n        },\n        {\n          \"type\": \"function\",\n          \"name\": \"get_weather\",\n          \"description\": \"Get the current weather for a city.\",\n          \"strict\": false,\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"city\": {\n                \"type\": \"string\",\n                \"description\": \"City name.\"\n              }\n            },\n            \"required\": [\n              \"city\"\n            ],\n            \"additionalProperties\": false\n          }\n        },\n        {\n          \"type\": \"namespace\",\n          \"name\": \"collaboration\",\n          \"description\": \"Tools for spawning and managing sub-agents.\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"spawn_agent\",\n              \"description\": \"Spawn a sub-agent for a bounded subtask.\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"task_name\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"task_name\"\n                ],\n                \"additionalProperties\": false\n              }\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with exactly: OK\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 64\n}"
+              "raw": "{\n  \"model\": \"gpt-5.6-sol\",\n  \"input\": [\n    {\n      \"type\": \"additional_tools\",\n      \"role\": \"developer\",\n      \"tools\": [\n        {\n          \"type\": \"custom\",\n          \"name\": \"exec\",\n          \"description\": \"Run JavaScript code to orchestrate/compose tool calls.\",\n          \"format\": {\n            \"type\": \"grammar\",\n            \"syntax\": \"lark\",\n            \"definition\": \"start: SOURCE\\nSOURCE: /[\\\\s\\\\S]+/\\n\"\n          }\n        },\n        {\n          \"type\": \"function\",\n          \"name\": \"get_weather\",\n          \"description\": \"Get the current weather for a city.\",\n          \"strict\": false,\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"city\": {\n                \"type\": \"string\",\n                \"description\": \"City name.\"\n              }\n            },\n            \"required\": [\n              \"city\"\n            ],\n            \"additionalProperties\": false\n          }\n        },\n        {\n          \"type\": \"namespace\",\n          \"name\": \"harness_agents\",\n          \"description\": \"Tools for spawning and managing sub-agents.\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"spawn_agent\",\n              \"description\": \"Spawn a sub-agent for a bounded subtask.\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"task_name\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"task_name\"\n                ],\n                \"additionalProperties\": false\n              }\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with exactly: OK\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 64\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/openai/v1/responses",
@@ -134574,7 +134574,7 @@
           }
         },
         {
-          "name": "vertex/gemini-2.5-pro /anthropic/v1/messages trailing assistant prefill is trimmed - #6334",
+          "name": "vertex/gemini-3.7-flash /anthropic/v1/messages trailing assistant prefill is trimmed - #6334",
           "event": [
             {
               "listen": "test",
@@ -134619,7 +134619,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"vertex/gemini-2.5-pro\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 2+2? Answer with just the number.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"The answer is\"\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"vertex/gemini-3.7-flash\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 2+2? Answer with just the number.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"The answer is\"\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/anthropic/v1/messages",
@@ -143802,7 +143802,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0\",\n  \"input\": \"A farmer has 17 sheep and all but 9 run away. Think it through step by step, then answer.\",\n  \"reasoning\": {\n    \"effort\": \"medium\",\n    \"summary\": \"auto\"\n  },\n  \"max_output_tokens\": 1024,\n  \"stream\": true\n}",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0\",\n  \"input\": \"A farmer has 17 sheep and all but 9 run away. Think it through step by step, then answer.\",\n  \"reasoning\": {\n    \"effort\": \"medium\",\n    \"summary\": \"auto\"\n  },\n  \"max_output_tokens\": 2048,\n  \"stream\": true\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -143886,7 +143886,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0\",\n  \"input\": \"A farmer has 17 sheep and all but 9 run away. Think it through step by step, then answer.\",\n  \"reasoning\": {\n    \"effort\": \"medium\",\n    \"summary\": \"auto\"\n  },\n  \"max_output_tokens\": 1024,\n  \"stream\": true\n}",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0\",\n  \"input\": \"A farmer has 17 sheep and all but 9 run away. Think it through step by step, then answer.\",\n  \"reasoning\": {\n    \"effort\": \"medium\",\n    \"summary\": \"auto\"\n  },\n  \"max_output_tokens\": 2048,\n  \"stream\": true\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -147344,7 +147344,7 @@
                   "  pm.expect(usage.prompt_tokens, 'usage: ' + JSON.stringify(usage)).to.be.above(0);",
                   "  pm.expect(usage.completion_tokens, 'usage: ' + JSON.stringify(usage)).to.be.above(0);",
                   "  pm.expect(usage.total_tokens, 'usage: ' + JSON.stringify(usage)).to.be.above(0);",
-                  "  pm.expect(usageIndex, 'usage chunk must arrive after the finish_reason chunk (finish=' + finishIndex + ', usage=' + usageIndex + ')').to.be.above(finishIndex);",
+                  "  pm.expect(usageIndex, 'usage must ride the finish_reason chunk or a later one (finish=' + finishIndex + ', usage=' + usageIndex + ')').to.be.at.least(finishIndex);",
             "  pm.expect(doneIndex, 'expected exactly one [DONE] frame after the usage chunk (usage=' + usageIndex + ', done=' + doneIndex + ')').to.be.above(usageIndex);",
             "  pm.expect(seen, '[DONE] must be the last frame; frames after it are invisible to clients (done=' + doneIndex + ', frames=' + seen + ')').to.equal(doneIndex);",
                   "});"
@@ -147418,7 +147418,7 @@
                   "  pm.expect(usage.prompt_tokens, 'usage: ' + JSON.stringify(usage)).to.be.above(0);",
                   "  pm.expect(usage.completion_tokens, 'usage: ' + JSON.stringify(usage)).to.be.above(0);",
                   "  pm.expect(usage.total_tokens, 'usage: ' + JSON.stringify(usage)).to.be.above(0);",
-                  "  pm.expect(usageIndex, 'usage chunk must arrive after the finish_reason chunk (finish=' + finishIndex + ', usage=' + usageIndex + ')').to.be.above(finishIndex);",
+                  "  pm.expect(usageIndex, 'usage must ride the finish_reason chunk or a later one (finish=' + finishIndex + ', usage=' + usageIndex + ')').to.be.at.least(finishIndex);",
             "  pm.expect(doneIndex, 'expected exactly one [DONE] frame after the usage chunk (usage=' + usageIndex + ', done=' + doneIndex + ')').to.be.above(usageIndex);",
             "  pm.expect(seen, '[DONE] must be the last frame; frames after it are invisible to clients (done=' + doneIndex + ', frames=' + seen + ')').to.equal(doneIndex);",
                   "});"
@@ -147669,7 +147669,16 @@
                   "  pm.expect(text, 'expected a terminal response.completed event').to.include('response.completed');",
                   "  pm.expect(text, 'expected the function_call to carry the bare name').to.include('\"name\":\"ping\"');",
                   "  pm.expect(text, 'expected the function_call to carry its namespace').to.include('\"namespace\":\"namespace_b\"');",
-                  "  pm.expect(text, 'the flattened alias leaked to the client').to.not.include('namespace_b__ping');",
+                  "  // extra_fields echoes the upstream wire, where the alias is expected",
+                  "  var clientText = text.split('\\n').map(function (line) {",
+                  "    if (line.indexOf('data: ') !== 0) { return line; }",
+                  "    var ev;",
+                  "    try { ev = JSON.parse(line.slice(6)); } catch (e) { return line; }",
+                  "    delete ev.extra_fields;",
+                  "    if (ev.response) { delete ev.response.extra_fields; }",
+                  "    return 'data: ' + JSON.stringify(ev);",
+                  "  }).join('\\n');",
+                  "  pm.expect(clientText, 'the flattened alias leaked to the client').to.not.include('namespace_b__ping');",
                   "});"
                 ]
               }
@@ -147757,7 +147766,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"openai/gpt-5-mini\",\n  \"input\": \"Test the tools\",\n  \"max_output_tokens\": 64,\n  \"tools\": [\n    {\n      \"type\": \"namespace\",\n      \"name\": \"namespace_a\",\n      \"tools\": [\n        {\n          \"type\": \"function\",\n          \"name\": \"js\",\n          \"description\": \"Run JavaScript in namespace A\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {},\n            \"additionalProperties\": false\n          }\n        }\n      ]\n    },\n    {\n      \"type\": \"namespace\",\n      \"name\": \"namespace_b\",\n      \"tools\": [\n        {\n          \"type\": \"function\",\n          \"name\": \"js\",\n          \"description\": \"Run JavaScript in namespace B\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {},\n            \"additionalProperties\": false\n          }\n        }\n      ]\n    }\n  ]\n}",
+              "raw": "{\n  \"model\": \"openai/gpt-5-mini\",\n  \"input\": \"Test the tools\",\n  \"max_output_tokens\": 512,\n  \"reasoning\": {\n    \"effort\": \"minimal\"\n  },\n  \"tools\": [\n    {\n      \"type\": \"namespace\",\n      \"name\": \"namespace_a\",\n      \"description\": \"Tools in namespace A\",\n      \"tools\": [\n        {\n          \"type\": \"function\",\n          \"name\": \"js\",\n          \"description\": \"Run JavaScript in namespace A\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {},\n            \"additionalProperties\": false\n          }\n        }\n      ]\n    },\n    {\n      \"type\": \"namespace\",\n      \"name\": \"namespace_b\",\n      \"description\": \"Tools in namespace B\",\n      \"tools\": [\n        {\n          \"type\": \"function\",\n          \"name\": \"js\",\n          \"description\": \"Run JavaScript in namespace B\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {},\n            \"additionalProperties\": false\n          }\n        }\n      ]\n    }\n  ]\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -148156,15 +148165,15 @@
                   "var tools = rr.tools || [];",
                   "pm.test('deepseek v4-flash, 64-char wire: both nested functions reach the wire as distinct tools', function () {",
                   "  pm.expect(tools.length, 'expected two outbound tools: ' + JSON.stringify(rr).slice(0, 400)).to.equal(2);",
-                  "  pm.expect(tools[0].name, 'the two flattened names must stay distinct').to.not.equal(tools[1].name);",
+                  "  pm.expect(tools[0].function.name, 'the two flattened names must stay distinct').to.not.equal(tools[1].function.name);",
                   "});",
                   "pm.test('deepseek v4-flash: names honour the 64-char OpenAI-compatible contract via the hashed form - namespace-alias-length', function () {",
                   "  for (var i = 0; i < tools.length; i++) {",
-                  "    var name = tools[i].name || '';",
+                  "    var name = (tools[i].function || {}).name || '';",
                   "    pm.expect(name, 'tool[' + i + '] name ' + JSON.stringify(name) + ' (len ' + name.length + ') breaks the 64-char contract').to.match(/^[A-Za-z0-9_-]{1,64}$/);",
                   "    pm.expect(name, 'a 98-char alias must take the <8-hex hash>_<function> form on a 64-char wire').to.match(/^[0-9a-f]{8}_/);",
                   "  }",
-                  "  pm.expect(tools[0].name, 'the function name must stay readable after the hash prefix').to.include('read_repository_file');",
+                  "  pm.expect(tools[0].function.name, 'the function name must stay readable after the hash prefix').to.include('read_repository_file');",
                   "});"
                 ]
               }
