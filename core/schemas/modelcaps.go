@@ -675,6 +675,16 @@ func (c ModelCaps) BedrockRequiresSignedReasoning(fallback bool) bool {
 	return fallback
 }
 
+// SupportsConverseToolResultImages reports whether Converse accepts image blocks
+// inside a toolResult for this model. Falls back to the caller's name-based answer
+// when the row says nothing.
+func (c ModelCaps) SupportsConverseToolResultImages(fallback bool) bool {
+	if c.record != nil && c.record.SupportsConverseToolResultImages != nil {
+		return *c.record.SupportsConverseToolResultImages
+	}
+	return fallback
+}
+
 // SupportsResponsesEndpoint reports whether the datasheet's supported_endpoints list
 // includes the Responses API.
 func (c ModelCaps) SupportsResponsesEndpoint(fallback bool) bool {

@@ -149089,6 +149089,525 @@
           }
         }
       ]
+    },
+    {
+      "name": "88. Bedrock Converse images inside tool results for OpenAI and xAI models (converse-tool-result-images)",
+      "description": "AWS Converse rejects an image inside a toolResult for the OpenAI and xAI families (gpt-5.6, gpt-6-astra, grok-4.6) with 400 \"This model doesn't support the image field for user messages\", although the same image is accepted at the top level of a user message and gpt-5.6 reads it nested on the Responses API. Screenshot and browser tools return exactly that shape, so each such agent turn failed.\n\nhoistToolResultImages runs in both Converse converters (chat and Responses). It moves each image out of its toolResult to follow the last toolResult in the same user message, keeping result order, and leaves the fixed text \"Image attached below.\" in a toolResult it emptied, because an empty toolResult is its own 400. It is gated on supports_converse_tool_result_images, falling back to the OpenAI and xAI families; Claude, Nova and Llama 4 keep the nested shape (Llama 4 rejects the moved layout).\n\nCases pin: the Claude Code shape on the Anthropic route (placeholder text, and the model actually reading the moved image), parallel results on chat completions (all toolResults first, images in result order), the Responses converter, streaming, the xAI fallback branch, and a Claude control that must stay nested. All use the plain bedrock provider, so every request goes to Converse.",
+      "item": [
+        {
+          "name": "bedrock/global.openai.gpt-5.6-sol /anthropic/v1/messages image-only tool_result with cache_control moves out of toolResult - converse-tool-result-images",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.openai.gpt-5.6-sol\",\"max_tokens\":2048,\"tools\":[{\"name\":\"get_screenshot\",\"description\":\"Returns a screenshot of the current screen\",\"input_schema\":{\"type\":\"object\",\"properties\":{}}}],\"messages\":[{\"role\":\"user\",\"content\":\"Call get_screenshot, then reply with only the dominant colour of the screenshot.\"},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_screenshot_1\",\"name\":\"get_screenshot\",\"input\":{}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_screenshot_1\",\"content\":[{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAeUlEQVR4nO3PQQkAMAzAwIqof2UTMxF7HINABFzm7H7dcEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFj12qxUDxeFqrFAAAAABJRU5ErkJggg==\"}}],\"cache_control\":{\"type\":\"ephemeral\"}}]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "function lastUserBlocks(j) {",
+                  "  var msgs = ((j.extra_fields || {}).raw_request || {}).messages || [];",
+                  "  for (var i = msgs.length - 1; i >= 0; i--) {",
+                  "    if (msgs[i].role === 'user') { return (msgs[i].content || []).filter(function (b) { return !b.cachePoint; }); }",
+                  "  }",
+                  "  return null;",
+                  "}",
+                  "function label(b) {",
+                  "  if (b.toolResult) { return 'toolResult[' + (b.toolResult.content || []).map(label).join(', ') + ']'; }",
+                  "  if (b.image) { return 'image'; }",
+                  "  if (typeof b.text === 'string') { return 'text'; }",
+                  "  return Object.keys(b).join('+');",
+                  "}",
+                  "// Converse layout after the fix: every toolResult first, image-free but never empty, then the moved images.",
+                  "function expectMoved(blocks, count) {",
+                  "  pm.expect(blocks, 'raw_request missing - is send_back_raw_request honoured?').to.be.an('array');",
+                  "  var layout = blocks.map(label).join(' | ');",
+                  "  var results = 0, images = 0, lastResult = -1, firstImage = -1;",
+                  "  blocks.forEach(function (b, i) {",
+                  "    if (b.toolResult) {",
+                  "      results++; lastResult = i;",
+                  "      var inner = b.toolResult.content || [];",
+                  "      pm.expect(inner.filter(function (c) { return c.image; }).length, 'image still nested in a toolResult: ' + layout).to.equal(0);",
+                  "      pm.expect(inner.filter(function (c) { return typeof c.text === 'string' && c.text !== ''; }).length, 'emptied toolResult has no text left behind (Converse 400s an empty one): ' + layout).to.be.above(0);",
+                  "    }",
+                  "    if (b.image) { images++; if (firstImage === -1) { firstImage = i; } }",
+                  "  });",
+                  "  pm.expect(results, 'toolResult count: ' + layout).to.equal(count);",
+                  "  pm.expect(images, 'moved image count: ' + layout).to.equal(count);",
+                  "  pm.expect(firstImage, 'images must follow every toolResult: ' + layout).to.be.above(lastResult);",
+                  "}",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "",
+                  "pm.test('bedrock global.openai.gpt-5.6-sol: image-only tool_result reaches Converse beside its toolResult - converse-tool-result-images', function () {",
+                  "  pm.expect(body, 'image left inside toolResult - the pre-fix Converse 400').to.not.include(\"doesn't support the image field\");",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var blocks = lastUserBlocks(pm.response.json());",
+                  "  expectMoved(blocks, 1);",
+                  "  var result = blocks.filter(function (b) { return b.toolResult; })[0].toolResult;",
+                  "  // Fixed text, so the rewritten turn is byte-identical every time and implicit prefix caching still hits.",
+                  "  pm.expect(result.content[0].text, 'placeholder left in the emptied toolResult').to.equal('Image attached below.');",
+                  "});",
+                  "pm.test('bedrock global.openai.gpt-5.6-sol: model reads the moved image - converse-tool-result-images', function () {",
+                  "  if (pm.response.code >= 400) { return; }",
+                  "  var text = (pm.response.json().content || []).filter(function (c) { return c.type === 'text'; }).map(function (c) { return c.text; }).join(' ');",
+                  "  pm.expect(text.toLowerCase(), 'answer does not name the red screenshot: ' + text).to.include('red');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.openai.gpt-5.6-sol /v1/chat/completions parallel tool images follow both toolResults in result order - converse-tool-result-images",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.openai.gpt-5.6-sol\",\"max_tokens\":2048,\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_screenshot\",\"description\":\"Returns a screenshot of one window\",\"parameters\":{\"type\":\"object\",\"properties\":{\"window\":{\"type\":\"string\"}},\"required\":[\"window\"]}}}],\"messages\":[{\"role\":\"user\",\"content\":\"Screenshot the left and right windows in parallel, then reply exactly as: left=<colour>, right=<colour>\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_left\",\"type\":\"function\",\"function\":{\"name\":\"get_screenshot\",\"arguments\":\"{\\\"window\\\":\\\"left\\\"}\"}},{\"id\":\"call_right\",\"type\":\"function\",\"function\":{\"name\":\"get_screenshot\",\"arguments\":\"{\\\"window\\\":\\\"right\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_left\",\"content\":[{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAeUlEQVR4nO3PQQkAMAzAwIqof2UTMxF7HINABFzm7H7dcEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFj12qxUDxeFqrFAAAAABJRU5ErkJggg==\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_right\",\"content\":[{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAe0lEQVR4nO3PUQkAIBTAwBfCEPbPYxhD+HEIgwW4zdrn64YLGtCCBrSgAS1oQAsa0IIGtKABLWhACxrQgga0oAEtaEALGtCCBrSgAS1oQAsa0IIGtKABLWhACxrQgga0oAEtaEALGtCCBrSgAS1oQAsa0IIGtKABLXjsAm3EgQAbtio+AAAAAElFTkSuQmCC\"}}]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "function lastUserBlocks(j) {",
+                  "  var msgs = ((j.extra_fields || {}).raw_request || {}).messages || [];",
+                  "  for (var i = msgs.length - 1; i >= 0; i--) {",
+                  "    if (msgs[i].role === 'user') { return (msgs[i].content || []).filter(function (b) { return !b.cachePoint; }); }",
+                  "  }",
+                  "  return null;",
+                  "}",
+                  "function label(b) {",
+                  "  if (b.toolResult) { return 'toolResult[' + (b.toolResult.content || []).map(label).join(', ') + ']'; }",
+                  "  if (b.image) { return 'image'; }",
+                  "  if (typeof b.text === 'string') { return 'text'; }",
+                  "  return Object.keys(b).join('+');",
+                  "}",
+                  "// Converse layout after the fix: every toolResult first, image-free but never empty, then the moved images.",
+                  "function expectMoved(blocks, count) {",
+                  "  pm.expect(blocks, 'raw_request missing - is send_back_raw_request honoured?').to.be.an('array');",
+                  "  var layout = blocks.map(label).join(' | ');",
+                  "  var results = 0, images = 0, lastResult = -1, firstImage = -1;",
+                  "  blocks.forEach(function (b, i) {",
+                  "    if (b.toolResult) {",
+                  "      results++; lastResult = i;",
+                  "      var inner = b.toolResult.content || [];",
+                  "      pm.expect(inner.filter(function (c) { return c.image; }).length, 'image still nested in a toolResult: ' + layout).to.equal(0);",
+                  "      pm.expect(inner.filter(function (c) { return typeof c.text === 'string' && c.text !== ''; }).length, 'emptied toolResult has no text left behind (Converse 400s an empty one): ' + layout).to.be.above(0);",
+                  "    }",
+                  "    if (b.image) { images++; if (firstImage === -1) { firstImage = i; } }",
+                  "  });",
+                  "  pm.expect(results, 'toolResult count: ' + layout).to.equal(count);",
+                  "  pm.expect(images, 'moved image count: ' + layout).to.equal(count);",
+                  "  pm.expect(firstImage, 'images must follow every toolResult: ' + layout).to.be.above(lastResult);",
+                  "}",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "",
+                  "pm.test('bedrock global.openai.gpt-5.6-sol: both toolResults come first and the images follow in result order - converse-tool-result-images', function () {",
+                  "  pm.expect(body, 'image left inside toolResult - the pre-fix Converse 400').to.not.include(\"doesn't support the image field\");",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var blocks = lastUserBlocks(pm.response.json());",
+                  "  expectMoved(blocks, 2);",
+                  "  var ids = blocks.filter(function (b) { return b.toolResult; }).map(function (b) { return b.toolResult.toolUseId; });",
+                  "  pm.expect(ids, 'toolResult order').to.eql(['call_left', 'call_right']);",
+                  "  // gpt-5.6 pairs the Nth image with the Nth tool call, so the moved images must keep result order.",
+                  "  var sent = JSON.parse((pm.request.body && pm.request.body.raw) || '{}').messages",
+                  "    .filter(function (m) { return m.role === 'tool'; })",
+                  "    .map(function (m) { return m.content[0].image_url.url.split('base64,')[1]; });",
+                  "  var wire = blocks.filter(function (b) { return b.image; }).map(function (b) { return (b.image.source || {}).bytes; });",
+                  "  pm.expect(wire.length, 'moved image count').to.equal(sent.length);",
+                  "  pm.expect(wire[0] === sent[0] && wire[1] === sent[1], 'moved images are not in tool result order (left red, then right blue)').to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.openai.gpt-5.6-sol /v1/responses function_call_output image moves out of toolResult - converse-tool-result-images",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.openai.gpt-5.6-sol\",\"max_output_tokens\":2048,\"tools\":[{\"type\":\"function\",\"name\":\"get_screenshot\",\"description\":\"Returns a screenshot of the current screen\",\"parameters\":{\"type\":\"object\",\"properties\":{}}}],\"input\":[{\"role\":\"user\",\"content\":\"Call get_screenshot, then reply with only the dominant colour of the screenshot.\"},{\"type\":\"function_call\",\"call_id\":\"call_screenshot_1\",\"name\":\"get_screenshot\",\"arguments\":\"{}\"},{\"type\":\"function_call_output\",\"call_id\":\"call_screenshot_1\",\"output\":[{\"type\":\"input_image\",\"image_url\":\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAeUlEQVR4nO3PQQkAMAzAwIqof2UTMxF7HINABFzm7H7dcEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFj12qxUDxeFqrFAAAAABJRU5ErkJggg==\"}]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "function lastUserBlocks(j) {",
+                  "  var msgs = ((j.extra_fields || {}).raw_request || {}).messages || [];",
+                  "  for (var i = msgs.length - 1; i >= 0; i--) {",
+                  "    if (msgs[i].role === 'user') { return (msgs[i].content || []).filter(function (b) { return !b.cachePoint; }); }",
+                  "  }",
+                  "  return null;",
+                  "}",
+                  "function label(b) {",
+                  "  if (b.toolResult) { return 'toolResult[' + (b.toolResult.content || []).map(label).join(', ') + ']'; }",
+                  "  if (b.image) { return 'image'; }",
+                  "  if (typeof b.text === 'string') { return 'text'; }",
+                  "  return Object.keys(b).join('+');",
+                  "}",
+                  "// Converse layout after the fix: every toolResult first, image-free but never empty, then the moved images.",
+                  "function expectMoved(blocks, count) {",
+                  "  pm.expect(blocks, 'raw_request missing - is send_back_raw_request honoured?').to.be.an('array');",
+                  "  var layout = blocks.map(label).join(' | ');",
+                  "  var results = 0, images = 0, lastResult = -1, firstImage = -1;",
+                  "  blocks.forEach(function (b, i) {",
+                  "    if (b.toolResult) {",
+                  "      results++; lastResult = i;",
+                  "      var inner = b.toolResult.content || [];",
+                  "      pm.expect(inner.filter(function (c) { return c.image; }).length, 'image still nested in a toolResult: ' + layout).to.equal(0);",
+                  "      pm.expect(inner.filter(function (c) { return typeof c.text === 'string' && c.text !== ''; }).length, 'emptied toolResult has no text left behind (Converse 400s an empty one): ' + layout).to.be.above(0);",
+                  "    }",
+                  "    if (b.image) { images++; if (firstImage === -1) { firstImage = i; } }",
+                  "  });",
+                  "  pm.expect(results, 'toolResult count: ' + layout).to.equal(count);",
+                  "  pm.expect(images, 'moved image count: ' + layout).to.equal(count);",
+                  "  pm.expect(firstImage, 'images must follow every toolResult: ' + layout).to.be.above(lastResult);",
+                  "}",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "",
+                  "pm.test('bedrock global.openai.gpt-5.6-sol: Responses converter moves the function_call_output image beside its toolResult - converse-tool-result-images', function () {",
+                  "  pm.expect(body, 'image left inside toolResult - the pre-fix Converse 400').to.not.include(\"doesn't support the image field\");",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  expectMoved(lastUserBlocks(pm.response.json()), 1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.openai.gpt-5.6-sol /v1/chat/completions streaming tool image moves out of toolResult - converse-tool-result-images",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.openai.gpt-5.6-sol\",\"max_tokens\":2048,\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_screenshot\",\"description\":\"Returns a screenshot of the current screen\",\"parameters\":{\"type\":\"object\",\"properties\":{}}}}],\"messages\":[{\"role\":\"user\",\"content\":\"Call get_screenshot, then reply with only the dominant colour of the screenshot.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_screenshot_1\",\"type\":\"function\",\"function\":{\"name\":\"get_screenshot\",\"arguments\":\"{}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_screenshot_1\",\"content\":[{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAeUlEQVR4nO3PQQkAMAzAwIqof2UTMxF7HINABFzm7H7dcEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFj12qxUDxeFqrFAAAAABJRU5ErkJggg==\"}}]}],\"stream\":true}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('bedrock global.openai.gpt-5.6-sol: streaming tool image completes with an answer - converse-tool-result-images', function () {",
+                  "  pm.expect(body, 'image left inside toolResult - the pre-fix Converse 400').to.not.include(\"doesn't support the image field\");",
+                  "  pm.expect(pm.response.code, 'stream request failed: ' + body.slice(0, 600)).to.equal(200);",
+                  "  pm.expect(body, 'expected the [DONE] terminator').to.include('data: [DONE]');",
+                  "  var content = '', errors = [];",
+                  "  body.split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data: ') !== 0 || line === 'data: [DONE]') { return; }",
+                  "    var chunk;",
+                  "    try { chunk = JSON.parse(line.slice(6)); } catch (e) { return; }",
+                  "    if (chunk.error) { errors.push(JSON.stringify(chunk.error)); }",
+                  "    (chunk.choices || []).forEach(function (c) { if (c.delta && typeof c.delta.content === 'string') { content += c.delta.content; } });",
+                  "  });",
+                  "  pm.expect(errors, 'error frames in the stream').to.eql([]);",
+                  "  pm.expect(content.trim(), 'stream carried no answer text').to.not.equal('');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.xai.grok-4.6 /v1/chat/completions tool image moves out of toolResult - converse-tool-result-images",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.xai.grok-4.6\",\"max_tokens\":2048,\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_screenshot\",\"description\":\"Returns a screenshot of the current screen\",\"parameters\":{\"type\":\"object\",\"properties\":{}}}}],\"messages\":[{\"role\":\"user\",\"content\":\"Call get_screenshot, then reply with only the dominant colour of the screenshot.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_screenshot_1\",\"type\":\"function\",\"function\":{\"name\":\"get_screenshot\",\"arguments\":\"{}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_screenshot_1\",\"content\":[{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAeUlEQVR4nO3PQQkAMAzAwIqof2UTMxF7HINABFzm7H7dcEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFj12qxUDxeFqrFAAAAABJRU5ErkJggg==\"}}]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "function lastUserBlocks(j) {",
+                  "  var msgs = ((j.extra_fields || {}).raw_request || {}).messages || [];",
+                  "  for (var i = msgs.length - 1; i >= 0; i--) {",
+                  "    if (msgs[i].role === 'user') { return (msgs[i].content || []).filter(function (b) { return !b.cachePoint; }); }",
+                  "  }",
+                  "  return null;",
+                  "}",
+                  "function label(b) {",
+                  "  if (b.toolResult) { return 'toolResult[' + (b.toolResult.content || []).map(label).join(', ') + ']'; }",
+                  "  if (b.image) { return 'image'; }",
+                  "  if (typeof b.text === 'string') { return 'text'; }",
+                  "  return Object.keys(b).join('+');",
+                  "}",
+                  "// Converse layout after the fix: every toolResult first, image-free but never empty, then the moved images.",
+                  "function expectMoved(blocks, count) {",
+                  "  pm.expect(blocks, 'raw_request missing - is send_back_raw_request honoured?').to.be.an('array');",
+                  "  var layout = blocks.map(label).join(' | ');",
+                  "  var results = 0, images = 0, lastResult = -1, firstImage = -1;",
+                  "  blocks.forEach(function (b, i) {",
+                  "    if (b.toolResult) {",
+                  "      results++; lastResult = i;",
+                  "      var inner = b.toolResult.content || [];",
+                  "      pm.expect(inner.filter(function (c) { return c.image; }).length, 'image still nested in a toolResult: ' + layout).to.equal(0);",
+                  "      pm.expect(inner.filter(function (c) { return typeof c.text === 'string' && c.text !== ''; }).length, 'emptied toolResult has no text left behind (Converse 400s an empty one): ' + layout).to.be.above(0);",
+                  "    }",
+                  "    if (b.image) { images++; if (firstImage === -1) { firstImage = i; } }",
+                  "  });",
+                  "  pm.expect(results, 'toolResult count: ' + layout).to.equal(count);",
+                  "  pm.expect(images, 'moved image count: ' + layout).to.equal(count);",
+                  "  pm.expect(firstImage, 'images must follow every toolResult: ' + layout).to.be.above(lastResult);",
+                  "}",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "",
+                  "pm.test('bedrock global.xai.grok-4.6: xAI fallback moves the tool image beside its toolResult - converse-tool-result-images', function () {",
+                  "  pm.expect(body, 'image left inside toolResult - the pre-fix Converse 400').to.not.include(\"doesn't support the image field\");",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  expectMoved(lastUserBlocks(pm.response.json()), 1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/{{bedrockModel}} /v1/chat/completions Claude keeps the image inside toolResult - converse-tool-result-images",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/{{bedrockModel}}\",\"max_tokens\":2048,\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_screenshot\",\"description\":\"Returns a screenshot of the current screen\",\"parameters\":{\"type\":\"object\",\"properties\":{}}}}],\"messages\":[{\"role\":\"user\",\"content\":\"Call get_screenshot, then reply with only the dominant colour of the screenshot.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_screenshot_1\",\"type\":\"function\",\"function\":{\"name\":\"get_screenshot\",\"arguments\":\"{}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_screenshot_1\",\"content\":[{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAeUlEQVR4nO3PQQkAMAzAwIqof2UTMxF7HINABFzm7H7dcEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFj12qxUDxeFqrFAAAAABJRU5ErkJggg==\"}}]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "function lastUserBlocks(j) {",
+                  "  var msgs = ((j.extra_fields || {}).raw_request || {}).messages || [];",
+                  "  for (var i = msgs.length - 1; i >= 0; i--) {",
+                  "    if (msgs[i].role === 'user') { return (msgs[i].content || []).filter(function (b) { return !b.cachePoint; }); }",
+                  "  }",
+                  "  return null;",
+                  "}",
+                  "function label(b) {",
+                  "  if (b.toolResult) { return 'toolResult[' + (b.toolResult.content || []).map(label).join(', ') + ']'; }",
+                  "  if (b.image) { return 'image'; }",
+                  "  if (typeof b.text === 'string') { return 'text'; }",
+                  "  return Object.keys(b).join('+');",
+                  "}",
+                  "// Converse layout after the fix: every toolResult first, image-free but never empty, then the moved images.",
+                  "function expectMoved(blocks, count) {",
+                  "  pm.expect(blocks, 'raw_request missing - is send_back_raw_request honoured?').to.be.an('array');",
+                  "  var layout = blocks.map(label).join(' | ');",
+                  "  var results = 0, images = 0, lastResult = -1, firstImage = -1;",
+                  "  blocks.forEach(function (b, i) {",
+                  "    if (b.toolResult) {",
+                  "      results++; lastResult = i;",
+                  "      var inner = b.toolResult.content || [];",
+                  "      pm.expect(inner.filter(function (c) { return c.image; }).length, 'image still nested in a toolResult: ' + layout).to.equal(0);",
+                  "      pm.expect(inner.filter(function (c) { return typeof c.text === 'string' && c.text !== ''; }).length, 'emptied toolResult has no text left behind (Converse 400s an empty one): ' + layout).to.be.above(0);",
+                  "    }",
+                  "    if (b.image) { images++; if (firstImage === -1) { firstImage = i; } }",
+                  "  });",
+                  "  pm.expect(results, 'toolResult count: ' + layout).to.equal(count);",
+                  "  pm.expect(images, 'moved image count: ' + layout).to.equal(count);",
+                  "  pm.expect(firstImage, 'images must follow every toolResult: ' + layout).to.be.above(lastResult);",
+                  "}",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "",
+                  "pm.test('bedrock {{bedrockModel}}: Claude reads images inside a toolResult, so the request stays nested - converse-tool-result-images', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var blocks = lastUserBlocks(pm.response.json());",
+                  "  pm.expect(blocks, 'raw_request missing - is send_back_raw_request honoured?').to.be.an('array');",
+                  "  var layout = blocks.map(label).join(' | ');",
+                  "  var results = blocks.filter(function (b) { return b.toolResult; });",
+                  "  pm.expect(results.length, 'toolResult count: ' + layout).to.equal(1);",
+                  "  var inner = results[0].toolResult.content || [];",
+                  "  pm.expect(inner.filter(function (c) { return c.image; }).length, 'image was moved out for Claude: ' + layout).to.equal(1);",
+                  "  pm.expect(blocks.filter(function (b) { return b.image; }).length, 'unexpected image beside the toolResult: ' + layout).to.equal(0);",
+                  "  pm.expect(inner.filter(function (c) { return c.text === 'Image attached below.'; }).length, 'placeholder added for Claude: ' + layout).to.equal(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
