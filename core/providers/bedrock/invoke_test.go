@@ -298,7 +298,7 @@ func TestToAnthropicInvokeStreamBytes_MessageDeltaCarriesUsage(t *testing.T) {
 		},
 	}
 
-	frames, err := toAnthropicInvokeStreamBytes(resp)
+	frames, err := toAnthropicInvokeStreamBytes(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), resp)
 	require.NoError(t, err)
 	require.Len(t, frames, 2, "expected message_delta + message_stop")
 
@@ -331,7 +331,7 @@ func TestToAnthropicInvokeStreamBytes_MessageStartCarriesUsage(t *testing.T) {
 		},
 	}
 
-	frames, err := toAnthropicInvokeStreamBytes(resp)
+	frames, err := toAnthropicInvokeStreamBytes(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), resp)
 	require.NoError(t, err)
 	require.Len(t, frames, 1, "expected a single message_start frame")
 
@@ -366,7 +366,7 @@ func TestToAnthropicInvokeStreamBytes_MessageStartPrefersKnownUsage(t *testing.T
 		},
 	}
 
-	frames, err := toAnthropicInvokeStreamBytes(resp)
+	frames, err := toAnthropicInvokeStreamBytes(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), resp)
 	require.NoError(t, err)
 	require.Len(t, frames, 1)
 
@@ -535,7 +535,7 @@ func TestToAnthropicInvokeStreamBytes_ReasoningSignatureDelta(t *testing.T) {
 		Signature:    &signature,
 	}
 
-	frames, err := toAnthropicInvokeStreamBytes(resp)
+	frames, err := toAnthropicInvokeStreamBytes(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), resp)
 	require.NoError(t, err)
 	require.Len(t, frames, 1)
 
@@ -1638,4 +1638,105 @@ func TestToBedrockInvokeMessagesResponse_ToolSearchCall(t *testing.T) {
 				"the srvtoolu_ block must never be a client tool_use: %s", string(encoded))
 		}
 	}
+}
+
+// TestToBedrockInvokeMessagesStreamResponse_ToolSearchNotToolUse is the streaming
+// twin of TestToBedrockInvokeMessagesResponse_ToolSearchCall. output_item.added for
+// a tool_search_call must open a server_tool_use block, not a tool_use: a caller that
+// sees tool_use executes the srvtoolu_ id and returns a tool_result for it, which
+// Anthropic rejects on the next turn.
+// (https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool)
+func TestToBedrockInvokeMessagesStreamResponse_ToolSearchNotToolUse(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	const searchID = "srvtoolu_01ABC"
+
+	added := func(itemType schemas.ResponsesMessageType, id, name string) *schemas.BifrostResponsesStreamResponse {
+		return &schemas.BifrostResponsesStreamResponse{
+			Type:         schemas.ResponsesStreamResponseTypeOutputItemAdded,
+			ContentIndex: schemas.Ptr(0),
+			Item: &schemas.ResponsesMessage{
+				ID:   schemas.Ptr(id),
+				Type: schemas.Ptr(itemType),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr(id),
+					Name:   schemas.Ptr(name),
+				},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{ResolvedModelUsed: "us.anthropic.claude-sonnet-4-6-v1:0"},
+		}
+	}
+
+	t.Run("tool_search_call opens server_tool_use", func(t *testing.T) {
+		_, event, err := ToBedrockInvokeMessagesStreamResponse(ctx, added(schemas.ResponsesMessageTypeToolSearchCall, searchID, "tool_search_tool_regex"))
+		require.NoError(t, err)
+		bedrockEvent, ok := event.(*BedrockStreamEvent)
+		require.True(t, ok, "expected a BedrockStreamEvent, got %T", event)
+		require.Len(t, bedrockEvent.InvokeModelRawChunks, 1)
+		raw := bedrockEvent.InvokeModelRawChunks[0]
+
+		assert.Equal(t, "server_tool_use", gjson.GetBytes(raw, "content_block.type").String(),
+			"the srvtoolu_ block must never open as a client tool_use: %s", string(raw))
+		assert.Equal(t, searchID, gjson.GetBytes(raw, "content_block.id").String())
+	})
+
+	t.Run("ordinary function_call still opens tool_use", func(t *testing.T) {
+		_, event, err := ToBedrockInvokeMessagesStreamResponse(ctx, added(schemas.ResponsesMessageTypeFunctionCall, "toolu_01XYZ", "get_weather"))
+		require.NoError(t, err)
+		bedrockEvent, ok := event.(*BedrockStreamEvent)
+		require.True(t, ok)
+		require.Len(t, bedrockEvent.InvokeModelRawChunks, 1)
+		assert.Equal(t, "tool_use", gjson.GetBytes(bedrockEvent.InvokeModelRawChunks[0], "content_block.type").String())
+	})
+	t.Run("tool_search_call stop closes the block its start opened", func(t *testing.T) {
+		streamCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+		_, startEvent, err := ToBedrockInvokeMessagesStreamResponse(streamCtx, added(schemas.ResponsesMessageTypeToolSearchCall, searchID, "tool_search_tool_regex"))
+		require.NoError(t, err)
+		startBedrock, ok := startEvent.(*BedrockStreamEvent)
+		require.True(t, ok, "expected a BedrockStreamEvent, got %T", startEvent)
+		require.Len(t, startBedrock.InvokeModelRawChunks, 1)
+		startRaw := startBedrock.InvokeModelRawChunks[0]
+		require.Equal(t, "content_block_start", gjson.GetBytes(startRaw, "type").String())
+
+		// The neutral stream collapses server_tool_use + tool_search_tool_result into one
+		// item, so output_item.done arrives carrying the result block's content index.
+		done := &schemas.BifrostResponsesStreamResponse{
+			Type:         schemas.ResponsesStreamResponseTypeOutputItemDone,
+			ContentIndex: schemas.Ptr(1),
+			Item: &schemas.ResponsesMessage{
+				ID:   schemas.Ptr(searchID),
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeToolSearchCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr(searchID),
+					Name:   schemas.Ptr("tool_search_tool_regex"),
+				},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{ResolvedModelUsed: "us.anthropic.claude-sonnet-4-6-v1:0"},
+		}
+		_, stopEvent, err := ToBedrockInvokeMessagesStreamResponse(streamCtx, done)
+		require.NoError(t, err)
+		stopBedrock, ok := stopEvent.(*BedrockStreamEvent)
+		require.True(t, ok, "expected a BedrockStreamEvent, got %T", stopEvent)
+		require.Len(t, stopBedrock.InvokeModelRawChunks, 1)
+		stopRaw := stopBedrock.InvokeModelRawChunks[0]
+
+		require.Equal(t, "content_block_stop", gjson.GetBytes(stopRaw, "type").String())
+		assert.Equal(t, gjson.GetBytes(startRaw, "index").Int(), gjson.GetBytes(stopRaw, "index").Int(),
+			"content_block_stop must close the block content_block_start opened: start=%s stop=%s", string(startRaw), string(stopRaw))
+	})
+
+	t.Run("an item with no recorded start keeps its own content index", func(t *testing.T) {
+		streamCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		done := &schemas.BifrostResponsesStreamResponse{
+			Type:         schemas.ResponsesStreamResponseTypeOutputItemDone,
+			ContentIndex: schemas.Ptr(2),
+			Item:         &schemas.ResponsesMessage{ID: schemas.Ptr("msg_text_block")},
+		}
+		_, event, err := ToBedrockInvokeMessagesStreamResponse(streamCtx, done)
+		require.NoError(t, err)
+		bedrockEvent, ok := event.(*BedrockStreamEvent)
+		require.True(t, ok)
+		require.Len(t, bedrockEvent.InvokeModelRawChunks, 1)
+		assert.Equal(t, int64(2), gjson.GetBytes(bedrockEvent.InvokeModelRawChunks[0], "index").Int())
+	})
 }
