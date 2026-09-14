@@ -6802,12 +6802,12 @@ func TestMidConversationSystemReminderStaysInline(t *testing.T) {
 	assert.Equal(t, "second user turn", *messages[0].Content[2].Text)
 }
 
-// TestMidConversationSystemReminderHoistedForNonAnthropic verifies the Anthropic-only gating:
-// for a non-Anthropic Bedrock model (e.g. Nova), the historical behavior is preserved — every
-// role=system message, including mid-conversation ones, is hoisted into the top-level system
-// block and nothing is inlined as a <system-reminder>. The inlining is a prompt-cache workaround
-// specific to Anthropic-on-Bedrock and must not change the wire shape for other models.
-func TestMidConversationSystemReminderHoistedForNonAnthropic(t *testing.T) {
+// TestHoistEverythingModeStillHoistsAllSystemMessages pins the inlineSystemReminders=false mode.
+// No request path uses it any more (ToBedrockResponsesRequest inlines mid-conversation reminders
+// for every model family, because Bedrock's prompt cache is prefix-based for every model that
+// has one); it survives only for rendering a stored response back into a Converse shape, and
+// that caller must keep getting the hoist-everything wire shape.
+func TestHoistEverythingModeStillHoistsAllSystemMessages(t *testing.T) {
 	input := []schemas.ResponsesMessage{
 		systemReminderTextMsg("You are a helpful assistant."), // leading system prompt
 		userReminderTextMsg("first user turn"),
@@ -6819,7 +6819,7 @@ func TestMidConversationSystemReminderHoistedForNonAnthropic(t *testing.T) {
 	require.NoError(t, err)
 
 	// Both system messages are hoisted (historical behavior), not just the leading one.
-	require.Len(t, systemMessages, 2, "non-Anthropic models hoist every system message")
+	require.Len(t, systemMessages, 2, "hoist-everything mode hoists every system message")
 	assert.Equal(t, "You are a helpful assistant.", *systemMessages[0].Text)
 	assert.Equal(t, "Mid-conversation reminder.", *systemMessages[1].Text)
 
@@ -6827,7 +6827,7 @@ func TestMidConversationSystemReminderHoistedForNonAnthropic(t *testing.T) {
 	for _, m := range messages {
 		for _, b := range m.Content {
 			if b.Text != nil {
-				assert.NotContains(t, *b.Text, "<system-reminder>", "non-Anthropic path must not wrap reminders")
+				assert.NotContains(t, *b.Text, "<system-reminder>", "hoist-everything mode must not wrap reminders")
 			}
 		}
 	}
