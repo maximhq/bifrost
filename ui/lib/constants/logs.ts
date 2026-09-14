@@ -225,7 +225,10 @@ export const mapAppToClientApp = (app?: string | null): ClientApp => {
 	if (!app || app.trim() === "") {
 		return { name: "Unknown" };
 	}
-	return appByName.get(app) || { name: app };
+	return (
+		appByName.get(app) ||
+		userAgentAppMatchers.find((matcher) => matcher.identifiers.includes(app.trim().toLowerCase()))?.app || { name: app }
+	);
 };
 
 // mapUserAgentToApp resolves a raw User-Agent string to a client app for display.
