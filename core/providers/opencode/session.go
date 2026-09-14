@@ -41,6 +41,9 @@ func namespaceOpencodeSession(namespaceInput, session string) string {
 // PresentedVirtualKey precedent, whatever the context also carries under the
 // key's own name did not authenticate this request.
 func opencodeNamespaceInput(ctx *schemas.BifrostContext) string {
+	if ctx == nil {
+		return ""
+	}
 	if grant := ctx.Grant(); grant != nil {
 		if identity := grant.Identity(); identity != nil {
 			if vk := identity.VirtualKey(); vk != nil && vk.ID != "" {
