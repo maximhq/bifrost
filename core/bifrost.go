@@ -9098,7 +9098,7 @@ func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, p
 		//   - If key.Models is non-empty → only include if model is in list
 		// Blacklist wins over allowlist
 		if model != nil && *model != "" {
-			if !k.ModelAccess().Allows(string(providerKey), *model) {
+			if !k.ModelRule().Allows(string(providerKey), *model) {
 				continue
 			}
 		}
@@ -9215,7 +9215,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 			// NOTE: Model filtering uses the original requested model (which may be an alias).
 			// key.Models and key.BlacklistedModels must therefore be expressed in alias keys.
 			// The provider-specific identifier is resolved later in the handler closure via key.Aliases.Resolve(model).
-			modelSupported := hasValue && key.ModelAccess().Allows(string(providerKey), model)
+			modelSupported := hasValue && key.ModelRule().Allows(string(providerKey), model)
 			if baseProviderType == schemas.VLLM && key.VLLMKeyConfig != nil {
 				if key.VLLMKeyConfig.ModelName != "" {
 					modelSupported = modelSupported && (key.VLLMKeyConfig.ModelName == model)

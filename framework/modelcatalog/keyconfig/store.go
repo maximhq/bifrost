@@ -38,9 +38,9 @@ type KeyEntry struct {
 	Aliases             schemas.KeyAliases
 }
 
-// Access returns the entry's model rule: exact lists plus their pattern twins.
-func (e KeyEntry) Access() schemas.ModelAccessRule {
-	return schemas.ModelAccessRule{
+// ModelRule returns the entry's model rule: exact lists plus their pattern twins.
+func (e KeyEntry) ModelRule() schemas.ModelRule {
+	return schemas.ModelRule{
 		Allowed:         e.Allowed,
 		Blocked:         e.Blacklisted,
 		AllowedPatterns: e.AllowedPatterns,
@@ -72,9 +72,9 @@ type providerState struct {
 	aliasIndex          map[string]AliasOwner
 }
 
-// access returns the provider-wide rule for keyless evaluation.
-func (st *providerState) access() schemas.ModelAccessRule {
-	return schemas.ModelAccessRule{
+// modelRule returns the provider-wide rule for keyless evaluation.
+func (st *providerState) modelRule() schemas.ModelRule {
+	return schemas.ModelRule{
 		Allowed:         st.allowed,
 		Blocked:         st.blacklisted,
 		AllowedPatterns: st.allowedPatterns,
@@ -229,16 +229,16 @@ func (s *Store) BlacklistedPatternsFor(provider schemas.ModelProvider) schemas.M
 	return slices.Clone(st.blacklistedPatterns)
 }
 
-// AccessFor returns the provider-wide model rule built from the aggregated
+// ModelRuleFor returns the provider-wide model rule built from the aggregated
 // lists, or a deny-all rule when the provider is unknown. The four lists are
 // cloned, like the ones the individual accessors return, so a caller that
 // sorts or trims them cannot mutate the snapshot other readers are holding.
-func (s *Store) AccessFor(provider schemas.ModelProvider) schemas.ModelAccessRule {
+func (s *Store) ModelRuleFor(provider schemas.ModelProvider) schemas.ModelRule {
 	st := s.load(provider)
 	if st == nil {
-		return schemas.ModelAccessRule{}
+		return schemas.ModelRule{}
 	}
-	rule := st.access()
+	rule := st.modelRule()
 	rule.Allowed = slices.Clone(rule.Allowed)
 	rule.Blocked = slices.Clone(rule.Blocked)
 	rule.AllowedPatterns = slices.Clone(rule.AllowedPatterns)
@@ -262,7 +262,7 @@ func (s *Store) IsAllowed(provider schemas.ModelProvider, model string) bool {
 	// Keyless unrestricted provider: no per-key entries to gate on, but the
 	// aggregated allow-list ("*") governs and ambient/IAM auth routes without a key.
 	if len(st.entries) == 0 {
-		return st.access().Allows(string(provider), model)
+		return st.modelRule().Allows(string(provider), model)
 	}
 	return anyKeyAllows(st, provider, model)
 }
@@ -272,7 +272,7 @@ func (s *Store) IsAllowed(provider schemas.ModelProvider, model string) bool {
 // KeysAllowingModel.
 func anyKeyAllows(st *providerState, provider schemas.ModelProvider, model string) bool {
 	for _, e := range st.entries {
-		if e.Enabled && e.Access().Allows(string(provider), model) {
+		if e.Enabled && e.ModelRule().Allows(string(provider), model) {
 			return true
 		}
 	}
@@ -318,7 +318,7 @@ func (s *Store) KeysAllowingModel(provider schemas.ModelProvider, model string) 
 	}
 	var out []string
 	for _, e := range st.entries {
-		if e.Enabled && e.Access().Allows(string(provider), model) {
+		if e.Enabled && e.ModelRule().Allows(string(provider), model) {
 			out = append(out, e.KeyID)
 		}
 	}
@@ -413,7 +413,7 @@ func (s *Store) buildState(provider schemas.ModelProvider, keys []schemas.Key) *
 			allModelsAllowed = true
 		} else {
 			for _, m := range key.Models {
-				if key.ModelAccess().Blocks(string(provider), m) {
+				if key.ModelRule().Blocks(string(provider), m) {
 					continue
 				}
 				if !allowed.Contains(m) {

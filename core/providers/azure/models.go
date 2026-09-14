@@ -7,7 +7,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func (response *AzureListModelsResponse) ToBifrostListModelsResponse(access schemas.ModelAccessRule, aliases schemas.KeyAliases, unfiltered bool) *schemas.BifrostListModelsResponse {
+func (response *AzureListModelsResponse) ToBifrostListModelsResponse(rule schemas.ModelRule, aliases schemas.KeyAliases, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -17,7 +17,7 @@ func (response *AzureListModelsResponse) ToBifrostListModelsResponse(access sche
 	}
 
 	pipeline := &providerUtils.ListModelsPipeline{
-		Access:      access,
+		Rule:        rule,
 		Aliases:     aliases,
 		Unfiltered:  unfiltered,
 		ProviderKey: schemas.Azure,

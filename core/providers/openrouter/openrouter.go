@@ -265,7 +265,7 @@ func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext,
 	// Patterns are left as configured: they already match the bare name and
 	// "<provider>/<model>", so no prefix stripping is needed.
 	pipeline := &providerUtils.ListModelsPipeline{
-		Access: schemas.ModelAccessRule{
+		Rule: schemas.ModelRule{
 			Allowed:         normalizedAllowed,
 			Blocked:         normalizedBlacklist,
 			AllowedPatterns: key.ModelsPatterns,

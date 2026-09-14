@@ -124,9 +124,9 @@ func (pc *TableVirtualKeyProviderConfig) BeforeSave(tx *gorm.DB) error {
 	return nil
 }
 
-// ModelAccess returns the provider config's model rule: exact lists plus their pattern twins.
-func (pc *TableVirtualKeyProviderConfig) ModelAccess() schemas.ModelAccessRule {
-	return schemas.ModelAccessRule{
+// ModelRule returns the provider config's model rule: exact lists plus their pattern twins.
+func (pc *TableVirtualKeyProviderConfig) ModelRule() schemas.ModelRule {
+	return schemas.ModelRule{
 		Allowed:         pc.AllowedModels,
 		Blocked:         pc.BlacklistedModels,
 		AllowedPatterns: pc.AllowedModelsPatterns,

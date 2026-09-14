@@ -303,28 +303,28 @@ func vertexServiceTierHeaderValue(region string, model string, tier schemas.Bifr
 }
 
 // buildResponseFromConfig builds a list models response from configured deployments and the
-// key's model access rule. This is used when the user has explicitly configured which models
+// key's model rule rule. This is used when the user has explicitly configured which models
 // they want to use.
-func buildResponseFromConfig(deployments schemas.KeyAliases, access schemas.ModelAccessRule) *schemas.BifrostListModelsResponse {
+func buildResponseFromConfig(deployments schemas.KeyAliases, rule schemas.ModelRule) *schemas.BifrostListModelsResponse {
 	response := &schemas.BifrostListModelsResponse{
 		Data: make([]schemas.Model, 0),
 	}
 
-	if access.Blocked.IsBlockAll() {
+	if rule.Blocked.IsBlockAll() {
 		return response
 	}
 
 	addedModelIDs := make(map[string]bool)
 
 	provider := string(schemas.Vertex)
-	restrictAllowed := access.Allowed.IsRestricted()
+	restrictAllowed := rule.Allowed.IsRestricted()
 
 	// First add models from deployments (filtered by the allow side when set)
 	for alias, deploymentValue := range deployments {
-		if restrictAllowed && !access.Admits(provider, alias) {
+		if restrictAllowed && !rule.Admits(provider, alias) {
 			continue
 		}
-		if access.Blocks(provider, alias) {
+		if rule.Blocks(provider, alias) {
 			continue
 		}
 		modelID := string(schemas.Vertex) + "/" + alias
@@ -348,12 +348,12 @@ func buildResponseFromConfig(deployments schemas.KeyAliases, access schemas.Mode
 	if !restrictAllowed {
 		return response
 	}
-	for _, allowedModel := range access.Allowed {
+	for _, allowedModel := range rule.Allowed {
 		modelID := provider + "/" + allowedModel
 		if addedModelIDs[modelID] {
 			continue
 		}
-		if access.Blocks(provider, allowedModel) {
+		if rule.Blocks(provider, allowedModel) {
 			continue
 		}
 

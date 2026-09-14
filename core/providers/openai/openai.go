@@ -184,7 +184,7 @@ func ListModelsByKey(
 		return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
 	}
 
-	response := openaiResponse.ToBifrostListModelsResponse(providerName, key.ModelAccess(), key.Aliases, unfiltered)
+	response := openaiResponse.ToBifrostListModelsResponse(providerName, key.ModelRule(), key.Aliases, unfiltered)
 
 	response.ExtraFields.Latency = latency.Milliseconds()
 	response.ExtraFields.ProviderResponseHeaders = providerResponseHeaders

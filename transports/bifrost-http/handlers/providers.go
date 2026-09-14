@@ -1248,12 +1248,12 @@ func (h *ProviderHandler) getModelParameters(ctx *fasthttp.RequestCtx) {
 // model resolves to the same base model name as the queried model (alias matching).
 // Pattern twins are evaluated alongside the exact lists; block patterns win.
 func keyAllowsModelForList(key schemas.Key, provider string, model string, catalog *modelcatalog.ModelCatalog) bool {
-	access := key.ModelAccess()
-	if access.Blocks(provider, model) {
+	rule := key.ModelRule()
+	if rule.Blocks(provider, model) {
 		return false
 	}
 	if len(key.Models) > 0 || len(key.ModelsPatterns) > 0 {
-		if access.Admits(provider, model) {
+		if rule.Admits(provider, model) {
 			return true
 		}
 		// Catalog-aware alias matching: a key allowlisting "gpt-4o-2024-08-06"

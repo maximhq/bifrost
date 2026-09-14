@@ -38,7 +38,7 @@ func (mc *ModelCatalog) computeModelsForProvider(provider schemas.ModelProvider)
 	allowed := mc.keyconf.AllowedFor(provider)
 	// rule folds the pattern twins in so a name a pattern admits (or blocks) is
 	// treated the same as one the exact lists name.
-	rule := mc.keyconf.AccessFor(provider)
+	rule := mc.keyconf.ModelRuleFor(provider)
 	// A key may allow models by pattern alone, which leaves the aggregated
 	// exact list nil. Restriction is therefore "either side names something",
 	// not "the exact list is non-nil" - otherwise a pattern-only rule reads as
@@ -106,7 +106,7 @@ func (mc *ModelCatalog) computeModelsForProvider(provider schemas.ModelProvider)
 	return out
 }
 
-func (mc *ModelCatalog) appendAllowedDatasheetModels(out []string, models []string, restricted bool, rule schemas.ModelAccessRule, providerName string) []string {
+func (mc *ModelCatalog) appendAllowedDatasheetModels(out []string, models []string, restricted bool, rule schemas.ModelRule, providerName string) []string {
 	if len(models) == 0 {
 		return out
 	}
@@ -275,7 +275,7 @@ func (mc *ModelCatalog) computeProvidersForModel(model string) []schemas.ModelPr
 		if _, ok := seen[p]; ok {
 			continue
 		}
-		rule := mc.keyconf.AccessFor(p)
+		rule := mc.keyconf.ModelRuleFor(p)
 		if rule.Blocks(string(p), model) {
 			continue
 		}

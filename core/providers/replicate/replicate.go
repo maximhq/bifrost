@@ -313,7 +313,7 @@ func (provider *ReplicateProvider) listDeploymentsByKey(ctx *schemas.BifrostCont
 		return ToBifrostListModelsResponse(
 			&ReplicateDeploymentListResponse{},
 			providerName,
-			key.ModelAccess(),
+			key.ModelRule(),
 			key.Aliases,
 			request.Unfiltered,
 		), nil
@@ -400,7 +400,7 @@ func (provider *ReplicateProvider) listDeploymentsByKey(ctx *schemas.BifrostCont
 	response := ToBifrostListModelsResponse(
 		deploymentsResponse,
 		providerName,
-		key.ModelAccess(),
+		key.ModelRule(),
 		key.Aliases,
 		request.Unfiltered,
 	)

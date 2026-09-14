@@ -259,7 +259,7 @@ const runwareCuratedSource = "curated"
 func ToBifrostListModelsResponse(
 	models []RunwareModel,
 	providerKey schemas.ModelProvider,
-	access schemas.ModelAccessRule,
+	rule schemas.ModelRule,
 	aliases schemas.KeyAliases,
 	unfiltered bool,
 ) *schemas.BifrostListModelsResponse {
@@ -268,7 +268,7 @@ func ToBifrostListModelsResponse(
 	}
 
 	pipeline := &providerUtils.ListModelsPipeline{
-		Access:      access,
+		Rule:        rule,
 		Aliases:     aliases,
 		Unfiltered:  unfiltered,
 		ProviderKey: providerKey,

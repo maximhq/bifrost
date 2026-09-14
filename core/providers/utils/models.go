@@ -155,7 +155,7 @@ type FilterResult struct {
 // and use its methods instead of passing params + matchFns to every function.
 //
 //	pipeline := &providerUtils.ListModelsPipeline{
-//	    Access:            key.ModelAccess(),
+//	    Rule:              key.ModelRule(),
 //	    Aliases:           key.Aliases,
 //	    Unfiltered:        request.Unfiltered,
 //	    ProviderKey:       schemas.OpenAI,
@@ -165,10 +165,10 @@ type FilterResult struct {
 //	result := pipeline.FilterModel(model.ID)
 //	pipeline.BackfillModels(included)
 type ListModelsPipeline struct {
-	// Access carries the key's exact allow and block lists plus their pattern
+	// Rule carries the key's exact allow and block lists plus their pattern
 	// twins. Exact entries go through MatchFns; patterns are evaluated as RE2
 	// against the resolved model name and "<provider>/<model>".
-	Access schemas.ModelAccessRule
+	Rule schemas.ModelRule
 	// Aliases maps user-facing alias keys to their AliasConfig. The pipeline
 	// reads AliasConfig.ModelID for matching and Alias surfacing.
 	Aliases     schemas.KeyAliases
@@ -195,35 +195,30 @@ func (p *ListModelsPipeline) ShouldEarlyExit() bool {
 	if p.Unfiltered {
 		return false
 	}
-	if p.Access.Blocked.IsBlockAll() {
+	if p.Rule.Blocked.IsBlockAll() {
 		return true
 	}
-	if p.Access.Allowed.IsEmpty() && p.Access.AllowedPatterns.IsEmpty() && len(p.Aliases) == 0 {
+	if p.Rule.Allowed.IsEmpty() && p.Rule.AllowedPatterns.IsEmpty() && len(p.Aliases) == 0 {
 		return true
 	}
 	return false
 }
 
-// admitted reports whether name passes the allow side: an exact entry through
-// MatchFns, or an allow pattern.
+// admitted reports whether name passes the allow side, comparing exact entries
+// through MatchFns.
 func (p *ListModelsPipeline) admitted(name string) bool {
-	for _, entry := range p.Access.Allowed {
-		if matches(name, entry, p.MatchFns) {
-			return true
-		}
-	}
-	return p.Access.AllowedPatterns.Matches(string(p.ProviderKey), name)
+	return p.Rule.AdmitsBy(string(p.ProviderKey), name, p.entryMatches)
 }
 
-// blocked reports whether name is caught by the block side: an exact entry
-// through MatchFns, or a block pattern.
+// blocked reports whether name is caught by the block side, comparing exact
+// entries through MatchFns.
 func (p *ListModelsPipeline) blocked(name string) bool {
-	for _, entry := range p.Access.Blocked {
-		if matches(name, entry, p.MatchFns) {
-			return true
-		}
-	}
-	return p.Access.BlockedPatterns.Matches(string(p.ProviderKey), name)
+	return p.Rule.BlocksBy(string(p.ProviderKey), name, p.entryMatches)
+}
+
+// entryMatches is the equality the rule uses for exact entries in this pipeline.
+func (p *ListModelsPipeline) entryMatches(entry, name string) bool {
+	return matches(name, entry, p.MatchFns)
 }
 
 // aliasMatch holds a single alias key/value pair returned by resolveModelID.
@@ -305,7 +300,7 @@ func (p *ListModelsPipeline) FilterModel(modelID string) []FilterResult {
 		// Step 2: allowlist check.
 		// IsRestricted() is true for both an explicit list AND an empty list (deny-all).
 		// Only a wildcard allowlist marker bypasses this check (pass-through).
-		if !p.Unfiltered && p.Access.Allowed.IsRestricted() && !p.admitted(resolvedName) {
+		if !p.Unfiltered && p.Rule.Allowed.IsRestricted() && !p.admitted(resolvedName) {
 			continue
 		}
 
@@ -353,10 +348,10 @@ func (p *ListModelsPipeline) FilterModel(modelID string) []FilterResult {
 func (p *ListModelsPipeline) BackfillModels(included map[string]bool) []schemas.Model {
 	var result []schemas.Model
 
-	if !p.Unfiltered && p.Access.Allowed.IsRestricted() {
+	if !p.Unfiltered && p.Rule.Allowed.IsRestricted() {
 		// Case A: backfill explicit allowlist entries not yet matched. Allow
 		// patterns name no model, so there is nothing to surface for them.
-		for _, entry := range p.Access.Allowed {
+		for _, entry := range p.Rule.Allowed {
 			if included[strings.ToLower(entry)] {
 				continue
 			}

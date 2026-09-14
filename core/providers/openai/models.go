@@ -8,7 +8,7 @@ import (
 )
 
 // ToBifrostListModelsResponse converts an OpenAI list models response to a Bifrost list models response
-func (response *OpenAIListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, access schemas.ModelAccessRule, aliases schemas.KeyAliases, unfiltered bool) *schemas.BifrostListModelsResponse {
+func (response *OpenAIListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, rule schemas.ModelRule, aliases schemas.KeyAliases, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -18,7 +18,7 @@ func (response *OpenAIListModelsResponse) ToBifrostListModelsResponse(providerKe
 	}
 
 	pipeline := &providerUtils.ListModelsPipeline{
-		Access:      access,
+		Rule:        rule,
 		Aliases:     aliases,
 		Unfiltered:  unfiltered,
 		ProviderKey: providerKey,

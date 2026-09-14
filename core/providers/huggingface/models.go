@@ -14,7 +14,7 @@ const (
 	maxModelFetchLimit     = 1000
 )
 
-func (response *HuggingFaceListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, inferenceProvider inferenceProvider, access schemas.ModelAccessRule, aliases schemas.KeyAliases, unfiltered bool) *schemas.BifrostListModelsResponse {
+func (response *HuggingFaceListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, inferenceProvider inferenceProvider, rule schemas.ModelRule, aliases schemas.KeyAliases, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -24,7 +24,7 @@ func (response *HuggingFaceListModelsResponse) ToBifrostListModelsResponse(provi
 	}
 
 	pipeline := &providerUtils.ListModelsPipeline{
-		Access:      access,
+		Rule:        rule,
 		Aliases:     aliases,
 		Unfiltered:  unfiltered,
 		ProviderKey: providerKey,

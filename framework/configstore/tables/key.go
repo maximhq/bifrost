@@ -139,9 +139,9 @@ type TableKey struct {
 // TableName sets the table name for each model
 func (TableKey) TableName() string { return "config_keys" }
 
-// ModelAccess returns the key's model rule: exact lists plus their pattern twins.
-func (k *TableKey) ModelAccess() schemas.ModelAccessRule {
-	return schemas.ModelAccessRule{
+// ModelRule returns the key's model rule: exact lists plus their pattern twins.
+func (k *TableKey) ModelRule() schemas.ModelRule {
+	return schemas.ModelRule{
 		Allowed:         k.Models,
 		Blocked:         k.BlacklistedModels,
 		AllowedPatterns: k.ModelsPatterns,

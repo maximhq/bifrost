@@ -283,9 +283,9 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	}
 
 	deployments := key.Aliases
-	access := key.ModelAccess()
+	rule := key.ModelRule()
 
-	if !request.Unfiltered && (access.DeniesAll() && len(deployments) == 0) {
+	if !request.Unfiltered && (rule.DeniesAll() && len(deployments) == 0) {
 		return &schemas.BifrostListModelsResponse{Data: make([]schemas.Model, 0)}, nil
 	}
 
@@ -294,9 +294,9 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	// only way to surface what it admits is the Model Garden listing, which the pipeline then
 	// filters by both the exact lists and the patterns.
 	// Skip this fast path when Unfiltered is set so the full Vertex catalog can be retrieved
-	if !request.Unfiltered && access.AllowedPatterns.IsEmpty() &&
-		(len(deployments) > 0 || (access.Allowed.IsRestricted() && !access.Allowed.IsEmpty())) {
-		return buildResponseFromConfig(deployments, access), nil
+	if !request.Unfiltered && rule.AllowedPatterns.IsEmpty() &&
+		(len(deployments) > 0 || (rule.Allowed.IsRestricted() && !rule.Allowed.IsEmpty())) {
+		return buildResponseFromConfig(deployments, rule), nil
 	}
 
 	// No deployments configured - fetch from Model Garden API
@@ -421,7 +421,7 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 		PublisherModels: allPublisherModels,
 	}
 
-	response := aggregatedResponse.ToBifrostListModelsResponse(key.ModelAccess(), key.Aliases, request.Unfiltered)
+	response := aggregatedResponse.ToBifrostListModelsResponse(key.ModelRule(), key.Aliases, request.Unfiltered)
 
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 		response.ExtraFields.RawRequest = rawRequests
@@ -3687,7 +3687,7 @@ func gcsGetAuthHeader(key schemas.Key) (string, error) {
 	tok, err := tokenSrc.Token()
 	if err != nil {
 		removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
-		return "", fmt.Errorf("failed to acquire GCS access token: %w", err)
+		return "", fmt.Errorf("failed to acquire GCS rule token: %w", err)
 	}
 	return "Bearer " + tok.AccessToken, nil
 }

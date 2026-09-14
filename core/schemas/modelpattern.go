@@ -23,10 +23,10 @@ type ModelPatternList []string
 // rejected at write time by Validate.
 var modelPatternCache sync.Map // map[string]*regexp.Regexp
 
-// CompileModelPattern compiles pattern into an anchored, case-insensitive RE2
+// compileModelPattern compiles pattern into an anchored, case-insensitive RE2
 // expression and caches it. It returns an error when the pattern is blank or
 // when RE2 rejects it.
-func CompileModelPattern(pattern string) (*regexp.Regexp, error) {
+func compileModelPattern(pattern string) (*regexp.Regexp, error) {
 	if v, ok := modelPatternCache.Load(pattern); ok {
 		return v.(*regexp.Regexp), nil
 	}
@@ -61,7 +61,7 @@ func (pl ModelPatternList) Validate() error {
 			return fmt.Errorf("duplicate pattern '%s'", p)
 		}
 		seen[p] = struct{}{}
-		if _, err := CompileModelPattern(p); err != nil {
+		if _, err := compileModelPattern(p); err != nil {
 			return fmt.Errorf("invalid pattern '%s': %w", p, err)
 		}
 	}
@@ -80,7 +80,7 @@ func (pl ModelPatternList) Matches(provider, model string) bool {
 		qualified = provider + "/" + model
 	}
 	for _, p := range pl {
-		re, err := CompileModelPattern(p)
+		re, err := compileModelPattern(p)
 		if err != nil {
 			continue
 		}
@@ -94,7 +94,7 @@ func (pl ModelPatternList) Matches(provider, model string) bool {
 	return false
 }
 
-// ModelAccessRule is the composition of one exact allow list, one exact block
+// ModelRule is the composition of one exact allow list, one exact block
 // list and their pattern twins. Every site that decides whether a model may be
 // served evaluates through it, so allow and block semantics live in one place:
 //
@@ -104,7 +104,7 @@ func (pl ModelPatternList) Matches(provider, model string) bool {
 //     block pattern matches it;
 //   - block wins over allow;
 //   - an empty allow list with no allow patterns admits nothing.
-type ModelAccessRule struct {
+type ModelRule struct {
 	Allowed         WhiteList
 	Blocked         BlackList
 	AllowedPatterns ModelPatternList
@@ -112,31 +112,60 @@ type ModelAccessRule struct {
 }
 
 // Blocks reports whether model is blocked by the exact block list or a block
-// pattern.
-func (r ModelAccessRule) Blocks(provider, model string) bool {
-	return r.Blocked.IsBlocked(model) || r.BlockedPatterns.Matches(provider, model)
+// pattern. Exact entries are compared case-insensitively.
+func (r ModelRule) Blocks(provider, model string) bool {
+	return r.BlocksBy(provider, model, strings.EqualFold)
+}
+
+// BlocksBy is Blocks with the caller's equality for exact entries: the block
+// list is "*", an entry equals model under eq, or a block pattern matches.
+func (r ModelRule) BlocksBy(provider, model string, eq func(entry, model string) bool) bool {
+	if r.Blocked.IsBlockAll() {
+		return true
+	}
+	for _, entry := range r.Blocked {
+		if eq(entry, model) {
+			return true
+		}
+	}
+	return r.BlockedPatterns.Matches(provider, model)
 }
 
 // Admits reports whether model is admitted by the exact allow list or an allow
-// pattern. It ignores the block side; see Allows.
-func (r ModelAccessRule) Admits(provider, model string) bool {
-	return r.Allowed.IsAllowed(model) || r.AllowedPatterns.Matches(provider, model)
+// pattern. It ignores the block side; see Allows. Exact entries are compared
+// case-insensitively.
+func (r ModelRule) Admits(provider, model string) bool {
+	return r.AdmitsBy(provider, model, strings.EqualFold)
+}
+
+// AdmitsBy is Admits with the caller's equality for exact entries: the allow
+// list is "*", an entry equals model under eq, or an allow pattern matches.
+func (r ModelRule) AdmitsBy(provider, model string, eq func(entry, model string) bool) bool {
+	if r.Allowed.IsUnrestricted() {
+		return true
+	}
+	for _, entry := range r.Allowed {
+		if eq(entry, model) {
+			return true
+		}
+	}
+	return r.AllowedPatterns.Matches(provider, model)
 }
 
 // Allows reports whether model may be served: admitted and not blocked.
-func (r ModelAccessRule) Allows(provider, model string) bool {
+func (r ModelRule) Allows(provider, model string) bool {
 	return !r.Blocks(provider, model) && r.Admits(provider, model)
 }
 
 // DeniesAll reports whether no model can pass: everything is blocked, or
 // nothing is admitted.
-func (r ModelAccessRule) DeniesAll() bool {
+func (r ModelRule) DeniesAll() bool {
 	return r.Blocked.IsBlockAll() || (r.Allowed.IsEmpty() && r.AllowedPatterns.IsEmpty())
 }
 
 // Validate checks all four lists. The error names the offending side using
 // the given field names so handlers can surface it verbatim.
-func (r ModelAccessRule) Validate() error {
+func (r ModelRule) Validate() error {
 	if err := r.Allowed.Validate(); err != nil {
 		return fmt.Errorf("allowed models: %w", err)
 	}

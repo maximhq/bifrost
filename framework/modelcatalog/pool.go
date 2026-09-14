@@ -121,10 +121,10 @@ func (mc *ModelCatalog) BlacklistedModelsPatternsForProvider(provider schemas.Mo
 	return mc.keyconf.BlacklistedPatternsFor(provider)
 }
 
-// ModelAccessForProvider returns the provider-wide model rule aggregated
+// ModelRuleForProvider returns the provider-wide model rule aggregated
 // across enabled keys: exact lists plus their pattern twins.
-func (mc *ModelCatalog) ModelAccessForProvider(provider schemas.ModelProvider) schemas.ModelAccessRule {
-	return mc.keyconf.AccessFor(provider)
+func (mc *ModelCatalog) ModelRuleForProvider(provider schemas.ModelProvider) schemas.ModelRule {
+	return mc.keyconf.ModelRuleFor(provider)
 }
 
 // ConfiguredProviders returns every provider with at least one entry in

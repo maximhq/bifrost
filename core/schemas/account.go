@@ -158,10 +158,10 @@ type Key struct {
 	Description               string                  `json:"description,omitempty"`                 // Description of key
 }
 
-// ModelAccess returns the key's model rule: exact lists plus their pattern
+// ModelRule returns the key's model rule: exact lists plus their pattern
 // twins, so callers decide with one Allows call.
-func (k Key) ModelAccess() ModelAccessRule {
-	return ModelAccessRule{
+func (k Key) ModelRule() ModelRule {
+	return ModelRule{
 		Allowed:         k.Models,
 		Blocked:         k.BlacklistedModels,
 		AllowedPatterns: k.ModelsPatterns,

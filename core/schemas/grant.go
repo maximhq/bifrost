@@ -242,10 +242,10 @@ type ProviderPermit struct {
 	//                  expresses one wins as the more specific context.
 }
 
-// ModelAccess returns the permit's model rule: exact lists plus their pattern
+// ModelRule returns the permit's model rule: exact lists plus their pattern
 // twins.
-func (pp ProviderPermit) ModelAccess() ModelAccessRule {
-	return ModelAccessRule{
+func (pp ProviderPermit) ModelRule() ModelRule {
+	return ModelRule{
 		Allowed:         pp.AllowedModels,
 		Blocked:         pp.BlacklistedModels,
 		AllowedPatterns: pp.AllowedModelsPatterns,
