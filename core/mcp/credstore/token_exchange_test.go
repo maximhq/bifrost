@@ -3,6 +3,7 @@ package credstore
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -75,6 +76,31 @@ func TestTokenExchangeConnectionHeadersMissingSubject(t *testing.T) {
 	}
 	if authErr.AuthorizeURL != "" || authErr.SubmitURL != "" {
 		t.Fatal("exchange auth-required errors must carry no interactive URLs")
+	}
+	if !strings.Contains(authErr.Message, "Send your identity-provider access token as the Authorization bearer") {
+		t.Fatalf("a request that carried no token is told how to carry one, got %q", authErr.Message)
+	}
+}
+
+// The refusal names what happened to a token the caller did send, when the auth layer recorded it.
+// Telling a caller who sent a token to send one gives them nothing to act on.
+func TestTokenExchangeConnectionHeadersMissingSubjectNamesTheRejection(t *testing.T) {
+	r := &tokenExchangeResolver{provider: &fakeExchangeProvider{exchangedTokenErr: schemas.ErrExchangeSubjectTokenMissing}}
+	ctx := newExchangeTestContext()
+	ctx.SetValue(schemas.BifrostContextKeyMCPInboundBearerOmitted, schemas.MCPInboundBearerRejected)
+	_, err := r.ConnectionHeaders(ctx, exchangeClientConfig())
+	var authErr *schemas.MCPAuthRequiredError
+	if !errors.As(err, &authErr) {
+		t.Fatalf("expected *MCPAuthRequiredError, got %T: %v", err, err)
+	}
+	if !authErr.SubjectTokenMissing {
+		t.Fatal("SubjectTokenMissing = false, want true")
+	}
+	if !strings.Contains(authErr.Message, "was rejected") {
+		t.Fatalf("Message = %q, want it to say the token was rejected", authErr.Message)
+	}
+	if strings.Contains(authErr.Message, "Send your identity-provider access token as the Authorization bearer") {
+		t.Fatalf("a caller who sent a token must not be told to send one, got %q", authErr.Message)
 	}
 }
 
