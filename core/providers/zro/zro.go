@@ -3,6 +3,9 @@ package zro
 
 import (
 	"context"
+	"errors"
+	"maps"
+	"net/url"
 	"strings"
 	"time"
 
@@ -14,6 +17,7 @@ import (
 
 // ZroProvider implements the Provider interface for Zro's API.
 type ZroProvider struct {
+	providerKey         schemas.ModelProvider // Effective identity, including custom aliases
 	logger              schemas.Logger        // Logger for provider operations
 	client              *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
 	streamingClient     *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
@@ -27,6 +31,20 @@ type ZroProvider struct {
 // The client is configured with timeouts, concurrency limits, and optional proxy settings.
 func NewZroProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*ZroProvider, error) {
 	config.CheckAndSetDefaults()
+	networkConfig := config.NetworkConfig
+	if networkConfig.BaseURL == "" {
+		networkConfig.BaseURL = "https://zro.moonmath.ai/v1"
+	}
+	endpoint, err := url.Parse(networkConfig.BaseURL)
+	if err != nil || endpoint.Scheme != "https" || endpoint.Hostname() == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.ForceQuery || endpoint.Fragment != "" {
+		return nil, errors.New("zro base URL must be an absolute HTTPS URL without credentials, query parameters, or fragments")
+	}
+	networkConfig.BaseURL = strings.TrimRight(networkConfig.BaseURL, "/")
+	networkConfig.ExtraHeaders = maps.Clone(networkConfig.ExtraHeaders)
+	providerKey := schemas.Zro
+	if config.CustomProviderConfig != nil && config.CustomProviderConfig.CustomProviderKey != "" {
+		providerKey = schemas.ModelProvider(config.CustomProviderConfig.CustomProviderKey)
+	}
 
 	requestTimeout := time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds)
 	client := &fasthttp.Client{
@@ -44,17 +62,13 @@ func NewZroProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*Zro
 	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
-	// Set default BaseURL if not provided
-	if config.NetworkConfig.BaseURL == "" {
-		config.NetworkConfig.BaseURL = "https://zro.moonmath.ai/v1"
-	}
-	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &ZroProvider{
+		providerKey:         providerKey,
 		logger:              logger,
 		client:              client,
 		streamingClient:     streamingClient,
-		networkConfig:       config.NetworkConfig,
+		networkConfig:       networkConfig,
 		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
 	}, nil
@@ -62,7 +76,7 @@ func NewZroProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*Zro
 
 // GetProviderKey returns the provider identifier for Zro.
 func (provider *ZroProvider) GetProviderKey() schemas.ModelProvider {
-	return schemas.Zro
+	return provider.providerKey
 }
 
 // ListModels performs a list models request to Zro's API.
@@ -74,7 +88,7 @@ func (provider *ZroProvider) ListModels(ctx *schemas.BifrostContext, keys []sche
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/models"),
 		keys,
 		provider.networkConfig.ExtraHeaders,
-		schemas.Zro,
+		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 	)
@@ -85,9 +99,7 @@ func (provider *ZroProvider) TextCompletion(ctx *schemas.BifrostContext, key sch
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TextCompletionRequest, provider.GetProviderKey())
 }
 
-// TextCompletionStream performs a streaming text completion request to Zro's API.
-// It formats the request, sends it to Zro, and processes the response.
-// Returns a channel of BifrostStreamChunk objects or an error if the request fails.
+// TextCompletionStream is not supported by the Zro provider.
 func (provider *ZroProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TextCompletionStreamRequest, provider.GetProviderKey())
 }
@@ -119,14 +131,14 @@ func (provider *ZroProvider) ChatCompletionStream(ctx *schemas.BifrostContext, p
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamingClient,
-		provider.networkConfig.BaseURL+"/chat/completions",
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/chat/completions"),
 		request,
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
-		schemas.Zro,
+		provider.GetProviderKey(),
 		postHookRunner,
 		nil,
 		nil,

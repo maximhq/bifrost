@@ -10,6 +10,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// TestZro runs the live Zro provider scenarios when an API key is configured.
 func TestZro(t *testing.T) {
 	t.Parallel()
 	if strings.TrimSpace(os.Getenv("ZRO_API_KEY")) == "" {
@@ -51,4 +52,3 @@ func TestZro(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
 }
-
