@@ -573,6 +573,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_client_config_enforce_vk_object_ownership_column"}, run: migrationAddClientConfigEnforceVKObjectOwnershipColumn},
 	{IDs: []string{"add_mcp_client_openapi_spec_column"}, run: migrationAddMCPClientOpenAPISpecColumn},
 	{IDs: []string{"add_mcp_client_openapi_config_json_column"}, run: migrationAddMCPClientOpenAPIConfigJSONColumn},
+	{IDs: []string{"widen_batch_job_file_id_columns"}, run: migrationWidenBatchJobFileIDColumns},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -13126,9 +13127,9 @@ func migrationAddBatchJobsTable(ctx context.Context, db *gorm.DB, logger schemas
 						model                    VARCHAR(255),
 						endpoint                 VARCHAR(255),
 						provider_status          VARCHAR(50),
-						input_file_id            VARCHAR(255),
-						output_file_id           VARCHAR(255),
-						error_file_id            VARCHAR(255),
+						input_file_id            TEXT,
+						output_file_id           TEXT,
+						error_file_id            TEXT,
 						results_url              TEXT,
 						next_check_at            TIMESTAMPTZ,
 						poll_attempts            INTEGER NOT NULL DEFAULT 0,
@@ -16029,4 +16030,45 @@ func migrationAddA2ARawCaptureSetting(ctx context.Context, db *gorm.DB, logger s
 			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableClientConfig{}, "A2AStoreRawRequestResponse")
 		},
 	})
+}
+
+// migrationWidenBatchJobFileIDColumns removes the PostgreSQL length limit from
+// provider-returned file identifiers. Providers may return opaque identifiers
+// longer than 255 characters, and truncating them would make later result
+// retrieval and accounting address the wrong object.
+//
+// SQLite does not enforce VARCHAR length limits and fresh PostgreSQL tables use
+// TEXT in migrationAddBatchJobsTable, so this only needs to alter existing
+// PostgreSQL installations that still have the legacy VARCHAR(255) columns.
+func migrationWidenBatchJobFileIDColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "widen_batch_job_file_id_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Dialector.Name() != "postgres" {
+				return nil
+			}
+
+			for _, column := range []string{"input_file_id", "output_file_id", "error_file_id"} {
+				if !tx.Migrator().HasColumn(&tables.TableProviderJob{}, column) {
+					continue
+				}
+				if err := tx.Exec("ALTER TABLE batch_jobs ALTER COLUMN " + column + " TYPE TEXT").Error; err != nil {
+					return fmt.Errorf("failed to widen batch_jobs.%s: %w", column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: narrowing provider file identifiers could truncate values already stored", migrationName)
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
 }

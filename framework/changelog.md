@@ -1,0 +1,1 @@
+- fix: allow long provider batch file identifiers in PostgreSQL [@axelray-dev](https://github.com/axelray-dev)
