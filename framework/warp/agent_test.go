@@ -3,13 +3,15 @@ package warp
 import (
 	"context"
 	"fmt"
-	"github.com/bytedance/sonic"
-	"github.com/maximhq/bifrost/framework/logstore"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -600,6 +602,36 @@ func MultiToolTurn(names ...string) *schemas.BifrostResponsesResponse {
 	return &schemas.BifrostResponsesResponse{Output: output}
 }
 
+// mixedToolCall names one call in a MixedToolTurn: which tool, and what
+// arguments.
+type mixedToolCall struct {
+	name string
+	args string
+}
+
+// MixedToolTurn builds one assistant turn asking for several different tools
+// at once, each with its own arguments - MultiToolTurn above assumes one
+// shared tool name and identical arguments, which does not let a test mix
+// ask_user into a batch of real calls, or target different fake methods (and
+// therefore different independently configurable delays) with different
+// calls in the same batch.
+func MixedToolTurn(calls ...mixedToolCall) *schemas.BifrostResponsesResponse {
+	itemType := schemas.ResponsesMessageTypeFunctionCall
+	output := make([]schemas.ResponsesMessage, 0, len(calls))
+	for i, call := range calls {
+		callID, callName, callArgs := fmt.Sprintf("call-%d", i), call.name, call.args
+		output = append(output, schemas.ResponsesMessage{
+			Type: &itemType,
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID:    &callID,
+				Name:      &callName,
+				Arguments: &callArgs,
+			},
+		})
+	}
+	return &schemas.BifrostResponsesResponse{Output: output}
+}
+
 // Every tool call the model makes must come back with a result, including the
 // ones past the per-turn cap.
 //
@@ -923,6 +955,170 @@ func TestWarpSystemInstructionsOmitSemanticSearchWhenUnavailable(t *testing.T) {
 	}
 	require.NotContains(t, names(buildToolsFor(nil)), SemanticSearchToolName)
 	require.Contains(t, names(buildToolsFor(&SemanticSearcher{})), SemanticSearchToolName)
+}
+
+// This is the correctness guarantee running a step's tool calls together
+// depends on: the model gets its answers back in the order it asked the
+// questions, not the order the store happened to finish them in. Get this
+// wrong and a provider that pairs tool_use/tool_result by position rather
+// than id - or a reader trying to follow the transcript - sees a scrambled
+// exchange. Each call below hits a different fake method with its own
+// independently configured delay, deliberately finishing in the reverse of
+// the order they were requested.
+func TestWarpAgentPreservesCallOrderRegardlessOfCompletionOrder(t *testing.T) {
+	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{
+		MixedToolTurn(
+			mixedToolCall{"query_metrics", `{"filters":{},"metrics":["summary"]}`},  // slowest: finishes last
+			mixedToolCall{"query_metrics", `{"filters":{},"metrics":["requests"]}`}, // fast
+			mixedToolCall{"query_metrics", `{"filters":{},"metrics":["cost"]}`},     // medium
+			mixedToolCall{"query_metrics", `{"filters":{},"metrics":["tokens"]}`},   // fastest: finishes first
+		),
+		TextTurn("done."),
+	}}
+	fake := &fakeLogReader{
+		statsDelay:          100 * time.Millisecond,
+		histogramDelay:      10 * time.Millisecond,
+		costHistogramDelay:  50 * time.Millisecond,
+		tokenHistogramDelay: 1 * time.Millisecond,
+	}
+	agent := newTestAgent(model, fake, 8)
+
+	collectEvents(t, agent, context.Background())
+
+	// model.lastInput is the conversation on the second model call - the one
+	// that has to carry every function_result back in the model's own order.
+	var callOrder []string
+	for _, message := range model.lastInput {
+		if message.Type == nil || *message.Type != schemas.ResponsesMessageTypeFunctionCallOutput {
+			continue
+		}
+		callOrder = append(callOrder, *message.ResponsesToolMessage.CallID)
+	}
+	require.Equal(t, []string{"call-0", "call-1", "call-2", "call-3"}, callOrder,
+		"results must return in the order the calls were made, not the order they finished")
+}
+
+// The whole point of running a step's tool calls together is wall-clock time:
+// several calls that each take real time must not cost several times as long.
+// The order-preservation test above proves correctness; this proves the
+// actual benefit exists - its fake responds instantly, which would pass
+// whether or not the calls actually overlap.
+func TestWarpAgentRunsQueuedToolCallsConcurrently(t *testing.T) {
+	names := make([]string, MaxToolCallsPerTurn)
+	for i := range names {
+		names[i] = "query_metrics"
+	}
+	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{
+		MultiToolTurn(names...),
+		TextTurn("done."),
+	}}
+	fake := &fakeLogReader{
+		entered: make(chan struct{}, MaxToolCallsPerTurn),
+		release: make(chan struct{}),
+	}
+	agent := newTestAgent(model, fake, 8)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		collectEvents(t, agent, context.Background())
+	}()
+
+	// If the calls actually ran one at a time, only one would ever be
+	// blocked in GetStats waiting on release at once, and this would time
+	// out well before a second call showed up - the barrier itself is the
+	// proof of overlap, not a wall-clock margin.
+	for range MaxToolCallsPerTurn {
+		select {
+		case <-fake.entered:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for all queued calls to be in flight at once")
+		}
+	}
+	require.Equal(t, int32(MaxToolCallsPerTurn), atomic.LoadInt32(&fake.activeStatsCalls),
+		"every queued call must be running at once, not trickling in one at a time")
+	close(fake.release)
+	<-done
+
+	require.Equal(t, MaxToolCallsPerTurn, fake.statsCalls, "every call must actually have reached the store")
+}
+
+// ask_user ending the batch must hold exactly as it did sequentially: calls
+// queued ahead of it still run - MixedToolTurn below queues one before it -
+// but nothing after it does, whether or not the ones ahead of it have
+// actually finished by the time ask_user's own index is reached.
+func TestWarpAgentAskUserMidBatchStillRunsEarlierCallsButNotLaterOnes(t *testing.T) {
+	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{
+		MixedToolTurn(
+			mixedToolCall{"query_metrics", `{"filters":{},"metrics":["summary"]}`},
+			mixedToolCall{AskUserTool, `{"question":"Which period?","options":[{"label":"7d","hint":"-7d"},{"label":"30d","hint":"-30d"}]}`},
+			mixedToolCall{"query_metrics", `{"filters":{},"metrics":["requests"]}`},
+		),
+		TextTurn("should never be reached"),
+	}}
+	fake := &fakeLogReader{statsDelay: 20 * time.Millisecond}
+	agent := newTestAgent(model, fake, 8)
+
+	events := collectEvents(t, agent, context.Background())
+
+	require.Equal(t, []eventType{EventStart, EventToolCallStart, EventToolCallEnd, EventQuestion, EventDone}, eventTypes(events),
+		"only the call queued ahead of ask_user may start, and the turn must end on the question")
+	require.Equal(t, 1, model.calls, "the model must not be called again after asking")
+	require.Equal(t, 1, fake.statsCalls, "the call queued after ask_user must never reach the store")
+}
+
+// toolCallSem bounds concurrent tool calls across every active turn in the
+// process, not just within one - it is a package-level var precisely because
+// a fresh Agent is built per turn (see NewAgent), so a per-Agent limit would
+// protect nothing against several sessions running at once. Three agents at
+// MaxToolCallsPerTurn each ask for 12 calls combined, comfortably past
+// maxConcurrentToolCalls (8); if the cap only applied within one Agent, all
+// 12 would run at once and the peak would exceed 8.
+func TestWarpAgentToolCallCapIsGlobalAcrossConcurrentTurns(t *testing.T) {
+	names := make([]string, MaxToolCallsPerTurn)
+	for i := range names {
+		names[i] = "query_metrics"
+	}
+	fake := &fakeLogReader{
+		entered: make(chan struct{}, maxConcurrentToolCalls),
+		release: make(chan struct{}),
+	}
+
+	var wg sync.WaitGroup
+	for range 3 {
+		model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{
+			MultiToolTurn(names...),
+			TextTurn("done."),
+		}}
+		agent := newTestAgent(model, fake, 8)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			collectEvents(t, agent, context.Background())
+		}()
+	}
+
+	// The three turns ask for MaxToolCallsPerTurn*3 (12) calls combined, past
+	// maxConcurrentToolCalls (8); wait for exactly that many to actually be
+	// in flight before releasing any of them, so the count asserted below is
+	// the cap actually holding, not a peak inferred after the fact from a
+	// wall-clock delay.
+	for range maxConcurrentToolCalls {
+		select {
+		case <-fake.entered:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for calls to reach the global cap")
+		}
+	}
+	require.Equal(t, int32(maxConcurrentToolCalls), atomic.LoadInt32(&fake.activeStatsCalls),
+		"the global cap must hold exactly maxConcurrentToolCalls calls in flight at once, not more")
+	close(fake.release)
+	wg.Wait()
+
+	require.Equal(t, MaxToolCallsPerTurn*3, int(fake.statsCalls), "every call across all three turns must still have reached the store")
+	peak := atomic.LoadInt32(&fake.peakStatsCalls)
+	require.LessOrEqual(t, peak, int32(maxConcurrentToolCalls), "the global cap must hold across turns, not just within one")
+	require.Greater(t, peak, int32(MaxToolCallsPerTurn), "the three turns must actually have overlapped, or this proves nothing")
 }
 
 // The last research step is the model's final chance to say something. It is
