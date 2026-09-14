@@ -14324,6 +14324,22 @@ func TestSetPluginOrderInfo_Defaults(t *testing.T) {
 	require.Equal(t, 1, info.Order)
 }
 
+// TestSetPluginOrderInfo_BuiltinPluginsUseFixedOrdering verifies that persisted
+// placement and order values cannot move built-in plugins during a hot reload.
+func TestSetPluginOrderInfo_BuiltinPluginsUseFixedOrdering(t *testing.T) {
+	config := newTestConfigForPlugins()
+	placement := schemas.PluginPlacementPostBuiltin
+	order := 99
+
+	for i, name := range builtinPluginNames {
+		config.SetPluginOrderInfo(name, &placement, &order)
+
+		info := config.pluginOrderMap[name]
+		require.Equal(t, schemas.PluginPlacementBuiltin, info.Placement, name)
+		require.Equal(t, i+1, info.Order, name)
+	}
+}
+
 // TestSortAndRebuildPlugins_PlacementGroups verifies plugins sort into pre_builtin → builtin → post_builtin.
 func TestSortAndRebuildPlugins_PlacementGroups(t *testing.T) {
 	config := newTestConfigForPlugins()
