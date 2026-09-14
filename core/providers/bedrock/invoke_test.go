@@ -80,9 +80,16 @@ func TestConvertAnthropicTools_ToolSearchTypeNeverBecomesInvocable(t *testing.T)
 
 	toolConfig := req.convertAnthropicTools()
 	require.NotNil(t, toolConfig)
-	require.Len(t, toolConfig.Tools, 1, "the tool_search_tool_* entry must be skipped, only the real tool kept")
-	require.NotNil(t, toolConfig.Tools[0].ToolSpec)
-	assert.Equal(t, "keep_me", toolConfig.Tools[0].ToolSpec.Name)
+	require.Len(t, toolConfig.Tools, 2, "the tool_search_tool_* entry is carried as a marker, not dropped (#7155)")
+	// The invariant this test guards is unchanged: the entry must never become an
+	// invocable ToolSpec. It is now carried on an ingress-only marker instead of
+	// being discarded, so the egress predicate can route the request to InvokeModel.
+	require.Nil(t, toolConfig.Tools[0].ToolSpec, "tool_search must never become an invocable tool")
+	require.NotNil(t, toolConfig.Tools[0].AnthropicToolSearch)
+	assert.Equal(t, "tool_search_tool_regex_20251119", toolConfig.Tools[0].AnthropicToolSearch.Type)
+	assert.Equal(t, "tool_search_tool_regex", toolConfig.Tools[0].AnthropicToolSearch.Name)
+	require.NotNil(t, toolConfig.Tools[1].ToolSpec)
+	assert.Equal(t, "keep_me", toolConfig.Tools[1].ToolSpec.Name)
 }
 
 // TestConvertAnthropicTools_CarriesCacheControl is the regression test for #5629: a
@@ -1448,4 +1455,106 @@ func TestToBedrockConverseRequest_InvokeToolSearchEndToEnd(t *testing.T) {
 
 	assert.True(t, responsesUsesAnthropicInvokePath(ctx, responsesReq),
 		"a tool-search request on the invoke ingress must route to InvokeModel, not Converse")
+}
+
+// TestConvertAnthropicTools_DeferredToolSkipsCachePoint pins the one tool-level
+// combination Anthropic rejects outright: "A tool with defer_loading: true can't
+// also carry cache_control: the API returns a 400."
+// (https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool)
+// The invoke ingress converts cache_control into a positional cachePoint sibling
+// (#5629), so it must not manufacture one for a deferred tool. A non-deferred
+// neighbour in the same request still gets its breakpoint.
+func TestConvertAnthropicTools_DeferredToolSkipsCachePoint(t *testing.T) {
+	deferredCached := anthropicToolMap("deferred", map[string]interface{}{"type": "ephemeral"})
+	deferredCached["defer_loading"] = true
+
+	req := &BedrockInvokeRequest{
+		Tools: []interface{}{
+			deferredCached,
+			anthropicToolMap("eager", map[string]interface{}{"type": "ephemeral"}),
+		},
+	}
+
+	toolConfig := req.convertAnthropicTools()
+	require.NotNil(t, toolConfig)
+
+	// deferred tool, then eager tool, then the eager tool's cachePoint — three entries.
+	require.Len(t, toolConfig.Tools, 3, "only the non-deferred tool may get a cachePoint: %+v", toolConfig.Tools)
+
+	require.NotNil(t, toolConfig.Tools[0].ToolSpec)
+	assert.Equal(t, "deferred", toolConfig.Tools[0].ToolSpec.Name)
+	require.NotNil(t, toolConfig.Tools[0].ToolSpec.DeferLoading)
+	assert.True(t, *toolConfig.Tools[0].ToolSpec.DeferLoading)
+	assert.Nil(t, toolConfig.Tools[0].CachePoint)
+
+	require.NotNil(t, toolConfig.Tools[1].ToolSpec)
+	assert.Equal(t, "eager", toolConfig.Tools[1].ToolSpec.Name)
+	assert.Nil(t, toolConfig.Tools[1].ToolSpec.DeferLoading)
+
+	require.NotNil(t, toolConfig.Tools[2].CachePoint, "the non-deferred tool keeps its cache breakpoint")
+	assert.Nil(t, toolConfig.Tools[2].ToolSpec)
+}
+
+// TestConvertAnthropicTools_UnknownToolSearchVariantNotRouted guards the boundary
+// schemas.normalizeResponsesToolType already documents: an unrecognized tool_search
+// sibling must reach unknown-tool handling rather than silently becoming a
+// variant-less canonical tool_search. Without the variant gate the marker is created
+// anyway, ToolSearchVariantName yields no name, and toolNeedsAnthropicInvokePath still
+// matches the canonical "tool_search" prefix — so an unsupported tool would select the
+// InvokeModel route and be forwarded to AWS as though Bifrost supported it.
+func TestConvertAnthropicTools_UnknownToolSearchVariantNotRouted(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	req := &BedrockInvokeRequest{
+		ModelID: "us.anthropic.claude-sonnet-4-6-v1:0",
+		Messages: []BedrockMessage{{
+			Role:    BedrockMessageRoleUser,
+			Content: []BedrockContentBlock{{Text: schemas.Ptr("hi")}},
+		}},
+		Tools: []interface{}{
+			map[string]interface{}{
+				"type": "tool_search_tool_vector_20270101",
+				"name": "tool_search_tool_vector",
+			},
+			anthropicToolMap("keep_me", nil),
+		},
+	}
+
+	toolConfig := req.convertAnthropicTools()
+	require.NotNil(t, toolConfig)
+	for i, tool := range toolConfig.Tools {
+		assert.Nil(t, tool.AnthropicToolSearch,
+			"tool %d: an unrecognized tool_search variant must not become a tool-search marker", i)
+	}
+	require.Len(t, toolConfig.Tools, 1, "only the real tool survives: %+v", toolConfig.Tools)
+	require.NotNil(t, toolConfig.Tools[0].ToolSpec)
+	assert.Equal(t, "keep_me", toolConfig.Tools[0].ToolSpec.Name)
+
+	// End to end: the unsupported variant must not select the InvokeModel route.
+	responsesReq, err := req.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+	for _, tool := range responsesReq.Params.Tools {
+		assert.NotEqual(t, schemas.ResponsesToolTypeToolSearch, tool.Type,
+			"unrecognized variant leaked through as a canonical tool_search: %+v", responsesReq.Params.Tools)
+	}
+	assert.False(t, responsesUsesAnthropicInvokePath(ctx, responsesReq),
+		"an unsupported tool_search variant must not route to InvokeModel")
+
+	// The recognized variants still do route, so the gate is not over-broad.
+	for _, known := range []string{"tool_search_tool_regex_20251119", "tool_search_tool_bm25"} {
+		known := known
+		t.Run(known, func(t *testing.T) {
+			ok := &BedrockInvokeRequest{
+				ModelID:  "us.anthropic.claude-sonnet-4-6-v1:0",
+				Messages: req.Messages,
+				Tools: []interface{}{
+					map[string]interface{}{"type": known},
+					anthropicToolMap("keep_me", nil),
+				},
+			}
+			r, err := ok.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx)
+			require.NoError(t, err)
+			assert.True(t, responsesUsesAnthropicInvokePath(ctx, r), "%s must still route to InvokeModel", known)
+		})
+	}
 }
