@@ -80,6 +80,7 @@
 		"zod": "4.2.1"
 	},
 	"devDependencies": {
+		"@rolldown/plugin-babel": "0.2.3",
 		"@tailwindcss/postcss": "4.2.1",
 		"@tailwindcss/vite": "4.2.2",
 		"@tanstack/router-devtools": "1.166.11",
@@ -90,6 +91,7 @@
 		"@types/react": "19.2.7",
 		"@types/react-dom": "19.2.3",
 		"@vitejs/plugin-react": "6.0.1",
+		"babel-plugin-react-compiler": "1.0.0",
 		"oxfmt": "0.45.0",
 		"oxlint": "1.60.0",
 		"tailwindcss": "4.1.12",
