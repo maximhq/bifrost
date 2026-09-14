@@ -1623,6 +1623,12 @@ false
 {{- if $inputConfig.plugin_span_filter }}
 {{- $_ := set $otelConfig "plugin_span_filter" $inputConfig.plugin_span_filter }}
 {{- end }}
+{{- if hasKey $inputConfig "export_overhead_spans" }}
+{{- $_ := set $otelConfig "export_overhead_spans" $inputConfig.export_overhead_spans }}
+{{- end }}
+{{- if hasKey $inputConfig "overhead_breakdown_enabled" }}
+{{- $_ := set $otelConfig "overhead_breakdown_enabled" $inputConfig.overhead_breakdown_enabled }}
+{{- end }}
 {{- end }}
 {{- $plugin := dict "enabled" true "name" "otel" "config" $otelConfig }}
 {{- if hasKey .Values.bifrost.plugins.otel "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.otel.version | int) }}{{- end }}
