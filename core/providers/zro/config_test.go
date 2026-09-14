@@ -85,7 +85,7 @@ func TestZroConfigIsolation(t *testing.T) {
 		t.Error("custom provider identity was lost")
 	}
 	_, unsupported := p.TextCompletion(nil, schemas.Key{}, nil)
-	if unsupported.ExtraFields.Provider != schemas.ModelProvider("custom-zro") {
+	if unsupported.ExtraFields.RoutingInfo.Provider != schemas.ModelProvider("custom-zro") {
 		t.Error("unsupported operation lost custom provider identity")
 	}
 	defaultProvider, err := NewZroProvider(&schemas.ProviderConfig{}, nil)
