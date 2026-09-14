@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -1156,6 +1157,53 @@ func TestEffortPredicatesAgainstCatalogIDs(t *testing.T) {
 		}
 		if got := acceptsMaxEffort(c.model); got != c.max {
 			t.Errorf("max(%q) = %v, want %v", c.model, got, c.max)
+		}
+	}
+}
+
+// TestAllTurnsContextPredicateAgainstCatalogIDs pins the name default
+// for reasoning.context "all_turns" against model IDs as they appear in the
+// datasheet, prefixed and dated variants included. Substring matching, for the
+// same reason as the xhigh/max needles above.
+func TestAllTurnsContextPredicateAgainstCatalogIDs(t *testing.T) {
+	cases := []struct {
+		model string
+		want  bool
+	}{
+		// original gpt-5 family and its variants: only auto/current_turn
+		{"gpt-5", false},
+		{"gpt-5-pro", false},
+		{"gpt-5-pro-2025-10-06", false},
+		{"gpt-5-mini-2025-08-07", false},
+		{"gpt-5-codex", false},
+		{"azure/gpt-5-pro", false},
+		// dot-revisions before 5.4
+		{"gpt-5.1", false},
+		{"gpt-5.2-pro", false},
+		{"gpt-5.3-codex", false},
+		// o-series and non-reasoning models
+		{"o1", false},
+		{"o3-pro", false},
+		{"gpt-4o", false},
+		// families that accept all_turns
+		{"gpt-5.4", true},
+		{"azure/eu/gpt-5.4", true},
+		{"gpt-5.4-mini-2026-03-17", true},
+		{"gpt-5.5-pro-2026-04-23", true},
+		{"gpt-5.6-terra", true},
+		{"openai.gpt-5.6-sol", true},
+		{"gpt-6", true},
+	}
+	for _, c := range cases {
+		if got := acceptsAllTurnsContext(c.model); got != c.want {
+			t.Errorf("acceptsAllTurnsContext(%q) = %v, want %v", c.model, got, c.want)
+		}
+		contexts := defaultReasoningContexts(c.model)
+		if !slices.Contains(contexts, schemas.ReasoningContextAuto) || !slices.Contains(contexts, schemas.ReasoningContextCurrentTurn) {
+			t.Errorf("defaultReasoningContexts(%q) = %v, must always carry auto and current_turn", c.model, contexts)
+		}
+		if got := slices.Contains(contexts, schemas.ReasoningContextAllTurns); got != c.want {
+			t.Errorf("defaultReasoningContexts(%q) lists all_turns = %v, want %v", c.model, got, c.want)
 		}
 	}
 }

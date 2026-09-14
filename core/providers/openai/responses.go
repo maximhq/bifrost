@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/providers/utils"
@@ -627,6 +628,23 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			// summary:"none" is Anthropic-specific (maps to display:"omitted"); strip it for OpenAI.
 			if req.ResponsesParameters.Reasoning.Summary != nil && *req.ResponsesParameters.Reasoning.Summary == "none" {
 				req.ResponsesParameters.Reasoning.Summary = nil
+			}
+
+			// reasoning.context is gated per value: every OpenAI reasoning model takes
+			// "auto"/"current_turn", but "all_turns" is a hard 400 before gpt-5.4
+			// ("Unsupported value: 'all_turns' is not supported with the 'gpt-5-pro'
+			// model"). Drop a value the model does not list so the request runs under
+			// its own default instead of failing; the datasheet row
+			// supported_reasoning_contexts overrides the name default. Other
+			// OpenAI-compatible upstreams are left alone.
+			// Match on the base provider: a custom provider built on OpenAI or Azure
+			// reports its own key ("my-openai"), so gating on the unresolved key
+			// would let an unsupported value through to the upstream 400.
+			contextProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
+			if c := req.ResponsesParameters.Reasoning.Context; c != nil &&
+				(contextProvider == schemas.OpenAI || contextProvider == schemas.Azure) &&
+				!slices.Contains(caps.SupportedReasoningContexts(defaultReasoningContexts(capModel)), *c) {
+				req.ResponsesParameters.Reasoning.Context = nil
 			}
 
 			// Bedrock's OpenAI-compatible surfaces accept only "auto". They answer

@@ -163,6 +163,13 @@ type ModelCapabilities struct {
 	// set. Example for Gemini 3 Pro: {"minimal": "low", "medium": "high"}.
 	ReasoningEffortRenames map[string]string `json:"reasoning_effort_renames,omitempty"`
 
+	// reasoning.context values the model accepts on the OpenAI Responses wire
+	// ("auto" | "current_turn" | "all_turns"). A request value outside the list
+	// is dropped before dispatch so the model's own default applies. Absent
+	// means "use the name-based default": every reasoning model takes "auto"
+	// and "current_turn", and gpt-5.4+ also "all_turns".
+	SupportedReasoningContexts []string `json:"supported_reasoning_contexts,omitempty"`
+
 	// Allowed thinking-budget range in tokens.
 	ReasoningBudget *BudgetControl `json:"reasoning_budget,omitempty"`
 
