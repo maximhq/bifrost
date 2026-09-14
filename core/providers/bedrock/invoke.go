@@ -224,6 +224,35 @@ func (b *BedrockContentBlock) UnmarshalJSON(data []byte) error {
 		if aux.IsError != nil && *aux.IsError {
 			b.ToolResult.Status = schemas.Ptr("error")
 		}
+	case "server_tool_use":
+		// Only tool search is carried. Every other Anthropic server tool is either
+		// Converse-representable or unsupported on this ingress, and reshaping one
+		// here would be a silent behaviour change well beyond #7155.
+		if aux.ID == nil || aux.Name == nil || !strings.HasPrefix(*aux.Name, "tool_search_tool_") {
+			return nil
+		}
+		b.AnthropicToolSearchUse = &BedrockAnthropicToolSearchUse{ID: *aux.ID, Name: *aux.Name, Input: aux.Input}
+	case "tool_search_tool_result":
+		if aux.ToolUseID == nil {
+			return nil
+		}
+		res := &BedrockAnthropicToolSearchResult{ToolUseID: *aux.ToolUseID}
+		// Anthropic nests tool_references inside the content object
+		// ({"type":"tool_search_tool_search_result","tool_references":[...]}); accept the
+		// flat spelling too, mirroring AnthropicContentBlock.DiscoveredToolReferences.
+		for _, path := range []string{"content.tool_references", "tool_references"} {
+			refs := gjson.GetBytes(data, path)
+			if !refs.Exists() {
+				continue
+			}
+			for _, ref := range refs.Array() {
+				if name := ref.Get("tool_name"); name.Exists() {
+					res.ToolReferences = append(res.ToolReferences, name.String())
+				}
+			}
+			break
+		}
+		b.AnthropicToolSearchResult = res
 	case "thinking":
 		if aux.Thinking == nil {
 			return nil
