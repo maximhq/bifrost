@@ -143,23 +143,8 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := key.Models.Validate(); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid models: %v", err))
-		return
-	}
-
 	if err := key.BlacklistedModels.Validate(); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid blacklisted_models: %v", err))
-		return
-	}
-
-	if err := key.ModelsPatterns.Validate(); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid models_patterns: %v", err))
-		return
-	}
-
-	if err := key.BlacklistedModelsPatterns.Validate(); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid blacklisted_models_patterns: %v", err))
 		return
 	}
 
@@ -266,23 +251,8 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := mergedKey.Models.Validate(); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid models: %v", err))
-		return
-	}
-
 	if err := mergedKey.BlacklistedModels.Validate(); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid blacklisted_models: %v", err))
-		return
-	}
-
-	if err := mergedKey.ModelsPatterns.Validate(); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid models_patterns: %v", err))
-		return
-	}
-
-	if err := mergedKey.BlacklistedModelsPatterns.Validate(); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid blacklisted_models_patterns: %v", err))
 		return
 	}
 

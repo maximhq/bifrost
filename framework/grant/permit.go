@@ -120,8 +120,6 @@ func cloneProviderPermits(providerPermits []schemas.ProviderPermit) []schemas.Pr
 	for i := range cloned {
 		cloned[i].AllowedModels = slices.Clone(cloned[i].AllowedModels)
 		cloned[i].BlacklistedModels = slices.Clone(cloned[i].BlacklistedModels)
-		cloned[i].AllowedModelsPatterns = slices.Clone(cloned[i].AllowedModelsPatterns)
-		cloned[i].BlacklistedModelsPatterns = slices.Clone(cloned[i].BlacklistedModelsPatterns)
 		cloned[i].KeyIDs = slices.Clone(cloned[i].KeyIDs)
 		if cloned[i].Weight != nil {
 			weight := *cloned[i].Weight
@@ -228,7 +226,7 @@ func blacklistsModel(p schemas.Permit, provider string, model string) bool {
 		return false
 	}
 	for _, pp := range p.ProviderPermits() {
-		if pp.Provider == provider && pp.ModelAccess().Blocks(provider, model) {
+		if pp.Provider == provider && pp.BlacklistedModels.IsBlocked(model) {
 			return true
 		}
 	}
@@ -315,7 +313,7 @@ func providerPermitAllowsModel(pp *schemas.ProviderPermit, model string) bool {
 	if model == "" {
 		return true
 	}
-	return pp.ModelAccess().Allows(pp.Provider, model)
+	return pp.AllowedModels.IsAllowed(model) && !pp.BlacklistedModels.IsBlocked(model)
 }
 
 // weightedProviderPermitFor returns the permit's first provider permit for provider that sets a

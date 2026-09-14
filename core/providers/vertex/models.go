@@ -70,7 +70,7 @@ type vertexRerankOptions struct {
 // - If allowedModels is empty, all models are allowed
 // - If allowedModels is non-empty, only models/deployments with keys in allowedModels are included
 // - Deployments map is used to match model IDs to aliases and filter accordingly
-func (response *VertexListModelsResponse) ToBifrostListModelsResponse(access schemas.ModelAccessRule, aliases schemas.KeyAliases, unfiltered bool) *schemas.BifrostListModelsResponse {
+func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, aliases schemas.KeyAliases, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -80,11 +80,12 @@ func (response *VertexListModelsResponse) ToBifrostListModelsResponse(access sch
 	}
 
 	pipeline := &providerUtils.ListModelsPipeline{
-		Access:      access,
-		Aliases:     aliases,
-		Unfiltered:  unfiltered,
-		ProviderKey: schemas.Vertex,
-		MatchFns:    providerUtils.DefaultMatchFns(),
+		AllowedModels:     allowedModels,
+		BlacklistedModels: blacklistedModels,
+		Aliases:           aliases,
+		Unfiltered:        unfiltered,
+		ProviderKey:       schemas.Vertex,
+		MatchFns:          providerUtils.DefaultMatchFns(),
 	}
 	if pipeline.ShouldEarlyExit() {
 		return bifrostResponse
@@ -139,7 +140,7 @@ func (response *VertexListModelsResponse) ToBifrostListModelsResponse(access sch
 
 // ToBifrostListModelsResponse converts a Vertex AI publisher models response to Bifrost's format.
 // This is for foundation models from the Model Garden (publishers.models.list endpoint).
-func (response *VertexListPublisherModelsResponse) ToBifrostListModelsResponse(access schemas.ModelAccessRule, aliases schemas.KeyAliases, unfiltered bool) *schemas.BifrostListModelsResponse {
+func (response *VertexListPublisherModelsResponse) ToBifrostListModelsResponse(allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, aliases schemas.KeyAliases, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -149,11 +150,12 @@ func (response *VertexListPublisherModelsResponse) ToBifrostListModelsResponse(a
 	}
 
 	pipeline := &providerUtils.ListModelsPipeline{
-		Access:      access,
-		Aliases:     aliases,
-		Unfiltered:  unfiltered,
-		ProviderKey: schemas.Vertex,
-		MatchFns:    providerUtils.DefaultMatchFns(),
+		AllowedModels:     allowedModels,
+		BlacklistedModels: blacklistedModels,
+		Aliases:           aliases,
+		Unfiltered:        unfiltered,
+		ProviderKey:       schemas.Vertex,
+		MatchFns:          providerUtils.DefaultMatchFns(),
 	}
 	if pipeline.ShouldEarlyExit() {
 		return bifrostResponse
