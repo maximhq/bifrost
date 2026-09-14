@@ -3934,6 +3934,22 @@ func (resp *BifrostResponsesStreamResponse) WithDefaults() *BifrostResponsesStre
 		if result.Item != nil && result.Item.Status == nil {
 			result.Item.Status = Ptr("in_progress")
 		}
+		// Strict Responses clients expect a message item to carry a content
+		// array from the moment it is added, before the first
+		// content_part.added arrives; an upstream that omits the field on the
+		// initial event otherwise gets the whole stream rejected. Done on a
+		// copy so the source item is not mutated (the raw Bifrost superset
+		// stream keeps the field absent, exactly as the provider sent it).
+		if result.Item != nil && result.Item.Content == nil &&
+			result.Item.Type != nil && *result.Item.Type == ResponsesMessageTypeMessage {
+			itemCopy := *result.Item
+			// ContentBlocks must be non-nil and empty: a nil block slice makes
+			// ResponsesMessageContent.MarshalJSON emit "" rather than [].
+			itemCopy.Content = &ResponsesMessageContent{
+				ContentBlocks: []ResponsesMessageContentBlock{},
+			}
+			result.Item = &itemCopy
+		}
 
 	case ResponsesStreamResponseTypeOutputTextDelta, ResponsesStreamResponseTypeOutputTextDone:
 		// Ensure logprobs array exists
