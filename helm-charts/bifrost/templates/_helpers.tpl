@@ -1357,6 +1357,9 @@ false
 {{- if $client.allowedExtraHeaders }}
 {{- $_ := set $cc "allowed_extra_headers" $client.allowedExtraHeaders }}
 {{- end }}
+{{- if $client.perUserHeaderKeys }}
+{{- $_ := set $cc "per_user_header_keys" $client.perUserHeaderKeys }}
+{{- end }}
 {{- /* allowByDefault supersedes allowOnAllVirtualKeys. Emit exactly one key so the backend's
        ResolveAllowByDefault sees an unambiguous declaration: the current key when it is given,
        otherwise the deprecated one passed through untranslated. */ -}}
