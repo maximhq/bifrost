@@ -2721,6 +2721,9 @@ func NewBifrostBadRequestError(message string) *schemas.BifrostError {
 			Message: message,
 			Type:    &errorType,
 		},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+		},
 	}
 }
 
