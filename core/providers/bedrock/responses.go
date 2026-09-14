@@ -2168,6 +2168,7 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 					Type:                  schemas.ResponsesToolTypeFunction,
 					Name:                  &tool.ToolSpec.Name,
 					Description:           tool.ToolSpec.Description,
+					DeferLoading:          tool.ToolSpec.DeferLoading,
 					ResponsesToolFunction: &schemas.ResponsesToolFunction{},
 				}
 
@@ -2187,6 +2188,20 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 				}
 
 				bifrostReq.Params.Tools = append(bifrostReq.Params.Tools, bifrostTool)
+			} else if tool.AnthropicToolSearch != nil {
+				// Rebuild the neutral tool_search tool carried across by the invoke
+				// ingress. The variant lives on Name — that is what the Anthropic
+				// egress converter reads to pick regex vs bm25 — so recover it from
+				// the dated type when the client omitted the name.
+				name := tool.AnthropicToolSearch.Name
+				if name == "" {
+					name = schemas.ToolSearchVariantName(tool.AnthropicToolSearch.Type)
+				}
+				toolSearch := schemas.ResponsesTool{Type: schemas.ResponsesToolTypeToolSearch}
+				if name != "" {
+					toolSearch.Name = &name
+				}
+				bifrostReq.Params.Tools = append(bifrostReq.Params.Tools, toolSearch)
 			} else if tool.SystemTool != nil {
 				// Nova system tools: nova_grounding → web_search, nova_code_interpreter → code_interpreter
 				var toolType schemas.ResponsesToolType
