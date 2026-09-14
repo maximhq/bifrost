@@ -1346,6 +1346,58 @@ func toBedrockInvokeAnthropicResponse(resp *schemas.BifrostResponsesResponse, mo
 				}
 			}
 		}
+		// Server-side tool search replays as the server_tool_use + tool_search_tool_result
+		// pair Anthropic sent, never as a client tool_use. The caller must not return a
+		// tool_result for a srvtoolu_ id — "Never return a tool_result for its
+		// srvtoolu_... ID" — and must echo both blocks back unchanged on the next turn.
+		// (https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool)
+		//
+		// This runs before the generic ResponsesToolMessage branch below, which would
+		// otherwise emit the search as an invocable tool_use.
+		if item.Type != nil && *item.Type == schemas.ResponsesMessageTypeToolSearchCall &&
+			item.ResponsesToolMessage != nil {
+			ts := item.ResponsesToolMessage
+			// Preserve the query the model searched with. Anthropic requires this block
+			// to be echoed back unchanged on the next turn, so rebuilding input as {}
+			// would silently rewrite it. Same parse as the generic tool branch below;
+			// {} remains the fallback when no arguments were captured.
+			var searchInput interface{} = map[string]interface{}{}
+			if ts.Arguments != nil && *ts.Arguments != "" {
+				var parsed interface{}
+				if err := sonic.UnmarshalString(*ts.Arguments, &parsed); err == nil {
+					searchInput = parsed
+				} else {
+					searchInput = *ts.Arguments
+				}
+			}
+			use := BedrockInvokeMessagesContentBlock{Type: "server_tool_use", Input: searchInput}
+			if ts.CallID != nil {
+				use.ID = *ts.CallID
+			}
+			if ts.Name != nil {
+				use.Name = *ts.Name
+			}
+			result.Content = append(result.Content, use)
+
+			refs := []BedrockInvokeToolReference{}
+			if ts.ResponsesToolSearchCall != nil {
+				for _, name := range ts.ResponsesToolSearchCall.ToolReferences {
+					refs = append(refs, BedrockInvokeToolReference{Type: "tool_reference", ToolName: name})
+				}
+			}
+			res := BedrockInvokeMessagesContentBlock{
+				Type: "tool_search_tool_result",
+				Content: &BedrockInvokeToolSearchResult{
+					Type:           "tool_search_tool_search_result",
+					ToolReferences: refs,
+				},
+			}
+			if ts.CallID != nil {
+				res.ToolUseID = *ts.CallID
+			}
+			result.Content = append(result.Content, res)
+			continue
+		}
 		// Tool use content
 		if item.ResponsesToolMessage != nil {
 			var input interface{}
