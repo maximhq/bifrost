@@ -93,7 +93,7 @@ describe("warpToolLabel", () => {
 			"query_usage_by",
 			"query_model_performance",
 			"describe_filter_space",
-			"describe_scope",
+			"describe_virtual_key",
 			"ask_user",
 		];
 		for (const tool of tools) {
@@ -271,7 +271,10 @@ describe("turnsFromStoredMessages", () => {
 			{
 				role: "assistant",
 				content: "About $12.",
-				tool_calls: [{ name: "query_metrics", duration_ms: 12 }, { name: "count_logs", duration_ms: 3, failed: true }],
+				tool_calls: [
+					{ name: "query_metrics", duration_ms: 12 },
+					{ name: "count_logs", duration_ms: 3, failed: true },
+				],
 				finish_reason: "partial",
 				total_tokens: 120,
 				cost: 0.0123,
@@ -296,7 +299,10 @@ describe("turnsFromStoredMessages", () => {
 // The tray's index chip is one glance: is semantic search usable right now.
 describe("indexStatusLabel", () => {
 	it("names each state and shows progress while indexing", () => {
-		expect(indexStatusLabel({ state: "ready", vector_store_connected: true, embedding_configured: true })).toEqual({ label: "Index ready", tone: "ok" });
+		expect(indexStatusLabel({ state: "ready", vector_store_connected: true, embedding_configured: true })).toEqual({
+			label: "Index ready",
+			tone: "ok",
+		});
 		expect(indexStatusLabel({ state: "unavailable", vector_store_connected: false, embedding_configured: true })).toEqual({
 			label: "No vector store",
 			tone: "error",
@@ -356,9 +362,18 @@ describe("isTypingInto", () => {
 // finished turn, never two at once.
 describe("shouldDrainQueue", () => {
 	it("sends only on the streaming-to-idle transition", () => {
-		expect(shouldDrainQueue(true, false, 2)).toBe(true);
-		expect(shouldDrainQueue(false, false, 2)).toBe(false);
-		expect(shouldDrainQueue(true, true, 2)).toBe(false);
-		expect(shouldDrainQueue(true, false, 0)).toBe(false);
+		expect(shouldDrainQueue(true, false, 2, false)).toBe(true);
+		expect(shouldDrainQueue(false, false, 2, false)).toBe(false);
+		expect(shouldDrainQueue(true, true, 2, false)).toBe(false);
+		expect(shouldDrainQueue(true, false, 0, false)).toBe(false);
+	});
+
+	// A queued follow-up was written expecting the turn ahead of it to have
+	// actually answered. Auto-firing it the instant a *failed* turn finishes
+	// showed "Thinking" directly under an error card, for a request sent
+	// against a conversation whose last turn never actually completed.
+	it("holds the queue back when the turn that just finished failed", () => {
+		expect(shouldDrainQueue(true, false, 2, true)).toBe(false);
+		expect(shouldDrainQueue(true, false, 0, true)).toBe(false);
 	});
 });

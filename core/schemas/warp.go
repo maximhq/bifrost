@@ -1,6 +1,7 @@
 package schemas
 
 import (
+	"slices"
 	"strings"
 	"time"
 )
@@ -45,7 +46,26 @@ const (
 	// WarpDefaultLogVectorStoreNamespace is deliberately Warp-specific: sharing
 	// an embedding namespace with another feature mixes incompatible metadata.
 	WarpDefaultLogVectorStoreNamespace = "BifrostWarpLogs"
+
+	// WarpMinTemperature and WarpMaxTemperature bound a configured temperature.
+	// 2 is OpenAI's own ceiling, the widest of the providers Warp can run
+	// against; a narrower provider (Anthropic caps at 1) rejects an
+	// out-of-its-range value itself, with its own error, rather than Warp
+	// silently clamping a number the operator typed to something else.
+	WarpMinTemperature = 0.0
+	WarpMaxTemperature = 2.0
 )
+
+// WarpReasoningEfforts is every value ReasoningEffort accepts, in the order
+// the settings page lists them. It mirrors ResponsesParametersReasoning.Effort
+// rather than the other way around - Warp does not invent a vocabulary the
+// wire format does not already have.
+var WarpReasoningEfforts = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+
+// IsWarpReasoningEffort reports whether value is one of WarpReasoningEfforts.
+func IsWarpReasoningEffort(value string) bool {
+	return slices.Contains(WarpReasoningEfforts, value)
+}
 
 // WarpConfig is the deployment's Warp settings. Exactly one row exists.
 type WarpConfig struct {
@@ -79,6 +99,20 @@ type WarpConfig struct {
 	// and cost model, but cannot remove the tool-use and scoping instructions
 	// the built-in prompt establishes.
 	SystemPromptSuffix string `json:"system_prompt_suffix,omitempty"`
+	// Temperature overrides the model's sampling temperature. Nil leaves it
+	// unset, so the provider applies its own default - the behavior every
+	// deployment already had before this field existed. Nil is deliberately
+	// not the same as 0: 0 is a real, fully deterministic value some operators
+	// specifically want for a tool whose whole job is reporting numbers
+	// correctly, and collapsing "not configured" onto it would make that
+	// choice impossible to express.
+	Temperature *float64 `json:"temperature,omitempty"`
+	// ReasoningEffort sets a reasoning model's effort level ("low", "medium",
+	// "high", ...; see WarpReasoningEfforts). Empty leaves it unset, so nothing
+	// is sent - most configured models are not reasoning models, and sending
+	// an effort to one that is not is a parameter a provider may simply
+	// reject.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 
 	// EmbeddingProvider, EmbeddingModel and EmbeddingAPIKeyID identify the
 	// separately configured model used to index and search gateway logs.
