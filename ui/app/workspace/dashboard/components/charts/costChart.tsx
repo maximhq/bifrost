@@ -12,6 +12,7 @@ import {
 	OTHER_SERIES_KEY,
 	OTHER_SERIES_LABEL,
 } from "../../utils/chartUtils";
+import { CappedBarStack } from "./barShape";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 
@@ -146,18 +147,18 @@ function CostChartImpl({ data, chartType, startTime, endTime, selectedModel }: C
 							content={<CustomTooltip selectedModel={selectedModel} displayModels={displayModels} />}
 							cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }}
 						/>
-						{displayModels.map((model, idx) => (
-							<Bar
-								isAnimationActive={false}
-								key={model}
-								dataKey={`model_${idx}`}
-								stackId="cost"
-								fill={model === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx)}
-								fillOpacity={0.9}
-								barSize={30}
-								radius={idx === displayModels.length - 1 ? [2, 2, 0, 0] : [0, 0, 0, 0]}
-							/>
-						))}
+						<CappedBarStack buckets={chartData.length}>
+							{displayModels.map((model, idx) => (
+								<Bar
+									isAnimationActive={false}
+									key={model}
+									dataKey={`model_${idx}`}
+									fill={model === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx)}
+									fillOpacity={0.9}
+									barSize={30}
+								/>
+							))}
+						</CappedBarStack>
 					</BarChart>
 				) : (
 					<AreaChart {...commonProps}>

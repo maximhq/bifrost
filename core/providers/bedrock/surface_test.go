@@ -731,6 +731,32 @@ func TestUseOpenAIEndpointsFlag(t *testing.T) {
 	}
 }
 
+// Namespace tools are an OpenAI Responses wire feature. Only the Mantle
+// OpenAI-compatible surface understands them; Converse and the native Anthropic
+// Messages surface (Claude on Mantle) do not, so core flattens for those.
+func TestSupportsResponsesNamespaceTools(t *testing.T) {
+	provider := &BedrockProvider{}
+	cases := []struct {
+		name  string
+		ctx   *schemas.BifrostContext
+		key   schemas.Key
+		model string
+		want  bool
+	}{
+		{"mantle gpt", surfaceTestCtx(), schemas.Key{}, "openai.gpt-5.6-luna", true},
+		{"claude on runtime", surfaceTestCtx(), schemas.Key{}, "anthropic.claude-opus-5", false},
+		{"cross-region gpt pins runtime", surfaceTestCtx(), schemas.Key{}, "global.openai.gpt-5.6-luna", false},
+		{"application profile pins runtime", withAlias("gpt-model", "3dnkdwuaalc7", appProfileARN), schemas.Key{}, "3dnkdwuaalc7", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := provider.SupportsResponsesNamespaceTools(tc.ctx, tc.key, tc.model); got != tc.want {
+				t.Fatalf("SupportsResponsesNamespaceTools(%q) = %v, want %v", tc.model, got, tc.want)
+			}
+		})
+	}
+}
+
 // An alias-level value wins over the key, matching use_anthropic_endpoints.
 func TestUseOpenAIEndpointsAliasOverridesKey(t *testing.T) {
 	const model = "us.openai.gpt-5.6-terra"
@@ -766,5 +792,43 @@ func TestUseOpenAIEndpointsCannotForceApplicationProfile(t *testing.T) {
 	surface := resolveBedrockSurface(ctx, key, "3dnkdwuaalc7")
 	if runtimeServesOpenAIAPI(ctx, key, surface, "3dnkdwuaalc7", schemas.BedrockAPIResponses) {
 		t.Error("an application inference profile must stay on Converse even when opted in")
+	}
+}
+
+// The surface decides what the wire can structurally carry, and a datasheet row may
+// only narrow within that: on Mantle's OpenAI-compatible path a bedrock_mantle row can
+// switch namespace support off, but no row can switch it on for Converse or for the
+// Anthropic Messages surface Claude takes on Mantle, because those wires have no
+// namespace container to send. A bedrock row saying "supported" must therefore be
+// ignored on a Converse-routed attempt (CodeRabbit on #7082).
+func TestSupportsResponsesNamespaceToolsDatasheetRow(t *testing.T) {
+	rows := map[schemas.ModelProvider]map[string]*bool{
+		schemas.BedrockMantle: {
+			"openai.gpt-5.6-luna":     new(false), // narrows the Mantle default of true
+			"anthropic.claude-opus-5": new(true),  // must not widen the Anthropic Messages surface
+		},
+		schemas.Bedrock: {
+			"anthropic.claude-opus-5": new(true), // must not widen Converse
+		},
+	}
+	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		supported, ok := rows[provider][model]
+		if !ok {
+			return nil
+		}
+		return &schemas.ModelCapabilities{SupportsNamespaceTools: supported}
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	provider := &BedrockProvider{}
+
+	if provider.SupportsResponsesNamespaceTools(surfaceTestCtx(), schemas.Key{}, "openai.gpt-5.6-luna") {
+		t.Error("a bedrock_mantle row saying unsupported must narrow the Mantle default")
+	}
+	if provider.SupportsResponsesNamespaceTools(surfaceTestCtx(), schemas.Key{}, "anthropic.claude-opus-5") {
+		t.Error("a bedrock row saying supported must not send namespace containers to Converse")
+	}
+	// Cross-region id pins Converse; neither row applies.
+	if provider.SupportsResponsesNamespaceTools(surfaceTestCtx(), schemas.Key{}, "global.openai.gpt-5.6-luna") {
+		t.Error("a Converse-routed attempt must answer false regardless of rows")
 	}
 }

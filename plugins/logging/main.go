@@ -221,35 +221,14 @@ func (p *LoggerPlugin) contentLoggingEnabled(ctx *schemas.BifrostContext) bool {
 	return p.resolveContentPolicy(ctx).storeContent
 }
 
-// applyMCPGovernanceFieldsToEntry stamps MCP log ownership from the request context.
+// applyMCPGovernanceFieldsToEntry stamps MCP log ownership from the request context. Every dimension,
+// id and name alike, is recorded by the entry itself so the inspect and ingest paths in enterprise
+// stamp identically without repeating the field list.
 func applyMCPGovernanceFieldsToEntry(ctx *schemas.BifrostContext, entry *logstore.MCPToolLog) {
 	if ctx == nil || entry == nil {
 		return
 	}
-	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
-	teamID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamID)
-	customerID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerID)
-	businessUnitID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitID)
-	projectID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectID)
-	projectName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectName)
-	if userID != "" {
-		entry.UserID = &userID
-	}
-	if teamID != "" {
-		entry.TeamID = &teamID
-	}
-	if customerID != "" {
-		entry.CustomerID = &customerID
-	}
-	if businessUnitID != "" {
-		entry.BusinessUnitID = &businessUnitID
-	}
-	if projectID != "" {
-		entry.ProjectID = &projectID
-	}
-	if projectName != "" {
-		entry.ProjectName = &projectName
-	}
+	entry.ApplyGovernanceContext(ctx)
 }
 
 // scheduleDeferredUsageUpdate schedules a deferred usage update for the request.
@@ -2496,20 +2475,66 @@ func (p *LoggerPlugin) storeOrEnqueueEntry(ctx *schemas.BifrostContext, entry *l
 	// content is actually visible.
 	attachLogRedactionData(ctx, entry, policy.visible())
 	traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
-	if traceID != "" {
-		// Append to slice for Inject() to pick up — supports multiple attempts per trace
-		existing, loaded := p.pendingLogsToInject.LoadOrStore(traceID, &pendingInjectEntries{entries: []*logstore.Log{entry}, createdAt: time.Now()})
-		if !loaded {
-			return
-		}
-		pending := existing.(*pendingInjectEntries)
-		pending.mu.Lock()
-		pending.entries = append(pending.entries, entry)
-		pending.mu.Unlock()
-	} else {
+	if traceID == "" {
 		// Fallback: no tracing (Go SDK path), enqueue directly
 		p.enqueueLogEntry(entry, callback)
+		return
 	}
+	if p.traceAlreadyEnded(ctx, traceID) {
+		// The tracer has already ended this trace: the transport completes it as
+		// soon as it has answered the client, which on a disconnect runs ahead of
+		// the worker's abandoned-billing terminal hooks (#6972). EndTrace removes
+		// the trace from the store before any Inject runs, so nothing will ever
+		// drain a slot parked now. Write directly (without the trace's plugin logs
+		// and latency backfill, which are gone with the trace). This holds however
+		// late the hook is; it does not depend on a timer.
+		p.enqueueLogEntry(entry, callback)
+		return
+	}
+	// Append to slice for Inject() to pick up — supports multiple attempts per trace
+	existing, loaded := p.pendingLogsToInject.LoadOrStore(traceID, &pendingInjectEntries{entries: []*logstore.Log{entry}, createdAt: time.Now()})
+	if !loaded {
+		// The trace may have ended between the check above and this store. Inject
+		// runs after EndTrace, so if it already drained, this fresh slot is
+		// orphaned: reclaim it. If Inject has not drained yet, it wins the
+		// LoadAndDelete below and drains the entry itself.
+		if p.traceAlreadyEnded(ctx, traceID) {
+			if val, ok := p.pendingLogsToInject.LoadAndDelete(traceID); ok {
+				orphaned := val.(*pendingInjectEntries)
+				orphaned.mu.Lock()
+				orphaned.drained = true
+				late := orphaned.entries
+				orphaned.mu.Unlock()
+				for _, e := range late {
+					p.enqueueLogEntry(e, callback)
+				}
+			}
+		}
+		return
+	}
+	pending := existing.(*pendingInjectEntries)
+	pending.mu.Lock()
+	if pending.drained {
+		// Inject drained this slot between our load and this append.
+		pending.mu.Unlock()
+		p.enqueueLogEntry(entry, callback)
+		return
+	}
+	pending.entries = append(pending.entries, entry)
+	pending.mu.Unlock()
+}
+
+// traceAlreadyEnded reports whether the tracer has completed the request's trace.
+// EndTrace removes a trace from the store before its Inject fan-out, so a nil root
+// span handle means no Inject will drain entries parked from now on. A live trace
+// always has its root span by the time an LLM hook runs (the transport starts it
+// before the request is dispatched), so this cannot misread an in-flight trace.
+func (p *LoggerPlugin) traceAlreadyEnded(ctx *schemas.BifrostContext, traceID string) bool {
+	tracer, ok := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer)
+	if !ok || tracer == nil {
+		return false
+	}
+	return tracer.GetSpanHandleByID(traceID, nil) == nil
 }
 
 // ConsumesOverheadSpans opts this plugin into receiving the internal overhead-breakdown
@@ -2540,6 +2565,12 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 	if !ok {
 		return nil
 	}
+	// Snapshot under the lock and close the slot, so a concurrent append cannot
+	// land in a slice this drain has already walked.
+	pending.mu.Lock()
+	pending.drained = true
+	entries := pending.entries
+	pending.mu.Unlock()
 	// Serialize plugin logs once for all entries
 	pluginLogsJSON := serializePluginLogs(trace.PluginLogs)
 	// Backfill upstream/overhead from the authoritative values the tracer stamped on
@@ -2555,7 +2586,7 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 	// row that receives the overhead number below.
 	overheadBreakdown, measuredOverheadMs, isStreaming := overhead.Compute(trace, overheadMs, ovOK, upstreamMs, upOK)
 
-	p.logger.Debug("Inject: enqueuing %d log entries", len(pending.entries))
+	p.logger.Debug("Inject: enqueuing %d log entries", len(entries))
 	// Upstream/overhead are request-level: put them on one row per trace, not all.
 	// A trace can log many rows (list_models fans out per provider; fallbacks add a
 	// row per attempt), and stamping every one would count the same overhead N times
@@ -2567,14 +2598,14 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 	// "last" would attach trace latency to a random provider row. For sequential
 	// fallbacks the latest Timestamp is still the terminal attempt.
 	stampIdx := 0
-	for i, entry := range pending.entries {
-		best := pending.entries[stampIdx]
+	for i, entry := range entries {
+		best := entries[stampIdx]
 		if entry.Timestamp.After(best.Timestamp) ||
 			(entry.Timestamp.Equal(best.Timestamp) && entry.ID > best.ID) {
 			stampIdx = i
 		}
 	}
-	for i, entry := range pending.entries {
+	for i, entry := range entries {
 		entry.PluginLogs = pluginLogsJSON
 		if i == stampIdx {
 			// Clear both provisional components before backfilling. A partial root
@@ -2716,10 +2747,6 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		return req, nil, nil
 	}
 
-	// Get virtual key information from context - using same method as normal LLM logging
-	virtualKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID)
-	virtualKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName)
-
 	// Use the per-tool-call unique MCP log ID (set by agent executor per goroutine) as the
 	// primary key. Fall back to requestID if not set (e.g. direct single tool call).
 	mcpLogID, ok := ctx.Value(schemas.BifrostContextKeyMCPLogID).(string)
@@ -2741,12 +2768,6 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		entry.LLMRequestID = &parentRequestID
 	}
 
-	if virtualKeyID != "" {
-		entry.VirtualKeyID = &virtualKeyID
-	}
-	if virtualKeyName != "" {
-		entry.VirtualKeyName = &virtualKeyName
-	}
 	applyMCPGovernanceFieldsToEntry(ctx, entry)
 
 	// Capture the raw User-Agent of the calling client (stored verbatim; the UI
@@ -2824,10 +2845,6 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 		mcpLogID = requestID
 	}
 
-	// Extract virtual key ID and name from context (set by governance plugin)
-	virtualKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID)
-	virtualKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName)
-
 	pendingVal, hasPending := p.pendingMCPLogsToInject.LoadAndDelete(mcpLogID)
 	var entry *logstore.MCPToolLog
 	if hasPending {
@@ -2845,12 +2862,6 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 		}
 	}
 
-	if virtualKeyID != "" {
-		entry.VirtualKeyID = &virtualKeyID
-	}
-	if virtualKeyName != "" {
-		entry.VirtualKeyName = &virtualKeyName
-	}
 	applyMCPGovernanceFieldsToEntry(ctx, entry)
 	if resp != nil {
 		latency := float64(resp.ExtraFields.Latency)

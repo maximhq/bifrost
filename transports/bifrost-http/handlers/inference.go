@@ -1954,9 +1954,10 @@ func (h *CompletionHandler) handleStreamingTranscriptionRequest(ctx *fasthttp.Re
 }
 
 // handleStreamingResponse is a generic function to handle streaming responses using Server-Sent Events (SSE)
-// The cancel function is called ONLY when client disconnects are detected via write errors.
-// Bifrost handles cleanup internally for normal completion and errors, so we only cancel
-// upstream streams when write errors indicate the client has disconnected.
+// The cancel function is called here only when client disconnects are detected via write errors;
+// a client that closes its socket before the first write is caught by the socket watcher started
+// in lib.ConvertToBifrostContext. Bifrost handles cleanup internally for normal completion and
+// errors, so we only cancel upstream streams when the client has disconnected.
 func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, requestType schemas.RequestType, getStream func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError), cancel context.CancelFunc) {
 	// Get the streaming channel — called BEFORE setting SSE headers so that
 	// provider errors return proper HTTP status codes + JSON content type.

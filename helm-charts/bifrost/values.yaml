@@ -359,7 +359,9 @@ bifrost:
   #   network_config:
   #     base_url: ""                                  # Custom base URL (required for Ollama)
   #     extra_headers: {}                             # Additional headers to send with requests
-  #     default_request_timeout_in_seconds: 300       # Request timeout
+  #     default_request_timeout_in_seconds: 300       # Request timeout. On streams this bounds connect, request
+  #                                                   # write and wait-for-headers; after headers arrive,
+  #                                                   # stream_idle_timeout_in_seconds governs the body
   #     max_retries: 3                                # Maximum number of retries
   #     retry_backoff_initial_ms: 500                 # Initial retry backoff in ms
   #     retry_backoff_max_ms: 5000                    # Max retry backoff in ms
@@ -558,6 +560,15 @@ bifrost:
       #     clientSecret: "env.MY_EXCHANGE_CLIENT_SECRET"  # omit for public clients
       #     authorizationServerUrl: ""                   # optional — override exchange endpoint (e.g. Okta custom AS)
       #     scopes: []                                   # optional; include 'offline_access' for refresh tokens
+      # - name: "example-per-user-headers-mcp"
+      #   connectionType: "http"
+      #   httpConfig:
+      #     url: "https://my-mcp.corp/mcp"
+      #   # authType "per_user_headers": each caller submits their own header values (API keys,
+      #   # signed tokens) through the Bifrost auth flow; perUserHeaderKeys declares which header
+      #   # names are required. Values are collected and stored per-identity by Bifrost, not here.
+      #   authType: "per_user_headers"
+      #   perUserHeaderKeys: ["Authorization"]
     # toolSyncInterval: "10m"   # Global tool sync interval (Go duration string, e.g. "10m", "1h", "0s")
     # Virtual MCPs: bundle tools from one or more MCP clients into a single endpoint
     # served at /mcp/<endpointSlug> and attach it to virtual keys.
@@ -592,6 +603,10 @@ bifrost:
       config:
         custom_labels: []
         # metrics_enabled: true   # Serve the Prometheus /metrics scrape endpoint (default: true)
+        # Export the per-component overhead histogram bifrost_overhead_component_microseconds
+        # (overhead latency split by the overhead_component label). Requires tracing to be active,
+        # since the breakdown is computed from completed trace spans (default: false)
+        # overhead_breakdown_enabled: false
         # push_gateway:
         #   enabled: false
         #   push_gateway_url: ""
@@ -674,6 +689,7 @@ bifrost:
         #     group_traces_by_session: false # Group requests sharing x-bf-session-id into one trace (traceparent takes precedence)
         #     disable_root_span_content: false # Drop input/output from the root span only (keeps it on the llm.call span)
         #     request_headers: []     # Header name patterns (exact or wildcard like "x-custom-*") captured as span attributes; "*" includes sensitive headers like Authorization
+        #     overhead_breakdown_enabled: false # Export the per-component overhead histogram bifrost_overhead_component_microseconds (requires metrics_enabled and an active trace)
         #
         # Single-profile shape:
         service_name: "bifrost"
@@ -708,6 +724,10 @@ bifrost:
         # Request header name patterns (exact or wildcard like "x-custom-*") captured and emitted as span attributes.
         # Note: "*" captures all headers including sensitive ones like Authorization.
         # request_headers: []
+        # Export the per-component overhead histogram bifrost_overhead_component_microseconds
+        # (overhead latency split by the overhead_component attribute). Requires metrics_enabled
+        # and an active trace, since the breakdown is computed from completed spans (default: false)
+        # overhead_breakdown_enabled: false
       # Cap on concurrent in-flight trace injects the tracer will send this plugin;
       # a saturated cap drops new traces for this plugin only, not process-wide (default: 10000)
       # semaphore_size: 10000

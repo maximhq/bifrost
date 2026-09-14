@@ -6,6 +6,100 @@ import (
 	"testing"
 )
 
+// TestBifrostResponsesStreamResponseOmitsEmptyItem verifies that events without
+// an item object (response.created, output_text.delta, response.completed, ...)
+// do not serialize "item": null. Strict Responses API clients (e.g. opencode's
+// open-responses protocol) reject events where "item" is present but null —
+// the field only belongs on output_item.added / output_item.done.
+func TestBifrostResponsesStreamResponseOmitsEmptyItem(t *testing.T) {
+	for _, typ := range []ResponsesStreamResponseType{
+		ResponsesStreamResponseTypeCreated,
+		ResponsesStreamResponseTypeInProgress,
+		ResponsesStreamResponseTypeOutputTextDelta,
+		ResponsesStreamResponseTypeContentPartAdded,
+		ResponsesStreamResponseTypeCompleted,
+	} {
+		ev := &BifrostResponsesStreamResponse{Type: typ, SequenceNumber: 0}
+		encoded, err := MarshalSorted(ev)
+		if err != nil {
+			t.Fatalf("%s: marshal: %v", typ, err)
+		}
+		var decoded map[string]json.RawMessage
+		if err := json.Unmarshal(encoded, &decoded); err != nil {
+			t.Fatalf("%s: unmarshal encoded event: %v", typ, err)
+		}
+		if _, ok := decoded["item"]; ok {
+			t.Errorf("%s: event without item serializes an item field:\n%s", typ, encoded)
+		}
+	}
+
+	for _, typ := range []ResponsesStreamResponseType{
+		ResponsesStreamResponseTypeOutputItemAdded,
+		ResponsesStreamResponseTypeOutputItemDone,
+	} {
+		withItem := &BifrostResponsesStreamResponse{
+			Type: typ,
+			Item: &ResponsesMessage{Type: Ptr(ResponsesMessageTypeMessage), ID: Ptr("msg_1")},
+		}
+		encoded, err := MarshalSorted(withItem)
+		if err != nil {
+			t.Fatalf("%s: marshal: %v", typ, err)
+		}
+		var decoded map[string]json.RawMessage
+		if err := json.Unmarshal(encoded, &decoded); err != nil {
+			t.Fatalf("%s: unmarshal encoded event: %v", typ, err)
+		}
+		itemJSON, ok := decoded["item"]
+		if !ok {
+			t.Errorf("%s: lost item object:\n%s", typ, encoded)
+			continue
+		}
+		var item ResponsesMessage
+		if err := json.Unmarshal(itemJSON, &item); err != nil {
+			t.Fatalf("%s: unmarshal item: %v", typ, err)
+		}
+		if item.ID == nil || *item.ID != "msg_1" {
+			t.Errorf("%s: unexpected item payload: %#v", typ, item)
+		}
+	}
+}
+
+func TestBifrostResponsesStreamResponseLogProbsScopedToApplicableEvents(t *testing.T) {
+	created := &BifrostResponsesStreamResponse{Type: ResponsesStreamResponseTypeCreated, SequenceNumber: 0}
+	encoded, err := MarshalSorted(created)
+	if err != nil {
+		t.Fatalf("created: marshal: %v", err)
+	}
+	var createdDecoded map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &createdDecoded); err != nil {
+		t.Fatalf("created: unmarshal encoded event: %v", err)
+	}
+	if _, ok := createdDecoded["logprobs"]; ok {
+		t.Fatalf("created: unexpected logprobs field: %s", encoded)
+	}
+
+	delta := (&BifrostResponsesStreamResponse{Type: ResponsesStreamResponseTypeOutputTextDelta}).WithDefaults()
+	encoded, err = MarshalSorted(delta)
+	if err != nil {
+		t.Fatalf("output_text.delta: marshal: %v", err)
+	}
+	var deltaDecoded map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &deltaDecoded); err != nil {
+		t.Fatalf("output_text.delta: unmarshal encoded event: %v", err)
+	}
+	logprobsJSON, ok := deltaDecoded["logprobs"]
+	if !ok {
+		t.Fatalf("output_text.delta: missing logprobs field: %s", encoded)
+	}
+	var logprobs []ResponsesOutputMessageContentTextLogProb
+	if err := json.Unmarshal(logprobsJSON, &logprobs); err != nil {
+		t.Fatalf("output_text.delta: unmarshal logprobs: %v", err)
+	}
+	if logprobs == nil || len(logprobs) != 0 {
+		t.Fatalf("output_text.delta: expected empty logprobs array, got %#v", logprobs)
+	}
+}
+
 func TestBifrostResponsesStreamResponsePreservesOpenAIStreamMetadata(t *testing.T) {
 	raw := []byte(`{"type":"response.reasoning_summary_text.delta","delta":"thinking","item_id":"rs_123","obfuscation":"opaque","output_index":0,"sequence_number":4,"summary_index":0}`)
 
@@ -760,5 +854,94 @@ func TestStreamWithDefaultsStripsCodeExecutionCarry(t *testing.T) {
 		if strings.Contains(string(encoded), "code_execution_") {
 			t.Errorf("%s: normalized stream JSON still has code_execution_*:\n%s", typ, encoded)
 		}
+	}
+}
+
+// TestCustomToolInputDoneRoundTrip preserves the terminal input clients compare with streamed custom-tool deltas.
+func TestCustomToolInputDoneRoundTrip(t *testing.T) {
+	raw := []byte(`{"type":"response.custom_tool_call_input.done","item_id":"tool1","output_index":0,"input":"grep alice@example.com"}`)
+	var response BifrostResponsesStreamResponse
+	if err := Unmarshal(raw, &response); err != nil {
+		t.Fatal(err)
+	}
+	output, err := json.Marshal(response.WithDefaults())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(output, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if fields["input"] != "grep alice@example.com" {
+		t.Fatalf("terminal input lost: %s", output)
+	}
+}
+
+// TestDeepCopyResponsesMessageCustomInput preserves custom input without sharing mutable tool state.
+func TestDeepCopyResponsesMessageCustomInput(t *testing.T) {
+	for _, input := range []string{"", "grep alice@example.com"} {
+		t.Run(input, func(t *testing.T) {
+			original := ResponsesMessage{
+				Type: Ptr(ResponsesMessageTypeCustomToolCall),
+				ResponsesToolMessage: &ResponsesToolMessage{
+					Name:                    Ptr("bash"),
+					ResponsesCustomToolCall: &ResponsesCustomToolCall{Input: input},
+				},
+			}
+			copied := DeepCopyResponsesMessage(original)
+			if copied.ResponsesToolMessage == nil || copied.ResponsesCustomToolCall == nil {
+				t.Fatal("copy lost custom tool input")
+			}
+			if copied.ResponsesCustomToolCall.Input != input {
+				t.Fatalf("input = %q, want %q", copied.ResponsesCustomToolCall.Input, input)
+			}
+			copied.ResponsesCustomToolCall.Input = "redacted"
+			if original.ResponsesCustomToolCall.Input != input {
+				t.Fatal("changing copied input mutated the original")
+			}
+		})
+	}
+}
+
+// A per-part media resolution is replayed to the provider verbatim, so DeepCopyResponsesMessage
+// must carry it across -- and must not alias it, since the copy and the original can be sent on
+// different attempts of the same request.
+func TestDeepCopyResponsesMessagePreservesMediaResolution(t *testing.T) {
+	messageType := ResponsesMessageTypeMessage
+	role := ResponsesInputMessageRoleUser
+	imageURL := "data:image/jpeg;base64,/9j/4AAQSkZJRg=="
+	numTokens := int32(512)
+
+	original := ResponsesMessage{
+		Type: &messageType,
+		Role: &role,
+		Content: &ResponsesMessageContent{
+			ContentBlocks: []ResponsesMessageContentBlock{{
+				Type:                                   ResponsesInputMessageContentBlockTypeImage,
+				ResponsesInputMessageContentBlockImage: &ResponsesInputMessageContentBlockImage{ImageURL: &imageURL},
+				MediaResolution:                        &MediaResolution{Level: "MEDIA_RESOLUTION_ULTRA_HIGH", NumTokens: &numTokens},
+			}},
+		},
+	}
+
+	copied := DeepCopyResponsesMessage(original)
+	got := copied.Content.ContentBlocks[0].MediaResolution
+	if got == nil {
+		t.Fatal("deep copy dropped the media resolution")
+	}
+	if got.Level != "MEDIA_RESOLUTION_ULTRA_HIGH" {
+		t.Fatalf("level = %q, want MEDIA_RESOLUTION_ULTRA_HIGH", got.Level)
+	}
+	if got == original.Content.ContentBlocks[0].MediaResolution {
+		t.Error("copy aliases the original media resolution struct")
+	}
+	if got.NumTokens == nil {
+		t.Fatal("deep copy dropped numTokens")
+	}
+	if got.NumTokens == original.Content.ContentBlocks[0].MediaResolution.NumTokens {
+		t.Error("copy aliases the original numTokens pointer")
+	}
+	if *got.NumTokens != 512 {
+		t.Fatalf("numTokens = %d, want 512", *got.NumTokens)
 	}
 }

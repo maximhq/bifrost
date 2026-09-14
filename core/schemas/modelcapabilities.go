@@ -35,6 +35,8 @@ type ModelCapabilities struct {
 	SupportsTextEditorTool          *bool `json:"supports_text_editor_tool,omitempty"`
 	SupportsMemoryTool              *bool `json:"supports_memory_tool,omitempty"`
 	SupportsToolSearch              *bool `json:"supports_tool_search,omitempty"`
+	ToolNameMaxLength               *int  `json:"tool_name_max_length,omitempty"`     // longest tool name the wire accepts; absent falls back to the per-provider default in core/providers/utils (64 for OpenAI-compatible wires and Bedrock, 128 for Anthropic and Gemini)
+	SupportsNamespaceTools          *bool `json:"supports_namespace_tools,omitempty"` // accepts the OpenAI Responses `namespace` tool container on the wire; absent falls back to the per-provider default in core/providers/utils
 	SupportsFilesAPI                *bool `json:"supports_files_api,omitempty"`
 	SupportsCompaction              *bool `json:"supports_compaction,omitempty"`
 	SupportsContextEditing          *bool `json:"supports_context_editing,omitempty"`
@@ -161,6 +163,13 @@ type ModelCapabilities struct {
 	// set. Example for Gemini 3 Pro: {"minimal": "low", "medium": "high"}.
 	ReasoningEffortRenames map[string]string `json:"reasoning_effort_renames,omitempty"`
 
+	// reasoning.context values the model accepts on the OpenAI Responses wire
+	// ("auto" | "current_turn" | "all_turns"). A request value outside the list
+	// is dropped before dispatch so the model's own default applies. Absent
+	// means "use the name-based default": every reasoning model takes "auto"
+	// and "current_turn", and gpt-5.4+ also "all_turns".
+	SupportedReasoningContexts []string `json:"supported_reasoning_contexts,omitempty"`
+
 	// Allowed thinking-budget range in tokens.
 	ReasoningBudget *BudgetControl `json:"reasoning_budget,omitempty"`
 
@@ -235,6 +244,14 @@ type ModelCapabilities struct {
 	// Perplexity: reasoning_effort is a required field (not optional).
 	ReasoningRequired *bool `json:"reasoning_required,omitempty"`
 
+	// Namespace-tool names the provider keeps for its own server-side tools. A
+	// caller-defined namespace with one of these names is rejected upstream
+	// (Bedrock Mantle: "User-defined namespace 'web' collides with an existing
+	// tool namespace"), so the request builder drops it. A non-empty list replaces
+	// the hardcoded per-provider fallback in core/providers/openai outright; absent
+	// or empty means the fallback applies.
+	ReservedToolNamespaces []string `json:"reserved_tool_namespaces,omitempty"`
+
 	// ---- Aliasing & regional inference profiles ----
 
 	// Bedrock regional inference profile aliases that point to a canonical entry.
@@ -295,6 +312,12 @@ type ModelCapabilities struct {
 	//
 	// Absent falls back to the caller's family detection.
 	BedrockRequiresSignedReasoning *bool `json:"bedrock_requires_signed_reasoning,omitempty"`
+
+	// Whether Converse accepts image blocks inside a toolResult. Scoped to Converse:
+	// gpt-5.6 rejects them there but reads them in Responses tool output.
+	//
+	// Absent falls back to the caller's family detection.
+	SupportsConverseToolResultImages *bool `json:"supports_converse_tool_result_images,omitempty"`
 }
 
 // BedrockAPI names one wire API on a Bedrock endpoint. Which endpoint serves it

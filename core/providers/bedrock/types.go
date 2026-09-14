@@ -693,8 +693,16 @@ type BedrockGuardrailTraceDetail struct {
 // BedrockCountTokensRequest represents a Bedrock CountTokens API request
 type BedrockCountTokensRequest struct {
 	Input struct {
-		Converse *BedrockConverseRequest `json:"converse,omitempty"`
+		Converse    *BedrockConverseRequest             `json:"converse,omitempty"`
+		InvokeModel *BedrockCountTokensInvokeModelInput `json:"invokeModel,omitempty"`
 	} `json:"input"`
+}
+
+// BedrockCountTokensInvokeModelInput is the "invokeModel" member of the
+// CountTokens input union. Body is the exact InvokeModel request body; AWS
+// takes it as base64-encoded binary, which []byte marshals to.
+type BedrockCountTokensInvokeModelInput struct {
+	Body []byte `json:"body"`
 }
 
 // BedrockCountTokensResponse represents a Bedrock CountTokens API response

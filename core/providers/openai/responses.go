@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/providers/utils"
@@ -60,17 +61,37 @@ var ProviderFeatures = map[schemas.ModelProvider]ResponsesFeatureSupport{
 	schemas.BedrockMantle: {AdditionalToolsItem: false, ContextManagement: false},
 }
 
-// reservedToolNamespaces lists the namespace-tool names a provider keeps for
-// its own server-side tools. Bedrock rejects a user-defined namespace with one
-// of these names outright on both the bedrock-mantle and bedrock-runtime
-// Responses endpoints: "Invalid Value: 'tools.namespace'. User-defined namespace
-// 'web' collides with an existing tool namespace." (HTTP 400). Codex registers a
-// client-side "web" namespace (web.run) whenever it believes it is talking to
-// OpenAI, which is the case when Bifrost is configured through openai_base_url.
-// Live-verified against openai.gpt-5.6-luna on 2026-09-09.
-var reservedToolNamespaces = map[schemas.ModelProvider]map[string]bool{
-	schemas.Bedrock:       {"web": true, "image_gen": true, "browser": true, "python": true},
-	schemas.BedrockMantle: {"web": true, "image_gen": true, "browser": true, "python": true},
+// reservedToolNamespaces is the hardcoded fallback for the namespace-tool names a
+// provider keeps for its own server-side tools, used when the datasheet row for the
+// (base provider, model) publishes no reserved_tool_namespaces. Bedrock rejects a
+// user-defined namespace with one of these names outright on both the
+// bedrock-mantle and bedrock-runtime Responses endpoints: "Invalid Value:
+// 'tools.namespace'. User-defined namespace 'web' collides with an existing tool
+// namespace." (HTTP 400). Codex registers a client-side "web" namespace (web.run)
+// whenever it believes it is talking to OpenAI, which is the case when Bifrost is
+// configured through openai_base_url. Live-verified against openai.gpt-5.6-luna on
+// 2026-09-09.
+var reservedToolNamespaces = map[schemas.ModelProvider][]string{
+	schemas.Bedrock:       {"web", "image_gen", "browser", "python"},
+	schemas.BedrockMantle: {"web", "image_gen", "browser", "python"},
+}
+
+// resolveReservedToolNamespaces returns the reserved-name set for one attempt:
+// the datasheet row for (toolProvider, capModel) when it publishes one, else the
+// hardcoded fallback. toolProvider is the BASE provider, so a custom provider
+// wrapping Mantle reads the bedrock_mantle row and the bedrock_mantle fallback.
+func resolveReservedToolNamespaces(toolProvider schemas.ModelProvider, capModel string) map[string]bool {
+	names := schemas.ResolveModelCaps(toolProvider, capModel).ReservedToolNamespaces(reservedToolNamespaces[toolProvider])
+	if len(names) == 0 {
+		return nil
+	}
+	reserved := make(map[string]bool, len(names))
+	for _, name := range names {
+		if name != "" {
+			reserved[name] = true
+		}
+	}
+	return reserved
 }
 
 // dropReservedNamespaceTools returns a copy of tools without the namespace tools
@@ -333,6 +354,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	// Tools lifted out of codex additional_tools items for providers that reject them.
 	var hoistedTools []schemas.ResponsesTool
 	keepAdditionalTools := supportsAdditionalToolsItem(bifrostReq.Provider)
+	replayAssistantTextAsInput := isMantleGPTOSSResponses(ctx, bifrostReq.Provider, capModel)
 	for _, message := range bifrostReq.Input {
 		if !keepAdditionalTools && message.Type != nil &&
 			*message.Type == schemas.ResponsesMessageTypeAdditionalTools {
@@ -394,6 +416,10 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		// requests without it. Blocks converted from non-OpenAI surfaces (Anthropic,
 		// Gemini, Cohere, chat bridge) never carry one, so default missing values to "auto".
 		message = defaultImageDetail(message)
+
+		if replayAssistantTextAsInput {
+			message = assistantOutputTextAsInputText(message)
+		}
 
 		// Strip provider reasoning signatures (e.g. Gemini thoughtSignatures smuggled into
 		// call_id as "<baseID>_ts_<sig>") from tool call IDs, but only when the id exceeds
@@ -609,6 +635,23 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				req.ResponsesParameters.Reasoning.Summary = nil
 			}
 
+			// reasoning.context is gated per value: every OpenAI reasoning model takes
+			// "auto"/"current_turn", but "all_turns" is a hard 400 before gpt-5.4
+			// ("Unsupported value: 'all_turns' is not supported with the 'gpt-5-pro'
+			// model"). Drop a value the model does not list so the request runs under
+			// its own default instead of failing; the datasheet row
+			// supported_reasoning_contexts overrides the name default. Other
+			// OpenAI-compatible upstreams are left alone.
+			// Match on the base provider: a custom provider built on OpenAI or Azure
+			// reports its own key ("my-openai"), so gating on the unresolved key
+			// would let an unsupported value through to the upstream 400.
+			contextProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
+			if c := req.ResponsesParameters.Reasoning.Context; c != nil &&
+				(contextProvider == schemas.OpenAI || contextProvider == schemas.Azure) &&
+				!slices.Contains(caps.SupportedReasoningContexts(defaultReasoningContexts(capModel)), *c) {
+				req.ResponsesParameters.Reasoning.Context = nil
+			}
+
 			// Bedrock's OpenAI-compatible surfaces accept only "auto". They answer
 			// "concise" and "detailed" with a 400 ("Unsupported parameter:
 			// 'reasoning.summary' is not supported with the ... model") even though the
@@ -674,9 +717,10 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	// the hoist so additional_tools namespaces get the same treatment, and before
 	// filterUnsupportedTools so a substituted web_search goes through its copy path.
 	// Match on the base provider: a custom provider built on bedrock reports its own
-	// key, which the map does not know, so the reserved namespace would reach AWS.
+	// key, which neither the datasheet nor the fallback map knows, so the reserved
+	// namespace would reach AWS.
 	toolProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
-	if reserved := reservedToolNamespaces[toolProvider]; len(reserved) > 0 && len(req.Tools) > 0 {
+	if reserved := resolveReservedToolNamespaces(toolProvider, capModel); len(reserved) > 0 && len(req.Tools) > 0 {
 		substitute := toolProvider == schemas.BedrockMantle && caps.SupportsWebSearch(true)
 		req.Tools = dropReservedNamespaceTools(req.Tools, reserved, substitute)
 	}
@@ -786,6 +830,49 @@ func defaultImageDetail(message schemas.ResponsesMessage) schemas.ResponsesMessa
 			imageCopy := *block.ResponsesInputMessageContentBlockImage
 			imageCopy.Detail = schemas.Ptr("auto")
 			newBlocks[i].ResponsesInputMessageContentBlockImage = &imageCopy
+		}
+	}
+
+	contentCopy := *message.Content
+	contentCopy.ContentBlocks = newBlocks
+	message.Content = &contentCopy
+	return message
+}
+
+// isMantleGPTOSSResponses reports whether the request is gpt-oss served by Bedrock Mantle's
+// /v1 Responses backend; gpt-5.x on /openai/v1 and gpt-oss elsewhere keep output_text history.
+func isMantleGPTOSSResponses(ctx *schemas.BifrostContext, provider schemas.ModelProvider, capModel string) bool {
+	base := schemas.ResolveBaseProvider(ctx, provider)
+	return (base == schemas.Bedrock || base == schemas.BedrockMantle) &&
+		strings.Contains(strings.ToLower(capModel), "gpt-oss") &&
+		schemas.ResolveBedrockMantleBasePath(capModel) == schemas.BedrockMantleBasePathV1
+}
+
+// assistantOutputTextAsInputText retags a replayed assistant message's output_text blocks
+// as input_text. Mantle /v1 strips id, status and annotations from assistant items before
+// validating, so output_text history matches no input variant and the turn fails (#7074).
+func assistantOutputTextAsInputText(message schemas.ResponsesMessage) schemas.ResponsesMessage {
+	if message.Role == nil || *message.Role != schemas.ResponsesInputMessageRoleAssistant ||
+		message.Content == nil || len(message.Content.ContentBlocks) == 0 {
+		return message
+	}
+	fixNeeded := false
+	for _, block := range message.Content.ContentBlocks {
+		if block.Type == schemas.ResponsesOutputMessageContentTypeText {
+			fixNeeded = true
+			break
+		}
+	}
+	if !fixNeeded {
+		return message
+	}
+
+	newBlocks := make([]schemas.ResponsesMessageContentBlock, len(message.Content.ContentBlocks))
+	copy(newBlocks, message.Content.ContentBlocks)
+	for i := range newBlocks {
+		if newBlocks[i].Type == schemas.ResponsesOutputMessageContentTypeText {
+			newBlocks[i].Type = schemas.ResponsesInputMessageContentBlockTypeText
+			newBlocks[i].ResponsesOutputMessageContentText = nil
 		}
 	}
 

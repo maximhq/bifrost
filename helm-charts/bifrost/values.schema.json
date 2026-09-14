@@ -805,6 +805,11 @@
                       "default": true,
                       "description": "Serve the Prometheus /metrics scrape endpoint. Default true."
                     },
+                    "overhead_breakdown_enabled": {
+                      "type": "boolean",
+                      "default": false,
+                      "description": "Export the per-component overhead histogram bifrost_overhead_component_microseconds (overhead latency split by the overhead_component label). Off by default. Requires tracing to be active, since the breakdown is computed from completed trace spans."
+                    },
                     "push_gateway": {
                       "type": "object",
                       "description": "Configuration for pushing metrics to a Prometheus Push Gateway for multi-node cluster deployments",
@@ -5801,6 +5806,11 @@
         "export_overhead_spans": {
           "type": "boolean",
           "description": "Export internal overhead/latency spans (setup, key selection, pipeline phases). Default false."
+        },
+        "overhead_breakdown_enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Export the per-component overhead histogram bifrost_overhead_component_microseconds (overhead latency split by the overhead_component attribute). Off by default. Requires metrics_enabled and an active trace, since the breakdown is computed from completed spans."
         }
       },
       "allOf": [
@@ -6143,7 +6153,8 @@
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Models this key can access. Use [\"*\"] to allow all models; empty array denies all (deny-by-default). An entry starting with regex: is an RE2 pattern matched case-insensitively against the whole model name."
         },
         "weight": {
           "type": "number",
@@ -6692,7 +6703,7 @@
         "default_request_timeout_in_seconds": {
           "type": "integer",
           "minimum": 1,
-          "description": "Default request timeout in seconds"
+          "description": "Default request timeout in seconds. For streaming requests this bounds the connection, the request write and the wait for response headers; once headers arrive, stream_idle_timeout_in_seconds governs the body."
         },
         "max_retries": {
           "type": "integer",
@@ -7031,6 +7042,14 @@
           },
           "description": "Allowlist of request-level headers that callers may forward to this MCP server. Use ['*'] to allow all headers."
         },
+        "perUserHeaderKeys": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "\\S"
+          },
+          "description": "Header names each caller must individually supply when authType is 'per_user_headers' (e.g. ['Authorization']). Required (non-empty) for that auth type; ignored otherwise."
+        },
         "allowOnAllVirtualKeys": {
           "type": "boolean",
           "deprecated": true,
@@ -7112,6 +7131,24 @@
           },
           "then": {
             "required": ["connectionString"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "authType": {
+                "const": "per_user_headers"
+              }
+            },
+            "required": ["authType"]
+          },
+          "then": {
+            "required": ["perUserHeaderKeys"],
+            "properties": {
+              "perUserHeaderKeys": {
+                "minItems": 1
+              }
+            }
           }
         }
       ]
@@ -7318,14 +7355,14 @@
         },
         "allowed_models": {
           "type": "array",
-          "description": "Allowed models for this provider config. Use [\"*\"] to allow all models; empty array denies all (deny-by-default).",
+          "description": "Allowed models for this provider config. Use [\"*\"] to allow all models; empty array denies all (deny-by-default). An entry starting with regex: is an RE2 pattern matched case-insensitively against the whole model name.",
           "items": {
             "type": "string"
           }
         },
         "blacklisted_models": {
           "type": "array",
-          "description": "Models blocked for this provider config even if matched by allowed_models. Use [\"*\"] to block all.",
+          "description": "Models blocked for this provider config even if matched by allowed_models. Use [\"*\"] to block all; empty array blocks none. An entry starting with regex: is an RE2 pattern matched case-insensitively against the whole model name.",
           "items": {
             "type": "string"
           }
@@ -7372,7 +7409,7 @@
                 "items": {
                   "type": "string"
                 },
-                "description": "Models this key can access. Use [\"*\"] to allow all models; empty array denies all (deny-by-default)."
+                "description": "Models this key can access. Use [\"*\"] to allow all models; empty array denies all (deny-by-default). An entry starting with regex: is an RE2 pattern matched case-insensitively against the whole model name."
               },
               "weight": {
                 "type": "number",

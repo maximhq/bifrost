@@ -2475,9 +2475,14 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 			input = input[:trimmed]
 		}
 
-		// Inline mid-conversation system reminders for Anthropic models (keeps Bedrock's
-		// prefix-based prompt cache stable); hoist-everything for other families.
-		messages, systemMessages, err := ConvertBifrostMessagesToBedrockMessages(ctx, capModel, input, schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model))
+		// Inline mid-conversation system reminders for every family. Bedrock's prompt cache is
+		// prefix-based for every model that has one: explicit cachePoint for Claude and Nova,
+		// implicit exact-prefix matching for OpenAI models on Converse. Hoisting a reminder
+		// into `system` grows the prefix front on every turn and forces a full miss (seen in
+		// the field with Claude Code against global.openai.gpt-5.6-luna, which appends a
+		// role:"system" <total_tokens> reminder after each turn). Models without a cache only
+		// gain chronological order. Response rendering still passes false.
+		messages, systemMessages, err := ConvertBifrostMessagesToBedrockMessages(ctx, capModel, input, true)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert Responses messages: %w", err)
 		}
@@ -2905,6 +2910,10 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 
 	// Ensure tool config is present when tool content exists (similar to Chat Completions)
 	ensureResponsesToolConfigForConversation(ctx, bifrostReq, bedrockReq)
+
+	if !caps.SupportsConverseToolResultImages(schemas.BedrockModelSupportsToolResultImages(capModel)) {
+		hoistToolResultImages(bedrockReq)
+	}
 
 	if !caps.SupportsCachePoint(schemas.BedrockModelSupportsCachePoints(capModel)) {
 		stripCachePointsFromBedrockRequest(bedrockReq)
@@ -3507,14 +3516,20 @@ func (m *ToolCallStateManager) HasPendingResults() bool {
 // The ctx is propagated to URL fetches inside content blocks. inlineSystemReminders selects the
 // mid-conversation system-message handling: when true, only the leading run of system/developer
 // messages is hoisted into the top-level `system` block and later (mid-conversation) ones are
-// inlined in place; when false, every system/developer message is hoisted (historical behavior).
-// Callers compute it from the provider+model — see the call site in ToBedrockResponsesRequest.
+// inlined in place; when false, every system/developer message is hoisted. Every request path
+// passes true regardless of model family (see ToBedrockResponsesRequest); false is only used
+// when rendering a stored response back into a Converse shape.
 func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, model string, bifrostMessages []schemas.ResponsesMessage, inlineSystemReminders bool) ([]BedrockMessage, []BedrockSystemMessage, error) {
+	// Request-scoped document namer: the Converse API rejects duplicate
+	// document names across the whole request, not just within one message
+	// (#7003).
+	docNamer := newBedrockDocNamer()
+
 	// If only a single system message is present, convert it user message (since openai allows it)
 	if len(bifrostMessages) == 1 && bifrostMessages[0].Role != nil && (*bifrostMessages[0].Role == schemas.ResponsesInputMessageRoleSystem || *bifrostMessages[0].Role == schemas.ResponsesInputMessageRoleDeveloper) {
 		msg := bifrostMessages[0]
 		msg.Role = schemas.Ptr(schemas.ResponsesInputMessageRoleUser)
-		bedrockMsg, err := convertBifrostMessageToBedrockMessage(ctx, model, &msg)
+		bedrockMsg, err := convertBifrostMessageToBedrockMessage(ctx, model, &msg, docNamer)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -3531,7 +3546,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, model string, 
 	// counterpart of the native Anthropic provider's mid-conversation system support
 	// (SupportsMidConversationSystem) — Bedrock has no message-level system role, so the inlined
 	// message is rendered as a user turn (see convertBifrostSystemReminderToBedrockUserMessage).
-	// When false, every system/developer message is hoisted (historical behavior).
+	// When false, every system/developer message is hoisted (response rendering only).
 
 	var bedrockMessages []BedrockMessage
 	var systemMessages []BedrockSystemMessage
@@ -3805,6 +3820,9 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, model string, 
 									return nil, nil, fmt.Errorf("bedrock: converting tool result document: %w", err)
 								}
 								if document != nil {
+									// The Converse API rejects duplicate document
+									// names within a request (#7003).
+									document.Name = docNamer.name(document.Name)
 									resultContent = append(resultContent, BedrockContentBlock{Document: document})
 								}
 							}
@@ -3970,7 +3988,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, model string, 
 			// Convert regular message
 			if (role == schemas.ResponsesInputMessageRoleSystem || role == schemas.ResponsesInputMessageRoleDeveloper) &&
 				(!inlineSystemReminders || !seenNonSystemMessage) {
-				// Leading system prompt (or any system message for non-Anthropic models): hoist into `system`.
+				// Leading system prompt (or every system message in hoist-everything mode): hoist into `system`.
 				systemMsgs := convertBifrostMessageToBedrockSystemMessages(&msg)
 				systemMessages = append(systemMessages, systemMsgs...)
 			} else if role == schemas.ResponsesInputMessageRoleSystem || role == schemas.ResponsesInputMessageRoleDeveloper {
@@ -3981,7 +3999,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, model string, 
 				}
 			} else {
 				// Convert user/assistant text message
-				bedrockMsg, err := convertBifrostMessageToBedrockMessage(ctx, model, &msg)
+				bedrockMsg, err := convertBifrostMessageToBedrockMessage(ctx, model, &msg, docNamer)
 				if err != nil {
 					return nil, nil, err
 				}
@@ -4329,7 +4347,7 @@ func convertBifrostSystemReminderToBedrockUserMessage(msg *schemas.ResponsesMess
 // The ctx is propagated to URL fetches inside content blocks. A conversion failure
 // (e.g. an image or document URL that can't be fetched) is returned rather than
 // swallowed - dropping the message would send Bedrock a request missing the turn.
-func convertBifrostMessageToBedrockMessage(ctx context.Context, model string, msg *schemas.ResponsesMessage) (*BedrockMessage, error) {
+func convertBifrostMessageToBedrockMessage(ctx context.Context, model string, msg *schemas.ResponsesMessage, docNamer *bedrockDocNamer) (*BedrockMessage, error) {
 	// Ensure Content is present
 	if msg.Content == nil {
 		return nil, nil
@@ -4340,7 +4358,7 @@ func convertBifrostMessageToBedrockMessage(ctx context.Context, model string, ms
 	}
 
 	// Convert content
-	contentBlocks, err := convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx, model, *msg.Content)
+	contentBlocks, err := convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx, model, *msg.Content, docNamer)
 	if err != nil {
 		return nil, err
 	}
@@ -5122,7 +5140,7 @@ func convertBifrostReasoningToBedrockReasoning(msg *schemas.ResponsesMessage, sh
 
 // convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks converts Bifrost content to Bedrock content blocks.
 // The ctx is propagated to URL fetches inside image blocks.
-func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx context.Context, model string, content schemas.ResponsesMessageContent) ([]BedrockContentBlock, error) {
+func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx context.Context, model string, content schemas.ResponsesMessageContent, docNamer *bedrockDocNamer) ([]BedrockContentBlock, error) {
 	var blocks []BedrockContentBlock
 
 	if content.ContentStr != nil {
@@ -5191,6 +5209,9 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 					if err != nil {
 						return nil, fmt.Errorf("failed to convert document in responses content block: %w", err)
 					}
+					// The Converse API rejects duplicate document names within a
+					// request (#7003): disambiguate via the request-scoped namer.
+					document.Name = docNamer.name(document.Name)
 					bedrockBlock.Document = document
 				}
 			default:

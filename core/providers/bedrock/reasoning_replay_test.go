@@ -526,7 +526,7 @@ func TestRedactedReasoningSurvivesTheReplayLoop(t *testing.T) {
 
 	// Replay that assistant turn back to Bedrock.
 	replayed, err := convertMessage(context.Background(), model,
-		*bifrostResp.Choices[0].ChatNonStreamResponseChoice.Message)
+		*bifrostResp.Choices[0].ChatNonStreamResponseChoice.Message, newBedrockDocNamer())
 	require.NoError(t, err)
 
 	raw, err := sonic.Marshal(replayed)

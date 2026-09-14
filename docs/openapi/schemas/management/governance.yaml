@@ -302,10 +302,12 @@ VirtualKeyProviderConfig:
       type: array
       items:
         type: string
+      description: Allowlist. `["*"]` allows every model. An entry starting with `regex:` is an RE2 pattern matched case-insensitively against the whole model name. An empty pattern, `regex:*`, or a pattern that does not compile is rejected with 400.
     blacklisted_models:
       type: array
       items:
         type: string
+      description: Denylist, which wins over the allowlist. `["*"]` blocks every model. An entry starting with `regex:` is an RE2 pattern matched case-insensitively against the whole model name. An empty pattern, `regex:*`, or a pattern that does not compile is rejected with 400.
     allow_all_keys:
       type: boolean
     rate_limit_id:
@@ -456,10 +458,12 @@ CreateVirtualKeyRequest:
             type: array
             items:
               type: string
+            description: Allowlist. `["*"]` allows every model. An entry starting with `regex:` is an RE2 pattern matched case-insensitively against the whole model name. An empty pattern, `regex:*`, or a pattern that does not compile is rejected with 400.
           blacklisted_models:
             type: array
             items:
               type: string
+            description: Denylist, which wins over the allowlist. `["*"]` blocks every model. An entry starting with `regex:` is an RE2 pattern matched case-insensitively against the whole model name. An empty pattern, `regex:*`, or a pattern that does not compile is rejected with 400.
           budgets:
             type: array
             description: Provider-specific budget quotas. Use this array instead of the removed singular `budget` or `budget_id` fields.
@@ -549,10 +553,12 @@ UpdateVirtualKeyRequest:
             type: array
             items:
               type: string
+            description: Allowlist. `["*"]` allows every model. An entry starting with `regex:` is an RE2 pattern matched case-insensitively against the whole model name. An empty pattern, `regex:*`, or a pattern that does not compile is rejected with 400.
           blacklisted_models:
             type: array
             items:
               type: string
+            description: Denylist, which wins over the allowlist. `["*"]` blocks every model. An entry starting with `regex:` is an RE2 pattern matched case-insensitively against the whole model name. An empty pattern, `regex:*`, or a pattern that does not compile is rejected with 400.
           budgets:
             type: array
             description: Provider-specific budget quotas. Replaces all budgets for that provider config when provided; the removed singular `budget` and `budget_id` fields are not request fields.

@@ -1323,6 +1323,30 @@ export interface WebSocketLogMessage {
 
 // MCP Tool Log Entry - represents a single MCP tool execution
 export interface MCPToolLogEntry {
+	request_id?: string;
+	user_id?: string | null;
+	user_name?: string | null;
+	team_id?: string | null;
+	team_name?: string | null;
+	customer_id?: string | null;
+	customer_name?: string | null;
+	business_unit_id?: string | null;
+	business_unit_name?: string | null;
+	// Index-aligned with their ids: team_names[i] names team_ids[i].
+	team_ids?: string[];
+	team_names?: string[];
+	customer_ids?: string[];
+	customer_names?: string[];
+	business_unit_ids?: string[];
+	business_unit_names?: string[];
+	budget_ids?: string[];
+	rate_limit_ids?: string[];
+	project_id?: string | null;
+	project_name?: string | null;
+	device_id?: string;
+	app_key?: string;
+	decision?: string;
+	source?: string;
 	id: string;
 	llm_request_id?: string; // Links to the LLM request that triggered this tool call
 	timestamp: string; // ISO string format
@@ -1347,6 +1371,13 @@ export interface MCPToolLogEntry {
 
 // MCP Tool Log Filters
 export interface MCPToolLogFilters {
+	user_ids?: string[];
+	team_ids?: string[];
+	customer_ids?: string[];
+	business_unit_ids?: string[];
+	project_ids?: string[];
+	device_ids?: string[];
+
 	tool_names?: string[];
 	server_labels?: string[];
 	status?: string[];

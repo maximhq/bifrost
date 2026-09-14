@@ -908,6 +908,7 @@ func stripNonBillingPayloadBytes(l *Log) {
 	l.ImageGenerationOutput = ""
 }
 
+// searchLogs runs scoped log searches with the requested projection.
 func (s *RDBLogStore) searchLogs(ctx context.Context, filters SearchFilters, pagination PaginationOptions, selectColumns string) (*SearchResult, error) {
 	// Build order clause up front (needed by the data goroutine).
 	direction := "DESC"
@@ -1184,6 +1185,7 @@ func (s *RDBLogStore) GetSessionSummary(ctx context.Context, sessionID string) (
 	}, nil
 }
 
+// normalizeAggregateTimestamp normalizes driver-specific timestamp values for aggregate responses.
 func normalizeAggregateTimestamp(value any) string {
 	switch v := value.(type) {
 	case nil:
@@ -2460,6 +2462,7 @@ type latencyHistogramBucketData struct {
 	overheads []float64
 }
 
+// toBucket converts accumulated latency values into the response bucket.
 func (bd *latencyHistogramBucketData) toBucket(ts int64) LatencyHistogramBucket {
 	b := LatencyHistogramBucket{
 		Timestamp:     time.Unix(ts, 0).UTC(),
@@ -4591,6 +4594,25 @@ func (s *RDBLogStore) DeleteLogs(ctx context.Context, ids []string) error {
 
 // applyMCPFilters applies search filters to a GORM query for MCP tool logs
 func (s *RDBLogStore) applyMCPFilters(baseQuery *gorm.DB, filters MCPToolLogSearchFilters) *gorm.DB {
+	if len(filters.UserIDs) > 0 {
+		baseQuery = baseQuery.Where("user_id IN ?", filters.UserIDs)
+	}
+	if len(filters.TeamIDs) > 0 {
+		baseQuery = baseQuery.Where("team_id IN ?", filters.TeamIDs)
+	}
+	if len(filters.CustomerIDs) > 0 {
+		baseQuery = baseQuery.Where("customer_id IN ?", filters.CustomerIDs)
+	}
+	if len(filters.BusinessUnitIDs) > 0 {
+		baseQuery = baseQuery.Where("business_unit_id IN ?", filters.BusinessUnitIDs)
+	}
+	if len(filters.ProjectIDs) > 0 {
+		baseQuery = baseQuery.Where("project_id IN ?", filters.ProjectIDs)
+	}
+	if len(filters.DeviceIDs) > 0 {
+		baseQuery = baseQuery.Where("device_id IN ?", filters.DeviceIDs)
+	}
+
 	if len(filters.ToolNames) > 0 {
 		baseQuery = baseQuery.Where("tool_name IN ?", filters.ToolNames)
 	}
@@ -4895,6 +4917,7 @@ func (s *RDBLogStore) GetAvailableToolNames(ctx context.Context, limit int, quer
 	return toolNames, nil
 }
 
+// GetAvailableServerLabels lists MCP server labels matching the filter search.
 func (s *RDBLogStore) GetAvailableServerLabels(ctx context.Context, limit int, query string) ([]string, error) {
 	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
 	var serverLabels []string
@@ -4943,6 +4966,7 @@ func (s *RDBLogStore) GetAvailableMCPApps(ctx context.Context, limit int, query 
 	return apps, nil
 }
 
+// GetAvailableMCPVirtualKeys lists virtual keys represented in visible MCP logs.
 func (s *RDBLogStore) GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]MCPToolLog, error) {
 	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
 	var logs []MCPToolLog

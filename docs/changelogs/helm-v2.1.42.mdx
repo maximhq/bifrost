@@ -1,0 +1,15 @@
+---
+title: "v2.1.42"
+description: "Helm v2.1.42 changelog - 2026-09-14"
+---
+
+<Update label="Bifrost Helm" description="v2.1.42">
+
+## Changelog
+
+
+- Added `mcp.clientConfigs[].perUserHeaderKeys` — the header names each caller must individually supply under `authType: per_user_headers` (e.g. `["Authorization"]`).
+- Added `bifrost.plugins.otel.config.overhead_breakdown_enabled` (default `false`) and `bifrost.plugins.telemetry.config.overhead_breakdown_enabled` - exports the per-component overhead histogram `bifrost_overhead_component_microseconds`, overhead latency split by the `overhead_component` label. 
+- Fixed `bifrost.plugins.otel.config.export_overhead_spans` not rendering into `config.json`.
+
+</Update>

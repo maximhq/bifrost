@@ -130,8 +130,8 @@ export const DefaultPerformanceConfig = {
 // falls back to the default variant's border-primary (green), which clashes
 // on the red/amber/blue states.
 export const MCP_STATUS_COLORS: Record<string, string> = {
-	healthy: "bg-green-100 text-green-800 border-green-200",
-	error: "bg-red-100 text-red-800 border-red-200",
+	healthy: "border-chart-success/30 bg-chart-success/10 text-chart-success-ink",
+	error: "border-chart-error/30 bg-chart-error/10 text-chart-error-ink",
 	// Amber, not red/gray: Bifrost's own connection check most recently
 	// failed, but this is purely informational — nothing is gated on it, and
 	// it self-heals on the next successful check. Same mild treatment as
@@ -143,7 +143,7 @@ export const MCP_STATUS_COLORS: Record<string, string> = {
 	// Same red as `error`: the client's credential has died and it can't be
 	// used until a human reauthorizes it, mirroring the "destructive" treatment
 	// this status already gets on the MCP sessions table.
-	needs_reauth: "bg-red-100 text-red-800 border-red-200",
+	needs_reauth: "border-chart-error/30 bg-chart-error/10 text-chart-error-ink",
 	// Distinct blue/purple, not amber/red: unlike unstable, this isn't "one
 	// instance's check currently failing" — it's "instances disagree with
 	// each other about the state," which needs its own visual signal to
@@ -158,9 +158,9 @@ export const MCP_STATUS_COLORS: Record<string, string> = {
 // badge: green for usable, red for "a human must act", amber for
 // informational.
 export const MCP_CREDENTIAL_STATUS_COLORS: Record<string, string> = {
-	active: "bg-green-100 text-green-800 border-green-200",
-	needs_reauth: "bg-red-100 text-red-800 border-red-200",
-	needs_update: "bg-red-100 text-red-800 border-red-200",
+	active: "border-chart-success/30 bg-chart-success/10 text-chart-success-ink",
+	needs_reauth: "border-chart-error/30 bg-chart-error/10 text-chart-error-ink",
+	needs_update: "border-chart-error/30 bg-chart-error/10 text-chart-error-ink",
 	orphaned: "bg-yellow-100 text-yellow-800 border-yellow-200",
 	// Sessions table only: an OAuth flow that was started but not completed.
 	pending: "bg-gray-100 text-gray-800 border-gray-200",

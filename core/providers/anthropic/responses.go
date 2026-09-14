@@ -4982,9 +4982,14 @@ func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *sche
 		break
 	}
 
-	// Map stop reason from Bifrost response if available, otherwise infer from content
+	// Stop reason precedence: StopReason > IncompleteDetails > tool_use inference > end_turn.
 	if bifrostResp.StopReason != nil {
 		anthropicResp.StopReason = ConvertBifrostFinishReasonToAnthropic(*bifrostResp.StopReason)
+	} else if reason := anthropicStopReasonFromIncompleteDetails(bifrostResp.IncompleteDetails); reason != "" {
+		// OpenAI-shaped providers never send stop_reason; a turn truncated by the
+		// output cap or a content filter carries only incomplete_details. Reporting
+		// end_turn there hides the truncation from the client (#6782).
+		anthropicResp.StopReason = reason
 	} else {
 		anthropicResp.StopReason = AnthropicStopReasonEndTurn
 		for _, block := range contentBlocks {
@@ -5073,12 +5078,14 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 	midConvSystemSupported := isRequestMessage && caps.SupportsMidConversationSystem(
 		DefaultSupportsMidConversationSystem(caps.Provider(), caps.Model()))
 	// When the native role:"system" form isn't available, inline the reminder as a user turn
-	// rather than hoisting it into the top-level system block — hoisting preserves the
+	// rather than hoisting it into the top-level system block: hoisting preserves the
 	// breakpoint but invalidates the cached prefix behind it, costing roughly half the prompt on
-	// a warm conversation. Gated on the Anthropic model family because these call sites also
-	// serve DeepSeek/Fireworks/SGL over the Anthropic wire shape, and the <system-reminder>
-	// envelope is a Claude convention those models never asked for; they keep hoisting.
-	inlineMidConvSystem := isRequestMessage && schemas.IsAnthropicModelFamily(ctx, caps.Model())
+	// a warm conversation. Every family, not only Claude: these call sites also serve
+	// DeepSeek/Fireworks/SGL over the Anthropic wire shape, and DeepSeek's context cache is
+	// automatic and prefix-based (a request must fully match a cached prefix unit,
+	// api-docs.deepseek.com/guides/kv_cache), so hoisting collapses it the same way. The
+	// <system-reminder> envelope is plain text those models read fine.
+	inlineMidConvSystem := isRequestMessage
 
 	var anthropicMessages []AnthropicMessage
 	var systemContent *AnthropicContent

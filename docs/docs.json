@@ -350,7 +350,8 @@
                       "integrations/guardrails/grayswan",
                       "integrations/guardrails/patronus-ai",
                       "integrations/guardrails/checkpoint",
-                      "integrations/guardrails/repello-argus"
+                      "integrations/guardrails/repello-argus",
+                      "integrations/guardrails/singulr-ai"
                     ]
                   }
                 ]
@@ -603,7 +604,8 @@
               "integrations/guardrails/grayswan",
               "integrations/guardrails/patronus-ai",
               "integrations/guardrails/checkpoint",
-              "integrations/guardrails/repello-argus"
+              "integrations/guardrails/repello-argus",
+              "integrations/guardrails/singulr-ai"
             ]
           },
           {
@@ -2169,6 +2171,7 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.42",
               "changelogs/helm-v2.1.41",
               "changelogs/helm-v2.1.40",
               "changelogs/helm-v2.1.39",

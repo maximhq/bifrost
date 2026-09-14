@@ -4,9 +4,15 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.41
+**Latest Version:** 2.1.42
 
 ## Changelog
+
+### 2.1.42
+
+- Added `mcp.clientConfigs[].perUserHeaderKeys` — the header names each caller must individually supply under `authType: per_user_headers` (e.g. `["Authorization"]`).
+- Added `bifrost.plugins.otel.config.overhead_breakdown_enabled` (default `false`) and `bifrost.plugins.telemetry.config.overhead_breakdown_enabled` - exports the per-component overhead histogram `bifrost_overhead_component_microseconds`, overhead latency split by the `overhead_component` label. 
+- Fixed `bifrost.plugins.otel.config.export_overhead_spans` not rendering into `config.json`.
 
 ### 2.1.41
 
@@ -33,10 +39,6 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Added `bifrost.client.vkRotationCooldown` (default `0`) — grace period after a virtual key rotation during which the previous key value still authenticates. Go duration string (e.g. `"5m"`), max 30 days; `0` disables
 - Added `databricks_key_config` (`workspace_url`, `api_format`, `client_id`/`client_secret` for OAuth M2M, `forward_gateway_tags`) to provider keys, with `bifrost.providers.databricks` examples in `values.yaml`.
 - Added `allow_all_providers` to `bifrost.governance.projects[]` and `bifrost.accessProfiles[]` (default `false`) — grant access to every provider, including ones without a `provider_configs` entry and providers added later; listed providers keep their own model, key, budget, and rate-limit rules. Renders into each entry's `allow_all_providers`.
-=======
-**Latest Version:** 2.1.38
-
-## Changelog
 
 ### 2.1.38
 
@@ -69,7 +71,6 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Documented `endpoints` on the `bedrock` and `bedrock_mantle` key examples (AWS PrivateLink interface VPC endpoint hosts: `runtime`, `control_plane`, `mantle`, `agent_runtime`, `s3`). Passes through into `bedrock_key_config.endpoints` / `bedrock_mantle_key_config.endpoints`.
 - Extended `bifrost.governance.budgets[]` with quarterly resets (`reset_duration: "1Q"`) and `reset_config.quarter_start_month` (1–12, sets the fiscal Q1 month). Passes through into `budgets[].reset_config`.
 - Added `target` (`llm` default, or `mcp`) to `bifrost.governance` guardrail rules to select the rule's execution target. Passes through into the rule's `target`.
-
 
 ### 2.1.34
 

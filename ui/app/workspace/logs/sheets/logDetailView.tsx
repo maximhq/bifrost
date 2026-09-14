@@ -446,22 +446,22 @@ const isContainerOperation = (object: string) => {
 };
 
 const statusPillStyles: Record<string, string> = {
-	success: "bg-green-50 text-green-700 border-green-200 dark:bg-green-950/40 dark:text-green-400 dark:border-green-900",
-	error: "bg-red-50 text-red-700 border-red-200 dark:bg-red-950/40 dark:text-red-400 dark:border-red-900",
+	success: "border-chart-success/30 bg-chart-success/10 text-chart-success-ink",
+	error: "border-chart-error/30 bg-chart-error/10 text-chart-error-ink",
 	processing: "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/40 dark:text-blue-400 dark:border-blue-900",
 	cancelled: "bg-gray-50 text-gray-700 border-gray-200 dark:bg-gray-900/40 dark:text-gray-400 dark:border-gray-800",
 };
 const statusDotStyles: Record<string, string> = {
-	success: "bg-green-500",
-	error: "bg-red-500",
+	success: "bg-chart-success",
+	error: "bg-chart-error",
 	processing: "bg-blue-500",
 	cancelled: "bg-gray-400",
 };
 
 const batchStatusBadgeStyles: Record<string, string> = {
-	completed: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
-	ended: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
-	failed: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
+	completed: "bg-chart-success/15 text-chart-success-ink",
+	ended: "bg-chart-success/15 text-chart-success-ink",
+	failed: "bg-chart-error/15 text-chart-error-ink",
 	expired: "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300",
 	cancelled: "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300",
 	deleted: "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300",
@@ -484,13 +484,12 @@ function StatusPill({ status }: { status: Status }) {
 
 // Colors an HTTP status code badge by response class.
 function statusCodeBadgeClass(code: number): string {
-	if (code >= 200 && code < 300)
-		return "bg-green-50 text-green-700 border-green-200 dark:bg-green-950/40 dark:text-green-400 dark:border-green-900";
+	if (code >= 200 && code < 300) return "border-chart-success/30 bg-chart-success/10 text-chart-success-ink";
 	if (code >= 300 && code < 400)
 		return "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/40 dark:text-blue-400 dark:border-blue-900";
 	if (code >= 400 && code < 500)
 		return "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-900";
-	return "bg-red-50 text-red-700 border-red-200 dark:bg-red-950/40 dark:text-red-400 dark:border-red-900";
+	return "border-chart-error/30 bg-chart-error/10 text-chart-error-ink";
 }
 
 function HeroStat({
@@ -1196,14 +1195,14 @@ export function LogDetailView({
 					const contents = item?.request?.contents;
 					const messages = Array.isArray(contents)
 						? contents.map((c: any) => ({
-							role: c?.role === "model" ? "assistant" : c?.role || "user",
-							content: Array.isArray(c?.parts)
-								? c.parts
-									.filter((p: any) => p && typeof p.text === "string")
-									.map((p: any) => p.text)
-									.join("")
-								: "",
-						}))
+								role: c?.role === "model" ? "assistant" : c?.role || "user",
+								content: Array.isArray(c?.parts)
+									? c.parts
+											.filter((p: any) => p && typeof p.text === "string")
+											.map((p: any) => p.text)
+											.join("")
+									: "",
+							}))
 						: [];
 					return {
 						customId: typeof item?.metadata?.key === "string" && item.metadata.key ? item.metadata.key : `request-${index + 1}`,
@@ -1262,9 +1261,9 @@ export function LogDetailView({
 					const parts = candidate?.content?.parts;
 					const text = Array.isArray(parts)
 						? parts
-							.filter((p: any) => p && typeof p.text === "string")
-							.map((p: any) => p.text)
-							.join("")
+								.filter((p: any) => p && typeof p.text === "string")
+								.map((p: any) => p.text)
+								.join("")
 						: "";
 					const role = candidate?.content?.role === "model" ? "assistant" : candidate?.content?.role || "assistant";
 					message = { role, content: text };
@@ -1287,11 +1286,11 @@ export function LogDetailView({
 	}, [batchRawResponse]);
 	const passthroughParams = isPassthrough
 		? (log.params as {
-			method?: string;
-			path?: string;
-			raw_query?: string;
-			status_code?: number;
-		})
+				method?: string;
+				path?: string;
+				raw_query?: string;
+				status_code?: number;
+			})
 		: null;
 	// Only errors and passthrough requests carry a real HTTP status code; others have none.
 	// Non-HTTP errors (timeouts, network, marshal) default to 0; treat that as no status
@@ -1311,7 +1310,7 @@ export function LogDetailView({
 	if (declaredTools.length) {
 		try {
 			toolsParameter = JSON.stringify(declaredTools, null, 2);
-		} catch { }
+		} catch {}
 	}
 
 	const audioFormat = (log.params as any)?.audio?.format || (log.params as any)?.extra_params?.audio?.format || undefined;
@@ -1328,7 +1327,7 @@ export function LogDetailView({
 			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
 				return Object.values(parsed).reduce<number>((sum, v) => sum + (Array.isArray(v) ? v.length : 0), 0);
 			}
-		} catch { }
+		} catch {}
 		return 0;
 	})();
 
@@ -1608,10 +1607,11 @@ export function LogDetailView({
 							audioSeconds != null
 								? "duration billed"
 								: log.token_usage
-									? `total ${formatCompactNumber(log.token_usage.total_tokens ?? 0)}${log.token_usage.completion_tokens_details?.reasoning_tokens
-										? ` · reasoning ${formatCompactNumber(log.token_usage.completion_tokens_details.reasoning_tokens)}`
-										: ""
-									}`
+									? `total ${formatCompactNumber(log.token_usage.total_tokens ?? 0)}${
+											log.token_usage.completion_tokens_details?.reasoning_tokens
+												? ` · reasoning ${formatCompactNumber(log.token_usage.completion_tokens_details.reasoning_tokens)}`
+												: ""
+										}`
 									: "—"
 						}
 						hasRightBorder
@@ -1721,9 +1721,7 @@ export function LogDetailView({
 							{!isContainer && log.server_side_fallback_model && (
 								<LogEntryDetailsView className="w-full" label="Served By (fallback)" value={log.server_side_fallback_model} />
 							)}
-							{!isContainer && log.served_model && (
-								<LogEntryDetailsView className="w-full" label="Served Model" value={log.served_model} />
-							)}
+							{!isContainer && log.served_model && <LogEntryDetailsView className="w-full" label="Served Model" value={log.served_model} />}
 							{detectedApp && (
 								<LogEntryDetailsView
 									className="w-full"
@@ -1826,7 +1824,7 @@ export function LogDetailView({
 												<TooltipTrigger asChild>
 													<button
 														type="button"
-														className="block max-w-full min-w-0 cursor-pointer truncate bg-transparent p-0 text-left font-mono font-normal text-blue-600 underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 dark:text-blue-400"
+														className="focus-visible:ring-ring block max-w-full min-w-0 cursor-pointer truncate bg-transparent p-0 text-left font-mono font-normal text-blue-600 underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none dark:text-blue-400"
 														onClick={() => onFilterBySessionId(log.session_id as string)}
 													>
 														{log.session_id}
@@ -2210,11 +2208,7 @@ export function LogDetailView({
 									    has no cost of its own. Without this the detail view of a video
 									    generation reads as free while the list beside it shows the spend. */}
 									{log.cost == null && (log.children_cost ?? 0) > 0 && (
-										<LogEntryDetailsView
-											className="w-full"
-											label="Settled Cost"
-											value={formatCostPrecise(log.children_cost)}
-										/>
+										<LogEntryDetailsView className="w-full" label="Settled Cost" value={formatCostPrecise(log.children_cost)} />
 									)}
 									{/* Additional cost (guardrail / semantic cache / routing / MCP) on its own row below. */}
 									{(log.cost_breakdown?.additional_cost ?? 0) > 0 && (
@@ -2923,7 +2917,7 @@ export function LogDetailView({
 							Content logging has been disabled for this request.
 						</div>
 					)}
-                    {/* Passthrough just renders the raw json, so there's nothing to filter */}
+					{/* Passthrough just renders the raw json, so there's nothing to filter */}
 					<div className={cn("flex justify-end", (log.content_hidden || isPassthrough) && "hidden")}>
 						<DropdownMenu>
 							<DropdownMenuTrigger asChild>
@@ -3093,11 +3087,11 @@ export function LogDetailView({
 							<div className="bg-card rounded-sm border p-5">
 								{(visibleRoles.size < allRoles.length
 									? log.input_history?.filter((m) => {
-										if (!m) return false;
-										const mainRole = ((m.role as string) || "user") as MessageRole;
-										const hasReasoning = !!extractChatReasoning(m);
-										return visibleRoles.has(mainRole) || (hasReasoning && visibleRoles.has("reasoning"));
-									})
+											if (!m) return false;
+											const mainRole = ((m.role as string) || "user") as MessageRole;
+											const hasReasoning = !!extractChatReasoning(m);
+											return visibleRoles.has(mainRole) || (hasReasoning && visibleRoles.has("reasoning"));
+										})
 									: log.input_history?.filter(Boolean)
 								)?.flatMap((message, index) => {
 									const role = ((message.role as string) || "user") as MessageRole;
@@ -3347,11 +3341,11 @@ export function LogDetailView({
 													? msg.call_id
 													: Array.isArray(msg.tools)
 														? (() => {
-															const callable = flattenDeclaredTools(msg.tools).length;
-															return callable !== msg.tools.length
-																? `${msg.type} · ${msg.tools.length} declarations · ${callable} callable tools`
-																: `${msg.type} · ${msg.tools.length} tool${msg.tools.length === 1 ? "" : "s"}`;
-														})()
+																const callable = flattenDeclaredTools(msg.tools).length;
+																return callable !== msg.tools.length
+																	? `${msg.type} · ${msg.tools.length} declarations · ${callable} callable tools`
+																	: `${msg.type} · ${msg.tools.length} tool${msg.tools.length === 1 ? "" : "s"}`;
+															})()
 														: [msg.type, summarizeResponsesToolCall(msg, mapping)].filter(Boolean).join(" · ") || undefined;
 									}
 									const usePlainText = role === "user" || role === "assistant";
@@ -3634,7 +3628,7 @@ export function LogDetailView({
 													{record.fail_reason ? (
 														<span className="text-destructive">{record.fail_reason}</span>
 													) : (
-														<span className="text-green-600 dark:text-green-400">success</span>
+														<span className="text-chart-success-ink">success</span>
 													)}
 												</td>
 											</tr>
