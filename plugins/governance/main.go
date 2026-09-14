@@ -821,6 +821,19 @@ func unusablePermit(access schemas.Access) *EvaluationResult {
 	return nil
 }
 
+// refusal builds the error a governance decision refuses a request with.
+func refusal(result *EvaluationResult, statusCode int, errorType schemas.ErrorType) *schemas.BifrostError {
+	return &schemas.BifrostError{
+		// Type stays the raw decision: it is the client-visible error contract.
+		Type:       new(string(result.Decision)),
+		StatusCode: new(statusCode),
+		Error: &schemas.ErrorField{
+			Message: result.Reason,
+		},
+		ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: errorType},
+	}
+}
+
 // decide turns a governance decision into what the caller gets back: the result, and the error to
 // refuse the request with when it was not allowed. Every step of Evaluate ends here, so a refusal
 // is marked on the request and mapped to a status in one place regardless of which step refused.
@@ -849,60 +862,30 @@ func (p *GovernancePlugin) decide(ctx *schemas.BifrostContext, result *Evaluatio
 	case DecisionAccessNotFound:
 		// The credential itself did not resolve, so this is a failure to authenticate rather than
 		// a permission the caller lacks.
-		return result, &schemas.BifrostError{
-			Type:       new(string(result.Decision)),
-			StatusCode: new(401),
-			Error: &schemas.ErrorField{
-				Message: result.Reason,
-			},
-		}
+		return result, refusal(result, 401, schemas.ErrorTypePolicyAccessDenied)
 
-	case DecisionAccessBlocked, DecisionModelBlocked, DecisionProviderBlocked:
-		return result, &schemas.BifrostError{
-			Type:       new(string(result.Decision)),
-			StatusCode: new(403),
-			Error: &schemas.ErrorField{
-				Message: result.Reason,
-			},
-		}
+	case DecisionAccessBlocked:
+		return result, refusal(result, 403, schemas.ErrorTypePolicyAccessDenied)
+
+	case DecisionModelBlocked:
+		return result, refusal(result, 403, schemas.ErrorTypePolicyModelBlocked)
+
+	case DecisionProviderBlocked:
+		return result, refusal(result, 403, schemas.ErrorTypePolicyProviderBlocked)
 
 	case DecisionRateLimited, DecisionTokenLimited, DecisionRequestLimited:
-		return result, &schemas.BifrostError{
-			Type:       new(string(result.Decision)),
-			StatusCode: new(429),
-			Error: &schemas.ErrorField{
-				Message: result.Reason,
-			},
-		}
+		return result, refusal(result, 429, schemas.ErrorTypePolicyRateLimited)
 
 	case DecisionBudgetExceeded:
-		return result, &schemas.BifrostError{
-			Type:       new(string(result.Decision)),
-			StatusCode: new(402),
-			Error: &schemas.ErrorField{
-				Message: result.Reason,
-			},
-		}
+		return result, refusal(result, 402, schemas.ErrorTypePolicyBudgetExceeded)
 
 	case DecisionMCPToolBlocked:
-		return result, &schemas.BifrostError{
-			Type:       new(string(result.Decision)),
-			StatusCode: new(403),
-			Error: &schemas.ErrorField{
-				Message: result.Reason,
-			},
-		}
+		return result, refusal(result, 403, schemas.ErrorTypePolicyToolBlocked)
 
 	case DecisionAccessUnresolved:
 		// A wiring fault, not a policy decision: the request reached evaluation without the grant
 		// every transport installs, so the deployment is misassembled rather than the caller refused.
-		return result, &schemas.BifrostError{
-			Type:       new(string(result.Decision)),
-			StatusCode: new(500),
-			Error: &schemas.ErrorField{
-				Message: result.Reason,
-			},
-		}
+		return result, refusal(result, 500, schemas.ErrorTypeBifrostInternal)
 
 	default:
 		// Fallback to deny for unknown decisions

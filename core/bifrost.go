@@ -6345,6 +6345,9 @@ func executeRequestWithRetries[T any](
 							Type:    &errType,
 							Message: err.Error(),
 						},
+						ExtraFields: schemas.BifrostErrorExtraFields{
+							ErrorType: schemas.ErrorTypeProviderCredentialsExhausted,
+						},
 					}
 				}
 				return zero, newBifrostErrorFromMsg(err.Error())
@@ -7091,15 +7094,19 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 						bifrost.logger.Debug("error building key pool for model %s: %v", model, keyPoolErr)
 						bifrost.sendWorkerError(req, schemas.BifrostError{
 							IsBifrostError: false,
+							Type:           schemas.Ptr(schemas.NoKeySupportsModel),
+							StatusCode:     schemas.Ptr(400),
 							Error: &schemas.ErrorField{
 								Message: keyPoolErr.Error(),
 								Error:   keyPoolErr,
+								Type:    schemas.Ptr(schemas.NoKeySupportsModel),
 							},
 							ExtraFields: schemas.BifrostErrorExtraFields{
 								Provider:               provider.GetProviderKey(),
 								RequestType:            req.RequestType,
 								OriginalModelRequested: model,
 								ResolvedModelUsed:      model,
+								ErrorType:              schemas.ErrorTypeCallerModelNotAvailable,
 							},
 						})
 						continue

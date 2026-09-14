@@ -1905,13 +1905,6 @@ type BifrostRoutingCall struct {
 	CountTowardBudgets bool `json:"count_toward_budgets,omitempty"`
 }
 
-const (
-	RequestCancelled         = "request_cancelled"
-	RequestTimedOut          = "request_timed_out"
-	RequestDropped           = "request_dropped"
-	ProviderConnectionFailed = "provider_connection_failed"
-)
-
 // BifrostStreamChunk represents a stream of responses from the Bifrost system.
 // Either BifrostResponse or BifrostError will be non-nil.
 type BifrostStreamChunk struct {
@@ -2141,4 +2134,11 @@ type BifrostErrorExtraFields struct {
 	// the provider actually billed us for. Nil when the failure consumed no
 	// tokens (e.g. 401/403/429 before the model ran).
 	BilledUsage *BifrostLLMUsage `json:"billed_usage,omitempty"`
+
+	// ErrorType is this failure's normalized classification, declared by whoever
+	// produced the error. ClassifyErrorType returns it verbatim when set and infers
+	// only when it is not, so a refusal that forgets to declare lands in
+	// ErrorTypeOther rather than in a wrong bucket. Empty is normal for provider
+	// errors, which are still inferred.
+	ErrorType ErrorType `json:"error_type,omitempty"`
 }
