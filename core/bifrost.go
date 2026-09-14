@@ -302,7 +302,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 	// key affinity has nowhere to keep a binding and declines every request.
 	bifrost.sessionAffinity = config.SessionAffinity
 	if bifrost.sessionAffinity == nil {
-		bifrost.sessionAffinity = newKeyAffinity(bifrost.kvStore, bifrost.keySelector, bifrost.logger)
+		bifrost.sessionAffinity = newSessionAffinity(bifrost.kvStore, bifrost.logger)
 	}
 
 	// Initialize object pools
@@ -5283,6 +5283,13 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		ctx = bifrost.ctx
 	}
 
+	// What the caller asked for, before any hook rewrites it: the name under which a session
+	// remembers where these requests were served. Reported back with how the request ended.
+	requested := schemas.Route{Provider: provider, Model: model}
+	var served *schemas.Route
+	servedFallback := false
+	defer func() { bifrost.observeSessionOutcome(ctx, requested, served, servedFallback, bifrostErr) }()
+
 	// Reset first: bifrost.ctx is shared across every nil-ctx caller.
 	ctx.ResetUpstreamLatency()
 	// Whole-request start for top-down overhead (total minus upstream). On ctx so
@@ -5316,6 +5323,8 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	preReqPipeline := bifrost.getPluginPipeline()
 	preReqPipeline.RunPreRequestHooks(ctx, req)
 	bifrost.releasePluginPipeline(preReqPipeline)
+	// The session has the last word on the chain the hooks produced.
+	bifrost.resolveSessionRoute(ctx, requested, req)
 	bifrost.endCoreSpan(setupSpan)
 	// "miscellaneous" phase: pre-dispatch glue (field re-read + validation) on no other
 	// span. Closed before tryRequest so pipeline-pre stays a separate bucket.
@@ -5351,6 +5360,9 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	// Check if we should proceed with fallbacks
 	shouldTryFallbacks := bifrost.shouldTryFallbacks(req, primaryErr)
 	if !shouldTryFallbacks {
+		if primaryErr == nil {
+			served = &schemas.Route{Provider: provider, Model: model}
+		}
 		return primaryResult, primaryErr
 	}
 
@@ -5402,6 +5414,8 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 			bifrost.logger.Debug("successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model)
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Request served by fallback %s/%s (attempt %d/%d)", fallback.Provider, fallback.Model, i+1, len(fallbacks)))
 			tracer.EndSpan(handle, schemas.SpanStatusOk, "")
+			served = &schemas.Route{Provider: fallback.Provider, Model: fallback.Model}
+			servedFallback = true
 			return result, nil
 		}
 
@@ -5429,7 +5443,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 // It handles plugin hooks, request validation, response processing, and fallback providers.
 // If the primary provider fails, it will try each fallback provider in order until one succeeds.
 // It is the wrapper for all streaming public API methods.
-func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (stream chan *schemas.BifrostStreamChunk, bifrostErr *schemas.BifrostError) {
 	defer bifrost.releaseBifrostRequest(req)
 	provider, model, fallbacks := req.GetRequestFields()
 
@@ -5437,6 +5451,13 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	if ctx == nil {
 		ctx = bifrost.ctx
 	}
+
+	// What the caller asked for, before any hook rewrites it: the name under which a session
+	// remembers where these requests were served. Reported back with how the request ended.
+	requested := schemas.Route{Provider: provider, Model: model}
+	var served *schemas.Route
+	servedFallback := false
+	defer func() { bifrost.observeSessionOutcome(ctx, requested, served, servedFallback, bifrostErr) }()
 
 	ctx.ResetUpstreamLatency()
 	ctx.ResetStreamOverhead()
@@ -5459,6 +5480,8 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	preReqPipeline := bifrost.getPluginPipeline()
 	preReqPipeline.RunPreRequestHooks(ctx, req)
 	bifrost.releasePluginPipeline(preReqPipeline)
+	// The session has the last word on the chain the hooks produced.
+	bifrost.resolveSessionRoute(ctx, requested, req)
 	// "miscellaneous" phase: pre-dispatch glue (field re-read + validation) on no other
 	// span. Mirrors handleRequest so streaming classifies this cost too.
 	preDispatchSpan := bifrost.startCoreSpan(ctx, "miscellaneous")
@@ -5493,6 +5516,9 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	// Check if we should proceed with fallbacks
 	shouldTryFallbacks := bifrost.shouldTryFallbacks(req, primaryErr)
 	if !shouldTryFallbacks {
+		if primaryErr == nil {
+			served = &schemas.Route{Provider: provider, Model: model}
+		}
 		return primaryResult, primaryErr
 	}
 
@@ -5555,6 +5581,8 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 			bifrost.logger.Debug("successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model)
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Request served by fallback %s/%s (attempt %d/%d)", fallback.Provider, fallback.Model, i+1, len(fallbacks)))
 			tracer.EndSpan(handle, schemas.SpanStatusOk, "")
+			served = &schemas.Route{Provider: fallback.Provider, Model: fallback.Model}
+			servedFallback = true
 			return result, nil
 		}
 
@@ -9272,17 +9300,19 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 		return []schemas.Key{supportedKeys[0]}, false, nil
 	}
 
-	// Session affinity: a session that already has a key here stays on it. The policy decides
-	// what that means; core honors the key it names, for every attempt of the request, as long
+	// Session affinity: a request that takes part and already has a key here stays on it. The
+	// policy decides what that means; core honors the key it names, for every attempt, as long
 	// as that key is one of the eligible ones. A policy naming anything else is ignored, so a
 	// disabled or model-incompatible key can never reach a request through it.
-	if key, ok := bifrost.sessionAffinity.ResolveKey(ctx, providerKey, model, supportedKeys); ok {
-		for _, eligible := range supportedKeys {
-			if eligible.ID == key.ID {
-				return []schemas.Key{eligible}, false, nil
+	if schemas.IsSessionAffinityActive(ctx) {
+		if key, ok := bifrost.sessionAffinity.ResolveKey(ctx, providerKey, model, supportedKeys); ok {
+			for _, eligible := range supportedKeys {
+				if eligible.ID == key.ID {
+					return []schemas.Key{eligible}, false, nil
+				}
 			}
+			bifrost.logger.Warn("session affinity named key %s for provider %s, which is not in the eligible pool; selecting a key normally", key.ID, providerKey)
 		}
-		bifrost.logger.Warn("session affinity named key %s for provider %s, which is not in the eligible pool; selecting a key normally", key.ID, providerKey)
 	}
 
 	// Normal case: return the full filtered pool with rotation enabled.
