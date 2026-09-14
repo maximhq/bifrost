@@ -933,26 +933,68 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, resp)
 }
 
+// enrichListModelsResponse backfills pricing plus the subset of capability metadata
+// current dev modelcatalog can provide. The catalog currently exposes one
+// preferred mode per model (chat, then responses, then completion, else a
+// deterministic fallback), not an exhaustive endpoint list, so
+// supported_endpoints currently contains at most one preferred endpoint.
+// supported_methods keeps provider-native values when present and is otherwise
+// backfilled with Bifrost request-type identifiers derived from that endpoint.
 func enrichListModelsResponse(resp *schemas.BifrostListModelsResponse, catalog *modelcatalog.ModelCatalog) {
-	if resp == nil || len(resp.Data) == 0 {
-		return
-	}
-
-	if catalog == nil {
+	if resp == nil || len(resp.Data) == 0 || catalog == nil {
 		return
 	}
 
 	for i := range resp.Data {
-		modelEntry := resp.Data[i]
+		modelEntry := &resp.Data[i]
 		provider, modelName := schemas.ParseModelString(modelEntry.ID, "")
+
 		pricingEntry := catalog.GetPricingEntryForModel(modelName, provider)
+		capabilityEntry := catalog.GetModelCapabilityEntryForModel(modelName, provider)
 		if pricingEntry == nil && modelEntry.Alias != nil {
 			pricingEntry = catalog.GetPricingEntryForModel(*modelEntry.Alias, provider)
 		}
-		// Same mapping ctx.GetModelInfo hands to plugins, so the two never drift.
-		modelcatalog.ApplyModelInfo(&modelEntry, pricingEntry)
-		resp.Data[i] = modelEntry
+		if capabilityEntry == nil && modelEntry.Alias != nil {
+			capabilityEntry = catalog.GetModelCapabilityEntryForModel(*modelEntry.Alias, provider)
+		}
+
+		preserveExistingPricing := modelEntry.Pricing != nil
+		applyCatalogCapabilityMetadata(modelEntry, capabilityEntry)
+		applyCatalogPricingMetadata(modelEntry, pricingEntry, preserveExistingPricing)
 	}
+}
+
+func applyCatalogPricingMetadata(modelEntry *schemas.Model, pricingEntry *modelcatalog.PricingEntry, preserveExistingPricing bool) {
+	if modelEntry == nil || pricingEntry == nil {
+		return
+	}
+	if preserveExistingPricing && modelEntry.Pricing != nil {
+		return
+	}
+	if !preserveExistingPricing && modelEntry.Pricing != nil && catalogEntryHasPricing(pricingEntry) {
+		modelEntry.Pricing = nil
+	}
+
+	modelcatalog.ApplyModelInfo(modelEntry, pricingEntry)
+}
+
+func catalogEntryHasPricing(entry *modelcatalog.PricingEntry) bool {
+	return entry != nil && (entry.InputCostPerToken != nil ||
+		entry.OutputCostPerToken != nil ||
+		entry.InputCostPerImage != nil ||
+		entry.CacheReadInputTokenCost != nil ||
+		entry.CacheCreationInputTokenCost != nil ||
+		entry.SearchContextCostPerQuery != nil ||
+		entry.CostPerRequest != nil)
+}
+
+func applyCatalogCapabilityMetadata(modelEntry *schemas.Model, capabilityEntry *modelcatalog.PricingEntry) {
+	if modelEntry == nil || capabilityEntry == nil {
+		return
+	}
+
+	modelcatalog.ApplyModelInfo(modelEntry, capabilityEntry)
+	modelcatalog.ApplyModelCapabilitySurface(modelEntry, capabilityEntry)
 }
 
 // prepareTextCompletionRequest prepares a BifrostTextCompletionRequest from the HTTP request body
