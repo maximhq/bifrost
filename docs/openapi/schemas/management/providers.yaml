@@ -196,12 +196,12 @@ Key:
       type: array
       items:
         type: string
-      description: List of models this key can access (whitelist)
+      description: List of models this key can access (whitelist). `["*"]` allows every model. An entry starting with `regex:` is an RE2 pattern matched case-insensitively against the whole model name; an empty pattern, `regex:*`, or a pattern that does not compile is rejected with 400. `blacklisted_models` wins over this list.
     blacklisted_models:
       type: array
       items:
         type: string
-      description: List of models this key cannot access (blacklist)
+      description: List of models this key cannot access (blacklist), which wins over `models`. `["*"]` blocks every model. An entry starting with `regex:` is an RE2 pattern matched case-insensitively against the whole model name; an empty pattern, `regex:*`, or a pattern that does not compile is rejected with 400.
     weight:
       type: number
       description: Weight for load balancing

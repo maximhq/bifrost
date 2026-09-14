@@ -244,14 +244,14 @@ ProjectProviderConfig:
         type: string
       description: >-
         Allowlist. `["*"]` allows every model. A list may not mix `*` with named
-        entries.
+        entries. An entry starting with `regex:` is an RE2 pattern matched case-insensitively against the whole model name. An empty pattern, `regex:*`, or a pattern that does not compile is rejected with 400.
     blacklisted_models:
       type: array
       nullable: true
       items:
         type: string
       description: >-
-        Denylist, which wins over the allowlist. `["*"]` blocks everything.
+        Denylist, which wins over the allowlist. `["*"]` blocks everything. An entry starting with `regex:` is an RE2 pattern matched case-insensitively against the whole model name. An empty pattern, `regex:*`, or a pattern that does not compile is rejected with 400.
     key_ids:
       type: array
       nullable: true
