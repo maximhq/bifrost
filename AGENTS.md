@@ -580,21 +580,44 @@ Insert into the collection surgically (a script that splices the new object in, 
 
 The narrow exemptions: changes with no wire-visible effect (comments, internal renames, log lines) and behaviour no HTTP request can reach. If a change is exempt, say so explicitly in the PR rather than leaving the omission unexplained.
 
-### Every non-exempt wire-visible fix ends with a provider-harness run against `tests/integrations/python/config.json`
+### Every non-exempt wire-visible fix ends with unit tests, then a harness command handed to the user
 
-Unit tests and `make test-core` are not the finish line. The exemptions are the ones in the previous section: a change with no wire-visible effect (comments, internal renames, log lines, test-only or guidance-only edits) or behaviour no HTTP request can reach is exempt, and the report must say so explicitly. For everything else, after the Go-level red/green loop and the regression reruns, run the live provider harness with the shared integration config, scoped to the change with `PROVIDER` and `FEATURE` so the paid sweep stays small, and report the provider table from the run. `APP_DIR=tests/integrations/python` is the config directory the harness starts Bifrost from; pass it explicitly so a stale server or another config never answers for the code under test.
+Unit tests and `make test-core` are the finish line for the agent. Run the Go-level red/green loop and the regression reruns, and report what passed and what failed.
+
+The live provider harness is the user's to run, not the agent's. Do not launch it. Instead, end the report with both final commands in a plain code block, ready to paste: the `make dev` line that starts Bifrost from the code under test, and the single-line `make run-provider-harness-test` line that runs against it. No box drawing around them, since border characters make the commands impossible to select. Naming the scope is the agent's job; spending the money is the user's call.
+
+**RUN THE PROVIDER HARNESS.** Unit tests are green. The live run is yours to trigger.
+
+```bash
+# 1. port 8080 must be free
+lsof -nP -iTCP:8080 -sTCP:LISTEN
+
+# 2. start Bifrost from the code under test, then wait for /health
+make dev APP_DIR=$(pwd)/tests/integrations/python
+
+# 3. run the harness against that server
+make run-provider-harness-test APP_DIR=$(pwd)/tests/integrations/python CI=1 HARNESS_MAX_REQUESTS=<ceiling> PROVIDER=<provider> FEATURE="<keyword>"
+```
+
+`APP_DIR` must be an **absolute** path. `run-provider-harness-test` uses it verbatim (Makefile:2255), unlike `make dev` which wraps it in `$(abspath)`; a relative value resolves against the wrong cwd in `logs-db-url.js` and the dbverify reporter.
+
+Never print that block with a placeholder still in it. `<ceiling>`, `<provider>` and `<keyword>` belong to the template; substitute the real values for the change so every line pastes straight into a shell.
+
+The exemptions are the ones in the previous section: a change with no wire-visible effect (comments, internal renames, log lines, test-only or guidance-only edits) or behaviour no HTTP request can reach is exempt. For an exempt change, say so explicitly instead of printing the block.
 
 ```bash
 # Scoped to the change (preferred): the provider and a keyword from the affected cases
-make run-provider-harness-test APP_DIR=tests/integrations/python CI=1 HARNESS_MAX_REQUESTS=<approved ceiling> PROVIDER=<provider> FEATURE="<keyword>"
+make run-provider-harness-test APP_DIR=$(pwd)/tests/integrations/python CI=1 HARNESS_MAX_REQUESTS=<approved ceiling> PROVIDER=<provider> FEATURE="<keyword>"
 
 # Curated ~100-request smoke set across all providers, when the change is cross-cutting
-make run-provider-harness-test APP_DIR=tests/integrations/python CI=1 HARNESS_MAX_REQUESTS=<approved ceiling> SMOKE=1
+make run-provider-harness-test APP_DIR=$(pwd)/tests/integrations/python CI=1 HARNESS_MAX_REQUESTS=<approved ceiling> SMOKE=1
 ```
+
+The profile to pass is `APP_DIR=$(pwd)/tests/integrations/python`, the shared provider config at `tests/integrations/python/config.json` that every live check uses. Always pass it explicitly, so a stale server or another config never answers for the code under test.
 
 `HARNESS_MAX_REQUESTS` is the enforced spend bound: the recipe checks every newman launch against its exact filtered request count before it starts and refuses any launch that would cross the cap (exit 3), so the live total never exceeds the approved number. Always pass it; the preflight count from `filter-collection.mjs` is only an estimate because shared producers repeat per provider fork. Stream-cancellation probes are never sent under a cap.
 
-Port 8080 is a blocking precondition: the recipe reuses any server whose `/health` answers and never starts the `APP_DIR` one, so a stale listener silently tests old code. Run `lsof -nP -iTCP:8080 -sTCP:LISTEN` first; if it reports a listener you did not start from the current working tree, stop, have it shut down (never kill a process you did not start), and recheck before running the target. The one acceptable listener is Bifrost you started yourself from the code under test (`make dev APP_DIR=tests/integrations/python` in the background, then wait for `/health`), which is also the reliable pattern since a cold start can outlast the recipe's 60s health wait. For non-exempt changes, do not skip the run because it is paid or slow; scope it instead, and report exactly which scope ran.
+Port 8080 is a blocking precondition worth restating in the block: the recipe reuses any server whose `/health` answers and never starts the `APP_DIR` one, so a stale listener silently tests old code. `lsof -nP -iTCP:8080 -sTCP:LISTEN` must come back empty, or show only a Bifrost started from the code under test. Starting it first with `make dev APP_DIR=$(pwd)/tests/integrations/python` and waiting for `/health` is the reliable pattern, since a cold start can outlast the recipe's 60s health wait.
 
 ### Always prefer `make test-core` over raw `go test` for provider-level tests
 

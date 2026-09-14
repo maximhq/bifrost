@@ -766,7 +766,7 @@ Once all approved changes are applied:
    reach, and an exempt change must say so in the report). It is a paid live sweep
    against real provider accounts: the unfiltered collection is ~1,900 requests. The scope keeps
    the run small and `HARNESS_MAX_REQUESTS` (below) is the enforced ceiling. Always use the shared
-   integration config via `APP_DIR=tests/integrations/python` (that is
+   integration config via `APP_DIR=$(pwd)/tests/integrations/python` (that is
    `tests/integrations/python/config.json`) and scope the run to the change with `PROVIDER` and
    `FEATURE`, or `SMOKE=1` for a cross-cutting change. Never run the unscoped sweep, and never
    widen the scope beyond the change, without a separate explicit yes from the user that names
@@ -805,12 +805,12 @@ Once all approved changes are applied:
    which is also the reliable way to run it, because a cold `make dev` from this config can
    take longer than the recipe's 60s health wait:
    ```bash
-   make dev APP_DIR=tests/integrations/python   # in the background; wait for /health = 200
+   make dev APP_DIR=$(pwd)/tests/integrations/python   # in the background; wait for /health = 200
    ```
    ```bash
-   make run-provider-harness-test APP_DIR=tests/integrations/python CI=1 HARNESS_MAX_REQUESTS=<approved ceiling> PROVIDER=<provider> FEATURE="<keyword>"
+   make run-provider-harness-test APP_DIR=$(pwd)/tests/integrations/python CI=1 HARNESS_MAX_REQUESTS=<approved ceiling> PROVIDER=<provider> FEATURE="<keyword>"
    # cross-cutting change: the curated smoke set instead
-   make run-provider-harness-test APP_DIR=tests/integrations/python CI=1 HARNESS_MAX_REQUESTS=<approved ceiling> SMOKE=1
+   make run-provider-harness-test APP_DIR=$(pwd)/tests/integrations/python CI=1 HARNESS_MAX_REQUESTS=<approved ceiling> SMOKE=1
    ```
    Report the provider status table and `tmp/harness-failures.md` findings, and state exactly
    which scope ran. See AGENTS.md "Every fix ends with a provider-harness run".

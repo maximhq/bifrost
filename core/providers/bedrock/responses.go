@@ -2475,9 +2475,14 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 			input = input[:trimmed]
 		}
 
-		// Inline mid-conversation system reminders for Anthropic models (keeps Bedrock's
-		// prefix-based prompt cache stable); hoist-everything for other families.
-		messages, systemMessages, err := ConvertBifrostMessagesToBedrockMessages(ctx, capModel, input, schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model))
+		// Inline mid-conversation system reminders for every family. Bedrock's prompt cache is
+		// prefix-based for every model that has one: explicit cachePoint for Claude and Nova,
+		// implicit exact-prefix matching for OpenAI models on Converse. Hoisting a reminder
+		// into `system` grows the prefix front on every turn and forces a full miss (seen in
+		// the field with Claude Code against global.openai.gpt-5.6-luna, which appends a
+		// role:"system" <total_tokens> reminder after each turn). Models without a cache only
+		// gain chronological order. Response rendering still passes false.
+		messages, systemMessages, err := ConvertBifrostMessagesToBedrockMessages(ctx, capModel, input, true)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert Responses messages: %w", err)
 		}
@@ -3511,8 +3516,9 @@ func (m *ToolCallStateManager) HasPendingResults() bool {
 // The ctx is propagated to URL fetches inside content blocks. inlineSystemReminders selects the
 // mid-conversation system-message handling: when true, only the leading run of system/developer
 // messages is hoisted into the top-level `system` block and later (mid-conversation) ones are
-// inlined in place; when false, every system/developer message is hoisted (historical behavior).
-// Callers compute it from the provider+model — see the call site in ToBedrockResponsesRequest.
+// inlined in place; when false, every system/developer message is hoisted. Every request path
+// passes true regardless of model family (see ToBedrockResponsesRequest); false is only used
+// when rendering a stored response back into a Converse shape.
 func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, model string, bifrostMessages []schemas.ResponsesMessage, inlineSystemReminders bool) ([]BedrockMessage, []BedrockSystemMessage, error) {
 	// Request-scoped document namer: the Converse API rejects duplicate
 	// document names across the whole request, not just within one message
@@ -3540,7 +3546,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, model string, 
 	// counterpart of the native Anthropic provider's mid-conversation system support
 	// (SupportsMidConversationSystem) — Bedrock has no message-level system role, so the inlined
 	// message is rendered as a user turn (see convertBifrostSystemReminderToBedrockUserMessage).
-	// When false, every system/developer message is hoisted (historical behavior).
+	// When false, every system/developer message is hoisted (response rendering only).
 
 	var bedrockMessages []BedrockMessage
 	var systemMessages []BedrockSystemMessage
@@ -3982,7 +3988,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, model string, 
 			// Convert regular message
 			if (role == schemas.ResponsesInputMessageRoleSystem || role == schemas.ResponsesInputMessageRoleDeveloper) &&
 				(!inlineSystemReminders || !seenNonSystemMessage) {
-				// Leading system prompt (or any system message for non-Anthropic models): hoist into `system`.
+				// Leading system prompt (or every system message in hoist-everything mode): hoist into `system`.
 				systemMsgs := convertBifrostMessageToBedrockSystemMessages(&msg)
 				systemMessages = append(systemMessages, systemMsgs...)
 			} else if role == schemas.ResponsesInputMessageRoleSystem || role == schemas.ResponsesInputMessageRoleDeveloper {
