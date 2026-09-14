@@ -244,7 +244,7 @@ export function MCPLogDetailSheet({
 						</AlertDialogContent>
 					</AlertDialog>
 				</SheetHeader>
-				<div className="space-y-4 rounded-sm border px-4 py-4 md:px-6">
+				<div className="space-y-4 rounded-sm border px-4 pb-4 md:px-6">
 					<div className="space-y-4">
 						<BlockHeader title="Timings" />
 						<div className="grid w-full grid-cols-1 items-center justify-between gap-4 md:grid-cols-3">

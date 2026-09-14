@@ -149025,6 +149025,61 @@
           }
         }
       ]
+    },
+    {
+      "name": "87. Anthropic ingress non-streaming truncation reports stop_reason max_tokens (#6782)",
+      "description": "Pins that a non-streaming turn cut short by the output-token cap reports stop_reason max_tokens on /anthropic/v1/messages, not end_turn.\n\nBug (#6782): OpenAI-shaped Responses providers (Azure /openai/v1/responses, OpenAI, and every chat-completions provider whose finish_reason \"length\" becomes status incomplete via responsesStatusFromChatFinishReason in core/schemas/mux.go) never send stop_reason; the truncation lives only in incomplete_details.reason. ToAnthropicResponsesResponse in core/providers/anthropic/responses.go read only StopReason and defaulted to end_turn, so a 4096-token truncated reply on Azure Fireworks Foundry models was reported as a clean finish. Folder 65 pins the streaming twin (#6081, fixed in #6805); this folder pins the non-streaming encoder.\n\nThe Azure half of #6782 (Fireworks Foundry deployments routed to /openai/v1/chat/completions when their datasheet row lists no /v1/responses endpoint) cannot be pinned here: the harness Azure account has no Fireworks deployment and the gate depends on datasheet rows shipped separately. It is covered by TestAzureResponsesHonoursDatasheetSupportedEndpoints in core/providers/azure/azure_test.go.",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini /anthropic/v1/messages non-streaming truncated by max_tokens reports stop_reason max_tokens - #6782",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai chat via anthropic ingress: non-streaming truncation reports stop_reason max_tokens, not end_turn - #6782', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 400)).to.be.below(400);",
+                  "  var j; try { j = pm.response.json(); } catch (e) {",
+                  "    pm.expect.fail('response was not JSON: ' + raw.slice(0, 300)); return; }",
+                  "  pm.expect(j.usage && j.usage.output_tokens, 'usage.output_tokens must be reported: ' + raw.slice(0, 300)).to.be.above(0);",
+                  "  pm.expect(j.stop_reason, 'a turn cut by max_tokens=16 must not be reported as a clean finish: ' + raw.slice(0, 300)).to.equal('max_tokens');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"Count from 1 to 1000, one number per line.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
