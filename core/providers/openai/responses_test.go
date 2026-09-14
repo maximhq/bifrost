@@ -110,6 +110,28 @@ func TestToOpenAIResponsesRequest_ReasoningOnlyMessageSkip(t *testing.T) {
 			description:              "Reasoning models (o1/o3) produce encrypted content; should be preserved for multi-turn",
 		},
 		{
+			name:  "message with EncryptedContent preserved for gpt-6-astra",
+			model: "gpt-6-astra",
+			message: schemas.ResponsesMessage{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+				ResponsesReasoning: &schemas.ResponsesReasoning{
+					Summary:          []schemas.ResponsesReasoningSummary{},
+					EncryptedContent: schemas.Ptr("encrypted"),
+				},
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type: schemas.ResponsesOutputMessageContentTypeReasoning,
+							Text: schemas.Ptr("reasoning text"),
+						},
+					},
+				},
+			},
+			expectedIncluded:         true,
+			expectedEncryptedContent: schemas.Ptr("encrypted"),
+			description:              "GPT-6 returns encrypted reasoning; it must survive replay instead of being dropped as cross-provider content",
+		},
+		{
 			name:  "message with empty ContentBlocks preserved for non-gpt-oss model",
 			model: "gpt-4o",
 			message: schemas.ResponsesMessage{
@@ -481,6 +503,26 @@ func TestToOpenAIResponsesRequest_NormalizesReasoningEffort(t *testing.T) {
 		{
 			name:     "preserves xhigh for gpt-5.5",
 			model:    "gpt-5.5",
+			effort:   "xhigh",
+			expected: "xhigh",
+		},
+		{
+			// gpt-6-astra reached the provider with reasoning stripped entirely, so OpenAI
+			// applied its own default of "medium" — see issue report on 1.6.x.
+			name:     "preserves xhigh for gpt-6-astra",
+			model:    "gpt-6-astra",
+			effort:   "xhigh",
+			expected: "xhigh",
+		},
+		{
+			name:     "preserves max for gpt-6-astra",
+			model:    "gpt-6-astra",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves xhigh for provider-prefixed gpt-6-astra",
+			model:    "openai/gpt-6-astra",
 			effort:   "xhigh",
 			expected: "xhigh",
 		},
