@@ -409,6 +409,46 @@ func TestOpencodeNamespaceInput(t *testing.T) {
 		}
 	})
 
+	t.Run("grant without settled identity falls back to presented string", func(t *testing.T) {
+		ctx, cancel := newCtx(t)
+		defer cancel()
+		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "vk-presented")
+		if !ctx.SetGrant(&stubGrant{}) {
+			t.Fatal("SetGrant refused stub grant")
+		}
+		if got := opencodeNamespaceInput(ctx); got != "vk-presented" {
+			t.Fatalf("namespace input = %q, want presented vk-presented", got)
+		}
+	})
+
+	t.Run("virtual key row wins when both identities are set", func(t *testing.T) {
+		ctx, cancel := newCtx(t)
+		defer cancel()
+		if !ctx.SetGrant(&stubGrant{identity: &stubIdentity{
+			vk:   &schemas.EntityRef{ID: "vk-row-9"},
+			user: &schemas.UserRef{ID: "user-7"},
+		}}) {
+			t.Fatal("SetGrant refused stub grant")
+		}
+		if got := opencodeNamespaceInput(ctx); got != "vk-row-9" {
+			t.Fatalf("namespace input = %q, want settled vk-row-9", got)
+		}
+	})
+
+	t.Run("user wins when virtual key row id is empty", func(t *testing.T) {
+		ctx, cancel := newCtx(t)
+		defer cancel()
+		if !ctx.SetGrant(&stubGrant{identity: &stubIdentity{
+			vk:   &schemas.EntityRef{ID: ""},
+			user: &schemas.UserRef{ID: "user-7"},
+		}}) {
+			t.Fatal("SetGrant refused stub grant")
+		}
+		if got := opencodeNamespaceInput(ctx); got != "user-7" {
+			t.Fatalf("namespace input = %q, want settled user-7", got)
+		}
+	})
+
 	t.Run("grant virtual key row namespaces the wire value", func(t *testing.T) {
 		ctx, cancel := newCtx(t)
 		defer cancel()
@@ -434,6 +474,27 @@ func TestOpencodeNamespaceInput(t *testing.T) {
 		}
 		if leaked := namespaceOpencodeSession("vk-presented", "conv-123"); got == leaked {
 			t.Fatalf("wire value %q must not match presented-string namespacing", got)
+		}
+	})
+
+	t.Run("grant user identity namespaces the wire value", func(t *testing.T) {
+		ctx, cancel := newCtx(t)
+		defer cancel()
+		ctx.SetValue(schemas.BifrostContextKeyOpencodeSession, "conv-123")
+		if !ctx.SetGrant(&stubGrant{identity: &stubIdentity{user: &schemas.UserRef{ID: "user-7"}}}) {
+			t.Fatal("SetGrant refused stub grant")
+		}
+		signer := opencodeSessionSigner(ctx)
+		if signer == nil {
+			t.Fatal("signer is nil with session captured")
+		}
+		headers, bifrostErr := signer(nil)
+		if bifrostErr != nil {
+			t.Fatalf("signer: %v", bifrostErr)
+		}
+		got := headers[opencodeSessionHeader]
+		if want := namespaceOpencodeSession("user-7", "conv-123"); got != want {
+			t.Fatalf("wire value = %q, want user-namespaced %q", got, want)
 		}
 	})
 }
