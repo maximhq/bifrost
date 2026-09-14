@@ -115,7 +115,8 @@
             "claude-sonnet-4-6",
             "claude-opus-4-8",
             "moonshotai/kimi-k2-thinking-maas",
-            "minimaxai/minimax-m2-maas"
+            "minimaxai/minimax-m2-maas",
+            "gemini-3.6-flash"
           ]
         },
         {
@@ -132,6 +133,16 @@
             "moonshotai/kimi-k2-thinking-maas",
             "minimaxai/minimax-m2-maas"
           ]
+        },
+        {
+          "name": "Vertex Global (Gemini 3)",
+          "vertex_key_config": {
+            "project_id": "env.VERTEX_PROJECT_ID",
+            "region": "global",
+            "auth_credentials": "env.VERTEX_CREDENTIALS"
+          },
+          "weight": 1,
+          "models": ["gemini-3.6-flash"]
         }
       ],
       "network_config": {

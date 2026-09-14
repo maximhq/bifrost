@@ -902,3 +902,46 @@ func TestDeepCopyResponsesMessageCustomInput(t *testing.T) {
 		})
 	}
 }
+
+// A per-part media resolution is replayed to the provider verbatim, so DeepCopyResponsesMessage
+// must carry it across -- and must not alias it, since the copy and the original can be sent on
+// different attempts of the same request.
+func TestDeepCopyResponsesMessagePreservesMediaResolution(t *testing.T) {
+	messageType := ResponsesMessageTypeMessage
+	role := ResponsesInputMessageRoleUser
+	imageURL := "data:image/jpeg;base64,/9j/4AAQSkZJRg=="
+	numTokens := int32(512)
+
+	original := ResponsesMessage{
+		Type: &messageType,
+		Role: &role,
+		Content: &ResponsesMessageContent{
+			ContentBlocks: []ResponsesMessageContentBlock{{
+				Type:                                   ResponsesInputMessageContentBlockTypeImage,
+				ResponsesInputMessageContentBlockImage: &ResponsesInputMessageContentBlockImage{ImageURL: &imageURL},
+				MediaResolution:                        &MediaResolution{Level: "MEDIA_RESOLUTION_ULTRA_HIGH", NumTokens: &numTokens},
+			}},
+		},
+	}
+
+	copied := DeepCopyResponsesMessage(original)
+	got := copied.Content.ContentBlocks[0].MediaResolution
+	if got == nil {
+		t.Fatal("deep copy dropped the media resolution")
+	}
+	if got.Level != "MEDIA_RESOLUTION_ULTRA_HIGH" {
+		t.Fatalf("level = %q, want MEDIA_RESOLUTION_ULTRA_HIGH", got.Level)
+	}
+	if got == original.Content.ContentBlocks[0].MediaResolution {
+		t.Error("copy aliases the original media resolution struct")
+	}
+	if got.NumTokens == nil {
+		t.Fatal("deep copy dropped numTokens")
+	}
+	if got.NumTokens == original.Content.ContentBlocks[0].MediaResolution.NumTokens {
+		t.Error("copy aliases the original numTokens pointer")
+	}
+	if *got.NumTokens != 512 {
+		t.Fatalf("numTokens = %d, want 512", *got.NumTokens)
+	}
+}

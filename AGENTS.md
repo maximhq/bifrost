@@ -596,26 +596,26 @@ lsof -nP -iTCP:8080 -sTCP:LISTEN
 make dev APP_DIR=$(pwd)/tests/integrations/python
 
 # 3. run the harness against that server
-make run-provider-harness-test APP_DIR=$(pwd)/tests/integrations/python CI=1 HARNESS_MAX_REQUESTS=<ceiling> PROVIDER=<provider> FEATURE="<keyword>"
+make run-provider-harness-test PROVIDER=<provider> FEATURE="<keyword>"
 ```
 
-`APP_DIR` must be an **absolute** path. `run-provider-harness-test` uses it verbatim (Makefile:2255), unlike `make dev` which wraps it in `$(abspath)`; a relative value resolves against the wrong cwd in `logs-db-url.js` and the dbverify reporter.
+Do not pass `APP_DIR` or `CI=1` to `run-provider-harness-test`. `APP_DIR` already defaults to `tests/integrations/python` (Makefile:2255), the same profile `make dev` is pointed at, and `CI=1` suppresses the interactive HTML viewer that makes a live run readable. `make dev` is the one that needs `APP_DIR` spelled out, because it is what decides which code and config the server runs.
 
-Never print that block with a placeholder still in it. `<ceiling>`, `<provider>` and `<keyword>` belong to the template; substitute the real values for the change so every line pastes straight into a shell.
+Never print that block with a placeholder still in it. `<provider>` and `<keyword>` belong to the template; substitute the real values for the change so every line pastes straight into a shell.
 
 The exemptions are the ones in the previous section: a change with no wire-visible effect (comments, internal renames, log lines, test-only or guidance-only edits) or behaviour no HTTP request can reach is exempt. For an exempt change, say so explicitly instead of printing the block.
 
 ```bash
 # Scoped to the change (preferred): the provider and a keyword from the affected cases
-make run-provider-harness-test APP_DIR=$(pwd)/tests/integrations/python CI=1 HARNESS_MAX_REQUESTS=<approved ceiling> PROVIDER=<provider> FEATURE="<keyword>"
+make run-provider-harness-test PROVIDER=<provider> FEATURE="<keyword>"
 
 # Curated ~100-request smoke set across all providers, when the change is cross-cutting
-make run-provider-harness-test APP_DIR=$(pwd)/tests/integrations/python CI=1 HARNESS_MAX_REQUESTS=<approved ceiling> SMOKE=1
+make run-provider-harness-test SMOKE=1
 ```
 
-The profile to pass is `APP_DIR=$(pwd)/tests/integrations/python`, the shared provider config at `tests/integrations/python/config.json` that every live check uses. Always pass it explicitly, so a stale server or another config never answers for the code under test.
+The profile is the shared provider config at `tests/integrations/python/config.json` that every live check uses. Pass it to `make dev` as `APP_DIR=$(pwd)/tests/integrations/python` so a stale server or another config never answers for the code under test; the harness target already defaults to it and does not need it repeated.
 
-`HARNESS_MAX_REQUESTS` is the enforced spend bound: the recipe checks every newman launch against its exact filtered request count before it starts and refuses any launch that would cross the cap (exit 3), so the live total never exceeds the approved number. Always pass it; the preflight count from `filter-collection.mjs` is only an estimate because shared producers repeat per provider fork. Stream-cancellation probes are never sent under a cap.
+`HARNESS_MAX_REQUESTS=<n>` is an optional enforced spend bound: the recipe checks every newman launch against its exact filtered request count before it starts and refuses any launch that would cross the cap (exit 3), so the live total never exceeds the approved number. Add it when a run is broad enough that the cost is worth capping; a `PROVIDER=` + `FEATURE=` scoped run is usually small enough not to need it. The preflight count from `filter-collection.mjs` is only an estimate because shared producers repeat per provider fork. Stream-cancellation probes are never sent under a cap.
 
 Port 8080 is a blocking precondition worth restating in the block: the recipe reuses any server whose `/health` answers and never starts the `APP_DIR` one, so a stale listener silently tests old code. `lsof -nP -iTCP:8080 -sTCP:LISTEN` must come back empty, or show only a Bifrost started from the code under test. Starting it first with `make dev APP_DIR=$(pwd)/tests/integrations/python` and waiting for `/health` is the reliable pattern, since a cold start can outlast the recipe's 60s health wait.
 

@@ -43235,8 +43235,8 @@
       ]
     },
     {
-      "name": "31. Gemini/Vertex generationConfig.mediaResolution honored (image prompt tokens)",
-      "description": "Regression: generationConfig.mediaResolution was silently dropped in the Gemini -> Bifrost -> Gemini\nResponses conversion on the /genai generateContent path, so a Vertex/Gemini image request billed the\nmodel-default image token count regardless of MEDIA_RESOLUTION_LOW/HIGH (e.g. ~1290 instead of ~74\nprompt tokens for a 1024x1024 image). thinkingConfig survived because both conversion legs handle it;\nmediaResolution was handled by neither.\n\nFix: round mediaResolution through ExtraParams[\"media_resolution\"] in core/providers/gemini\n(convertGenerationConfigToResponsesParameters inbound + convertParamsToGenerationConfigResponses outbound).\n\nThe only external signal is usageMetadata.promptTokenCount, so each pair sends the SAME 1024x1024 image\n(folder-level prerequest sets {{mediaResImage}}) and asserts the HIGH request reports more prompt tokens\nthan the LOW request. If the field is dropped, both fall back to the same default => equal counts =>\nthe HIGH-exceeds-LOW assertion fails, independent of what the model default is. 31.1/31.2 pin the fix on\nthe GenAI route (needs only {{genaiKey}}); 31.3/31.4 pin the same invariant on Vertex (the reported\nroute) and skip cleanly if Vertex is not configured.",
+      "name": "31. Gemini/Vertex mediaResolution honored, request-level and per-part (image prompt tokens)",
+      "description": "Regression: generationConfig.mediaResolution was silently dropped in the Gemini -> Bifrost -> Gemini\nResponses conversion on the /genai generateContent path, so a Vertex/Gemini image request billed the\nmodel-default image token count regardless of MEDIA_RESOLUTION_LOW/HIGH (e.g. ~1290 instead of ~74\nprompt tokens for a 1024x1024 image). thinkingConfig survived because both conversion legs handle it;\nmediaResolution was handled by neither.\n\nFix: round mediaResolution through ExtraParams[\"media_resolution\"] in core/providers/gemini\n(convertGenerationConfigToResponsesParameters inbound + convertParamsToGenerationConfigResponses outbound).\n\nThe only external signal is usageMetadata.promptTokenCount, so each pair sends the SAME 1024x1024 image\n(folder-level prerequest sets {{mediaResImage}}) and asserts the HIGH request reports more prompt tokens\nthan the LOW request. If the field is dropped, both fall back to the same default => equal counts =>\nthe HIGH-exceeds-LOW assertion fails, independent of what the model default is. 31.1/31.2 pin the fix on\nthe GenAI route (needs only {{genaiKey}}); 31.3/31.4 pin the same invariant on Vertex (the reported\nroute) and skip cleanly if Vertex is not configured.\n\n31.5-31.9 pin the second, separate half: Google also models media resolution per Part (Vertex AI v1 Part field 12), and the per-part value overrides generationConfig for that part. Bifrost's Part type had no such field and Part.UnmarshalJSON decodes into a closed alias, so the key was discarded at parse time -- before any of the conversion work 31.1-31.4 cover. Reported against v1.6.7: an ULTRA_HIGH image billed ~21.0k prompt tokens through /genai versus ~22.1k direct, while /genai with x-model-provider: gemini and /genai_passthrough both matched Google, because those forward raw bytes instead of converting. Per-part is Gemini 3 only, so these cases hardcode gemini-3.6-flash rather than using {{genaiModel}}/{{vertexModel}}. 31.5 sends the snake_case media_resolution spelling Google's own REST reference documents; 31.6-31.9 send camelCase. 31.7 and 31.9 are the ones that pin the override semantics: generationConfig says LOW while the part says HIGH, and the part must win.\n\nThat override shape is required rather than cosmetic on the HIGH cases. Google documents Gemini 3 image tokens as low 280 / medium 560 / high 1120 / ultra_high 2240, with the unspecified default also 1120 (https://ai.google.dev/gemini-api/docs/media-resolution). Default and HIGH are therefore indistinguishable, so a bare per-part HIGH case cannot tell \"HIGH honored\" from \"field dropped\". Pinning generationConfig to LOW makes a dropped per-part field fall back to ~280 instead of ~1120, which the HIGH-exceeds-LOW assertion then catches.",
       "event": [
         {
           "listen": "prerequest",
@@ -43463,6 +43463,279 @@
                 "v1beta",
                 "models",
                 "{{vertexModel}}:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "31.5 GenAI Gemini per-part media_resolution LOW - record image prompt tokens (gemini)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('GenAI Gemini per-part media_resolution LOW request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var low = body && body.usageMetadata && body.usageMetadata.promptTokenCount;",
+                  "pm.test('GenAI Gemini per-part media_resolution LOW response reports usageMetadata.promptTokenCount', function () {",
+                  "  pm.expect(low, 'promptTokenCount missing: ' + pm.response.text()).to.be.a('number');",
+                  "});",
+                  "pm.collectionVariables.set('genaiPartMediaResLowPromptTokens', low);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"parts\": [\n        {\n          \"text\": \"Reply with the single word: ok.\"\n        },\n        {\n          \"inline_data\": {\n            \"mime_type\": \"image/jpeg\",\n            \"data\": \"{{mediaResImage}}\"\n          },\n          \"media_resolution\": {\n            \"level\": \"MEDIA_RESOLUTION_LOW\"\n          }\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 2048\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-3.6-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini-3.6-flash:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "31.6 GenAI Gemini per-part mediaResolution HIGH exceeds LOW - field not dropped (gemini)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('GenAI Gemini per-part mediaResolution HIGH request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var high = body && body.usageMetadata && body.usageMetadata.promptTokenCount;",
+                  "pm.test('GenAI Gemini per-part mediaResolution HIGH response reports usageMetadata.promptTokenCount', function () {",
+                  "  pm.expect(high, 'promptTokenCount missing: ' + pm.response.text()).to.be.a('number');",
+                  "});",
+                  "var low = Number(pm.collectionVariables.get('genaiPartMediaResLowPromptTokens'));",
+                  "// Only assert the invariant when the LOW case actually recorded a value (it may have skipped).",
+                  "if (!isNaN(low) && low > 0) {",
+                  "  pm.test('per-part mediaResolution honored: HIGH image prompt tokens exceed LOW', function () {",
+                  "    pm.expect(high, 'HIGH=' + high + ' must exceed LOW=' + low + '; equal counts mean the per-part field was dropped').to.be.above(low);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"parts\": [\n        {\n          \"text\": \"Reply with the single word: ok.\"\n        },\n        {\n          \"inline_data\": {\n            \"mime_type\": \"image/jpeg\",\n            \"data\": \"{{mediaResImage}}\"\n          },\n          \"mediaResolution\": {\n            \"level\": \"MEDIA_RESOLUTION_HIGH\"\n          }\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 2048\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-3.6-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini-3.6-flash:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "31.7 GenAI Gemini per-part mediaResolution overrides generationConfig LOW (gemini)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('GenAI Gemini per-part override request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var high = body && body.usageMetadata && body.usageMetadata.promptTokenCount;",
+                  "pm.test('GenAI Gemini per-part override response reports usageMetadata.promptTokenCount', function () {",
+                  "  pm.expect(high, 'promptTokenCount missing: ' + pm.response.text()).to.be.a('number');",
+                  "});",
+                  "var low = Number(pm.collectionVariables.get('genaiPartMediaResLowPromptTokens'));",
+                  "// Only assert the invariant when the LOW case actually recorded a value (it may have skipped).",
+                  "if (!isNaN(low) && low > 0) {",
+                  "  pm.test('per-part mediaResolution overrides the request-level generationConfig.mediaResolution', function () {",
+                  "    pm.expect(high, 'HIGH=' + high + ' must exceed LOW=' + low + '; equal counts mean the per-part field was dropped').to.be.above(low);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"parts\": [\n        {\n          \"text\": \"Reply with the single word: ok.\"\n        },\n        {\n          \"inline_data\": {\n            \"mime_type\": \"image/jpeg\",\n            \"data\": \"{{mediaResImage}}\"\n          },\n          \"mediaResolution\": {\n            \"level\": \"MEDIA_RESOLUTION_HIGH\"\n          }\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"mediaResolution\": \"MEDIA_RESOLUTION_LOW\",\n    \"maxOutputTokens\": 2048\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-3.6-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini-3.6-flash:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "31.8 Vertex Gemini per-part media_resolution LOW - record image prompt tokens (vertex)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Vertex Gemini per-part media_resolution LOW request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var low = body && body.usageMetadata && body.usageMetadata.promptTokenCount;",
+                  "pm.test('Vertex Gemini per-part media_resolution LOW response reports usageMetadata.promptTokenCount', function () {",
+                  "  pm.expect(low, 'promptTokenCount missing: ' + pm.response.text()).to.be.a('number');",
+                  "});",
+                  "pm.collectionVariables.set('vertexPartMediaResLowPromptTokens', low);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"parts\": [\n        {\n          \"text\": \"Reply with the single word: ok.\"\n        },\n        {\n          \"inline_data\": {\n            \"mime_type\": \"image/jpeg\",\n            \"data\": \"{{mediaResImage}}\"\n          },\n          \"media_resolution\": {\n            \"level\": \"MEDIA_RESOLUTION_LOW\"\n          }\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 2048\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3.6-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex/gemini-3.6-flash:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "31.9 Vertex Gemini per-part mediaResolution overrides generationConfig LOW (vertex)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Vertex Gemini per-part override request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var high = body && body.usageMetadata && body.usageMetadata.promptTokenCount;",
+                  "pm.test('Vertex Gemini per-part override response reports usageMetadata.promptTokenCount', function () {",
+                  "  pm.expect(high, 'promptTokenCount missing: ' + pm.response.text()).to.be.a('number');",
+                  "});",
+                  "var low = Number(pm.collectionVariables.get('vertexPartMediaResLowPromptTokens'));",
+                  "// Only assert the invariant when the LOW case actually recorded a value (it may have skipped).",
+                  "if (!isNaN(low) && low > 0) {",
+                  "  pm.test('per-part mediaResolution overrides the request-level generationConfig.mediaResolution on Vertex', function () {",
+                  "    pm.expect(high, 'HIGH=' + high + ' must exceed LOW=' + low + '; equal counts mean the per-part field was dropped').to.be.above(low);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"parts\": [\n        {\n          \"text\": \"Reply with the single word: ok.\"\n        },\n        {\n          \"inline_data\": {\n            \"mime_type\": \"image/jpeg\",\n            \"data\": \"{{mediaResImage}}\"\n          },\n          \"mediaResolution\": {\n            \"level\": \"MEDIA_RESOLUTION_HIGH\"\n          }\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"mediaResolution\": \"MEDIA_RESOLUTION_LOW\",\n    \"maxOutputTokens\": 2048\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3.6-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex/gemini-3.6-flash:generateContent"
               ]
             }
           }

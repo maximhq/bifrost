@@ -765,10 +765,11 @@ Once all approved changes are applied:
    the exemptions are AGENTS.md's: no wire-visible effect, or behaviour no HTTP request can
    reach, and an exempt change must say so in the report). It is a paid live sweep
    against real provider accounts: the unfiltered collection is ~1,900 requests. The scope keeps
-   the run small and `HARNESS_MAX_REQUESTS` (below) is the enforced ceiling. Always use the shared
-   integration config via `APP_DIR=$(pwd)/tests/integrations/python` (that is
-   `tests/integrations/python/config.json`) and scope the run to the change with `PROVIDER` and
-   `FEATURE`, or `SMOKE=1` for a cross-cutting change. Never run the unscoped sweep, and never
+   the run small, and `HARNESS_MAX_REQUESTS` (below) is an optional ceiling on top of that. Start
+   the server against the shared integration config with `make dev
+   APP_DIR=$(pwd)/tests/integrations/python` (that is `tests/integrations/python/config.json`,
+   which the harness target already defaults to), and scope the run to the change with `PROVIDER`
+   and `FEATURE`, or `SMOKE=1` for a cross-cutting change. Never run the unscoped sweep, and never
    widen the scope beyond the change, without a separate explicit yes from the user that names
    the scope.
 
@@ -787,8 +788,11 @@ Once all approved changes are applied:
    combined with PROVIDER, FEATURE or FOLDER, apply the same filters to both smoke commands.
    The preflight is an estimate: the main pass forks one newman per provider and a producer
    shared by several forks runs once per fork, so the live total can exceed the preflight sum
-   (observed: 102 preflight, 122 live for SMOKE=1). The enforced bound is
-   `HARNESS_MAX_REQUESTS`: always pass it with the ceiling the user approved. The recipe checks
+   (observed: 102 preflight, 122 live for SMOKE=1). `HARNESS_MAX_REQUESTS` is the optional
+   enforced bound: add it with the ceiling the user approved when a run is broad enough that the
+   cost is worth capping; a `PROVIDER=` + `FEATURE=` scoped run is usually small enough not to
+   need it. Left unset, the recipe skips the budget check and the run proceeds (Makefile:2177).
+   When it is set, the recipe checks
    every newman launch against its exact filtered count before it starts (main shards, 429
    replays, the cache-parity pass, sequential mode); a launch that would cross the cap is
    refused and the run exits 3, so the live total can never exceed the approved number. The
@@ -808,9 +812,9 @@ Once all approved changes are applied:
    make dev APP_DIR=$(pwd)/tests/integrations/python   # in the background; wait for /health = 200
    ```
    ```bash
-   make run-provider-harness-test APP_DIR=$(pwd)/tests/integrations/python CI=1 HARNESS_MAX_REQUESTS=<approved ceiling> PROVIDER=<provider> FEATURE="<keyword>"
+   make run-provider-harness-test PROVIDER=<provider> FEATURE="<keyword>"
    # cross-cutting change: the curated smoke set instead
-   make run-provider-harness-test APP_DIR=$(pwd)/tests/integrations/python CI=1 HARNESS_MAX_REQUESTS=<approved ceiling> SMOKE=1
+   make run-provider-harness-test SMOKE=1
    ```
    Report the provider status table and `tmp/harness-failures.md` findings, and state exactly
    which scope ran. See AGENTS.md "Every fix ends with a provider-harness run".
