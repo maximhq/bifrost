@@ -95614,6 +95614,10 @@
           },
           "request_type": {
             "type": "string"
+          },
+          "error_type": {
+            "type": "string",
+            "description": "Normalized, low-cardinality classification of why the request failed, declared by whichever component refused it. Prefixed by fault domain (caller_, policy_, provider_, bifrost_). Absent on failures that were not classified at source."
           }
         }
       },
@@ -105457,6 +105461,28 @@
               "endOffset": {
                 "type": "string",
                 "description": "End offset of the video"
+              }
+            }
+          },
+          "mediaResolution": {
+            "type": "object",
+            "description": "Per-part media resolution, overriding generationConfig.mediaResolution for this part alone. Supported on Gemini 3 and later; MEDIA_RESOLUTION_ULTRA_HIGH is image-only.",
+            "properties": {
+              "level": {
+                "type": "string",
+                "enum": [
+                  "MEDIA_RESOLUTION_UNSPECIFIED",
+                  "MEDIA_RESOLUTION_LOW",
+                  "MEDIA_RESOLUTION_MEDIUM",
+                  "MEDIA_RESOLUTION_HIGH",
+                  "MEDIA_RESOLUTION_ULTRA_HIGH"
+                ],
+                "description": "The tokenization quality used for the given media"
+              },
+              "numTokens": {
+                "type": "integer",
+                "format": "int32",
+                "description": "Required sequence length for media tokenization (Gemini API only)"
               }
             }
           }

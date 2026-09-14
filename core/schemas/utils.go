@@ -1538,6 +1538,16 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 		*copy.EncryptedContent = *original.EncryptedContent
 	}
 
+	// Gemini's per-part media resolution is replayed to the provider verbatim, so it has to
+	// survive the copy -- and must not share the NumTokens pointer with the original.
+	if original.MediaResolution != nil {
+		copyMediaResolution := &MediaResolution{Level: original.MediaResolution.Level}
+		if original.MediaResolution.NumTokens != nil {
+			copyMediaResolution.NumTokens = new(*original.MediaResolution.NumTokens)
+		}
+		copy.MediaResolution = copyMediaResolution
+	}
+
 	// Deep copy ResponsesInputMessageContentBlockImage
 	if original.ResponsesInputMessageContentBlockImage != nil {
 		copyImage := &ResponsesInputMessageContentBlockImage{}

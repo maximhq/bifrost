@@ -4175,6 +4175,183 @@ func TestGenAIMediaResolution_PreservedThroughBifrostRoundTrip(t *testing.T) {
 		"mediaResolution must round-trip into the outbound generationConfig")
 }
 
+// --- per-part mediaResolution ---------------------------------------------------------------
+//
+// Google models media resolution twice: once request-wide on generationConfig (covered above) and
+// once per Part (Vertex AI v1 Part field 12, outside the data/metadata oneofs; Gemini 3+ only).
+// The per-part value overrides the request-level one for that part, so dropping it silently
+// downgrades image/PDF tokenization. Bifrost's Part had no such field, and Part.UnmarshalJSON
+// decodes into a closed alias, so the key was discarded before any conversion ran.
+
+const testPixelJPEG = "/9j/4AAQSkZJRg=="
+
+func geminiImagePartRequest(mr *gemini.PartMediaResolution) *gemini.GeminiGenerationRequest {
+	return &gemini.GeminiGenerationRequest{
+		Model: "gemini-3.1-flash-lite",
+		Contents: []gemini.Content{{
+			Role: "user",
+			Parts: []*gemini.Part{
+				{Text: "what is in this image?"},
+				{
+					InlineData:      &gemini.Blob{MIMEType: "image/jpeg", Data: testPixelJPEG},
+					MediaResolution: mr,
+				},
+			},
+		}},
+	}
+}
+
+// roundTripGeminiRequest runs the full /genai conversion: Gemini → Bifrost → Gemini.
+func roundTripGeminiRequest(t *testing.T, req *gemini.GeminiGenerationRequest) *gemini.GeminiGenerationRequest {
+	t.Helper()
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq := req.ToBifrostResponsesRequest(bifrostCtx)
+	require.NotNil(t, bifrostReq)
+	out, err := gemini.ToGeminiResponsesRequest(nil, bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	return out
+}
+
+// findPartWithMediaResolution returns the first part carrying a media resolution.
+func findPartWithMediaResolution(req *gemini.GeminiGenerationRequest) *gemini.PartMediaResolution {
+	for _, c := range req.Contents {
+		for _, p := range c.Parts {
+			if p != nil && p.MediaResolution != nil {
+				return p.MediaResolution
+			}
+		}
+	}
+	return nil
+}
+
+// Regression: a per-part mediaResolution on an inline image must survive Gemini → Bifrost → Gemini.
+// It used to be dropped at Part.UnmarshalJSON, so image tokens were billed at the model default
+// (~21k instead of ~22.1k for MEDIA_RESOLUTION_ULTRA_HIGH).
+func TestGenAIPartMediaResolution_PreservedThroughBifrostRoundTrip(t *testing.T) {
+	req := geminiImagePartRequest(&gemini.PartMediaResolution{Level: "MEDIA_RESOLUTION_ULTRA_HIGH"})
+
+	got := findPartWithMediaResolution(roundTripGeminiRequest(t, req))
+	require.NotNil(t, got, "per-part mediaResolution must survive the round trip")
+	assert.Equal(t, "MEDIA_RESOLUTION_ULTRA_HIGH", got.Level)
+	assert.Nil(t, got.NumTokens, "numTokens must stay unset when the caller omitted it")
+}
+
+// numTokens is Gemini-API-only (Vertex v1's nested message carries level alone), but when a caller
+// sends it we must pass it through rather than normalize it away.
+func TestGenAIPartMediaResolution_NumTokensRoundTrips(t *testing.T) {
+	numTokens := int32(512)
+	req := geminiImagePartRequest(&gemini.PartMediaResolution{NumTokens: &numTokens})
+
+	got := findPartWithMediaResolution(roundTripGeminiRequest(t, req))
+	require.NotNil(t, got)
+	require.NotNil(t, got.NumTokens)
+	assert.Equal(t, int32(512), *got.NumTokens)
+}
+
+// "Omitted settings should remain omitted": a part without a media resolution must not grow one,
+// and must not emit an empty mediaResolution object on the wire.
+func TestGenAIPartMediaResolution_OmittedStaysOmitted(t *testing.T) {
+	out := roundTripGeminiRequest(t, geminiImagePartRequest(nil))
+	assert.Nil(t, findPartWithMediaResolution(out), "no part may gain a media resolution")
+
+	encoded, err := sonic.Marshal(out.Contents)
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), "mediaResolution",
+		"an unset media resolution must not be serialized")
+}
+
+// Google's own REST example uses the snake_case key, and the google-genai SDK emits snake_case
+// inside functionResponse.parts, so Part must accept both spellings — camelCase winning when both
+// are present, matching the existing inlineData/fileData and generationConfig precedence.
+func TestGenAIPartMediaResolution_AcceptsSnakeCaseKey(t *testing.T) {
+	t.Run("snake_case only", func(t *testing.T) {
+		var part gemini.Part
+		require.NoError(t, sonic.Unmarshal([]byte(
+			`{"inline_data":{"mime_type":"image/jpeg","data":"`+testPixelJPEG+`"},`+
+				`"media_resolution":{"level":"MEDIA_RESOLUTION_HIGH"}}`), &part))
+		require.NotNil(t, part.MediaResolution)
+		assert.Equal(t, "MEDIA_RESOLUTION_HIGH", part.MediaResolution.Level)
+	})
+
+	t.Run("camelCase wins over snake_case", func(t *testing.T) {
+		var part gemini.Part
+		require.NoError(t, sonic.Unmarshal([]byte(
+			`{"text":"hi","mediaResolution":{"level":"MEDIA_RESOLUTION_LOW"},`+
+				`"media_resolution":{"level":"MEDIA_RESOLUTION_ULTRA_HIGH"}}`), &part))
+		require.NotNil(t, part.MediaResolution)
+		assert.Equal(t, "MEDIA_RESOLUTION_LOW", part.MediaResolution.Level)
+	})
+
+	t.Run("num_tokens snake_case", func(t *testing.T) {
+		var part gemini.Part
+		require.NoError(t, sonic.Unmarshal([]byte(
+			`{"text":"hi","mediaResolution":{"num_tokens":256}}`), &part))
+		require.NotNil(t, part.MediaResolution)
+		require.NotNil(t, part.MediaResolution.NumTokens)
+		assert.Equal(t, int32(256), *part.MediaResolution.NumTokens)
+	})
+
+	t.Run("marshals back as camelCase", func(t *testing.T) {
+		numTokens := int32(256)
+		encoded, err := sonic.Marshal(gemini.Part{
+			Text:            "hi",
+			MediaResolution: &gemini.PartMediaResolution{Level: "MEDIA_RESOLUTION_LOW", NumTokens: &numTokens},
+		})
+		require.NoError(t, err)
+		assert.Contains(t, string(encoded), `"mediaResolution":{"level":"MEDIA_RESOLUTION_LOW","numTokens":256}`)
+	})
+}
+
+// Per-part media resolution applies to PDFs and file URIs too, not just inline images. Those take
+// different branches of the Gemini↔Bifrost part conversion (File block rather than Image block),
+// so each needs its own coverage.
+func TestGenAIPartMediaResolution_NonImageParts(t *testing.T) {
+	t.Run("inline pdf", func(t *testing.T) {
+		req := &gemini.GeminiGenerationRequest{
+			Model: "gemini-3.1-flash-lite",
+			Contents: []gemini.Content{{Role: "user", Parts: []*gemini.Part{{
+				InlineData:      &gemini.Blob{MIMEType: "application/pdf", Data: "JVBERi0xLjQK"},
+				MediaResolution: &gemini.PartMediaResolution{Level: "MEDIA_RESOLUTION_HIGH"},
+			}}}},
+		}
+		got := findPartWithMediaResolution(roundTripGeminiRequest(t, req))
+		require.NotNil(t, got, "media resolution must survive on an inline PDF part")
+		assert.Equal(t, "MEDIA_RESOLUTION_HIGH", got.Level)
+	})
+
+	t.Run("file uri", func(t *testing.T) {
+		req := &gemini.GeminiGenerationRequest{
+			Model: "gemini-3.1-flash-lite",
+			Contents: []gemini.Content{{Role: "user", Parts: []*gemini.Part{{
+				FileData:        &gemini.FileData{MIMEType: "image/png", FileURI: "https://example.com/a.png"},
+				MediaResolution: &gemini.PartMediaResolution{Level: "MEDIA_RESOLUTION_MEDIUM"},
+			}}}},
+		}
+		got := findPartWithMediaResolution(roundTripGeminiRequest(t, req))
+		require.NotNil(t, got, "media resolution must survive on a fileData part")
+		assert.Equal(t, "MEDIA_RESOLUTION_MEDIUM", got.Level)
+	})
+}
+
+// Retry/fallback guarantee. Unlike generationConfig.mediaResolution — which is tunnelled through the
+// shared ExtraParams map and was consumed by the first attempt (#7138) — the per-part value lives on
+// a typed field that is read, never popped. Converting the same Bifrost request repeatedly, as a
+// retry or a provider fallback does, must yield the identical media resolution every time.
+func TestGenAIPartMediaResolution_StableAcrossRepeatedConversions(t *testing.T) {
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq := geminiImagePartRequest(
+		&gemini.PartMediaResolution{Level: "MEDIA_RESOLUTION_ULTRA_HIGH"}).ToBifrostResponsesRequest(bifrostCtx)
+
+	for attempt := 1; attempt <= 3; attempt++ {
+		out, err := gemini.ToGeminiResponsesRequest(nil, bifrostReq)
+		require.NoError(t, err, "attempt %d", attempt)
+		got := findPartWithMediaResolution(out)
+		require.NotNil(t, got, "attempt %d lost the per-part media resolution", attempt)
+		assert.Equal(t, "MEDIA_RESOLUTION_ULTRA_HIGH", got.Level, "attempt %d", attempt)
+	}
+}
+
 // Regression: MAX_TOKENS from Gemini must survive Gemini → Bifrost → Gemini on the GenAI path
 // (StopReason used to be dropped, so clients saw STOP instead of MAX_TOKENS).
 func TestGenAIFinishReasonMaxTokens_PersistsThroughBifrostRoundTrip(t *testing.T) {
@@ -5620,4 +5797,52 @@ func TestChatToolConfigRequiresFunctionDeclarations(t *testing.T) {
 		assert.Empty(t, out.Tools, "custom tools produce no Gemini declarations")
 		assert.Nil(t, out.ToolConfig, "functionCallingConfig without function_declarations is rejected by Gemini")
 	})
+}
+
+// The outbound converter stamps media resolution only onto parts that actually carry media.
+// A text, reasoning or refusal part has nothing to resolve, and Gemini rejects the field there,
+// so a block that somehow carries one must not leak it onto a text part.
+func TestGenAIPartMediaResolution_NeverStampedOnTextParts(t *testing.T) {
+	text := "hello"
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Model: "gemini-3.1-flash-lite",
+		Input: []schemas.ResponsesMessage{{
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+					Type:            schemas.ResponsesInputMessageContentBlockTypeText,
+					Text:            &text,
+					MediaResolution: &schemas.MediaResolution{Level: "MEDIA_RESOLUTION_HIGH"},
+				}},
+			},
+		}},
+	}
+
+	out, err := gemini.ToGeminiResponsesRequest(nil, bifrostReq)
+	require.NoError(t, err)
+	assert.Nil(t, findPartWithMediaResolution(out),
+		"a text part must never carry a media resolution")
+}
+
+// The batch path re-marshals each inline body through GeminiBatchGenerateContentRequest, which
+// reuses the same Part type, so per-part media resolution was dropped there too.
+func TestGenAIPartMediaResolution_SurvivesBatchConversion(t *testing.T) {
+	body := map[string]interface{}{
+		"contents": []interface{}{map[string]interface{}{
+			"role": "user",
+			"parts": []interface{}{map[string]interface{}{
+				"inlineData":      map[string]interface{}{"mimeType": "image/jpeg", "data": testPixelJPEG},
+				"mediaResolution": map[string]interface{}{"level": "MEDIA_RESOLUTION_ULTRA_HIGH"},
+			}},
+		}},
+	}
+
+	batchReq, err := gemini.ToGeminiBatchGenerateContentRequest(body)
+	require.NoError(t, err)
+	require.NotEmpty(t, batchReq.Contents)
+	require.NotEmpty(t, batchReq.Contents[0].Parts)
+	got := batchReq.Contents[0].Parts[0].MediaResolution
+	require.NotNil(t, got, "batch conversion must preserve per-part media resolution")
+	assert.Equal(t, "MEDIA_RESOLUTION_ULTRA_HIGH", got.Level)
 }

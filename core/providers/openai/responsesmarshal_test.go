@@ -1904,3 +1904,63 @@ func TestToOpenAIResponsesRequest_CustomProviderResolvesBaseForCacheBreakpoints(
 		}
 	})
 }
+
+// Gemini's per-part media resolution rides on the shared ResponsesMessageContentBlock, and
+// OpenAI's Responses input is those blocks marshalled straight onto the wire behind a denylist.
+// A /genai request that falls back to OpenAI must therefore have the field stripped, exactly as
+// cache_control and citations are, or OpenAI 400s with "Unknown parameter".
+func TestOpenAIResponsesRequest_MarshalJSON_StripsMediaResolution(t *testing.T) {
+	messageType := schemas.ResponsesMessageTypeMessage
+	role := schemas.ResponsesInputMessageRoleUser
+	imageURL := "data:image/jpeg;base64,/9j/4AAQSkZJRg=="
+	callID := "call_1"
+
+	input := OpenAIResponsesRequestInput{
+		OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+			{
+				Type: &messageType,
+				Role: &role,
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+						Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+						ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+							ImageURL: &imageURL,
+						},
+						MediaResolution: &schemas.MediaResolution{Level: "MEDIA_RESOLUTION_ULTRA_HIGH"},
+					}},
+				},
+			},
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: &callID,
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{{
+							Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+							ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+								ImageURL: &imageURL,
+							},
+							MediaResolution: &schemas.MediaResolution{Level: "MEDIA_RESOLUTION_HIGH"},
+						}},
+					},
+				},
+			},
+		},
+	}
+
+	data, err := input.MarshalJSON()
+	if err != nil {
+		t.Fatalf("MarshalJSON returned error: %v", err)
+	}
+	if strings.Contains(string(data), "media_resolution") {
+		t.Errorf("media_resolution must not reach OpenAI's wire, got: %s", string(data))
+	}
+	if !strings.Contains(string(data), "image_url") {
+		t.Errorf("stripping media_resolution must not drop the image itself, got: %s", string(data))
+	}
+
+	// The source request is shared across retries and fallbacks, so sanitizing must copy.
+	if input.OpenAIResponsesRequestInputArray[0].Content.ContentBlocks[0].MediaResolution == nil {
+		t.Error("sanitization must not mutate the caller's request")
+	}
+}

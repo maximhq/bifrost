@@ -1804,6 +1804,13 @@ type ResponsesMessageContentBlock struct {
 	CacheControl *CacheControl `json:"cache_control,omitempty"`
 	Citations    *Citations    `json:"citations,omitempty"`
 
+	// MediaResolution carries Gemini's per-part Part.mediaResolution, which overrides the
+	// request-level generationConfig.mediaResolution for this block alone. It lives on the
+	// block rather than on the image sub-struct because per-part resolution applies to PDFs
+	// and file URIs too, which arrive as file blocks. Providers that have no equivalent
+	// simply never read it, so it drops itself on a cross-provider fallback.
+	MediaResolution *MediaResolution `json:"media_resolution,omitempty"`
+
 	// PromptCacheBreakpoint marks an explicit prompt-cache breakpoint on this block (OpenAI gpt-5.6+).
 	PromptCacheBreakpoint *PromptCacheBreakpoint `json:"prompt_cache_breakpoint,omitempty"`
 }
@@ -1828,6 +1835,14 @@ type ResponsesOutputMessageContentRenderedContent struct {
 
 type Citations struct {
 	Enabled *bool `json:"enabled,omitempty"`
+}
+
+// MediaResolution is the per-part media resolution for an input media block (Gemini 3+).
+// Level is a provider enum string (e.g. MEDIA_RESOLUTION_HIGH) forwarded verbatim; NumTokens
+// is accepted by the Gemini API surface only.
+type MediaResolution struct {
+	Level     string `json:"level,omitempty"`
+	NumTokens *int32 `json:"num_tokens,omitempty"`
 }
 type ResponsesInputMessageContentBlockImage struct {
 	ImageURL *string `json:"image_url,omitempty"`

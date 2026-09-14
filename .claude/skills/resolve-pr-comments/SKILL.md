@@ -228,7 +228,7 @@ gh api repos/OWNER/REPO/pulls/PR_NUMBER/comments/COMMENT_ID/replies -X POST -f b
 - `COMMENT_ID` is the numeric comment id (same as GraphQL `databaseId` from the thread's first comment).
 - Request body: only `body` (string). No `in_reply_to`, `commit_id`, or path params.
 
-## Step 5a: Run unit tests, then hand over the harness command
+## Step 5a: Run the tests, then hand over the harness command
 
 After the local edits for a comment (or for the batch), run the tests yourself and report the result. Do **not** run the provider harness - that run is the user's to trigger.
 
@@ -256,12 +256,12 @@ lsof -nP -iTCP:8080 -sTCP:LISTEN
 make dev APP_DIR=$(pwd)/tests/integrations/python
 
 # 3. run the harness against that server
-make run-provider-harness-test APP_DIR=$(pwd)/tests/integrations/python CI=1 HARNESS_MAX_REQUESTS=<ceiling> PROVIDER=<provider> FEATURE="<keyword>"
+make run-provider-harness-test PROVIDER=<provider> FEATURE="<keyword>"
 ```
 
-`APP_DIR` must be an **absolute** path. `run-provider-harness-test` uses it verbatim (Makefile:2255), unlike `make dev` which wraps it in `$(abspath)`; a relative value resolves against the wrong cwd in `logs-db-url.js` and the dbverify reporter.
+Do not pass `APP_DIR` or `CI=1` to `run-provider-harness-test`. `APP_DIR` already defaults to `tests/integrations/python` (Makefile:2255), the same profile `make dev` is pointed at, and `CI=1` suppresses the interactive HTML viewer that makes a live run readable. `make dev` is the one that needs `APP_DIR` spelled out, because it is what decides which code and config the server runs.
 
-**Never print the block with a placeholder still in it.** `<ceiling>`, `<provider>` and `<keyword>` are for this template only. Substitute the real values for the change before showing it, so every line can be pasted straight into a shell, and say in one line why that scope covers the change. If the change is not wire-visible (comments, renames, test-only edits), skip the block and say it is exempt instead.
+**Never print the block with a placeholder still in it.** `<provider>` and `<keyword>` are for this template only. Substitute the real values for the change before showing it, so every line can be pasted straight into a shell, and say in one line why that scope covers the change. If the change is not wire-visible (comments, renames, test-only edits), skip the block and say it is exempt instead.
 
 ## Step 5b: Push and Reply to FIX comments
 
@@ -331,7 +331,7 @@ If count is 0 (across all pages), report success. If comments remain:
 6. **Update tracking file** after each action
 7. **Some bots are slow** - CodeRabbit may take minutes to auto-resolve after push
 8. **User pushes manually** - This skill never commits or pushes; the user must push code changes before expecting auto-resolution of FIX actions
-9. **Never run the provider harness** - run the unit tests, then print the Step 5a block with both final commands filled in so the user runs the harness themselves
+9. **Never run the provider harness** - run the tests via `make test-core`, then print the Step 5a block with both final commands filled in so the user runs the harness themselves
 
 ## Error Handling
 
