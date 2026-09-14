@@ -3836,14 +3836,14 @@
         },
         "allowed_models": {
           "type": "array",
-          "description": "Allowed models for this provider config. Use [\"*\"] to allow all models; empty array denies all (deny-by-default).",
+          "description": "Allowed models for this provider config. Use [\"*\"] to allow all models; empty array denies all (deny-by-default). An entry starting with regex: is an RE2 pattern matched case-insensitively against the whole model name.",
           "items": {
             "type": "string"
           }
         },
         "blacklisted_models": {
           "type": "array",
-          "description": "Models blocked for this provider config even if matched by allowed_models. Use [\"*\"] to block all; empty array blocks none.",
+          "description": "Models blocked for this provider config even if matched by allowed_models. Use [\"*\"] to block all; empty array blocks none. An entry starting with regex: is an RE2 pattern matched case-insensitively against the whole model name.",
           "items": {
             "type": "string"
           }
@@ -4509,7 +4509,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Models this key can access. Use [\"*\"] to allow all models; empty array denies all (deny-by-default)."
+          "description": "Models this key can access. Use [\"*\"] to allow all models; empty array denies all (deny-by-default). An entry starting with regex: is an RE2 pattern matched case-insensitively against the whole model name."
         },
         "weight": {
           "type": "number",

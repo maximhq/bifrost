@@ -201,6 +201,10 @@ interface AsyncMultiSelectProps<T> {
 	inputId?: string;
 	/** id of element that labels this control (accessibility) */
 	ariaLabelledBy?: string;
+	/** id of the element describing this control, e.g. a form error message (accessibility) */
+	ariaDescribedBy?: string;
+	/** marks the control invalid for assistive tech (accessibility) */
+	ariaInvalid?: boolean;
 	/** test selector for the container element */
 	"data-testid"?: string;
 	views?: {
@@ -490,6 +494,8 @@ export function AsyncMultiSelect<T>(props: AsyncMultiSelectProps<T>) {
 				}}
 				inputId={props.inputId}
 				aria-labelledby={props.ariaLabelledBy}
+				aria-invalid={props.ariaInvalid}
+				aria-errormessage={props.ariaInvalid ? props.ariaDescribedBy : undefined}
 				data-testid={props["data-testid"]}
 				{...customOptionProps}
 				{...customDropdownIndicatorProps}

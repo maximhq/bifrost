@@ -22,6 +22,7 @@ const (
 // WhiteList is a list of values that are allowed to be used.
 // Semantics:
 //   - "*" (alone) means all values are allowed.
+//   - "regex:<pattern>" entries match any value the RE2 pattern fully matches (see MatchEntry).
 //   - Empty list means nothing is allowed.
 //   - Non-empty list (without "*") means only the listed values are allowed.
 //
@@ -33,7 +34,7 @@ type WhiteList []string
 // Returns true if value is in the list.
 func (wl WhiteList) Contains(value string) bool {
 	return slices.ContainsFunc(wl, func(s string) bool {
-		return strings.EqualFold(s, value)
+		return MatchEntry(s, value)
 	})
 }
 
@@ -61,9 +62,13 @@ func (wl WhiteList) IsRestricted() bool {
 }
 
 // Validate checks that the whitelist is well-formed.
-// Returns an error if "*" is present alongside other values, or if there are duplicate entries.
+// Returns an error if "*" is present alongside other values, if there are duplicate entries,
+// or if a regex: entry does not compile.
 func (wl WhiteList) Validate() error {
-	if wl.Contains("*") && len(wl) > 1 {
+	if err := ValidateRegexEntries(wl); err != nil {
+		return err
+	}
+	if slices.Contains(wl, "*") && len(wl) > 1 {
 		return fmt.Errorf("wildcard '*' cannot be used with other values in the whitelist")
 	}
 	seen := make(map[string]struct{}, len(wl))
@@ -80,13 +85,14 @@ func (wl WhiteList) Validate() error {
 // BlackList is a list of values that are denied.
 // Semantics:
 //   - "*" (alone) means all values are blocked.
+//   - "regex:<pattern>" entries block any value the RE2 pattern fully matches (see MatchEntry).
 //   - Empty list means nothing is blocked.
 //   - Non-empty list (without "*") means only the listed values are blocked.
 type BlackList []string
 
 func (bl BlackList) Contains(value string) bool {
 	return slices.ContainsFunc(bl, func(s string) bool {
-		return strings.EqualFold(s, value)
+		return MatchEntry(s, value)
 	})
 }
 
@@ -107,7 +113,10 @@ func (bl BlackList) IsBlockAll() bool {
 
 // Validate checks that the blacklist is well-formed.
 func (bl BlackList) Validate() error {
-	if bl.Contains("*") && len(bl) > 1 {
+	if err := ValidateRegexEntries(bl); err != nil {
+		return err
+	}
+	if slices.Contains(bl, "*") && len(bl) > 1 {
 		return fmt.Errorf("wildcard '*' cannot be used with other values in the blacklist")
 	}
 	seen := make(map[string]struct{}, len(bl))
