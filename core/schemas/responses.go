@@ -423,7 +423,15 @@ func (resp *BifrostResponsesResponse) WithDefaults() *BifrostResponsesResponse {
 	} else {
 		result.ServiceTier = new(BifrostServiceTierAuto)
 	}
-	result.Truncation = orDefault(resp.Truncation, "disabled")
+	// Truncation - default: "disabled". An empty string counts as unset: some
+	// OpenAI-compatible upstreams emit `"truncation": ""` on response.created,
+	// and a strict Responses client accepts only "auto" or "disabled", so
+	// forwarding the empty value invalidates the whole stream.
+	if resp.Truncation != nil && *resp.Truncation != "" {
+		result.Truncation = resp.Truncation
+	} else {
+		result.Truncation = Ptr("disabled")
+	}
 	result.ParallelToolCalls = orDefault(resp.ParallelToolCalls, true)
 
 	// Token limits - defaults: 0 (unlimited)
