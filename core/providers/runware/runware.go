@@ -131,7 +131,8 @@ func (provider *RunwareProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	return ToBifrostListModelsResponse(
 		models,
 		provider.GetProviderKey(),
-		key.ModelAccess(),
+		key.Models,
+		key.BlacklistedModels,
 		key.Aliases,
 		request.Unfiltered,
 	), nil
