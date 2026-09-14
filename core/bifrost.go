@@ -1017,6 +1017,25 @@ func (bifrost *Bifrost) ResponsesStreamRequest(ctx *schemas.BifrostContext, req 
 		}
 	}
 
+	stream, bifrostErr := bifrost.makeResponsesStreamRequest(ctx, req)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Agent mode for streams: see ChatCompletionStreamRequest for the shape.
+	if bifrost.MCPManager != nil {
+		startNextIteration := func(ctx *schemas.BifrostContext, next *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+			clearCtxForNextStreamIteration(ctx)
+			return bifrost.makeResponsesStreamRequest(ctx, next)
+		}
+		stream = bifrost.MCPManager.CheckAndExecuteAgentForResponsesStream(ctx, req, stream, startNextIteration)
+	}
+	return stream, nil
+}
+
+// makeResponsesStreamRequest runs one Responses stream through the request pipeline, without agent
+// mode. It is the streaming twin of makeResponsesRequest.
+func (bifrost *Bifrost) makeResponsesStreamRequest(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	bifrostReq := bifrost.getBifrostRequest()
 	bifrostReq.RequestType = schemas.ResponsesStreamRequest
 	bifrostReq.ResponsesRequest = req

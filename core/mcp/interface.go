@@ -49,6 +49,15 @@ type MCPManagerInterface interface {
 		startStream ChatStreamStarter,
 	) chan *schemas.BifrostStreamChunk
 
+	// CheckAndExecuteAgentForResponsesStream wraps a Responses stream so agent mode also applies
+	// to streaming requests. Returns the stream unchanged when there is nothing to auto-execute.
+	CheckAndExecuteAgentForResponsesStream(
+		ctx *schemas.BifrostContext,
+		req *schemas.BifrostResponsesRequest,
+		stream chan *schemas.BifrostStreamChunk,
+		startStream ResponsesStreamStarter,
+	) chan *schemas.BifrostStreamChunk
+
 	// CheckAndExecuteAgentForResponsesRequest handles agent mode for Responses API.
 	// Tool executions inside the agent loop go through the plugin gate internally.
 	CheckAndExecuteAgentForResponsesRequest(
