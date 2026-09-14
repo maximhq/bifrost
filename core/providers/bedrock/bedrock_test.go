@@ -7843,7 +7843,8 @@ func TestAnthropicIngressMantleReplayUsesResponsesInputShapes(t *testing.T) {
 
 		sawAssistant = true
 		for j, part := range parts {
-			assert.Equalf(t, "output_text", part.Type, "input[%d].content[%d]: replayed assistant text stays output_text", i, j)
+			// Mantle /v1 strips status/annotations from assistant items, so only input_text validates for gpt-oss.
+			assert.Equalf(t, "input_text", part.Type, "input[%d].content[%d]: replayed gpt-oss assistant text must be input_text on Mantle", i, j)
 		}
 		if assert.NotNilf(t, item.Status,
 			"input[%d]: an assistant output message item requires `status` (ResponseOutputMessageParam), got item: %s", i, mustItem(body, i)) {

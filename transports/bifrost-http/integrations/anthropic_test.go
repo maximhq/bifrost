@@ -6,9 +6,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -727,4 +729,72 @@ func TestAnthropicRawArgumentDelta(t *testing.T) {
 	if gjson.Get(result, "delta.partial_json").String() != `{"command":"grep [EMAIL]"}` || gjson.Get(result, "index").Int() != 2 {
 		t.Fatal(result)
 	}
+}
+
+// TestAnthropicMessagesRawResponseCarriesExtraFields verifies the verbatim Claude body keeps extra_fields unless Claude Code passthrough is active.
+func TestAnthropicMessagesRawResponseCarriesExtraFields(t *testing.T) {
+	converter := createAnthropicMessagesRouteConfig("/anthropic", nil)[0].ResponsesResponseConverter
+	rawResponse := `{"model":"claude-haiku-4-5-20251001","id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"OK"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":1},"future_field":{"kept":true}}`
+	newResp := func(raw any) *schemas.BifrostResponsesResponse {
+		return &schemas.BifrostResponsesResponse{
+			ID: schemas.Ptr("msg_1"),
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				Provider:    schemas.Anthropic,
+				RawRequest:  json.RawMessage(`{"model":"claude-haiku-4-5","max_tokens":16}`),
+				RawResponse: raw,
+			},
+		}
+	}
+
+	t.Run("raw capture requested", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		out, err := converter(ctx, newResp(json.RawMessage(rawResponse)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := sonic.Marshal(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := gjson.GetBytes(body, "extra_fields.raw_request.model").String(); got != "claude-haiku-4-5" {
+			t.Fatalf("raw_request not echoed: %s", body)
+		}
+		if got := gjson.GetBytes(body, "extra_fields.raw_response.id").String(); got != "msg_1" {
+			t.Fatalf("raw_response not echoed: %s", body)
+		}
+		withoutExtraFields, err := sjson.DeleteBytes(body, "extra_fields")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(withoutExtraFields) != rawResponse {
+			t.Fatalf("Anthropic body changed:\n got %s\nwant %s", withoutExtraFields, rawResponse)
+		}
+	})
+
+	t.Run("claude code passthrough stays byte-identical", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, true)
+		out, err := converter(ctx, newResp(json.RawMessage(rawResponse)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := sonic.Marshal(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(body) != rawResponse {
+			t.Fatalf("passthrough body changed:\n got %s\nwant %s", body, rawResponse)
+		}
+	})
+
+	t.Run("no raw response uses the converted shape", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		out, err := converter(ctx, newResp(nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := out.(*anthropic.AnthropicMessageResponse); !ok {
+			t.Fatalf("expected converted AnthropicMessageResponse, got %T", out)
+		}
+	})
 }

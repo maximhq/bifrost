@@ -291,6 +291,21 @@ func TestAccumulateAnthropicResponsesUsage_StreamReplica(t *testing.T) {
 	if usage.OutputTokensDetails == nil || usage.OutputTokensDetails.ReasoningTokens != 50 {
 		t.Fatalf("ReasoningTokens = %v, want 50", usage.OutputTokensDetails)
 	}
+	if len(usage.Iterations) != 2 {
+		t.Fatalf("Iterations = %d, want 2 (compaction + message)", len(usage.Iterations))
+	}
+	if it := usage.Iterations[0]; it.Type == nil || *it.Type != AnthropicUsageIterationTypeCompaction || it.OutputTokens != 312 {
+		t.Fatalf("Iterations[0] = %+v, want compaction with 312 output tokens", it)
+	}
+	if it := usage.Iterations[1]; it.Type == nil || *it.Type != "message" || it.OutputTokens != 74 {
+		t.Fatalf("Iterations[1] = %+v, want message with 74 output tokens", it)
+	}
+
+	// A later usage event without iterations must not erase the breakdown.
+	accumulateAnthropicResponsesUsage(usage, billed, &AnthropicUsage{OutputTokens: 74})
+	if len(usage.Iterations) != 2 {
+		t.Fatalf("Iterations after iteration-less event = %d, want 2", len(usage.Iterations))
+	}
 
 	normalizeCachedUsage(billed)
 	if billed.CompletionTokens != 386 {

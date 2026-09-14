@@ -3151,3 +3151,84 @@ func TestToOpenAIResponsesRequest_ReservedNamespacesFromDatasheet(t *testing.T) 
 		})
 	}
 }
+
+// Bedrock Mantle's /v1 Responses backend (gpt-oss) strips id, status and annotations from
+// replayed assistant items before validating, so output_text history fails with
+// status "failed" / invalid_prompt; only input_text (or a string) validates (#7074). gpt-5.x
+// on /openai/v1 and OpenAI itself reject input_text on assistant items, so the retag must
+// stay scoped to gpt-oss on Mantle.
+func TestToOpenAIResponsesRequest_MantleGPTOSSReplaysAssistantTextAsInput(t *testing.T) {
+	tests := []struct {
+		name         string
+		provider     schemas.ModelProvider
+		baseProvider schemas.ModelProvider
+		model        string
+		wantType     string
+	}{
+		{name: "bedrock gpt-oss-120b", provider: schemas.Bedrock, model: "openai.gpt-oss-120b", wantType: "input_text"},
+		{name: "bedrock_mantle gpt-oss-20b", provider: schemas.BedrockMantle, model: "openai.gpt-oss-20b", wantType: "input_text"},
+		{name: "custom provider on a bedrock base", provider: schemas.ModelProvider("my-bedrock"), baseProvider: schemas.Bedrock, model: "openai.gpt-oss-120b", wantType: "input_text"},
+		{name: "bedrock gpt-5.6 on /openai/v1 keeps output_text", provider: schemas.Bedrock, model: "openai.gpt-5.6-sol", wantType: "output_text"},
+		{name: "bedrock_mantle gpt-5.6 keeps output_text", provider: schemas.BedrockMantle, model: "openai.gpt-5.6-sol", wantType: "output_text"},
+		{name: "gpt-oss outside Mantle keeps output_text", provider: schemas.Groq, model: "openai/gpt-oss-120b", wantType: "output_text"},
+		{name: "openai keeps output_text", provider: schemas.OpenAI, model: "gpt-5-mini", wantType: "output_text"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assistant := schemas.ResponsesMessage{
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+				Status: schemas.Ptr("completed"),
+				Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+					Type:                              schemas.ResponsesOutputMessageContentTypeText,
+					Text:                              schemas.Ptr("Hello! How can I help you today?"),
+					ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{},
+				}}},
+			}
+			bifrostReq := &schemas.BifrostResponsesRequest{
+				Provider: tc.provider,
+				Model:    tc.model,
+				Input: []schemas.ResponsesMessage{
+					{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")}},
+					assistant,
+					{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Reply with OK.")}},
+				},
+			}
+			var ctx *schemas.BifrostContext
+			if tc.baseProvider != "" {
+				ctx = schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline,
+					schemas.BifrostContextKeyBaseProviderType, tc.baseProvider)
+			}
+			result := ToOpenAIResponsesRequest(ctx, bifrostReq)
+			require.NotNil(t, result)
+
+			body, err := sonic.Marshal(result)
+			require.NoError(t, err)
+			var wire struct {
+				Input []json.RawMessage `json:"input"`
+			}
+			require.NoError(t, json.Unmarshal(body, &wire))
+			require.Len(t, wire.Input, 3, "body: %s", body)
+			var replayed struct {
+				Role    string `json:"role"`
+				Content []struct {
+					Type        string          `json:"type"`
+					Text        string          `json:"text"`
+					Annotations json.RawMessage `json:"annotations"`
+				} `json:"content"`
+			}
+			require.NoError(t, json.Unmarshal(wire.Input[1], &replayed), "input[1]: %s", wire.Input[1])
+			require.Equal(t, "assistant", replayed.Role)
+			require.Len(t, replayed.Content, 1)
+			require.Equal(t, tc.wantType, replayed.Content[0].Type, "input[1]: %s", wire.Input[1])
+			require.Equal(t, "Hello! How can I help you today?", replayed.Content[0].Text)
+			if tc.wantType == "input_text" {
+				require.Nil(t, replayed.Content[0].Annotations, "input_text carries no annotations: %s", wire.Input[1])
+			}
+
+			require.Equal(t, schemas.ResponsesOutputMessageContentTypeText, bifrostReq.Input[1].Content.ContentBlocks[0].Type,
+				"the caller's input must not be mutated")
+		})
+	}
+}
