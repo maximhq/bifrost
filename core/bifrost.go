@@ -888,6 +888,29 @@ func (bifrost *Bifrost) ChatCompletionStreamRequest(ctx *schemas.BifrostContext,
 		}
 	}
 
+	stream, bifrostErr := bifrost.makeChatCompletionStreamRequest(ctx, req)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Agent mode for streams: tool calls Bifrost owns are executed without the client seeing
+	// them, and the model's follow-up continues in the same stream. Each round goes back through
+	// makeChatCompletionStreamRequest so it is logged, priced and governed like any other request.
+	if bifrost.MCPManager != nil {
+		startNextIteration := func(ctx *schemas.BifrostContext, next *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+			// The finished iteration left per-stream state on the shared context; without
+			// clearing it the next provider call reads as an already-closed connection.
+			clearCtxForNextStreamIteration(ctx)
+			return bifrost.makeChatCompletionStreamRequest(ctx, next)
+		}
+		stream = bifrost.MCPManager.CheckAndExecuteAgentForChatStream(ctx, req, stream, startNextIteration)
+	}
+	return stream, nil
+}
+
+// makeChatCompletionStreamRequest runs one chat completion stream through the request pipeline,
+// without agent mode. It is the streaming twin of makeChatCompletionRequest.
+func (bifrost *Bifrost) makeChatCompletionStreamRequest(ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	bifrostReq := bifrost.getBifrostRequest()
 	bifrostReq.RequestType = schemas.ChatCompletionStreamRequest
 	bifrostReq.ChatRequest = req
