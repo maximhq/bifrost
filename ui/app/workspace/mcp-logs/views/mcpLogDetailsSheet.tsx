@@ -221,16 +221,47 @@ export function MCPLogDetailSheet({
 		if (startStr && endStr && startStr !== endStr) return `${startStr} → ${endStr}`;
 		return startStr ?? endStr ?? "";
 	})();
+	// Team, customer and business unit can hold more than one value for a request
+	// (a user in more than one team, say), so each carries its plural columns
+	// alongside the scalar. User, project and device stay scalar-only; their
+	// plural slots are just left empty. filterKey ships without its "_ids"
+	// suffix here so the pluralized filter always applies to every id, single
+	// value included.
 	const scopeLinks = (
 		[
-			["User", "user_ids", displayLog.user_name, displayLog.user_id],
-			["Team", "team_ids", displayLog.team_name, displayLog.team_id],
-			["Customer", "customer_ids", displayLog.customer_name, displayLog.customer_id],
-			["Business Unit", "business_unit_ids", displayLog.business_unit_name, displayLog.business_unit_id],
-			["Project", "project_ids", displayLog.project_name, displayLog.project_id],
-			["Device", "device_ids", null, displayLog.device_id],
+			["User", "Users", "user_id", displayLog.user_name, displayLog.user_id, undefined, undefined],
+			["Team", "Teams", "team_id", displayLog.team_name, displayLog.team_id, displayLog.team_names, displayLog.team_ids],
+			[
+				"Customer",
+				"Customers",
+				"customer_id",
+				displayLog.customer_name,
+				displayLog.customer_id,
+				displayLog.customer_names,
+				displayLog.customer_ids,
+			],
+			[
+				"Business Unit",
+				"Business Units",
+				"business_unit_id",
+				displayLog.business_unit_name,
+				displayLog.business_unit_id,
+				displayLog.business_unit_names,
+				displayLog.business_unit_ids,
+			],
+			["Project", "Projects", "project_id", displayLog.project_name, displayLog.project_id, undefined, undefined],
+			["Device", "Devices", "device_id", null, displayLog.device_id, undefined, undefined],
 		] as const
-	).filter(([, , , id]) => id);
+	)
+		.map(([label, pluralLabel, idKey, name, id, names, ids]) => {
+			const items = ids?.length
+				? ids.map((entryId, i) => ({ id: entryId, name: names?.[i] || entryId }))
+				: id
+					? [{ id, name: name || id }]
+					: [];
+			return { label, pluralLabel, idKey, items };
+		})
+		.filter(({ items }) => items.length > 0);
 	const metadataEntries = Object.entries(displayLog.metadata ?? {});
 
 	return (
@@ -513,25 +544,32 @@ export function MCPLogDetailSheet({
 										)
 									}
 								/>
-								{scopeLinks.map(([label, filter, name, id]) => (
+								{scopeLinks.map(({ label, pluralLabel, idKey, items }) => (
 									<LogEntryDetailsView
-										key={filter}
+										key={idKey}
 										className="w-full"
-										label={label}
+										label={items.length > 1 ? pluralLabel : label}
 										value={
-											<Tooltip>
-												<TooltipTrigger asChild>
-													<Link
-														to="/workspace/mcp-logs"
-														search={(prev) => ({ ...prev, offset: 0, selected_log: "", [filter]: [id!] })}
-														className={`block max-w-full min-w-0 truncate text-sm font-normal text-blue-600 underline-offset-2 hover:underline dark:text-blue-400${name ? "" : " font-mono"}`}
-														data-testid={`mcplogdetails-${filter.replace("_ids", "").replaceAll("_", "-")}-link`}
-													>
-														{name || id}
-													</Link>
-												</TooltipTrigger>
-												<TooltipContent sideOffset={6}>{name ? id : `Filter by ${label.toLowerCase()}`}</TooltipContent>
-											</Tooltip>
+											<span className="inline-flex flex-wrap gap-x-1">
+												{items.map((item, i) => (
+													<Tooltip key={item.id}>
+														<TooltipTrigger asChild>
+															<Link
+																to="/workspace/mcp-logs"
+																search={(prev) => ({ ...prev, offset: 0, selected_log: "", [`${idKey}s`]: [item.id] })}
+																className={`text-sm font-normal text-blue-600 underline-offset-2 hover:underline dark:text-blue-400${item.name !== item.id ? "" : " font-mono"}`}
+																data-testid={`mcplogdetails-${idKey.replace("_id", "").replaceAll("_", "-")}-link-${item.id}`}
+															>
+																{item.name}
+																{i < items.length - 1 ? "," : ""}
+															</Link>
+														</TooltipTrigger>
+														<TooltipContent sideOffset={6}>
+															{item.name !== item.id ? item.id : `Filter by ${label.toLowerCase()}`}
+														</TooltipContent>
+													</Tooltip>
+												))}
+											</span>
 										}
 									/>
 								))}

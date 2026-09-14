@@ -177,18 +177,44 @@ export const createMCPColumns = (
 		},
 	},
 	{ id: "user", header: "User", size: 150, cell: ({ row }) => <AttributionCell name={row.original.user_name} id={row.original.user_id} /> },
-	{ id: "team", header: "Team", size: 150, cell: ({ row }) => <AttributionCell name={row.original.team_name} id={row.original.team_id} /> },
+	{
+		id: "team",
+		header: "Team",
+		size: 150,
+		cell: ({ row }) => (
+			<AttributionCell
+				names={row.original.team_names}
+				name={row.original.team_name}
+				ids={row.original.team_ids}
+				id={row.original.team_id}
+			/>
+		),
+	},
 	{
 		id: "customer",
 		header: "Customer",
 		size: 150,
-		cell: ({ row }) => <AttributionCell name={row.original.customer_name} id={row.original.customer_id} />,
+		cell: ({ row }) => (
+			<AttributionCell
+				names={row.original.customer_names}
+				name={row.original.customer_name}
+				ids={row.original.customer_ids}
+				id={row.original.customer_id}
+			/>
+		),
 	},
 	{
 		id: "business_unit",
 		header: "Business Unit",
 		size: 150,
-		cell: ({ row }) => <AttributionCell name={row.original.business_unit_name} id={row.original.business_unit_id} />,
+		cell: ({ row }) => (
+			<AttributionCell
+				names={row.original.business_unit_names}
+				name={row.original.business_unit_name}
+				ids={row.original.business_unit_ids}
+				id={row.original.business_unit_id}
+			/>
+		),
 	},
 	{
 		id: "project",

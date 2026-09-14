@@ -1385,6 +1385,15 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 		budgets = grant.LimitsFrom(budgets, untrackedHolderKinds...)
 		rateLimits = grant.LimitsFrom(rateLimits, untrackedHolderKinds...)
 	}
+	// Record what the call answered to, the way PostLLMHook does for inference. The logging plugin
+	// reads these keys when it completes the tool log, so a tool call is attributable to the same
+	// budgets and rate limits it was billed against.
+	if budgetIDs := limitIDsOf(budgets); len(budgetIDs) > 0 {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceBudgetIDs, budgetIDs)
+	}
+	if rateLimitIDs := limitIDsOf(rateLimits); len(rateLimitIDs) > 0 {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceRateLimitIDs, rateLimitIDs)
+	}
 	usageUpdate := &UsageUpdate{
 		Success:      success,
 		Cost:         toolCost,
