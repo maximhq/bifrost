@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"time"
 
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/oauth2"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -170,6 +172,40 @@ func perUserCallbackRedirect(ctx *fasthttp.RequestCtx, store configstore.ConfigS
 	return "/workspace/mcp-sessions/auth-failed?error=" + url.QueryEscape(userMsg)
 }
 
+// resolveOAuthConfigStatus returns the status the /status endpoint reports.
+//
+// TableOauthConfig.Status is the one-time bootstrap lifecycle only: it reads
+// "authorized" forever after a first successful auth, and InitiateUserOAuthFlow
+// never rewrites it when a reauth starts — it rotates the flow row to "pending"
+// instead. Echoing that stale value lets the authorizer UI's first poll tick
+// close the consent popup and fire complete-oauth while the flow is still
+// pending, which completeMCPClientOAuth rejects with 409. The flow row is
+// therefore the only honest source mid-reauth, exactly as
+// isPrematureOAuthCompletion reasons.
+func resolveOAuthConfigStatus(configStatus string, flow *configstoreTables.TableMCPOauthFlow, now time.Time) string {
+	if configStatus == "authorized" && isPrematureOAuthCompletion(flow, now) {
+		return flow.Status
+	}
+	return configStatus
+}
+
+// currentAdminOauthFlow returns the admin-mode flow row for the MCP client
+// owning this OAuth config, or nil when the client has none. Whether that row
+// says a reauth is still in flight is resolveOAuthConfigStatus's call — this
+// only fetches. Errors are non-fatal: a lookup failure leaves the caller with
+// the config status rather than failing the whole status read.
+func (h *OAuthHandler) currentAdminOauthFlow(ctx context.Context, oauthConfigID string) *configstoreTables.TableMCPOauthFlow {
+	client, err := h.store.ConfigStore.GetMCPClientByOauthConfigID(ctx, oauthConfigID)
+	if err != nil || client == nil {
+		return nil
+	}
+	flow, err := h.store.ConfigStore.GetOauthUserSessionByModeIdentityAndMCPClient(ctx, schemas.MCPAuthModeAdmin, "", client.ClientID)
+	if err != nil {
+		return nil
+	}
+	return flow
+}
+
 // getOAuthConfigStatus returns the current status of an OAuth config
 // GET /api/oauth/config/{id}/status
 func (h *OAuthHandler) getOAuthConfigStatus(ctx *fasthttp.RequestCtx) {
@@ -191,9 +227,18 @@ func (h *OAuthHandler) getOAuthConfigStatus(ctx *fasthttp.RequestCtx) {
 	// from this response rather than joined in: the popup UI that polls this
 	// endpoint (oauth2Authorizer.tsx) only ever branches on status, never
 	// reads a deadline for a live countdown.
+	//
+	// That split is also why the row's own status can't be echoed verbatim
+	// during a reauth — see resolveOAuthConfigStatus. Only a config already
+	// reading "authorized" can be stale that way, so the flow lookup is
+	// skipped for every other status.
+	var inFlightFlow *configstoreTables.TableMCPOauthFlow
+	if oauthConfig.Status == "authorized" {
+		inFlightFlow = h.currentAdminOauthFlow(ctx, configID)
+	}
 	response := map[string]interface{}{
 		"id":         oauthConfig.ID,
-		"status":     oauthConfig.Status,
+		"status":     resolveOAuthConfigStatus(oauthConfig.Status, inFlightFlow, time.Now()),
 		"created_at": oauthConfig.CreatedAt,
 	}
 
