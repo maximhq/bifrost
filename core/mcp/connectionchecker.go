@@ -376,7 +376,7 @@ func (c *ClientConnectionChecker) checkLiveConnection(conn *client.Client, clien
 		return false
 	}
 
-	c.writeBackTools(connGeneration, newTools, newMapping)
+	c.manager.writeBackDiscoveredTools(c.clientID, connGeneration, newTools, newMapping)
 	c.recordSuccess(clientName, connGeneration)
 	return true
 }
@@ -399,7 +399,7 @@ func (c *ClientConnectionChecker) checkPerCall(config *schemas.MCPClientConfig, 
 		return false
 	}
 
-	c.writeBackTools(connGeneration, newTools, newMapping)
+	c.manager.writeBackDiscoveredTools(c.clientID, connGeneration, newTools, newMapping)
 	c.recordSuccess(config.Name, connGeneration)
 	return true
 }
@@ -412,46 +412,6 @@ func (c *ClientConnectionChecker) markAsCheck(ctx context.Context) *schemas.Bifr
 	bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 	bfCtx.SetValue(schemas.BifrostContextKeyMCPHealthCheckRequest, true)
 	return bfCtx
-}
-
-// writeBackTools mirrors the old tool-syncer's generation-guarded
-// write-back: if a reconnect swapped in a fresh connection while this check
-// was in flight, the fresh generation no longer matches what was captured
-// before the check ran, and these (now stale) results are dropped silently
-// — the next tick syncs against whatever is current.
-func (c *ClientConnectionChecker) writeBackTools(connGeneration uint64, newTools map[string]schemas.ChatTool, newMapping map[string]string) {
-	// Precompute serialized JSON before the lock (see precomputeToolSerialization),
-	// so per-request logging/marshal reuse the bytes and the manager mutex isn't
-	// held across N marshals.
-	precomputeToolSerialization(newTools)
-
-	c.manager.mu.Lock()
-
-	clientState, exists := c.manager.clientMap[c.clientID]
-	if !exists {
-		c.manager.mu.Unlock()
-		return
-	}
-	if clientState.ConnGeneration != connGeneration {
-		c.manager.mu.Unlock()
-		c.logger.Debug("%s Skipping tool write-back for %s: connection was replaced during check", MCPLogPrefix, c.clientID)
-		return
-	}
-	clientState.ToolMap = newTools
-	clientState.ToolNameMapping = newMapping
-	fire := c.manager.toolsChangedCallback(clientState, c.clientID, newTools, newMapping)
-	c.manager.mu.Unlock()
-
-	// Fired outside the lock — see toolsChangeCallback's field doc. Covers
-	// the periodic checker's own refresh for both sticky (checkLiveConnection)
-	// and per-call (checkPerCall) clients — previously the one path where a
-	// client's tools could drift out of sync with the DB indefinitely, since
-	// nothing else revisits a per-call client after its first discovery.
-	// Gated on genuine content change: this is the highest-frequency firing
-	// point (every checker tick), and most ticks rediscover identical tools.
-	if fire != nil {
-		fire()
-	}
 }
 
 // recordFailure marks the client Unstable — a single transient-classified
