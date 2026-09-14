@@ -1399,3 +1399,53 @@ func TestBedrockCountTokensBody_UsesInvokeModelInputForRoutedRequests(t *testing
 		require.False(t, gjson.GetBytes(body, "input.invokeModel").Exists())
 	})
 }
+
+// TestToBedrockConverseRequest_InvokeToolSearchEndToEnd is the full-pipeline regression
+// test for #7155: a tool-search request arriving on the Bedrock-native invoke ingress
+// (POST /bedrock/model/{modelId}/invoke) must keep the tool_search_tool_* server tool and
+// the per-tool defer_loading flag through the mandatory invoke -> Converse -> neutral
+// conversion, so #6908's egress predicate (responsesUsesAnthropicInvokePath) can pick
+// InvokeModel. AWS restricts server-side tool search to InvokeModel, never Converse:
+// "On Amazon Bedrock, server-side tool search is available only through the InvokeModel
+// API, not the Converse API."
+// (https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool)
+func TestToBedrockConverseRequest_InvokeToolSearchEndToEnd(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+
+	deferredTool := anthropicToolMap("get_weather", nil)
+	deferredTool["defer_loading"] = true
+
+	req := &BedrockInvokeRequest{
+		ModelID: "us.anthropic.claude-sonnet-4-6-v1:0",
+		Messages: []BedrockMessage{{
+			Role:    BedrockMessageRoleUser,
+			Content: []BedrockContentBlock{{Text: schemas.Ptr("What is the weather in Paris? Use your tools.")}},
+		}},
+		Tools: []interface{}{
+			map[string]interface{}{"type": "tool_search_tool_regex_20251119", "name": "tool_search_tool_regex"},
+			deferredTool,
+		},
+	}
+
+	converseReq := req.ToBedrockConverseRequest()
+	responsesReq, err := converseReq.ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, responsesReq.Params)
+
+	var sawToolSearch, sawDeferred bool
+	for _, tool := range responsesReq.Params.Tools {
+		if tool.Type == schemas.ResponsesToolTypeToolSearch {
+			sawToolSearch = true
+			require.NotNil(t, tool.Name, "tool_search variant must survive on Name")
+			assert.Equal(t, "tool_search_tool_regex", *tool.Name)
+		}
+		if tool.Name != nil && *tool.Name == "get_weather" && tool.DeferLoading != nil {
+			sawDeferred = *tool.DeferLoading
+		}
+	}
+	assert.True(t, sawToolSearch, "tool_search_tool_* dropped by the invoke ingress: %+v", responsesReq.Params.Tools)
+	assert.True(t, sawDeferred, "defer_loading dropped by the invoke ingress: %+v", responsesReq.Params.Tools)
+
+	assert.True(t, responsesUsesAnthropicInvokePath(ctx, responsesReq),
+		"a tool-search request on the invoke ingress must route to InvokeModel, not Converse")
+}
