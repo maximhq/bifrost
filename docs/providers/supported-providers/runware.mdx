@@ -22,7 +22,7 @@ Text inference takes the other path: Runware serves it at an **OpenAI-compatible
 | Chat Completion (stream) | ✅ | `/v1/chat/completions` | OpenAI-compatible (SSE, not a task) |
 | Responses API | ✅ | `/v1/responses` | translated to chat completions |
 | Responses API (stream) | ✅ | `/v1/responses` | translated to chat completions (SSE) |
-| List Models | ✅ | `/v1/models` | `modelSearch` (paged task) |
+| List Models | ✅ | `/v1/models` | `modelSearch` (catalog) + `/v1/models` (pricing) |
 | Image Generation | ✅ | `/v1/images/generations` | `imageInference` |
 | Image Edit (image-to-image, inpainting, outpainting) | ✅ | `/v1/images/edits` | `imageInference` |
 | Image Upscale | ✅ | `/v1/images/edits` | `upscale` |
@@ -51,6 +51,8 @@ Runware returns an exact per-task **cost** when a request sets `includeCost: tru
 # Chat Completions (LLM)
 
 Runware's text models are served through an OpenAI-compatible endpoint. Route to them with the `runware/<model>` syntax; list the available ids with `GET /v1/models` on the gateway (backed by Runware's `modelSearch` catalog sweep).
+
+The gateway's listing merges two Runware sources: `modelSearch` supplies the full catalog (every modality), and the OpenAI-compatible `/v1/models` supplies the per-token `pricing` and `context_length` / `max_output_tokens` limits for the text models. Runware's two catalogues name the same model differently — `modelSearch` keys on the AIR (`google:gemini@3.1-pro`), `/v1/models` on a slug (`google-gemini-3-1-pro`) — and the gateway bridges the two, so those fields reach the model entries you see. If `/v1/models` is unavailable, the listing still returns the full catalog, just without pricing and context limits.
 
 ## Chat (`POST /v1/chat/completions`)
 
