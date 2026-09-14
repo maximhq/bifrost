@@ -148853,6 +148853,178 @@
           ]
         }
       ]
+    },
+    {
+      "name": "86. DeepSeek max_tokens cap dropped on OpenAI-compatible wire (#5606) (deepseek-max-tokens-cap)",
+      "description": "Issue #5606: Bifrost collapses an inbound max_tokens into ChatParameters.MaxCompletionTokens at the transport, then the OpenAI egress converter emits it as max_completion_tokens. DeepSeek's OpenAI-compatible /chat/completions reads only the legacy max_tokens spelling and ignores unknown fields silently, so the output cap was dropped with no error at any layer - reported at 266-289x the requested cap (4629 tokens returned for max_tokens:16) with finish_reason 'stop'. The fix renames the field back to max_tokens in the DeepSeek case of ToOpenAIChatRequest, alongside the existing OpenCode/Ollama/Mistral cases. These rows pin the cap as observable behaviour rather than as a wire-field name: a honored cap truncates an essay prompt at 16 tokens and reports finish_reason 'length'. Pre-fix all three fail with finish_reason 'stop' and thousands of completion tokens. max_tokens is exactly 16 so Bifrost's MinMaxCompletionTokens clamp is a no-op and cannot mask the result. Content is deliberately not asserted: DeepSeek thinks by default, so a 16-token cap can legitimately truncate inside reasoning and leave content empty.",
+      "item": [
+        {
+          "name": "deepseek/deepseek-v4-flash /v1/chat/completions honors max_tokens cap - #5606",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('deepseek native route max_tokens: 2xx - #5606', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('deepseek native route max_tokens: max_tokens cap honored (finish_reason=length) - #5606', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.choices, 'expected a choices array: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(j.choices[0].finish_reason, 'max_tokens:16 was not honored - DeepSeek reads the legacy max_tokens field and silently ignores max_completion_tokens, so a renamed field lets generation run uncapped: ' + pm.response.text()).to.eql('length');",
+                  "});",
+                  "pm.test('deepseek native route max_tokens: completion_tokens stays near the cap - #5606', function () {",
+                  "  var u = pm.response.json().usage || {};",
+                  "  pm.expect(u.completion_tokens, 'no usage.completion_tokens in reply: ' + pm.response.text()).to.be.a('number');",
+                  "  pm.expect(u.completion_tokens, 'requested max_tokens:16 but got ' + u.completion_tokens + ' completion tokens - the output cap was dropped in translation (#5606)').to.be.at.most(64);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"deepseek/deepseek-v4-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"Write a detailed 800 word essay about the history of the Eiffel Tower, covering its design, construction and reception.\"}],\"max_tokens\":16}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash /v1/chat/completions streaming honors max_tokens cap - #5606",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('deepseek native route streaming max_tokens: 2xx - #5606', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var finishReason = null;",
+                  "var completionTokens = null;",
+                  "pm.response.text().split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var payload = line.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  var chunk;",
+                  "  try { chunk = JSON.parse(payload); } catch (e) { return; }",
+                  "  if (chunk.usage && typeof chunk.usage.completion_tokens === 'number') { completionTokens = chunk.usage.completion_tokens; }",
+                  "  var choice = chunk.choices && chunk.choices[0];",
+                  "  if (choice && choice.finish_reason) { finishReason = choice.finish_reason; }",
+                  "});",
+                  "pm.test('deepseek native route streaming max_tokens: stream terminates with finish_reason=length - #5606', function () {",
+                  "  pm.expect(finishReason, 'max_tokens:16 was not honored on the stream - generation ran uncapped and stopped on its own (#5606): ' + pm.response.text()).to.eql('length');",
+                  "});",
+                  "pm.test('deepseek native route streaming max_tokens: streamed completion_tokens stays near the cap - #5606', function () {",
+                  "  pm.expect(completionTokens, 'no usage chunk despite stream_options.include_usage: ' + pm.response.text()).to.be.a('number');",
+                  "  pm.expect(completionTokens, 'requested max_tokens:16 but streamed ' + completionTokens + ' completion tokens - the output cap was dropped in translation (#5606)').to.be.at.most(64);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"deepseek/deepseek-v4-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"Write a detailed 800 word essay about the history of the Eiffel Tower, covering its design, construction and reception.\"}],\"max_tokens\":16,\"stream\":true,\"stream_options\":{\"include_usage\":true}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash /openai drop-in honors max_tokens cap - #5606",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('deepseek /openai drop-in max_tokens: 2xx - #5606', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('deepseek /openai drop-in max_tokens: max_tokens cap honored (finish_reason=length) - #5606', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.choices, 'expected a choices array: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(j.choices[0].finish_reason, 'max_tokens:16 was not honored - DeepSeek reads the legacy max_tokens field and silently ignores max_completion_tokens, so a renamed field lets generation run uncapped: ' + pm.response.text()).to.eql('length');",
+                  "});",
+                  "pm.test('deepseek /openai drop-in max_tokens: completion_tokens stays near the cap - #5606', function () {",
+                  "  var u = pm.response.json().usage || {};",
+                  "  pm.expect(u.completion_tokens, 'no usage.completion_tokens in reply: ' + pm.response.text()).to.be.a('number');",
+                  "  pm.expect(u.completion_tokens, 'requested max_tokens:16 but got ' + u.completion_tokens + ' completion tokens - the output cap was dropped in translation (#5606)').to.be.at.most(64);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"deepseek/deepseek-v4-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"Write a detailed 800 word essay about the history of the Eiffel Tower, covering its design, construction and reception.\"}],\"max_tokens\":16}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
