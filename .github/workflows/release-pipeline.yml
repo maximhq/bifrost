@@ -337,6 +337,7 @@ jobs:
             api.individual.githubcopilot.com:443
             api.groq.com:443
             api.mistral.ai:443
+            api.getnadir.com:443
             api.openai.com:443
             api.parasail.io:443
             api.perplexity.ai:443
@@ -451,6 +452,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           GITHUB_COPILOT_API_KEY: ${{ secrets.GITHUB_COPILOT_API_KEY }}
+          NADIR_API_KEY: ${{ secrets.NADIR_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
@@ -669,6 +671,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
+          NADIR_API_KEY: ${{ secrets.NADIR_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
@@ -1352,6 +1355,7 @@ jobs:
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          NADIR_API_KEY: ${{ secrets.NADIR_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
@@ -1403,6 +1407,7 @@ jobs:
             production.cloudfront.docker.com:443
             dl.google.com:443
             api.github.com:443
+            api.getnadir.com:443
             api.openai.com:443
             auth.docker.io:443
             azure.archive.ubuntu.com:80
@@ -1486,6 +1491,7 @@ jobs:
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          NADIR_API_KEY: ${{ secrets.NADIR_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
@@ -1673,6 +1679,7 @@ jobs:
             api.github.com:443
             api.groq.com:443
             api.mistral.ai:443
+            api.getnadir.com:443
             api.openai.com:443
             api.parasail.io:443
             api.tokenfactory.nebius.com:443
@@ -1856,6 +1863,7 @@ jobs:
             api.individual.githubcopilot.com:443
             api.groq.com:443
             api.mistral.ai:443
+            api.getnadir.com:443
             api.openai.com:443
             api.parasail.io:443
             api.perplexity.ai:443
@@ -1978,6 +1986,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           GITHUB_COPILOT_API_KEY: ${{ secrets.GITHUB_COPILOT_API_KEY }}
+          NADIR_API_KEY: ${{ secrets.NADIR_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
@@ -2248,6 +2257,7 @@ jobs:
             api.individual.githubcopilot.com:443
             api.groq.com:443
             api.mistral.ai:443
+            api.getnadir.com:443
             api.openai.com:443
             api.parasail.io:443
             api.perplexity.ai:443
@@ -2336,6 +2346,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           GITHUB_COPILOT_API_KEY: ${{ secrets.GITHUB_COPILOT_API_KEY }}
+          NADIR_API_KEY: ${{ secrets.NADIR_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
@@ -2402,6 +2413,7 @@ jobs:
             api.individual.githubcopilot.com:443
             api.groq.com:443
             api.mistral.ai:443
+            api.getnadir.com:443
             api.openai.com:443
             api.parasail.io:443
             api.perplexity.ai:443
@@ -2490,6 +2502,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           GITHUB_COPILOT_API_KEY: ${{ secrets.GITHUB_COPILOT_API_KEY }}
+          NADIR_API_KEY: ${{ secrets.NADIR_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
@@ -2620,6 +2633,7 @@ jobs:
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          NADIR_API_KEY: ${{ secrets.NADIR_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
@@ -2747,6 +2761,7 @@ jobs:
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          NADIR_API_KEY: ${{ secrets.NADIR_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
@@ -2890,6 +2905,7 @@ jobs:
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          NADIR_API_KEY: ${{ secrets.NADIR_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}

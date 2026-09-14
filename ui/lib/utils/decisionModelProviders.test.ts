@@ -65,12 +65,13 @@ describe("decision model provider helpers", () => {
 	const ollama = provider({ name: "ollama" } as Partial<ModelProvider>);
 	const azure = provider({ name: "azure" } as Partial<ModelProvider>);
 	const databricks = provider({ name: "databricks" } as Partial<ModelProvider>);
+	const nadir = provider({ name: "nadir" } as Partial<ModelProvider>);
 	const laya = custom("Laya");
 	const clef = custom("cloudflare clev", "https://api.cloudflare.com/client/v4/accounts/acct/ai/run/@cf/cloudflare/clef");
 	const clefFlash = custom("clef-flash", "https://api.cloudflare.com/client/v4/accounts/acct/ai/run/@cf/cloudflare/clef-flash/");
 
 	test("offers only providers that answer decisions natively", () => {
-		for (const candidate of [typesafe, openrouter, openai, cloudflare, perplexity, ollama, azure, databricks, laya, clef])
+		for (const candidate of [typesafe, openrouter, openai, cloudflare, perplexity, ollama, azure, databricks, nadir, laya, clef])
 			expect(isDecisionProvider(candidate)).toBe(true);
 		expect(isDecisionProvider(provider({ name: "anthropic" } as Partial<ModelProvider>))).toBe(false);
 		expect(
@@ -118,6 +119,8 @@ describe("decision model provider helpers", () => {
 		expect(defaultDecisionModel(azure)).toBe("Microsoft-Decision-1");
 		// ai_decide is the only decision model a Databricks workspace serves.
 		expect(defaultDecisionModel(databricks)).toBe("ai_decide");
+		// Nadir answers with its classifier whatever the model is named.
+		expect(defaultDecisionModel(nadir)).toBe("auto");
 		expect(defaultDecisionModel(clefFlash)).toBe("clef-flash");
 		expect(defaultDecisionModel(laya)).toBe("english");
 		expect(defaultDecisionModel(custom("nimble-gpu"))).toBe("nimble-latest");
@@ -134,11 +137,12 @@ describe("decision model provider helpers", () => {
 			),
 		).toBe(true);
 		expect(listsDecisionModels(undefined, "openai")).toBe(true);
-		for (const candidate of [typesafe, databricks, laya, clef]) expect(listsDecisionModels(candidate, candidate.name)).toBe(false);
+		for (const candidate of [typesafe, databricks, nadir, laya, clef]) expect(listsDecisionModels(candidate, candidate.name)).toBe(false);
 	});
 
-	test("fixes the model for Databricks and a Cloudflare-URL provider", () => {
+	test("fixes the model for Databricks, Nadir, and a Cloudflare-URL provider", () => {
 		expect(servesFixedDecisionModel(databricks, "databricks")).toBe(true);
+		expect(servesFixedDecisionModel(nadir, "nadir")).toBe(true);
 		expect(servesFixedDecisionModel(clef, clef.name)).toBe(true);
 		for (const candidate of [typesafe, openai, azure, laya]) expect(servesFixedDecisionModel(candidate, candidate.name)).toBe(false);
 	});
