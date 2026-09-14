@@ -302,7 +302,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 	// key affinity has nowhere to keep a binding and declines every request.
 	bifrost.sessionAffinity = config.SessionAffinity
 	if bifrost.sessionAffinity == nil {
-		bifrost.sessionAffinity = newSessionAffinity(bifrost.kvStore, bifrost.logger)
+		bifrost.sessionAffinity = NewSessionAffinity(bifrost.kvStore, bifrost.logger)
 	}
 
 	// Initialize object pools
