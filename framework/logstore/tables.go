@@ -1354,6 +1354,12 @@ func costsReconcile(a, b float64) bool {
 // MCPToolLog represents a log entry for MCP tool executions
 // This is separate from the main Log table since MCP tool calls have different fields
 type MCPToolLog struct {
+	// Display names are resolved after scoped reads; IDs remain the recorded attribution.
+	UserName         *string `gorm:"-" json:"user_name,omitempty"`
+	TeamName         *string `gorm:"-" json:"team_name,omitempty"`
+	CustomerName     *string `gorm:"-" json:"customer_name,omitempty"`
+	BusinessUnitName *string `gorm:"-" json:"business_unit_name,omitempty"`
+
 	ID             string    `gorm:"primaryKey;type:varchar(255)" json:"id"`
 	RequestID      string    `gorm:"type:varchar(255);column:request_id;index:idx_mcp_logs_request_id" json:"request_id,omitempty"`             // The original request ID from context
 	LLMRequestID   *string   `gorm:"type:varchar(255);column:llm_request_id;index:idx_mcp_logs_llm_request_id" json:"llm_request_id,omitempty"` // Links to the LLM request that triggered this tool call
@@ -1388,7 +1394,7 @@ type MCPToolLog struct {
 	// Endpoint-agent context. These are populated for tool calls observed on a
 	// developer machine by the Bifrost Edge agent (rather than proxied by the
 	// gateway). Source distinguishes the origin: empty/null for gateway-proxied
-	// calls, "endpoint" for agent-observed calls.
+	// calls, "endpoint" for agent-observed MCP calls, "native" for harness tools.
 	DeviceID *string `gorm:"type:varchar(255);index:idx_mcp_logs_device_id" json:"device_id,omitempty"`
 	AppKey   *string `gorm:"type:varchar(64)" json:"app_key,omitempty"` // Canonical policy key of the detected client app (schemas.AppKeyFromName), e.g. "claude-code"; a slug like App, not a secret or credential
 	Decision *string `gorm:"type:varchar(16)" json:"decision,omitempty"`
@@ -1694,6 +1700,13 @@ type WebhookDeliverySearchFilters struct {
 
 // MCPToolLogSearchFilters represents the available filters for MCP tool log searches
 type MCPToolLogSearchFilters struct {
+	UserIDs         []string `json:"user_ids,omitempty"`
+	TeamIDs         []string `json:"team_ids,omitempty"`
+	CustomerIDs     []string `json:"customer_ids,omitempty"`
+	BusinessUnitIDs []string `json:"business_unit_ids,omitempty"`
+	ProjectIDs      []string `json:"project_ids,omitempty"`
+	DeviceIDs       []string `json:"device_ids,omitempty"`
+
 	ToolNames     []string   `json:"tool_names,omitempty"`
 	ServerLabels  []string   `json:"server_labels,omitempty"`
 	Status        []string   `json:"status,omitempty"`
@@ -2315,6 +2328,7 @@ var dimensionColumns = map[RankingDimension]dimensionColumnDef{
 	RankingDimensionUserAgent:    {IDCol: "user_agent", NameCol: "user_agent"},
 }
 
+// DimensionColumnDef returns the column pair for a supported ranking dimension.
 func DimensionColumnDef(d RankingDimension) (idCol, nameCol string, ok bool) {
 	def, exists := dimensionColumns[d]
 	return def.IDCol, def.NameCol, exists

@@ -56,3 +56,26 @@ func TestGetStatsTokenSplit(t *testing.T) {
 	require.Equal(t, int64(70), stats.CompletionTokens, "completion = 10+20+40")
 	require.Equal(t, stats.TotalTokens, stats.PromptTokens+stats.CompletionTokens, "split sums to total")
 }
+
+// TestMCPAttributionFiltersApplyToRowsAndStats checks each stored scope filters both records and aggregates.
+func TestMCPAttributionFiltersApplyToRowsAndStats(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&MCPToolLog{}))
+	store := &RDBLogStore{db: db, logger: bifrost.NewDefaultLogger(schemas.LogLevelInfo)}
+	ctx := context.Background()
+	a, b := "a", "b"
+	now := time.Now()
+	require.NoError(t, db.Create(&MCPToolLog{ID: a, ToolName: "Read", Timestamp: now, Status: "success", UserID: &a, TeamID: &a, CustomerID: &a, BusinessUnitID: &a, ProjectID: &a, DeviceID: &a}).Error)
+	require.NoError(t, db.Create(&MCPToolLog{ID: b, ToolName: "Read", Timestamp: now, Status: "error", UserID: &b, TeamID: &b, CustomerID: &b, BusinessUnitID: &b, ProjectID: &b, DeviceID: &b}).Error)
+	for _, filters := range []MCPToolLogSearchFilters{{UserIDs: []string{a}}, {TeamIDs: []string{a}}, {CustomerIDs: []string{a}}, {BusinessUnitIDs: []string{a}}, {ProjectIDs: []string{a}}, {DeviceIDs: []string{a}}} {
+		result, err := store.SearchMCPToolLogs(ctx, filters, PaginationOptions{Limit: 10, SortBy: "timestamp", Order: "desc"})
+		require.NoError(t, err)
+		require.Len(t, result.Logs, 1)
+		require.Equal(t, a, result.Logs[0].ID)
+		stats, err := store.GetMCPToolLogStats(ctx, filters)
+		require.NoError(t, err)
+		require.EqualValues(t, 1, stats.TotalExecutions)
+		require.EqualValues(t, 100, stats.SuccessRate)
+	}
+}
