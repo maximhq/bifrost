@@ -911,9 +911,14 @@ func TestStreamOutputItemAddedMessageCarriesEmptyContentArray(t *testing.T) {
 				t.Errorf("item.%s = %s, want %s", field, got, want)
 			}
 		}
-		// The source item must not be mutated.
+		// The source item must not be mutated — neither field. Status is
+		// defaulted on this event too, and before the copy was hoisted above
+		// both defaults it wrote through to the shared source item.
 		if src.Item.Content != nil {
-			t.Errorf("WithDefaults mutated the source item: %+v", src.Item.Content)
+			t.Errorf("WithDefaults mutated the source item content: %+v", src.Item.Content)
+		}
+		if src.Item.Status != nil {
+			t.Errorf("WithDefaults mutated the source item status: %q", *src.Item.Status)
 		}
 	})
 
