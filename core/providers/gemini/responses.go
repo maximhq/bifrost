@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -3865,28 +3866,15 @@ var responsesGenerationConfigExtraParamKeys = []string{
 
 // responsesExtraParamsWithoutGenerationConfigKeys returns the ExtraParams to
 // forward on the wire, without the keys already mapped into generationConfig.
-// It never mutates the input so the Bifrost request stays intact for retries.
+// It always returns a copy (nil stays nil): the caller later removes
+// safety_settings and cached_content from the outbound map, and aliasing the
+// source map would drop those keys from the Bifrost request for the next
+// retry/fallback attempt.
 func responsesExtraParamsWithoutGenerationConfigKeys(extraParams map[string]interface{}) map[string]interface{} {
-	if extraParams == nil {
-		return nil
-	}
-	hasConsumedKey := false
-	for _, key := range responsesGenerationConfigExtraParamKeys {
-		if _, ok := extraParams[key]; ok {
-			hasConsumedKey = true
-			break
-		}
-	}
-	if !hasConsumedKey {
-		return extraParams
-	}
-	filtered := make(map[string]interface{}, len(extraParams))
-	for key, value := range extraParams {
-		if slices.Contains(responsesGenerationConfigExtraParamKeys, key) {
-			continue
-		}
-		filtered[key] = value
-	}
+	filtered := maps.Clone(extraParams)
+	maps.DeleteFunc(filtered, func(key string, _ interface{}) bool {
+		return slices.Contains(responsesGenerationConfigExtraParamKeys, key)
+	})
 	return filtered
 }
 

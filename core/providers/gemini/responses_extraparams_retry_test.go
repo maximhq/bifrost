@@ -81,3 +81,41 @@ func TestGenAIMediaResolution_PreservedOnSecondConversion(t *testing.T) {
 		"mediaResolution must survive a second conversion of the same request (retry)")
 	assert.NotContains(t, second.GetExtraParams(), "media_resolution")
 }
+
+// safety_settings and cached_content are not generationConfig keys, but they are
+// removed from the outbound ExtraParams after being mapped to dedicated fields.
+// Without a copy, that removal hit the Bifrost request and a retry lost them.
+func TestToGeminiResponsesRequest_SafetySettingsAndCachedContentSurviveRetries(t *testing.T) {
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Gemini,
+		Model:    "gemini-2.5-flash",
+		Params: &schemas.ResponsesParameters{
+			ExtraParams: map[string]interface{}{
+				"safety_settings": []interface{}{
+					map[string]interface{}{
+						"category":  "HARM_CATEGORY_HARASSMENT",
+						"threshold": "BLOCK_NONE",
+					},
+				},
+				"cached_content":     "cachedContents/abc123",
+				"custom_passthrough": "keep-me",
+			},
+		},
+	}
+
+	for attempt := 1; attempt <= 3; attempt++ {
+		geminiReq, err := gemini.ToGeminiResponsesRequest(nil, bifrostReq)
+		require.NoError(t, err, "attempt %d", attempt)
+		require.NotNil(t, geminiReq, "attempt %d", attempt)
+
+		require.Len(t, geminiReq.SafetySettings, 1, "attempt %d", attempt)
+		assert.Equal(t, "HARM_CATEGORY_HARASSMENT", geminiReq.SafetySettings[0].Category, "attempt %d", attempt)
+		assert.Equal(t, "BLOCK_NONE", geminiReq.SafetySettings[0].Threshold, "attempt %d", attempt)
+		assert.Equal(t, "cachedContents/abc123", geminiReq.CachedContent, "attempt %d", attempt)
+		assert.Equal(t, map[string]interface{}{"custom_passthrough": "keep-me"}, geminiReq.GetExtraParams(), "attempt %d", attempt)
+	}
+
+	assert.Contains(t, bifrostReq.Params.ExtraParams, "safety_settings")
+	assert.Contains(t, bifrostReq.Params.ExtraParams, "cached_content")
+	assert.Len(t, bifrostReq.Params.ExtraParams, 3)
+}
