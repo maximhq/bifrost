@@ -4849,6 +4849,12 @@ func migrationAddMCPGovernanceSnapshots(ctx context.Context, db *gorm.DB, logger
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
+			// Twelve ALTER TABLEs on a table that is being written to continuously.
+			// Without a bounded wait each one can sit behind a long-running log
+			// transaction holding ACCESS EXCLUSIVE, and startup stalls with it.
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
 			for _, col := range columns {
 				if err := addColumnIfNotExists(tx, logger, &MCPToolLog{}, col); err != nil {
 					return err
@@ -4858,6 +4864,9 @@ func migrationAddMCPGovernanceSnapshots(ctx context.Context, db *gorm.DB, logger
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
 			for i := len(columns) - 1; i >= 0; i-- {
 				if err := dropColumnIfExists(tx, logger, &MCPToolLog{}, columns[i]); err != nil {
 					return err
