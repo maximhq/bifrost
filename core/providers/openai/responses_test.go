@@ -653,6 +653,131 @@ func TestToOpenAIResponsesRequest_NormalizesReasoningEffort(t *testing.T) {
 	}
 }
 
+// TestToOpenAIResponsesRequest_ReasoningContextAllTurns pins the
+// reasoning.context gate: "all_turns" is a hard 400 on models that only accept
+// "auto"/"current_turn" (gpt-5-pro, gpt-5, o-series), so it is dropped there and
+// kept on the families that accept it. A datasheet row wins over the name
+// default in both directions; "auto"/"current_turn" and non-OpenAI providers are
+// never touched, and the caller's params are not mutated.
+func TestToOpenAIResponsesRequest_ReasoningContextAllTurns(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider schemas.ModelProvider
+		// baseProvider is the built-in provider a custom provider key resolves to,
+		// carried on the context exactly as the router sets it.
+		baseProvider schemas.ModelProvider
+		model        string
+		context      string
+		record       *schemas.ModelCapabilities
+		want         *string // nil means the field must be dropped
+	}{
+		{name: "drops all_turns for gpt-5-pro", model: "gpt-5-pro", context: schemas.ReasoningContextAllTurns},
+		{name: "drops all_turns for gpt-5", model: "gpt-5", context: schemas.ReasoningContextAllTurns},
+		{name: "drops all_turns for gpt-5.2", model: "gpt-5.2", context: schemas.ReasoningContextAllTurns},
+		{name: "drops all_turns for o3", model: "o3", context: schemas.ReasoningContextAllTurns},
+		{name: "drops all_turns for azure gpt-5-pro", provider: schemas.Azure, model: "gpt-5-pro", context: schemas.ReasoningContextAllTurns},
+		{name: "keeps all_turns for gpt-5.4", model: "gpt-5.4", context: schemas.ReasoningContextAllTurns, want: new(schemas.ReasoningContextAllTurns)},
+		{name: "keeps all_turns for gpt-5.5-pro", model: "gpt-5.5-pro", context: schemas.ReasoningContextAllTurns, want: new(schemas.ReasoningContextAllTurns)},
+		{name: "keeps all_turns for gpt-5.6-sol", model: "gpt-5.6-sol", context: schemas.ReasoningContextAllTurns, want: new(schemas.ReasoningContextAllTurns)},
+		{name: "keeps all_turns for azure gpt-5.6", provider: schemas.Azure, model: "gpt-5.6", context: schemas.ReasoningContextAllTurns, want: new(schemas.ReasoningContextAllTurns)},
+		{
+			name:    "row listing all_turns beats the name default",
+			model:   "gpt-5-pro",
+			context: schemas.ReasoningContextAllTurns,
+			record: &schemas.ModelCapabilities{SupportedReasoningContexts: []string{
+				schemas.ReasoningContextAuto, schemas.ReasoningContextCurrentTurn, schemas.ReasoningContextAllTurns,
+			}},
+			want: new(schemas.ReasoningContextAllTurns),
+		},
+		{
+			name:    "row omitting all_turns beats the name default",
+			model:   "gpt-5.6",
+			context: schemas.ReasoningContextAllTurns,
+			record: &schemas.ModelCapabilities{SupportedReasoningContexts: []string{
+				schemas.ReasoningContextAuto, schemas.ReasoningContextCurrentTurn,
+			}},
+		},
+		{
+			name:    "row omitting auto drops auto too",
+			model:   "gpt-5.4",
+			context: schemas.ReasoningContextAuto,
+			record: &schemas.ModelCapabilities{SupportedReasoningContexts: []string{
+				schemas.ReasoningContextCurrentTurn, schemas.ReasoningContextAllTurns,
+			}},
+		},
+		{name: "keeps current_turn for gpt-5-pro", model: "gpt-5-pro", context: schemas.ReasoningContextCurrentTurn, want: new(schemas.ReasoningContextCurrentTurn)},
+		{name: "keeps auto for gpt-5-pro", model: "gpt-5-pro", context: schemas.ReasoningContextAuto, want: new(schemas.ReasoningContextAuto)},
+		{name: "leaves other OpenAI-compatible providers alone", provider: schemas.Groq, model: "gpt-5-pro", context: schemas.ReasoningContextAllTurns, want: new(schemas.ReasoningContextAllTurns)},
+		{
+			// A custom provider reports its own key, so the gate has to resolve the
+			// base provider from the context or the value reaches OpenAI as a 400.
+			name:         "drops all_turns for a custom provider on an openai base",
+			provider:     schemas.ModelProvider("my-openai"),
+			baseProvider: schemas.OpenAI,
+			model:        "gpt-5-pro",
+			context:      schemas.ReasoningContextAllTurns,
+		},
+		{
+			name:         "drops all_turns for a custom provider on an azure base",
+			provider:     schemas.ModelProvider("my-azure"),
+			baseProvider: schemas.Azure,
+			model:        "gpt-5-pro",
+			context:      schemas.ReasoningContextAllTurns,
+		},
+		{
+			name:         "keeps all_turns for a custom provider on a non-OpenAI base",
+			provider:     schemas.ModelProvider("my-anthropic"),
+			baseProvider: schemas.Anthropic,
+			model:        "gpt-5-pro",
+			context:      schemas.ReasoningContextAllTurns,
+			want:         new(schemas.ReasoningContextAllTurns),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider := tt.provider
+			if provider == "" {
+				provider = schemas.OpenAI
+			}
+			if tt.record != nil {
+				installCapabilityRecord(t, tt.model, tt.record)
+			}
+			params := &schemas.ResponsesParameters{
+				Reasoning: &schemas.ResponsesParametersReasoning{
+					Effort:  new("medium"),
+					Context: new(tt.context),
+				},
+			}
+			var ctx *schemas.BifrostContext
+			if tt.baseProvider != "" {
+				ctx = schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline,
+					schemas.BifrostContextKeyBaseProviderType, tt.baseProvider)
+			}
+			req := ToOpenAIResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+				Provider: provider,
+				Model:    tt.model,
+				Input: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+				}},
+				Params: params,
+			})
+
+			require.NotNil(t, req)
+			require.NotNil(t, req.Reasoning, "effort must survive; only context is gated")
+			if tt.want == nil {
+				require.Nil(t, req.Reasoning.Context, "reasoning.context must be dropped")
+			} else {
+				require.NotNil(t, req.Reasoning.Context, "reasoning.context must be kept")
+				require.Equal(t, *tt.want, *req.Reasoning.Context)
+			}
+			require.NotNil(t, params.Reasoning.Context, "caller's params must not be mutated")
+			require.Equal(t, tt.context, *params.Reasoning.Context)
+		})
+	}
+}
+
 func TestToOpenAIResponsesRequest_GPTOSS_SummaryToContentBlocks(t *testing.T) {
 	tests := []struct {
 		name              string
