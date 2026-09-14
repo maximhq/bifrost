@@ -327,7 +327,7 @@ func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider
 	}
 
 	// Bare-name match needs no catalog access and covers most allowlists.
-	if allowedModels.Contains(model) {
+	if slices.Contains(allowedModels, model) {
 		return true
 	}
 

@@ -128,12 +128,6 @@ func (r ModelAccessRule) Allows(provider, model string) bool {
 	return !r.Blocks(provider, model) && r.Admits(provider, model)
 }
 
-// IsRestricted reports whether the allow side names specific models, either
-// exactly or by pattern, rather than admitting everything.
-func (r ModelAccessRule) IsRestricted() bool {
-	return r.Allowed.IsRestricted()
-}
-
 // DeniesAll reports whether no model can pass: everything is blocked, or
 // nothing is admitted.
 func (r ModelAccessRule) DeniesAll() bool {

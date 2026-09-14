@@ -413,7 +413,7 @@ func (s *Store) buildState(provider schemas.ModelProvider, keys []schemas.Key) *
 			allModelsAllowed = true
 		} else {
 			for _, m := range key.Models {
-				if key.BlacklistedModels.IsBlocked(m) {
+				if key.ModelAccess().Blocks(string(provider), m) {
 					continue
 				}
 				if !allowed.Contains(m) {

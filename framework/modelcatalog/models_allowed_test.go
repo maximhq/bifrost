@@ -72,7 +72,7 @@ func TestIsModelAllowedForProvider_ExactOnly(t *testing.T) {
 		{"regex-looking entry does not admit the family", "gpt-4o-mini", schemas.WhiteList{"regex:^gpt-4.*"}, false},
 		{"regex-looking entry matches itself", "regex:^gpt-4.*", schemas.WhiteList{"regex:^gpt-4.*"}, true},
 		{"bare pattern syntax is a literal", "gpt-4o", schemas.WhiteList{"^gpt-4.*"}, false},
-		{"literal entries match case-insensitively", "GPT-4o", schemas.WhiteList{"gpt-4o"}, true},
+		{"literal entries match as written", "GPT-4o", schemas.WhiteList{"gpt-4o"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
