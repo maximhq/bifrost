@@ -119,9 +119,10 @@ func ConvertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage) []Op
 
 // isOpenAIReasoningModel checks if the given model is an OpenAI reasoning model
 // that supports the reasoning.effort parameter.
-// OpenAI reasoning models include o1, o3, o4 series and GPT-5.x variants.
-// Note: -pro and -codex variants (e.g. gpt-5.2-pro, gpt-5.2-codex) are always-reasoning
-// models that do NOT support effort "none" — callers must handle top_p stripping separately.
+// OpenAI reasoning models include o1, o3, o4 series and GPT-5.x/GPT-6 variants.
+// Note: -pro and -codex variants (e.g. gpt-5.2-pro, gpt-5.2-codex) and the GPT-6 family are
+// always-reasoning models that do NOT default effort to "none" — callers must handle top_p
+// stripping separately.
 // TODO we need to find a better way to check if a model is an OpenAI reasoning model
 func isOpenAIReasoningModel(model string) bool {
 	_, parsedModel := schemas.ParseModelString(model, schemas.OpenAI)
@@ -154,8 +155,8 @@ func isOpenAIReasoningModel(model string) bool {
 			return true
 		}
 	}
-	// Check for GPT-5 series models which support reasoning.effort
-	if strings.Contains(modelLower, "gpt-5") {
+	// Check for GPT-5/GPT-6 series models which support reasoning.effort
+	if strings.Contains(modelLower, "gpt-5") || strings.Contains(modelLower, "gpt-6") {
 		return true
 	}
 	return false
@@ -196,23 +197,26 @@ func supportsOpenAIXHighReasoningEffort(model string) bool {
 	if schemas.SupportsGrokXHighReasoningEffort(modelLower) {
 		return true
 	}
-	return strings.HasPrefix(modelLower, "gpt-5.2") ||
-		strings.HasPrefix(modelLower, "gpt-5.3-codex") ||
-		strings.HasPrefix(modelLower, "gpt-5.4") ||
-		strings.HasPrefix(modelLower, "gpt-5.5") ||
-		strings.HasPrefix(modelLower, "gpt-5.6")
+	// Substring, not prefix: Bedrock serves these as "openai.gpt-5.6-sol".
+	return strings.Contains(modelLower, "gpt-5.2") ||
+		strings.Contains(modelLower, "gpt-5.3-codex") ||
+		strings.Contains(modelLower, "gpt-5.4") ||
+		strings.Contains(modelLower, "gpt-5.5") ||
+		strings.Contains(modelLower, "gpt-5.6") ||
+		strings.Contains(modelLower, "gpt-6")
 }
 
-// supportsMaxReasoningEffort reports models that natively accept "max" effort (e.g. GPT-5.6, DeepSeek V4, GLM-5.2).
+// supportsMaxReasoningEffort reports models that natively accept "max" effort (e.g. GPT-5.6, GPT-6, DeepSeek V4, GLM-5.2).
 func supportsMaxReasoningEffort(model string) bool {
 	_, parsedModel := schemas.ParseModelString(model, schemas.OpenAI)
 	if parsedModel != "" {
 		model = parsedModel
 	}
 	modelLower := strings.ToLower(model)
-	return strings.HasPrefix(modelLower, "gpt-5.6") ||
-		strings.HasPrefix(modelLower, "deepseek-v4") ||
-		strings.HasPrefix(modelLower, "glm-5.2")
+	return strings.Contains(modelLower, "gpt-5.6") ||
+		strings.Contains(modelLower, "gpt-6") ||
+		strings.Contains(modelLower, "deepseek-v4") ||
+		strings.Contains(modelLower, "glm-5.2")
 }
 
 // MaxUserFieldLength for OpenAI enforces a 64 character maximum on the user field

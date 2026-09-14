@@ -175,6 +175,15 @@ func TestNormalizeOpenAIReasoningEffort(t *testing.T) {
 		{"gpt-5.5 keeps xhigh", "gpt-5.5", "xhigh", "xhigh"},
 		{"gpt-5.1 downgrades max to high", "gpt-5.1", "max", "high"},
 		{"gpt-5.1 downgrades xhigh to high", "gpt-5.1", "xhigh", "high"},
+		{"gpt-6-astra keeps xhigh", "gpt-6-astra", "xhigh", "xhigh"},
+		{"gpt-6-astra keeps max", "gpt-6-astra", "max", "max"},
+		{"gpt-6-astra variant keeps max", "gpt-6-astra-mini", "max", "max"},
+		{"provider-prefixed gpt-6-astra keeps xhigh", "openai/gpt-6-astra", "xhigh", "xhigh"},
+		{"bedrock gpt-5.6 keeps xhigh", "openai.gpt-5.6-sol", "xhigh", "xhigh"},
+		{"bedrock gpt-5.6 keeps max", "openai.gpt-5.6-sol", "max", "max"},
+		{"bedrock gpt-6-astra keeps xhigh", "openai.gpt-6-astra", "xhigh", "xhigh"},
+		{"bedrock gpt-6-astra keeps max", "us.openai.gpt-6-astra", "max", "max"},
+		{"bedrock gpt-5.1 still downgrades xhigh", "openai.gpt-5.1", "xhigh", "high"},
 		{"standard effort passes through", "gpt-5.1", "medium", "medium"},
 	}
 
