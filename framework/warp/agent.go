@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -206,7 +207,27 @@ const (
 	// ceiling.
 	MaxHistoryMessages = 40
 	MaxHistoryBytes    = 256 * 1024
+	// maxConcurrentToolCalls bounds how many tool calls may be executing
+	// against the store at once, across every active Warp turn in this
+	// process - not just the MaxToolCallsPerTurn=4 that bounds one turn's own
+	// batch. Without this, several sessions each mid-batch multiply
+	// unboundedly: the store shares its connection pool with the gateway's
+	// own request-logging writes (see LogReader's doc comment), and on the
+	// SQLite deployment default in particular that pool has no tuning of its
+	// own to fall back on. Sized for two turns' worth of concurrency before a
+	// third has to wait its turn - the same scale client.go's own
+	// InitialPoolSize already assumes for Warp ("one dashboard user asking
+	// one question at a time"). A constant, not a config field: this is a
+	// safety net against a shared resource, not a knob most deployments will
+	// ever need to touch.
+	maxConcurrentToolCalls = 8
 )
+
+// toolCallSem is the semaphore maxConcurrentToolCalls describes. Package-level
+// rather than a field on Agent, since a fresh Agent is built for every turn
+// (see NewAgent) - a per-Agent semaphore would protect nothing across the
+// concurrent sessions this exists to bound in the first place.
+var toolCallSem = make(chan struct{}, maxConcurrentToolCalls)
 
 // run drives the loop, emitting events onto out. It always closes out.
 //
@@ -356,8 +377,39 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 			return
 		}
 
-		ranThisStep := make([]string, 0, len(toolCalls))
+		// This pass only decides, in order, which calls run - refusing what's
+		// over the per-step cap or a repeat of an earlier step, stopping
+		// outright at the first ask_user, and stopping outright the moment the
+		// client is already known gone, exactly as a single sequential pass
+		// over the whole batch would. The calls it queues instead of running
+		// inline are what the prompt's "call them together" instruction (see
+		// SystemPrompt) is actually asking the model to spend on one round
+		// trip rather than several - see the concurrent phase below. results
+		// is index-addressed so a queued call and one resolved immediately
+		// right next to it still land back in conversation in the model's own
+		// order, regardless of which finishes first - the one guarantee every
+		// provider on the other end of the next request depends on.
+		results := make([]*schemas.ResponsesMessage, len(toolCalls))
+		type queuedCall struct {
+			index          int
+			id, name, args string
+		}
+		queued := make([]queuedCall, 0, min(len(toolCalls), MaxToolCallsPerTurn))
+		var posedQuestion *Question
+
 		for index, call := range toolCalls {
+			// A cancelled ctx here means the client left sometime after an
+			// earlier call in this same batch was announced (emit's own
+			// ctx-awareness is not a reliable enough signal for this: with a
+			// buffered channel a send can still succeed even after cancellation
+			// races it). Stopping here is what keeps a slow first call from
+			// quietly paying for three more nobody will read, the same
+			// checkpoint a purely sequential pass gets for free between calls.
+			// Whatever already queued in earlier iterations still runs below.
+			if ctx.Err() != nil {
+				break
+			}
+
 			name, arguments, id := call.Name, call.Arguments, call.ID
 
 			// Past the cap the call is refused, not dropped. The whole output list
@@ -369,33 +421,20 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 			// once turned into Warp being unreachable, with nothing in the message
 			// to suggest tool limits had anything to do with it.
 			if index >= MaxToolCallsPerTurn {
-				conversation = append(conversation, toolResultMessage(id,
-					fmt.Sprintf(`{"error":"not run: no more than %d tools may be called in one step. Ask for the ones you need most, then continue."}`, MaxToolCallsPerTurn)))
+				msg := toolResultMessage(id,
+					fmt.Sprintf(`{"error":"not run: no more than %d tools may be called in one step. Ask for the ones you need most, then continue."}`, MaxToolCallsPerTurn))
+				results[index] = &msg
 				continue
 			}
 
-			// ask_user is not a query, it is the end of the turn. Emitting the
-			// question and stopping is what makes the exchange turn-based: the reply
-			// arrives as an ordinary next message, so there is no second channel and
-			// no request held open while somebody reads.
+			// ask_user is not a query, it is the end of the turn. Whatever was
+			// already queued ahead of it below still runs - the same calls a
+			// purely sequential pass would already have finished by the time it
+			// reached this index - but nothing after it does, so the loop stops
+			// here rather than continuing.
 			if question := questionFromToolCall(name, arguments); question != nil {
-				if !emit(Event{Type: EventQuestion, Question: question}) {
-					return
-				}
-				emit(Event{
-					Type:         EventDone,
-					FinishReason: "question",
-					Iterations:   iteration,
-					Usage:        usage,
-				})
-				return
-			}
-
-			if !emit(Event{
-				Type: EventToolCallStart, ToolID: id, ToolName: name,
-				Arguments: arguments, Iteration: iteration,
-			}) {
-				return
+				posedQuestion = question
+				break
 			}
 
 			// An identical call returns an identical result. Running it again
@@ -404,34 +443,110 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 			// to the step whose result it already has.
 			key := name + "\x00" + arguments
 			if prior, repeated := executed[key]; repeated {
+				if !emit(Event{
+					Type: EventToolCallStart, ToolID: id, ToolName: name,
+					Arguments: arguments, Iteration: iteration,
+				}) {
+					return
+				}
 				refusal := fmt.Sprintf("not run: identical to your call in step %d, whose result you already have. Change the arguments, use a different tool, or answer from what you have.", prior)
 				if !emit(Event{Type: EventToolCallEnd, ToolID: id, ToolName: name, Failed: true, ToolError: refusal}) {
 					return
 				}
-				conversation = append(conversation, toolResultMessage(id, `{"error":`+strconv.Quote(refusal)+`}`))
+				msg := toolResultMessage(id, `{"error":`+strconv.Quote(refusal)+`}`)
+				results[index] = &msg
 				continue
 			}
-			ranThisStep = append(ranThisStep, key)
+			queued = append(queued, queuedCall{index: index, id: id, name: name, args: arguments})
+		}
 
-			started := time.Now()
-			result, failed := a.executeTool(ctx, name, arguments)
-			end := Event{
-				Type: EventToolCallEnd, ToolID: id, ToolName: name,
-				DurationMs: time.Since(started).Milliseconds(), Failed: failed,
+		// Run the queued calls together rather than one at a time. Each
+		// goroutine only ever writes its own results[i] and calls emit, and a
+		// channel send is safe from multiple goroutines at once, so nothing
+		// here needs a lock; wg.Wait() below is what makes reading results
+		// back afterward safe (the happens-before edge every prior Done gives
+		// the next Wait).
+		var wg sync.WaitGroup
+		for _, q := range queued {
+			wg.Add(1)
+			go func(q queuedCall) {
+				defer wg.Done()
+
+				// Acquire a slot before doing any real work. Waiting here,
+				// not skipping the call, is required: every function_call
+				// the model sent needs a function_call_output back, or the
+				// next request to the provider 400s (see the cap-refusal
+				// comment above) - so this can only make a call wait its
+				// turn, never drop it, the way toolCallSem's own doc comment
+				// says. If the client leaves while queued for a slot, there
+				// is nothing left to acquire it for.
+				select {
+				case toolCallSem <- struct{}{}:
+				case <-ctx.Done():
+					return
+				}
+				defer func() { <-toolCallSem }()
+
+				// The wait for a slot can outlast the client's own patience -
+				// select above can still pick the semaphore case in the same
+				// instant ctx is cancelled, since it's not required to prefer
+				// a ready Done(). Recheck here so a call that only just got
+				// its turn does not run against a context that's already
+				// gone, and so tool_call_start (emitted right below, right
+				// before the call it describes) never goes out without the
+				// tool_call_end that must follow it.
+				if ctx.Err() != nil {
+					return
+				}
+
+				if !emit(Event{
+					Type: EventToolCallStart, ToolID: q.id, ToolName: q.name,
+					Arguments: q.args, Iteration: iteration,
+				}) {
+					return
+				}
+
+				started := time.Now()
+				result, failed := a.executeTool(ctx, q.name, q.args)
+				end := Event{
+					Type: EventToolCallEnd, ToolID: q.id, ToolName: q.name,
+					DurationMs: time.Since(started).Milliseconds(), Failed: failed,
+				}
+				if failed {
+					// The result *is* the error message on a failed call, and it is
+					// already bounded, so it can be surfaced as-is.
+					end.ToolError = result
+				}
+				// Best-effort: a false return means the client is gone, and ctx
+				// cancellation - shared by every call in this batch - is what
+				// the next iteration's own check acts on, not this return value.
+				emit(end)
+				msg := toolResultMessage(q.id, result)
+				results[q.index] = &msg
+			}(q)
+		}
+		wg.Wait()
+
+		for _, result := range results {
+			if result != nil {
+				conversation = append(conversation, *result)
 			}
-			if failed {
-				// The result *is* the error message on a failed call, and it is
-				// already bounded, so it can be surfaced as-is.
-				end.ToolError = result
-			}
-			if !emit(end) {
+		}
+		for _, q := range queued {
+			executed[q.name+"\x00"+q.args] = iteration
+		}
+
+		if posedQuestion != nil {
+			if !emit(Event{Type: EventQuestion, Question: posedQuestion}) {
 				return
 			}
-
-			conversation = append(conversation, toolResultMessage(id, result))
-		}
-		for _, key := range ranThisStep {
-			executed[key] = iteration
+			emit(Event{
+				Type:         EventDone,
+				FinishReason: "question",
+				Iterations:   iteration,
+				Usage:        usage,
+			})
+			return
 		}
 	}
 
