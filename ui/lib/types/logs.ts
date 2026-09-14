@@ -1332,6 +1332,15 @@ export interface MCPToolLogEntry {
 	customer_name?: string | null;
 	business_unit_id?: string | null;
 	business_unit_name?: string | null;
+	// Index-aligned with their ids: team_names[i] names team_ids[i].
+	team_ids?: string[];
+	team_names?: string[];
+	customer_ids?: string[];
+	customer_names?: string[];
+	business_unit_ids?: string[];
+	business_unit_names?: string[];
+	budget_ids?: string[];
+	rate_limit_ids?: string[];
 	project_id?: string | null;
 	project_name?: string | null;
 	device_id?: string;
