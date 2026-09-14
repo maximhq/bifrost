@@ -14,7 +14,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 
 	"github.com/maximhq/bifrost/core/keyselectors"
@@ -128,6 +127,7 @@ type Bifrost struct {
 	keySelector         schemas.KeySelector                 // Custom key selector function
 	keyPoolFilter       schemas.KeyPoolFilter               // optional hook to veto keys before selection (nil = all eligible)
 	kvStore             schemas.KVStore                     // optional KV store for session stickiness (nil = disabled)
+	sessionAffinity     schemas.SessionAffinity             // decides which key a session stays on; never nil after Init
 }
 
 // ProviderQueue wraps a provider's request channel with lifecycle management
@@ -297,6 +297,12 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 
 	if bifrost.keySelector == nil {
 		bifrost.keySelector = keyselectors.WeightedRandom
+	}
+	// Always present, so key selection never checks for it: without a KV store the shipped
+	// key affinity has nowhere to keep a binding and declines every request.
+	bifrost.sessionAffinity = config.SessionAffinity
+	if bifrost.sessionAffinity == nil {
+		bifrost.sessionAffinity = newKeyAffinity(bifrost.kvStore, bifrost.keySelector, bifrost.logger)
 	}
 
 	// Initialize object pools
@@ -9157,7 +9163,7 @@ func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, p
 // canRotate=false is returned for cases where the caller must always use the same key:
 //   - SkipKeySelection (Claude Code OAuth passthrough to Anthropic; empty slice returned)
 //   - Explicit BifrostContextKeyAPIKeyID / APIKeyName (user pinned a specific key)
-//   - Session stickiness (key persisted in KV store for the session lifetime)
+//   - Session affinity (the registered policy named a key for the request's session)
 //   - Single-key pool (only one eligible key — rotation is a no-op, KV write skipped)
 //
 // canRotate=true is returned when there are two or more eligible keys and no pinning
@@ -9281,103 +9287,21 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 		return []schemas.Key{supportedKeys[0]}, false, nil
 	}
 
-	// Session stickiness: on the first request for a session ID, the randomly selected key is
-	// persisted in the KV store. Subsequent requests reuse it for the session lifetime. The sticky
-	// key is intentionally kept fixed across all retry attempts — return it as a single-element
-	// pool with canRotate=false so rate-limit retries also stay on the same key.
-	sessionID := ""
-	if ctx != nil {
-		if id, ok := ctx.Value(schemas.BifrostContextKeySessionID).(string); ok && id != "" {
-			sessionID = id
-		}
-	}
-	fallbackIndex := 0
-	if ctx != nil {
-		fallbackIndex, _ = ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int)
-	}
-	stickinessActive := sessionID != "" && bifrost.kvStore != nil && fallbackIndex == 0
-
-	if stickinessActive {
-		kvKey := buildSessionKey(providerKey, sessionID, model)
-		ttl, _ := ctx.Value(schemas.BifrostContextKeySessionTTL).(time.Duration)
-		if ttl <= 0 {
-			ttl = schemas.DefaultSessionStickyTTL
-		}
-
-		if cachedKey, found, stale := getCachedKeyFromStore(bifrost.kvStore, kvKey, supportedKeys); found {
-			if err := bifrost.kvStore.SetWithTTL(kvKey, cachedKey.ID, ttl); err != nil {
-				bifrost.logger.Warn("error setting session cache for provider=%s key_id=%s: %s", providerKey, cachedKey.ID, err.Error())
-			}
-			return []schemas.Key{cachedKey}, false, nil
-		} else if stale {
-			if _, err := bifrost.kvStore.Delete(kvKey); err != nil {
-				bifrost.logger.Warn("error deleting stale session cache for provider=%s: %s", providerKey, err.Error())
+	// Session affinity: a session that already has a key here stays on it. The policy decides
+	// what that means; core honors the key it names, for every attempt of the request, as long
+	// as that key is one of the eligible ones. A policy naming anything else is ignored, so a
+	// disabled or model-incompatible key can never reach a request through it.
+	if key, ok := bifrost.sessionAffinity.ResolveKey(ctx, providerKey, model, supportedKeys); ok {
+		for _, eligible := range supportedKeys {
+			if eligible.ID == key.ID {
+				return []schemas.Key{eligible}, false, nil
 			}
 		}
-
-		selectedKey, err := bifrost.keySelector(ctx, supportedKeys, providerKey, model)
-		if err != nil {
-			return nil, false, err
-		}
-
-		wasSet, err := bifrost.kvStore.SetNXWithTTL(kvKey, selectedKey.ID, ttl)
-		if err != nil {
-			bifrost.logger.Warn("error setting session cache for provider=%s key_id=%s: %s", providerKey, selectedKey.ID, err.Error())
-			return []schemas.Key{selectedKey}, false, nil
-		}
-		if wasSet {
-			return []schemas.Key{selectedKey}, false, nil
-		}
-
-		// Another concurrent request won the race — re-read the persisted key.
-		if currentKey, found, stale := getCachedKeyFromStore(bifrost.kvStore, kvKey, supportedKeys); found {
-			return []schemas.Key{currentKey}, false, nil
-		} else if stale {
-			if _, err := bifrost.kvStore.Delete(kvKey); err != nil {
-				bifrost.logger.Warn("error deleting stale session cache for provider=%s: %s", providerKey, err.Error())
-			}
-			return []schemas.Key{selectedKey}, false, nil
-		}
-
-		return []schemas.Key{selectedKey}, false, nil
+		bifrost.logger.Warn("session affinity named key %s for provider %s, which is not in the eligible pool; selecting a key normally", key.ID, providerKey)
 	}
 
 	// Normal case: return the full filtered pool with rotation enabled.
 	return supportedKeys, true, nil
-}
-
-// getCachedKeyFromStore retrieves a key ID from the KV store and looks it up in supportedKeys.
-// Returns the matching Key, found (true if key exists in supportedKeys), and stale (true if
-// KV contains an ID but it is not in supportedKeys—caller should delete before SetNXWithTTL).
-func getCachedKeyFromStore(kvStore schemas.KVStore, kvKey string, supportedKeys []schemas.Key) (schemas.Key, bool, bool) {
-	raw, err := kvStore.Get(kvKey)
-	if err != nil {
-		return schemas.Key{}, false, false
-	}
-
-	var cachedKeyID string
-	switch v := raw.(type) {
-	case string:
-		cachedKeyID = v
-	case []byte:
-		var s string
-		if err := sonic.Unmarshal(v, &s); err == nil {
-			cachedKeyID = s
-		} else {
-			cachedKeyID = string(v)
-		}
-	}
-
-	if cachedKeyID != "" {
-		for _, k := range supportedKeys {
-			if k.ID == cachedKeyID {
-				return k, true, false
-			}
-		}
-		return schemas.Key{}, false, true
-	}
-
-	return schemas.Key{}, false, false
 }
 
 // Shutdown gracefully stops all workers when triggered.

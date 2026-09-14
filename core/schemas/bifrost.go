@@ -29,13 +29,14 @@ type BifrostConfig struct {
 	OAuth2Provider     OAuth2Provider
 	MCPHeadersProvider MCPHeadersProvider // Backend for MCPAuthTypePerUserHeaders credential storage; nil disables per-user-headers auth (resolver errors at use)
 	Logger             Logger
-	Tracer             Tracer        // Tracer for distributed tracing (nil = NoOpTracer)
-	InitialPoolSize    int           // Initial pool size for sync pools in Bifrost. Higher values will reduce memory allocations but will increase memory usage.
-	DropExcessRequests bool          // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
-	MCPConfig          *MCPConfig    // MCP (Model Context Protocol) configuration for tool integration
-	KeySelector        KeySelector   // Custom key selector function
-	KeyPoolFilter      KeyPoolFilter // Optional hook to filter available keys before selection; nil = all keys eligible
-	KVStore            KVStore       // shared KV store for clustering/session stickiness; nil = disabled
+	Tracer             Tracer          // Tracer for distributed tracing (nil = NoOpTracer)
+	InitialPoolSize    int             // Initial pool size for sync pools in Bifrost. Higher values will reduce memory allocations but will increase memory usage.
+	DropExcessRequests bool            // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
+	MCPConfig          *MCPConfig      // MCP (Model Context Protocol) configuration for tool integration
+	KeySelector        KeySelector     // Custom key selector function
+	KeyPoolFilter      KeyPoolFilter   // Optional hook to filter available keys before selection; nil = all keys eligible
+	KVStore            KVStore         // shared KV store for clustering/session stickiness; nil = disabled
+	SessionAffinity    SessionAffinity // Decides which key a session stays on; nil = Bifrost's own default, which needs KVStore to bind anything
 	ModelCatalog       ModelInfoProvider
 }
 
