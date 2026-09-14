@@ -1261,7 +1261,7 @@ func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 	}
 
 	// Verify kvstore was written
-	kvKey := buildSessionKey(schemas.OpenAI, "sess-123", "gpt-4")
+	kvKey := sessionStateKey(bfCtx, SessionStateKindKey, string(schemas.OpenAI), "gpt-4")
 	if raw, err := kvStore.Get(kvKey); err != nil || raw != "key-a" {
 		t.Errorf("kvstore after first call: expected key-a, got %v (err=%v)", raw, err)
 	}
@@ -1328,8 +1328,11 @@ func TestSelectKeyFromProviderForModel_NoStickinessWithoutSessionID(t *testing.T
 		t.Errorf("expected 0 keySelector calls from pool building (no session id), got %d", keySelectorCalls)
 	}
 	// KVStore should not have a sticky entry for an empty session id
-	if _, err := kvStore.Get(buildSessionKey(schemas.OpenAI, "", "gpt-4")); err == nil {
-		t.Error("kvstore should not have a sticky entry for an empty session id")
+	kvStore.mu.RLock()
+	entries := len(kvStore.data)
+	kvStore.mu.RUnlock()
+	if entries != 0 {
+		t.Errorf("kvstore should not have a sticky entry for an empty session id, got %d entries", entries)
 	}
 }
 

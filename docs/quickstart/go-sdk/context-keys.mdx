@@ -103,7 +103,7 @@ Bind a session to a specific API key so that requests with the same session ID c
 On the first request for a session ID, Bifrost selects a key (via weighted random) and caches the binding in the KV store. Subsequent requests with the same session ID reuse the cached key as long as it remains valid. If the cached key is no longer in the supported set (disabled, removed, or model support changed), Bifrost re-selects and overwrites the cache.
 
 <Note>
-Session stickiness requires a `KVStore` to be configured in `BifrostConfig`.
+The policy that picks and keeps the key is `BifrostConfig.SessionAffinity`. When it is unset, Bifrost's own default applies: it needs a `KVStore` in `BifrostConfig`, binds the session to the key selected for its first request, and scopes bindings to the virtual key and user the request's grant identity is attributed to, so a session id reused by another caller does not share them. A custom `SessionAffinity` may keep its state elsewhere and scope it differently.
 </Note>
 
 ```go
