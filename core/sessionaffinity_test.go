@@ -78,7 +78,7 @@ func servedBy(route schemas.Route, keyID string, fallback bool) schemas.RouteOut
 }
 
 func testAffinity(kv schemas.KVStore) *sessionAffinity {
-	return newSessionAffinity(kv, NewDefaultLogger(schemas.LogLevelError))
+	return NewSessionAffinity(kv, NewDefaultLogger(schemas.LogLevelError)).(*sessionAffinity)
 }
 
 func enginesUsed(ctx *schemas.BifrostContext) []string {
@@ -130,25 +130,25 @@ func (r *recordingAffinity) Observe(_ *schemas.BifrostContext, requested schemas
 }
 
 func TestSessionStateKeyScopesBySessionAndIdentity(t *testing.T) {
-	base := sessionStateKey(attributed(sessionCtx("session-1"), "vk-1", ""), SessionStateKindKey, "openai", "gpt-4o")
+	base := SessionStateKey(attributed(sessionCtx("session-1"), "vk-1", ""), SessionStateKindKey, "openai", "gpt-4o")
 	if !strings.HasPrefix(base, "session:v2:key:") {
 		t.Fatalf("key %q lacks the kind prefix", base)
 	}
 	if strings.Contains(base, "session-1") || strings.Contains(base, "vk-1") || strings.Contains(base, "gpt-4o") {
 		t.Fatalf("key %q leaks a hashed part", base)
 	}
-	if base != sessionStateKey(attributed(sessionCtx("session-1"), "vk-1", ""), SessionStateKindKey, "openai", "gpt-4o") {
+	if base != SessionStateKey(attributed(sessionCtx("session-1"), "vk-1", ""), SessionStateKindKey, "openai", "gpt-4o") {
 		t.Fatal("key is not deterministic")
 	}
 
 	variants := map[string]string{
-		"other virtual key": sessionStateKey(attributed(sessionCtx("session-1"), "vk-2", ""), SessionStateKindKey, "openai", "gpt-4o"),
-		"same id as a user": sessionStateKey(attributed(sessionCtx("session-1"), "", "vk-1"), SessionStateKindKey, "openai", "gpt-4o"),
-		"key and user":      sessionStateKey(attributed(sessionCtx("session-1"), "vk-1", "u-1"), SessionStateKindKey, "openai", "gpt-4o"),
-		"other session":     sessionStateKey(attributed(sessionCtx("session-2"), "vk-1", ""), SessionStateKindKey, "openai", "gpt-4o"),
-		"other provider":    sessionStateKey(attributed(sessionCtx("session-1"), "vk-1", ""), SessionStateKindKey, "azure", "gpt-4o"),
-		"other model":       sessionStateKey(attributed(sessionCtx("session-1"), "vk-1", ""), SessionStateKindKey, "openai", "gpt-4o-mini"),
-		"route kind":        sessionStateKey(attributed(sessionCtx("session-1"), "vk-1", ""), SessionStateKindRoute, "openai", "gpt-4o"),
+		"other virtual key": SessionStateKey(attributed(sessionCtx("session-1"), "vk-2", ""), SessionStateKindKey, "openai", "gpt-4o"),
+		"same id as a user": SessionStateKey(attributed(sessionCtx("session-1"), "", "vk-1"), SessionStateKindKey, "openai", "gpt-4o"),
+		"key and user":      SessionStateKey(attributed(sessionCtx("session-1"), "vk-1", "u-1"), SessionStateKindKey, "openai", "gpt-4o"),
+		"other session":     SessionStateKey(attributed(sessionCtx("session-2"), "vk-1", ""), SessionStateKindKey, "openai", "gpt-4o"),
+		"other provider":    SessionStateKey(attributed(sessionCtx("session-1"), "vk-1", ""), SessionStateKindKey, "azure", "gpt-4o"),
+		"other model":       SessionStateKey(attributed(sessionCtx("session-1"), "vk-1", ""), SessionStateKindKey, "openai", "gpt-4o-mini"),
+		"route kind":        SessionStateKey(attributed(sessionCtx("session-1"), "vk-1", ""), SessionStateKindRoute, "openai", "gpt-4o"),
 	}
 	for name, v := range variants {
 		if v == base {
@@ -158,19 +158,19 @@ func TestSessionStateKeyScopesBySessionAndIdentity(t *testing.T) {
 
 	// A request nothing governs, one whose grant has no identity, and one whose identity names
 	// nothing all scope to the deployment and share a key.
-	deployment := sessionStateKey(sessionCtx("session-1"), SessionStateKindKey, "openai", "gpt-4o")
+	deployment := SessionStateKey(sessionCtx("session-1"), SessionStateKindKey, "openai", "gpt-4o")
 	unsettled := sessionCtx("session-1")
 	unsettled.SetGrant(&stubGrant{})
-	if got := sessionStateKey(unsettled, SessionStateKindKey, "openai", "gpt-4o"); got != deployment {
+	if got := SessionStateKey(unsettled, SessionStateKindKey, "openai", "gpt-4o"); got != deployment {
 		t.Fatal("a grant without identity should scope to the deployment")
 	}
-	if got := sessionStateKey(attributed(sessionCtx("session-1"), "", ""), SessionStateKindKey, "openai", "gpt-4o"); got != deployment {
+	if got := SessionStateKey(attributed(sessionCtx("session-1"), "", ""), SessionStateKindKey, "openai", "gpt-4o"); got != deployment {
 		t.Fatal("an identity naming no key and no user should scope to the deployment")
 	}
 	if deployment == base {
 		t.Fatal("deployment scope collides with a virtual key scope")
 	}
-	if sessionStateKey(nil, SessionStateKindKey, "openai", "gpt-4o") == "" {
+	if SessionStateKey(nil, SessionStateKindKey, "openai", "gpt-4o") == "" {
 		t.Fatal("nil context should still produce a key")
 	}
 }
@@ -228,7 +228,7 @@ func TestSessionAffinityResolveKeyReadsReplicatedBindings(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			kv := newMockKVStore()
 			ctx := sessionCtx("session-1")
-			_ = kv.SetWithTTL(sessionStateKey(ctx, SessionStateKindKey, "openai", "gpt-4o"), tc.value, time.Minute)
+			_ = kv.SetWithTTL(SessionStateKey(ctx, SessionStateKindKey, "openai", "gpt-4o"), tc.value, time.Minute)
 			key, ok := testAffinity(kv).ResolveKey(ctx, schemas.OpenAI, "gpt-4o", sessionTestPool)
 			if !ok || key.ID != tc.want {
 				t.Fatalf("got %q ok=%v, want the stored binding %q", key.ID, ok, tc.want)
@@ -239,7 +239,7 @@ func TestSessionAffinityResolveKeyReadsReplicatedBindings(t *testing.T) {
 	// An empty stored value is no binding.
 	kv := newMockKVStore()
 	ctx := sessionCtx("session-1")
-	_ = kv.SetWithTTL(sessionStateKey(ctx, SessionStateKindKey, "openai", "gpt-4o"), "", time.Minute)
+	_ = kv.SetWithTTL(SessionStateKey(ctx, SessionStateKindKey, "openai", "gpt-4o"), "", time.Minute)
 	if _, ok := testAffinity(kv).ResolveKey(ctx, schemas.OpenAI, "gpt-4o", sessionTestPool); ok {
 		t.Fatal("empty binding produced a key")
 	}
@@ -263,8 +263,8 @@ func TestSessionAffinityBindsOnOutcomeThenReuses(t *testing.T) {
 
 	// Served by key-b: the route and the key are bound with the request's TTL.
 	a.Observe(ctx, requested, servedBy(served, "key-b", false))
-	routeKey := sessionStateKey(ctx, SessionStateKindRoute, "", "gpt-4o")
-	keyKey := sessionStateKey(ctx, SessionStateKindKey, "openai", "gpt-4o")
+	routeKey := SessionStateKey(ctx, SessionStateKindRoute, "", "gpt-4o")
+	keyKey := SessionStateKey(ctx, SessionStateKindKey, "openai", "gpt-4o")
 	if entry := kv.data[routeKey]; entry.value != "openai/gpt-4o" || entry.ttl != 5*time.Minute {
 		t.Fatalf("route binding after first request: %+v", entry)
 	}
@@ -292,7 +292,7 @@ func TestSessionAffinityBindsOnOutcomeThenReuses(t *testing.T) {
 	// A fallback provider that served binds its own key, and does not take the route from a
 	// request that followed no route binding.
 	a.Observe(next, requested, servedBy(routeOf(schemas.Azure, "gpt-4o"), "az-1", true))
-	if entry := kv.data[sessionStateKey(next, SessionStateKindKey, "azure", "gpt-4o")]; entry.value != "az-1" {
+	if entry := kv.data[SessionStateKey(next, SessionStateKindKey, "azure", "gpt-4o")]; entry.value != "az-1" {
 		t.Fatalf("fallback key binding: %+v", entry)
 	}
 	if entry := kv.data[routeKey]; entry.value != "openai/gpt-4o" {
@@ -303,7 +303,7 @@ func TestSessionAffinityBindsOnOutcomeThenReuses(t *testing.T) {
 func TestSessionAffinityRebindsWhenBoundKeyLeavesThePool(t *testing.T) {
 	kv := newMockKVStore()
 	ctx := sessionCtx("session-1")
-	stateKey := sessionStateKey(ctx, SessionStateKindKey, "openai", "gpt-4o")
+	stateKey := SessionStateKey(ctx, SessionStateKindKey, "openai", "gpt-4o")
 	_ = kv.SetWithTTL(stateKey, "key-gone", time.Minute)
 
 	if _, ok := testAffinity(kv).ResolveKey(ctx, schemas.OpenAI, "gpt-4o", sessionTestPool); ok {
@@ -321,7 +321,7 @@ func TestSessionAffinityResolveRoute(t *testing.T) {
 	chain := []schemas.Route{routeOf(schemas.Groq, "openai/gpt-4o"), routeOf(schemas.OpenAI, "gpt-4o"), routeOf(schemas.Azure, "gpt-4o")}
 	requested := routeOf("", "gpt-4o")
 	bind := func(kv *mockKVStore, ctx *schemas.BifrostContext, value string) {
-		_ = kv.SetWithTTL(sessionStateKey(ctx, SessionStateKindRoute, "", "gpt-4o"), value, time.Minute)
+		_ = kv.SetWithTTL(SessionStateKey(ctx, SessionStateKindRoute, "", "gpt-4o"), value, time.Minute)
 	}
 
 	t.Run("no binding leaves the chain", func(t *testing.T) {
@@ -391,7 +391,7 @@ func TestSessionAffinityResolveRoute(t *testing.T) {
 		if _, recorded := ctx.Value(sessionAffinityResolvedKey).(sessionResolution); recorded {
 			t.Fatal("a binding outside the chain was recorded as followed")
 		}
-		routeKey := sessionStateKey(ctx, SessionStateKindRoute, "", "gpt-4o")
+		routeKey := SessionStateKey(ctx, SessionStateKindRoute, "", "gpt-4o")
 		if _, present := kv.data[routeKey]; present {
 			t.Fatal("a binding outside the chain was kept")
 		}
@@ -399,6 +399,36 @@ func TestSessionAffinityResolveRoute(t *testing.T) {
 		a.Observe(ctx, requested, servedBy(routeOf(schemas.OpenAI, "gpt-4o"), "oa-1", false))
 		if entry := kv.data[routeKey]; entry.value != "openai/gpt-4o" {
 			t.Fatalf("session did not rebind to what served: %+v", entry)
+		}
+	})
+
+	t.Run("a binding that cannot be read is dropped so the session can rebind", func(t *testing.T) {
+		for _, unreadable := range []struct{ name, value string }{
+			{"no separator between provider and model", "azure"},
+			{"no provider", "/gpt-4o"},
+		} {
+			t.Run(unreadable.name, func(t *testing.T) {
+				kv := newMockKVStore()
+				a := testAffinity(kv)
+				ctx := sessionCtx("session-1")
+				bind(kv, ctx, unreadable.value)
+				if got := a.ResolveRoute(ctx, requested, chain); !slices.Equal(got, chain) {
+					t.Fatalf("got %v, want the chain unchanged", got)
+				}
+				if _, recorded := ctx.Value(sessionAffinityResolvedKey).(sessionResolution); recorded {
+					t.Fatal("a binding that names no route was recorded as followed")
+				}
+				routeKey := SessionStateKey(ctx, SessionStateKindRoute, "", "gpt-4o")
+				if _, present := kv.data[routeKey]; present {
+					t.Fatal("a binding that names no route was kept")
+				}
+				// Kept, it would refuse the first-writer bind below and strand the session on
+				// routing's pick until the binding expired.
+				a.Observe(ctx, requested, servedBy(routeOf(schemas.OpenAI, "gpt-4o"), "oa-1", false))
+				if entry := kv.data[routeKey]; entry.value != "openai/gpt-4o" {
+					t.Fatalf("session did not rebind to what served: %+v", entry)
+				}
+			})
 		}
 	})
 
@@ -422,7 +452,7 @@ func TestSessionAffinityObserveRoute(t *testing.T) {
 	chain := []schemas.Route{routeOf(schemas.OpenAI, "gpt-4o"), routeOf(schemas.Azure, "gpt-4o")}
 	requested := routeOf("", "gpt-4o")
 	routeKeyOf := func(ctx *schemas.BifrostContext) string {
-		return sessionStateKey(ctx, SessionStateKindRoute, "", "gpt-4o")
+		return SessionStateKey(ctx, SessionStateKindRoute, "", "gpt-4o")
 	}
 
 	t.Run("a followed route that served is refreshed", func(t *testing.T) {
@@ -484,7 +514,7 @@ func TestSessionAffinityResolveKeyDeclines(t *testing.T) {
 	kv := newMockKVStore()
 	a := testAffinity(kv)
 	bound := sessionCtx("session-1")
-	_ = kv.SetWithTTL(sessionStateKey(bound, SessionStateKindKey, "openai", "gpt-4o"), "key-a", time.Minute)
+	_ = kv.SetWithTTL(SessionStateKey(bound, SessionStateKindKey, "openai", "gpt-4o"), "key-a", time.Minute)
 
 	if _, ok := a.ResolveKey(nil, schemas.OpenAI, "gpt-4o", sessionTestPool); ok {
 		t.Fatal("nil context got a key")
@@ -534,7 +564,7 @@ func TestSessionAffinityConcurrentFirstRequestsConverge(t *testing.T) {
 	}
 	wg.Wait()
 
-	bound, _ := kv.data[sessionStateKey(sessionCtx("session-1"), SessionStateKindKey, "openai", "gpt-4o")].value.(string)
+	bound, _ := kv.data[SessionStateKey(sessionCtx("session-1"), SessionStateKindKey, "openai", "gpt-4o")].value.(string)
 	if bound == "" {
 		t.Fatal("no key binding after eight served requests")
 	}
@@ -776,7 +806,7 @@ func TestSessionAffinityForgetsWhatAnEarlierRequestFollowed(t *testing.T) {
 	requested := routeOf("", "gpt-4o")
 	chain := []schemas.Route{routeOf(schemas.OpenAI, "gpt-4o"), routeOf(schemas.Azure, "gpt-4o")}
 	ctx := sessionCtx("session-1")
-	routeKey := sessionStateKey(ctx, SessionStateKindRoute, "", "gpt-4o")
+	routeKey := SessionStateKey(ctx, SessionStateKindRoute, "", "gpt-4o")
 
 	// An earlier request on this context followed a binding to azure.
 	_ = kv.SetWithTTL(routeKey, "azure/gpt-4o", time.Minute)
@@ -801,7 +831,7 @@ func TestSessionAffinityLeavesAnExplicitProviderAlone(t *testing.T) {
 	requested := routeOf(schemas.OpenAI, "gpt-4o")
 	chain := []schemas.Route{routeOf(schemas.OpenAI, "gpt-4o"), routeOf(schemas.Azure, "gpt-4o")}
 	ctx := sessionCtx("session-1")
-	routeKey := sessionStateKey(ctx, SessionStateKindRoute, "openai", "gpt-4o")
+	routeKey := SessionStateKey(ctx, SessionStateKindRoute, "openai", "gpt-4o")
 
 	// A fallback that served does not become the session's home when the caller named the
 	// provider: no route binding is written, only the key the fallback used.
@@ -809,7 +839,7 @@ func TestSessionAffinityLeavesAnExplicitProviderAlone(t *testing.T) {
 	if _, present := kv.data[routeKey]; present {
 		t.Fatal("a route binding was written for a request that named its provider")
 	}
-	if entry := kv.data[sessionStateKey(ctx, SessionStateKindKey, "azure", "gpt-4o")]; entry.value != "az-1" {
+	if entry := kv.data[SessionStateKey(ctx, SessionStateKindKey, "azure", "gpt-4o")]; entry.value != "az-1" {
 		t.Fatalf("the fallback's key binding was not written: %+v", entry)
 	}
 

@@ -53,9 +53,11 @@ type sessionAffinity struct {
 	logger schemas.Logger
 }
 
-// newSessionAffinity builds the shipped affinity over kv. Without a store it declines every
-// request. The logger may not be nil.
-func newSessionAffinity(kv schemas.KVStore, logger schemas.Logger) *sessionAffinity {
+// NewSessionAffinity builds the affinity Bifrost ships over kv, the one Init installs when the
+// configuration registers none. It is returned as the interface so a deployment that registers
+// its own can embed it and delegate: decide first from what it knows, then let this one keep
+// the bindings. Without a store it declines every request. The logger may not be nil.
+func NewSessionAffinity(kv schemas.KVStore, logger schemas.Logger) schemas.SessionAffinity {
 	return &sessionAffinity{kv: kv, logger: logger}
 }
 
@@ -78,24 +80,32 @@ func (a *sessionAffinity) ResolveRoute(ctx *schemas.BifrostContext, requested sc
 	if requested.Provider != "" {
 		return chain
 	}
-	key := sessionStateKey(ctx, SessionStateKindRoute, string(requested.Provider), requested.Model)
-	bound, found := sessionStateString(a.kv, key)
+	key := SessionStateKey(ctx, SessionStateKindRoute, string(requested.Provider), requested.Model)
+	bound, found := SessionStateString(a.kv, key)
 	if !found {
 		return chain
 	}
-	boundProvider, _, _ := strings.Cut(bound, "/")
-	at := slices.IndexFunc(chain, func(route schemas.Route) bool { return string(route.Provider) == boundProvider })
+	boundRoute, ok := ParseRouteState(bound)
+	if !ok {
+		// Nothing can follow a binding that names no route, and keeping it would refuse the
+		// next served request's first-writer bind until it expired.
+		if _, err := a.kv.Delete(key); err != nil {
+			a.logger.Warn("error dropping unreadable session route binding: %s", err.Error())
+		}
+		return chain
+	}
+	at := slices.IndexFunc(chain, func(route schemas.Route) bool { return route.Provider == boundRoute.Provider })
 	if at < 0 {
 		// The chain is what this request may use, so a binding outside it is stale. Dropping it
 		// lets the next served request bind afresh and the session converge there, instead of
 		// scattering across routing's picks until the binding expires.
 		if _, err := a.kv.Delete(key); err != nil {
-			a.logger.Warn("error dropping session route binding to %s: %s", boundProvider, err.Error())
+			a.logger.Warn("error dropping session route binding to %s: %s", boundRoute.Provider, err.Error())
 		}
-		ctx.AppendRoutingEngineLog(schemas.RoutingEngineSessionAffinity, schemas.LogLevelInfo, fmt.Sprintf("Session was last served by %s for %s, which this request cannot use, so the routing decision stands and the session rebinds on its next served request", boundProvider, requested.Model))
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineSessionAffinity, schemas.LogLevelInfo, fmt.Sprintf("Session was last served by %s for %s, which this request cannot use, so the routing decision stands and the session rebinds on its next served request", boundRoute.Provider, requested.Model))
 		return chain
 	}
-	a.remember(ctx, func(r *sessionResolution) { r.route = routeString(chain[at]) })
+	a.remember(ctx, func(r *sessionResolution) { r.route = RouteStateValue(chain[at]) })
 	if at == 0 {
 		return chain
 	}
@@ -119,8 +129,8 @@ func (a *sessionAffinity) ResolveKey(ctx *schemas.BifrostContext, provider schem
 	if fallbackIndex, _ := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int); fallbackIndex > 0 {
 		return schemas.Key{}, false
 	}
-	key := sessionStateKey(ctx, SessionStateKindKey, string(provider), model)
-	boundID, found := sessionStateString(a.kv, key)
+	key := SessionStateKey(ctx, SessionStateKindKey, string(provider), model)
+	boundID, found := SessionStateString(a.kv, key)
 	if !found {
 		return schemas.Key{}, false
 	}
@@ -158,14 +168,14 @@ func (a *sessionAffinity) Observe(ctx *schemas.BifrostContext, requested schemas
 	// Only a request that left the provider to routing binds a route; one that named it has
 	// nothing to remember at that level, even when a fallback served.
 	if requested.Provider == "" {
-		a.settle(sessionStateKey(ctx, SessionStateKindRoute, string(requested.Provider), requested.Model), routeString(served), resolved.route, ttl)
+		a.settle(SessionStateKey(ctx, SessionStateKindRoute, string(requested.Provider), requested.Model), RouteStateValue(served), resolved.route, ttl)
 	}
 	if outcome.KeyID != "" {
 		followed := ""
 		if resolved.keyRoute == served {
 			followed = resolved.keyID
 		}
-		a.settle(sessionStateKey(ctx, SessionStateKindKey, string(served.Provider), served.Model), outcome.KeyID, followed, ttl)
+		a.settle(SessionStateKey(ctx, SessionStateKindKey, string(served.Provider), served.Model), outcome.KeyID, followed, ttl)
 	}
 }
 
@@ -195,10 +205,20 @@ func (a *sessionAffinity) remember(ctx *schemas.BifrostContext, update func(*ses
 	ctx.SetValue(sessionAffinityResolvedKey, resolution)
 }
 
-// routeString spells a route as session state stores it. Provider names carry no slash, so the
-// first one separates the two.
-func routeString(route schemas.Route) string {
+// RouteStateValue spells a route as a route binding stores it. Provider names carry no slash,
+// so the first one separates the provider from the model.
+func RouteStateValue(route schemas.Route) string {
 	return string(route.Provider) + "/" + route.Model
+}
+
+// ParseRouteState reads a route back from what RouteStateValue wrote. ok is false when the
+// value names no provider.
+func ParseRouteState(value string) (schemas.Route, bool) {
+	provider, model, found := strings.Cut(value, "/")
+	if !found || provider == "" {
+		return schemas.Route{}, false
+	}
+	return schemas.Route{Provider: schemas.ModelProvider(provider), Model: model}, true
 }
 
 // resolveSessionRoute asks the session affinity to settle the chain the routing hooks
@@ -243,14 +263,15 @@ func (bifrost *Bifrost) observeSessionOutcome(ctx *schemas.BifrostContext, reque
 	bifrost.sessionAffinity.Observe(ctx, requested, outcome)
 }
 
-// sessionStateKey builds the store key for one piece of session state: its kind, the request's
+// SessionStateKey builds the store key for one piece of session state: its kind, the request's
 // session, who that session belongs to, and whatever further parts tell instances of that kind
 // apart (a provider and model for a key binding). The session and its owner come from ctx: the
 // session id, and the virtual key and user the grant identity attributes the request to. A
 // request nothing governs, or whose identity is not settled, is scoped to the deployment.
 // Everything but the kind is hashed, so the key is bounded in size and carries no
-// caller-supplied text.
-func sessionStateKey(ctx *schemas.BifrostContext, kind string, parts ...string) string {
+// caller-supplied text. Any component that keeps per-session state keys it this way, so one
+// session id means one thing everywhere.
+func SessionStateKey(ctx *schemas.BifrostContext, kind string, parts ...string) string {
 	virtualKeyID, userID := sessionIdentityParts(ctx)
 	h := sha256.New()
 	for _, part := range append([]string{virtualKeyID, userID, sessionIDFromContext(ctx)}, parts...) {
@@ -303,10 +324,10 @@ func sessionTTLFromContext(ctx *schemas.BifrostContext) time.Duration {
 	return schemas.DefaultSessionStickyTTL
 }
 
-// sessionStateString reads the string under key. A missing key, a read error and an empty
+// SessionStateString reads the string under key. A missing key, a read error and an empty
 // value all read as not found. Values come back as strings from a local store and as JSON
 // bytes from one that replicated them, so both are accepted.
-func sessionStateString(kv schemas.KVStore, key string) (string, bool) {
+func SessionStateString(kv schemas.KVStore, key string) (string, bool) {
 	raw, err := kv.Get(key)
 	if err != nil {
 		return "", false
