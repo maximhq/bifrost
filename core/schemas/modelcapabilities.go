@@ -312,6 +312,12 @@ type ModelCapabilities struct {
 	//
 	// Absent falls back to the caller's family detection.
 	BedrockRequiresSignedReasoning *bool `json:"bedrock_requires_signed_reasoning,omitempty"`
+
+	// Whether Converse accepts image blocks inside a toolResult. Scoped to Converse:
+	// gpt-5.6 rejects them there but reads them in Responses tool output.
+	//
+	// Absent falls back to the caller's family detection.
+	SupportsConverseToolResultImages *bool `json:"supports_converse_tool_result_images,omitempty"`
 }
 
 // BedrockAPI names one wire API on a Bedrock endpoint. Which endpoint serves it

@@ -1800,6 +1800,12 @@ func BedrockModelSupportsCachePoints(model string) bool {
 	return IsAnthropicModel(model) || IsNovaModel(model)
 }
 
+// BedrockModelSupportsToolResultImages reports whether the Bedrock model accepts
+// image blocks inside a Converse toolResult.
+func BedrockModelSupportsToolResultImages(model string) bool {
+	return !IsOpenAIModel(model) && !IsGrokModel(model)
+}
+
 // ResolveBedrockMantleBasePath returns the URL base path Bedrock Mantle serves the
 // model's OpenAI-compatible APIs on, preferring the datasheet and falling back to
 // family detection.

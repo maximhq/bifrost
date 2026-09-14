@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/bytedance/sonic"
@@ -3033,6 +3034,43 @@ func clampBedrockCachePoints(req *BedrockConverseRequest) int {
 	}
 
 	return dropped
+}
+
+// toolResultImagePlaceholder fills a tool result emptied by hoistToolResultImages.
+const toolResultImagePlaceholder = "Image attached below."
+
+// hoistToolResultImages moves images out of tool results to follow the last toolResult
+// in their message, for models that reject images inside a toolResult.
+func hoistToolResultImages(req *BedrockConverseRequest) {
+	for i := range req.Messages {
+		content := req.Messages[i].Content
+		var images []BedrockContentBlock
+		last := -1
+		for j := range content {
+			toolResult := content[j].ToolResult
+			if toolResult == nil {
+				continue
+			}
+			last = j
+			moved := len(images)
+			kept := toolResult.Content[:0]
+			for _, block := range toolResult.Content {
+				if block.Image != nil {
+					images = append(images, block)
+					continue
+				}
+				kept = append(kept, block)
+			}
+			// An empty toolResult is rejected, so keep a stable placeholder behind.
+			if len(kept) == 0 && len(images) > moved {
+				kept = append(kept, BedrockContentBlock{Text: new(toolResultImagePlaceholder)})
+			}
+			toolResult.Content = kept
+		}
+		if len(images) > 0 {
+			req.Messages[i].Content = slices.Insert(content, last+1, images...)
+		}
+	}
 }
 
 // stripCachePointsFromBedrockRequest removes all CachePoint blocks from a

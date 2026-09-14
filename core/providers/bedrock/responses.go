@@ -2906,6 +2906,10 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 	// Ensure tool config is present when tool content exists (similar to Chat Completions)
 	ensureResponsesToolConfigForConversation(ctx, bifrostReq, bedrockReq)
 
+	if !caps.SupportsConverseToolResultImages(schemas.BedrockModelSupportsToolResultImages(capModel)) {
+		hoistToolResultImages(bedrockReq)
+	}
+
 	if !caps.SupportsCachePoint(schemas.BedrockModelSupportsCachePoints(capModel)) {
 		stripCachePointsFromBedrockRequest(bedrockReq)
 	} else {
