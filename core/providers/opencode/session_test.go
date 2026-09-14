@@ -322,3 +322,118 @@ func TestOpencodeProviderSessionHeader(t *testing.T) {
 		}
 	})
 }
+
+// stubIdentity is a minimal schemas.Identity for namespace-input tests.
+type stubIdentity struct {
+	vk   *schemas.EntityRef
+	user *schemas.UserRef
+}
+
+func (s *stubIdentity) Credential() schemas.Credential     { return schemas.Credential{} }
+func (s *stubIdentity) Presented() bool                    { return true }
+func (s *stubIdentity) User() *schemas.UserRef             { return s.user }
+func (s *stubIdentity) VirtualKey() *schemas.EntityRef     { return s.vk }
+func (s *stubIdentity) Teams() []schemas.EntityRef         { return nil }
+func (s *stubIdentity) Customers() []schemas.EntityRef     { return nil }
+func (s *stubIdentity) BusinessUnits() []schemas.EntityRef { return nil }
+func (s *stubIdentity) Project() *schemas.EntityRef        { return nil }
+
+// stubGrant is a minimal schemas.Grant carrying one fixed identity.
+type stubGrant struct{ identity schemas.Identity }
+
+func (g *stubGrant) Identity() schemas.Identity        { return g.identity }
+func (g *stubGrant) Access() schemas.Access            { return nil }
+func (g *stubGrant) Limits() schemas.Limits            { return nil }
+func (g *stubGrant) SetIdentity(schemas.Identity) bool { return false }
+func (g *stubGrant) SetAccess(schemas.Access) bool     { return false }
+func (g *stubGrant) SetLimits(schemas.Limits) bool     { return false }
+
+// TestOpencodeNamespaceInput verifies the tenant scope derives from the
+// settled Grant identity first (virtual-key row ID, else user ID), falling
+// back to the presented virtual-key string only when no identity settled.
+func TestOpencodeNamespaceInput(t *testing.T) {
+	newCtx := func(t *testing.T) (*schemas.BifrostContext, context.CancelFunc) {
+		t.Helper()
+		return schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+	}
+
+	t.Run("no grant falls back to presented virtual key", func(t *testing.T) {
+		ctx, cancel := newCtx(t)
+		defer cancel()
+		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "vk-test-1")
+		if got := opencodeNamespaceInput(ctx); got != "vk-test-1" {
+			t.Fatalf("namespace input = %q, want presented vk-test-1", got)
+		}
+	})
+
+	t.Run("no grant and no key means no scope", func(t *testing.T) {
+		ctx, cancel := newCtx(t)
+		defer cancel()
+		if got := opencodeNamespaceInput(ctx); got != "" {
+			t.Fatalf("namespace input = %q, want empty", got)
+		}
+	})
+
+	t.Run("grant virtual key row wins over presented string", func(t *testing.T) {
+		ctx, cancel := newCtx(t)
+		defer cancel()
+		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "vk-presented")
+		if !ctx.SetGrant(&stubGrant{identity: &stubIdentity{vk: &schemas.EntityRef{ID: "vk-row-9"}}}) {
+			t.Fatal("SetGrant refused stub grant")
+		}
+		if got := opencodeNamespaceInput(ctx); got != "vk-row-9" {
+			t.Fatalf("namespace input = %q, want settled vk-row-9", got)
+		}
+	})
+
+	t.Run("grant user covers enterprise callers without a key", func(t *testing.T) {
+		ctx, cancel := newCtx(t)
+		defer cancel()
+		if !ctx.SetGrant(&stubGrant{identity: &stubIdentity{user: &schemas.UserRef{ID: "user-7"}}}) {
+			t.Fatal("SetGrant refused stub grant")
+		}
+		if got := opencodeNamespaceInput(ctx); got != "user-7" {
+			t.Fatalf("namespace input = %q, want settled user-7", got)
+		}
+	})
+
+	t.Run("settled identity naming neither ignores the presented string", func(t *testing.T) {
+		ctx, cancel := newCtx(t)
+		defer cancel()
+		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "vk-presented")
+		if !ctx.SetGrant(&stubGrant{identity: &stubIdentity{}}) {
+			t.Fatal("SetGrant refused stub grant")
+		}
+		if got := opencodeNamespaceInput(ctx); got != "" {
+			t.Fatalf("namespace input = %q, want empty", got)
+		}
+	})
+
+	t.Run("grant virtual key row namespaces the wire value", func(t *testing.T) {
+		ctx, cancel := newCtx(t)
+		defer cancel()
+		ctx.SetValue(schemas.BifrostContextKeyOpencodeSession, "conv-123")
+		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "vk-presented")
+		if !ctx.SetGrant(&stubGrant{identity: &stubIdentity{vk: &schemas.EntityRef{ID: "vk-row-9"}}}) {
+			t.Fatal("SetGrant refused stub grant")
+		}
+		signer := opencodeSessionSigner(ctx)
+		if signer == nil {
+			t.Fatal("signer is nil with session captured")
+		}
+		headers, bifrostErr := signer(nil)
+		if bifrostErr != nil {
+			t.Fatalf("signer: %v", bifrostErr)
+		}
+		got := headers[opencodeSessionHeader]
+		if !strings.HasSuffix(got, ":conv-123") {
+			t.Fatalf("wire value %q must carry the raw session suffix", got)
+		}
+		if want := namespaceOpencodeSession("vk-row-9", "conv-123"); got != want {
+			t.Fatalf("wire value = %q, want row-namespaced %q", got, want)
+		}
+		if leaked := namespaceOpencodeSession("vk-presented", "conv-123"); got == leaked {
+			t.Fatalf("wire value %q must not match presented-string namespacing", got)
+		}
+	})
+}
