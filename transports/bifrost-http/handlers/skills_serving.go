@@ -133,8 +133,11 @@ func (h *SkillsServingHandler) RegisterRoutes(r *router.Router, middlewares ...s
 	// Git-based marketplace routes only registered when git binary is available,
 	// since Claude Code and Codex require git clone support.
 	if h.gitAvailable {
-		// Claude Code marketplace
+		// Claude Code and Claude Desktop/Cowork marketplace
+		claudeMarketplaceBase := "/api/skills/serve/claude-code.git"
 		r.GET("/api/skills/serve/claude-code/.claude-plugin/marketplace.json", h.claudeCodeMarketplace)
+		r.GET(claudeMarketplaceBase+"/info/refs", h.claudeCodeMarketplaceGit())
+		r.POST(claudeMarketplaceBase+"/git-upload-pack", h.claudeCodeMarketplaceGit())
 
 		// Codex marketplace — Codex expects .agents/plugins/marketplace.json
 		r.GET("/api/skills/serve/codex/.agents/plugins/marketplace.json", h.codexMarketplace)
@@ -169,9 +172,20 @@ const allSkillsPluginName = pluginNamePrefix + "all-skills"
 
 // claudeCodeMarketplace generates GET /api/skills/serve/claude-code/.claude-plugin/marketplace.json
 func (h *SkillsServingHandler) claudeCodeMarketplace(ctx *fasthttp.RequestCtx) {
+	marketplaceJSON, err := h.buildClaudeCodeMarketplaceJSON(ctx)
+	if err != nil {
+		return // error already sent
+	}
+	ctx.SetContentType("application/json")
+	ctx.SetStatusCode(fasthttp.StatusOK)
+	ctx.SetBody(marketplaceJSON)
+}
+
+// buildClaudeCodeMarketplaceJSON builds the Claude marketplace JSON bytes.
+func (h *SkillsServingHandler) buildClaudeCodeMarketplaceJSON(ctx *fasthttp.RequestCtx) ([]byte, error) {
 	skills, err := h.listAllSkills(ctx)
 	if err != nil {
-		return
+		return nil, err
 	}
 
 	allSkillsVersion := "0.0.0"
@@ -180,7 +194,7 @@ func (h *SkillsServingHandler) claudeCodeMarketplace(ctx *fasthttp.RequestCtx) {
 		if err != nil {
 			logger.Error("all-skills: failed to get version: %v", err)
 			SendError(ctx, fasthttp.StatusInternalServerError, "failed to get all-skills version")
-			return
+			return nil, err
 		}
 	}
 
@@ -218,7 +232,7 @@ func (h *SkillsServingHandler) claudeCodeMarketplace(ctx *fasthttp.RequestCtx) {
 		"plugins": plugins,
 	}
 
-	SendJSON(ctx, result)
+	return json.MarshalIndent(result, "", "  ")
 }
 
 // codexMarketplace generates GET /api/skills/serve/codex/.codex-plugin/marketplace.json
@@ -575,9 +589,23 @@ func (h *SkillsServingHandler) servePluginGit(harness string) fasthttp.RequestHa
 	}
 }
 
+// claudeCodeMarketplaceGit serves the Claude marketplace as a git repository.
+// Claude Desktop and Cowork clone this URL and read .claude-plugin/marketplace.json.
+func (h *SkillsServingHandler) claudeCodeMarketplaceGit() fasthttp.RequestHandler {
+	repoBase := "/api/skills/serve/claude-code.git"
+	return func(ctx *fasthttp.RequestCtx) {
+		marketplaceJSON, err := h.buildClaudeCodeMarketplaceJSON(ctx)
+		if err != nil {
+			return // error already sent
+		}
+
+		spec := assembleMarketplaceRepoSpec(marketplaceJSON, "claude-code")
+		serveGitRepo(ctx, spec, repoBase)
+	}
+}
+
 // codexMarketplaceGit returns a handler that serves the Codex marketplace as a
-// git repo. Codex clones the marketplace URL itself (unlike Claude Code which
-// fetches marketplace.json as plain HTTP).
+// git repo. Codex clones the marketplace URL itself.
 func (h *SkillsServingHandler) codexMarketplaceGit() fasthttp.RequestHandler {
 	repoBase := "/api/skills/serve/codex"
 	return func(ctx *fasthttp.RequestCtx) {
