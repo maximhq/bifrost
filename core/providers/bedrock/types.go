@@ -757,6 +757,25 @@ type BedrockInvokeMessagesContentBlock struct {
 	Input     interface{} `json:"input,omitempty"`
 	Thinking  string      `json:"thinking,omitempty"`
 	Signature string      `json:"signature,omitempty"`
+
+	// tool_search_tool_result: the paired server_tool_use id, plus the nested
+	// tool_search_tool_search_result payload. Typed rather than a map so the two
+	// keys marshal in a stable order.
+	ToolUseID string                         `json:"tool_use_id,omitempty"`
+	Content   *BedrockInvokeToolSearchResult `json:"content,omitempty"`
+}
+
+// BedrockInvokeToolSearchResult is the "content" object of a tool_search_tool_result
+// block: {"type":"tool_search_tool_search_result","tool_references":[...]}.
+type BedrockInvokeToolSearchResult struct {
+	Type           string                       `json:"type"`
+	ToolReferences []BedrockInvokeToolReference `json:"tool_references"`
+}
+
+// BedrockInvokeToolReference is one discovered (deferred) tool.
+type BedrockInvokeToolReference struct {
+	Type     string `json:"type"`
+	ToolName string `json:"tool_name"`
 }
 
 // MarshalJSON forces the thinking key to be present on thinking blocks.
