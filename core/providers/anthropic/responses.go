@@ -4982,9 +4982,14 @@ func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *sche
 		break
 	}
 
-	// Map stop reason from Bifrost response if available, otherwise infer from content
+	// Stop reason precedence: StopReason > IncompleteDetails > tool_use inference > end_turn.
 	if bifrostResp.StopReason != nil {
 		anthropicResp.StopReason = ConvertBifrostFinishReasonToAnthropic(*bifrostResp.StopReason)
+	} else if reason := anthropicStopReasonFromIncompleteDetails(bifrostResp.IncompleteDetails); reason != "" {
+		// OpenAI-shaped providers never send stop_reason; a turn truncated by the
+		// output cap or a content filter carries only incomplete_details. Reporting
+		// end_turn there hides the truncation from the client (#6782).
+		anthropicResp.StopReason = reason
 	} else {
 		anthropicResp.StopReason = AnthropicStopReasonEndTurn
 		for _, block := range contentBlocks {

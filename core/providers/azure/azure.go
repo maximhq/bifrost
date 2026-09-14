@@ -537,6 +537,20 @@ func (provider *AzureProvider) Responses(ctx *schemas.BifrostContext, key schema
 		)
 	}
 
+	// Models whose datasheet row lists supported_endpoints without /v1/responses
+	// (Fireworks-hosted Foundry models, which Microsoft types as chat-completions
+	// models) are served through chat completions: their /openai/v1/responses
+	// route caps output at 4096 tokens regardless of max_output_tokens (#6782).
+	// A silent or missing row keeps the Responses route, like Bedrock Mantle.
+	canonicalModel := schemas.ResolveCanonicalModel(ctx, request.Model)
+	if !schemas.ResolveModelCaps(provider.GetProviderKey(), canonicalModel).SupportsResponsesEndpoint(true) {
+		chatResponse, bifrostErr := provider.ChatCompletion(ctx, key, request.ToChatRequest())
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+		return chatResponse.ToBifrostResponsesResponse(), nil
+	}
+
 	// OpenAI-family models use the OpenAI-compatible Azure endpoint via the shared handler.
 	authHeader, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
 	if bifrostErr != nil {
@@ -610,6 +624,14 @@ func (provider *AzureProvider) ResponsesStream(ctx *schemas.BifrostContext, post
 			postHookSpanFinalizer,
 		)
 	} else {
+		// Same datasheet gate as Responses; the shared chat streaming handler
+		// re-assembles Responses events from the chat chunks when this flag is set.
+		canonicalModel := schemas.ResolveCanonicalModel(ctx, request.Model)
+		if !schemas.ResolveModelCaps(provider.GetProviderKey(), canonicalModel).SupportsResponsesEndpoint(true) {
+			ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
+			return provider.ChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request.ToChatRequest())
+		}
+
 		authHeader, err := provider.getAzureAuthHeaders(ctx, key, false)
 		if err != nil {
 			return nil, err
