@@ -1,22 +1,94 @@
 package cohere
 
 import (
-	"encoding/json"
 	"strings"
+
+	"github.com/bytedance/sonic"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// CohereRerankDocument is Cohere's overloaded document field. Requests accept a bare string or an
+// object; only the object's "text" is ranked, every other key rides along. Responses always use
+// the object form, so this always marshals as an object and only unmarshalling is lenient.
+type CohereRerankDocument struct {
+	Text     string                 `json:"text"`
+	ID       *string                `json:"id,omitempty"`
+	Metadata map[string]interface{} `json:"metadata,omitempty"`
+}
+
+// UnmarshalJSON accepts a bare string or an object, folding any key other than "text" and "id"
+// into Metadata so passthrough fields survive a round trip.
+func (d *CohereRerankDocument) UnmarshalJSON(data []byte) error {
+	var text string
+	if err := sonic.Unmarshal(data, &text); err == nil {
+		*d = CohereRerankDocument{Text: text}
+		return nil
+	}
+
+	var fields map[string]interface{}
+	if err := sonic.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+
+	*d = CohereRerankDocument{}
+	if text, ok := fields["text"].(string); ok {
+		d.Text = text
+	}
+	if id, ok := fields["id"].(string); ok {
+		d.ID = &id
+	}
+	metadata := make(map[string]interface{})
+	if nested, ok := fields["metadata"].(map[string]interface{}); ok {
+		for k, v := range nested {
+			metadata[k] = v
+		}
+	}
+	for k, v := range fields {
+		if k != "text" && k != "id" && k != "metadata" {
+			metadata[k] = v
+		}
+	}
+	if len(metadata) > 0 {
+		d.Metadata = metadata
+	}
+	return nil
+}
+
 // CohereRerankRequest represents a Cohere rerank API request.
 type CohereRerankRequest struct {
 	Model           string                 `json:"model"`
 	Query           string                 `json:"query"`
-	Documents       []string               `json:"documents"`
+	Documents       []CohereRerankDocument `json:"documents"`
 	TopN            *int                   `json:"top_n,omitempty"`
 	MaxTokensPerDoc *int                   `json:"max_tokens_per_doc,omitempty"`
 	Priority        *int                   `json:"priority,omitempty"`
+	ReturnDocuments *bool                  `json:"return_documents,omitempty"`
 	ExtraParams     map[string]interface{} `json:"-"`
+}
+
+// MarshalJSON emits the request's documents as bare strings. Cohere v2 defines
+// the request's documents as an array of STRINGS (the object form was v1), so
+// strict Cohere-v2-compatible servers 422 on objects (issue #6640). The Text
+// field already holds the single ranked string (ToCohereRerankRequest collapses
+// structured documents via rerankDocumentText); ID/metadata never ride the
+// request wire — Bifrost restores IDs response-side from the request's
+// documents slice. Unmarshalling stays lenient per document, and responses keep
+// the object form (CohereRerankResult.Document is unaffected).
+func (r CohereRerankRequest) MarshalJSON() ([]byte, error) {
+	type alias CohereRerankRequest
+	documents := make([]string, len(r.Documents))
+	for i, doc := range r.Documents {
+		documents[i] = doc.Text
+	}
+	return sonic.Marshal(struct {
+		alias
+		Documents []string `json:"documents"`
+	}{
+		alias:     alias(r),
+		Documents: documents,
+	})
 }
 
 // GetExtraParams returns extra parameters for the rerank request.
@@ -26,23 +98,25 @@ func (r *CohereRerankRequest) GetExtraParams() map[string]interface{} {
 
 // CohereRerankResult represents a single result from Cohere rerank.
 type CohereRerankResult struct {
-	Index          int             `json:"index"`
-	RelevanceScore float64         `json:"relevance_score"`
-	Document       json.RawMessage `json:"document,omitempty"`
+	Index          int                   `json:"index"`
+	RelevanceScore float64               `json:"relevance_score"`
+	Document       *CohereRerankDocument `json:"document,omitempty"`
 }
 
 // CohereRerankResponse represents a Cohere rerank API response.
 type CohereRerankResponse struct {
-	ID      string               `json:"id"`
+	ID      string               `json:"id,omitempty"`
 	Results []CohereRerankResult `json:"results"`
 	Meta    *CohereRerankMeta    `json:"meta,omitempty"`
 }
 
 // CohereRerankMeta represents metadata in Cohere rerank response.
 type CohereRerankMeta struct {
-	APIVersion  *CohereEmbeddingAPIVersion `json:"api_version,omitempty"`
-	BilledUnits *CohereBilledUnits         `json:"billed_units,omitempty"`
-	Tokens      *CohereTokenUsage          `json:"tokens,omitempty"`
+	APIVersion   *CohereEmbeddingAPIVersion `json:"api_version,omitempty"`
+	BilledUnits  *CohereBilledUnits         `json:"billed_units,omitempty"`
+	Tokens       *CohereTokenUsage          `json:"tokens,omitempty"`
+	CachedTokens *int                       `json:"cached_tokens,omitempty"`
+	Warnings     []string                   `json:"warnings,omitempty"`
 }
 
 func (response *CohereListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, aliases schemas.KeyAliases, unfiltered bool) *schemas.BifrostListModelsResponse {

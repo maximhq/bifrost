@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -47,6 +48,11 @@ func (m *mockToolClientManager) GetPluginPipeline() PluginPipeline             {
 func (m *mockToolClientManager) ReleasePluginPipeline(pipeline PluginPipeline) {}
 func (m *mockToolClientManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schemas.MCPClientState) (*client.Client, func(), error) {
 	return nil, func() {}, nil
+}
+func (m *mockToolClientManager) ReconnectClient(id string) error { return nil }
+
+func (m *mockToolClientManager) AwaitReconnect(clientID string, budget time.Duration) (bool, error) {
+	return false, nil
 }
 func (m *mockToolClientManager) RunWithPluginPipeline(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest, op MCPOpFunc) (*schemas.BifrostMCPResponse, *schemas.BifrostError) {
 	resp, err := op(req)

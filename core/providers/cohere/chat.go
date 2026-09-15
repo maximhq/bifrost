@@ -134,7 +134,7 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Coh
 				cohereReq.Thinking = thinking
 			} else if bifrostReq.Params.Reasoning.Effort != nil {
 				if *bifrostReq.Params.Reasoning.Effort != "none" {
-					maxCompletionTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Model, DefaultCompletionMaxTokens)
+					maxCompletionTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Provider, bifrostReq.Model, DefaultCompletionMaxTokens)
 					if bifrostReq.Params.MaxCompletionTokens != nil {
 						maxCompletionTokens = *bifrostReq.Params.MaxCompletionTokens
 					}

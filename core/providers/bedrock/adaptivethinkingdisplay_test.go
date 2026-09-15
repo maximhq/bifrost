@@ -37,7 +37,7 @@ func thinkingFields(t *testing.T, reasoning *schemas.ChatReasoning) map[string]a
 		Params: &schemas.ChatParameters{Reasoning: reasoning},
 	}
 	bedrockReq := &BedrockConverseRequest{}
-	if err := convertChatParameters(nil, bifrostReq, bedrockReq); err != nil {
+	if err := convertChatParameters(nil, bifrostReq, bedrockReq, schemas.ResolveModelCaps(schemas.Bedrock, adaptiveOnlyModel)); err != nil {
 		t.Fatalf("convertChatParameters failed: %v", err)
 	}
 	if bedrockReq.AdditionalModelRequestFields == nil {

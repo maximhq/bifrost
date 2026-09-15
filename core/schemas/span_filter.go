@@ -96,18 +96,46 @@ func (f *PluginSpanFilter) BuildReparentMap(spans []*Span) map[string]string {
 	if f == nil {
 		return nil
 	}
-	// First pass: record direct parent ID for every filtered span.
+	return reparentMap(spans, f.ShouldExportSpan)
+}
+
+// IsOverheadLatencySpan reports whether a span is an internal overhead/latency phase span.
+// A parentless span (the trace root) is excluded so it is never stripped.
+func IsOverheadLatencySpan(span *Span) bool {
+	return span != nil && span.Kind == SpanKindInternal && span.ParentID != ""
+}
+
+// ShouldExportSpanWithOverhead is ShouldExportSpan, additionally dropping overhead spans when
+// exportOverheadSpans is false. Nil-safe.
+func (f *PluginSpanFilter) ShouldExportSpanWithOverhead(span *Span, exportOverheadSpans bool) bool {
+	if !exportOverheadSpans && IsOverheadLatencySpan(span) {
+		return false
+	}
+	return f.ShouldExportSpan(span)
+}
+
+// BuildReparentMapWithOverhead is BuildReparentMap honoring the overhead toggle. Not nil-gated:
+// overhead spans can drop with no plugin filter set.
+func (f *PluginSpanFilter) BuildReparentMapWithOverhead(spans []*Span, exportOverheadSpans bool) map[string]string {
+	return reparentMap(spans, func(span *Span) bool {
+		return f.ShouldExportSpanWithOverhead(span, exportOverheadSpans)
+	})
+}
+
+// reparentMap maps each dropped span to its nearest exported ancestor, resolving chains of
+// consecutive drops. Nil when nothing drops.
+func reparentMap(spans []*Span, shouldExport func(*Span) bool) map[string]string {
 	filtered := make(map[string]string) // spanID -> parentID
 	for _, span := range spans {
-		if !f.ShouldExportSpan(span) {
+		if span != nil && !shouldExport(span) {
 			filtered[span.SpanID] = span.ParentID
 		}
 	}
 	if len(filtered) == 0 {
 		return nil
 	}
-	// Second pass: resolve chains so each filtered span maps to its first exported ancestor.
-	// Cap the walk at len(filtered) to break out of any cycle caused by malformed span data.
+	// Resolve chains so each dropped span maps to its first exported ancestor.
+	// Cap the walk at len(filtered) to break out of any cycle from malformed span data.
 	maxHops := len(filtered)
 	for spanID := range filtered {
 		parentID := filtered[spanID]

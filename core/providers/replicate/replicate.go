@@ -167,13 +167,20 @@ func createPrediction(
 	}
 
 	// Parse response
+	ft, fh := providerUtils.StartPhaseSpan(ctx, "response-finalize")
 	body, decodeErr := providerUtils.CheckAndDecodeBody(resp)
 	if decodeErr != nil {
+		if ft != nil {
+			ft.EndSpan(fh, schemas.SpanStatusError, decodeErr.Error())
+		}
 		return nil, nil, latency, providerResponseHeaders, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, decodeErr)
+	}
+	if ft != nil {
+		ft.EndSpan(fh, schemas.SpanStatusOk, "")
 	}
 
 	var prediction ReplicatePredictionResponse
-	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &prediction, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, sendBackRawResponse))
+	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, body, &prediction, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, sendBackRawResponse))
 	if bifrostErr != nil {
 		return nil, nil, latency, providerResponseHeaders, bifrostErr
 	}
@@ -222,13 +229,20 @@ func getPrediction(
 	}
 
 	// Parse response
+	ft, fh := providerUtils.StartPhaseSpan(ctx, "response-finalize")
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
+		if ft != nil {
+			ft.EndSpan(fh, schemas.SpanStatusError, err.Error())
+		}
 		return nil, nil, providerResponseHeaders, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+	}
+	if ft != nil {
+		ft.EndSpan(fh, schemas.SpanStatusOk, "")
 	}
 
 	prediction := &ReplicatePredictionResponse{}
-	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, prediction, nil, false, sendBackRawResponse)
+	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, body, prediction, nil, false, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, nil, providerResponseHeaders, bifrostErr
 	}
@@ -1833,6 +1847,11 @@ func (provider *ReplicateProvider) ImageGeneration(ctx *schemas.BifrostContext, 
 		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
+	// Backfill output resolution for upscale-style models (target/factor
+	// input, no plain size param) so resolution-tiered cost calculation
+	// doesn't silently fall back to the base per-image rate.
+	applyUpscaleOutputResolution(request, prediction, bifrostResponse)
+
 	// Set extra fields
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
@@ -2109,6 +2128,12 @@ func (provider *ReplicateProvider) ImageGenerationStream(ctx *schemas.BifrostCon
 					},
 				}
 
+				// Backfill output resolution for upscale-style models. Only the
+				// request-side target signal is available here: the SSE path never
+				// re-reads the finished prediction, so factor mode has no metrics
+				// band to fall back to.
+				applyUpscaleStreamOutputResolution(resolveUpscaleOutputPixels(request, nil), finalChunk)
+
 				// Set raw request only on final chunk if enabled
 				if sendBackRawRequest {
 					providerUtils.ParseAndSetRawRequest(&finalChunk.ExtraFields, jsonData)
@@ -2248,6 +2273,12 @@ func (provider *ReplicateProvider) ImageEdit(ctx *schemas.BifrostContext, key sc
 	if err != nil {
 		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
+
+	// Backfill output resolution for upscale-style models, which reach this path
+	// through the first-class target_megapixels/upscale_factor edit params, so
+	// resolution-tiered cost calculation doesn't silently fall back to the base
+	// per-image rate.
+	applyUpscaleEditOutputResolution(request, prediction, bifrostResponse)
 
 	// Set extra fields
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
@@ -2518,6 +2549,12 @@ func (provider *ReplicateProvider) ImageEditStream(ctx *schemas.BifrostContext, 
 					},
 				}
 
+				// Backfill output resolution for upscale-style models. Only the
+				// request-side target signal is available here: the SSE path never
+				// re-reads the finished prediction, so factor mode has no metrics
+				// band to fall back to.
+				applyUpscaleStreamOutputResolution(resolveUpscaleEditOutputPixels(request, nil), finalChunk)
+
 				if sendBackRawRequest {
 					providerUtils.ParseAndSetRawRequest(&finalChunk.ExtraFields, jsonData)
 				}
@@ -2687,14 +2724,21 @@ func (provider *ReplicateProvider) VideoRetrieve(ctx *schemas.BifrostContext, ke
 	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 
+	ft, fh := providerUtils.StartPhaseSpan(ctx, "response-finalize")
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
+		if ft != nil {
+			ft.EndSpan(fh, schemas.SpanStatusError, err.Error())
+		}
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+	}
+	if ft != nil {
+		ft.EndSpan(fh, schemas.SpanStatusOk, "")
 	}
 
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 	var prediction ReplicatePredictionResponse
-	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &prediction, nil, false, sendBackRawResponse)
+	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, body, &prediction, nil, false, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -2799,6 +2843,11 @@ func (provider *ReplicateProvider) VideoDelete(_ *schemas.BifrostContext, _ sche
 // VideoList is not supported by replicate provider.
 func (provider *ReplicateProvider) VideoList(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoListRequest) (*schemas.BifrostVideoListResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoListRequest, provider.GetProviderKey())
+}
+
+// VideoEdit is not supported by the Replicate provider.
+func (provider *ReplicateProvider) VideoEdit(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoEditRequest) (*schemas.BifrostVideoEditResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoEditRequest, provider.GetProviderKey())
 }
 
 // VideoRemix is not supported by replicate provider.

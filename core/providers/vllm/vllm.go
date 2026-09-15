@@ -295,6 +295,7 @@ func (provider *VLLMProvider) Embedding(ctx *schemas.BifrostContext, key schemas
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		HandleVLLMResponse,
+		nil,
 		provider.logger,
 	)
 }
@@ -725,14 +726,20 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 				var response schemas.BifrostTranscriptionStreamResponse
 				var bifrostErr *schemas.BifrostError
 
+				// Decode timed as the "response-parse" stream phase (per-event JSON decode).
+				parseStart := time.Now()
 				_, _, bifrostErr = HandleVLLMResponse(dataBytes, &response, nil, false, false)
+				schemas.AddStreamParse(ctx, time.Since(parseStart))
 				if bifrostErr != nil {
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, body.Bytes(), dataBytes, false, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse), latency), responseChan, logger, postHookSpanFinalizer)
 					return
 				}
 
+				// Convert timed as the "convertor" stream phase (per-event mapping).
+				convStart := time.Now()
 				customChunk, ok := parseVLLMTranscriptionStreamChunk(dataBytes)
+				schemas.AddStreamConvert(ctx, time.Since(convStart))
 				if !ok || customChunk == nil {
 					logger.Warn("customChunkParser returned no chunk")
 					continue
@@ -826,6 +833,11 @@ func (provider *VLLMProvider) VideoDelete(_ *schemas.BifrostContext, _ schemas.K
 // VideoList is not supported by the vLLM provider.
 func (provider *VLLMProvider) VideoList(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoListRequest) (*schemas.BifrostVideoListResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoListRequest, provider.GetProviderKey())
+}
+
+// VideoEdit is not supported by the VLLM provider.
+func (provider *VLLMProvider) VideoEdit(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoEditRequest) (*schemas.BifrostVideoEditResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoEditRequest, provider.GetProviderKey())
 }
 
 // VideoRemix is not supported by the vLLM provider.

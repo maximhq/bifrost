@@ -66,12 +66,23 @@ var EnrichmentDims = []EnrichmentDim{
 	{Name: "selected_key_name", SpanAttr: AttrBifrostSelectedKeyName, MetricSafe: true},
 	{Name: "routing_rule_id", SpanAttr: AttrBifrostRoutingRuleID, MetricSafe: true},
 	{Name: "routing_rule_name", SpanAttr: AttrBifrostRoutingRuleName, MetricSafe: true},
+	// complexity_tier and complexity_mechanism are set by the governance plugin only
+	// when a routing rule references complexity_tier. Both are closed value sets
+	// (tiers: SIMPLE/MEDIUM/COMPLEX; mechanisms: semantic/llm/session/skipped), so
+	// they are metric-safe. The raw complexity score is deliberately NOT a
+	// dimension — unbounded cardinality; it lives only in the logstore columns.
+	{Name: "complexity_tier", SpanAttr: AttrBifrostComplexityTier, MetricSafe: true},
+	{Name: "complexity_mechanism", SpanAttr: AttrBifrostComplexityMechanism, MetricSafe: true},
 	{Name: "team_id", SpanAttr: AttrBifrostTeamID, MetricSafe: true},
 	{Name: "team_name", SpanAttr: AttrBifrostTeamName, MetricSafe: true},
 	{Name: "customer_id", SpanAttr: AttrBifrostCustomerID, MetricSafe: true},
 	{Name: "customer_name", SpanAttr: AttrBifrostCustomerName, MetricSafe: true},
 	{Name: "business_unit_id", SpanAttr: AttrBifrostBusinessUnitID, MetricSafe: true},
 	{Name: "business_unit_name", SpanAttr: AttrBifrostBusinessUnitName, MetricSafe: true},
+	// A request is scoped to at most one project, so unlike team/customer/business
+	// unit there is no array form of this dimension.
+	{Name: "project_id", SpanAttr: AttrBifrostProjectID, MetricSafe: true},
+	{Name: "project_name", SpanAttr: AttrBifrostProjectName, MetricSafe: true},
 	{Name: "fallback_index", SpanAttr: AttrBifrostFallbackIndex, MetricSafe: true},
 
 	// --- Record/trace tier only: high cardinality, NOT metric-safe. Present on

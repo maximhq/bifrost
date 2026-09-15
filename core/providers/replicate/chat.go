@@ -309,6 +309,8 @@ func (response *ReplicatePredictionResponse) ToBifrostChatResponse() *schemas.Bi
 }
 
 // supportsSystemPrompt checks if a model supports the system_prompt field.
+// Prefers the datasheet's supports_system_messages, falling back to the model
+// list above. Callers fold the text into the prompt when this is false.
 func supportsSystemPrompt(model string) bool {
 	// Normalize model name to lowercase for comparison
 	modelLower := strings.ToLower(model)
@@ -320,10 +322,8 @@ func supportsSystemPrompt(model string) bool {
 	}
 
 	// All deepseek models don't support system prompt
-	if strings.HasPrefix(modelIdentifier, "deepseek-ai/deepseek") {
-		return false
-	}
+	fallback := !strings.HasPrefix(modelIdentifier, "deepseek-ai/deepseek") &&
+		!slices.Contains(unsupportedSystemPromptModels, modelIdentifier)
 
-	isUnsupported := slices.Contains(unsupportedSystemPromptModels, modelIdentifier)
-	return !isUnsupported
+	return schemas.ResolveModelCaps(schemas.Replicate, modelIdentifier).SupportsSystemMessages(fallback)
 }

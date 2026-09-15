@@ -12,7 +12,7 @@ import (
 // - /v1/video_to_video: when video URI is provided
 // - /v1/image_to_video: when image input reference is provided
 func getRunwayEndpoint(req *schemas.BifrostVideoGenerationRequest) string {
-	if req.Params != nil && req.Params.VideoURI != nil && *req.Params.VideoURI != "" {
+	if req.Input != nil && req.Input.VideoURI != nil && *req.Input.VideoURI != "" {
 		return "/v1/video_to_video"
 	}
 	if req.Input != nil && req.Input.InputReference != nil && *req.Input.InputReference != "" {

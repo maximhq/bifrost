@@ -405,6 +405,8 @@ type CohereBilledUnits struct {
 	OutputTokens    *int `json:"output_tokens,omitempty"`   // Number of billed output tokens
 	SearchUnits     *int `json:"search_units,omitempty"`    // Number of billed search units
 	Classifications *int `json:"classifications,omitempty"` // Number of billed classification units
+	Images          *int `json:"images,omitempty"`          // Number of billed images
+	ImageTokens     *int `json:"image_tokens,omitempty"`    // Number of billed image tokens
 }
 
 // CohereTokenUsage represents detailed token usage

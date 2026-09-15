@@ -26,7 +26,7 @@ func TestToolResultStatusFromIsError(t *testing.T) {
 		},
 	}
 
-	converted, err := convertToolMessages(context.Background(), msgs)
+	converted, err := convertToolMessages(context.Background(), "anthropic.claude-sonnet-4-5-20250929-v1:0", msgs)
 	if err != nil {
 		t.Fatalf("convert tool messages: %v", err)
 	}

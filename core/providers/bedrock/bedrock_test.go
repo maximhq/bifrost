@@ -2544,6 +2544,41 @@ func TestGuardrailConfigRequestRoundTrip(t *testing.T) {
 	assert.Nil(t, result.ExtraParams, "ExtraParams should be nil after all keys are extracted")
 }
 
+// TestContentFilterMapsToIncomplete verifies that a Bedrock content-filter /
+// guardrail stop reason (which returns no output message and zero usage) is
+// surfaced as Responses status "incomplete" with incomplete_details.reason
+// "content_filter", instead of being normalized to a successful empty "completed"
+// result that downstream agents cannot distinguish from a genuine empty turn.
+func TestContentFilterMapsToIncomplete(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	cases := []struct {
+		name             string
+		bedrockStop      string
+		expectStopReason string
+	}{
+		{"content_filtered", "content_filtered", "content_filter"},
+		{"guardrail_intervened", "guardrail_intervened", "guardrail_intervened"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			original := &bedrock.BedrockConverseResponse{
+				StopReason: tc.bedrockStop,
+			}
+
+			bifrostResp, err := original.ToBifrostResponsesResponse(ctx)
+			require.NoError(t, err)
+			require.NotNil(t, bifrostResp.Status, "status must be set, not left to default to completed")
+			assert.Equal(t, schemas.ResponsesResponseStatusIncomplete, *bifrostResp.Status)
+			require.NotNil(t, bifrostResp.IncompleteDetails)
+			assert.Equal(t, schemas.ResponsesResponseIncompleteReasonContentFilter, bifrostResp.IncompleteDetails.Reason)
+			require.NotNil(t, bifrostResp.StopReason)
+			assert.Equal(t, tc.expectStopReason, *bifrostResp.StopReason)
+		})
+	}
+}
+
 // TestGuardrailTraceResponseRoundTrip verifies the full trace response round-trip:
 //
 //	BedrockConverseResponse.Trace
@@ -2959,7 +2994,7 @@ func TestToolResultJSONParsingResponsesAPI(t *testing.T) {
 				},
 			}
 
-			messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, false)
+			messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, false)
 			require.NoError(t, err)
 			require.Len(t, messages, 1)
 
@@ -2994,6 +3029,7 @@ func TestConvertBifrostResponsesMessageContentBlocksToBedrockContentBlocks_Empty
 		name           string
 		input          *schemas.BifrostResponsesResponse
 		expectedBlocks int // Expected number of ContentBlocks in the output
+		expectError    bool
 		description    string
 	}{
 		{
@@ -3065,7 +3101,7 @@ func TestConvertBifrostResponsesMessageContentBlocksToBedrockContentBlocks_Empty
 			description:    "Reasoning block with nil Text should not create an empty ContentBlock",
 		},
 		{
-			name: "FileBlockWithNilFileData_ShouldNotCreateEmptyBlock",
+			name: "FileBlockWithNilFileData_ShouldReturnError",
 			input: &schemas.BifrostResponsesResponse{
 				CreatedAt: 1234567890,
 				Output: []schemas.ResponsesMessage{
@@ -3087,8 +3123,8 @@ func TestConvertBifrostResponsesMessageContentBlocksToBedrockContentBlocks_Empty
 					},
 				},
 			},
-			expectedBlocks: 0,
-			description:    "File block with nil FileData should not create an empty ContentBlock",
+			expectError: true,
+			description: "File block with neither FileData nor FileURL should return an error instead of silently dropping the document",
 		},
 		{
 			name: "FileBlockWithNilFileBlock_ShouldNotCreateEmptyBlock",
@@ -3189,7 +3225,7 @@ func TestConvertBifrostResponsesMessageContentBlocksToBedrockContentBlocks_Empty
 			description:    "Valid file block should create a document ContentBlock plus the required placeholder text block",
 		},
 		{
-			name: "MixedValidAndInvalidBlocks_ShouldOnlyCreateValidBlocks",
+			name: "MixedValidAndSourceLessFileBlocks_ShouldReturnError",
 			input: &schemas.BifrostResponsesResponse{
 				CreatedAt: 1234567890,
 				Output: []schemas.ResponsesMessage{
@@ -3221,8 +3257,8 @@ func TestConvertBifrostResponsesMessageContentBlocksToBedrockContentBlocks_Empty
 					},
 				},
 			},
-			expectedBlocks: 2, // Only valid text and reasoning blocks
-			description:    "Mixed valid and invalid blocks should only create valid ContentBlocks",
+			expectError: true,
+			description: "A source-less document should fail the message conversion instead of being removed from otherwise valid content",
 		},
 		{
 			name: "CacheControlBlock_ShouldCreateCachePointBlock",
@@ -3254,6 +3290,10 @@ func TestConvertBifrostResponsesMessageContentBlocksToBedrockContentBlocks_Empty
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			actual, err := bedrock.ToBedrockConverseResponse(tt.input)
+			if tt.expectError {
+				require.Error(t, err, tt.description)
+				return
+			}
 			require.NoError(t, err, "Conversion should not error")
 			require.NotNil(t, actual, "Response should not be nil")
 			require.NotNil(t, actual.Output, "Output should not be nil")
@@ -4124,7 +4164,8 @@ func TestNovaReasoningEffortClamped(t *testing.T) {
 
 // TestReasoningSignatureEchoedOnlyWhenNonEmpty verifies that an empty reasoning
 // signature is dropped before sending to Bedrock (MiniMax emits ""), while a real
-// signature is preserved (Anthropic requires it). Keyed on the value, not the model.
+// signature is preserved. Runs on a Nova id: on Claude an unsigned block is not
+// sent at all (#6624), which TestUnsignedReasoningReplay_Chat pins.
 func TestReasoningSignatureEchoedOnlyWhenNonEmpty(t *testing.T) {
 	cases := map[string]struct {
 		in   *string
@@ -4137,7 +4178,7 @@ func TestReasoningSignatureEchoedOnlyWhenNonEmpty(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			bifrostReq := &schemas.BifrostChatRequest{
-				Model: "anthropic.claude-sonnet-4-5",
+				Model: "amazon.nova-pro-v1:0",
 				Input: []schemas.ChatMessage{
 					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
 					{
@@ -4619,8 +4660,17 @@ func TestDocumentFormatFromDataURL(t *testing.T) {
 
 			assert.Equal(t, tt.expectedFormat, doc.Format,
 				"data URL media type %q should map to format %q", tt.mediaType, tt.expectedFormat)
-			require.NotNil(t, doc.Source.Bytes)
-			assert.Equal(t, payload, *doc.Source.Bytes, "data URL prefix must be stripped from source.bytes")
+			if strings.HasPrefix(strings.ToLower(tt.mediaType), "text/") {
+				decoded, err := base64.StdEncoding.DecodeString(payload)
+				require.NoError(t, err)
+				require.NotNil(t, doc.Source.Text)
+				assert.Equal(t, string(decoded), *doc.Source.Text)
+				assert.Nil(t, doc.Source.Bytes, "document source is a union")
+			} else {
+				require.NotNil(t, doc.Source.Bytes)
+				assert.Equal(t, payload, *doc.Source.Bytes, "data URL prefix must be stripped from source.bytes")
+				assert.Nil(t, doc.Source.Text, "document source is a union")
+			}
 		})
 	}
 }
@@ -4669,8 +4719,7 @@ func TestDocumentInlineTextDataURL(t *testing.T) {
 	assert.Equal(t, "txt", doc.Format)
 	require.NotNil(t, doc.Source.Text)
 	assert.Equal(t, "Hello World", *doc.Source.Text)
-	require.NotNil(t, doc.Source.Bytes)
-	assert.Equal(t, base64.StdEncoding.EncodeToString([]byte("Hello World")), *doc.Source.Bytes)
+	assert.Nil(t, doc.Source.Bytes, "document source is a union and text documents must not also carry bytes")
 
 	// A binary format never gets source.text, matching the raw file_data path.
 	doc = chatFileBlockDocument(t, &schemas.ChatInputFile{
@@ -4894,9 +4943,9 @@ func TestBedrockStopReasonMappingResponsesPath(t *testing.T) {
 		{"MaxTokens", "max_tokens", "length", "incomplete", "max_output_tokens"},
 		{"StopSequence", "stop_sequence", "stop", "completed", ""},
 		{"ToolUse", "tool_use", "tool_calls", "completed", ""},
-		{"ContentFiltered", "content_filtered", "content_filter", "", ""},               // no clean mapping — passes through, no Status
-		{"GuardrailIntervened", "guardrail_intervened", "guardrail_intervened", "", ""}, // no clean mapping — passes through, no Status
-		{"UnknownReason", "some_unknown_reason", "some_unknown_reason", "", ""},         // no clean mapping — passes through, no Status
+		{"ContentFiltered", "content_filtered", "content_filter", "incomplete", "content_filter"},               // filtered → incomplete + content_filter
+		{"GuardrailIntervened", "guardrail_intervened", "guardrail_intervened", "incomplete", "content_filter"}, // guardrail block → incomplete + content_filter
+		{"UnknownReason", "some_unknown_reason", "some_unknown_reason", "", ""},                                 // no clean mapping — passes through, no Status
 	}
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -4985,12 +5034,12 @@ func TestFinalizeBedrockStream_CleanCompletionUnaffected(t *testing.T) {
 }
 
 // TestFinalizeBedrockStream_UnmappedReasonLeavesStatusUnset keeps the streaming
-// path aligned with the non-streaming mapping: an unmapped stop reason (e.g.
-// content_filter) ends the stream as response.completed but must leave Status
-// unset rather than asserting "completed".
+// path aligned with the non-streaming mapping: an unmapped stop reason ends the
+// stream as response.completed but must leave Status unset rather than asserting
+// "completed".
 func TestFinalizeBedrockStream_UnmappedReasonLeavesStatusUnset(t *testing.T) {
 	state := bedrock.NewBedrockResponsesStreamState()
-	state.StopReason = schemas.Ptr("content_filter")
+	state.StopReason = schemas.Ptr("some_unknown_reason")
 	usage := &schemas.ResponsesResponseUsage{InputTokens: 5, OutputTokens: 10, TotalTokens: 15}
 
 	finalResponses := bedrock.FinalizeBedrockStream(state, 0, usage, nil)
@@ -5001,6 +5050,33 @@ func TestFinalizeBedrockStream_UnmappedReasonLeavesStatusUnset(t *testing.T) {
 	require.NotNil(t, terminal.Response)
 	assert.Nil(t, terminal.Response.Status, "unmapped stop reasons must leave Status unset, matching the non-streaming path")
 	assert.Nil(t, terminal.Response.IncompleteDetails)
+}
+
+// TestFinalizeBedrockStream_ContentFilterIncomplete guards the streaming
+// counterpart of the content-filter fix: when Bedrock's stopReason maps to
+// content_filter / guardrail_intervened, the terminal SSE event must be
+// response.incomplete carrying Status="incomplete" + IncompleteDetails.Reason
+// "content_filter", so streaming consumers can detect the filtered turn instead
+// of seeing a successful-looking response.completed.
+func TestFinalizeBedrockStream_ContentFilterIncomplete(t *testing.T) {
+	for _, stopReason := range []string{"content_filter", "guardrail_intervened"} {
+		t.Run(stopReason, func(t *testing.T) {
+			state := bedrock.NewBedrockResponsesStreamState()
+			state.StopReason = schemas.Ptr(stopReason)
+			usage := &schemas.ResponsesResponseUsage{InputTokens: 5, OutputTokens: 0, TotalTokens: 5}
+
+			finalResponses := bedrock.FinalizeBedrockStream(state, 0, usage, nil)
+			require.NotEmpty(t, finalResponses)
+
+			terminal := finalResponses[len(finalResponses)-1]
+			assert.Equal(t, schemas.ResponsesStreamResponseTypeIncomplete, terminal.Type)
+			require.NotNil(t, terminal.Response)
+			require.NotNil(t, terminal.Response.Status)
+			assert.Equal(t, schemas.ResponsesResponseStatusIncomplete, *terminal.Response.Status)
+			require.NotNil(t, terminal.Response.IncompleteDetails)
+			assert.Equal(t, schemas.ResponsesResponseIncompleteReasonContentFilter, terminal.Response.IncompleteDetails.Reason)
+		})
+	}
 }
 
 // TestBifrostToBedrockStopReasonReverseMapping tests the reverse conversion
@@ -5333,7 +5409,7 @@ func TestDocumentFormatResponsesPathRoundTrip(t *testing.T) {
 			require.NotEmpty(t, bifrostMessages, "expected at least one Bifrost message")
 
 			// Outbound: Bifrost responses messages -> Bedrock
-			roundTripped, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(ctx, bifrostMessages, false)
+			roundTripped, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(ctx, anthropicModel, bifrostMessages, false)
 			require.NoError(t, err)
 			require.NotEmpty(t, roundTripped, "expected at least one Bedrock message after round-trip")
 
@@ -5531,7 +5607,7 @@ func TestToolResultImageContentResponsesAPI(t *testing.T) {
 			},
 		}
 
-		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, false)
+		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, false)
 		require.NoError(t, err)
 		require.Len(t, messages, 1)
 
@@ -5575,7 +5651,7 @@ func TestToolResultImageContentResponsesAPI(t *testing.T) {
 			},
 		}
 
-		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, false)
+		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, false)
 		require.NoError(t, err)
 		require.Len(t, messages, 1)
 
@@ -5608,7 +5684,7 @@ func TestToolResultImageContentResponsesAPI(t *testing.T) {
 			},
 		}
 
-		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, false)
+		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, false)
 		require.NoError(t, err)
 		require.Len(t, messages, 1)
 
@@ -6662,7 +6738,7 @@ func TestMidConversationSystemReminderStaysInline(t *testing.T) {
 		userReminderTextMsg("second user turn"),
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	// Only the leading system prompt should be hoisted into the system block.
@@ -6699,7 +6775,7 @@ func TestMidConversationSystemReminderHoistedForNonAnthropic(t *testing.T) {
 		userReminderTextMsg("second user turn"),
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, false)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, false)
 	require.NoError(t, err)
 
 	// Both system messages are hoisted (historical behavior), not just the leading one.
@@ -6727,7 +6803,7 @@ func TestMultipleLeadingSystemMessagesAllHoisted(t *testing.T) {
 		systemReminderTextMsg("Injected reminder."),
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	require.Len(t, systemMessages, 2, "both leading system messages belong in the system block")
@@ -6763,7 +6839,7 @@ func TestSystemReminderAfterToolResultPreservesPairing(t *testing.T) {
 		systemReminderTextMsg("The task tools haven't been used recently."), // reminder right after tool result
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 	require.Len(t, systemMessages, 1)
 
@@ -6831,7 +6907,7 @@ func TestMidConversationDeveloperReminderStaysInline(t *testing.T) {
 		userReminderTextMsg("second user turn"),
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	// Only the leading system prompt is hoisted; the developer reminder is NOT.
@@ -6869,7 +6945,7 @@ func TestMidConversationReminderContentStrInlined(t *testing.T) {
 		},
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 	require.Len(t, systemMessages, 1, "only the leading prompt is hoisted")
 
@@ -6898,7 +6974,7 @@ func TestMidConversationReminderEmptyContentDropped(t *testing.T) {
 		},
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 	require.Len(t, systemMessages, 1)
 
@@ -6936,7 +7012,7 @@ func TestSystemReminderBetweenToolCallAndResult(t *testing.T) {
 		},
 	}
 
-	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	// Locate the assistant message carrying the tool_use.
@@ -6992,7 +7068,7 @@ func TestSystemReminderCarriesCachePoint(t *testing.T) {
 		reminder,
 	}
 
-	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	// The marker must follow the wrapped reminder text: per Converse semantics a cachePoint
@@ -7023,7 +7099,7 @@ func TestSystemReminderWithoutCacheControlAddsNoCachePoint(t *testing.T) {
 		systemReminderTextMsg("Reminder with no breakpoint."),
 	}
 
-	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	for _, m := range messages {
@@ -7064,7 +7140,7 @@ func TestToolCacheControlBecomesCachePointWithTTL(t *testing.T) {
 	}
 
 	assertTTLPreserved := func(t *testing.T, input []schemas.ResponsesMessage) {
-		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 		require.NoError(t, err)
 
 		var afterToolUse, afterToolResult bool
@@ -7115,7 +7191,7 @@ func TestLoneSystemMessageReturnsUserMessage(t *testing.T) {
 	for role, msg := range roles {
 		for _, inline := range []bool{true, false} {
 			input := []schemas.ResponsesMessage{msg}
-			messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, inline)
+			messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, inline)
 			require.NoError(t, err)
 			assert.Empty(t, systemMessages, "lone %s message must not populate the system block (inline=%v)", role, inline)
 			require.Len(t, messages, 1, "lone %s message must yield exactly one message (inline=%v)", role, inline)
@@ -7134,7 +7210,7 @@ func TestNoLeadingSystemBlockReminderInlined(t *testing.T) {
 		userReminderTextMsg("continue"),
 	}
 
-	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
 	require.NoError(t, err)
 
 	assert.Empty(t, systemMessages, "no leading system block means nothing should be hoisted")
@@ -7268,6 +7344,10 @@ func TestReasoningConfigNoDoubleEmissionOnEgress(t *testing.T) {
 // DocumentSource is documented as bytes | content | s3Location | text, so the object
 // reference is a first-class source - inlining it would burn a round trip and put the
 // payload under the 25 MiB inline cap for nothing.
+//
+// Nova, because forwarding the reference is only correct for a model whose Converse
+// backend resolves it: see schemas.BedrockModelSupportsS3Location, and
+// TestS3LocationRefusedForModelsThatCannotReadIt for the other side of that gate.
 func TestBedrockDocumentS3URIUsesS3Location(t *testing.T) {
 	t.Parallel()
 
@@ -7277,7 +7357,7 @@ func TestBedrockDocumentS3URIUsesS3Location(t *testing.T) {
 	fileType := "application/pdf"
 
 	got, err := bedrock.ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
-		Model: "anthropic.claude-sonnet-4-5-v1:0",
+		Model: novaModel,
 		Input: []schemas.ChatMessage{
 			{
 				Role: schemas.ChatMessageRoleUser,
@@ -7343,7 +7423,7 @@ func TestBedrockDocumentS3URIResolvesFormatFromObjectExtension(t *testing.T) {
 			fileURL := tc.uri
 
 			got, err := bedrock.ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
-				Model: "anthropic.claude-sonnet-4-5-v1:0",
+				Model: novaModel,
 				Input: []schemas.ChatMessage{
 					{
 						Role: schemas.ChatMessageRoleUser,
@@ -7387,7 +7467,7 @@ func TestBedrockDocumentS3URIResolvesFormatFromObjectExtension(t *testing.T) {
 		fileURL := "s3://my-bucket/reports/q4.pdf"
 
 		got, err := bedrock.ToBedrockResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
-			Model: "anthropic.claude-sonnet-4-5-v1:0",
+			Model: novaModel,
 			Input: []schemas.ResponsesMessage{
 				{
 					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
@@ -7429,7 +7509,7 @@ func TestBedrockDocumentS3URIResolvesFormatFromObjectExtension(t *testing.T) {
 		fileURL := "s3://my-bucket/reports/q4"
 
 		_, err := bedrock.ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
-			Model: "anthropic.claude-sonnet-4-5-v1:0",
+			Model: novaModel,
 			Input: []schemas.ChatMessage{
 				{
 					Role: schemas.ChatMessageRoleUser,
@@ -7451,7 +7531,8 @@ func TestBedrockDocumentS3URIResolvesFormatFromObjectExtension(t *testing.T) {
 
 // TestBedrockImageS3URIUsesS3Location is the ImageSource twin. Note the format has to be
 // derived from the object's extension: nothing is fetched, so there is no Content-Type,
-// and Converse requires a format on every image block.
+// and Converse requires a format on every image block. Nova for the same reason as its
+// document twin above.
 func TestBedrockImageS3URIUsesS3Location(t *testing.T) {
 	t.Parallel()
 
@@ -7459,7 +7540,7 @@ func TestBedrockImageS3URIUsesS3Location(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	got, err := bedrock.ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
-		Model: "anthropic.claude-sonnet-4-5-v1:0",
+		Model: novaModel,
 		Input: []schemas.ChatMessage{
 			{
 				Role: schemas.ChatMessageRoleUser,
@@ -7496,7 +7577,7 @@ func TestBedrockImageS3URIWithoutExtensionErrors(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	_, err := bedrock.ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
-		Model: "anthropic.claude-sonnet-4-5-v1:0",
+		Model: novaModel,
 		Input: []schemas.ChatMessage{
 			{
 				Role: schemas.ChatMessageRoleUser,

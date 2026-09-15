@@ -79,6 +79,51 @@ func TestToAnthropicResponsesRequest_StructuredOutput_ToolConversion(t *testing.
 	}
 }
 
+// TestToAnthropicResponsesRequest_StructuredOutput_Fable51_NoForcedToolChoice is the
+// Fable 5.1 counterpart: the synthetic tool is still added, but the pin is not,
+// because Fable 5.1 / Mythos 5.1 reject tool_choice "tool" and "any" with a 400.
+// The model reaches the tool under the default "auto" — with only the bf_so_*
+// tool bound there is nothing else it can call.
+func TestToAnthropicResponsesRequest_StructuredOutput_Fable51_NoForcedToolChoice(t *testing.T) {
+	for _, provider := range toolConversionProviders {
+		for _, model := range []string{"claude-fable-5-1", "claude-mythos-5-1"} {
+			t.Run(string(provider)+"/"+model, func(t *testing.T) {
+				req := &schemas.BifrostResponsesRequest{
+					Provider: provider,
+					Model:    model,
+					Input: []schemas.ResponsesMessage{
+						{
+							Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+							Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Hello")},
+						},
+					},
+					Params: &schemas.ResponsesParameters{Text: makeResponsesTextFormat("my_schema")},
+				}
+
+				ctx := schemas.NewBifrostContext(nil, time.Time{})
+				result, err := ToAnthropicResponsesRequest(ctx, req)
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+
+				found := false
+				for _, tool := range result.Tools {
+					if tool.Name == "bf_so_my_schema" {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Fatalf("expected the synthetic tool to still be added for %s/%s", provider, model)
+				}
+				if result.ToolChoice != nil {
+					t.Errorf("expected no forced ToolChoice for %s/%s, got %+v", provider, model, result.ToolChoice)
+				}
+			})
+		}
+	}
+}
+
 // TestToAnthropicResponsesRequest_StructuredOutput_NativeOutputConfig_Anthropic is the
 // negative-case control: Anthropic itself supports output_config.format natively, so no
 // synthetic tool should be added. This is the branch that Azure incorrectly took before

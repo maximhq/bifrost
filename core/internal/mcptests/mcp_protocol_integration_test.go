@@ -56,7 +56,7 @@ func TestProtocol_BasicToolExecution(t *testing.T) {
 	// Verify client is connected
 	clients := manager.GetClients()
 	require.Len(t, clients, 1, "Should have one client")
-	assert.Equal(t, schemas.MCPConnectionStateConnected, clients[0].State, "Client should be connected")
+	assert.Equal(t, schemas.MCPConnectionStateHealthy, clients[0].State, "Client should be connected")
 
 	// Get available tools
 	ctx := createTestContext()
@@ -142,7 +142,7 @@ func TestProtocol_ParallelExecution(t *testing.T) {
 	// Verify connection
 	clients := manager.GetClients()
 	require.Len(t, clients, 1, "Should have one client")
-	assert.Equal(t, schemas.MCPConnectionStateConnected, clients[0].State)
+	assert.Equal(t, schemas.MCPConnectionStateHealthy, clients[0].State)
 
 	// Setup Bifrost instance
 	bifrost := setupBifrost(t)
@@ -212,7 +212,7 @@ func TestProtocol_ErrorHandling(t *testing.T) {
 	// Verify connection
 	clients := manager.GetClients()
 	require.Len(t, clients, 1, "Should have one client")
-	assert.Equal(t, schemas.MCPConnectionStateConnected, clients[0].State)
+	assert.Equal(t, schemas.MCPConnectionStateHealthy, clients[0].State)
 
 	bifrost := setupBifrost(t)
 	bifrost.SetMCPManager(manager)
@@ -305,7 +305,7 @@ func TestProtocol_EdgeCases(t *testing.T) {
 	// Verify connection
 	clients := manager.GetClients()
 	require.Len(t, clients, 1, "Should have one client")
-	assert.Equal(t, schemas.MCPConnectionStateConnected, clients[0].State)
+	assert.Equal(t, schemas.MCPConnectionStateHealthy, clients[0].State)
 
 	bifrost := setupBifrost(t)
 	bifrost.SetMCPManager(manager)
@@ -459,7 +459,7 @@ func TestProtocol_ToolCallIDPreservation(t *testing.T) {
 	// Verify connection
 	clients := manager.GetClients()
 	require.Len(t, clients, 1, "Should have one client")
-	assert.Equal(t, schemas.MCPConnectionStateConnected, clients[0].State)
+	assert.Equal(t, schemas.MCPConnectionStateHealthy, clients[0].State)
 
 	bifrost := setupBifrost(t)
 	bifrost.SetMCPManager(manager)

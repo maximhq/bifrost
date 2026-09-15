@@ -229,7 +229,7 @@ type BifrostResponsesResponse struct {
 	Instructions         *ResponsesResponseInstructions      `json:"instructions"`
 	MaxOutputTokens      *int                                `json:"max_output_tokens"`
 	MaxToolCalls         *int                                `json:"max_tool_calls"`
-	Metadata             *map[string]any                     `json:"metadata,omitempty"`
+	Metadata             *map[string]any                     `json:"metadata"`
 	Model                string                              `json:"model"`
 	Output               []ResponsesMessage                  `json:"output"`
 	ParallelToolCalls    *bool                               `json:"parallel_tool_calls,omitempty"`
@@ -409,7 +409,7 @@ func (resp *BifrostResponsesResponse) WithDefaults() *BifrostResponsesResponse {
 
 	if resp.ServiceTier != nil {
 		switch *resp.ServiceTier {
-		case BifrostServiceTierAuto, BifrostServiceTierDefault, BifrostServiceTierFlex, BifrostServiceTierPriority:
+		case BifrostServiceTierAuto, BifrostServiceTierDefault, BifrostServiceTierFlex, BifrostServiceTierPriority, BifrostServiceTierUltrafast:
 			result.ServiceTier = resp.ServiceTier
 		default:
 			result.ServiceTier = new(BifrostServiceTierAuto)
@@ -1251,6 +1251,11 @@ type ResponsesResponseConversationStruct struct {
 }
 
 type ResponsesResponseError struct {
+	// Type is present on the top-level `error` stream event used by Azure
+	// OpenAI (for example, `too_many_requests`). It is optional on
+	// `response.failed`, whose response.error object normally only contains
+	// code and message.
+	Type    string `json:"type,omitempty"`
 	Code    string `json:"code"`    // The error code for the response
 	Message string `json:"message"` // A human-readable description of the error
 }
@@ -1308,6 +1313,14 @@ type ResponsesResponseUsage struct {
 	CostInUsdTicks             *int64                               `json:"cost_in_usd_ticks,omitempty"`
 	ServerSideToolUsageDetails *ResponsesServerSideToolUsageDetails `json:"server_side_tool_usage_details,omitempty"`
 	ContextDetails             *ResponsesContextDetails             `json:"context_details,omitempty"`
+}
+
+// NormalizeProviderCost mirrors BifrostLLMUsage.NormalizeProviderCost for the responses path.
+func (u *ResponsesResponseUsage) NormalizeProviderCost() {
+	if u == nil || u.Cost != nil {
+		return
+	}
+	u.Cost = costFromUSDTicks(u.CostInUsdTicks)
 }
 
 // ResponsesServerSideToolUsageDetails holds per-tool call counts returned by xAI.
@@ -1744,6 +1757,10 @@ const (
 	ResponsesOutputMessageContentTypeText      ResponsesMessageContentBlockType = "output_text"
 	ResponsesOutputMessageContentTypeRefusal   ResponsesMessageContentBlockType = "refusal"
 	ResponsesOutputMessageContentTypeReasoning ResponsesMessageContentBlockType = "reasoning_text"
+
+	// Part type on response.reasoning_summary_part.{added,done}, where the event's
+	// part field is required.
+	ResponsesOutputMessageContentTypeSummaryText ResponsesMessageContentBlockType = "summary_text"
 
 	// gemini sends rendered content in google search results
 	ResponsesOutputMessageContentTypeRenderedContent ResponsesMessageContentBlockType = "rendered_content"
@@ -2568,6 +2585,45 @@ type ResponsesToolChoiceStruct struct {
 type ResponsesToolChoice struct {
 	ResponsesToolChoiceStr    *string
 	ResponsesToolChoiceStruct *ResponsesToolChoiceStruct
+}
+
+// IsForced reports whether the choice obliges the model to call a tool, in any
+// of its spellings — "any"/"required", a named function or custom tool, a
+// pinned server tool, or an allowed-tools set in "required" mode. Only "none"
+// and "auto" are unforced. Models that reject forced tool use (Fable 5.1+)
+// need the choice dropped; see ModelCaps.SupportsForcedToolChoice.
+func (tc *ResponsesToolChoice) IsForced() bool {
+	if tc == nil {
+		return false
+	}
+	if tc.ResponsesToolChoiceStr != nil {
+		return forcedResponsesToolChoiceMode(*tc.ResponsesToolChoiceStr)
+	}
+	if s := tc.ResponsesToolChoiceStruct; s != nil {
+		switch s.Type {
+		case ResponsesToolChoiceTypeNone, ResponsesToolChoiceTypeAuto:
+			return false
+		case ResponsesToolChoiceTypeAllowedTools:
+			// The set is a constraint, not a forcing; only its mode forces.
+			return s.Mode != nil && forcedResponsesToolChoiceMode(*s.Mode)
+		case "":
+			// Mode-only choice; it serializes as the bare mode string.
+			return s.Mode != nil && forcedResponsesToolChoiceMode(*s.Mode)
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+// forcedResponsesToolChoiceMode reports whether a bare mode string forces a call.
+func forcedResponsesToolChoiceMode(mode string) bool {
+	switch ResponsesToolChoiceType(mode) {
+	case ResponsesToolChoiceTypeNone, ResponsesToolChoiceTypeAuto:
+		return false
+	default:
+		return true
+	}
 }
 
 // MarshalJSON implements custom JSON marshalling for ChatMessageContent.

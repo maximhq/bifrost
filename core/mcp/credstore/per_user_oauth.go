@@ -1,6 +1,7 @@
 package credstore
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -33,7 +34,7 @@ func (r *perUserOAuthResolver) ConnectionHeaders(ctx *schemas.BifrostContext, co
 	}
 
 	mode := ctx.MCPAuthMode()
-	identity := identityForMCPAuthMode(ctx, mode)
+	identity := ctx.MCPIdentity(mode)
 	if identity == "" {
 		return nil, fmt.Errorf(
 			"per-user OAuth for %s requires an identity: send a Virtual Key (x-bf-vk), authenticate as a user, or set x-bf-mcp-session-id to any opaque string you'll re-send on subsequent calls",
@@ -94,3 +95,32 @@ func (r *perUserOAuthResolver) ConnectionHeaders(ctx *schemas.BifrostContext, co
 }
 
 func (r *perUserOAuthResolver) RequiresPerCallConnection() bool { return true }
+
+// ForceRefresh unconditionally refreshes the caller's per-identity token,
+// bypassing GetUserAccessTokenByMode's ExpiresAt gate. Resolution ((mode,
+// identity) from ctx, the provider-availability check) now happens entirely
+// inside the provider — see schemas.OAuth2Provider.ForceRefreshAccessToken.
+func (r *perUserOAuthResolver) ForceRefresh(ctx *schemas.BifrostContext, config *schemas.MCPClientConfig) error {
+	if r.provider == nil {
+		return fmt.Errorf("per-user OAuth requires an OAuth2Provider but none is configured")
+	}
+	return r.provider.ForceRefreshAccessToken(ctx, config)
+}
+
+// AdminConnectionHeaders resolves the retained admin bootstrap token (see
+// GetAdminAccessToken's doc comment) for periodic tool-discovery refresh.
+func (r *perUserOAuthResolver) AdminConnectionHeaders(ctx context.Context, config *schemas.MCPClientConfig) (http.Header, error) {
+	if r.provider == nil {
+		return nil, fmt.Errorf("per-user OAuth requires an OAuth2Provider but none is configured")
+	}
+	if config.OauthConfigID == nil || *config.OauthConfigID == "" {
+		return nil, fmt.Errorf("per-user OAuth client %q has no linked oauth config", config.Name)
+	}
+	accessToken, err := r.provider.GetAdminAccessToken(ctx, config.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get admin access token for MCP server %s: %w", config.Name, err)
+	}
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer "+accessToken)
+	return headers, nil
+}

@@ -244,6 +244,8 @@ type TranscriptionUsage struct {
 	OutputTokens      *int                                 `json:"output_tokens,omitempty"`
 	TotalTokens       *int                                 `json:"total_tokens,omitempty"`
 	Seconds           *float64                             `json:"seconds,omitempty"` // For duration-based usage (fractional, e.g. 523.5)
+	// Cost is the per-category cost breakdown, populated when pricing is available.
+	Cost *BifrostCost `json:"cost,omitempty"`
 }
 
 type TranscriptionUsageInputTokenDetails struct {

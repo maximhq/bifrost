@@ -94,5 +94,50 @@ type Usage struct {
 	CitationTokens    *int                 `json:"citation_tokens,omitempty"`
 	NumSearchQueries  *int                 `json:"num_search_queries,omitempty"`
 	ReasoningTokens   *int                 `json:"reasoning_tokens,omitempty"`
-	Cost              *schemas.BifrostCost `json:"cost,omitempty"`
+	Cost              *perplexityCost      `json:"cost,omitempty"`
+}
+
+// perplexityCost is Perplexity's raw cost object, a flat per-category shape. It
+// is mapped into the neutral schemas.BifrostCost via toBifrostCost rather than
+// deserialized into it directly, keeping the provider wire format out of the
+// core schema.
+type perplexityCost struct {
+	InputTokensCost     float64 `json:"input_tokens_cost"`
+	OutputTokensCost    float64 `json:"output_tokens_cost"`
+	ReasoningTokensCost float64 `json:"reasoning_tokens_cost"`
+	CitationTokensCost  float64 `json:"citation_tokens_cost"`
+	SearchQueriesCost   float64 `json:"search_queries_cost"`
+	RequestCost         float64 `json:"request_cost"`
+	TotalCost           float64 `json:"total_cost"`
+}
+
+// toBifrostCost maps Perplexity's flat cost onto the nested BifrostCost: the flat
+// request surcharge folds into the input side; reasoning/citation/search are
+// output-side categories.
+func (c *perplexityCost) toBifrostCost() *schemas.BifrostCost {
+	if c == nil {
+		return nil
+	}
+	inputCost := c.InputTokensCost + c.RequestCost
+	outputCost := c.OutputTokensCost + c.ReasoningTokensCost + c.CitationTokensCost + c.SearchQueriesCost
+	total := c.TotalCost
+	if total == 0 {
+		total = inputCost + outputCost
+	}
+	bc := &schemas.BifrostCost{InputCost: inputCost, OutputCost: outputCost, TotalCost: total}
+	if inputCost != 0 {
+		bc.InputCostDetails = &schemas.InputCostDetails{
+			TextCost:    c.InputTokensCost,
+			RequestCost: c.RequestCost,
+		}
+	}
+	if outputCost != 0 {
+		bc.OutputCostDetails = &schemas.OutputCostDetails{
+			TextCost:          c.OutputTokensCost,
+			ReasoningCost:     c.ReasoningTokensCost,
+			CitationCost:      c.CitationTokensCost,
+			SearchQueriesCost: c.SearchQueriesCost,
+		}
+	}
+	return bc
 }

@@ -135,7 +135,7 @@ func requireCodeModeClientsReady(t *testing.T, manager *mcp.MCPManager, configs 
 		if !ok {
 			t.Fatalf("MCP client %q (%s) was not registered", config.Name, config.ID)
 		}
-		if client.State != schemas.MCPConnectionStateConnected {
+		if client.State != schemas.MCPConnectionStateHealthy {
 			t.Fatalf("MCP client %q (%s) is %s; expected connected", config.Name, config.ID, client.State)
 		}
 		if !client.ExecutionConfig.IsCodeModeClient {

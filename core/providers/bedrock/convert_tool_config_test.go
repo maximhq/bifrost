@@ -321,7 +321,7 @@ func TestCollectBedrockServerTools_BashOnly(t *testing.T) {
 			},
 		},
 	}
-	tools, betas := collectBedrockServerTools(params)
+	tools, betas := collectBedrockServerTools("us.anthropic.claude-opus-5", params)
 	if len(tools) != 1 {
 		t.Fatalf("expected 1 server tool, got %d", len(tools))
 	}
@@ -348,7 +348,7 @@ func TestCollectBedrockServerTools_ComputerDerivesBeta(t *testing.T) {
 			},
 		},
 	}
-	tools, betas := collectBedrockServerTools(params)
+	tools, betas := collectBedrockServerTools("us.anthropic.claude-opus-5", params)
 	if len(tools) != 1 {
 		t.Fatalf("expected 1 server tool, got %d", len(tools))
 	}
@@ -372,7 +372,7 @@ func TestCollectBedrockServerTools_MemoryDerivesContextManagement(t *testing.T) 
 			},
 		},
 	}
-	_, betas := collectBedrockServerTools(params)
+	_, betas := collectBedrockServerTools("us.anthropic.claude-opus-5", params)
 	if len(betas) != 1 || betas[0] != "context-management-2025-06-27" {
 		t.Errorf("expected [context-management-2025-06-27], got %v", betas)
 	}
@@ -390,7 +390,7 @@ func TestCollectBedrockServerTools_StripsUnsupported(t *testing.T) {
 			},
 		},
 	}
-	tools, betas := collectBedrockServerTools(params)
+	tools, betas := collectBedrockServerTools("us.anthropic.claude-opus-5", params)
 	if len(tools) != 0 {
 		t.Errorf("expected no server tools (web_search unsupported on Bedrock), got %d", len(tools))
 	}
@@ -415,7 +415,7 @@ func TestCollectBedrockServerTools_FunctionToolsIgnored(t *testing.T) {
 			},
 		},
 	}
-	tools, betas := collectBedrockServerTools(params)
+	tools, betas := collectBedrockServerTools("us.anthropic.claude-opus-5", params)
 	if len(tools) != 0 || len(betas) != 0 {
 		t.Errorf("function tools should not flow through server-tool helper, got tools=%d betas=%v", len(tools), betas)
 	}
@@ -562,7 +562,8 @@ func TestBuildBedrockServerToolChoice_UnsupportedServerToolPin_NotTunneled(t *te
 //   - ToolConfig nil (no function tools → Converse's typed path is inactive)
 func TestConvertChatParameters_PinnedServerToolE2E(t *testing.T) {
 	bifrostReq := &schemas.BifrostChatRequest{
-		Model: "global.anthropic.claude-sonnet-4-6",
+		Provider: schemas.Bedrock,
+		Model:    "global.anthropic.claude-sonnet-4-6",
 		Params: &schemas.ChatParameters{
 			Tools: []schemas.ChatTool{
 				{
@@ -580,7 +581,7 @@ func TestConvertChatParameters_PinnedServerToolE2E(t *testing.T) {
 		},
 	}
 	bedrockReq := &BedrockConverseRequest{}
-	if err := convertChatParameters(nil, bifrostReq, bedrockReq); err != nil {
+	if err := convertChatParameters(nil, bifrostReq, bedrockReq, schemas.ResolveModelCaps(bifrostReq.Provider, bifrostReq.Model)); err != nil {
 		t.Fatalf("convertChatParameters failed: %v", err)
 	}
 	if bedrockReq.ToolConfig != nil {
@@ -634,7 +635,8 @@ func TestConvertChatParameters_ResponseFormatWithPinnedServerTool_NoConflictingC
 	})
 
 	bifrostReq := &schemas.BifrostChatRequest{
-		Model: "amazon.nova-pro-v1:0",
+		Provider: schemas.Bedrock,
+		Model:    "amazon.nova-pro-v1:0",
 		Params: &schemas.ChatParameters{
 			ResponseFormat: &responseFormat,
 			Tools: []schemas.ChatTool{
@@ -654,7 +656,7 @@ func TestConvertChatParameters_ResponseFormatWithPinnedServerTool_NoConflictingC
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	bedrockReq := &BedrockConverseRequest{}
-	if err := convertChatParameters(ctx, bifrostReq, bedrockReq); err != nil {
+	if err := convertChatParameters(ctx, bifrostReq, bedrockReq, schemas.ResolveModelCaps(bifrostReq.Provider, bifrostReq.Model)); err != nil {
 		t.Fatalf("convertChatParameters failed: %v", err)
 	}
 
@@ -695,7 +697,7 @@ func TestConvertInferenceConfig_GLMSkipsStopSequences(t *testing.T) {
 		Stop:                []string{"hi"},
 	}
 
-	glm := convertInferenceConfig(params, "zai.glm-5")
+	glm := convertInferenceConfig(params, schemas.ResolveModelCaps(schemas.Bedrock, "zai.glm-5"))
 	if glm.StopSequences != nil {
 		t.Fatalf("expected StopSequences to be omitted for GLM, got %v", glm.StopSequences)
 	}
@@ -704,7 +706,7 @@ func TestConvertInferenceConfig_GLMSkipsStopSequences(t *testing.T) {
 		t.Fatalf("expected MaxTokens to be preserved, got %v", glm.MaxTokens)
 	}
 
-	other := convertInferenceConfig(params, "anthropic.claude-sonnet-4")
+	other := convertInferenceConfig(params, schemas.ResolveModelCaps(schemas.Bedrock, "anthropic.claude-sonnet-4"))
 	if len(other.StopSequences) != 1 || other.StopSequences[0] != "hi" {
 		t.Fatalf("expected StopSequences to be preserved for non-GLM, got %v", other.StopSequences)
 	}
@@ -859,4 +861,114 @@ func assertToolOrder(t *testing.T, tools []BedrockTool, want []string) {
 			t.Fatalf("tool order drifted: got %s at index %d, want %s", tool.ToolSpec.Name, i, want[i])
 		}
 	}
+}
+
+// installBedrockCapabilityRecord points the capability resolver at one model for
+// the duration of the test, so a gate can be driven from the datasheet side.
+func installBedrockCapabilityRecord(t *testing.T, model string, record *schemas.ModelCapabilities) {
+	t.Helper()
+	schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if m != model {
+			return nil
+		}
+		return record
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+}
+
+// TestBedrockCapabilityGatesReadDatasheet covers the datasheet side of the gates
+// migrated off model-family checks. The name-based fallbacks stay covered by the
+// GLM / cache-point / tool-choice tests elsewhere in the package; these pin that
+// a record overrides them, in both directions.
+func TestBedrockCapabilityGatesReadDatasheet(t *testing.T) {
+	t.Run("stop_survives_when_row_marks_it_supported", func(t *testing.T) {
+		const model = "zai.glm-5"
+		installBedrockCapabilityRecord(t, model, &schemas.ModelCapabilities{
+			UnsupportedFields: map[string]bool{schemas.FieldStop: false},
+		})
+
+		config := convertInferenceConfig(
+			&schemas.ChatParameters{Stop: []string{"hi"}},
+			schemas.ResolveModelCaps(schemas.Bedrock, model),
+		)
+		if len(config.StopSequences) != 1 {
+			t.Fatalf("an explicit false must beat the GLM name check, got %v", config.StopSequences)
+		}
+	})
+
+	t.Run("stop_dropped_when_row_marks_it_unsupported", func(t *testing.T) {
+		const model = "anthropic.claude-sonnet-4"
+		installBedrockCapabilityRecord(t, model, &schemas.ModelCapabilities{
+			UnsupportedFields: map[string]bool{schemas.FieldStop: true},
+		})
+
+		config := convertInferenceConfig(
+			&schemas.ChatParameters{Stop: []string{"hi"}},
+			schemas.ResolveModelCaps(schemas.Bedrock, model),
+		)
+		if config.StopSequences != nil {
+			t.Fatalf("an explicit true must drop stop on a non-GLM model, got %v", config.StopSequences)
+		}
+	})
+
+	t.Run("tool_choice_pin_dropped_when_row_marks_struct_unsupported", func(t *testing.T) {
+		const model = "anthropic.claude-sonnet-4"
+		installBedrockCapabilityRecord(t, model, &schemas.ModelCapabilities{
+			ToolChoiceStructSupported: new(false),
+		})
+
+		params := &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{{
+				Type:     schemas.ChatToolTypeFunction,
+				Function: &schemas.ChatToolFunction{Name: "get_weather"},
+			}},
+			ToolChoice: &schemas.ChatToolChoice{
+				ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{
+					Type:     schemas.ChatToolChoiceTypeFunction,
+					Function: &schemas.ChatToolChoiceFunction{Name: "get_weather"},
+				},
+			},
+		}
+		config := convertToolConfig(model, params)
+		if config == nil {
+			t.Fatal("expected a tool config")
+		}
+		if config.ToolChoice != nil {
+			t.Fatalf("the named pin must be dropped, got %+v", config.ToolChoice)
+		}
+	})
+
+	t.Run("cache_points_stripped_when_row_says_unsupported", func(t *testing.T) {
+		const model = "anthropic.claude-sonnet-4"
+		installBedrockCapabilityRecord(t, model, &schemas.ModelCapabilities{
+			SupportsCachePoint: new(false),
+		})
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req, err := ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+			Provider: schemas.Bedrock,
+			Model:    model,
+			Input: []schemas.ChatMessage{{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")},
+			}},
+			Params: &schemas.ChatParameters{
+				Tools: []schemas.ChatTool{{
+					Type:         schemas.ChatToolTypeFunction,
+					Function:     &schemas.ChatToolFunction{Name: "get_weather"},
+					CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
+				}},
+			},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if req.ToolConfig != nil {
+			for _, tool := range req.ToolConfig.Tools {
+				if tool.CachePoint != nil {
+					t.Fatal("cache points must be stripped when the row says unsupported")
+				}
+			}
+		}
+	})
 }

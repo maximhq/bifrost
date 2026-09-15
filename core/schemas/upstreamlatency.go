@@ -138,6 +138,23 @@ func (r *BifrostResponse) PopulateUpstreamLatency(ctx context.Context) {
 	}
 }
 
+// PopulateOverheadLatency copies Bifrost's own cost onto the response's ExtraFields,
+// derived from total via CalculateOverhead. Left nil when no accumulator is present,
+// so absent stays distinct from zero.
+func (r *BifrostResponse) PopulateOverheadLatency(ctx context.Context, total time.Duration) {
+	if r == nil {
+		return
+	}
+	overhead, ok := CalculateOverhead(ctx, total)
+	if !ok {
+		return
+	}
+	if ef := r.GetExtraFields(); ef != nil {
+		ms := int64(overhead / time.Millisecond)
+		ef.OverheadLatency = &ms
+	}
+}
+
 // CalculateOverhead derives Bifrost's own cost from a total wall-clock duration.
 //
 // Clamps at zero. The two measurements come from different clocks started at

@@ -24,8 +24,13 @@ func ToBedrockChatCompletionRequest(ctx *schemas.BifrostContext, bifrostReq *sch
 		ModelID: bifrostReq.Model,
 	}
 
+	// capModel is the canonical model used for capability gating (resolves aliases).
+	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
+	caps := schemas.ResolveModelCaps(bifrostReq.Provider, capModel)
+
 	input := bifrostReq.Input
-	if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) && ctx.Value(schemas.BifrostContextKeySupportsAssistantPrefill) == false {
+	if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) &&
+		!caps.SupportsAssistantPrefill(ctx.Value(schemas.BifrostContextKeySupportsAssistantPrefill) != false) {
 		trimmed := len(input)
 		for trimmed > 0 && input[trimmed-1].Role == schemas.ChatMessageRoleAssistant {
 			trimmed--
@@ -34,7 +39,7 @@ func ToBedrockChatCompletionRequest(ctx *schemas.BifrostContext, bifrostReq *sch
 	}
 
 	// Convert messages and system messages
-	messages, systemMessages, err := convertMessages(ctx, input)
+	messages, systemMessages, err := convertMessages(ctx, capModel, input)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert messages: %w", err)
 	}
@@ -57,19 +62,17 @@ func ToBedrockChatCompletionRequest(ctx *schemas.BifrostContext, bifrostReq *sch
 	}
 
 	// Convert parameters and configurations
-	if err := convertChatParameters(ctx, bifrostReq, bedrockReq); err != nil {
+	if err := convertChatParameters(ctx, bifrostReq, bedrockReq, caps); err != nil {
 		return nil, fmt.Errorf("failed to convert chat parameters: %w", err)
 	}
 
 	// Ensure tool config is present when needed
 	ensureChatToolConfigForConversation(ctx, bifrostReq, bedrockReq)
 
-	// capModel is the canonical model used for capability gating (resolves aliases).
-	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
-	if !schemas.BedrockModelSupportsCachePoints(capModel) {
+	if !caps.SupportsCachePoint(schemas.BedrockModelSupportsCachePoints(capModel)) {
 		stripCachePointsFromBedrockRequest(bedrockReq)
 	} else {
-		if !schemas.BedrockModelSupportsExtendedCacheTTL(capModel) {
+		if !caps.SupportsExtendedCacheTTL(schemas.BedrockModelSupportsExtendedCacheTTL(capModel)) {
 			downgradeExtendedCacheTTLInBedrockRequest(bedrockReq)
 		}
 		// See the same call in ToBedrockResponsesRequest: exceeding the cap is a hard rejection,
@@ -141,17 +144,24 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 
 			// Handle reasoning content
 			if contentBlock.ReasoningContent != nil {
-				if contentBlock.ReasoningContent.ReasoningText == nil {
-					continue
-				}
-				reasoningDetails = append(reasoningDetails, schemas.ChatReasoningDetails{
-					Index:     len(reasoningDetails),
-					Type:      schemas.BifrostReasoningDetailsTypeText,
-					Text:      contentBlock.ReasoningContent.ReasoningText.Text,
-					Signature: contentBlock.ReasoningContent.ReasoningText.Signature,
-				})
-				if contentBlock.ReasoningContent.ReasoningText.Text != nil {
-					reasoningText += *contentBlock.ReasoningContent.ReasoningText.Text + "\n"
+				switch {
+				case contentBlock.ReasoningContent.ReasoningText != nil:
+					reasoningDetails = append(reasoningDetails, schemas.ChatReasoningDetails{
+						Index:     len(reasoningDetails),
+						Type:      schemas.BifrostReasoningDetailsTypeText,
+						Text:      contentBlock.ReasoningContent.ReasoningText.Text,
+						Signature: contentBlock.ReasoningContent.ReasoningText.Signature,
+					})
+					if contentBlock.ReasoningContent.ReasoningText.Text != nil {
+						reasoningText += *contentBlock.ReasoningContent.ReasoningText.Text + "\n"
+					}
+				case contentBlock.ReasoningContent.RedactedContent != nil:
+					// Opaque blob: no prose to surface, only the replay token.
+					reasoningDetails = append(reasoningDetails, schemas.ChatReasoningDetails{
+						Index: len(reasoningDetails),
+						Type:  schemas.BifrostReasoningDetailsTypeEncrypted,
+						Data:  contentBlock.ReasoningContent.RedactedContent,
+					})
 				}
 			}
 
@@ -483,8 +493,9 @@ func (chunk *BedrockStreamEvent) ToBifrostChatCompletionStream(state *BedrockStr
 			// Handle reasoning content delta
 			reasoningContentDelta := chunk.Delta.ReasoningContent
 
-			// Only construct and return a response when either Text or Signature is set
-			if (reasoningContentDelta.Text == nil || *reasoningContentDelta.Text == "") && reasoningContentDelta.Signature == nil {
+			// Only construct and return a response when the delta carries something
+			if (reasoningContentDelta.Text == nil || *reasoningContentDelta.Text == "") &&
+				reasoningContentDelta.Signature == nil && reasoningContentDelta.RedactedContent == nil {
 				return nil, nil, false
 			}
 
@@ -523,6 +534,27 @@ func (chunk *BedrockStreamEvent) ToBifrostChatCompletionStream(state *BedrockStr
 											Index:     0,
 											Type:      schemas.BifrostReasoningDetailsTypeText,
 											Signature: reasoningContentDelta.Signature,
+										},
+									},
+								},
+							},
+						},
+					},
+				}
+			} else if reasoningContentDelta.RedactedContent != nil {
+				// Arrives whole in a single delta, so no accumulation is needed.
+				streamResponse = &schemas.BifrostChatResponse{
+					Object: "chat.completion.chunk",
+					Choices: []schemas.BifrostResponseChoice{
+						{
+							Index: 0,
+							ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+								Delta: &schemas.ChatStreamResponseChoiceDelta{
+									ReasoningDetails: []schemas.ChatReasoningDetails{
+										{
+											Index: 0,
+											Type:  schemas.BifrostReasoningDetailsTypeEncrypted,
+											Data:  reasoningContentDelta.RedactedContent,
 										},
 									},
 								},

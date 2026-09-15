@@ -26,7 +26,13 @@ func ErrorInSuccessfulChatBody(body []byte) *schemas.BifrostError {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return nil
 	}
+	return errorInValidatedChatBody(body)
+}
 
+// errorInValidatedChatBody is ErrorInSuccessfulChatBody's core, for callers that
+// have already proven body is valid JSON (e.g. a successful sonic.Unmarshal on
+// the same bytes) and so can skip the redundant full-body gjson.ValidBytes scan.
+func errorInValidatedChatBody(body []byte) *schemas.BifrostError {
 	errObj := gjson.GetBytes(body, "error")
 	if !errObj.Exists() || !errObj.IsObject() {
 		return nil

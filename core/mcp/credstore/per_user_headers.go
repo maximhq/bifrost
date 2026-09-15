@@ -1,6 +1,7 @@
 package credstore
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -38,7 +39,7 @@ func (r *perUserHeadersResolver) ConnectionHeaders(ctx *schemas.BifrostContext, 
 	}
 
 	mode := ctx.MCPAuthMode()
-	identity := identityForMCPAuthMode(ctx, mode)
+	identity := ctx.MCPIdentity(mode)
 	if identity == "" {
 		return nil, fmt.Errorf(
 			"per-user headers for %s requires an identity: send a Virtual Key (x-bf-vk), authenticate as a user, or set x-bf-mcp-session-id to any opaque string you'll re-send on subsequent calls",
@@ -68,6 +69,32 @@ func (r *perUserHeadersResolver) ConnectionHeaders(ctx *schemas.BifrostContext, 
 
 func (r *perUserHeadersResolver) RequiresPerCallConnection() bool { return true }
 
+// ForceRefresh is a no-op — user-submitted header credentials have nothing
+// to refresh; a rejected header value requires a fresh submission, not a
+// refresh.
+func (r *perUserHeadersResolver) ForceRefresh(_ *schemas.BifrostContext, _ *schemas.MCPClientConfig) error {
+	return nil
+}
+
+// AdminConnectionHeaders resolves the retained admin header credential (see
+// verifyMCPClientHeaders' persistence call in transports/bifrost-http/handlers/mcp.go)
+// for periodic tool-discovery refresh. Reuses missingRequiredHeaderKeys and
+// buildPerUserHeaderValues below — same schema-drift and value-filtering
+// logic ConnectionHeaders applies for a real caller's credential.
+func (r *perUserHeadersResolver) AdminConnectionHeaders(ctx context.Context, config *schemas.MCPClientConfig) (http.Header, error) {
+	if r.provider == nil {
+		return nil, fmt.Errorf("per-user headers requires an MCPHeadersProvider but none is configured")
+	}
+	cred, err := r.provider.GetCredentialByMode(ctx, schemas.MCPAuthModeAdmin, "", config.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load admin header credential for %s: %w", config.Name, err)
+	}
+	if missing := missingRequiredHeaderKeys(config.PerUserHeaderKeys, cred.Headers); len(missing) > 0 {
+		return nil, fmt.Errorf("admin header credential for %s is missing required keys: %v", config.Name, missing)
+	}
+	return buildPerUserHeaderValues(config.PerUserHeaderKeys, cred.Headers), nil
+}
+
 // buildAuthRequiredError creates a pending mcp_per_user_header_flows row
 // via the provider, then constructs the inline-401 payload pointing at
 // that flow's auth-page URL. Mirrors per_user_oauth.go's call to
@@ -81,7 +108,7 @@ func (r *perUserHeadersResolver) buildAuthRequiredError(ctx *schemas.BifrostCont
 		return fmt.Errorf("per-user headers requires a callback base URL but none is available in context")
 	}
 	mode := ctx.MCPAuthMode()
-	identity := identityForMCPAuthMode(ctx, mode)
+	identity := ctx.MCPIdentity(mode)
 	if identity == "" {
 		// Defensive — the caller already validated identity before invoking
 		// the auth-required path, but keep the guard so a future refactor

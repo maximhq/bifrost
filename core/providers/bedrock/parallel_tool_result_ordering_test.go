@@ -18,8 +18,11 @@ package bedrock
 
 import (
 	"context"
+	"regexp"
+	"strings"
 	"testing"
 
+	"github.com/cespare/xxhash/v2"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -159,4 +162,179 @@ func TestParallelToolResultOrdering(t *testing.T) {
 			"iteration %d: tool_result order %v does not match tool_use order %v — Bedrock will reject this",
 			i, toolResultIDs, toolUseIDs)
 	}
+}
+
+// reportedGeminiToolUseID is the id from the OpenCode/Bedrock report: a Gemini-minted call id
+// with an embedded thought signature, replayed onto a glm-5 / kimi-2.5 turn.
+const reportedGeminiToolUseID = "d556q31u_ts_AY89a18eH3FucoBHPCdX6w7jgIhjSnIj7hU_mGofiw3SE2HL8kuMRcnfV3pGV7iUXRi_YQVYUgCH4bmcbYrS03yxWRtsPFb7KHPbp_iRinWZKPHtiyGVRlXfTsqeDBZOt3YNzKL-ycnZh0WeoLthSqnjkeZKT6idSNfd"
+
+var bedrockToolUseIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_.:-]{1,64}$`)
+
+// TestBedrockAliasToolUseID verifies the alias only rewrites ids Bedrock would reject, so
+// every id that works today stays byte-identical on the wire.
+func TestBedrockAliasToolUseID(t *testing.T) {
+	tests := []struct {
+		name       string
+		id         string
+		wantSameID bool
+	}{
+		{"anthropic id", "tooluse_RwHN0v2n5kuNuZ2qoMV3SN", true},
+		{"openai id", "call_9v2n5kuNuZ2qoMV3SNRwHN0", true},
+		{"kimi id keeps dots and colons", "functions.read:0", true},
+		{"exactly 64 chars", strings.Repeat("a", 64), true},
+		{"65 chars", strings.Repeat("a", 65), false},
+		{"gemini thought signature", reportedGeminiToolUseID, false},
+		{"unsafe characters", "call/abc 123", false},
+		{"empty", "", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := bedrockAliasToolUseID(tc.id)
+			assert.Regexp(t, bedrockToolUseIDPattern, got, "alias violates Bedrock's toolUseId constraint")
+			if tc.wantSameID {
+				assert.Equal(t, tc.id, got, "id Bedrock already accepts must pass through unchanged")
+			} else {
+				assert.Equal(t, got, bedrockAliasToolUseID(tc.id), "alias must be deterministic")
+			}
+		})
+	}
+
+	// The hash covers the full id, so ids sharing a truncated head still alias apart.
+	head := strings.Repeat("z", 70)
+	assert.NotEqual(t, bedrockAliasToolUseID(head+"_one"), bedrockAliasToolUseID(head+"_two"),
+		"ids sharing a truncated head must not collide")
+}
+
+// TestBedrockToolUseIDPairingResponsesPath verifies an over-long id is aliased identically on
+// the tool_use and its tool_result, so Bedrock can still pair them.
+func TestBedrockToolUseIDPairingResponsesPath(t *testing.T) {
+	ptr := func(s string) *string { return &s }
+	msgType := func(t schemas.ResponsesMessageType) *schemas.ResponsesMessageType { return &t }
+
+	req := &schemas.BifrostResponsesRequest{
+		Model: "zai.glm-5",
+		Input: []schemas.ResponsesMessage{
+			{
+				Type: msgType(schemas.ResponsesMessageTypeMessage),
+				Role: func(r schemas.ResponsesMessageRoleType) *schemas.ResponsesMessageRoleType { return &r }(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: ptr("What did we do so far?"),
+				},
+			},
+			{
+				Type: msgType(schemas.ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:    ptr(reportedGeminiToolUseID),
+					Name:      ptr("bash"),
+					Arguments: ptr(`{"command":"ls"}`),
+				},
+			},
+			{
+				Type: msgType(schemas.ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: ptr(reportedGeminiToolUseID),
+					Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: ptr("build/ src/")},
+				},
+			},
+		},
+	}
+
+	bedrockReq, err := ToBedrockResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req)
+	require.NoError(t, err)
+
+	var toolUseIDs, toolResultIDs []string
+	for _, msg := range bedrockReq.Messages {
+		for _, block := range msg.Content {
+			if block.ToolUse != nil {
+				toolUseIDs = append(toolUseIDs, block.ToolUse.ToolUseID)
+			}
+			if block.ToolResult != nil {
+				toolResultIDs = append(toolResultIDs, block.ToolResult.ToolUseID)
+			}
+		}
+	}
+
+	require.Len(t, toolUseIDs, 1)
+	require.Len(t, toolResultIDs, 1)
+	assert.Regexp(t, bedrockToolUseIDPattern, toolUseIDs[0], "Bedrock rejects toolUse.toolUseId over 64 chars")
+	assert.Regexp(t, bedrockToolUseIDPattern, toolResultIDs[0], "Bedrock rejects toolResult.toolUseId over 64 chars")
+	assert.Equal(t, toolUseIDs[0], toolResultIDs[0], "tool_use and tool_result must alias to the same id")
+}
+
+// TestBedrockToolUseIDPairingChatPath is TestBedrockToolUseIDPairingResponsesPath for the
+// chat completions path, which builds toolUse/toolResult blocks through a separate converter.
+func TestBedrockToolUseIDPairingChatPath(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostChatRequest{
+		Model: "zai.glm-5",
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("What did we do so far?")},
+			},
+			{
+				Role: schemas.ChatMessageRoleAssistant,
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{
+						{
+							ID:   schemas.Ptr(reportedGeminiToolUseID),
+							Type: schemas.Ptr(string(schemas.ChatToolChoiceTypeFunction)),
+							Function: schemas.ChatAssistantMessageToolCallFunction{
+								Name:      schemas.Ptr("bash"),
+								Arguments: `{"command":"ls"}`,
+							},
+						},
+					},
+				},
+			},
+			{
+				Role:            schemas.ChatMessageRoleTool,
+				ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr(reportedGeminiToolUseID)},
+				Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr("build/ src/")},
+			},
+		},
+	}
+
+	bedrockReq, err := ToBedrockChatCompletionRequest(ctx, req)
+	require.NoError(t, err)
+
+	var toolUseID, toolResultID string
+	for _, msg := range bedrockReq.Messages {
+		for _, block := range msg.Content {
+			if block.ToolUse != nil {
+				toolUseID = block.ToolUse.ToolUseID
+			}
+			if block.ToolResult != nil {
+				toolResultID = block.ToolResult.ToolUseID
+			}
+		}
+	}
+
+	assert.Regexp(t, bedrockToolUseIDPattern, toolUseID, "Bedrock rejects toolUse.toolUseId over 64 chars")
+	assert.Regexp(t, bedrockToolUseIDPattern, toolResultID, "Bedrock rejects toolResult.toolUseId over 64 chars")
+	assert.Equal(t, toolUseID, toolResultID, "tool_use and tool_result must alias to the same id")
+}
+
+// TestBedrockAliasToolUseIDFullHashAvoidsCollision uses a real pair of 68-char ids found by
+// brute-force search: their uint32(xxhash.Sum64String(...)) values collide (the bug in the
+// previous 32-bit-truncated hash), but the full 64-bit hashes don't. If bedrockAliasToolUseID
+// ever regresses to hashing only a uint32-truncated slice, this reproduces a real duplicate
+// toolUseId — which Bedrock rejects outright, or worse, silently misattributes a tool_result.
+func TestBedrockAliasToolUseIDFullHashAvoidsCollision(t *testing.T) {
+	idA := "d556q31u_ts_AY89a18eH3FucoBHPCdX6w7jgIhjSnIj7hU_mGofiw3SE2HL8_n38390"
+	idB := "d556q31u_ts_AY89a18eH3FucoBHPCdX6w7jgIhjSnIj7hU_mGofiw3SE2HL8_n63004"
+	require.Greater(t, len(idA), 64)
+	require.Greater(t, len(idB), 64)
+
+	// Document the collision this pair exercises: same 32-bit-truncated hash, different ids.
+	require.Equal(t, uint32(xxhash.Sum64String(idA)), uint32(xxhash.Sum64String(idB)),
+		"fixture no longer demonstrates a 32-bit hash collision")
+	require.NotEqual(t, idA, idB)
+
+	aliasA := bedrockAliasToolUseID(idA)
+	aliasB := bedrockAliasToolUseID(idB)
+	assert.NotEqual(t, aliasA, aliasB, "ids with a colliding 32-bit hash must still alias apart")
+	assert.Regexp(t, bedrockToolUseIDPattern, aliasA)
+	assert.Regexp(t, bedrockToolUseIDPattern, aliasB)
 }

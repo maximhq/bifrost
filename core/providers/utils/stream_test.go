@@ -2,11 +2,248 @@ package utils
 
 import (
 	"context"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
+
+func TestCheckStreamPreambleNilClassifierCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	source := make(chan *schemas.BifrostStreamChunk)
+	closeSource := sync.OnceFunc(func() { close(source) })
+	defer closeSource()
+	result := make(chan *schemas.BifrostError, 1)
+	cleanup := make(chan (<-chan struct{}), 1)
+	go func() {
+		_, done, err := CheckStreamPreambleForError(ctx, t.Name(), source, nil)
+		cleanup <- done
+		result <- err
+	}()
+	cancel()
+
+	select {
+	case err := <-result:
+		if err == nil || err.Error == nil || err.Error.Type == nil ||
+			*err.Error.Type != schemas.RequestCancelled {
+			t.Fatalf("expected cancellation error, got %v", err)
+		}
+		if err.AllowFallbacks == nil || *err.AllowFallbacks {
+			t.Fatal("cancellation must block fallbacks")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("nil classifier blocked cancellation")
+	}
+	done := <-cleanup
+	select {
+	case <-done:
+		t.Fatal("cleanup completed before upstream closed")
+	default:
+	}
+	closeSource()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("cancelled stream failed to drain")
+	}
+}
+
+func TestCheckStreamPreambleDeadlineAllowsFallbacks(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	source := make(chan *schemas.BifrostStreamChunk)
+	closeSource := sync.OnceFunc(func() { close(source) })
+	defer closeSource()
+
+	wrapped, done, err := CheckStreamPreambleForError(
+		ctx, t.Name(), source,
+		func(*schemas.BifrostStreamChunk) bool { return true },
+	)
+	if wrapped != nil || err == nil || err.Error == nil ||
+		err.Error.Type == nil || *err.Error.Type != schemas.RequestTimedOut {
+		t.Fatalf("expected timeout error, got %v", err)
+	}
+	if err.StatusCode == nil || *err.StatusCode != 504 {
+		t.Fatalf("expected status 504, got %v", err.StatusCode)
+	}
+	if err.AllowFallbacks != nil {
+		t.Fatal("timeout must preserve default fallback eligibility")
+	}
+	closeSource()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed-out stream failed to drain")
+	}
+}
+
+func TestCheckStreamPreambleCancellation(t *testing.T) {
+	for _, phase := range []string{"startup", "replay"} {
+		t.Run(phase, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			source := make(chan *schemas.BifrostStreamChunk, 2)
+			closeSource := sync.OnceFunc(func() { close(source) })
+			defer closeSource()
+			preamble := &schemas.BifrostStreamChunk{
+				BifrostChatResponse: &schemas.BifrostChatResponse{ID: "metadata"},
+			}
+			output := &schemas.BifrostStreamChunk{
+				BifrostChatResponse: &schemas.BifrostChatResponse{ID: "output"},
+			}
+			source <- preamble
+			if phase == "replay" {
+				source <- output
+			}
+
+			wrapped, done, err := CheckStreamPreambleForError(
+				ctx, t.Name(), source,
+				func(chunk *schemas.BifrostStreamChunk) bool {
+					if phase == "startup" {
+						cancel()
+					}
+					return chunk == preamble
+				},
+			)
+			if phase == "startup" {
+				if wrapped != nil || err == nil || err.Error == nil ||
+					err.Error.Type == nil || *err.Error.Type != schemas.RequestCancelled {
+					t.Fatalf("expected cancellation error, got %v", err)
+				}
+				if err.AllowFallbacks == nil || *err.AllowFallbacks {
+					t.Fatal("cancelled request must not allow fallbacks")
+				}
+			} else {
+				if wrapped == nil || err != nil {
+					t.Fatalf("expected replay stream, got %v", err)
+				}
+				// Abandon the returned channel without consuming its chunks.
+				cancel()
+			}
+
+			select {
+			case <-done:
+				t.Fatal("cleanup completed before upstream closed")
+			default:
+			}
+			// The drain must accept remaining upstream chunks after cancellation.
+			source <- preamble
+			closeSource()
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("cancelled stream failed to drain")
+			}
+			key := streamPreambleKey{requestID: t.Name(), source: source}
+			if _, exists := streamPreambles.Load(key); exists {
+				t.Fatal("cancelled stream retained preamble storage")
+			}
+		})
+	}
+}
+
+func TestCheckStreamPreambleForError(t *testing.T) {
+	preamble := &schemas.BifrostStreamChunk{
+		BifrostChatResponse: &schemas.BifrostChatResponse{ID: "metadata"},
+	}
+	output := &schemas.BifrostStreamChunk{
+		BifrostChatResponse: &schemas.BifrostChatResponse{ID: "output"},
+	}
+	oversized := &schemas.BifrostStreamChunk{
+		BifrostChatResponse: &schemas.BifrostChatResponse{
+			ID: strings.Repeat("x", maxStreamPreambleBytes),
+		},
+	}
+	failure := &schemas.BifrostStreamChunk{
+		BifrostError: &schemas.BifrostError{
+			Error: &schemas.ErrorField{Message: "rate limit exceeded"},
+		},
+	}
+	atLimit := make([]*schemas.BifrostStreamChunk, maxStreamPreambleChunks+1)
+	for i := 0; i < maxStreamPreambleChunks; i++ {
+		atLimit[i] = preamble
+	}
+	atLimit[maxStreamPreambleChunks] = failure
+
+	tests := []struct {
+		name  string
+		input []*schemas.BifrostStreamChunk
+		want  []*schemas.BifrostStreamChunk
+		err   *schemas.BifrostError
+	}{
+		{"empty", nil, nil, nil},
+		{"preamble then EOF",
+			[]*schemas.BifrostStreamChunk{preamble},
+			[]*schemas.BifrostStreamChunk{preamble}, nil},
+		{"error after three preambles",
+			[]*schemas.BifrostStreamChunk{preamble, preamble, preamble, failure},
+			nil, failure.BifrostError},
+		{"output then error stays in stream",
+			[]*schemas.BifrostStreamChunk{preamble, output, failure},
+			[]*schemas.BifrostStreamChunk{preamble, output, failure}, nil},
+		{"chunk limit commits", atLimit, atLimit, nil},
+		{"byte limit commits",
+			[]*schemas.BifrostStreamChunk{preamble, oversized, failure},
+			[]*schemas.BifrostStreamChunk{preamble, oversized, failure}, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			source := make(chan *schemas.BifrostStreamChunk, len(tt.input))
+			for _, chunk := range tt.input {
+				source <- chunk
+			}
+			close(source)
+
+			wrapped, done, err := CheckStreamPreambleForError(
+				ctx, t.Name(), source,
+				func(chunk *schemas.BifrostStreamChunk) bool {
+					return chunk == preamble || chunk == oversized
+				},
+			)
+			if err != tt.err {
+				t.Fatalf("error = %v, want %v", err, tt.err)
+			}
+			if (wrapped == nil) != (tt.want == nil) {
+				t.Fatalf("unexpected stream presence: %v", wrapped != nil)
+			}
+			if wrapped != nil {
+				count := 0
+			read:
+				for {
+					select {
+					case chunk, ok := <-wrapped:
+						if !ok {
+							break read
+						}
+						if count >= len(tt.want) || chunk != tt.want[count] {
+							t.Fatalf("unexpected chunk at position %d", count)
+						}
+						count++
+					case <-ctx.Done():
+						t.Fatal("timed out reading replay")
+					}
+				}
+				if count != len(tt.want) {
+					t.Fatalf("received %d chunks, want %d", count, len(tt.want))
+				}
+			}
+			select {
+			case <-done:
+			case <-ctx.Done():
+				t.Fatal("timed out waiting for cleanup")
+			}
+			key := streamPreambleKey{requestID: t.Name(), source: source}
+			if _, exists := streamPreambles.Load(key); exists {
+				t.Fatal("preamble storage survived cleanup")
+			}
+		})
+	}
+}
 
 func TestCheckFirstStreamChunk_ErrorInFirstChunk(t *testing.T) {
 	stream := make(chan *schemas.BifrostStreamChunk, 2)
@@ -70,6 +307,36 @@ func TestCheckFirstStreamChunk_ValidFirstChunk(t *testing.T) {
 	_, ok := <-wrapped
 	if ok {
 		t.Error("expected wrapped channel to be closed")
+	}
+}
+
+func TestCheckFirstStreamChunk_NilStream(t *testing.T) {
+	// A nil source must return immediately with a closed drainDone, matching
+	// CheckStreamPreambleForError. Without the guard the initial receive blocks
+	// until ctx ends and the drain goroutine never exits.
+	ctx := context.Background()
+	type result struct {
+		stream chan *schemas.BifrostStreamChunk
+		done   <-chan struct{}
+		err    *schemas.BifrostError
+	}
+	out := make(chan result, 1)
+	go func() {
+		s, d, e := CheckFirstStreamChunkForError(ctx, nil)
+		out <- result{s, d, e}
+	}()
+	select {
+	case r := <-out:
+		if r.stream != nil || r.err != nil {
+			t.Fatalf("expected nil stream and nil error, got stream=%v err=%v", r.stream != nil, r.err)
+		}
+		select {
+		case <-r.done:
+		default:
+			t.Fatal("expected drainDone to be closed for a nil stream")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("CheckFirstStreamChunkForError blocked on a nil stream")
 	}
 }
 
@@ -313,5 +580,137 @@ func TestCheckFirstStreamChunk_CodeOnlyError(t *testing.T) {
 	<-drainDone
 	if err.Error.Code == nil || *err.Error.Code != "limit_burst_rate" {
 		t.Errorf("unexpected error code: %v", err.Error.Code)
+	}
+}
+
+// Regression tests for maximhq/bifrost#6974: the first-chunk peek must observe
+// the request context so a cancelled or expired request releases its worker
+// slot instead of waiting out the provider's stream idle timeout.
+
+type firstChunkResult struct {
+	wrapped chan *schemas.BifrostStreamChunk
+	done    <-chan struct{}
+	err     *schemas.BifrostError
+}
+
+// peekAsync runs CheckFirstStreamChunkForError on its own goroutine so the
+// test can bound how long the peek blocks.
+func peekAsync(ctx context.Context, src chan *schemas.BifrostStreamChunk) <-chan firstChunkResult {
+	results := make(chan firstChunkResult, 1)
+	go func() {
+		wrapped, done, err := CheckFirstStreamChunkForError(ctx, src)
+		results <- firstChunkResult{wrapped: wrapped, done: done, err: err}
+	}()
+	return results
+}
+
+func TestCheckFirstStreamChunk_CtxCancelUnblocksPeek(t *testing.T) {
+	// A producer that accepted the request but never emits a chunk and does
+	// not watch ctx itself. Only the peek's own ctx handling can release the
+	// worker goroutine that is blocked inside CheckFirstStreamChunkForError.
+	src := make(chan *schemas.BifrostStreamChunk, 1)
+	closeSrc := sync.OnceFunc(func() { close(src) })
+	defer closeSrc()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	results := peekAsync(ctx, src)
+
+	cancel()
+
+	var got firstChunkResult
+	select {
+	case got = <-results:
+	case <-time.After(2 * time.Second):
+		t.Fatal("CheckFirstStreamChunkForError did not return after ctx cancellation; worker stays pinned until the stream idle timeout")
+	}
+	if got.wrapped != nil || got.err == nil || got.err.Error == nil ||
+		got.err.Error.Type == nil || *got.err.Error.Type != schemas.RequestCancelled {
+		t.Fatalf("expected cancellation error, got wrapped=%v err=%v", got.wrapped, got.err)
+	}
+	if got.err.StatusCode == nil || *got.err.StatusCode != 499 {
+		t.Fatalf("expected status 499, got %v", got.err.StatusCode)
+	}
+	if got.err.AllowFallbacks == nil || *got.err.AllowFallbacks {
+		t.Fatal("cancelled request must not allow fallbacks")
+	}
+
+	// The drain must keep accepting late producer chunks so the provider
+	// goroutine's blocked send can exit, then finish once the source closes.
+	select {
+	case <-got.done:
+		t.Fatal("drain completed before the producer closed the source")
+	default:
+	}
+	src <- &schemas.BifrostStreamChunk{
+		BifrostChatResponse: &schemas.BifrostChatResponse{ID: "late"},
+	}
+	closeSrc()
+	select {
+	case <-got.done:
+	case <-time.After(time.Second):
+		t.Fatal("cancelled peek failed to drain the source")
+	}
+}
+
+func TestCheckFirstStreamChunk_DeadlineAllowsFallbacks(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	src := make(chan *schemas.BifrostStreamChunk)
+	closeSrc := sync.OnceFunc(func() { close(src) })
+	defer closeSrc()
+
+	var got firstChunkResult
+	select {
+	case got = <-peekAsync(ctx, src):
+	case <-time.After(2 * time.Second):
+		t.Fatal("CheckFirstStreamChunkForError did not return after the request deadline passed")
+	}
+	if got.wrapped != nil || got.err == nil || got.err.Error == nil ||
+		got.err.Error.Type == nil || *got.err.Error.Type != schemas.RequestTimedOut {
+		t.Fatalf("expected timeout error, got wrapped=%v err=%v", got.wrapped, got.err)
+	}
+	if got.err.StatusCode == nil || *got.err.StatusCode != 504 {
+		t.Fatalf("expected status 504, got %v", got.err.StatusCode)
+	}
+	if got.err.AllowFallbacks != nil {
+		t.Fatal("timeout must preserve default fallback eligibility")
+	}
+	closeSrc()
+	select {
+	case <-got.done:
+	case <-time.After(time.Second):
+		t.Fatal("timed-out peek failed to drain the source")
+	}
+}
+
+// Guard: when the provider goroutine already delivered its own cancellation
+// chunk (HandleStreamCancellation carries billed usage and the raw request),
+// that richer chunk must win over the peek's synthetic cancellation error even
+// though ctx is already done.
+func TestCheckFirstStreamChunk_BufferedChunkWinsOverCancelledCtx(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	src := make(chan *schemas.BifrostStreamChunk, 1)
+	src <- &schemas.BifrostStreamChunk{
+		BifrostError: &schemas.BifrostError{
+			StatusCode: new(499),
+			Error: &schemas.ErrorField{
+				Type:    schemas.Ptr(schemas.RequestCancelled),
+				Message: "Request cancelled: client disconnected",
+			},
+		},
+	}
+	close(src)
+
+	wrapped, done, err := CheckFirstStreamChunkForError(ctx, src)
+	if wrapped != nil || err == nil || err.Error == nil ||
+		err.Error.Message != "Request cancelled: client disconnected" {
+		t.Fatalf("expected the producer's own cancellation chunk, got wrapped=%v err=%v", wrapped, err)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("closed source failed to drain")
 	}
 }

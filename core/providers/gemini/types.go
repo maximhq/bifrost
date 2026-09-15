@@ -46,17 +46,6 @@ type thinkingBudgetRange struct {
 	Max int
 }
 
-// thinkingBudgetRanges defines the valid thinkingBudget range per model family.
-// Source: https://ai.google.dev/gemini-api/docs/thinking#set-budget
-var thinkingBudgetRanges = []struct {
-	prefix string
-	r      thinkingBudgetRange
-}{
-	{"gemini-2.5-flash-lite", thinkingBudgetRange{Min: 512, Max: 24576}},
-	{"gemini-2.5-pro", thinkingBudgetRange{Min: 128, Max: 32768}},
-	{"gemini-2.5-flash", thinkingBudgetRange{Min: 0, Max: 24576}},
-}
-
 // thoughtSignatureSeparator is used to separate the base ID from the thought signature in tool IDs
 const thoughtSignatureSeparator = providerUtils.ThoughtSignatureSeparator
 
@@ -1705,7 +1694,10 @@ func (p Part) MarshalJSON() ([]byte, error) {
 		FunctionResponse    *FunctionResponse    `json:"functionResponse,omitempty"`
 		ToolCall            *ToolCall            `json:"toolCall,omitempty"`
 		ToolResponse        *ToolResponse        `json:"toolResponse,omitempty"`
-		Text                string               `json:"text,omitempty"`
+		// Text is a pointer so that "set to empty" and "not set" stay distinguishable:
+		// omitempty drops a nil pointer but keeps a pointer to "". See the empty-text
+		// restoration below for why that distinction has to survive the round trip.
+		Text *string `json:"text,omitempty"`
 	}
 
 	aux := PartAlias{
@@ -1719,7 +1711,9 @@ func (p Part) MarshalJSON() ([]byte, error) {
 		FunctionResponse:    p.FunctionResponse,
 		ToolCall:            p.ToolCall,
 		ToolResponse:        p.ToolResponse,
-		Text:                p.Text,
+	}
+	if p.Text != "" {
+		aux.Text = &p.Text
 	}
 
 	if len(p.ThoughtSignature) > 0 {
@@ -1730,7 +1724,42 @@ func (p Part) MarshalJSON() ([]byte, error) {
 		}
 	}
 
+	// A standalone thought signature arrives from Gemini in a part whose text is set but
+	// empty -- "the model may return the thought signature in a part with an empty text
+	// content part", and stream parsers are told to look for signatures "even if the text
+	// field is empty"
+	// (https://ai.google.dev/gemini-api/docs/generate-content/thought-signatures,
+	// https://ai.google.dev/gemini-api/docs/generate-content/gemini-3#thought-signatures).
+	// text belongs to Part's data union, so proto3 JSON prints it once it is set: the
+	// bytes on the wire are {"text":"","thoughtSignature":"..."}. Marshalling Text with
+	// omitempty erased the data field and left a metadata-only object Google itself never
+	// emits. Its own clients tolerate that, but adapters that require a representable
+	// payload do not -- pydantic-ai's Google adapter raises UnexpectedModelBehavior and
+	// the visible answer is never delivered.
+	//
+	// The empty payload is restored only for a part that carries nothing else. A signature
+	// riding on a functionCall, toolCall, inlineData or any other data field is already
+	// representable, and a second member of the data union on one part is invalid.
+	if aux.Text == nil && aux.ThoughtSignature != "" && !p.hasNonTextData() {
+		aux.Text = new("")
+	}
+
 	return providerUtils.MarshalSorted(aux)
+}
+
+// hasNonTextData reports whether the part already carries a member of Part's data union
+// other than text. Thought and VideoMetadata are excluded on purpose: they are metadata
+// that ride alongside a data field rather than being one, so a thought-marked part with
+// only a signature still needs its empty text payload restored.
+func (p Part) hasNonTextData() bool {
+	return p.InlineData != nil ||
+		p.FileData != nil ||
+		p.CodeExecutionResult != nil ||
+		p.ExecutableCode != nil ||
+		p.FunctionCall != nil ||
+		p.FunctionResponse != nil ||
+		p.ToolCall != nil ||
+		p.ToolResponse != nil
 }
 
 // UnmarshalJSON implements custom JSON unmarshaling for Part.
@@ -2600,6 +2629,10 @@ type GeminiBatchGenerateContentRequest struct {
 	GenerationConfig  *GenerationConfig `json:"generationConfig,omitempty"`
 	SafetySettings    []SafetySetting   `json:"safetySettings,omitempty"`
 	SystemInstruction *Content          `json:"systemInstruction,omitempty"`
+	Tools             []Tool            `json:"tools,omitempty"`
+	ToolConfig        *ToolConfig       `json:"toolConfig,omitempty"`
+	CachedContent     string            `json:"cachedContent,omitempty"`
+	Labels            map[string]string `json:"labels,omitempty"`
 }
 
 // GeminiBatchStats represents the stats of a batch job.
@@ -2732,11 +2765,21 @@ type GeminiBatchErrorInfo struct {
 }
 
 // GeminiBatchFileResultLine represents a single line in the batch results JSONL file.
-// Used when batch results are returned as a file rather than inline responses.
+// Native Gemini files put a GenerateContentResponse directly in response, while
+// OpenAI-compatible integrations may wrap it as {status_code, body}. Preserve the
+// raw response so the decoder can accept both wire shapes.
 type GeminiBatchFileResultLine struct {
-	Key      string                   `json:"key,omitempty"`
-	Response *GenerateContentResponse `json:"response,omitempty"`
-	Error    *GeminiBatchErrorInfo    `json:"error,omitempty"`
+	CustomID string                 `json:"custom_id,omitempty"`
+	Key      string                 `json:"key,omitempty"`
+	Response sonic.NoCopyRawMessage `json:"response,omitempty"`
+	Error    *GeminiBatchErrorInfo  `json:"error,omitempty"`
+}
+
+// GeminiFileResponseLine represents the response field inside a Gemini batch
+// results JSONL line. It pairs a status code with an OpenAI-compatible body.
+type GeminiFileResponseLine struct {
+	StatusCode int                    `json:"status_code"`
+	Body       map[string]interface{} `json:"body"`
 }
 
 // GeminiBatchListResponse represents the response from listing batches.

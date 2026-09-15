@@ -3,14 +3,13 @@ package schemas
 import (
 	"encoding/json"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 )
 
 // Ptr creates a pointer to any value.
@@ -19,16 +18,19 @@ func Ptr[T any](v T) *T {
 	return &v
 }
 
-// GetRandomString generates a random alphanumeric string of the given length.
+// letters is the hex alphabet GetRandomString draws from.
+const letters = "abcdef0123456789"
+
+// GetRandomString generates a random hex string of the given length.
+// Uses rand/v2 (seedless, per-thread): the old per-call time-seeded source cost
+// ~7µs per call and could mint identical strings for same-tick calls.
 func GetRandomString(length int) string {
 	if length <= 0 {
 		return ""
 	}
-	randomSource := rand.New(rand.NewSource(time.Now().UnixNano()))
-	letters := []rune("abcdef0123456789")
-	b := make([]rune, length)
+	b := make([]byte, length)
 	for i := range b {
-		b[i] = letters[randomSource.Intn(len(letters))]
+		b[i] = letters[rand.IntN(len(letters))]
 	}
 	return string(b)
 }
@@ -1688,6 +1690,42 @@ func IsGLMModel(model string) bool {
 	return strings.Contains(model, "glm")
 }
 
+// IsDeepSeekModel checks if the model is a DeepSeek model. Deployment names are
+// case-sensitive on some providers (Azure ships "DeepSeek-V3.1"), so match case-insensitively.
+func IsDeepSeekModel(model string) bool {
+	return strings.Contains(strings.ToLower(model), "deepseek")
+}
+
+// IsGPT56Model reports whether the model belongs to the gpt-5.6 family, which is the
+// first OpenAI generation to accept prompt_cache_options / prompt_cache_breakpoint.
+//
+// Substring-matched on the full dot-revision, deliberately. Catalog IDs carry region
+// and vendor namespaces ("azure/eu/gpt-5.6", "openai.gpt-5.6-terra"), so a prefix test
+// would miss them. Including the revision in the needle rules out gpt-5.5 and earlier,
+// but not a longer one: a bare Contains also answers true for gpt-5.60, a different
+// model that never declared support. Hence the trailing boundary - the character after
+// the needle must be absent or non-numeric. This mirrors the gating in
+// core/providers/openai/utils.go, restated here because core/schemas cannot import a
+// provider package.
+func IsGPT56Model(model string) bool {
+	const needle = "gpt-5.6"
+	lower := strings.ToLower(model)
+	for start := 0; start < len(lower); {
+		idx := strings.Index(lower[start:], needle)
+		if idx < 0 {
+			return false
+		}
+		end := start + idx + len(needle)
+		if end == len(lower) || lower[end] < '0' || lower[end] > '9' {
+			return true
+		}
+		// A digit here means a longer dot-revision; keep scanning, since a
+		// namespaced id may carry the real match further along.
+		start = end
+	}
+	return false
+}
+
 // IsAnthropicModel checks if the model is an Anthropic model.
 func IsAnthropicModel(model string) bool {
 	return strings.Contains(model, "anthropic.") || strings.Contains(model, "claude")
@@ -1701,15 +1739,15 @@ func IsOpenAIModel(model string) bool {
 	// OpenAI reasoning families (o1, o3, o4, ...). Match the bare id or a
 	// version-suffixed variant (e.g. "o3", "o4-mini", "o1-preview") while
 	// avoiding false matches on substrings like "co1" or "model-o3x".
-	return isOpenAIReasoningModel(model)
+	return isOSeriesModel(model)
 }
 
-// isOpenAIReasoningModel reports whether model names an OpenAI o-series
-// reasoning model. It strips any provider prefix (e.g. "openai/o3") and matches
-// an "o" followed by a single digit, where the next character is either end of
-// string or a "-" separator, so "o3" and "o4-mini" match but "co1" and "o3x"
-// do not.
-func isOpenAIReasoningModel(model string) bool {
+// isOSeriesModel reports whether model names an OpenAI o-series model. It
+// strips any provider prefix (e.g. "openai/o3") and matches an "o" followed by
+// a single digit, where the next character is either end of string or a "-"
+// separator, so "o3" and "o4-mini" match but "co1" and "o3x" do not. Narrower
+// than IsOpenAIReasoningModel, which also covers GPT-5.x and gpt-oss.
+func isOSeriesModel(model string) bool {
 	name := model
 	if idx := strings.LastIndexAny(name, "/:"); idx >= 0 {
 		name = name[idx+1:]
@@ -1725,6 +1763,25 @@ func IsAzureModelRouter(model string) bool {
 	return strings.Contains(model, "model-router")
 }
 
+// ServedModel returns the model the provider named on the response body. It can
+// differ from the model the caller addressed.
+func (r *BifrostResponse) ServedModel() string {
+	if r == nil {
+		return ""
+	}
+	switch {
+	case r.ChatResponse != nil:
+		return r.ChatResponse.Model
+	case r.ResponsesResponse != nil:
+		return r.ResponsesResponse.Model
+	case r.ResponsesStreamResponse != nil && r.ResponsesStreamResponse.Response != nil:
+		return r.ResponsesStreamResponse.Response.Model
+	case r.TextCompletionResponse != nil:
+		return r.TextCompletionResponse.Model
+	}
+	return ""
+}
+
 // IsElevenlabsSoundModel checks if the model targets ElevenLabs' text-to-sound
 // effects API (POST /v1/sound-generation, e.g. "eleven_text_to_sound_v2")
 // rather than text-to-speech. These models are not tied to a voice.
@@ -1738,6 +1795,33 @@ func BedrockModelSupportsCachePoints(model string) bool {
 	return IsAnthropicModel(model) || IsNovaModel(model)
 }
 
+// ModelSupportsPromptCaching is the datasheet-independent fallback for
+// ModelCaps.SupportsPromptCaching. It answers the narrower question the breakpoint
+// injector needs: can a marker placed on a content block actually do anything here?
+//
+// It is deliberately conservative. Providers whose caching is implicit and
+// provider-managed (OpenAI pre-5.6, DeepSeek, xAI, Groq, and the OpenAI-compatible
+// long tail) answer false, so injection is a no-op for them and no marker is ever
+// sent to an endpoint that would reject it. Gemini also answers false: its caching is
+// a server-side cachedContent resource with its own lifecycle, not a per-block
+// marker, so a breakpoint there would be inert.
+func ModelSupportsPromptCaching(provider ModelProvider, model string) bool {
+	switch provider {
+	case Anthropic, OpenRouter:
+		return IsAnthropicModel(model)
+	case Bedrock, BedrockMantle:
+		return BedrockModelSupportsCachePoints(model) || IsGPT56Model(model)
+	case Vertex:
+		// Vertex serves Claude (cache_control) and Gemini (cachedContent) side by
+		// side; only the former is markable.
+		return IsAnthropicModel(model)
+	case Azure, OpenAI:
+		return IsGPT56Model(model)
+	default:
+		return false
+	}
+}
+
 // BedrockModelSupportsExtendedCacheTTL reports whether the Bedrock model supports
 // the 1h (extended) prompt-caching TTL. This is Anthropic-only; other cache-point
 // models (e.g. Nova) support caching but only the default 5m TTL and 400 with
@@ -1746,9 +1830,59 @@ func BedrockModelSupportsExtendedCacheTTL(model string) bool {
 	return IsAnthropicModel(model)
 }
 
+// BedrockModelSupportsS3Location reports whether the model's Converse backend actually
+// resolves the s3Location member of an image/document/video source union.
+//
+// s3Location is part of the Converse schema for every model, but the API reference is
+// explicit that reading it is not: "To see which models support S3 uploads, see Supported
+// models and features for Converse."
+// https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_DocumentSource.html
+//
+// The gate has to exist because an unsupported model does not produce an s3Location error.
+// Converse validates the union, translates the request into the model's native format, and
+// drops the member when that format has no S3 source type. Anthropic's does not, so the
+// model receives an empty source and answers in its own vocabulary:
+//
+//	messages.0.content.0.document.source.type: Field required
+//
+// naming a field Converse has never had. Nothing upstream of the model ever touches S3, so
+// the object's existence and the caller's permissions are irrelevant to that failure.
+//
+// Allowlist rather than a denylist: AWS folded the per-model matrix into its model cards
+// and no longer publishes an S3 column, so "supported" is only knowable where it has been
+// observed. Nova is the family AWS's own Converse S3 examples use. Add families here as
+// they are confirmed - a model missing from this list is refused with an actionable error
+// rather than silently mangled, which is the safer way to be wrong.
+func BedrockModelSupportsS3Location(model string) bool {
+	return IsNovaModel(model)
+}
+
 // IsMistralModel checks if the model is a Mistral or Codestral model.
 func IsMistralModel(model string) bool {
 	return strings.Contains(model, "mistral") || strings.Contains(model, "codestral")
+}
+
+// IsFable51 checks if the model is Claude Fable 5.1 or Claude Mythos 5.1, which
+// removed forced tool use: tool_choice "any" and "tool" (and their OpenAI
+// spellings) return a 400. Matches the Bedrock/Vertex/date-suffixed forms.
+//
+// Only the versions known to have dropped it are matched here; a later model
+// that also drops it is carried by the datasheet's supports_forced_tool_choice
+// rather than this fallback.
+//
+// Source: https://platform.claude.com/docs/en/models/fable-5-1/whats-new-fable-5-1
+func IsFable51(model string) bool {
+	m := strings.ToLower(model)
+	if !strings.Contains(m, "fable") && !strings.Contains(m, "mythos") {
+		return false
+	}
+	return strings.Contains(m, "5-1") || strings.Contains(m, "5.1")
+}
+
+// DefaultSupportsForcedToolChoice is the name-based fallback for
+// ModelCaps.SupportsForcedToolChoice, used when the datasheet says nothing.
+func DefaultSupportsForcedToolChoice(model string) bool {
+	return !IsFable51(model)
 }
 
 // IsLlamaModel checks if the model is a Meta Llama model.

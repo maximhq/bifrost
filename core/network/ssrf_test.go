@@ -54,6 +54,20 @@ func TestIsPublicIP(t *testing.T) {
 
 		// Deprecated IPv6 site-local (RFC 3879).
 		{"site-local fec0::/10", "fec0::1", false},
+
+		// Teredo (RFC 4380). The whole 2001:0000::/32 prefix is refused: the
+		// embedded client IPv4 is XOR-obfuscated so none of the stdlib
+		// predicates see through it, and the address carries a second,
+		// separately attacker-chosen relay IPv4 in bits 32-63.
+		// 2001:0000:4136:e378:8000:63bf:5601:5601 obfuscates 169.254.169.254
+		// (0xa9fea9fe ^ 0xffffffff = 0x56015601) as the client address.
+		{"teredo-wrapped IMDS", "2001:0000:4136:e378:8000:63bf:5601:5601", false},
+		{"teredo prefix low", "2001:0::1", false},
+		{"teredo prefix high", "2001:0:ffff:ffff:ffff:ffff:ffff:ffff", false},
+		// The block is a /32, not a /16: ordinary global unicast that merely
+		// starts with 2001: must stay reachable.
+		{"global unicast 2001:4860 (Google) stays public", "2001:4860:4860::8888", true},
+		{"global unicast 2001:1:: stays public", "2001:1::1", true},
 	}
 
 	for _, tt := range tests {
@@ -89,7 +103,7 @@ func TestSSRFSafeDialContextBlocksNonPublicResolution(t *testing.T) {
 	dial := ssrfSafeDialContext(resolver, func(_ context.Context, _, _ string) (net.Conn, error) {
 		t.Fatal("dial must not be reached when a resolved IP is non-public")
 		return nil, nil
-	})
+	}, nil)
 
 	_, err := dial(context.Background(), "tcp", "evil.example:443")
 	if err == nil || !strings.Contains(err.Error(), "blocked connection to non-public address") {
@@ -106,7 +120,7 @@ func TestSSRFSafeDialContextDialsValidatedIPDirectly(t *testing.T) {
 	dial := ssrfSafeDialContext(resolver, func(_ context.Context, _, addr string) (net.Conn, error) {
 		dialed = addr
 		return nil, dialErr
-	})
+	}, nil)
 
 	_, err := dial(context.Background(), "tcp", "example.com:443")
 	if !errors.Is(err, dialErr) {
@@ -124,7 +138,7 @@ func TestSSRFSafeDialContextReResolvesPerDial(t *testing.T) {
 	dial := ssrfSafeDialContext(resolver, func(_ context.Context, _, _ string) (net.Conn, error) {
 		t.Fatal("dial must not be reached")
 		return nil, nil
-	})
+	}, nil)
 
 	for i := 0; i < 2; i++ {
 		if _, err := dial(context.Background(), "tcp", "rebind.example:80"); err == nil {
@@ -139,7 +153,7 @@ func TestSSRFSafeDialContextReResolvesPerDial(t *testing.T) {
 func TestSSRFSafeDialContextErrorPaths(t *testing.T) {
 	t.Run("resolver error propagates", func(t *testing.T) {
 		resolver := &fakeResolver{err: errors.New("nxdomain")}
-		dial := ssrfSafeDialContext(resolver, nil)
+		dial := ssrfSafeDialContext(resolver, nil, nil)
 		if _, err := dial(context.Background(), "tcp", "gone.example:443"); err == nil || !strings.Contains(err.Error(), "DNS lookup failed") {
 			t.Fatalf("expected DNS lookup error, got %v", err)
 		}
@@ -147,7 +161,7 @@ func TestSSRFSafeDialContextErrorPaths(t *testing.T) {
 
 	t.Run("empty resolution rejected", func(t *testing.T) {
 		resolver := &fakeResolver{}
-		dial := ssrfSafeDialContext(resolver, nil)
+		dial := ssrfSafeDialContext(resolver, nil, nil)
 		if _, err := dial(context.Background(), "tcp", "empty.example:443"); err == nil || !strings.Contains(err.Error(), "no addresses") {
 			t.Fatalf("expected no-addresses error, got %v", err)
 		}
@@ -155,7 +169,7 @@ func TestSSRFSafeDialContextErrorPaths(t *testing.T) {
 
 	t.Run("address without port rejected", func(t *testing.T) {
 		resolver := &fakeResolver{ips: []net.IP{net.ParseIP("93.184.216.34")}}
-		dial := ssrfSafeDialContext(resolver, nil)
+		dial := ssrfSafeDialContext(resolver, nil, nil)
 		if _, err := dial(context.Background(), "tcp", "no-port.example"); err == nil || !strings.Contains(err.Error(), "invalid dial address") {
 			t.Fatalf("expected invalid-address error, got %v", err)
 		}
@@ -169,4 +183,261 @@ func TestSSRFSafeDialContextBlocksLoopbackLiteral(t *testing.T) {
 	if _, err := dial(context.Background(), "tcp", "127.0.0.1:80"); err == nil || !strings.Contains(err.Error(), "blocked connection to non-public address") {
 		t.Fatalf("expected blocked-connection error, got %v", err)
 	}
+}
+
+func TestNewAllowlist_ParsesHostnamesIPsAndCIDRs(t *testing.T) {
+	al, err := NewAllowlist([]string{"artifactory.internal.corp", "10.0.0.0/8", "192.168.1.5"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !al.Permits("artifactory.internal.corp", net.ParseIP("203.0.113.1")) {
+		t.Fatal("expected hostname entry to permit its own name")
+	}
+	if !al.Permits("other.example", net.ParseIP("10.1.2.3")) {
+		t.Fatal("expected CIDR entry to permit an IP inside the range")
+	}
+	if !al.Permits("other.example", net.ParseIP("192.168.1.5")) {
+		t.Fatal("expected bare-IP entry to permit that exact IP")
+	}
+}
+
+func TestNewAllowlist_RejectsInvalidEntry(t *testing.T) {
+	for _, entry := range []string{"not a host!!", "10.0.0.0/999", "http://host", "host:9000", "999.168.1.1"} {
+		t.Run(entry, func(t *testing.T) {
+			if _, err := NewAllowlist([]string{entry}); err == nil {
+				t.Fatalf("expected error for invalid entry %q", entry)
+			}
+		})
+	}
+}
+
+// TestNewAllowlist_RejectsOutOfRangeIPOctetInsteadOfAcceptingAsHostname guards against a
+// silent no-op: "999.168.1.1" is shaped like an IPv4 address (four dot-separated numeric
+// labels) but fails to parse as one, and would otherwise be RFC-1123-valid as a hostname
+// label, defeating the fail-loudly-on-typo goal NewAllowlist documents.
+func TestNewAllowlist_RejectsOutOfRangeIPOctetInsteadOfAcceptingAsHostname(t *testing.T) {
+	_, err := NewAllowlist([]string{"999.168.1.1"})
+	if err == nil {
+		t.Fatal("expected error for out-of-range IP octet, got none (silently accepted as hostname)")
+	}
+	if !strings.Contains(err.Error(), "looks like an IP address") {
+		t.Fatalf("expected error to explain the IP-shaped rejection, got %v", err)
+	}
+}
+
+func TestNewAllowlist_EmptyAndBlankEntriesSkipped(t *testing.T) {
+	al, err := NewAllowlist([]string{"", "   ", "artifactory.internal.corp"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !al.Permits("artifactory.internal.corp", net.ParseIP("10.0.0.1")) {
+		t.Fatal("expected the one real entry to still be parsed")
+	}
+}
+
+func TestAllowlist_PermitsHostnameExactMatchCaseInsensitive(t *testing.T) {
+	al, err := NewAllowlist([]string{"Artifactory.Internal.Corp"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !al.Permits("artifactory.internal.corp", net.ParseIP("10.0.0.1")) {
+		t.Fatal("expected lowercased match")
+	}
+	if !al.Permits("ARTIFACTORY.INTERNAL.CORP", net.ParseIP("10.0.0.1")) {
+		t.Fatal("expected uppercased match")
+	}
+	if al.Permits("other.internal.corp", net.ParseIP("10.0.0.1")) {
+		t.Fatal("expected a different hostname to not match")
+	}
+}
+
+func TestAllowlist_PermitsCIDRMatch(t *testing.T) {
+	al, err := NewAllowlist([]string{"10.0.5.0/24"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !al.Permits("irrelevant.example", net.ParseIP("10.0.5.42")) {
+		t.Fatal("expected IP inside allowlisted CIDR to be permitted")
+	}
+	if al.Permits("irrelevant.example", net.ParseIP("10.0.6.42")) {
+		t.Fatal("expected IP outside allowlisted CIDR to be blocked")
+	}
+}
+
+func TestAllowlist_PermitsBareIPAsSingleHostMatch(t *testing.T) {
+	al, err := NewAllowlist([]string{"10.0.5.42"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !al.Permits("irrelevant.example", net.ParseIP("10.0.5.42")) {
+		t.Fatal("expected the exact allowlisted IP to be permitted")
+	}
+	if al.Permits("irrelevant.example", net.ParseIP("10.0.5.43")) {
+		t.Fatal("expected a neighboring IP to remain blocked")
+	}
+}
+
+func TestAllowlist_NilReceiverPermitsNothing(t *testing.T) {
+	var al *Allowlist
+	if al.Permits("anything.example", net.ParseIP("10.0.0.1")) {
+		t.Fatal("expected nil allowlist to permit nothing")
+	}
+}
+
+func TestAllowlist_UnwrapsEmbeddedIPv4ForCIDRMatch(t *testing.T) {
+	al, err := NewAllowlist([]string{"169.254.169.254/32"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// 6to4-wrapped form of the allowlisted IPv4 must still match, mirroring
+	// IsPublicIP's transition-address handling.
+	if !al.Permits("irrelevant.example", net.ParseIP("2002:a9fe:a9fe::")) {
+		t.Fatal("expected 6to4-wrapped allowlisted IPv4 to be permitted")
+	}
+}
+
+func TestSSRFSafeDialContextWithAllowlist_PermitsAllowlistedPrivateHost(t *testing.T) {
+	al, err := NewAllowlist([]string{"internal.example"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	resolver := &fakeResolver{ips: []net.IP{net.ParseIP("10.0.0.5")}}
+	var dialed string
+	dialErr := errors.New("stop before real network")
+	dial := ssrfSafeDialContext(resolver, func(_ context.Context, _, addr string) (net.Conn, error) {
+		dialed = addr
+		return nil, dialErr
+	}, al)
+
+	_, err = dial(context.Background(), "tcp", "internal.example:443")
+	if !errors.Is(err, dialErr) {
+		t.Fatalf("expected sentinel dial error, got %v", err)
+	}
+	if dialed != "10.0.0.5:443" {
+		t.Fatalf("dialed %q, want allowlisted private IP %q", dialed, "10.0.0.5:443")
+	}
+}
+
+func TestSSRFSafeDialContextWithAllowlist_StillBlocksNonAllowlistedPrivateHost(t *testing.T) {
+	al, err := NewAllowlist([]string{"internal.example"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	resolver := &fakeResolver{ips: []net.IP{net.ParseIP("10.0.0.5")}}
+	dial := ssrfSafeDialContext(resolver, func(_ context.Context, _, _ string) (net.Conn, error) {
+		t.Fatal("dial must not be reached for a non-allowlisted private host")
+		return nil, nil
+	}, al)
+
+	_, err = dial(context.Background(), "tcp", "not-allowlisted.example:443")
+	if err == nil || !strings.Contains(err.Error(), "blocked connection to non-public address") {
+		t.Fatalf("expected blocked-connection error, got %v", err)
+	}
+}
+
+func TestSSRFSafeDialContextWithAllowlist_ReResolvesPerDialEvenWhenAllowlisted(t *testing.T) {
+	al, err := NewAllowlist([]string{"internal.example"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	resolver := &fakeResolver{ips: []net.IP{net.ParseIP("10.0.0.5")}}
+	dial := ssrfSafeDialContext(resolver, func(_ context.Context, _, _ string) (net.Conn, error) {
+		return nil, errors.New("stop before real network")
+	}, al)
+
+	for i := 0; i < 2; i++ {
+		_, _ = dial(context.Background(), "tcp", "internal.example:443")
+	}
+	if resolver.lookups != 2 {
+		t.Fatalf("resolver invoked %d times, want one lookup per dial (2)", resolver.lookups)
+	}
+}
+
+func TestSSRFSafeDialContextWithAllowlist_NilAllowlistMatchesPlainDialContext(t *testing.T) {
+	resolver := &fakeResolver{ips: []net.IP{net.ParseIP("10.0.0.5")}}
+	dial := ssrfSafeDialContext(resolver, func(_ context.Context, _, _ string) (net.Conn, error) {
+		t.Fatal("dial must not be reached")
+		return nil, nil
+	}, nil)
+
+	_, err := dial(context.Background(), "tcp", "no-allowlist.example:443")
+	if err == nil || !strings.Contains(err.Error(), "blocked connection to non-public address") {
+		t.Fatalf("expected blocked-connection error, got %v", err)
+	}
+}
+
+func TestPrivateNetworkDialContextBlocksLinkLocal(t *testing.T) {
+	dial := PrivateNetworkDialContext(time.Second)
+	if _, err := dial(context.Background(), "tcp", "169.254.169.254:80"); err == nil || !strings.Contains(err.Error(), "blocked connection to link-local address") {
+		t.Fatalf("expected blocked link-local error, got %v", err)
+	}
+}
+
+func TestPrivateNetworkDialContextBlocksUnspecified(t *testing.T) {
+	dial := PrivateNetworkDialContext(time.Second)
+	if _, err := dial(context.Background(), "tcp", "0.0.0.0:80"); err == nil || !strings.Contains(err.Error(), "blocked connection to unspecified address") {
+		t.Fatalf("expected blocked unspecified error, got %v", err)
+	}
+}
+
+// TestPrivateNetworkDialContextAllowsLoopback locks in the deliberate
+// difference from SSRFSafeDialContext: a self-hosted MCP server on the same
+// host is the documented primary use case, so loopback must stay dialable.
+func TestPrivateNetworkDialContextAllowsLoopback(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to start test listener: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err == nil {
+			conn.Close()
+		}
+	}()
+
+	dial := PrivateNetworkDialContext(time.Second)
+	conn, err := dial(context.Background(), "tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("expected loopback dial to succeed, got %v", err)
+	}
+	conn.Close()
+}
+
+// TestPrivateNetworkDialContextFallsBackAcrossResolvedAddresses locks in the
+// multi-address behavior the MCP feature depends on: "localhost" resolves to
+// [::1, 127.0.0.1] on a dual-stack host, and an MCP server bound only to IPv4
+// must still be reachable. Pinning the first resolved address would make the
+// documented http://localhost:PORT/mcp target undialable.
+func TestPrivateNetworkDialContextFallsBackAcrossResolvedAddresses(t *testing.T) {
+	ips, err := net.DefaultResolver.LookupIP(context.Background(), "ip", "localhost")
+	if err != nil || len(ips) < 2 {
+		t.Skipf("localhost does not resolve to multiple addresses here (%v, err=%v)", ips, err)
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to start test listener: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			conn.Close()
+		}
+	}()
+	_, port, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("failed to split listener address: %v", err)
+	}
+
+	dial := PrivateNetworkDialContext(2 * time.Second)
+	conn, err := dial(context.Background(), "tcp", net.JoinHostPort("localhost", port))
+	if err != nil {
+		t.Fatalf("expected dial to fall back to the reachable resolved address, got %v", err)
+	}
+	conn.Close()
 }

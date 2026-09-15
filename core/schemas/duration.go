@@ -3,6 +3,7 @@ package schemas
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -62,6 +63,12 @@ func ParseFlexibleDuration(data json.RawMessage, fieldName string) (time.Duratio
 		var s string
 		if err := json.Unmarshal(data, &s); err != nil {
 			return 0, err
+		}
+		// An empty string means "unset", the same as an absent or null field: a
+		// cleared UI field and a config file with "" both express "no value"
+		// this way, and rejecting it would leave 0 as the only way to say it.
+		if strings.TrimSpace(s) == "" {
+			return 0, nil
 		}
 		dur, err := time.ParseDuration(s)
 		if err != nil {

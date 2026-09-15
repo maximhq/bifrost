@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -198,17 +199,20 @@ func TestGetVertexPublisherModelURL(t *testing.T) {
 }
 
 func TestGetVertexModelAwareAPIHost(t *testing.T) {
-	// Seed the model params cache with vertex_ai/ prefix (matches how model-parameters are stored)
-	providerUtils.SetModelParams("vertex_ai/claude-opus-4-7", providerUtils.ModelParams{
-		IsVertexMultiRegionOnly: schemas.Ptr(true),
+	// IsVertexMultiRegionOnlyModel asks the resolver for (Vertex, model).
+	providerUtils.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if provider != schemas.Vertex {
+			return nil
+		}
+		switch model {
+		case "claude-opus-4-7":
+			return &schemas.ModelCapabilities{IsVertexMultiRegionOnly: schemas.Ptr(true)}
+		case "claude-sonnet-4-5":
+			return &schemas.ModelCapabilities{IsVertexMultiRegionOnly: schemas.Ptr(false)}
+		}
+		return nil
 	})
-	providerUtils.SetModelParams("vertex_ai/claude-sonnet-4-5", providerUtils.ModelParams{
-		IsVertexMultiRegionOnly: schemas.Ptr(false),
-	})
-	t.Cleanup(func() {
-		providerUtils.DeleteModelParams("vertex_ai/claude-opus-4-7")
-		providerUtils.DeleteModelParams("vertex_ai/claude-sonnet-4-5")
-	})
+	t.Cleanup(func() { providerUtils.SetCapabilityResolver(nil) })
 
 	tests := []struct {
 		name              string
@@ -306,13 +310,14 @@ func TestGetVertexModelAwareAPIHost(t *testing.T) {
 }
 
 func TestGetVertexModelAwarePublisherModelURL(t *testing.T) {
-	// Seed the model params cache with vertex_ai/ prefix (matches how model-parameters are stored)
-	providerUtils.SetModelParams("vertex_ai/claude-opus-4-7", providerUtils.ModelParams{
-		IsVertexMultiRegionOnly: schemas.Ptr(true),
+	// IsVertexMultiRegionOnlyModel asks the resolver for (Vertex, model).
+	providerUtils.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if provider == schemas.Vertex && model == "claude-opus-4-7" {
+			return &schemas.ModelCapabilities{IsVertexMultiRegionOnly: schemas.Ptr(true)}
+		}
+		return nil
 	})
-	t.Cleanup(func() {
-		providerUtils.DeleteModelParams("vertex_ai/claude-opus-4-7")
-	})
+	t.Cleanup(func() { providerUtils.SetCapabilityResolver(nil) })
 
 	tests := []struct {
 		name              string
@@ -900,5 +905,103 @@ func TestVertexGeminiGCSFileURLSurvivesInlining(t *testing.T) {
 	}
 	if part.FileData.MIMEType != fileType {
 		t.Errorf("mimeType = %q, want %q", part.FileData.MIMEType, fileType)
+	}
+}
+
+// TestVertexServiceTierReadsDatasheet covers the datasheet side of the tier gate.
+// The published-prefix fallback is covered by the test above; these pin that a
+// service_tiers list overrides it in both directions, and that the list is
+// per-tier rather than a single on/off.
+func TestVertexServiceTierReadsDatasheet(t *testing.T) {
+	install := func(t *testing.T, model string, tiers []string) {
+		t.Helper()
+		schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+			if m != model {
+				return nil
+			}
+			return &schemas.ModelCapabilities{ServiceTiers: tiers}
+		})
+		t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	}
+
+	t.Run("list_opts_an_unlisted_model_in", func(t *testing.T) {
+		const model = "gemini-4-hypothetical"
+		install(t, model, []string{"priority"})
+
+		if got := vertexServiceTierHeaderValue("global", model, schemas.BifrostServiceTierPriority); got != "priority" {
+			t.Fatalf("expected priority header from service_tiers, got %q", got)
+		}
+		if got := vertexServiceTierHeaderValue("global", model, schemas.BifrostServiceTierFlex); got != "" {
+			t.Fatalf("expected no flex header for a priority-only row, got %q", got)
+		}
+	})
+
+	t.Run("list_opts_a_published_model_out", func(t *testing.T) {
+		// gemini-2.5-pro is in vertexPriorityModels; an explicit list must win.
+		const model = "gemini-2.5-pro"
+		install(t, model, []string{"flex"})
+
+		if got := vertexServiceTierHeaderValue("global", model, schemas.BifrostServiceTierPriority); got != "" {
+			t.Fatalf("expected service_tiers to drop priority, got %q", got)
+		}
+		if got := vertexServiceTierHeaderValue("global", model, schemas.BifrostServiceTierFlex); got != "flex" {
+			t.Fatalf("expected flex header from service_tiers, got %q", got)
+		}
+	})
+
+	t.Run("region_gate_still_applies", func(t *testing.T) {
+		const model = "gemini-4-hypothetical"
+		install(t, model, []string{"priority"})
+
+		if got := vertexServiceTierHeaderValue("us-central1", model, schemas.BifrostServiceTierPriority); got != "" {
+			t.Fatalf("service tiers are global-endpoint only, got %q", got)
+		}
+	})
+}
+
+func TestIsAnthropicPassthroughPath(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"/v1/projects/p/locations/global/publishers/anthropic/models/claude-sonnet-4-5@20250929:streamRawPredict", true},
+		{"/v1/projects/p/locations/us-east5/publishers/anthropic/models/claude-opus-4-5:rawPredict", true},
+		{"/projects/p/locations/global/publishers/ANTHROPIC/models/claude-sonnet-4-5:rawPredict", true},
+		{"/v1/projects/p/locations/global/publishers/anthropic/models/claude-sonnet-4-5:streamRawPredict?alt=sse", true},
+		{"/v1beta/projects/p/locations/us-central1/publishers/google/models/gemini-2.5-flash:streamGenerateContent", false},
+		{"/v1beta/models/gemini-2.5-flash:generateContent", false},
+		{"", false},
+	}
+
+	for _, tc := range cases {
+		if got := isAnthropicPassthroughPath(tc.path); got != tc.want {
+			t.Errorf("isAnthropicPassthroughPath(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
+// The Anthropic-on-Vertex stream carries usage in Messages events, which the Gemini parser
+// drops — the empty token/cost half of issue #6073.
+func TestVertexAnthropicPassthroughStreamUsage(t *testing.T) {
+	t.Parallel()
+
+	messageStart := []byte(`{"type":"message_start","message":{"usage":{"input_tokens":522,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":1}}}`)
+	messageDelta := []byte(`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":522,"output_tokens":13,"output_tokens_details":{"thinking_tokens":0}}}`)
+
+	path := "/v1/projects/p/locations/global/publishers/anthropic/models/claude-sonnet-4-5@20250929:streamRawPredict"
+	if u := gemini.ExtractGeminiPassthroughUsage(path, nil, messageDelta); u != nil {
+		t.Fatalf("gemini parser unexpectedly produced usage for an anthropic event: %+v", u)
+	}
+
+	acc := &anthropic.AnthropicPassthroughStreamUsage{}
+	acc.ObserveEvent(messageStart)
+	usage := acc.ObserveEvent(messageDelta)
+	if usage == nil || usage.LLMUsage == nil {
+		t.Fatalf("expected usage from anthropic accumulator, got %+v", usage)
+	}
+	if usage.LLMUsage.PromptTokens != 522 || usage.LLMUsage.CompletionTokens != 13 || usage.LLMUsage.TotalTokens != 535 {
+		t.Fatalf("unexpected usage: %+v", usage.LLMUsage)
 	}
 }

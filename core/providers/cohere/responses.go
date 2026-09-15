@@ -471,7 +471,7 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 				role := schemas.ResponsesInputMessageRoleAssistant
 
 				// Generate stable ID for reasoning item
-				itemID := "rs_" + providerUtils.GetRandomString(50)
+				itemID := "rs_" + schemas.GetRandomString(50)
 				state.ItemIDs[outputIndex] = itemID
 
 				item := &schemas.ResponsesMessage{
@@ -1274,7 +1274,7 @@ func ToCohereResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*Coh
 				cohereReq.Thinking = thinking
 			} else {
 				if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
-					maxOutputTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Model, DefaultCompletionMaxTokens)
+					maxOutputTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Provider, bifrostReq.Model, DefaultCompletionMaxTokens)
 					if bifrostReq.Params.MaxOutputTokens != nil {
 						maxOutputTokens = *bifrostReq.Params.MaxOutputTokens
 					}

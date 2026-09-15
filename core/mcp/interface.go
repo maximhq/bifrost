@@ -4,6 +4,7 @@ package mcp
 
 import (
 	"context"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -23,6 +24,10 @@ type MCPManagerInterface interface {
 	// DisableAutoToolInject in the config controls auto injection — pass the
 	// current value whenever only other fields change so it is never silently reset.
 	UpdateToolManagerConfig(config *schemas.MCPToolManagerConfig)
+
+	// UpdateToolSyncInterval replaces the global tool sync interval at runtime
+	// and re-times the periodic checkers of clients that follow it.
+	UpdateToolSyncInterval(interval time.Duration)
 
 	// Agent Mode Operations
 	// CheckAndExecuteAgentForChatRequest handles agent mode for Chat Completions API.
@@ -54,6 +59,25 @@ type MCPManagerInterface interface {
 	// GetClients returns all MCP clients
 	GetClients() []schemas.MCPClientState
 
+	// RequiresPerCallConnection reports whether config resolves to a
+	// per-call connection (true) or a persistent shared one (false), taking
+	// auth type, connection type, and needs_session_stickiness into account
+	// together.
+	RequiresPerCallConnection(config *schemas.MCPClientConfig) bool
+
+	// SetStateChangeCallback registers cb to be invoked on every reactive
+	// (non-admin-driven) client connection-state transition — periodic
+	// checker transitions and reactive connect-failure classification into
+	// NeedsReauth. Pass nil to clear a previously registered callback.
+	SetStateChangeCallback(cb func(clientID, name string, oldState, newState schemas.MCPConnectionState))
+
+	// SetToolsChangeCallback registers cb to be invoked whenever a client's
+	// tool map is freshly (re)discovered — connect/reconnect, per-call
+	// discovery, and the periodic checker's own refresh. core/mcp has no DB
+	// access; this is the seam the transport layer persists through. Pass
+	// nil to clear a previously registered callback.
+	SetToolsChangeCallback(cb func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string))
+
 	// AddClient adds a new MCP client with the given configuration
 	AddClient(ctx context.Context, config *schemas.MCPClientConfig) error
 
@@ -68,12 +92,17 @@ type MCPManagerInterface interface {
 	// UpdateClient updates an existing MCP client configuration
 	UpdateClient(id string, updatedConfig *schemas.MCPClientConfig) error
 
-	// UpdateClientConnection reconnects an existing MCP client using updated
+	// UpdateClientCredentials reconnects an existing MCP client using updated
 	// auth-related connection fields (for example, headers and OAuth config).
-	UpdateClientConnection(id string, newConfig *schemas.MCPClientConfig) error
+	UpdateClientCredentials(id string, newConfig *schemas.MCPClientConfig) error
 
 	// ReconnectClient reconnects an MCP client by ID
 	ReconnectClient(id string) error
+
+	// CloseAndMarkNeedsReauth closes a shared client's live upstream
+	// connection and flips it to needs_reauth, without attempting a new
+	// dial. Used after OAuth credential rotation.
+	CloseAndMarkNeedsReauth(id string) error
 
 	// DisableClient shuts down a client's connection and workers without removing it
 	DisableClient(id string) error

@@ -82,4 +82,31 @@ func TestToGeminiBatchGenerateContentRequest(t *testing.T) {
 		assert.Empty(t, req.Contents)
 		assert.Nil(t, req.SystemInstruction)
 	})
+
+	t.Run("PreservesToolsToolConfigCachedContentAndLabels", func(t *testing.T) {
+		body := map[string]interface{}{
+			"contents": []interface{}{
+				map[string]interface{}{"role": "user", "parts": []interface{}{map[string]interface{}{"text": "hi"}}},
+			},
+			"tools": []interface{}{
+				map[string]interface{}{"functionDeclarations": []interface{}{map[string]interface{}{"name": "get_weather"}}},
+			},
+			"toolConfig": map[string]interface{}{
+				"functionCallingConfig": map[string]interface{}{"mode": "AUTO"},
+			},
+			"cachedContent": "cachedContents/abc",
+			"labels":        map[string]interface{}{"team": "research"},
+		}
+
+		req, err := gemini.ToGeminiBatchGenerateContentRequest(body)
+		require.NoError(t, err)
+
+		require.Len(t, req.Tools, 1)
+		require.Len(t, req.Tools[0].FunctionDeclarations, 1)
+		assert.Equal(t, "get_weather", req.Tools[0].FunctionDeclarations[0].Name)
+		require.NotNil(t, req.ToolConfig)
+		require.NotNil(t, req.ToolConfig.FunctionCallingConfig)
+		assert.Equal(t, "cachedContents/abc", req.CachedContent)
+		assert.Equal(t, "research", req.Labels["team"])
+	})
 }

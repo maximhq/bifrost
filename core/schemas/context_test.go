@@ -477,3 +477,43 @@ func TestNewBifrostContext_WatchdogRaceWithReleasedScope(t *testing.T) {
 		_, _ = c.Deadline()
 	}
 }
+
+// TestReservedKey_SkipProviderCheckIsProtected pins BifrostContextKeySkipProviderCheck
+// as reserved. Governance uses it to bypass virtual-key provider allowlists, so a
+// restricted (plugin) write must not be able to flip it. It regressed out of
+// reservedKeys during the slice->map refactor.
+func TestReservedKey_SkipProviderCheckIsProtected(t *testing.T) {
+	if !isReservedKey(BifrostContextKeySkipProviderCheck) {
+		t.Fatal("BifrostContextKeySkipProviderCheck must be a reserved key")
+	}
+
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	defer ctx.Cancel()
+
+	// Trusted write before the guard is armed.
+	ctx.SetValue(BifrostContextKeySkipProviderCheck, true)
+	ctx.BlockRestrictedWrites()
+
+	// A restricted write must be silently dropped, leaving the flag untouched.
+	ctx.SetValue(BifrostContextKeySkipProviderCheck, false)
+	if v := ctx.Value(BifrostContextKeySkipProviderCheck); v != true {
+		t.Fatalf("reserved key overwritten under BlockRestrictedWrites: got %v, want true", v)
+	}
+}
+
+// TestReservedKey_NonComparableKeyDoesNotPanic guards the reserved-write path against
+// non-comparable keys. isReservedKey indexes reservedKeys, which panics on a slice/map/
+// func key unless the type is asserted first, and ClearValue reaches that guard even
+// when userValues is nil.
+func TestReservedKey_NonComparableKeyDoesNotPanic(t *testing.T) {
+	if isReservedKey([]string{"not", "comparable"}) {
+		t.Fatal("a non-comparable key must never be reported reserved")
+	}
+
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	defer ctx.Cancel()
+	ctx.BlockRestrictedWrites()
+
+	// userValues is still nil here; the guard must not panic before that check.
+	ctx.ClearValue([]string{"slice", "key"})
+}
