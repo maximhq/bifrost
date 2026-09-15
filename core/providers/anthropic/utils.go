@@ -260,7 +260,7 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 	// https://platform.claude.com/docs/en/build-with-claude/effort. Models
 	// outside the supported set return: "This model does not support the
 	// effort parameter."
-	if req.OutputConfig != nil && req.OutputConfig.Effort != nil && !caps.SupportsNativeEffort(DefaultSupportsNativeEffort(caps.Model())) {
+	if req.OutputConfig != nil && req.OutputConfig.Effort != nil && !caps.SupportsNativeEffort(defaultSupportsNativeEffort(caps)) {
 		req.OutputConfig.Effort = nil
 		if req.OutputConfig.Format == nil && req.OutputConfig.TaskBudget == nil {
 			req.OutputConfig = nil
@@ -630,7 +630,7 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 	// https://platform.claude.com/docs/en/build-with-claude/effort.
 	// Mirrors the typed path; same cleanup of an empty parent.
 	if providerUtils.JSONFieldExists(jsonBody, "output_config.effort") &&
-		!caps.SupportsNativeEffort(DefaultSupportsNativeEffort(caps.Model())) {
+		!caps.SupportsNativeEffort(defaultSupportsNativeEffort(caps)) {
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "output_config.effort")
 		if err != nil {
 			return nil, fmt.Errorf("strip raw output_config.effort: %w", err)
@@ -1032,7 +1032,25 @@ func DefaultCanDisableReasoning(model string) bool {
 // (supports_native_effort AND supports_adaptive_thinking) with no field of its
 // own: "accepts effort" minus "supports adaptive".
 func SupportsNativeEffort(caps schemas.ModelCaps) bool {
-	return caps.SupportsNativeEffort(DefaultSupportsNativeEffort(caps.Model())) && !caps.SupportsAdaptiveThinking(DefaultSupportsAdaptiveThinking(caps.Model()))
+	return caps.SupportsNativeEffort(defaultSupportsNativeEffort(caps)) && !caps.SupportsAdaptiveThinking(DefaultSupportsAdaptiveThinking(caps.Model()))
+}
+
+// defaultSupportsNativeEffort is the fallback handed to
+// ModelCaps.SupportsNativeEffort: a datasheet row still wins, but when none
+// speaks, a provider whose ProviderFeatures entry grants NativeEffort accepts
+// output_config.effort on every model it serves, and every other provider
+// falls back to the Claude model ladder in DefaultSupportsNativeEffort.
+//
+// This is what lets a non-Claude Anthropic-compatible surface (DeepSeek's
+// /anthropic/v1/messages) keep the effort knob: its model names never match
+// the Claude ladder, so without the provider-level grant the converters never
+// emit output_config.effort and the strip pass removes it if a caller sends
+// it raw.
+func defaultSupportsNativeEffort(caps schemas.ModelCaps) bool {
+	if features, ok := ProviderFeatures[caps.Provider()]; ok && features.NativeEffort {
+		return true
+	}
+	return DefaultSupportsNativeEffort(caps.Model())
 }
 
 // SupportsEffortParameter returns true if the model accepts the
