@@ -57,9 +57,9 @@ type TableProviderJob struct {
 	Params *string `gorm:"type:text" json:"params,omitempty"`
 
 	ProviderStatus string  `gorm:"type:varchar(50)" json:"provider_status,omitempty"`
-	InputFileID    string  `gorm:"type:varchar(255)" json:"input_file_id,omitempty"`
-	OutputFileID   *string `gorm:"type:varchar(255)" json:"output_file_id,omitempty"`
-	ErrorFileID    *string `gorm:"type:varchar(255)" json:"error_file_id,omitempty"`
+	InputFileID    string  `gorm:"type:text" json:"input_file_id,omitempty"`
+	OutputFileID   *string `gorm:"type:text" json:"output_file_id,omitempty"`
+	ErrorFileID    *string `gorm:"type:text" json:"error_file_id,omitempty"`
 	ResultsURL     *string `gorm:"type:text" json:"results_url,omitempty"`
 
 	NextCheckAt      *time.Time `gorm:"index:idx_batch_jobs_sweeper_v2,priority:4" json:"next_check_at,omitempty"`

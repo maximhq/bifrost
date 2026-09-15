@@ -3519,6 +3519,79 @@ func TestMigrationAddBatchJobsAttributionColumns(t *testing.T) {
 	require.NoError(t, migrationAddBatchJobsAttributionColumns(ctx, db, logger))
 }
 
+// TestMigrationWidenBatchJobFileIDColumns verifies that existing provider-job
+// rows survive the PostgreSQL type change and that new opaque identifiers are
+// persisted without truncation.
+func TestMigrationWidenBatchJobFileIDColumns(t *testing.T) {
+	ctx := context.Background()
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
+
+	for _, backend := range forEachProviderJobMigrationDB(t) {
+		t.Run(backend.name, func(t *testing.T) {
+			db := backend.db
+			require.NoError(t, migrationAddProviderJobKindColumns(ctx, db, logger))
+
+			legacyOutput := strings.Repeat("legacy-file-", 20)
+			now := time.Now().UTC().Truncate(time.Second)
+			legacyID := tables.ProviderJobID(tables.ProviderJobKindBatch, "vertex", "legacy-file-job")
+			require.NoError(t, db.Exec(`
+				INSERT INTO batch_jobs (id, provider, batch_id, kind, output_file_id, accounting_status, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				legacyID, "vertex", "legacy-file-job", tables.ProviderJobKindBatch, legacyOutput,
+				tables.ProviderJobAccountingStatusPending, now, now).Error)
+
+			require.NoError(t, migrationWidenBatchJobFileIDColumns(ctx, db, logger))
+
+			if backend.name == "postgres" {
+				columnTypes, err := db.Migrator().ColumnTypes(&tables.TableProviderJob{})
+				require.NoError(t, err)
+				for _, name := range []string{"input_file_id", "output_file_id", "error_file_id"} {
+					found := false
+					for _, column := range columnTypes {
+						if strings.EqualFold(column.Name(), name) {
+							found = true
+							assert.Equal(t, "TEXT", strings.ToUpper(column.DatabaseTypeName()), "batch_jobs.%s should be unbounded", name)
+							break
+						}
+					}
+					require.True(t, found, "batch_jobs.%s should exist", name)
+				}
+			}
+
+			var legacy tables.TableProviderJob
+			require.NoError(t, db.Where("id = ?", legacyID).First(&legacy).Error)
+			require.NotNil(t, legacy.OutputFileID)
+			assert.Equal(t, legacyOutput, *legacy.OutputFileID)
+
+			longFileID := strings.Repeat("long-file-", 28)
+			jobID := tables.ProviderJobID(tables.ProviderJobKindBatch, "vertex", "long-file-job")
+			store := &RDBConfigStore{}
+			store.db.Store(db)
+			require.NoError(t, store.UpsertProviderJob(ctx, &tables.TableProviderJob{
+				ID:               jobID,
+				Provider:         "vertex",
+				JobID:            "long-file-job",
+				InputFileID:      longFileID,
+				OutputFileID:     &longFileID,
+				ErrorFileID:      &longFileID,
+				AccountingStatus: tables.ProviderJobAccountingStatusPending,
+			}))
+
+			var persisted tables.TableProviderJob
+			require.NoError(t, db.Where("id = ?", jobID).First(&persisted).Error)
+			assert.Equal(t, longFileID, persisted.InputFileID)
+			require.NotNil(t, persisted.OutputFileID)
+			require.NotNil(t, persisted.ErrorFileID)
+			assert.Equal(t, longFileID, *persisted.OutputFileID)
+			assert.Equal(t, longFileID, *persisted.ErrorFileID)
+
+			// Re-run the DDL itself, not just the migration registry guard.
+			require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "widen_batch_job_file_id_columns").Error)
+			require.NoError(t, migrationWidenBatchJobFileIDColumns(ctx, db, logger))
+		})
+	}
+}
+
 // TestMigrationAddVideoResolutionPricingColumns exercises the upgrade path the
 // fresh-DB migration tests cannot: on a fresh database the pricing table is
 // created complete, so addColumnIfNotExists no-ops and never proves it can add
