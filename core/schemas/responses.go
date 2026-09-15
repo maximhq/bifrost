@@ -2788,7 +2788,7 @@ func normalizeResponsesToolType(t ResponsesToolType) ResponsesToolType {
 	case strings.HasPrefix(s, "advisor") && t != ResponsesToolTypeAdvisor:
 		// Covers "advisor_20260301" and future dated versions.
 		return ResponsesToolTypeAdvisor
-	case toolSearchVariantName(s) != "":
+	case ToolSearchVariantName(s) != "":
 		// Covers Anthropic's server-side tool-search meta-tool in both variants
 		// and both spellings: "tool_search_tool_regex_20251119",
 		// "tool_search_tool_bm25_20251119" and their undated forms. Without this
@@ -2796,7 +2796,7 @@ func normalizeResponsesToolType(t ResponsesToolType) ResponsesToolType {
 		// ResponsesToolTypeToolSearch, and got downcast to a plain custom tool —
 		// so Anthropic treated tool_search as a client tool and never ran the
 		// server-side search. The regex/bm25 variant is preserved on Name (see
-		// toolSearchVariantName), which is what the Anthropic converter reads.
+		// ToolSearchVariantName), which is what the Anthropic converter reads.
 		//
 		// Matching on the recognized variants rather than a bare "tool_search"
 		// prefix keeps an unrecognized sibling type out of the server-tool
@@ -2808,7 +2808,7 @@ func normalizeResponsesToolType(t ResponsesToolType) ResponsesToolType {
 	}
 }
 
-// toolSearchVariantName recovers the tool-search variant name from a raw tool
+// ToolSearchVariantName recovers the tool-search variant name from a raw tool
 // type string. normalizeResponsesToolType collapses every tool_search_tool_*
 // spelling to the canonical "tool_search", which erases the regex-vs-bm25
 // distinction from Type — but the two are not interchangeable: regex expects
@@ -2819,7 +2819,11 @@ func normalizeResponsesToolType(t ResponsesToolType) ResponsesToolType {
 // examples do). Returns "" when the type carries no variant.
 //
 // Cite: https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool
-func toolSearchVariantName(rawType string) string {
+// It is exported so a provider ingress that rebuilds a tool_search tool outside
+// ResponsesTool.UnmarshalJSON resolves the variant the same way. Regex and bm25 are
+// not interchangeable, so a second spelling of this rule elsewhere is a drift bug
+// waiting to happen.
+func ToolSearchVariantName(rawType string) string {
 	const prefix = "tool_search_tool_"
 	if !strings.HasPrefix(rawType, prefix) {
 		return ""
@@ -3107,7 +3111,7 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 	// canonical "tool_search". Backfill the variant onto Name so it survives —
 	// an explicitly supplied name always wins.
 	if t.Type == ResponsesToolTypeToolSearch && t.Name == nil {
-		if variant := toolSearchVariantName(typeStr); variant != "" {
+		if variant := ToolSearchVariantName(typeStr); variant != "" {
 			t.Name = new(variant)
 		}
 	}

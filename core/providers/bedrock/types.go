@@ -401,6 +401,21 @@ type BedrockTool struct {
 	ToolSpec   *BedrockToolSpec   `json:"toolSpec,omitempty"`   // Tool specification
 	CachePoint *BedrockCachePoint `json:"cachePoint,omitempty"` // Cache point for the tool
 	SystemTool *BedrockSystemTool `json:"systemTool,omitempty"` // Nova system tool (nova_grounding, nova_code_interpreter)
+
+	// AnthropicToolSearch carries an inbound tool_search_tool_* server tool across
+	// the Converse-shaped intermediate the invoke ingress has to build. Converse has
+	// no wire slot for it — AWS serves server-side tool search only through
+	// InvokeModel — so this is json:"-" and never reaches a Converse request body.
+	// It exists purely so the egress predicate can see the signal (#7155).
+	AnthropicToolSearch *BedrockAnthropicToolSearch `json:"-"`
+}
+
+// BedrockAnthropicToolSearch is the inbound tool_search_tool_* entry, preserved
+// verbatim so both the dated type and the regex/bm25 variant survive the invoke
+// ingress conversion.
+type BedrockAnthropicToolSearch struct {
+	Type string // e.g. "tool_search_tool_regex_20251119"
+	Name string // e.g. "tool_search_tool_regex"; may be absent on the wire
 }
 
 type BedrockSystemToolType string
@@ -423,6 +438,10 @@ type BedrockToolSpec struct {
 	Name        string                 `json:"name"`                  // Required: Tool name
 	Description *string                `json:"description,omitempty"` // Optional: Tool description
 	InputSchema BedrockToolInputSchema `json:"inputSchema"`           // Required: JSON schema for tool input
+
+	// DeferLoading carries Anthropic's per-tool defer_loading across the invoke
+	// ingress. Converse has no such field, so json:"-" keeps it off that wire.
+	DeferLoading *bool `json:"-"`
 }
 
 // BedrockToolInputSchema represents the input schema for a tool (union type)
