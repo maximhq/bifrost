@@ -285,6 +285,11 @@ func (provider *OpenAIProvider) ResponsesRetrieveStream(ctx *schemas.BifrostCont
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
 		lastChunkTime := startTime
 
+		// Identity of the response being streamed, kept so a stream that dies without a
+		// terminal event can still be reported as a well-formed response.failed.
+		var lastResponseSeen *schemas.BifrostResponsesResponse
+		lastSequenceNumber := 0
+
 		for {
 			if ctx.Err() != nil {
 				return
@@ -320,6 +325,14 @@ func (provider *OpenAIProvider) ResponsesRetrieveStream(ctx *schemas.BifrostCont
 				response.ExtraFields.RawResponse = jsonData
 			}
 
+			if response.SequenceNumber > lastSequenceNumber {
+				lastSequenceNumber = response.SequenceNumber
+			}
+			if response.Response != nil {
+				snapshot := *response.Response
+				lastResponseSeen = &snapshot
+			}
+
 			if response.Type == schemas.ResponsesStreamResponseTypeError {
 				bifrostErr := responsesStreamError(&response)
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -353,7 +366,8 @@ func (provider *OpenAIProvider) ResponsesRetrieveStream(ctx *schemas.BifrostCont
 		// A plain io.EOF cannot distinguish that from a healthy close, so surface it
 		// instead of closing the channel silently.
 		if !providerUtils.SSEStreamEndedOnMarker(sseReader) {
-			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, nil)
+			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, nil,
+				newResponsesTruncationEvent(lastResponseSeen, lastSequenceNumber+1))
 		}
 	}()
 
