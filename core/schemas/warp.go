@@ -364,6 +364,11 @@ type WarpStoredToolCall struct {
 	Name       string `json:"name"`
 	DurationMs int64  `json:"duration_ms,omitempty"`
 	Failed     bool   `json:"failed,omitempty"`
+	// TextOffset is how many Unicode code points of the answer preceded this
+	// call, so a reopened thread interleaves narration and tool calls the way
+	// the live turn did. Zero on rows filed before it existed, which renders
+	// every call ahead of the text, as those rows always did.
+	TextOffset int `json:"text_offset,omitempty"`
 }
 
 // WarpConversationTitle derives a thread title from its opening question.

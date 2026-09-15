@@ -7,12 +7,13 @@ import {
 	warpErrorDetail,
 	warpToolLabel,
 	warpToolStatusLabel,
+	warpTimeline,
 } from "@/components/warp/warpStream.utils";
 import type { WarpTurn, WarpTurnToolCall } from "@/lib/contexts/warpContext";
 import { cn } from "@/lib/utils";
 import { useNavigate } from "@tanstack/react-router";
 import { AlertTriangle, Brain, Check, ChevronDown, Info, Loader2 } from "lucide-react";
-import { lazy, memo, Suspense, useState, type AnchorHTMLAttributes } from "react";
+import { lazy, memo, Suspense, useMemo, useState, type AnchorHTMLAttributes } from "react";
 
 // Shiki is heavy and most Warp answers are prose, so the renderer is loaded on
 // demand. This mirrors how the prompt playground handles the same component.
@@ -71,9 +72,8 @@ export const WarpMessage = memo(function WarpMessage({ turn, isLatest }: { turn:
 			className={cn("min-w-0 space-y-2 overflow-x-auto [&_pre]:overflow-x-auto [&_table]:w-full [&_table]:min-w-full", enter)}
 			data-testid="warp-message-assistant"
 		>
-			{turn.toolCalls && turn.toolCalls.length > 0 && <WarpToolCallList calls={turn.toolCalls} />}
 			{turn.partial && <WarpPartialNote />}
-			{turn.content && <WarpAnswer content={turn.content} />}
+			{(turn.content || (turn.toolCalls?.length ?? 0) > 0) && <WarpAnswer content={turn.content} toolCalls={turn.toolCalls} />}
 			{/* What this answer cost. Warp's own calls never appear in the logs it
 			    reads - by design, so it does not corrupt the numbers it reports - so
 			    this line is the only place its spend is visible at all. */}
@@ -114,23 +114,63 @@ export function WarpStreamingMessage({
 			className="min-w-0 space-y-2 overflow-x-auto [&_pre]:overflow-x-auto [&_table]:w-full [&_table]:min-w-full"
 			data-testid="warp-message-streaming"
 		>
-			{toolCalls.length > 0 && <WarpToolCallList calls={toolCalls} />}
-			{text ? (
-				<Suspense fallback={<div className="text-muted-foreground text-sm">{text}</div>}>
-					{/* Streamed text is rendered whole: the provenance fence may be
-					    half-written, and folding a partial block away would make the
-					    answer appear to lose its ending mid-stream. */}
-					<LazyMarkdown content={text} isStreaming={isStreaming} caret="block" />
-				</Suspense>
-			) : (
-				// Shown whenever a turn is in flight with nothing written yet, tool
-				// calls or not. It used to be suppressed once any tool had run, so the
-				// gap between a step finishing and the first token arriving - the
-				// longest silence in a turn, since that is where the model is actually
-				// thinking - had nothing moving in it and read as hung.
-				isStreaming && <WarpThinking />
-			)}
+			{/* Streamed text is rendered whole: the provenance fence may be
+			    half-written, and folding a partial block away would make the
+			    answer appear to lose its ending mid-stream. */}
+			<WarpTimeline content={text} toolCalls={toolCalls} isStreaming={isStreaming} />
 		</div>
+	);
+}
+
+/**
+ * A turn in the order it happened: narration, the lookups it led to, more
+ * narration, more lookups, then the answer.
+ *
+ * Shared by the live and the completed turn so the transcript does not
+ * rearrange itself at the moment a turn finishes. Narration is set back - muted
+ * and smaller - so the answer is still the thing the eye lands on; at the same
+ * weight, five paragraphs of "let me trace those" bury it.
+ */
+function WarpTimeline({
+	content,
+	toolCalls,
+	isStreaming = false,
+}: {
+	content: string;
+	toolCalls?: WarpTurnToolCall[];
+	isStreaming?: boolean;
+}) {
+	const items = useMemo(() => warpTimeline(content, toolCalls), [content, toolCalls]);
+	const last = items[items.length - 1];
+	// Waiting on the model: nothing yet, or every lookup so far has come back.
+	// That gap is the longest silence in a turn, since it is where the model is
+	// actually thinking, and with nothing moving in it the turn reads as hung.
+	// While a lookup is still running its own spinner says so.
+	const isWaitingOnModel = isStreaming && (!last || (last.kind === "tools" && last.calls.every((call) => call.durationMs !== undefined)));
+
+	return (
+		<>
+			{items.map((item, index) => {
+				if (item.kind === "tools") {
+					return <WarpToolCallList key={`tools-${item.calls[0].id}`} calls={item.calls} />;
+				}
+				const isLast = index === items.length - 1;
+				return (
+					// Keyed by position: text items never reorder, and a key taken
+					// from the text would remount the block on every streamed change.
+					<Suspense key={`text-${index}`} fallback={<div className="text-muted-foreground text-sm">{item.text}</div>}>
+						<LazyMarkdown
+							content={item.text}
+							components={{ a: WarpAnswerLink }}
+							className={item.final ? undefined : "text-muted-foreground text-[13px]"}
+							isStreaming={isStreaming && isLast}
+							caret={isStreaming && isLast ? "block" : undefined}
+						/>
+					</Suspense>
+				);
+			})}
+			{isWaitingOnModel && <WarpThinking />}
+		</>
 	);
 }
 
@@ -272,15 +312,15 @@ function WarpAnswerLink({ href, children, ...rest }: AnchorHTMLAttributes<HTMLAn
  * push the next question off screen and get re-read on every scroll. Collapsed,
  * they are one click away for the one time someone doubts a figure.
  */
-function WarpAnswer({ content }: { content: string }) {
+function WarpAnswer({ content, toolCalls }: { content: string; toolCalls?: WarpTurnToolCall[] }) {
 	const [expanded, setExpanded] = useState(false);
+	// The provenance block is the last thing in an answer, so folding it away
+	// leaves every tool call's offset pointing where it did.
 	const { answer, provenance } = splitWarpAnswer(content);
 
 	return (
 		<div className="space-y-2">
-			<Suspense fallback={<div className="text-muted-foreground text-sm">{answer}</div>}>
-				<LazyMarkdown content={answer} components={{ a: WarpAnswerLink }} />
-			</Suspense>
+			<WarpTimeline content={answer} toolCalls={toolCalls} />
 
 			{provenance && (
 				<div className="text-muted-foreground">

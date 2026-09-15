@@ -1,4 +1,4 @@
-import type { WarpTurn } from "@/lib/contexts/warpContext";
+import type { WarpTurn, WarpTurnToolCall } from "@/lib/contexts/warpContext";
 import type { WarpLogIndexStatus, WarpStoredMessage } from "@/lib/types/warp";
 /**
  * SSE frame parsing for Warp, kept separate from the React hook so it can be
@@ -267,6 +267,7 @@ export function turnsFromStoredMessages(messages: WarpStoredMessage[]): WarpTurn
 				name: call.name,
 				durationMs: call.duration_ms,
 				failed: call.failed,
+				textOffset: call.text_offset,
 			}));
 		}
 		if (message.error) turn.error = message.error;
@@ -297,6 +298,76 @@ export function turnsFromStoredMessages(messages: WarpStoredMessage[]): WarpTurn
 		}
 		return turn;
 	});
+}
+
+/**
+ * One stretch of a turn: prose, or the tool calls that ran at that point.
+ * `final` marks the text nothing followed - the answer, as opposed to narration
+ * written on the way to it.
+ */
+export type WarpTimelineItem = { kind: "text"; text: string; final: boolean } | { kind: "tools"; calls: WarpTurnToolCall[] };
+
+/**
+ * Length in Unicode code points, the unit tool-call offsets are counted in.
+ * The server counts the same way, which string.length (UTF-16 units) and a byte
+ * count would not once an answer holds a dash or an arrow.
+ */
+export function warpTextLength(text: string): number {
+	return Array.from(text).length;
+}
+
+/**
+ * A turn in the order it happened.
+ *
+ * A turn is narration, lookups, more narration, more lookups, then the answer.
+ * It used to be kept as one list of calls and one string of text, and shown
+ * that way - every call stacked above all of the prose - which reads as a stuck
+ * state: a dozen finished rows, a wall of text, and nothing to say which lookups
+ * followed which thought. The answer stays one string, because that is what is
+ * saved and replayed to the model; each call records how much of it came first,
+ * and the split happens here.
+ *
+ * Offsets are clamped rather than trusted: never before an earlier call's, never
+ * past the end. A call with none - a row filed before they existed - lands ahead
+ * of the text, which is how those rows always rendered.
+ */
+export function warpTimeline(content: string, toolCalls: WarpTurnToolCall[] | undefined): WarpTimelineItem[] {
+	const chars = Array.from(content);
+	const items: WarpTimelineItem[] = [];
+	let cursor = 0;
+	const pushTextUpTo = (end: number) => {
+		const text = chars.slice(cursor, end).join("").trim();
+		if (text) items.push({ kind: "text", text, final: false });
+		cursor = end;
+	};
+	for (const call of toolCalls ?? []) {
+		pushTextUpTo(Math.min(chars.length, Math.max(cursor, call.textOffset ?? 0)));
+		const last = items[items.length - 1];
+		// Calls with only whitespace between them are one group: one list, not
+		// two lists with a gap.
+		if (last?.kind === "tools") last.calls.push(call);
+		else items.push({ kind: "tools", calls: [call] });
+	}
+	pushTextUpTo(chars.length);
+	const last = items[items.length - 1];
+	if (last?.kind === "text") last.final = true;
+	return items;
+}
+
+/**
+ * The question a thread is still waiting on, if any.
+ *
+ * turnsFromStoredMessages rebuilds turn.question for a reopened thread, but the
+ * card is driven by the panel's pending question, not by the transcript - so a
+ * thread that ended on a question came back as plain text with nothing to
+ * click. Only the last turn counts: once anything follows it, it was answered.
+ * A question with no options (a row saved before they were stored) is left as
+ * text, since a card with nothing to pick is worse than the composer alone.
+ */
+export function pendingWarpQuestion(turns: WarpTurn[]): WarpQuestion | null {
+	const last = turns[turns.length - 1];
+	if (!last || last.role !== "assistant" || !last.question || last.question.options.length === 0) return null;
+	return last.question;
 }
 
 /** What the tray's index chip says, and how loudly. */

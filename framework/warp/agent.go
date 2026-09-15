@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -526,6 +527,43 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 	// the per-turn cap already bounds those, and "step N" would name the step
 	// in progress.
 	executed := map[string]int{}
+	// calledTool records whether any data tool ran this turn, and redirected bounds
+	// the redirect below to once per turn, so a model that holds its ground
+	// ends the turn rather than burning the step budget.
+	// describedFilterSpace is whether describe_filter_space has answered this
+	// turn, so the redirect does not send the model back to a call it would have
+	// refused as a repeat.
+	calledTool, describedFilterSpace, redirected := false, false, false
+	// finalNudged and emptyRetried each bound a one-time message below.
+	finalNudged, emptyRetried := false, false
+	// issued is every Logs link a tool has returned, which is what the links in
+	// an answer are checked against (see sanitizeAnswerLinks). Seeded from the
+	// thread so far: tool results are not replayed across turns, only answers,
+	// and a follow-up may fairly repeat a link an earlier answer carried.
+	issued := issuedLinks{}
+	issued.collect(responsesText(messages))
+	// emitText streams one step's text as its own paragraph. Steps used to go
+	// out back to back, so a turn that narrated between lookups read "...what
+	// the root cause was.These are all overloaded_error" - live, in the saved
+	// answer, and in the history replayed to the model. Only what the break is
+	// missing is added, so text that already ends its paragraph is left alone.
+	streamedTail := ""
+	emitText := func(text string) bool {
+		if text == "" {
+			return true
+		}
+		if streamedTail != "" && !strings.HasPrefix(text, "\n\n") {
+			switch {
+			case strings.HasSuffix(streamedTail, "\n\n"):
+			case strings.HasSuffix(streamedTail, "\n") || strings.HasPrefix(text, "\n"):
+				text = "\n" + text
+			default:
+				text = "\n\n" + text
+			}
+		}
+		streamedTail = text[max(0, len(text)-2):]
+		return emit(Event{Type: EventDelta, Delta: text})
+	}
 
 	for iteration := 1; iteration <= a.maxIterations; iteration++ {
 		if ctx.Err() != nil {
@@ -555,6 +593,16 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 		params := &schemas.ResponsesParameters{Instructions: &instructions, Tools: declared, MaxOutputTokens: new(maxStepOutputTokens)}
 		if finalStep {
 			params = &schemas.ResponsesParameters{Instructions: &finalInstructions}
+			// Said in the conversation as well as in the instructions. A final
+			// request that ended on a tool result addressed nothing to the model
+			// and offered no tool to call, and came back as an empty end_turn -
+			// which discarded every step before it.
+			if !finalNudged {
+				finalNudged = true
+				nudge := userNudge("This is your final step and no tools are available now. Write your answer from the results above: lead with what you found, then say plainly what you could not check.")
+				conversation = append(conversation, nudge)
+				conversationTokens += estimateMessageTokens(nudge)
+			}
 		}
 		// Both unset by default, same as before either existed: an operator who
 		// has not configured one gets the provider's own default, not a value
@@ -592,11 +640,29 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 			emit(Event{Type: EventError, Code: code, Message: errorMessage(bifrostErr), Usage: usage})
 			return
 		}
-		if response == nil || len(response.Output) == 0 {
-			emit(Event{Type: EventError, Code: ErrUpstream, Message: "the model returned no output", Usage: usage})
-			return
+		// Counted before the reply is judged, so an empty one is still paid for
+		// in what the turn reports.
+		if response != nil {
+			usage = accumulateUsage(usage, usageFromResponses(response.Usage), a.cost)
 		}
-		usage = accumulateUsage(usage, usageFromResponses(response.Usage), a.cost)
+		// A reply with no text and no tool call says nothing, whether it arrives
+		// as an empty output list or as a message with empty text. It used to end
+		// the turn outright - and, as a blank message, to end it as an empty
+		// answer. It is asked again once, on the same step and with the same
+		// tools, since nothing was learned that a step should be charged for. The
+		// blank reply is not kept: providers reject an empty assistant message.
+		if response == nil || (responsesText(response.Output) == "" && len(responsesToolCalls(response.Output)) == 0) {
+			if emptyRetried {
+				emit(Event{Type: EventError, Code: ErrUpstream, Message: "the model returned no output", Usage: usage})
+				return
+			}
+			emptyRetried = true
+			nudge := userNudge("Your last reply was empty. Continue: call a tool if you still need data and tools are available, otherwise write your answer from the results above.")
+			conversation = append(conversation, nudge)
+			conversationTokens += estimateMessageTokens(nudge)
+			iteration--
+			continue
+		}
 
 		// Every output item goes back verbatim, reasoning items included. Replaying
 		// a reasoning model's own items is what lets it continue the thought it
@@ -604,7 +670,12 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 		conversation = append(conversation, response.Output...)
 		conversationTokens += estimateMessageTokens(response.Output...)
 
-		text := responsesText(response.Output)
+		// Repaired here, before anything streams, not only when the answer is
+		// folded for saving: the model dropped the leading slash from its Logs
+		// links, the raw delta reached the dashboard, and its markdown renderer
+		// showed every such link as "[blocked]" until a reload served the saved,
+		// repaired copy. What streams must be what is saved.
+		text := sanitizeAnswerLinks(responsesText(response.Output), issued)
 		toolCalls := responsesToolCalls(response.Output)
 
 		// On the final step any text is the answer, tool calls or not: nothing
@@ -612,7 +683,23 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 		// answer. It is marked partial because the model was cut off, and the
 		// reader should weigh it accordingly.
 		if len(toolCalls) == 0 || (finalStep && text != "") {
-			if text != "" && !emit(Event{Type: EventDelta, Delta: text}) {
+			// A reply that called no tool rests on nothing looked at. In practice
+			// it was a question in prose with nothing to click ("I need to know
+			// whose traffic you mean: ...", ending in a full stop, so no check on
+			// its wording caught it) or a refusal to investigate what the tools
+			// could have ("I'd need to inspect the failed requests"). Wording
+			// checks kept missing variants; this one does not depend on wording.
+			// After a tool has run, a question in prose is still caught by shape.
+			// Held back and sent back once, while a later step can still offer
+			// tools; the text has not been emitted, so the client never sees it.
+			if !finalStep && !redirected && iteration+1 < a.maxIterations && (!calledTool || endsWithProseQuestion(text)) {
+				redirected = true
+				redirect := unsupportedReplyRedirect(calledTool, describedFilterSpace)
+				conversation = append(conversation, redirect)
+				conversationTokens += estimateMessageTokens(redirect)
+				continue
+			}
+			if !emitText(text) {
 				return
 			}
 			finishReason := "stop"
@@ -632,11 +719,10 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 			// left to run, so fall through to the budget error below.
 			break
 		}
-
 		// Narration the model produced alongside its tool calls ("let me check
 		// last week's spend") is worth showing: it is what makes the wait legible
 		// rather than a spinner.
-		if text != "" && !emit(Event{Type: EventDelta, Delta: text}) {
+		if !emitText(text) {
 			return
 		}
 
@@ -823,6 +909,25 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 			if result != nil {
 				conversation = append(conversation, *result)
 				conversationTokens += estimateMessageTokens(*result)
+				// Collected from the bounded result, so what counts as issued is
+				// what the model was actually shown.
+				issued.collect(*result.ResponsesToolMessage.Output.ResponsesToolCallOutputStr)
+			}
+		}
+		// describe_filter_space only lists what can be filtered on. A turn that
+		// looked at nothing else and then replied had fetched no data - in
+		// practice it was a scope question in prose ("I need you to pick a
+		// scope first: team, customer, or business unit."), so it is held to the
+		// same redirect as a turn that called no tool. So is a turn whose calls
+		// all failed or were refused: asking for data is not having it.
+		for _, q := range queued {
+			if !succeeded[q.index] {
+				continue
+			}
+			if q.name == "describe_filter_space" {
+				describedFilterSpace = true
+			} else {
+				calledTool = true
 			}
 		}
 		for _, q := range queued {
@@ -876,6 +981,23 @@ func (a *Agent) executeTool(ctx context.Context, name, arguments string) (string
 	if strings.TrimSpace(arguments) != "" {
 		if err := sonic.UnmarshalString(arguments, &args); err != nil {
 			return fmt.Sprintf(`{"error":"arguments were not valid JSON: %s"}`, err.Error()), true
+		}
+	}
+
+	// An argument the tool does not take is refused rather than dropped. Dropped,
+	// the call runs as if it had been honoured, and the model reads the result
+	// as shaped by an argument that never existed - then guesses another.
+	if accepted := tool.argumentNames(); len(accepted) > 0 {
+		unknown := []string{}
+		for name := range args {
+			if !slices.Contains(accepted, name) {
+				unknown = append(unknown, name)
+			}
+		}
+		if len(unknown) > 0 {
+			slices.Sort(unknown)
+			return fmt.Sprintf(`{"error":%q}`, fmt.Sprintf("%s does not take %s. Its arguments are: %s. Filters such as time range, provider, model and status go inside filters.",
+				name, strings.Join(unknown, ", "), strings.Join(accepted, ", "))), true
 		}
 	}
 
@@ -964,6 +1086,45 @@ type ToolCall struct {
 // toolResultMessage builds the function_call_output item that answers a
 // call. The call id is what pairs it with its request, so a lost id turns a
 // perfectly good result into an orphan the model cannot attribute.
+// endsWithProseQuestion reports whether an answer ends by asking the person
+// something. An answer carrying a provenance block is a finished answer even
+// if a sentence in it ends on a question mark.
+func endsWithProseQuestion(text string) bool {
+	text = strings.TrimSpace(text)
+	return strings.HasSuffix(text, "?") && !strings.Contains(text, "```warp-scope")
+}
+
+// unsupportedReplyRedirect is the one-time nudge sent back for a reply that
+// called no tool, or that asked in prose after one did. It rides as a user
+// message because it is feedback on the last reply, not a standing
+// instruction.
+// userNudge builds a user-role message from the loop itself: feedback on the
+// conversation so far rather than a standing instruction, which is why it rides
+// in the transcript and not in the system prompt.
+func userNudge(content string) schemas.ResponsesMessage {
+	itemType := schemas.ResponsesMessageTypeMessage
+	role := schemas.ResponsesInputMessageRoleUser
+	return schemas.ResponsesMessage{Type: &itemType, Role: &role, Content: &schemas.ResponsesMessageContent{ContentStr: &content}}
+}
+
+func unsupportedReplyRedirect(calledTool, describedFilterSpace bool) schemas.ResponsesMessage {
+	itemType := schemas.ResponsesMessageTypeMessage
+	role := schemas.ResponsesInputMessageRoleUser
+	content := "That reply asked a question in prose, which reaches the person with nothing to click. " +
+		"If you need to ask, call " + AskUserTool + " with the options instead. If you did not need to ask, answer without the question."
+	if !calledTool {
+		options := "call describe_filter_space first so the options are ones that have traffic, and offer the person's own traffic only if describe_filter_space says they are identified. "
+		if describedFilterSpace {
+			options = "describe_filter_space has already run this turn, so build the options from the result you have rather than calling it again, and offer the person's own traffic only if it says they are identified. "
+		}
+		content = "That reply rests on no data: no tool has returned any this turn. " +
+			"If it asks the person something, call " + AskUserTool + " with options instead - " + options +
+			"If it says the question cannot be answered, investigate with your tools first - query_usage_by with dimension error_type and status error counts every failure by kind, query_logs returns failed rows with error_type, provider and model, and get_request_trace explains one request. " +
+			"If it answers from results already in this conversation, or declines a question outside what your tools cover, give the same reply again."
+	}
+	return schemas.ResponsesMessage{Type: &itemType, Role: &role, Content: &schemas.ResponsesMessageContent{ContentStr: &content}}
+}
+
 func toolResultMessage(callID, result string) schemas.ResponsesMessage {
 	itemType := schemas.ResponsesMessageTypeFunctionCallOutput
 	return schemas.ResponsesMessage{

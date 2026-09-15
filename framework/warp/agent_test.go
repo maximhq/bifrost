@@ -172,16 +172,19 @@ func eventTypes(events []Event) []eventType {
 	return types
 }
 
+// A reply written without a tool is sent back once (see
+// TestWarpAgentRedirectsToolLessTurnWhateverItsWording); one the model gives
+// again stands, so a turn can still end without tools.
 func TestWarpAgentAnswersWithoutTools(t *testing.T) {
-	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("You spent $412 last week.")}}
+	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("You spent $412 last week."), TextTurn("You spent $412 last week.")}}
 	agent := newTestAgent(model, &fakeLogReader{}, 8)
 
 	events := collectEvents(t, agent, context.Background())
 
 	require.Equal(t, []eventType{EventStart, EventDelta, EventDone}, eventTypes(events))
 	require.Equal(t, "You spent $412 last week.", events[1].Delta)
-	require.Equal(t, 1, events[2].Iterations)
-	require.Equal(t, 1, model.calls)
+	require.Equal(t, 2, events[2].Iterations)
+	require.Equal(t, 2, model.calls)
 }
 
 func TestWarpAgentRunsToolThenAnswers(t *testing.T) {
@@ -254,7 +257,10 @@ func TestWarpAgentReportsToolFailureToModel(t *testing.T) {
 	require.Equal(t, EventToolCallEnd, events[2].Type)
 	require.True(t, events[2].Failed)
 	require.Equal(t, EventDone, events[len(events)-1].Type, "a tool error must not end the request")
-	require.Equal(t, 2, model.calls, "the model must get a chance to recover")
+	// One more call than the script: a reply after nothing but a failed call
+	// rests on no data, so it is sent back once before it stands (see
+	// TestWarpAgentRedirectsAfterOnlyFailedToolCalls).
+	require.Equal(t, 3, model.calls, "the model must get a chance to recover")
 }
 
 func TestWarpAgentHandlesUnknownToolName(t *testing.T) {
@@ -410,8 +416,11 @@ func TestWarpAgentSurvivesNilContentOnToolTurn(t *testing.T) {
 	require.Equal(t, "42 requests.", events[len(events)-2].Delta)
 }
 
-// A plain answer with nil Content must also be survivable - an empty answer, not
-// a crash.
+// A plain answer with nil Content must also be survivable - handled, not a
+// crash. It used to end the turn as a done frame with nothing in it, which a
+// client reads as a successful answer that happens to be blank. A reply that says
+// nothing is asked again once and then reported as the failure it is (see
+// TestWarpAgentAsksAgainAfterAnEmptyReply).
 func TestWarpAgentSurvivesNilContentOnFinalTurn(t *testing.T) {
 	itemType := schemas.ResponsesMessageTypeMessage
 	role := schemas.ResponsesInputMessageRoleAssistant
@@ -421,7 +430,8 @@ func TestWarpAgentSurvivesNilContentOnFinalTurn(t *testing.T) {
 	agent := newTestAgent(model, &fakeLogReader{}, 8)
 
 	events := collectEvents(t, agent, context.Background())
-	require.Equal(t, EventDone, events[len(events)-1].Type)
+	require.Equal(t, EventError, events[len(events)-1].Type)
+	require.Equal(t, 2, model.calls)
 }
 
 // Warp's tools cover traffic, not configuration. Reporting traffic statistics to
@@ -438,6 +448,19 @@ func TestWarpSystemPromptAdmitsWhatItCannotAnswer(t *testing.T) {
 	// the issue link there would train people to file tickets for their own
 	// typos.
 	require.Contains(t, content, "An empty result is not the same as an unanswerable question")
+}
+
+// The prompt used to say to "filter it out with apps", but apps only includes.
+// Asked "what did I spend on each provider", the model sent apps: ["Warp"] and
+// reported Warp's own spend ($5.72) as the deployment's, against $9.03 on the
+// dashboard beside it.
+func TestWarpSystemPromptDoesNotSuggestExcludingWarpViaApps(t *testing.T) {
+	content := systemInstructions(&schemas.WarpConfig{}, true)
+
+	require.NotContains(t, content, "filter it out with apps")
+	require.Contains(t, content, `"My usage" and "what did I spend" mean the person's traffic through Bifrost, never your own queries`)
+	require.Contains(t, content, "No filter narrows to your own queries")
+	require.NotContains(t, content, `scope "warp"`)
 }
 
 // Nothing stops a generally helpful model from just answering "who is Kanye
@@ -1171,6 +1194,14 @@ func TestWarpAgentFinalStepAnswersPartially(t *testing.T) {
 	require.Equal(t, 3, model.calls)
 	require.Empty(t, model.lastTools, "the final step must not offer tools")
 	require.Contains(t, model.lastInstructions, "final step")
+	// Said in the conversation as well as the system prompt. With the instruction
+	// only in the system prompt the final request ended on a tool result, with
+	// nothing addressed to the model and no tool to call, and Sonnet 4.6 answered
+	// it with an empty end_turn - seven steps of research thrown away.
+	closing := model.lastInput[len(model.lastInput)-1]
+	require.NotNil(t, closing.Role, "the final request must not end on a tool result")
+	require.Equal(t, schemas.ResponsesInputMessageRoleUser, *closing.Role)
+	require.Contains(t, *closing.Content.ContentStr, "final step")
 	last := events[len(events)-1]
 	require.Equal(t, EventDone, last.Type)
 	require.Equal(t, FinishReasonPartial, last.FinishReason)
@@ -1371,6 +1402,18 @@ func TestWarpSystemPromptNamesExistingTrendFields(t *testing.T) {
 
 // The links only help if the model uses them. The prompt has to name the two
 // fields and forbid inventing URLs of its own.
+// "Prefer query_metrics for totals" sent a model-wise spend question to
+// query_metrics, which has no per-model split, and the model then reported the
+// question as unsupported after that one call. The prompt names which tool
+// owns each breakdown, and forbids giving up while another tool covers it.
+func TestWarpSystemPromptRoutesBreakdownsToTheirTools(t *testing.T) {
+	content := systemInstructions(&schemas.WarpConfig{}, true)
+	require.Contains(t, content, "Per-model spend, usage or performance: query_model_performance")
+	require.Contains(t, content, "Per user, team, customer, business unit, project, virtual key or app: query_usage_by")
+	require.Contains(t, content, "Per provider: query_metrics with group_by provider")
+	require.Contains(t, content, "Before saying a traffic question cannot be answered")
+}
+
 func TestWarpSystemPromptRequiresDashboardLinks(t *testing.T) {
 	content := systemInstructions(&schemas.WarpConfig{}, true)
 	require.Contains(t, content, "logs_link")
@@ -1481,4 +1524,278 @@ func TestWarpEstimateMessageTokensSumsAcrossMessages(t *testing.T) {
 	two := schemas.ResponsesMessage{ID: schemas.Ptr(strings.Repeat("值", 10))}
 	sum := estimateMessageTokens(one) + estimateMessageTokens(two)
 	require.Equal(t, sum, estimateMessageTokens(one, two))
+}
+
+// The model wrote its ranking links as "workspace/logs?..." with the leading
+// slash dropped. sanitizeAnswerLinks repaired them, but only in the folded
+// answer that gets saved - the streamed delta went out raw, and the dashboard's
+// markdown renderer blocks a link it cannot resolve, so every row of the live
+// table read "claude-opus-5 [blocked]" until a reload showed the saved copy.
+// What streams must be what is saved.
+func TestWarpAgentStreamsRepairedLinks(t *testing.T) {
+	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{
+		ToolTurn("q-1", "query_model_performance", `{"filters":{"start_time":"-7d"}}`),
+		TextTurn("| [claude-opus-5](workspace/logs?models=claude-opus-5) | $2.92 |"),
+	}}
+	events := collectEvents(t, newTestAgent(model, &fakeLogReader{}, 8), context.Background())
+
+	var streamed strings.Builder
+	for _, event := range events {
+		if event.Type == EventDelta {
+			streamed.WriteString(event.Delta)
+		}
+	}
+	require.Equal(t, "| [claude-opus-5](/workspace/logs?models=claude-opus-5) | $2.92 |", streamed.String())
+}
+
+// Sonnet 4.6 and Haiku 4.5 put a domain in front of the root-relative links the
+// tools return ("https://bifrost-dashboard.example.com/workspace/logs?..."),
+// and no shape check can tell an invented domain from a real external site. The
+// query string can: only a tool could have written this window's unix seconds.
+// A link whose query a tool issued this turn - or that an earlier answer in the
+// thread already carried - streams as the issued link.
+func TestWarpAgentRewritesInventedHostsToTheIssuedLink(t *testing.T) {
+	var issued string
+	calls := 0
+	chat := func(_ context.Context, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		calls++
+		if calls == 1 {
+			return ToolTurn("c-1", "count_logs", `{"filters":{"start_time":"-7d"}}`), nil
+		}
+		for _, item := range req.Input {
+			if item.ResponsesToolMessage != nil && item.ResponsesToolMessage.Output != nil && item.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil {
+				node, _ := sonic.GetFromString(*item.ResponsesToolMessage.Output.ResponsesToolCallOutputStr, "logs_link")
+				issued, _ = node.String()
+			}
+		}
+		return TextTurn("[1,271 requests](https://bifrost-dashboard.example.com" + issued + ")"), nil
+	}
+	agent := newTestAgent(&scriptedModel{}, &fakeLogReader{}, 8)
+	agent.chat = chat
+
+	events := collectEvents(t, agent, context.Background())
+
+	require.Contains(t, issued, "/workspace/logs?end_time=")
+	require.Equal(t, "[1,271 requests]("+issued+")", events[len(events)-2].Delta)
+
+	// An earlier answer's link is reused on a follow-up that needs no new query.
+	itemType := schemas.ResponsesMessageTypeMessage
+	assistant, user := schemas.ResponsesInputMessageRoleAssistant, schemas.ResponsesInputMessageRoleUser
+	earlier, followUp := "There was [a failure cluster](/workspace/logs?end_time=1789990939&start_time=1789386139&status=error).", "link me to it again"
+	history := []schemas.ResponsesMessage{
+		{Type: &itemType, Role: &assistant, Content: &schemas.ResponsesMessageContent{ContentStr: &earlier}},
+		{Type: &itemType, Role: &user, Content: &schemas.ResponsesMessageContent{ContentStr: &followUp}},
+	}
+	reply := "[The cluster](https://your-bifrost-host/workspace/logs?start_time=1789386139&end_time=1789990939&status=error)"
+	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn(reply), TextTurn(reply)}}
+	out := make(chan Event, 64)
+	go newTestAgent(model, &fakeLogReader{}, 8).Run(context.Background(), history, out)
+	var streamed strings.Builder
+	for event := range out {
+		if event.Type == EventDelta {
+			streamed.WriteString(event.Delta)
+		}
+	}
+	require.Equal(t, "[The cluster](/workspace/logs?end_time=1789990939&start_time=1789386139&status=error)", streamed.String())
+}
+
+// "What did I spend on each provider" opened with query_metrics and
+// describe_filter_space together. query_metrics failed, and the reply was "I
+// need you to choose whose traffic you mean before I can total spend, because
+// there's no default scope here." - a question ending in a full stop, after a
+// turn that had fetched nothing. A failed call counted as having looked, so the
+// reply was let through with nothing to click. Only a call that returned data
+// means the reply rests on something.
+func TestWarpAgentRedirectsAfterOnlyFailedToolCalls(t *testing.T) {
+	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{
+		MixedToolTurn(
+			mixedToolCall{name: "query_metrics", args: `{"filters":{"start_time":"-7d"},"metrics":["spend"]}`},
+			mixedToolCall{name: "describe_filter_space", args: `{}`},
+		),
+		TextTurn("I need you to choose whose traffic you mean before I can total spend, because there's no default scope here."),
+		ToolTurn("ask-1", AskUserTool, `{"question":"Whose traffic?","kind":"scope","options":[{"label":"Whole deployment"},{"label":"Team A"}]}`),
+	}}
+	events := collectEvents(t, newTestAgent(model, &fakeLogReader{}, 8), context.Background())
+
+	require.Equal(t, 3, model.calls, "the prose question must be sent back")
+	require.Equal(t, EventQuestion, events[len(events)-2].Type)
+	for _, event := range events {
+		require.NotContains(t, event.Delta, "I need you to choose", "the prose question must never reach the client")
+	}
+}
+
+// Sent back for asking in prose after describe_filter_space, the model was told
+// to "call describe_filter_space first", did, and had that refused as a repeat
+// of the call it had already made - and with the one redirect spent, its next
+// prose question went out. When the lists are already in the conversation the
+// redirect says to build the options from them.
+func TestWarpAgentRedirectAfterFilterSpaceDoesNotAskForItAgain(t *testing.T) {
+	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{
+		ToolTurn("d-1", "describe_filter_space", `{}`),
+		TextTurn("I need you to pick a scope first: team, customer, or business unit."),
+		ToolTurn("ask-1", AskUserTool, `{"question":"Whose traffic?","kind":"scope","options":[{"label":"Whole deployment"},{"label":"Team A"}]}`),
+	}}
+	collectEvents(t, newTestAgent(model, &fakeLogReader{}, 8), context.Background())
+
+	require.Equal(t, 3, model.calls)
+	var redirect string
+	for _, item := range model.lastInput {
+		if item.Role != nil && *item.Role == schemas.ResponsesInputMessageRoleUser && item.Content != nil && item.Content.ContentStr != nil {
+			redirect = *item.Content.ContentStr
+		}
+	}
+	require.Contains(t, redirect, AskUserTool)
+	require.Contains(t, redirect, "describe_filter_space has already run")
+	require.NotContains(t, redirect, "call describe_filter_space first")
+
+	// With nothing looked up yet, the redirect still sends the model there.
+	model = &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("Whose traffic do you mean."), TextTurn("Whose traffic do you mean.")}}
+	collectEvents(t, newTestAgent(model, &fakeLogReader{}, 8), context.Background())
+	last := model.lastInput[len(model.lastInput)-1]
+	require.Contains(t, *last.Content.ContentStr, "call describe_filter_space first")
+}
+
+// "What caused it" was refused with "I'd need to inspect the failed requests",
+// and "what failures did we see" was tallied from a 25-row query_logs sample,
+// while the exact count of every failure by kind sat behind the tenth dimension
+// of a tool described as "who is spending the most". The prompt, the tool's own
+// description and the redirect all name it as the failure breakdown.
+func TestWarpPointsFailureQuestionsAtTheErrorTypeRanking(t *testing.T) {
+	content := systemInstructions(&schemas.WarpConfig{}, true)
+	require.Contains(t, content, "Per error type, HTTP status code, error code or retry failure reason: query_usage_by")
+	require.Contains(t, content, "query_usage_by with dimension error_type and status error")
+	require.NotContains(t, content, "is answered with query_logs filtered to status error, tallying",
+		"a 25-row sample must not be the advertised way to count failures")
+
+	tool, ok := toolByName(buildTools(), "query_usage_by")
+	require.True(t, ok)
+	failures := indexOf(tool.description, "failure breakdown")
+	require.GreaterOrEqual(t, failures, 0)
+	require.Less(t, failures, indexOf(tool.description, "Dimensions:"), "said up front, not left to the dimension list")
+	require.Contains(t, tool.description, "what caused the failure spike")
+
+	redirect := unsupportedReplyRedirect(false, false)
+	require.Contains(t, *redirect.Content.ContentStr, "query_usage_by with dimension error_type")
+}
+
+// Each step's text went out back to back, so a turn that narrated between
+// lookups read "...to see what the root cause was.These are all
+// overloaded_error, not invalid_request_error.Good - I can see..." - in the
+// live transcript, in the saved answer, and in the history replayed to the
+// model. Steps are separate paragraphs.
+func TestWarpAgentSeparatesEachStepsText(t *testing.T) {
+	narrated := func(text, id, args string) *schemas.BifrostResponsesResponse {
+		turn := TextTurn(text)
+		turn.Output = append(turn.Output, ToolTurn(id, "count_logs", args).Output...)
+		return turn
+	}
+	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{
+		narrated("Let me count the failures.", "c-1", `{"filters":{"start_time":"-7d","status":["error"]}}`),
+		narrated("Now the week before.\n", "c-2", `{"filters":{"start_time":"-14d","end_time":"-7d","status":["error"]}}`),
+		TextTurn("Failures doubled."),
+	}}
+	events := collectEvents(t, newTestAgent(model, &fakeLogReader{}, 8), context.Background())
+
+	f := newFold()
+	for _, event := range events {
+		f.apply(event)
+	}
+	response := f.result()
+	require.Equal(t, "Let me count the failures.\n\nNow the week before.\n\nFailures doubled.", response.Answer)
+	require.Equal(t, []int{26, 49}, []int{response.ToolCalls[0].TextOffset, response.ToolCalls[1].TextOffset})
+}
+
+// EmptyTurn is a reply with nothing in it: no text and no tool call. Providers
+// send it as an empty output list or as a message with empty text; both mean
+// the model said nothing.
+func EmptyTurn(asBlankMessage bool) *schemas.BifrostResponsesResponse {
+	if asBlankMessage {
+		return TextTurn("")
+	}
+	return &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{}, Usage: &schemas.ResponsesResponseUsage{InputTokens: 100, OutputTokens: 8, TotalTokens: 108}}
+}
+
+// "Dig into the invalid request errors" spent $0.51 over seven steps and ended
+// as "the model returned no output": the eighth reply was 8 tokens of nothing,
+// and an empty reply was a terminal error. It is asked again once, saying so;
+// only a second empty reply ends the turn, and the tokens both cost are counted.
+func TestWarpAgentAsksAgainAfterAnEmptyReply(t *testing.T) {
+	for _, blank := range []bool{false, true} {
+		model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{
+			ToolTurn("one", "count_logs", `{"filters":{"start_time":"-7d"}}`),
+			EmptyTurn(blank),
+			TextTurn("17 requests failed."),
+		}}
+		events := collectEvents(t, newTestAgent(model, &fakeLogReader{}, 8), context.Background())
+
+		require.Equal(t, 3, model.calls, "blank message: %v", blank)
+		last := events[len(events)-1]
+		require.Equal(t, EventDone, last.Type, "blank message: %v", blank)
+		require.Equal(t, "17 requests failed.", events[len(events)-2].Delta)
+		nudge := model.lastInput[len(model.lastInput)-1]
+		require.NotNil(t, nudge.Role)
+		require.Equal(t, schemas.ResponsesInputMessageRoleUser, *nudge.Role)
+		require.Contains(t, *nudge.Content.ContentStr, "empty")
+		for _, item := range model.lastInput {
+			if item.Role != nil && *item.Role == schemas.ResponsesInputMessageRoleAssistant && item.Content != nil && item.Content.ContentStr != nil {
+				require.NotEmpty(t, *item.Content.ContentStr, "an empty assistant message must not be replayed: providers reject it")
+			}
+		}
+	}
+
+	// The final, tool-less step is where it happened, and it is retried there too
+	// without being counted as another step.
+	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{
+		ToolTurn("one", "count_logs", `{"filters":{"start_time":"-7d"}}`),
+		ToolTurn("two", "count_logs", `{"filters":{"start_time":"-14d"}}`),
+		EmptyTurn(false),
+		TextTurn("17 requests failed."),
+	}}
+	events := collectEvents(t, newTestAgent(model, &fakeLogReader{}, 3), context.Background())
+	last := events[len(events)-1]
+	require.Equal(t, EventDone, last.Type)
+	require.Equal(t, FinishReasonPartial, last.FinishReason)
+	require.Equal(t, 3, last.Iterations)
+	require.Empty(t, model.lastTools)
+
+	// Twice empty is an error, as before - with what it cost.
+	model = &scriptedModel{turns: []*schemas.BifrostResponsesResponse{EmptyTurn(false)}}
+	events = collectEvents(t, newTestAgent(model, &fakeLogReader{}, 8), context.Background())
+	last = events[len(events)-1]
+	require.Equal(t, EventError, last.Type)
+	require.Equal(t, 2, model.calls)
+	require.NotNil(t, last.Usage)
+	require.Equal(t, 216, last.Usage.TotalTokens, "both empty replies were paid for")
+}
+
+// gpt-5.4-nano called query_model_performance with "metrics" and then "group_by"
+// as well - arguments that belong to query_metrics, not to this tool. Unknown filter fields were
+// refused, but unknown arguments beside filters were dropped without a word, so
+// the call ran as if they had been honoured: the model got a result it believed
+// was shaped by them, and spent its next step guessing a third. An argument the
+// tool does not take is named, with the ones it does.
+func TestWarpAgentRefusesArgumentsAToolDoesNotTake(t *testing.T) {
+	agent := newTestAgent(&scriptedModel{}, &fakeLogReader{}, 8)
+
+	result, failed := agent.executeTool(context.Background(), "query_model_performance",
+		`{"filters":{"start_time":"-1d"},"metrics":["latency_p99"],"include_performance":true,"limit":20,"group_by":"none"}`)
+	require.True(t, failed)
+	require.Contains(t, result, "does not take group_by, metrics", "every unknown argument is named, in a stable order")
+	require.Contains(t, result, "filters", "and the ones the tool takes are listed")
+	require.Contains(t, result, "include_performance")
+
+	_, failed = agent.executeTool(context.Background(), "query_model_performance",
+		`{"filters":{"start_time":"-1d"},"include_performance":true}`)
+	require.False(t, failed, "the tool's own arguments still run")
+
+	// Every tool's schema has to declare its arguments for this to hold.
+	for _, tool := range buildToolsFor(&SemanticSearcher{}) {
+		require.NotEmpty(t, tool.argumentNames(), "tool %s declares no arguments", tool.name)
+	}
+
+	// The unknown-filter error lists what is supported, and that list is not
+	// allowed to fall behind the schema again.
+	_, err := parseFilters(map[string]any{"error_type": []any{"x"}}, Now())
+	require.ErrorContains(t, err, "error_types")
+	require.ErrorContains(t, err, "status_codes")
 }

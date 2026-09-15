@@ -93,6 +93,8 @@ export type WarpUnavailableReason = "not_configured" | "no_log_store" | "no_vect
 export interface WarpBackfillInput {
 	start_time: string;
 	end_time: string;
+	/** Discard a resumable checkpoint from a prior failed/cancelled run over this window and scan from the beginning anyway. */
+	restart?: boolean;
 }
 
 export type WarpBackfillState = "idle" | "pending" | "running" | "completed" | "failed" | "cancelled" | "cancelling";
@@ -142,6 +144,8 @@ export interface WarpStoredToolCall {
 	name: string;
 	duration_ms?: number;
 	failed?: boolean;
+	/** Unicode code points of the answer that preceded this call. */
+	text_offset?: number;
 }
 
 /** One persisted turn. Mirrors schemas.WarpStoredMessage. */

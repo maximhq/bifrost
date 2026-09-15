@@ -45,6 +45,48 @@ func TestWarpFoldAssemblesToolCallsAndAnswer(t *testing.T) {
 	require.Nil(t, response.Error)
 }
 
+// A turn is narration, then calls, then more narration, then more calls, then
+// the answer - and the fold kept one list of calls and one string of text, so a
+// saved thread could only show every call stacked above all of the prose. Each
+// call records how much text preceded it. Code points, because the dashboard
+// splits the same string in JavaScript: bytes would put the second call three
+// places too far along after the dash.
+func TestWarpFoldRecordsWhereEachToolCallFellInTheText(t *testing.T) {
+	f := newFold()
+	for _, event := range []Event{
+		{Type: EventToolCallStart, ToolID: "c1", ToolName: "count_logs"},
+		{Type: EventToolCallEnd, ToolID: "c1", ToolName: "count_logs", DurationMs: 3},
+		{Type: EventDelta, Delta: "17 failed — tracing two."},
+		{Type: EventToolCallStart, ToolID: "c2", ToolName: "get_request_trace"},
+		{Type: EventToolCallStart, ToolID: "c3", ToolName: "get_request_trace"},
+		{Type: EventToolCallEnd, ToolID: "c3", ToolName: "get_request_trace", DurationMs: 9},
+		{Type: EventToolCallEnd, ToolID: "c2", ToolName: "get_request_trace", DurationMs: 12},
+		{Type: EventDelta, Delta: "\n\nBoth hit a 400."},
+		{Type: EventDone, FinishReason: "stop"},
+	} {
+		f.apply(event)
+	}
+	calls := f.result().ToolCalls
+	require.Len(t, calls, 3)
+	require.Equal(t, 0, calls[0].TextOffset)
+	require.Equal(t, 24, calls[1].TextOffset, "counted in code points, not the 26 bytes")
+	require.Equal(t, 24, calls[2].TextOffset, "calls in one step share a position")
+}
+
+// A turn that failed after seven steps was filed as costing nothing: the error
+// frame carried its usage, and the fold only read usage off a done frame. The
+// thread's spend was $0.51 short, and a failed turn is exactly the one whose
+// cost someone goes looking for.
+func TestWarpFoldKeepsTheUsageOfAFailedTurn(t *testing.T) {
+	f := newFold()
+	f.apply(Event{Type: EventError, Code: ErrUpstream, Message: "the model returned no output",
+		Usage: &schemas.BifrostLLMUsage{TotalTokens: 164416, Cost: &schemas.BifrostCost{TotalCost: 0.507}}})
+	response := f.result()
+	require.NotNil(t, response.Usage)
+	require.Equal(t, 164416, response.Usage.TotalTokens)
+	require.InDelta(t, 0.507, response.Usage.Cost.TotalCost, 1e-9)
+}
+
 func TestWarpFoldRecordsTerminalError(t *testing.T) {
 	f := newFold()
 	f.apply(Event{Type: EventError, Code: ErrUpstream, Message: "boom"})

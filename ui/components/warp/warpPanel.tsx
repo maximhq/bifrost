@@ -3,7 +3,7 @@ import WarpHistory from "@/components/warp/warpHistory";
 import { WarpMessage, WarpStreamingMessage } from "@/components/warp/warpMessage";
 import WarpQuestionCard from "@/components/warp/warpQuestion";
 import { useWarpStream } from "@/components/warp/useWarpStream";
-import { indexStatusLabel, shouldDrainQueue, turnsFromStoredMessages } from "@/components/warp/warpStream.utils";
+import { indexStatusLabel, pendingWarpQuestion, shouldDrainQueue, turnsFromStoredMessages } from "@/components/warp/warpStream.utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { WarpIcon } from "@/components/ui/icons";
@@ -207,8 +207,14 @@ export default function WarpPanel() {
 		// discard, not stop: the in-flight turn belongs to the thread being left,
 		// and stop() keeps it - so it would be filed under the one being opened.
 		discard();
-		warp.replaceTurns(turnsFromStoredMessages(detail.messages));
+		const stored = turnsFromStoredMessages(detail.messages);
+		warp.replaceTurns(stored);
 		openConversation(detail.id);
+		// After openConversation, which clears the question of the thread being
+		// left. A thread that ended on a question gets its card back, so reopening
+		// it is the same as never having left - and its answer is filed under the
+		// conversation id set just above.
+		warp.setQuestion(pendingWarpQuestion(stored));
 		setShowHistory(false);
 	};
 	// "Turned off" and "never set up" both report configured:false, but they are

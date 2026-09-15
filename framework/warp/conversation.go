@@ -102,6 +102,13 @@ type ChatToolCall struct {
 	Arguments  string `json:"arguments,omitempty"`
 	DurationMs int64  `json:"duration_ms"`
 	Failed     bool   `json:"failed,omitempty"`
+	// TextOffset is how much of the answer had been written when this call
+	// started, in Unicode code points - the one unit Go and the dashboard's
+	// JavaScript count alike, which bytes and UTF-16 units are not once an
+	// answer holds a dash or an arrow. It is what lets a transcript show
+	// narration and tool calls in the order they happened while the answer
+	// itself stays one string.
+	TextOffset int `json:"text_offset,omitempty"`
 }
 
 type ChatError struct {

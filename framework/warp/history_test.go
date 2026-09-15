@@ -213,7 +213,7 @@ func TestWarpRecordTurnCreatesThreadOnFirstTurn(t *testing.T) {
 	service := historyService(store)
 	id := service.recordTurn(ownerCtx("u1"), &Turn{ConversationID: "t-1", IsNew: true, question: "how much did we spend?"}, ChatResponse{
 		Answer:    "$12.",
-		ToolCalls: []ChatToolCall{{Name: "query_metrics", DurationMs: 3}},
+		ToolCalls: []ChatToolCall{{Name: "query_metrics", DurationMs: 3, TextOffset: 4}},
 	})
 	require.NotEmpty(t, id)
 	thread := store.threads[id]
@@ -222,6 +222,9 @@ func TestWarpRecordTurnCreatesThreadOnFirstTurn(t *testing.T) {
 	require.Len(t, thread.Messages, 2)
 	require.Equal(t, "user", thread.Messages[0].Role)
 	require.Contains(t, thread.Messages[1].ToolCallsJSON, "query_metrics")
+	// Where the call fell in the answer is filed with it, or a reopened thread
+	// goes back to stacking every call above the prose.
+	require.Contains(t, thread.Messages[1].ToolCallsJSON, `"text_offset":4`)
 	require.Equal(t, []int{schemas.WarpMaxConversationsPerOwner}, store.pruned)
 }
 
@@ -705,6 +708,23 @@ func TestWarpRecordTurnQuestionWinsOverPreambleAnswer(t *testing.T) {
 	require.Len(t, thread.Messages, 2)
 	require.Equal(t, "Which time range?", thread.Messages[1].Content, "the question must win over preamble answer text")
 	require.Equal(t, "question", thread.Messages[1].FinishReason)
+}
+
+// Tool-call offsets are measured against the answer text. A question turn files
+// the question as its content instead, so an offset into the preamble would
+// split the question at an unrelated point when the thread is reopened.
+func TestWarpRecordTurnQuestionTurnsDropAnswerOffsets(t *testing.T) {
+	store := newMemoryConversations()
+	service := historyService(store)
+	id := service.recordTurn(ownerCtx("u1"), &Turn{ConversationID: "t-offset", IsNew: true, question: "what did we spend?"}, ChatResponse{
+		Answer:    "Let me check a few things first.",
+		ToolCalls: []ChatToolCall{{Name: "query_metrics", DurationMs: 3, TextOffset: 12}},
+		Question:  &Question{Question: "Which time range?"},
+	})
+	thread := store.threads[id]
+	require.NotNil(t, thread)
+	require.Contains(t, thread.Messages[1].ToolCallsJSON, "query_metrics")
+	require.NotContains(t, thread.Messages[1].ToolCallsJSON, "text_offset")
 }
 
 // The fold has to carry the question for the above to work: it is the only

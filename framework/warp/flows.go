@@ -102,9 +102,9 @@ func semanticSearchLogsTool() Tool {
 				"returned":  result.Returned,
 				"threshold": result.Threshold,
 				"scope":     scopeNote(filters, deps.scope),
-				"logs_link": logsViewLink(filters),
 				"window":    resolvedWindow(filters),
 			}
+			setLogsLink(response, filters)
 			if result.Returned == 0 {
 				// Four bare fields read as "search is useless here", and the
 				// model went off counting and listing logs instead. Say what
@@ -170,18 +170,17 @@ func queryLogsTool() Tool {
 			// total_matching is reported separately from the returned rows so the
 			// model can say "12,400 matched, here are the 10 slowest" instead of
 			// implying it saw everything.
-			return map[string]any{
+			return setLogsLink(map[string]any{
 				"rows":           rows,
 				"returned":       len(rows),
 				"total_matching": result.Pagination.TotalCount,
 				// Stated rather than left to be inferred from the two counts above.
 				// The prompt asks the model to caveat a partial answer, and a caveat
 				// it has to derive by comparing numbers is the one it forgets.
-				"sampled":   int64(len(rows)) < result.Pagination.TotalCount,
-				"scope":     scopeNote(filters, deps.scope),
-				"logs_link": logsViewLink(filters),
-				"window":    resolvedWindow(filters),
-			}, nil
+				"sampled": int64(len(rows)) < result.Pagination.TotalCount,
+				"scope":   scopeNote(filters, deps.scope),
+				"window":  resolvedWindow(filters),
+			}, filters), nil
 		},
 	}
 }
@@ -269,8 +268,14 @@ func countLogsTool() Tool {
 				"success_rate":       stats.SuccessRate,
 				"average_latency_ms": stats.AverageLatency,
 				"scope":              scopeNote(filters, deps.scope),
-				"logs_link":          logsViewLink(filters),
 				"window":             resolvedWindow(filters),
+			}
+			setLogsLink(out, filters)
+			// A query the Logs page cannot reproduce gets no logs_link, and the
+			// guidance must not then hand over a link the result does not carry.
+			_, hasLogsLink := out["logs_link"]
+			if link := failuresLink(filters, stats.TotalRequests, stats.SuccessRate); link != "" {
+				out["failures_link"] = link
 			}
 			// The advice travels with the number rather than living only in the
 			// prompt: this is the moment the decision gets made, and the threshold
@@ -278,17 +283,26 @@ func countLogsTool() Tool {
 			switch {
 			case stats.TotalRequests == 0:
 				out["guidance"] = "Nothing matched. Widen the time range or check the filter values with describe_filter_space before concluding there is no traffic."
+			case stats.TotalRequests > LargeResultThreshold && !hasLogsLink:
+				out["too_many_to_list"] = true
+				out["guidance"] = fmt.Sprintf(
+					"%d requests match - far too many to list. For a sorted top-N (\"slowest requests\", \"most expensive calls\"), call query_logs with sort_by and limit directly. Otherwise answer from aggregates (query_metrics, query_model_performance) where you can. If you genuinely need individual rows, narrow by provider, model, status or virtual key, or split the window into smaller slices and handle one at a time.",
+					stats.TotalRequests)
 			case stats.TotalRequests > LargeResultThreshold:
 				out["too_many_to_list"] = true
 				out["guidance"] = fmt.Sprintf(
-					"%d requests match - far too many to list in full. For a sorted top-N (\"slowest requests\", \"most expensive calls\"), call query_logs with sort_by and limit directly; that works regardless of this count, it is not the same as listing everything. For a total, answer from aggregates (query_metrics, query_model_performance) where you can. Only narrow by provider, model, status or virtual key, or split the window into smaller slices, if you genuinely need individual rows beyond a top-N.",
+					"%d requests match - far too many to list in full. If the person asked to see or list these requests, that is answerable: give the count and link it to logs_link, which opens this exact filtered set in the Logs view - do not tell them it cannot be listed or ask how to narrow it. For a sorted top-N (\"slowest requests\", \"most expensive calls\"), call query_logs with sort_by and limit directly; that works regardless of this count, it is not the same as listing everything. For a total, answer from aggregates (query_metrics, query_model_performance) where you can. Only narrow by provider, model, status or virtual key, or split the window into smaller slices, if you genuinely need individual rows beyond a top-N.",
 					stats.TotalRequests)
+			case stats.TotalRequests > MaxLogRows && !hasLogsLink:
+				out["guidance"] = fmt.Sprintf(
+					"%d requests match, and query_logs returns at most %d - listing them would answer from a sample without saying so. Answer from aggregates (query_metrics, query_model_performance), or narrow by provider, model, status or virtual key, or split the window, until the count is %d or fewer.",
+					stats.TotalRequests, MaxLogRows, MaxLogRows)
 			case stats.TotalRequests > MaxLogRows:
 				// Between MaxLogRows and LargeResultThreshold, "list it" was advice
 				// the tool cannot take: query_logs returns at most MaxLogRows, so the
 				// model got a sample and had no way to know it was one.
 				out["guidance"] = fmt.Sprintf(
-					"%d requests match, and query_logs returns at most %d - listing them would answer from a sample without saying so. Answer from aggregates (query_metrics, query_model_performance), or narrow by provider, model, status or virtual key, or split the window, until the count is %d or fewer.",
+					"%d requests match, and query_logs returns at most %d - listing them would answer from a sample without saying so. If the person asked to see or list these requests, give the count and link it to logs_link, which opens this exact filtered set in the Logs view - that is the full list, so do not tell them it cannot be listed or ask how to narrow it. Otherwise answer from aggregates (query_metrics, query_model_performance), or narrow by provider, model, status or virtual key, or split the window, until the count is %d or fewer.",
 					stats.TotalRequests, MaxLogRows, MaxLogRows)
 			default:
 				out["guidance"] = fmt.Sprintf("Small enough to list with query_logs if individual rows are needed - it returns up to %d.", MaxLogRows)
@@ -306,7 +320,7 @@ func queryMetricsTool() Tool {
 		name: "query_metrics",
 		description: "Aggregate statistics and time series over requests: totals, cost, tokens, latency percentiles, throughput. " +
 			"This is the cheapest way to answer 'how much', 'how many' and 'is it getting worse'. Without group_by, each series is reduced to one summary per field (total, mean, min, max, first, last) rather than bucket by bucket - total is omitted for a field summing cannot describe, like a percentile. " +
-			"group_by supports 'none' and 'provider' only. With 'provider', series stay as coarse buckets instead of a summary, since collapsing away the per-provider split would defeat the reason to group by it in the first place. 'requests' does not support group_by 'provider' - drop it from metrics or query without group_by. " +
+			"group_by supports 'none' and 'provider' only. With 'provider', series stay as coarse buckets instead of a summary, since collapsing away the per-provider split would defeat the reason to group by it in the first place, and provider_totals carries each provider's exact total cost, tokens, requests, success rate and average latency over the window, with a link to that provider's requests. Report per-provider totals from provider_totals, never by adding up buckets: bucket boundaries do not line up with the window, so a sum of buckets does not match the dashboard. 'requests' does not support group_by 'provider' - drop it from metrics or query without group_by. " +
 			"Set compare_to_previous with metrics including summary to answer 'is it up or down vs last period' in this one call, instead of calling this twice with a shifted window.",
 		schemaJSON: `{
   "type": "object",
@@ -370,18 +384,21 @@ func queryMetricsTool() Tool {
 				if bucket, err = bucketSize(filters); err != nil {
 					return nil, err
 				}
-				if byProvider {
-					if providerBucket, err = coarseBucketSize(filters); err != nil {
-						return nil, err
-					}
+			}
+			// A summary-only grouped call still needs the coarse bucket: the
+			// provider list is discovered through a per-provider histogram below.
+			if byProvider {
+				if providerBucket, err = coarseBucketSize(filters); err != nil {
+					return nil, err
 				}
 			}
 
 			out := map[string]any{
-				"scope":     scopeNote(filters, deps.scope),
-				"logs_link": logsViewLink(filters),
-				"window":    resolvedWindow(filters),
+				"scope":  scopeNote(filters, deps.scope),
+				"window": resolvedWindow(filters),
 			}
+			setLogsLink(out, filters)
+			var groupedProviders []string
 			for _, metric := range metrics {
 				switch metric {
 				case "summary":
@@ -390,6 +407,9 @@ func queryMetricsTool() Tool {
 						return nil, fmt.Errorf("stats query failed: %w", err)
 					}
 					out["summary"] = stats
+					if link := failuresLink(filters, stats.TotalRequests, stats.SuccessRate); link != "" {
+						out["failures_link"] = link
+					}
 					if compareToPrevious {
 						trend, err := previousPeriodTrend(ctx, deps, filters, stats)
 						if err != nil {
@@ -416,6 +436,7 @@ func queryMetricsTool() Tool {
 							return nil, fmt.Errorf("token histogram failed: %w", err)
 						}
 						out["tokens"] = result
+						groupedProviders = append(groupedProviders, result.Providers...)
 						continue
 					}
 					result, err := deps.logManager.GetTokenHistogram(ctx, filters, bucket)
@@ -430,6 +451,7 @@ func queryMetricsTool() Tool {
 							return nil, fmt.Errorf("cost histogram failed: %w", err)
 						}
 						out["cost"] = result
+						groupedProviders = append(groupedProviders, result.Providers...)
 						continue
 					}
 					result, err := deps.logManager.GetCostHistogram(ctx, filters, bucket)
@@ -444,6 +466,7 @@ func queryMetricsTool() Tool {
 							return nil, fmt.Errorf("latency histogram failed: %w", err)
 						}
 						out["latency"] = result
+						groupedProviders = append(groupedProviders, result.Providers...)
 						continue
 					}
 					result, err := deps.logManager.GetLatencyHistogram(ctx, filters, bucket)
@@ -458,6 +481,7 @@ func queryMetricsTool() Tool {
 							return nil, fmt.Errorf("throughput histogram failed: %w", err)
 						}
 						out["throughput"] = result
+						groupedProviders = append(groupedProviders, result.Providers...)
 						continue
 					}
 					result, err := deps.logManager.GetThroughputHistogram(ctx, filters, bucket)
@@ -473,9 +497,86 @@ func queryMetricsTool() Tool {
 					return nil, fmt.Errorf("unknown metric %q; supported: summary, requests, tokens, cost, latency, throughput", metric)
 				}
 			}
+			// No per-provider histogram ran - "summary" alone, the natural ask for
+			// "which provider fails most". Without this the grouping was dropped
+			// silently: one deployment-wide summary came back under a request for
+			// a per-provider split. The histogram is read only for its provider
+			// list; its buckets are not returned, since nobody asked for cost.
+			if byProvider && len(groupedProviders) == 0 {
+				discovered, err := deps.logManager.GetProviderCostHistogram(ctx, filters, providerBucket)
+				if err != nil {
+					return nil, fmt.Errorf("provider lookup failed: %w", err)
+				}
+				groupedProviders = discovered.Providers
+			}
+			if len(groupedProviders) > 0 {
+				totals, err := providerTotals(ctx, deps, filters, groupedProviders)
+				if err != nil {
+					return nil, fmt.Errorf("per-provider totals failed: %w", err)
+				}
+				out["provider_totals"] = totals
+			}
 			return out, nil
 		},
 	}
+}
+
+// providerTotal is one provider's exact aggregate over the filtered window.
+type providerTotal struct {
+	TotalRequests  int64   `json:"total_requests"`
+	TotalCost      float64 `json:"total_cost"`
+	TotalTokens    int64   `json:"total_tokens"`
+	SuccessRate    float64 `json:"success_rate"`
+	AverageLatency float64 `json:"average_latency_ms"`
+	// Link opens this provider's requests under the tool's own filters.
+	Link string `json:"link,omitempty"`
+}
+
+// providerTotals reads each provider's exact totals over the filtered window,
+// one GetStats per provider, run concurrently.
+//
+// The grouped buckets cannot stand in for these. They are aligned to the
+// bucket size, so the first starts before the window, and on Postgres they are
+// read from whole matview hours; GetStats reads the partial hours at each edge
+// from the raw table, which is what the dashboard's total does. Left to add
+// the buckets up itself, the model dropped the first one as out of range and
+// reported a provider's spend short of the dashboard's number for the same
+// window.
+func providerTotals(ctx context.Context, deps *ToolDeps, filters *logstore.SearchFilters, providers []string) (map[string]providerTotal, error) {
+	slices.Sort(providers)
+	providers = slices.Compact(providers)
+	stats := make([]*logstore.SearchStats, len(providers))
+	errs := make([]error, len(providers))
+	var wg sync.WaitGroup
+	for index, provider := range providers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// Each provider came out of the same filtered query, so narrowing
+			// to it never leaves the scope the buckets covered.
+			narrowed := *filters
+			narrowed.Providers = []string{provider}
+			stats[index], errs[index] = deps.logManager.GetStats(ctx, &narrowed)
+		}()
+	}
+	wg.Wait()
+	totals := make(map[string]providerTotal, len(providers))
+	for index, provider := range providers {
+		if errs[index] != nil {
+			return nil, errs[index]
+		}
+		narrowed := *filters
+		narrowed.Providers = []string{provider}
+		totals[provider] = providerTotal{
+			TotalRequests:  stats[index].TotalRequests,
+			TotalCost:      stats[index].TotalCost,
+			TotalTokens:    stats[index].TotalTokens,
+			SuccessRate:    stats[index].SuccessRate,
+			AverageLatency: stats[index].AverageLatency,
+			Link:           logsViewLink(&narrowed),
+		}
+	}
+	return totals, nil
 }
 
 // previousPeriodTrend fetches the period immediately preceding the filtered
@@ -654,7 +755,10 @@ func summarizeTokensHistogram(result *logstore.TokenHistogramResult) map[string]
 // summarizeCostHistogram drops the per-bucket by_model breakdown rather than
 // summarizing it: a per-model series-of-series is exactly the kind of nested
 // detail a shape-only summary exists to avoid, and the top-level model list is
-// already cheap and already returned separately.
+// already cheap and already returned separately. The names come without
+// amounts, so per_model_cost says where the amounts are: asked for model-wise
+// spend, a model that saw names with no numbers beside them concluded the
+// breakdown did not exist.
 func summarizeCostHistogram(result *logstore.CostHistogramResult) map[string]any {
 	n := len(result.Buckets)
 	cost := make([]float64, n)
@@ -664,6 +768,7 @@ func summarizeCostHistogram(result *logstore.CostHistogramResult) map[string]any
 	return map[string]any{
 		"total_cost":          summarizeSeries(cost, true),
 		"models":              result.Models,
+		"per_model_cost":      "not in this result - call query_model_performance for each model's total, input and output cost",
 		"buckets":             n,
 		"bucket_size_seconds": result.BucketSizeSeconds,
 	}
@@ -745,9 +850,17 @@ var rankingDimensions = []struct {
 	{logstore.RankingDimensionProject, "the project on the request or its virtual key"},
 	{logstore.RankingDimensionApp, "the client app that sent the request"},
 	{logstore.RankingDimensionUserAgent, "the raw User-Agent string"},
+	{logstore.RankingDimensionRoutingRule, "the routing rule that handled the request, by name - requests no rule handled are left out, so compare against count_logs for the share"},
+	{logstore.RankingDimensionRoutingEngine, "the routing engines a request passed through, e.g. routing-rule, governance, loadbalancing - one request can pass through several, so totals can exceed the request count"},
+	{logstore.RankingDimensionSelectedKey, "the provider API key Bifrost sent the request with, by name - not a virtual key; pair with status error to find a failing key"},
+	{logstore.RankingDimensionAlias, "the model alias the request was addressed to before Bifrost resolved it"},
+	{logstore.RankingDimensionComplexityTier, "the tier the complexity router assigned: SIMPLE, MEDIUM or COMPLEX - only requests it saw"},
+	{logstore.RankingDimensionComplexityMechanism, "how the complexity tier was decided, e.g. semantic, llm, session"},
+	{logstore.RankingDimensionToolCallName, "the function names responses called - one request can call several, so totals can exceed the request count"},
 	{logstore.RankingDimensionErrorType, "the provider's error classification on a failed request, e.g. rate_limit_error, invalid_request_error, timeout - filter to status error first, or every non-error request is silently excluded rather than shown as a false zero"},
 	{logstore.RankingDimensionErrorCode, "the provider's finer-grained error code on a failed request, e.g. rate_limited, context_length_exceeded - same status-error caveat as error_type"},
-	{logstore.RankingDimensionFailReason, "why a retry attempt failed, e.g. rate_limit_error, authentication_error, billing_error - one request can contribute more than one (one per failed attempt before it succeeded or gave up), so totals here can exceed the request count"},
+	{logstore.RankingDimensionStatusCode, "the HTTP status a failed request came back with, e.g. 400, 429, 529 - populated on every failed request, unlike error_code which many providers leave empty; same status-error caveat as error_type"},
+	{logstore.RankingDimensionFailReason, "why a retry attempt failed, e.g. rate_limit_error, authentication_error, billing_error - one request can contribute more than one (one per failed attempt before it succeeded or gave up), so totals here can exceed the request count It counts retry attempts, including attempts on requests that went on to succeed, so it answers a different question from error_type: never compare its counts with error_type's, and never use it to check or correct an error_type count."},
 	{logstore.RankingDimensionGuardrailRule, "which named guardrail rule fired - one request can trigger more than one rule, same over-count caveat as fail_reason"},
 	{logstore.RankingDimensionGuardrailAction, "what a guardrail did (e.g. block, redact) when it fired - same over-count caveat as fail_reason"},
 }
@@ -768,6 +881,7 @@ func queryUsageByTool() Tool {
 		name: "query_usage_by",
 		description: "Rank a dimension by usage - cost, requests and tokens - over a window, with a trend against the immediately preceding period of equal length. " +
 			"Answers 'who is spending the most', 'which team spends the most', 'which key is burning the budget', 'is X up or down'. " +
+			"It is also the failure breakdown: dimension error_type, status_code or error_code with filters.status [\"error\"] counts every failed request by kind, exactly rather than from a sample of rows - the tool for 'what errors are we seeing', 'why are requests failing', 'what caused the failure spike'. To fetch the requests behind one row, pass that row's id to query_logs as error_types, status_codes or error_codes. " +
 			"Each ranking row already carries a trend block (has_previous_period, requests_trend, tokens_trend, cost_trend); read it rather than calling this twice to check direction. " +
 			"Dimensions: " + strings.Join(describedValues, "; ") + ". " +
 			"Note: a per-entity time series is not available for any dimension; to see one, filter by the relevant id(s) and call query_metrics, which returns one combined series.",
@@ -801,12 +915,11 @@ func queryUsageByTool() Tool {
 			if err != nil {
 				return nil, fmt.Errorf("%s rankings failed: %w", dimension, err)
 			}
-			return map[string]any{
-				"rankings":  result,
-				"scope":     scopeNote(filters, deps.scope),
-				"logs_link": logsViewLink(filters),
-				"window":    resolvedWindow(filters),
-			}, nil
+			return setLogsLink(map[string]any{
+				"rankings": linkDimensionRankings(result, filters, dimension),
+				"scope":    scopeNote(filters, deps.scope),
+				"window":   resolvedWindow(filters),
+			}, filters), nil
 		},
 	}
 }
@@ -840,8 +953,10 @@ func quotedJoin(values []string) string {
 func queryModelsTool() Tool {
 	return Tool{
 		name: "query_model_performance",
-		description: "Rank models by usage and, optionally, compare provider performance (latency percentiles and throughput). " +
-			"Answers 'which model do we use most', 'which provider is slowest', 'did p99 regress'.",
+		description: "Rank models by usage and spend and, optionally, compare provider performance (latency percentiles and throughput). " +
+			"Each model row carries requests, tokens, success rate, latency, throughput and total cost split into input cost, output cost and additional cost. " +
+			"This is the tool for model-wise spend and per-model cost - query_metrics has no per-model split. " +
+			"Answers 'model-wise spend', 'which model costs the most', 'which model do we use most', 'which provider is slowest', 'did p99 regress'.",
 		schemaJSON: `{
   "type": "object",
   "properties": {
@@ -868,11 +983,11 @@ func queryModelsTool() Tool {
 				return nil, fmt.Errorf("model rankings failed: %w", err)
 			}
 			out := map[string]any{
-				"models":    rankings,
-				"scope":     scopeNote(filters, deps.scope),
-				"logs_link": logsViewLink(filters),
-				"window":    resolvedWindow(filters),
+				"models": linkModelRankings(rankings, filters),
+				"scope":  scopeNote(filters, deps.scope),
+				"window": resolvedWindow(filters),
 			}
+			setLogsLink(out, filters)
 
 			includePerformance, err := boolArg(args, "include_performance")
 			if err != nil {
@@ -923,10 +1038,11 @@ func queryModelsTool() Tool {
 func describeFilterSpaceTool() Tool {
 	return Tool{
 		name: "describe_filter_space",
-		description: "Report who is asking, what teams/customers/business units they could mean, and the real values that appear in this deployment's logs - models, apps, stop reasons, virtual keys - up to 50 of each, not necessarily every one that exists. " +
+		description: "Report who is asking, what teams/customers/business units they could mean, and the real values that appear in this deployment's logs - models, apps, stop reasons, virtual keys, routing rules, provider keys, aliases, routing engines, tool call names and metadata keys - up to 50 of each, not necessarily every one that exists. " +
 			"Call this before filtering by a name you are not certain about: guessing a model or key name returns an empty result that looks like a real finding. " +
 			"If a deployment has more than 50 of something, this list is a sample, not the full set - pass search to narrow to the specific value you need rather than treating an absence here as proof it does not exist. " +
-			"Also call it whenever a question about usage, spend or performance does not say whose traffic it means - with a known user, their own traffic is the default; without one there is no default, so ask which team, customer or business unit is meant before querying.",
+			"Also call it whenever a question about usage, spend or performance does not say whose traffic it means - with a known user, their own traffic is the default; without one there is no default, so ask. " +
+			"ask_user accepts at most 8 options, well under what teams, customers and business units here can add up to together, so narrow before asking: use any wording already in the question to filter this tool's results down to a short list, or, if the question gives no hint which of team, customer or business unit it means, ask that first and only list one dimension's values (still narrowed to 8) once they answer. Never pass every team, customer and business unit into one ask_user call.",
 		schemaJSON: `{
   "type": "object",
   "properties": {
@@ -954,7 +1070,10 @@ func describeFilterSpaceTool() Tool {
 					if deps.scope.HasIdentity {
 						return "the person asking"
 					}
-					return "none - ask which team, customer or business unit is meant"
+					// Read at the moment the model decides how to ask, so it names
+					// the tool: "ask which team..." alone came back as that same
+					// sentence in prose, with nothing to click.
+					return "none - nobody is identified. If you need to ask whose traffic is meant, ask through " + AskUserTool + " with options from the teams, customers or business_units below (one dimension at a time), never in prose"
 				}(),
 			}
 			if deps.scope.HasIdentity {
@@ -976,6 +1095,57 @@ func describeFilterSpaceTool() Tool {
 			out["models"] = models
 			out["apps"] = apps
 			out["stop_reasons"] = stopReasons
+
+			// The routing values, from the lookups behind the Logs page's own
+			// filter dropdowns. Run together: each is an independent indexed read.
+			var (
+				routingRules, providerKeys             []KeyPair
+				aliases, routingEngines, toolCallNames []string
+				metadata                               map[string][]string
+				routingErrs                            [6]error
+				routingWG                              sync.WaitGroup
+			)
+			for index, lookup := range []func() error{
+				func() (err error) {
+					routingRules, err = deps.logManager.GetAvailableRoutingRules(ctx, limit, query)
+					return
+				},
+				func() (err error) {
+					providerKeys, err = deps.logManager.GetAvailableSelectedKeys(ctx, limit, query)
+					return
+				},
+				func() (err error) { aliases, err = deps.logManager.GetAvailableAliases(ctx, limit, query); return },
+				func() (err error) {
+					routingEngines, err = deps.logManager.GetAvailableRoutingEngines(ctx, limit, query)
+					return
+				},
+				func() (err error) {
+					toolCallNames, err = deps.logManager.GetAvailableToolCallNames(ctx, limit, query)
+					return
+				},
+				func() (err error) {
+					metadata, err = deps.logManager.GetAvailableMetadataKeys(ctx, limit, query)
+					return
+				},
+			} {
+				routingWG.Add(1)
+				go func() {
+					defer routingWG.Done()
+					routingErrs[index] = lookup()
+				}()
+			}
+			routingWG.Wait()
+			for _, err := range routingErrs {
+				if err != nil {
+					return nil, fmt.Errorf("could not list routing values: %w", err)
+				}
+			}
+			out["routing_rules"] = routingRules
+			out["provider_keys"] = providerKeys
+			out["aliases"] = aliases
+			out["routing_engines"] = routingEngines
+			out["tool_call_names"] = toolCallNames
+			out["metadata"] = metadata
 
 			// virtual_keys, teams, customers and business_units are the distinct-value
 			// lookups the Logs filter bar uses - one indexed DISTINCT each, run

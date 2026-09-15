@@ -445,6 +445,30 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 			}
 		}
 	}
+	// Filtered with the same expression the error_type and error_code rankings
+	// group by, so a ranking row and the rows behind it can never disagree about
+	// what a request's error type is. The values are bound, not spliced; only the
+	// constant column and key names reach the SQL text.
+	for _, errorFilter := range []struct {
+		field  string
+		values []string
+	}{{"type", filters.ErrorTypes}, {"code", filters.ErrorCodes}} {
+		if len(errorFilter.values) == 0 {
+			continue
+		}
+		if expr, ok := jsonObjectFieldExpr(s.db.Dialector.Name(), "error_details", "error", errorFilter.field); ok {
+			baseQuery = baseQuery.Where(expr+" IN ?", errorFilter.values)
+		}
+	}
+	if len(filters.StatusCodes) > 0 {
+		if expr, ok := jsonTopLevelNumberExpr(s.db.Dialector.Name(), "error_details", "status_code"); ok {
+			codes := make([]string, len(filters.StatusCodes))
+			for i, code := range filters.StatusCodes {
+				codes[i] = strconv.Itoa(code)
+			}
+			baseQuery = baseQuery.Where(expr+" IN ?", codes)
+		}
+	}
 	if filters.ContentSearch != "" {
 		dialect := s.db.Dialector.Name()
 		if dialect == "postgres" {
@@ -3026,6 +3050,9 @@ func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFi
 	if _, isJSONField := jsonFieldDimensions[dimension]; isJSONField {
 		return s.GetJSONFieldDimensionRankings(ctx, filters, dimension)
 	}
+	if _, isCommaList := commaListDimensions[dimension]; isCommaList {
+		return s.GetCommaListDimensionRankings(ctx, filters, dimension)
+	}
 
 	idCol, nameCol, ok := DimensionColumnDef(dimension)
 	if !ok {
@@ -3045,7 +3072,7 @@ func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFi
 	// cost-histogram totals shown on the same dashboard. Bucketed dimensions
 	// always use the raw path — the matview reader has neither an Unassigned
 	// bucket nor the array columns the fan-out needs.
-	if !src.Bucketed && s.db.Dialector.Name() == "postgres" && s.canUseMatViewForFreshAggregate(filters) {
+	if !src.Bucketed && !dimensionColumns[dimension].RawOnly && s.db.Dialector.Name() == "postgres" && s.canUseMatViewForFreshAggregate(filters) {
 		if res, err := s.getDimensionRankingsFromMatView(ctx, filters, dimension); !s.fallBackToRaw(err) {
 			return res, err
 		}

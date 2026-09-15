@@ -1,11 +1,13 @@
 package warp
 
+import "unicode/utf8"
+
 // fold assembles a turn out of its events.
 //
 // Both transports run the same loop and differ only in their sink: SSE writes
 // each event as a frame, JSON waits for the end. What they share is this
-// reduction - deltas concatenated into an answer, tool calls paired start to end,
-// the terminal frame recorded - so it lives in one place rather than being
+// reduction - deltas concatenated into an answer, tool calls paired start to end
+// and placed in that answer, the terminal frame recorded - so it lives in one place rather than being
 // maintained twice.
 type fold struct {
 	response ChatResponse
@@ -24,7 +26,7 @@ func (f *fold) apply(event Event) {
 	case EventDelta:
 		f.answer = append(f.answer, event.Delta...)
 	case EventToolCallStart:
-		f.pending[event.ToolID] = ChatToolCall{Name: event.ToolName, Arguments: event.Arguments}
+		f.pending[event.ToolID] = ChatToolCall{Name: event.ToolName, Arguments: event.Arguments, TextOffset: utf8.RuneCount(f.answer)}
 	case EventToolCallEnd:
 		call := f.pending[event.ToolID]
 		call.Name, call.DurationMs, call.Failed = event.ToolName, event.DurationMs, event.Failed
@@ -46,12 +48,18 @@ func (f *fold) apply(event Event) {
 		f.response.Question = event.Question
 	case EventError:
 		f.response.Error = &ChatError{Code: event.Code, Message: event.Message}
+		// An error frame is terminal and carries what the turn cost up to it.
+		// Read only off a done frame, a failed turn was filed as free - and it
+		// is the turn whose cost someone goes looking for.
+		if event.Usage != nil {
+			f.response.Usage = event.Usage
+		}
 	}
 }
 
 // result returns the turn as assembled so far.
 func (f *fold) result() ChatResponse {
 	response := f.response
-	response.Answer = string(f.answer)
+	response.Answer = sanitizeAnswerLinks(string(f.answer), nil)
 	return response
 }

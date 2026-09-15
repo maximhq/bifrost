@@ -94,11 +94,6 @@ interface WarpFormState {
 	maxIterations: number;
 	requestTimeoutSeconds: number;
 	historyRetentionDays: number;
-	// temperatureEnabled decides whether temperature is sent at all - the value
-	// itself is meaningless while disabled, but is kept around rather than
-	// reset, so toggling back on restores what was there instead of resetting
-	// to the default.
-	temperatureEnabled: boolean;
 	// "" is a cleared input, distinct from 0 - WARP_MIN_TEMPERATURE is 0, so
 	// coercing a blank field straight to a number would silently read as a
 	// valid, deliberately-chosen 0 instead of "still typing".
@@ -125,7 +120,6 @@ const EMPTY_FORM: WarpFormState = {
 	maxIterations: DEFAULT_MAX_ITERATIONS,
 	requestTimeoutSeconds: DEFAULT_TIMEOUT_SECONDS,
 	historyRetentionDays: DEFAULT_HISTORY_RETENTION_DAYS,
-	temperatureEnabled: false,
 	temperature: DEFAULT_TEMPERATURE,
 	reasoningEffort: "",
 	systemPromptSuffix: "",
@@ -171,6 +165,16 @@ export default function WarpView() {
 	const [finishedBackfill, setFinishedBackfill] = useState<WarpBackfillJob | null>(null);
 	const [backfillStart, setBackfillStart] = useState(() => localDateTimeValue(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)));
 	const [backfillEnd, setBackfillEnd] = useState(() => localDateTimeValue(new Date()));
+	// Full-precision counterparts of backfillStart/backfillEnd, used only for
+	// comparing against backfillStatus.start_time/end_time. localDateTimeValue
+	// truncates to minute precision for the <input type="datetime-local">
+	// pickers, so comparing the picker strings directly against the server's
+	// timestamps (which can carry seconds/ms) would make a job's own frozen
+	// window look like it never matches itself right after hydration. These
+	// track the real endpoints: seeded from the server's own timestamps on
+	// hydration, or from the picker's edit otherwise.
+	const [backfillStartCompare, setBackfillStartCompare] = useState<string | null>(null);
+	const [backfillEndCompare, setBackfillEndCompare] = useState<string | null>(null);
 
 	const providers = providersData ?? [];
 	const embeddingProviders = providers.filter(supportsWarpEmbedding);
@@ -265,6 +269,44 @@ export default function WarpView() {
 		}
 	}, [backfillStatus?.status]);
 
+	// A failed or cancelled run that got partway through the window can be
+	// resumed from its checkpoint instead of rescanning from the start - see
+	// the `restart` flag on startWarpBackfill. Resuming only makes sense while
+	// the selected dates still match the failed job's frozen window: the
+	// server only reuses a checkpoint on an exact start/end match
+	// (BuildBackfillJobMeta), so once the picker has moved off that window,
+	// pressing "resume" would silently start a fresh scan under a label that
+	// still says otherwise. Compares against backfillStartCompare/EndCompare
+	// (full server precision), not the minute-truncated picker strings - see
+	// their declaration above.
+	const canResumeBackfill =
+		!isBackfillActive &&
+		(backfillStatus?.status === "failed" || backfillStatus?.status === "cancelled") &&
+		backfillStatus.scanned > 0 &&
+		backfillStatus.scanned < backfillStatus.total &&
+		!!backfillStatus.start_time &&
+		!!backfillStatus.end_time &&
+		!!backfillStartCompare &&
+		!!backfillEndCompare &&
+		new Date(backfillStartCompare).getTime() === new Date(backfillStatus.start_time).getTime() &&
+		new Date(backfillEndCompare).getTime() === new Date(backfillStatus.end_time).getTime();
+	// Whether the currently selected window is the exact one a completed job
+	// already finished - a frozen window that has already fully scanned can't
+	// pick up more logs by running again, so offering an active "Start
+	// backfill" button there just invites a pointless re-embed of the same
+	// rows. Compares against backfillStartCompare/EndCompare (full server
+	// precision), not the minute-truncated picker strings - see their
+	// declaration above.
+	const backfillWindowAlreadyDone =
+		!isBackfillActive &&
+		backfillStatus?.status === "completed" &&
+		!!backfillStatus.start_time &&
+		!!backfillStatus.end_time &&
+		!!backfillStartCompare &&
+		!!backfillEndCompare &&
+		new Date(backfillStartCompare).getTime() === new Date(backfillStatus.start_time).getTime() &&
+		new Date(backfillEndCompare).getTime() === new Date(backfillStatus.end_time).getTime();
+
 	// One hydration point. Everything the form shows comes from here.
 	useEffect(() => {
 		if (!config) return;
@@ -277,10 +319,10 @@ export default function WarpView() {
 			maxIterations: config.max_iterations || DEFAULT_MAX_ITERATIONS,
 			requestTimeoutSeconds: config.request_timeout_seconds || DEFAULT_TIMEOUT_SECONDS,
 			historyRetentionDays: config.history_retention_days || DEFAULT_HISTORY_RETENTION_DAYS,
-			// config.temperature is absent for "unset", not 0 - undefined and null
-			// both read as "not configured" here, since JSON only sends one of them
-			// but either could arrive depending on what wrote the row.
-			temperatureEnabled: config.temperature !== undefined && config.temperature !== null,
+			// config.temperature is absent for "unset", not 0, and also for a row
+			// saved before this field was always sent - undefined and null both fall
+			// back to the default here, since JSON only sends one of them but either
+			// could arrive depending on what wrote the row.
 			temperature: config.temperature ?? DEFAULT_TEMPERATURE,
 			reasoningEffort: config.reasoning_effort ?? "",
 			systemPromptSuffix: config.system_prompt_suffix ?? "",
@@ -293,6 +335,28 @@ export default function WarpView() {
 			searchLimit: config.semantic_search_limit || DEFAULT_SEARCH_LIMIT,
 		});
 	}, [config]);
+
+	// The date pickers default to "last 7 days" at mount time, which no longer
+	// matches a finished job's frozen window after a reload (the defaults
+	// recompute against the new "now"). Seed them from that job's own window
+	// once it's known - for any terminal status, not just a resumable one -
+	// so the pickers reflect what was actually last run: a failed/cancelled
+	// job resumes from its checkpoint instead of silently mismatching and
+	// falling back to a fresh scan, and a completed job is correctly flagged
+	// as already covering this window (see backfillWindowAlreadyDone) rather
+	// than looking identical to a window nothing has ever touched. Keyed on
+	// the job id so a later manual edit sticks.
+	useEffect(() => {
+		// Narrowed on id, not start_time: the status is a union and the idle arm
+		// carries neither timestamp, so id is what tells the two apart.
+		if (isBackfillActive || !backfillStatus?.id) return;
+		if (!backfillStatus.start_time || !backfillStatus.end_time) return;
+		setBackfillStart(localDateTimeValue(new Date(backfillStatus.start_time)));
+		setBackfillEnd(localDateTimeValue(new Date(backfillStatus.end_time)));
+		setBackfillStartCompare(backfillStatus.start_time);
+		setBackfillEndCompare(backfillStatus.end_time);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [backfillStatus?.id, isBackfillActive]);
 
 	const update = <K extends keyof WarpFormState>(key: K, value: WarpFormState[K]) => setForm((current) => ({ ...current, [key]: value }));
 
@@ -309,7 +373,7 @@ export default function WarpView() {
 			form.maxIterations !== (config.max_iterations || DEFAULT_MAX_ITERATIONS) ||
 			form.requestTimeoutSeconds !== (config.request_timeout_seconds || DEFAULT_TIMEOUT_SECONDS) ||
 			form.historyRetentionDays !== (config.history_retention_days || DEFAULT_HISTORY_RETENTION_DAYS) ||
-			(form.temperatureEnabled ? form.temperature : undefined) !== (config.temperature ?? undefined) ||
+			form.temperature !== (config.temperature ?? DEFAULT_TEMPERATURE) ||
 			form.reasoningEffort !== (config.reasoning_effort ?? "") ||
 			form.systemPromptSuffix !== (config.system_prompt_suffix ?? "") ||
 			form.embeddingProvider !== (config.embedding_provider ?? "") ||
@@ -334,9 +398,7 @@ export default function WarpView() {
 	// typed a number, with no way back to default retention from the form.
 	const retentionError = validateWarpRetentionDays(form.historyRetentionDays);
 	const retentionInvalid = retentionError !== true;
-	const temperatureInvalid =
-		form.temperatureEnabled &&
-		(form.temperature === "" || form.temperature < WARP_MIN_TEMPERATURE || form.temperature > WARP_MAX_TEMPERATURE);
+	const temperatureInvalid = form.temperature === "" || form.temperature < WARP_MIN_TEMPERATURE || form.temperature > WARP_MAX_TEMPERATURE;
 	const embeddingFields: WarpEmbeddingFields = form;
 	const embeddingValidation = validateWarpEmbedding(embeddingFields, form.enabled, config?.vector_store_connected ?? false);
 	const savedEmbeddingFields: WarpEmbeddingFields = {
@@ -377,7 +439,7 @@ export default function WarpView() {
 			// invalid (checked above) already blocks a cleared field from reaching
 			// here, but the type still allows "" - narrow it explicitly rather than
 			// send a value the API layer has to reject on its own.
-			temperature: form.temperatureEnabled && form.temperature !== "" ? form.temperature : undefined,
+			temperature: form.temperature !== "" ? form.temperature : undefined,
 			reasoning_effort: form.reasoningEffort || undefined,
 			system_prompt_suffix: form.systemPromptSuffix,
 			embedding_provider: form.embeddingProvider.trim(),
@@ -396,21 +458,30 @@ export default function WarpView() {
 		}
 	};
 
-	const onStartBackfill = async () => {
+	const onStartBackfill = async (restart = false) => {
 		if (!backfillStart || !backfillEnd || new Date(backfillStart) >= new Date(backfillEnd)) {
 			toast.error("Choose a valid backfill time range.");
 			return;
 		}
+		// Resuming a checkpoint only works if the request's window matches the
+		// server's stored one exactly (BuildBackfillJobMeta) - the picker's
+		// minute-truncated values can't be trusted for that, so a genuine resume
+		// sends back the frozen full-precision timestamps canResumeBackfill
+		// already confirmed match backfillStatus.start_time/end_time. A fresh
+		// scan - either explicitly restarted or over a window with nothing to
+		// resume - has no such frozen window and uses what the operator picked.
+		const resuming = !restart && canResumeBackfill && !!backfillStartCompare && !!backfillEndCompare;
 		try {
 			const status = await startWarpBackfill({
-				start_time: new Date(backfillStart).toISOString(),
-				end_time: new Date(backfillEnd).toISOString(),
+				start_time: resuming ? backfillStartCompare : new Date(backfillStart).toISOString(),
+				end_time: resuming ? backfillEndCompare : new Date(backfillEnd).toISOString(),
+				restart,
 			}).unwrap();
 			// A new run replaces the last one's result, so the panel never shows a
 			// finished job beside a running one.
 			setFinishedBackfill(null);
 			setActiveBackfillID(status.id ?? null);
-			toast.success("Warp embedding backfill started.");
+			toast.success(restart ? "Warp embedding backfill restarted from the beginning." : "Warp embedding backfill started.");
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
@@ -928,45 +999,32 @@ export default function WarpView() {
 						</div>
 
 						<div className="space-y-2 rounded-sm border p-4">
-							<div className="flex items-start justify-between gap-4">
-								<div className="space-y-0.5">
-									<Label htmlFor="warp-temperature">Temperature</Label>
-									<p className="text-muted-foreground text-sm">
-										Overrides the model&apos;s sampling temperature. Off leaves it unset, so the provider applies its own default - most
-										providers default near 1. Lower is more consistent answer to answer; a tool that reports numbers often wants that.
-									</p>
-								</div>
-								<Switch
-									id="warp-temperature-enabled"
-									data-testid="warp-temperature-enabled-switch"
-									checked={form.temperatureEnabled}
-									onCheckedChange={(checked) => update("temperatureEnabled", checked)}
-									disabled={!hasSettingsUpdateAccess}
-								/>
+							<div className="space-y-0.5">
+								<Label htmlFor="warp-temperature">Temperature</Label>
+								<p className="text-muted-foreground text-sm">
+									The model&apos;s sampling temperature, from {WARP_MIN_TEMPERATURE} to {WARP_MAX_TEMPERATURE}. Most providers default near{" "}
+									{DEFAULT_TEMPERATURE}. Lower is more consistent answer to answer; a tool that reports numbers often wants that.
+								</p>
 							</div>
-							{form.temperatureEnabled && (
-								<>
-									<Input
-										id="warp-temperature"
-										type="number"
-										min={WARP_MIN_TEMPERATURE}
-										max={WARP_MAX_TEMPERATURE}
-										step={0.1}
-										data-testid="warp-temperature-input"
-										className={temperatureInvalid ? "border-destructive" : ""}
-										value={form.temperature}
-										onChange={(event) => {
-											const raw = event.target.value;
-											update("temperature", raw === "" ? "" : Number(raw));
-										}}
-										disabled={!hasSettingsUpdateAccess}
-									/>
-									{temperatureInvalid && (
-										<p className="text-destructive text-sm">
-											Must be between {WARP_MIN_TEMPERATURE} and {WARP_MAX_TEMPERATURE}
-										</p>
-									)}
-								</>
+							<Input
+								id="warp-temperature"
+								type="number"
+								min={WARP_MIN_TEMPERATURE}
+								max={WARP_MAX_TEMPERATURE}
+								step={0.1}
+								data-testid="warp-temperature-input"
+								className={temperatureInvalid ? "border-destructive" : ""}
+								value={form.temperature}
+								onChange={(event) => {
+									const raw = event.target.value;
+									update("temperature", raw === "" ? "" : Number(raw));
+								}}
+								disabled={!hasSettingsUpdateAccess}
+							/>
+							{temperatureInvalid && (
+								<p className="text-destructive text-sm">
+									Must be between {WARP_MIN_TEMPERATURE} and {WARP_MAX_TEMPERATURE}
+								</p>
 							)}
 						</div>
 
@@ -1053,7 +1111,10 @@ export default function WarpView() {
 										type="datetime-local"
 										data-testid="warp-backfill-start-input"
 										value={backfillStart}
-										onChange={(event) => setBackfillStart(event.target.value)}
+										onChange={(event) => {
+											setBackfillStart(event.target.value);
+											setBackfillStartCompare(event.target.value ? new Date(event.target.value).toISOString() : null);
+										}}
 										disabled={isBackfillActive || !hasSettingsUpdateAccess}
 									/>
 								</div>
@@ -1064,7 +1125,10 @@ export default function WarpView() {
 										type="datetime-local"
 										data-testid="warp-backfill-end-input"
 										value={backfillEnd}
-										onChange={(event) => setBackfillEnd(event.target.value)}
+										onChange={(event) => {
+											setBackfillEnd(event.target.value);
+											setBackfillEndCompare(event.target.value ? new Date(event.target.value).toISOString() : null);
+										}}
 										disabled={isBackfillActive || !hasSettingsUpdateAccess}
 									/>
 								</div>
@@ -1089,6 +1153,7 @@ export default function WarpView() {
 									<p className="text-muted-foreground text-xs">
 										{shownBackfill.indexed} indexed · {shownBackfill.skipped} skipped · {shownBackfill.failed} failed
 									</p>
+									{shownBackfill.message && <p className="text-muted-foreground text-xs">{shownBackfill.message}</p>}
 									{shownBackfill.last_error && <p className="text-destructive text-xs">Latest error: {shownBackfill.last_error}</p>}
 								</div>
 							)}
@@ -1107,7 +1172,7 @@ export default function WarpView() {
 								</p>
 							)}
 
-							<div className="flex justify-end">
+							<div className="flex items-center justify-end gap-2">
 								{isBackfillActive ? (
 									<Button
 										type="button"
@@ -1119,29 +1184,60 @@ export default function WarpView() {
 										{isCancellingBackfill && <Loader2 className="mr-2 h-4 w-4 animate-spin" />} Cancel backfill
 									</Button>
 								) : (
-									<Button
-										type="button"
-										onClick={onStartBackfill}
-										disabled={
-											isStartingBackfill ||
-											// Until the status request lands, "no job is running" is a
-											// guess. Starting on that guess is a guaranteed 409.
-											isBackfillStatusLoading ||
-											isBackfillStatusFetching ||
-											isBackfillStatusError ||
-											!config?.configured ||
-											!config.vector_store_connected ||
-											!hasSettingsUpdateAccess ||
-											hasChanges
-										}
-										data-testid="warp-backfill-start-btn"
-									>
-										{isStartingBackfill && <Loader2 className="mr-2 h-4 w-4 animate-spin" />} Start backfill
-									</Button>
+									<>
+										{canResumeBackfill && (
+											<Button
+												type="button"
+												variant="outline"
+												onClick={() => onStartBackfill(true)}
+												disabled={
+													isStartingBackfill ||
+													// Until the status request lands, "no job is running" is a
+													// guess. Starting on that guess is a guaranteed 409.
+													isBackfillStatusLoading ||
+													isBackfillStatusFetching ||
+													isBackfillStatusError ||
+													!config?.configured ||
+													!config.vector_store_connected ||
+													!hasSettingsUpdateAccess ||
+													hasChanges
+												}
+												data-testid="warp-backfill-restart-btn"
+											>
+												Start fresh instead
+											</Button>
+										)}
+										<Button
+											type="button"
+											onClick={() => onStartBackfill(false)}
+											disabled={
+												isStartingBackfill ||
+												// Until the status request lands, "no job is running" is a
+												// guess. Starting on that guess is a guaranteed 409.
+												isBackfillStatusLoading ||
+												isBackfillStatusFetching ||
+												isBackfillStatusError ||
+												!config?.configured ||
+												!config.vector_store_connected ||
+												!hasSettingsUpdateAccess ||
+												hasChanges ||
+												backfillWindowAlreadyDone
+											}
+											data-testid="warp-backfill-start-btn"
+										>
+											{isStartingBackfill && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+											{canResumeBackfill ? `Resume backfill (${backfillStatus.scanned}/${backfillStatus.total})` : "Start backfill"}
+										</Button>
+									</>
 								)}
 							</div>
 							{hasChanges && (
 								<p className="text-muted-foreground text-right text-xs">Save configuration changes before starting a backfill.</p>
+							)}
+							{!hasChanges && backfillWindowAlreadyDone && (
+								<p className="text-muted-foreground text-right text-xs">
+									This window is already fully indexed. Change the dates to backfill a different range.
+								</p>
 							)}
 						</div>
 					</div>

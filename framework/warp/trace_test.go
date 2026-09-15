@@ -238,4 +238,5 @@ func TestWarpGetRequestTraceReportsTruncatedChain(t *testing.T) {
 	require.NoError(t, err)
 	out := result.(map[string]any)
 	require.Equal(t, true, out["truncated_chain"])
+	require.NotContains(t, out, "final_status", "a truncated chain's last fetched node isn't necessarily the terminal hop, so final_status must not be inferred from it")
 }

@@ -56,6 +56,17 @@ func (r warpLogReader) GetAvailableVirtualKeys(ctx context.Context, limit int, q
 }
 
 // GetAvailableTeams converts the manager's key pairs into Warp's.
+// The routing lookups that return pairs need the same conversion; the ones that
+// return plain strings (aliases, routing engines, tool call names, metadata
+// keys) are promoted from the embedded manager as they are.
+func (r warpLogReader) GetAvailableRoutingRules(ctx context.Context, limit int, query string) ([]warp.KeyPair, error) {
+	return convertWarpKeyPairs(r.LogManager.GetAvailableRoutingRules(ctx, limit, query))
+}
+
+func (r warpLogReader) GetAvailableSelectedKeys(ctx context.Context, limit int, query string) ([]warp.KeyPair, error) {
+	return convertWarpKeyPairs(r.LogManager.GetAvailableSelectedKeys(ctx, limit, query))
+}
+
 func (r warpLogReader) GetAvailableTeams(ctx context.Context, limit int, query string) ([]warp.KeyPair, error) {
 	return convertWarpKeyPairs(r.LogManager.GetAvailableTeams(ctx, limit, query))
 }

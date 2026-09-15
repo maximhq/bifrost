@@ -38,7 +38,7 @@ import (
 //     the fan-out safe against malformed or absent JSON without depending on
 //     any particular WHERE/FROM evaluation order.
 //
-// None of these five dimensions is bucketed: a row that never failed has no
+// None of these dimensions is bucketed: a row that never failed has no
 // error_type, and a row nothing guardrailed has no guardrail_rule. That is a
 // real, useful "not applicable" rather than "Unassigned" - a caller who wants
 // a breakdown of errors already filters to status=error, so a bucketed
@@ -49,6 +49,7 @@ const (
 	RankingDimensionFailReason      RankingDimension = "fail_reason"
 	RankingDimensionGuardrailRule   RankingDimension = "guardrail_rule"
 	RankingDimensionGuardrailAction RankingDimension = "guardrail_action"
+	RankingDimensionStatusCode      RankingDimension = "status_code"
 )
 
 // jsonFieldDimensionShape describes where one JSON-extracted dimension's
@@ -71,6 +72,10 @@ type jsonFieldDimensionShape struct {
 	// for a fanned-out dimension, or within the nestedUnder sub-object for a
 	// single-value one.
 	field string
+	// number marks a single-value dimension whose label is a JSON number at the
+	// top level of column (error_details.status_code), rendered as text so it
+	// groups, orders and filters like every other label here.
+	number bool
 	// fannedOut is true for dimensions with zero-to-many values per row
 	// (attempt_trail has one entry per retry attempt; judge_calls one per
 	// guardrail rule evaluated), matching dimensionReadSource.FannedOut:
@@ -85,6 +90,7 @@ var jsonFieldDimensions = map[RankingDimension]jsonFieldDimensionShape{
 	RankingDimensionFailReason:      {column: "attempt_trail", field: "fail_reason", fannedOut: true},
 	RankingDimensionGuardrailRule:   {column: "guardrail_debug", arrayField: "judge_calls", field: "rule_name", fannedOut: true},
 	RankingDimensionGuardrailAction: {column: "guardrail_debug", arrayField: "judge_calls", field: "action", fannedOut: true},
+	RankingDimensionStatusCode:      {column: "error_details", field: "status_code", number: true},
 }
 
 // jsonFieldDimensionSource resolves a JSON-extracted dimension to a
@@ -97,6 +103,13 @@ func jsonFieldDimensionSource(dialect string, dimension RankingDimension) (dimen
 	shape, ok := jsonFieldDimensions[dimension]
 	if !ok {
 		return dimensionReadSource{}, false
+	}
+	if shape.number {
+		expr, ok := jsonTopLevelNumberExpr(dialect, shape.column, shape.field)
+		if !ok {
+			return dimensionReadSource{}, false
+		}
+		return dimensionReadSource{IDExpr: expr, NameCol: expr}, true
 	}
 	if !shape.fannedOut {
 		expr, ok := jsonObjectFieldExpr(dialect, shape.column, shape.nestedUnder, shape.field)
@@ -149,6 +162,37 @@ func jsonObjectFieldExpr(dialect, column, nestedUnder, field string) (string, bo
 		return fmt.Sprintf(
 			`if(isValidJSON(ifNull(%[1]s, '')), JSONExtractString(ifNull(%[1]s, ''), '%[2]s', '%[3]s'), '')`,
 			column, nestedUnder, field,
+		), true
+	}
+	return "", false
+}
+
+// jsonTopLevelNumberExpr returns a SQL expression yielding a numeric field at
+// the top level of a JSON object column as text ("429"), or ("", false) for an
+// unsupported dialect. Like jsonObjectFieldExpr it evaluates to NULL (”, on
+// ClickHouse) for a NULL, malformed or field-less column rather than erroring.
+// Text rather than a number so the one expression serves GROUP BY, the
+// not-empty exclusion and an IN filter alike, on every dialect.
+func jsonTopLevelNumberExpr(dialect, column, field string) (string, bool) {
+	switch dialect {
+	case "postgres":
+		return fmt.Sprintf(
+			`(CASE WHEN %[1]s IS NOT NULL AND %[1]s IS JSON OBJECT THEN %[1]s::jsonb ->> '%[2]s' ELSE NULL END)`,
+			column, field,
+		), true
+	case "sqlite":
+		// json_extract yields an INTEGER here, and SQLite does not compare an
+		// integer expression equal to text, so the cast is what lets '429' match.
+		return fmt.Sprintf(
+			`(CASE WHEN %[1]s IS NOT NULL AND json_valid(%[1]s) THEN CAST(json_extract(%[1]s, '$.%[2]s') AS TEXT) ELSE NULL END)`,
+			column, field,
+		), true
+	case "clickhouse":
+		// JSONExtractString returns '' for a number, so the raw JSON text is
+		// taken instead: for a number that is its digits, and '' when absent.
+		return fmt.Sprintf(
+			`if(isValidJSON(ifNull(%[1]s, '')), JSONExtractRaw(ifNull(%[1]s, ''), '%[2]s'), '')`,
+			column, field,
 		), true
 	}
 	return "", false

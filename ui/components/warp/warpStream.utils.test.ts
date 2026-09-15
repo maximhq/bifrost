@@ -14,11 +14,14 @@ import {
 	isTypingInto,
 	isWarpQuestionFinish,
 	parseWarpFrame,
+	pendingWarpQuestion,
 	shouldDrainQueue,
 	splitWarpAnswer,
 	splitWarpFrames,
 	turnsFromStoredMessages,
 	warpErrorDetail,
+	warpTextLength,
+	warpTimeline,
 	warpToolLabel,
 	warpToolStatusLabel,
 } from "./warpStream.utils";
@@ -721,5 +724,98 @@ describe("turnsFromStoredMessages question markers", () => {
 		// the server reads a replayed clarification as an answer.
 		expect(turns[1].question?.question).toBe("Which provider did you mean?");
 		expect(turns[0].question).toBeUndefined();
+	});
+});
+
+// A thread that ended on a question came back from history with the question as
+// plain text and no options: turnsFromStoredMessages rebuilt turn.question, and
+// nothing handed it to the card. The pending question is the last turn's, and
+// only while it is still unanswered and has something to click.
+describe("pendingWarpQuestion", () => {
+	const asked = {
+		role: "assistant" as const,
+		content: "Whose traffic?",
+		finish_reason: "question",
+		created_at: "2026-09-21T12:30:53Z",
+		question: { question: "Whose traffic?", options: [{ label: "Whole deployment", hint: "all" }, { label: "Team A" }], allow_other: true },
+	};
+
+	it("restores the card for a reopened thread that ended on a question", () => {
+		const turns = turnsFromStoredMessages([{ role: "user", content: "what did I spend?", created_at: "2026-09-21T12:30:52Z" }, asked]);
+		expect(pendingWarpQuestion(turns)).toEqual({
+			question: "Whose traffic?",
+			options: [
+				{ label: "Whole deployment", hint: "all" },
+				{ label: "Team A", hint: undefined },
+			],
+			allow_other: true,
+			kind: undefined,
+		});
+	});
+
+	it("restores nothing once the question was answered, or when it has no options", () => {
+		const answered = turnsFromStoredMessages([asked, { role: "user", content: "all", created_at: "2026-09-21T12:31:05Z" }]);
+		expect(pendingWarpQuestion(answered)).toBeNull();
+		// A row saved before options were stored: a card with nothing to pick is
+		// worse than the question as text, which the composer can still answer.
+		const bare = turnsFromStoredMessages([
+			{ role: "assistant", content: "Which provider?", finish_reason: "question", created_at: "2026-09-16T09:00:01Z" },
+		]);
+		expect(pendingWarpQuestion(bare)).toBeNull();
+		expect(pendingWarpQuestion([])).toBeNull();
+	});
+});
+
+// A turn that narrated between lookups rendered as thirteen tool rows stacked
+// above four paragraphs run together, which reads as a stuck state: nothing
+// says which lookups followed which thought. The timeline puts each group of
+// calls where it fell in the text.
+describe("warpTimeline", () => {
+	const call = (id: string, textOffset?: number) => ({ id, name: "get_request_trace", durationMs: 5, textOffset });
+
+	it("interleaves narration and tool calls in the order they happened", () => {
+		const content = "17 failed \u2014 tracing two.\n\nBoth hit a 400.";
+		// Counted in code points on both sides of the wire.
+		expect(warpTextLength("17 failed \u2014 tracing two.")).toBe(24);
+		expect(warpTextLength("\u{1F53A} up")).toBe(4);
+		expect(warpTimeline(content, [call("c1", 0), call("c2", 24), call("c3", 24)])).toEqual([
+			{ kind: "tools", calls: [call("c1", 0)] },
+			{ kind: "text", text: "17 failed \u2014 tracing two.", final: false },
+			{ kind: "tools", calls: [call("c2", 24), call("c3", 24)] },
+			{ kind: "text", text: "Both hit a 400.", final: true },
+		]);
+	});
+
+	it("keeps calls that followed the last text at the end, where the wait is", () => {
+		expect(warpTimeline("Tracing two.", [call("c1", 12)])).toEqual([
+			{ kind: "text", text: "Tracing two.", final: false },
+			{ kind: "tools", calls: [call("c1", 12)] },
+		]);
+	});
+
+	it("renders rows filed before offsets existed as they always did, and survives bad ones", () => {
+		expect(warpTimeline("The answer.", [call("c1"), call("c2")])).toEqual([
+			{ kind: "tools", calls: [call("c1"), call("c2")] },
+			{ kind: "text", text: "The answer.", final: true },
+		]);
+		// Past the end (content trimmed since) or out of order: clamped, never lost.
+		expect(warpTimeline("Short.", [call("c1", 900), call("c2", 3)])).toEqual([
+			{ kind: "text", text: "Short.", final: false },
+			{ kind: "tools", calls: [call("c1", 900), call("c2", 3)] },
+		]);
+		expect(warpTimeline("Just text.", undefined)).toEqual([{ kind: "text", text: "Just text.", final: true }]);
+		expect(warpTimeline("", undefined)).toEqual([]);
+	});
+
+	it("carries the stored offset onto a reopened turn", () => {
+		const turns = turnsFromStoredMessages([
+			{
+				role: "assistant",
+				content: "Counting.\n\nDone.",
+				created_at: "2026-09-21T13:00:00Z",
+				tool_calls: [{ name: "count_logs", duration_ms: 3, text_offset: 9 }],
+			},
+		]);
+		expect(turns[0].toolCalls?.[0].textOffset).toBe(9);
 	});
 });
