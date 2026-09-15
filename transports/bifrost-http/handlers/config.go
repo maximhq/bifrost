@@ -43,6 +43,27 @@ var securityHeaders = []string{
 	"x-bf-vk",
 }
 
+// validateAndHashAdminPassword enforces the admin password policy and returns
+// the bcrypt-hashed SecretVar to persist, preserving env/vault reference
+// metadata. On failure it returns the HTTP status and error message to send.
+func validateAndHashAdminPassword(password *schemas.SecretVar) (*schemas.SecretVar, int, string) {
+	passwordPolicyFailures := getPasswordPolicyFailures(password.GetValue())
+	if len(passwordPolicyFailures) > 0 {
+		return nil, fasthttp.StatusBadRequest, fmt.Sprintf("auth password must include %s", strings.Join(passwordPolicyFailures, ", "))
+	}
+	hashedPassword, err := encrypt.Hash(password.GetValue())
+	if err != nil {
+		return nil, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to hash password: %v", err)
+	}
+	// Preserve env/vault reference metadata when storing hashed password
+	if password.IsFromSecret() {
+		sv := *password
+		sv.Val = hashedPassword
+		return &sv, 0, ""
+	}
+	return &schemas.SecretVar{Val: hashedPassword}, 0, ""
+}
+
 func getPasswordPolicyFailures(password string) []string {
 	failures := make([]string, 0, 5)
 	hasUppercase := false
@@ -891,9 +912,12 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		} else {
 			// Compare with existing config using value comparison (not pointer comparison)
 			// Password is considered changed when it was intentionally submitted —
-			// ShouldPreserveStored() returns false for both plain values and secret refs.
+			// the sentinel-only check returns false for both plain values and secret refs.
+			// Sentinel-only (not ShouldPreserveStored): the GET endpoint returns the
+			// admin password as "<redacted>"/FullyRedacted, never the 4+24+4 asterisk
+			// mask, so a submitted value with that shape is a real password (#6413).
 			passwordChanged := payload.AuthConfig.AdminPassword != nil &&
-				!payload.AuthConfig.AdminPassword.ShouldPreserveStored()
+				!payload.AuthConfig.AdminPassword.ShouldPreserveStoredSentinelOnly()
 			usernameChanged := payload.AuthConfig.AdminUserName != nil &&
 				!payload.AuthConfig.AdminUserName.Equals(authConfig.AdminUserName)
 			if payload.AuthConfig.IsEnabled != authConfig.IsEnabled ||
@@ -939,7 +963,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			}
 			// Fetching current Auth config
 			if payload.AuthConfig.AdminUserName.GetValue() != "" {
-				if payload.AuthConfig.AdminPassword.ShouldPreserveStored() {
+				if payload.AuthConfig.AdminPassword.ShouldPreserveStoredSentinelOnly() {
 					if authConfig == nil || authConfig.AdminPassword.GetValue() == "" {
 						SendError(ctx, fasthttp.StatusBadRequest, "auth password must be provided")
 						return
@@ -948,26 +972,15 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 					payload.AuthConfig.AdminPassword = authConfig.AdminPassword
 				} else {
 					// Password has been changed
-					passwordPolicyFailures := getPasswordPolicyFailures(payload.AuthConfig.AdminPassword.GetValue())
-					if len(passwordPolicyFailures) > 0 {
-						SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("auth password must include %s", strings.Join(passwordPolicyFailures, ", ")))
+					hashed, status, errMsg := validateAndHashAdminPassword(payload.AuthConfig.AdminPassword)
+					if errMsg != "" {
+						if status == fasthttp.StatusInternalServerError {
+							logger.Warn("%s", errMsg)
+						}
+						SendError(ctx, status, errMsg)
 						return
 					}
-					// We will hash the password
-					hashedPassword, err := encrypt.Hash(payload.AuthConfig.AdminPassword.GetValue())
-					if err != nil {
-						logger.Warn("failed to hash password: %v", err)
-						SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to hash password: %v", err))
-						return
-					}
-					// Preserve env/vault reference metadata when storing hashed password
-					if payload.AuthConfig.AdminPassword.IsFromSecret() {
-						sv := *payload.AuthConfig.AdminPassword
-						sv.Val = hashedPassword
-						payload.AuthConfig.AdminPassword = &sv
-					} else {
-						payload.AuthConfig.AdminPassword = &schemas.SecretVar{Val: hashedPassword}
-					}
+					payload.AuthConfig.AdminPassword = hashed
 				}
 			}
 			// Save auth config - this handles both first-time creation and updates
@@ -979,8 +992,21 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			}
 		} else if authConfig != nil {
 			// Auth is being disabled but there's an existing config - preserve credentials and update disabled state
-			if payload.AuthConfig.AdminPassword.ShouldPreserveStored() {
+			if payload.AuthConfig.AdminPassword.ShouldPreserveStoredSentinelOnly() {
 				payload.AuthConfig.AdminPassword = authConfig.AdminPassword
+			} else {
+				// A genuinely new password submitted alongside disablement must go
+				// through the same policy + hashing as the enabled path — persisting
+				// it raw would make CompareHash reject it once auth is re-enabled.
+				hashed, status, errMsg := validateAndHashAdminPassword(payload.AuthConfig.AdminPassword)
+				if errMsg != "" {
+					if status == fasthttp.StatusInternalServerError {
+						logger.Warn("%s", errMsg)
+					}
+					SendError(ctx, status, errMsg)
+					return
+				}
+				payload.AuthConfig.AdminPassword = hashed
 			}
 			if payload.AuthConfig.AdminUserName == nil || payload.AuthConfig.AdminUserName.GetValue() == "" {
 				payload.AuthConfig.AdminUserName = authConfig.AdminUserName
