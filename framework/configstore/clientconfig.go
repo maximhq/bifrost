@@ -198,6 +198,9 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	if c.Compat.ShouldConvertParams {
 		hash.Write([]byte("compatShouldConvertParams:true"))
 	}
+	if c.Compat.AzureDeepseek {
+		hash.Write([]byte("compatAzureDeepseek:true"))
+	}
 
 	// Only hash non-default value to avoid legacy config hash churn.
 	if c.HideDeletedVirtualKeysInFilters {
