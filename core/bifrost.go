@@ -7614,12 +7614,24 @@ func prepareResponsesRequest(ctx *schemas.BifrostContext, config *schemas.Provid
 
 // promptCacheChatRequest is the Chat Completions parallel of
 // promptCacheResponsesRequest, with the same copy-on-write guarantee.
+// It also strips Bedrock cachePoint markers when the attempt targets any other provider.
 func promptCacheChatRequest(ctx *schemas.BifrostContext, config *schemas.ProviderConfig, provider schemas.ModelProvider, r *schemas.BifrostChatRequest) *schemas.BifrostChatRequest {
-	if r == nil || config == nil {
+	if r == nil {
+		return r
+	}
+	baseProvider := schemas.ResolveBaseProvider(ctx, provider)
+	if baseProvider != schemas.Bedrock {
+		if input, stripped := providerUtils.StripChatCachePoints(r.Input); stripped {
+			cp := *r
+			cp.Input = input
+			r = &cp
+		}
+	}
+	if config == nil {
 		return r
 	}
 	promptCache := providerUtils.ResolvePromptCacheConfig(ctx, config.PromptCache)
-	if !providerUtils.PromptCacheInjectionEnabled(promptCache, schemas.ResolveBaseProvider(ctx, provider), r.Model) {
+	if !providerUtils.PromptCacheInjectionEnabled(promptCache, baseProvider, r.Model) {
 		return r
 	}
 	cp := *r
