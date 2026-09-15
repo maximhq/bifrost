@@ -818,6 +818,14 @@ func PopulateResponsesResponseAttributes(resp *schemas.BifrostResponsesResponse,
 		}
 	}
 
+	// Finish reason: the Responses API carries a single top-level stop_reason
+	// rather than per-choice finish reasons. Emit it under the same
+	// finish_reasons key the chat path uses so the tracer derives the singular
+	// gen_ai.response.finish_reason from it and refusals stay visible in OTEL.
+	if resp.StopReason != nil && *resp.StopReason != "" {
+		attrs[schemas.AttrFinishReasons] = []string{*resp.StopReason}
+	}
+
 	// Additional response fields
 	if resp.Include != nil {
 		attrs[schemas.AttrRespInclude] = strings.Join(resp.Include, ",")

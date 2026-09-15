@@ -799,3 +799,35 @@ func TestTracer_PopulateLLMResponseAttributesStampsErrorType(t *testing.T) {
 		}
 	})
 }
+
+// A Responses API refusal must reach the llm.call span as both the spec'd
+// gen_ai.response.finish_reasons list and the legacy singular
+// gen_ai.response.finish_reason, exactly like a chat completion does. Before
+// the fix the Responses populator never emitted the key, so the tracer had
+// nothing to derive the singular from and both attributes were absent.
+func TestTracer_PopulateLLMResponseAttributesEmitsResponsesFinishReason(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	traceID := tracer.CreateTrace("")
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+	_, handle := tracer.StartSpan(ctx, "llm.call", schemas.SpanKindLLMCall)
+
+	resp := &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			ID:         schemas.Ptr("resp_refusal"),
+			Model:      "gpt-4o-mini",
+			StopReason: schemas.Ptr("refusal"),
+		},
+	}
+
+	bctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	tracer.PopulateLLMResponseAttributes(bctx, handle, resp, nil)
+
+	span := store.GetTrace(traceID).RootSpan
+	require.Equal(t, []string{"refusal"}, span.Attributes[schemas.AttrFinishReasons])
+	require.Equal(t, "refusal", span.Attributes[schemas.AttrFinishReason])
+}
