@@ -86,6 +86,36 @@ func TestPostgresRoutingRuleUpdateDeleteDoesNotDeadlock(t *testing.T) {
 	}
 }
 
+// TestPostgresDeleteOrphanedSessions verifies the dashboard-session cleanup
+// predicate against a real PostgreSQL database, not SQLite's compatibility
+// layer. Sessions are eligible only after both expiry and orphan retention.
+func TestPostgresDeleteOrphanedSessions(t *testing.T) {
+	store := setupPostgresDeadlockStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	orphaned := &tables.SessionsTable{Token: "pg-orphaned-session", ExpiresAt: now.Add(-31 * 24 * time.Hour)}
+	recentlyExpired := &tables.SessionsTable{Token: "pg-recently-expired-session", ExpiresAt: now.Add(-time.Minute)}
+	active := &tables.SessionsTable{Token: "pg-active-session", ExpiresAt: now.Add(time.Minute)}
+	require.NoError(t, store.CreateSession(ctx, orphaned))
+	require.NoError(t, store.CreateSession(ctx, recentlyExpired))
+	require.NoError(t, store.CreateSession(ctx, active))
+
+	deleted, err := store.DeleteOrphanedSessions(ctx, 30*24*time.Hour)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, deleted)
+
+	gotOrphaned, err := store.GetSession(ctx, orphaned.Token)
+	require.NoError(t, err)
+	require.Nil(t, gotOrphaned)
+	gotRecentlyExpired, err := store.GetSession(ctx, recentlyExpired.Token)
+	require.NoError(t, err)
+	require.NotNil(t, gotRecentlyExpired)
+	gotActive, err := store.GetSession(ctx, active.Token)
+	require.NoError(t, err)
+	require.NotNil(t, gotActive)
+}
+
 // TestPostgresProviderGraphConcurrentMutationsDoNotDeadlock verifies provider graph mutations avoid deadlocks.
 func TestPostgresProviderGraphConcurrentMutationsDoNotDeadlock(t *testing.T) {
 	store := setupPostgresDeadlockStore(t)
