@@ -116,7 +116,10 @@
             "claude-opus-4-8",
             "moonshotai/kimi-k2-thinking-maas",
             "minimaxai/minimax-m2-maas",
-            "gemini-3.6-flash"
+            "gemini-3.6-flash",
+            "claude-fable-5-1",
+            "gemini-3-pro-image",
+            "gemini-3.7-flash"
           ]
         },
         {
@@ -131,7 +134,8 @@
             "claude-sonnet-4-6",
             "claude-opus-4-8",
             "moonshotai/kimi-k2-thinking-maas",
-            "minimaxai/minimax-m2-maas"
+            "minimaxai/minimax-m2-maas",
+            "claude-fable-5-1"
           ]
         },
         {
@@ -142,7 +146,7 @@
             "auth_credentials": "env.VERTEX_CREDENTIALS"
           },
           "weight": 1,
-          "models": ["gemini-3.6-flash"]
+          "models": ["gemini-3.6-flash", "gemini-3-pro-image", "gemini-3.7-flash"]
         }
       ],
       "network_config": {
@@ -392,9 +396,7 @@
           "name": "Anthropic API Key",
           "value": "env.ANTHROPIC_API_KEY",
           "weight": 1,
-          "models": [
-            "*"
-          ]
+          "models": ["*"]
         }
       ],
       "custom_provider_config": {
@@ -415,9 +417,7 @@
           "name": "Gemini API Key",
           "value": "env.GEMINI_API_KEY",
           "weight": 1,
-          "models": [
-            "*"
-          ]
+          "models": ["*"]
         }
       ],
       "custom_provider_config": {
@@ -438,9 +438,7 @@
           "name": "Anthropic API Key",
           "value": "env.ANTHROPIC_API_KEY",
           "weight": 1,
-          "models": [
-            "*"
-          ]
+          "models": ["*"]
         }
       ],
       "custom_provider_config": {
@@ -475,9 +473,7 @@
             "region": "env.AWS_REGION"
           },
           "weight": 1,
-          "models": [
-            "*"
-          ]
+          "models": ["*"]
         }
       ],
       "custom_provider_config": {
@@ -502,9 +498,7 @@
             "region": "env.AWS_REGION"
           },
           "weight": 1,
-          "models": [
-            "*"
-          ]
+          "models": ["*"]
         }
       ],
       "custom_provider_config": {
@@ -539,9 +533,7 @@
             "region": "env.AWS_REGION"
           },
           "weight": 1,
-          "models": [
-            "*"
-          ],
+          "models": ["*"],
           "use_openai_endpoints": true
         }
       ],
@@ -559,9 +551,7 @@
           "name": "OpenAI API Key",
           "value": "env.OPENAI_API_KEY",
           "weight": 1,
-          "models": [
-            "*"
-          ]
+          "models": ["*"]
         }
       ],
       "custom_provider_config": {
@@ -580,9 +570,7 @@
           "name": "OpenAI API Key",
           "value": "env.OPENAI_API_KEY",
           "weight": 1,
-          "models": [
-            "*"
-          ]
+          "models": ["*"]
         }
       ],
       "custom_provider_config": {
@@ -602,9 +590,7 @@
           "name": "OpenAI API Key",
           "value": "env.OPENAI_API_KEY",
           "weight": 1,
-          "models": [
-            "*"
-          ]
+          "models": ["*"]
         }
       ],
       "custom_provider_config": {
@@ -625,9 +611,7 @@
           "name": "OpenAI API Key",
           "value": "env.OPENAI_API_KEY",
           "weight": 1,
-          "models": [
-            "*"
-          ]
+          "models": ["*"]
         }
       ],
       "custom_provider_config": {
@@ -658,9 +642,7 @@
           "name": "Anthropic API Key",
           "value": "env.ANTHROPIC_API_KEY",
           "weight": 1,
-          "models": [
-            "*"
-          ]
+          "models": ["*"]
         }
       ],
       "custom_provider_config": {
@@ -699,9 +681,7 @@
           "name": "Anthropic API Key",
           "value": "env.ANTHROPIC_API_KEY",
           "weight": 1,
-          "models": [
-            "*"
-          ]
+          "models": ["*"]
         }
       ],
       "custom_provider_config": {
@@ -748,9 +728,7 @@
           "name": "Anthropic API Key",
           "value": "env.ANTHROPIC_API_KEY",
           "weight": 1,
-          "models": [
-            "*"
-          ]
+          "models": ["*"]
         }
       ],
       "custom_provider_config": {

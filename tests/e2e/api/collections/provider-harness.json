@@ -34385,7 +34385,9 @@
                           "  var d = det(j.usage);",
                           "  pm.test('write: usage present', function(){ pm.expect(j.usage,'usage').to.be.an('object'); });",
                           "  pm.test('write: cache-write tokens > 0 (cold cache write)', function(){ pm.expect(wtok(d), 'cache write tokens').to.be.above(0); });",
-                          "}"
+                          "}",
+                          "// Publish the chained variable this pair's [read] consumes, so a sliced or --rerun-failed selection pulls this [write] into the same newman process.",
+                          "if (pm.response.code < 400) { pm.collectionVariables.set('cacheChain_pc_sol_nativechat_non_streaming_write', 'sent'); }"
                         ]
                       }
                     }
@@ -34457,7 +34459,7 @@
                       "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-nativechat-sol-n-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} nativechat-sol-n]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ]\n}"
                     },
                     "url": {
-                      "raw": "{{baseUrl}}/v1/chat/completions",
+                      "raw": "{{baseUrl}}/v1/chat/completions?_chain={{cacheChain_pc_sol_nativechat_non_streaming_write}}",
                       "host": [
                         "{{baseUrl}}"
                       ],
@@ -34465,6 +34467,12 @@
                         "v1",
                         "chat",
                         "completions"
+                      ],
+                      "query": [
+                        {
+                          "key": "_chain",
+                          "value": "{{cacheChain_pc_sol_nativechat_non_streaming_write}}"
+                        }
                       ]
                     }
                   }
@@ -34485,7 +34493,9 @@
                           "  pm.test('write: usage present', function(){ pm.expect(j.usage,'usage').to.be.an('object'); });",
                           "  pm.test('write: cache-write tokens > 0 (cold cache write)', function(){ pm.expect(wtok(d), 'cache write tokens').to.be.above(0); });",
                           "  pm.test('write: prompt_cache_options echoed', function(){ pm.expect(j.prompt_cache_options,'prompt_cache_options').to.be.an('object'); pm.expect(j.prompt_cache_options.mode,'mode').to.eql('implicit'); });",
-                          "}"
+                          "}",
+                          "// Publish the chained variable this pair's [read] consumes, so a sliced or --rerun-failed selection pulls this [write] into the same newman process.",
+                          "if (pm.response.code < 400) { pm.collectionVariables.set('cacheChain_pc_sol_nativeresp_non_streaming_write', 'sent'); }"
                         ]
                       }
                     }
@@ -34556,13 +34566,19 @@
                       "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-nativeresp-sol-n-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} nativeresp-sol-n]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
                     },
                     "url": {
-                      "raw": "{{baseUrl}}/v1/responses",
+                      "raw": "{{baseUrl}}/v1/responses?_chain={{cacheChain_pc_sol_nativeresp_non_streaming_write}}",
                       "host": [
                         "{{baseUrl}}"
                       ],
                       "path": [
                         "v1",
                         "responses"
+                      ],
+                      "query": [
+                        {
+                          "key": "_chain",
+                          "value": "{{cacheChain_pc_sol_nativeresp_non_streaming_write}}"
+                        }
                       ]
                     }
                   }
@@ -34582,7 +34598,9 @@
                           "  var d = det(j.usage);",
                           "  pm.test('write: usage present', function(){ pm.expect(j.usage,'usage').to.be.an('object'); });",
                           "  pm.test('write: cache-write tokens > 0 (cold cache write)', function(){ pm.expect(wtok(d), 'cache write tokens').to.be.above(0); });",
-                          "}"
+                          "}",
+                          "// Publish the chained variable this pair's [read] consumes, so a sliced or --rerun-failed selection pulls this [write] into the same newman process.",
+                          "if (pm.response.code < 400) { pm.collectionVariables.set('cacheChain_pc_sol_dropinchat_non_streaming_write', 'sent'); }"
                         ]
                       }
                     }
@@ -34655,7 +34673,7 @@
                       "raw": "{\n  \"model\": \"gpt-5.6-sol\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-dropinchat-sol-n-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} dropinchat-sol-n]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ]\n}"
                     },
                     "url": {
-                      "raw": "{{baseUrl}}/openai/v1/chat/completions",
+                      "raw": "{{baseUrl}}/openai/v1/chat/completions?_chain={{cacheChain_pc_sol_dropinchat_non_streaming_write}}",
                       "host": [
                         "{{baseUrl}}"
                       ],
@@ -34664,6 +34682,12 @@
                         "v1",
                         "chat",
                         "completions"
+                      ],
+                      "query": [
+                        {
+                          "key": "_chain",
+                          "value": "{{cacheChain_pc_sol_dropinchat_non_streaming_write}}"
+                        }
                       ]
                     }
                   }
@@ -34684,7 +34708,9 @@
                           "  pm.test('write: usage present', function(){ pm.expect(j.usage,'usage').to.be.an('object'); });",
                           "  pm.test('write: cache-write tokens > 0 (cold cache write)', function(){ pm.expect(wtok(d), 'cache write tokens').to.be.above(0); });",
                           "  pm.test('write: prompt_cache_options echoed', function(){ pm.expect(j.prompt_cache_options,'prompt_cache_options').to.be.an('object'); pm.expect(j.prompt_cache_options.mode,'mode').to.eql('implicit'); });",
-                          "}"
+                          "}",
+                          "// Publish the chained variable this pair's [read] consumes, so a sliced or --rerun-failed selection pulls this [write] into the same newman process.",
+                          "if (pm.response.code < 400) { pm.collectionVariables.set('cacheChain_pc_sol_dropinresp_non_streaming_write', 'sent'); }"
                         ]
                       }
                     }
@@ -34756,7 +34782,7 @@
                       "raw": "{\n  \"model\": \"gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-dropinresp-sol-n-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} dropinresp-sol-n]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
                     },
                     "url": {
-                      "raw": "{{baseUrl}}/openai/v1/responses",
+                      "raw": "{{baseUrl}}/openai/v1/responses?_chain={{cacheChain_pc_sol_dropinresp_non_streaming_write}}",
                       "host": [
                         "{{baseUrl}}"
                       ],
@@ -34764,6 +34790,12 @@
                         "openai",
                         "v1",
                         "responses"
+                      ],
+                      "query": [
+                        {
+                          "key": "_chain",
+                          "value": "{{cacheChain_pc_sol_dropinresp_non_streaming_write}}"
+                        }
                       ]
                     }
                   }
@@ -34783,7 +34815,9 @@
                           "  var d = det(j.usage);",
                           "  pm.test('write: usage present', function(){ pm.expect(j.usage,'usage').to.be.an('object'); });",
                           "  pm.test('write: cache-write tokens > 0 (cold cache write)', function(){ pm.expect(wtok(d), 'cache write tokens').to.be.above(0); });",
-                          "}"
+                          "}",
+                          "// Publish the chained variable this pair's [read] consumes, so a sliced or --rerun-failed selection pulls this [write] into the same newman process.",
+                          "if (pm.response.code < 400) { pm.collectionVariables.set('cacheChain_pc_terra_nativechat_non_streaming_write', 'sent'); }"
                         ]
                       }
                     }
@@ -34855,7 +34889,7 @@
                       "raw": "{\n  \"model\": \"openai/gpt-5.6-terra\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-nativechat-terra-n-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} nativechat-terra-n]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ]\n}"
                     },
                     "url": {
-                      "raw": "{{baseUrl}}/v1/chat/completions",
+                      "raw": "{{baseUrl}}/v1/chat/completions?_chain={{cacheChain_pc_terra_nativechat_non_streaming_write}}",
                       "host": [
                         "{{baseUrl}}"
                       ],
@@ -34863,6 +34897,12 @@
                         "v1",
                         "chat",
                         "completions"
+                      ],
+                      "query": [
+                        {
+                          "key": "_chain",
+                          "value": "{{cacheChain_pc_terra_nativechat_non_streaming_write}}"
+                        }
                       ]
                     }
                   }
@@ -34882,7 +34922,9 @@
                           "  var d = det(j.usage);",
                           "  pm.test('write: usage present', function(){ pm.expect(j.usage,'usage').to.be.an('object'); });",
                           "  pm.test('write: cache-write tokens > 0 (cold cache write)', function(){ pm.expect(wtok(d), 'cache write tokens').to.be.above(0); });",
-                          "}"
+                          "}",
+                          "// Publish the chained variable this pair's [read] consumes, so a sliced or --rerun-failed selection pulls this [write] into the same newman process.",
+                          "if (pm.response.code < 400) { pm.collectionVariables.set('cacheChain_pc_luna_dropinchat_non_streaming_write', 'sent'); }"
                         ]
                       }
                     }
@@ -34955,7 +34997,7 @@
                       "raw": "{\n  \"model\": \"gpt-5.6-luna\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-dropinchat-luna-n-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} dropinchat-luna-n]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ]\n}"
                     },
                     "url": {
-                      "raw": "{{baseUrl}}/openai/v1/chat/completions",
+                      "raw": "{{baseUrl}}/openai/v1/chat/completions?_chain={{cacheChain_pc_luna_dropinchat_non_streaming_write}}",
                       "host": [
                         "{{baseUrl}}"
                       ],
@@ -34964,6 +35006,12 @@
                         "v1",
                         "chat",
                         "completions"
+                      ],
+                      "query": [
+                        {
+                          "key": "_chain",
+                          "value": "{{cacheChain_pc_luna_dropinchat_non_streaming_write}}"
+                        }
                       ]
                     }
                   }
@@ -34990,7 +35038,9 @@
                           "  var r = sse(pm.response.text()); var d = det(r.u);",
                           "  pm.test('stream write: usage present in stream', function(){ pm.expect(r.u,'streamed usage').to.be.an('object'); });",
                           "  pm.test('stream write: cache-write tokens > 0', function(){ pm.expect(wtok(d), 'cache write tokens').to.be.above(0); });",
-                          "}"
+                          "}",
+                          "// Publish the chained variable this pair's [read] consumes, so a sliced or --rerun-failed selection pulls this [write] into the same newman process.",
+                          "if (pm.response.code < 400) { pm.collectionVariables.set('cacheChain_pc_sol_nativechat_streaming_write', 'sent'); }"
                         ]
                       }
                     }
@@ -35064,7 +35114,7 @@
                       "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-nativechat-sol-s-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} nativechat-sol-s]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
                     },
                     "url": {
-                      "raw": "{{baseUrl}}/v1/chat/completions",
+                      "raw": "{{baseUrl}}/v1/chat/completions?_chain={{cacheChain_pc_sol_nativechat_streaming_write}}",
                       "host": [
                         "{{baseUrl}}"
                       ],
@@ -35072,6 +35122,12 @@
                         "v1",
                         "chat",
                         "completions"
+                      ],
+                      "query": [
+                        {
+                          "key": "_chain",
+                          "value": "{{cacheChain_pc_sol_nativechat_streaming_write}}"
+                        }
                       ]
                     }
                   }
@@ -35094,7 +35150,9 @@
                           "  pm.test('stream write: usage present in stream', function(){ pm.expect(r.u,'streamed usage').to.be.an('object'); });",
                           "  pm.test('stream write: cache-write tokens > 0', function(){ pm.expect(wtok(d), 'cache write tokens').to.be.above(0); });",
                           "  pm.test('stream write: prompt_cache_options echoed', function(){ pm.expect(r.p,'prompt_cache_options').to.be.an('object'); });",
-                          "}"
+                          "}",
+                          "// Publish the chained variable this pair's [read] consumes, so a sliced or --rerun-failed selection pulls this [write] into the same newman process.",
+                          "if (pm.response.code < 400) { pm.collectionVariables.set('cacheChain_pc_sol_nativeresp_streaming_write', 'sent'); }"
                         ]
                       }
                     }
@@ -35167,13 +35225,19 @@
                       "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-nativeresp-sol-s-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} nativeresp-sol-s]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ],\n  \"stream\": true\n}"
                     },
                     "url": {
-                      "raw": "{{baseUrl}}/v1/responses",
+                      "raw": "{{baseUrl}}/v1/responses?_chain={{cacheChain_pc_sol_nativeresp_streaming_write}}",
                       "host": [
                         "{{baseUrl}}"
                       ],
                       "path": [
                         "v1",
                         "responses"
+                      ],
+                      "query": [
+                        {
+                          "key": "_chain",
+                          "value": "{{cacheChain_pc_sol_nativeresp_streaming_write}}"
+                        }
                       ]
                     }
                   }
@@ -35195,7 +35259,9 @@
                           "  var r = sse(pm.response.text()); var d = det(r.u);",
                           "  pm.test('stream write: usage present in stream', function(){ pm.expect(r.u,'streamed usage').to.be.an('object'); });",
                           "  pm.test('stream write: cache-write tokens > 0', function(){ pm.expect(wtok(d), 'cache write tokens').to.be.above(0); });",
-                          "}"
+                          "}",
+                          "// Publish the chained variable this pair's [read] consumes, so a sliced or --rerun-failed selection pulls this [write] into the same newman process.",
+                          "if (pm.response.code < 400) { pm.collectionVariables.set('cacheChain_pc_sol_dropinchat_streaming_write', 'sent'); }"
                         ]
                       }
                     }
@@ -35270,7 +35336,7 @@
                       "raw": "{\n  \"model\": \"gpt-5.6-sol\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-dropinchat-sol-s-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} dropinchat-sol-s]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
                     },
                     "url": {
-                      "raw": "{{baseUrl}}/openai/v1/chat/completions",
+                      "raw": "{{baseUrl}}/openai/v1/chat/completions?_chain={{cacheChain_pc_sol_dropinchat_streaming_write}}",
                       "host": [
                         "{{baseUrl}}"
                       ],
@@ -35279,6 +35345,12 @@
                         "v1",
                         "chat",
                         "completions"
+                      ],
+                      "query": [
+                        {
+                          "key": "_chain",
+                          "value": "{{cacheChain_pc_sol_dropinchat_streaming_write}}"
+                        }
                       ]
                     }
                   }
@@ -35301,7 +35373,9 @@
                           "  pm.test('stream write: usage present in stream', function(){ pm.expect(r.u,'streamed usage').to.be.an('object'); });",
                           "  pm.test('stream write: cache-write tokens > 0', function(){ pm.expect(wtok(d), 'cache write tokens').to.be.above(0); });",
                           "  pm.test('stream write: prompt_cache_options echoed', function(){ pm.expect(r.p,'prompt_cache_options').to.be.an('object'); });",
-                          "}"
+                          "}",
+                          "// Publish the chained variable this pair's [read] consumes, so a sliced or --rerun-failed selection pulls this [write] into the same newman process.",
+                          "if (pm.response.code < 400) { pm.collectionVariables.set('cacheChain_pc_sol_dropinresp_streaming_write', 'sent'); }"
                         ]
                       }
                     }
@@ -35375,7 +35449,7 @@
                       "raw": "{\n  \"model\": \"gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-dropinresp-sol-s-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} dropinresp-sol-s]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ],\n  \"stream\": true\n}"
                     },
                     "url": {
-                      "raw": "{{baseUrl}}/openai/v1/responses",
+                      "raw": "{{baseUrl}}/openai/v1/responses?_chain={{cacheChain_pc_sol_dropinresp_streaming_write}}",
                       "host": [
                         "{{baseUrl}}"
                       ],
@@ -35383,6 +35457,12 @@
                         "openai",
                         "v1",
                         "responses"
+                      ],
+                      "query": [
+                        {
+                          "key": "_chain",
+                          "value": "{{cacheChain_pc_sol_dropinresp_streaming_write}}"
+                        }
                       ]
                     }
                   }
@@ -35405,7 +35485,9 @@
                           "  pm.test('stream write: usage present in stream', function(){ pm.expect(r.u,'streamed usage').to.be.an('object'); });",
                           "  pm.test('stream write: cache-write tokens > 0', function(){ pm.expect(wtok(d), 'cache write tokens').to.be.above(0); });",
                           "  pm.test('stream write: prompt_cache_options echoed', function(){ pm.expect(r.p,'prompt_cache_options').to.be.an('object'); });",
-                          "}"
+                          "}",
+                          "// Publish the chained variable this pair's [read] consumes, so a sliced or --rerun-failed selection pulls this [write] into the same newman process.",
+                          "if (pm.response.code < 400) { pm.collectionVariables.set('cacheChain_pc_terra_dropinresp_streaming_write', 'sent'); }"
                         ]
                       }
                     }
@@ -35479,7 +35561,7 @@
                       "raw": "{\n  \"model\": \"gpt-5.6-terra\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-dropinresp-terra-s-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} dropinresp-terra-s]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ],\n  \"stream\": true\n}"
                     },
                     "url": {
-                      "raw": "{{baseUrl}}/openai/v1/responses",
+                      "raw": "{{baseUrl}}/openai/v1/responses?_chain={{cacheChain_pc_terra_dropinresp_streaming_write}}",
                       "host": [
                         "{{baseUrl}}"
                       ],
@@ -35487,6 +35569,12 @@
                         "openai",
                         "v1",
                         "responses"
+                      ],
+                      "query": [
+                        {
+                          "key": "_chain",
+                          "value": "{{cacheChain_pc_terra_dropinresp_streaming_write}}"
+                        }
                       ]
                     }
                   }
@@ -35509,7 +35597,9 @@
                           "  pm.test('stream write: usage present in stream', function(){ pm.expect(r.u,'streamed usage').to.be.an('object'); });",
                           "  pm.test('stream write: cache-write tokens > 0', function(){ pm.expect(wtok(d), 'cache write tokens').to.be.above(0); });",
                           "  pm.test('stream write: prompt_cache_options echoed', function(){ pm.expect(r.p,'prompt_cache_options').to.be.an('object'); });",
-                          "}"
+                          "}",
+                          "// Publish the chained variable this pair's [read] consumes, so a sliced or --rerun-failed selection pulls this [write] into the same newman process.",
+                          "if (pm.response.code < 400) { pm.collectionVariables.set('cacheChain_pc_luna_nativeresp_streaming_write', 'sent'); }"
                         ]
                       }
                     }
@@ -35582,13 +35672,19 @@
                       "raw": "{\n  \"model\": \"openai/gpt-5.6-luna\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-nativeresp-luna-s-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"30m\"\n  },\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} nativeresp-luna-s]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ],\n  \"stream\": true\n}"
                     },
                     "url": {
-                      "raw": "{{baseUrl}}/v1/responses",
+                      "raw": "{{baseUrl}}/v1/responses?_chain={{cacheChain_pc_luna_nativeresp_streaming_write}}",
                       "host": [
                         "{{baseUrl}}"
                       ],
                       "path": [
                         "v1",
                         "responses"
+                      ],
+                      "query": [
+                        {
+                          "key": "_chain",
+                          "value": "{{cacheChain_pc_luna_nativeresp_streaming_write}}"
+                        }
                       ]
                     }
                   }
@@ -35613,7 +35709,9 @@
                           "  var d = det(j.usage);",
                           "  pm.test('write: usage present', function(){ pm.expect(j.usage,'usage').to.be.an('object'); });",
                           "  pm.test('write: cached_tokens present (numeric)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.a('number'); });",
-                          "}"
+                          "}",
+                          "// Publish the chained variable this pair's [read] consumes, so a sliced or --rerun-failed selection pulls this [write] into the same newman process.",
+                          "if (pm.response.code < 400) { pm.collectionVariables.set('cacheChain_pc_gpt_5_nativechat_non_streaming_write', 'sent'); }"
                         ]
                       }
                     }
@@ -35685,7 +35783,7 @@
                       "raw": "{\n  \"model\": \"openai/gpt-5\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-nativechat-gpt-5-n-{{pcNonce}}\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"{{cachePrefix}} [pc-session {{pcNonce}} nativechat-gpt-5-n]\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ]\n}"
                     },
                     "url": {
-                      "raw": "{{baseUrl}}/v1/chat/completions",
+                      "raw": "{{baseUrl}}/v1/chat/completions?_chain={{cacheChain_pc_gpt_5_nativechat_non_streaming_write}}",
                       "host": [
                         "{{baseUrl}}"
                       ],
@@ -35693,6 +35791,12 @@
                         "v1",
                         "chat",
                         "completions"
+                      ],
+                      "query": [
+                        {
+                          "key": "_chain",
+                          "value": "{{cacheChain_pc_gpt_5_nativechat_non_streaming_write}}"
+                        }
                       ]
                     }
                   }
@@ -35712,7 +35816,9 @@
                           "  var d = det(j.usage);",
                           "  pm.test('write: usage present', function(){ pm.expect(j.usage,'usage').to.be.an('object'); });",
                           "  pm.test('write: cached_tokens present (numeric)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.a('number'); });",
-                          "}"
+                          "}",
+                          "// Publish the chained variable this pair's [read] consumes, so a sliced or --rerun-failed selection pulls this [write] into the same newman process.",
+                          "if (pm.response.code < 400) { pm.collectionVariables.set('cacheChain_pc_gpt_5_mini_nativeresp_non_streaming_write', 'sent'); }"
                         ]
                       }
                     }
@@ -35783,13 +35889,19 @@
                       "raw": "{\n  \"model\": \"openai/gpt-5-mini\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-nativeresp-gpt-5-mini-n-{{pcNonce}}\",\n  \"input\": \"{{cachePrefix}} [pc-session {{pcNonce}} nativeresp-gpt-5-mini-n] Answer in one short word: is the sky blue?\"\n}"
                     },
                     "url": {
-                      "raw": "{{baseUrl}}/v1/responses",
+                      "raw": "{{baseUrl}}/v1/responses?_chain={{cacheChain_pc_gpt_5_mini_nativeresp_non_streaming_write}}",
                       "host": [
                         "{{baseUrl}}"
                       ],
                       "path": [
                         "v1",
                         "responses"
+                      ],
+                      "query": [
+                        {
+                          "key": "_chain",
+                          "value": "{{cacheChain_pc_gpt_5_mini_nativeresp_non_streaming_write}}"
+                        }
                       ]
                     }
                   }
@@ -35809,7 +35921,9 @@
                           "  var d = det(j.usage);",
                           "  pm.test('write: usage present', function(){ pm.expect(j.usage,'usage').to.be.an('object'); });",
                           "  pm.test('write: cached_tokens present (numeric)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.a('number'); });",
-                          "}"
+                          "}",
+                          "// Publish the chained variable this pair's [read] consumes, so a sliced or --rerun-failed selection pulls this [write] into the same newman process.",
+                          "if (pm.response.code < 400) { pm.collectionVariables.set('cacheChain_pc_gpt_5_nano_dropinchat_non_streaming_write', 'sent'); }"
                         ]
                       }
                     }
@@ -35882,7 +35996,7 @@
                       "raw": "{\n  \"model\": \"gpt-5-nano\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-dropinchat-gpt-5-nano-n-{{pcNonce}}\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"{{cachePrefix}} [pc-session {{pcNonce}} dropinchat-gpt-5-nano-n]\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ]\n}"
                     },
                     "url": {
-                      "raw": "{{baseUrl}}/openai/v1/chat/completions",
+                      "raw": "{{baseUrl}}/openai/v1/chat/completions?_chain={{cacheChain_pc_gpt_5_nano_dropinchat_non_streaming_write}}",
                       "host": [
                         "{{baseUrl}}"
                       ],
@@ -35891,6 +36005,12 @@
                         "v1",
                         "chat",
                         "completions"
+                      ],
+                      "query": [
+                        {
+                          "key": "_chain",
+                          "value": "{{cacheChain_pc_gpt_5_nano_dropinchat_non_streaming_write}}"
+                        }
                       ]
                     }
                   }
@@ -35910,7 +36030,9 @@
                           "  var d = det(j.usage);",
                           "  pm.test('write: usage present', function(){ pm.expect(j.usage,'usage').to.be.an('object'); });",
                           "  pm.test('write: cached_tokens present (numeric)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.a('number'); });",
-                          "}"
+                          "}",
+                          "// Publish the chained variable this pair's [read] consumes, so a sliced or --rerun-failed selection pulls this [write] into the same newman process.",
+                          "if (pm.response.code < 400) { pm.collectionVariables.set('cacheChain_pc_gpt_4_1_dropinresp_non_streaming_write', 'sent'); }"
                         ]
                       }
                     }
@@ -35982,7 +36104,7 @@
                       "raw": "{\n  \"model\": \"gpt-4.1\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-dropinresp-gpt-4.1-n-{{pcNonce}}\",\n  \"input\": \"{{cachePrefix}} [pc-session {{pcNonce}} dropinresp-gpt-4.1-n] Answer in one short word: is the sky blue?\"\n}"
                     },
                     "url": {
-                      "raw": "{{baseUrl}}/openai/v1/responses",
+                      "raw": "{{baseUrl}}/openai/v1/responses?_chain={{cacheChain_pc_gpt_4_1_dropinresp_non_streaming_write}}",
                       "host": [
                         "{{baseUrl}}"
                       ],
@@ -35990,6 +36112,12 @@
                         "openai",
                         "v1",
                         "responses"
+                      ],
+                      "query": [
+                        {
+                          "key": "_chain",
+                          "value": "{{cacheChain_pc_gpt_4_1_dropinresp_non_streaming_write}}"
+                        }
                       ]
                     }
                   }
@@ -36016,7 +36144,9 @@
                           "  var r = sse(pm.response.text()); var d = det(r.u);",
                           "  pm.test('stream write: usage present in stream', function(){ pm.expect(r.u,'streamed usage').to.be.an('object'); });",
                           "  pm.test('stream write: cached_tokens present (numeric)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.a('number'); });",
-                          "}"
+                          "}",
+                          "// Publish the chained variable this pair's [read] consumes, so a sliced or --rerun-failed selection pulls this [write] into the same newman process.",
+                          "if (pm.response.code < 400) { pm.collectionVariables.set('cacheChain_pc_gpt_4_1_mini_nativechat_streaming_write', 'sent'); }"
                         ]
                       }
                     }
@@ -36090,7 +36220,7 @@
                       "raw": "{\n  \"model\": \"openai/gpt-4.1-mini\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-nativechat-gpt-4.1-mini-s-{{pcNonce}}\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"{{cachePrefix}} [pc-session {{pcNonce}} nativechat-gpt-4.1-mini-s]\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
                     },
                     "url": {
-                      "raw": "{{baseUrl}}/v1/chat/completions",
+                      "raw": "{{baseUrl}}/v1/chat/completions?_chain={{cacheChain_pc_gpt_4_1_mini_nativechat_streaming_write}}",
                       "host": [
                         "{{baseUrl}}"
                       ],
@@ -36098,6 +36228,12 @@
                         "v1",
                         "chat",
                         "completions"
+                      ],
+                      "query": [
+                        {
+                          "key": "_chain",
+                          "value": "{{cacheChain_pc_gpt_4_1_mini_nativechat_streaming_write}}"
+                        }
                       ]
                     }
                   }
@@ -36119,7 +36255,9 @@
                           "  var r = sse(pm.response.text()); var d = det(r.u);",
                           "  pm.test('stream write: usage present in stream', function(){ pm.expect(r.u,'streamed usage').to.be.an('object'); });",
                           "  pm.test('stream write: cached_tokens present (numeric)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.a('number'); });",
-                          "}"
+                          "}",
+                          "// Publish the chained variable this pair's [read] consumes, so a sliced or --rerun-failed selection pulls this [write] into the same newman process.",
+                          "if (pm.response.code < 400) { pm.collectionVariables.set('cacheChain_pc_gpt_4_1_nano_nativeresp_streaming_write', 'sent'); }"
                         ]
                       }
                     }
@@ -36192,13 +36330,19 @@
                       "raw": "{\n  \"model\": \"openai/gpt-4.1-nano\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-nativeresp-gpt-4.1-nano-s-{{pcNonce}}\",\n  \"input\": \"{{cachePrefix}} [pc-session {{pcNonce}} nativeresp-gpt-4.1-nano-s] Answer in one short word: is the sky blue?\",\n  \"stream\": true\n}"
                     },
                     "url": {
-                      "raw": "{{baseUrl}}/v1/responses",
+                      "raw": "{{baseUrl}}/v1/responses?_chain={{cacheChain_pc_gpt_4_1_nano_nativeresp_streaming_write}}",
                       "host": [
                         "{{baseUrl}}"
                       ],
                       "path": [
                         "v1",
                         "responses"
+                      ],
+                      "query": [
+                        {
+                          "key": "_chain",
+                          "value": "{{cacheChain_pc_gpt_4_1_nano_nativeresp_streaming_write}}"
+                        }
                       ]
                     }
                   }
@@ -36220,7 +36364,9 @@
                           "  var r = sse(pm.response.text()); var d = det(r.u);",
                           "  pm.test('stream write: usage present in stream', function(){ pm.expect(r.u,'streamed usage').to.be.an('object'); });",
                           "  pm.test('stream write: cached_tokens present (numeric)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.a('number'); });",
-                          "}"
+                          "}",
+                          "// Publish the chained variable this pair's [read] consumes, so a sliced or --rerun-failed selection pulls this [write] into the same newman process.",
+                          "if (pm.response.code < 400) { pm.collectionVariables.set('cacheChain_pc_gpt_4o_dropinchat_streaming_write', 'sent'); }"
                         ]
                       }
                     }
@@ -36295,7 +36441,7 @@
                       "raw": "{\n  \"model\": \"gpt-4o\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-dropinchat-gpt-4o-s-{{pcNonce}}\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"{{cachePrefix}} [pc-session {{pcNonce}} dropinchat-gpt-4o-s]\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
                     },
                     "url": {
-                      "raw": "{{baseUrl}}/openai/v1/chat/completions",
+                      "raw": "{{baseUrl}}/openai/v1/chat/completions?_chain={{cacheChain_pc_gpt_4o_dropinchat_streaming_write}}",
                       "host": [
                         "{{baseUrl}}"
                       ],
@@ -36304,6 +36450,12 @@
                         "v1",
                         "chat",
                         "completions"
+                      ],
+                      "query": [
+                        {
+                          "key": "_chain",
+                          "value": "{{cacheChain_pc_gpt_4o_dropinchat_streaming_write}}"
+                        }
                       ]
                     }
                   }
@@ -36325,7 +36477,9 @@
                           "  var r = sse(pm.response.text()); var d = det(r.u);",
                           "  pm.test('stream write: usage present in stream', function(){ pm.expect(r.u,'streamed usage').to.be.an('object'); });",
                           "  pm.test('stream write: cached_tokens present (numeric)', function(){ pm.expect(rtok(d),'cached_tokens').to.be.a('number'); });",
-                          "}"
+                          "}",
+                          "// Publish the chained variable this pair's [read] consumes, so a sliced or --rerun-failed selection pulls this [write] into the same newman process.",
+                          "if (pm.response.code < 400) { pm.collectionVariables.set('cacheChain_pc_gpt_4o_mini_dropinresp_streaming_write', 'sent'); }"
                         ]
                       }
                     }
@@ -36399,7 +36553,7 @@
                       "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-dropinresp-gpt-4o-mini-s-{{pcNonce}}\",\n  \"input\": \"{{cachePrefix}} [pc-session {{pcNonce}} dropinresp-gpt-4o-mini-s] Answer in one short word: is the sky blue?\",\n  \"stream\": true\n}"
                     },
                     "url": {
-                      "raw": "{{baseUrl}}/openai/v1/responses",
+                      "raw": "{{baseUrl}}/openai/v1/responses?_chain={{cacheChain_pc_gpt_4o_mini_dropinresp_streaming_write}}",
                       "host": [
                         "{{baseUrl}}"
                       ],
@@ -36407,6 +36561,12 @@
                         "openai",
                         "v1",
                         "responses"
+                      ],
+                      "query": [
+                        {
+                          "key": "_chain",
+                          "value": "{{cacheChain_pc_gpt_4o_mini_dropinresp_streaming_write}}"
+                        }
                       ]
                     }
                   }
@@ -139169,7 +139329,9 @@
                 "exec": [
                   "pm.test('69.2 openrouter responses cache write: 2xx', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
-                  "});"
+                  "});",
+                  "// Publish the chained variable this pair's [read] consumes, so a sliced or --rerun-failed selection pulls this [write] into the same newman process.",
+                  "if (pm.response.code < 400) { pm.collectionVariables.set('cacheChain_openrouter_claude_responses_prompt_caching_non_streaming', 'sent'); }"
                 ]
               }
             }
@@ -139244,13 +139406,19 @@
               "raw": "{\n  \"model\": \"openrouter/anthropic/claude-sonnet-4\",\n  \"max_output_tokens\": 32,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [bf-6290 {{pcNonce}} nonstream]\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
             },
             "url": {
-              "raw": "{{baseUrl}}/v1/responses",
+              "raw": "{{baseUrl}}/v1/responses?_chain={{cacheChain_openrouter_claude_responses_prompt_caching_non_streaming}}",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "v1",
                 "responses"
+              ],
+              "query": [
+                {
+                  "key": "_chain",
+                  "value": "{{cacheChain_openrouter_claude_responses_prompt_caching_non_streaming}}"
+                }
               ]
             }
           }
@@ -139269,7 +139437,9 @@
                   "pm.test('69.4 stream reached a terminal event', function () {",
                   "  var raw = pm.response.text() || '';",
                   "  pm.expect(raw.indexOf('response.completed') !== -1 || raw.indexOf('response.incomplete') !== -1, 'no terminal SSE event: ' + raw.slice(-400)).to.be.true;",
-                  "});"
+                  "});",
+                  "// Publish the chained variable this pair's [read] consumes, so a sliced or --rerun-failed selection pulls this [write] into the same newman process.",
+                  "if (pm.response.code < 400) { pm.collectionVariables.set('cacheChain_openrouter_claude_responses_prompt_caching_streaming', 'sent'); }"
                 ]
               }
             }
@@ -139346,13 +139516,19 @@
               "raw": "{\n  \"model\": \"openrouter/anthropic/claude-sonnet-4\",\n  \"max_output_tokens\": 32,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [bf-6290 {{pcNonce}} stream]\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ],\n  \"stream\": true\n}"
             },
             "url": {
-              "raw": "{{baseUrl}}/v1/responses",
+              "raw": "{{baseUrl}}/v1/responses?_chain={{cacheChain_openrouter_claude_responses_prompt_caching_streaming}}",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "v1",
                 "responses"
+              ],
+              "query": [
+                {
+                  "key": "_chain",
+                  "value": "{{cacheChain_openrouter_claude_responses_prompt_caching_streaming}}"
+                }
               ]
             }
           }
@@ -139570,7 +139746,9 @@
                 "exec": [
                   "pm.test('63.3 cache write: 2xx', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
-                  "});"
+                  "});",
+                  "// Publish the chained variable this pair's [read] consumes, so a sliced or --rerun-failed selection pulls this [write] into the same newman process.",
+                  "if (pm.response.code < 400) { pm.collectionVariables.set('cacheChain_anthropic_claude_auto_injected_cache_non_streaming_write', 'sent'); }"
                 ]
               }
             }
@@ -139653,13 +139831,19 @@
               "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"max_output_tokens\": 32,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [bf-6180 {{pcNonce}} nonstream]\"\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
             },
             "url": {
-              "raw": "{{baseUrl}}/v1/responses",
+              "raw": "{{baseUrl}}/v1/responses?_chain={{cacheChain_anthropic_claude_auto_injected_cache_non_streaming_write}}",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "v1",
                 "responses"
+              ],
+              "query": [
+                {
+                  "key": "_chain",
+                  "value": "{{cacheChain_anthropic_claude_auto_injected_cache_non_streaming_write}}"
+                }
               ]
             }
           }
@@ -139678,7 +139862,9 @@
                   "pm.test('63.5 stream reached a terminal event', function () {",
                   "  var raw = pm.response.text() || '';",
                   "  pm.expect(raw.indexOf('response.completed') !== -1 || raw.indexOf('response.incomplete') !== -1, 'no terminal SSE event: ' + raw.slice(-400)).to.be.true;",
-                  "});"
+                  "});",
+                  "// Publish the chained variable this pair's [read] consumes, so a sliced or --rerun-failed selection pulls this [write] into the same newman process.",
+                  "if (pm.response.code < 400) { pm.collectionVariables.set('cacheChain_anthropic_claude_auto_injected_cache_streaming_write', 'sent'); }"
                 ]
               }
             }
@@ -139761,13 +139947,19 @@
               "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"max_output_tokens\": 32,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [bf-6180 {{pcNonce}} stream]\"\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ],\n  \"stream\": true\n}"
             },
             "url": {
-              "raw": "{{baseUrl}}/v1/responses",
+              "raw": "{{baseUrl}}/v1/responses?_chain={{cacheChain_anthropic_claude_auto_injected_cache_streaming_write}}",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "v1",
                 "responses"
+              ],
+              "query": [
+                {
+                  "key": "_chain",
+                  "value": "{{cacheChain_anthropic_claude_auto_injected_cache_streaming_write}}"
+                }
               ]
             }
           }
@@ -143709,7 +143901,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"input\": \"A farmer has 17 sheep and all but 9 run away. Think it through step by step, then answer.\",\n  \"reasoning\": {\n    \"effort\": \"medium\",\n    \"summary\": \"auto\"\n  },\n  \"max_output_tokens\": 1024,\n  \"stream\": true\n}",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"input\": \"A farmer has 17 sheep and all but 9 run away. Think it through step by step, then answer.\",\n  \"reasoning\": {\n    \"effort\": \"medium\",\n    \"summary\": \"auto\"\n  },\n  \"max_output_tokens\": 4055,\n  \"stream\": true\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -144259,7 +144451,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0\",\n  \"input\": [\n    {\"role\": \"user\", \"content\": \"A farmer has 17 sheep and all but 9 run away. Think it through step by step, then answer.\"},\n    {{bedrockStreamedReasoningItem_rsf}},\n    {\"role\": \"assistant\", \"content\": [{\"type\": \"output_text\", \"text\": \"Nine sheep remain.\"}]},\n    {\"role\": \"user\", \"content\": \"Now restate that in one short sentence.\"}\n  ],\n  \"reasoning\": {\"effort\": \"medium\", \"summary\": \"auto\"},\n  \"max_output_tokens\": 512\n}",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0\",\n  \"input\": [\n    {\"role\": \"user\", \"content\": \"A farmer has 17 sheep and all but 9 run away. Think it through step by step, then answer.\"},\n    {{bedrockStreamedReasoningItem_rsf}},\n    {\"role\": \"assistant\", \"content\": [{\"type\": \"output_text\", \"text\": \"Nine sheep remain.\"}]},\n    {\"role\": \"user\", \"content\": \"Now restate that in one short sentence.\"}\n  ],\n  \"reasoning\": {\"effort\": \"medium\", \"summary\": \"auto\"},\n  \"max_output_tokens\": 2048\n}",
               "options": {
                 "raw": {
                   "language": "json"
