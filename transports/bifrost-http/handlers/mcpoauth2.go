@@ -190,20 +190,36 @@ func resolveOAuthConfigStatus(configStatus string, flow *configstoreTables.Table
 }
 
 // currentAdminOauthFlow returns the admin-mode flow row for the MCP client
-// owning this OAuth config, or nil when the client has none. Whether that row
+// owning this OAuth config, or nil when no client owns it. Whether that row
 // says a reauth is still in flight is resolveOAuthConfigStatus's call — this
-// only fetches. Errors are non-fatal: a lookup failure leaves the caller with
-// the config status rather than failing the whole status read.
-func (h *OAuthHandler) currentAdminOauthFlow(ctx context.Context, oauthConfigID string) *configstoreTables.TableMCPOauthFlow {
+// only fetches.
+//
+// A lookup failure is returned rather than folded into nil. nil means "no
+// reauth in flight", so swallowing one would report the config's own — stale —
+// "authorized" and let the authorizer UI complete a reauth whose flow row
+// could not actually be read, which is the failure this endpoint exists to
+// prevent. The caller turns it into a 500; the UI's poll treats that as
+// transient and keeps polling, which is the safe direction.
+//
+// A config with no owning MCP client is not a failure: the admin-test popup
+// validates an OAuth config template that may have no client yet, and there
+// is then no flow row to find.
+func (h *OAuthHandler) currentAdminOauthFlow(ctx context.Context, oauthConfigID string) (*configstoreTables.TableMCPOauthFlow, error) {
 	client, err := h.store.ConfigStore.GetMCPClientByOauthConfigID(ctx, oauthConfigID)
-	if err != nil || client == nil {
-		return nil
+	if err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if client == nil {
+		return nil, nil
 	}
 	flow, err := h.store.ConfigStore.GetOauthUserSessionByModeIdentityAndMCPClient(ctx, schemas.MCPAuthModeAdmin, "", client.ClientID)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return flow
+	return flow, nil
 }
 
 // getOAuthConfigStatus returns the current status of an OAuth config
@@ -234,7 +250,12 @@ func (h *OAuthHandler) getOAuthConfigStatus(ctx *fasthttp.RequestCtx) {
 	// skipped for every other status.
 	var inFlightFlow *configstoreTables.TableMCPOauthFlow
 	if oauthConfig.Status == "authorized" {
-		inFlightFlow = h.currentAdminOauthFlow(ctx, configID)
+		flow, flowErr := h.currentAdminOauthFlow(ctx, configID)
+		if flowErr != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to read the reauthorization state for this OAuth config: %v", flowErr))
+			return
+		}
+		inFlightFlow = flow
 	}
 	response := map[string]interface{}{
 		"id":         oauthConfig.ID,
