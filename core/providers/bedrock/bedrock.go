@@ -217,8 +217,8 @@ func isStreamTransportError(err error) bool {
 // camelCase shape names AWS uses for ConverseStream / InvokeModelWithResponseStream
 // in-stream exception members) to a retryable HTTP status code. These exceptions
 // are transient and should be retried — the retry gate in executeRequestWithRetries
-// checks StatusCode against transientServerStatusCodes (500, 502, 503, 504) for
-// same-key retries and perKeyFailureStatusCodes (429) for rotation-triggered retries.
+// classifies the StatusCode (ClassifyFailure): 500, 502, 503 and 504 retry on the same
+// key, 429 rotates to the next one.
 //
 // Some AWS exceptions have a native status code the gate does not recognize
 // (modelStreamErrorException=424, modelTimeoutException=408); they are mapped to
