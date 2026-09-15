@@ -150227,6 +150227,251 @@
           ]
         }
       ]
+    },
+    {
+      "name": "91. Streaming raw_response retains every provider SSE frame (#7144) (raw-stream-frames)",
+      "description": "Issue #7144: with send_back_raw_response enabled, the OpenAI-compatible chat streaming\nloop attached ExtraFields.RawResponse only inside the branch that forwards chunks\ncarrying content/reasoning/audio/tool calls. Role-only, finish-only and usage-only\nframes are documented parts of an OpenAI stream, but none of them reaches that branch,\nso their bytes were discarded before framework/streaming could reconstruct\nraw_response - which it does purely by concatenating chunk.RawResponse. The usage-only\nframe is the provider's authoritative token count and is what Bifrost bills from, so\nthe captured audit trail could not be reconciled against a provider invoice.\n\nThe mirror defect lived on the Responses-over-Chat fallback, where one upstream chat\nframe spreads into several Responses events and each was stamped with the same payload,\nmaking a single frame appear N times.\n\n91.1 pins the usage-only frame surviving on the direct chat path, and that Bifrost still\nreports normalized usage (proving the frame is read, not merely recorded).\n91.2 pins the finish-only frame surviving, captured exactly once.\n91.3 pins the fallback path no longer duplicating frames.\n\nThe refusal/annotation forwarding fix from the same change is not pinned here: a live\nmodel cannot be reliably made to emit delta.refusal, so it is covered by the Go tests\nTestChatStreamForwardsRefusalOnlyDelta / TestChatStreamForwardsAnnotationOnlyDelta.",
+      "item": [
+        {
+          "name": "91.1 openai/gpt-4o-mini /v1/chat/completions streaming - raw_response retains the usage-only frame - #7144",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// #7144: raw capture used to live inside the branch that forwards content-bearing",
+                  "// chunks, so the final usage-only frame (choices: [], the provider's authoritative",
+                  "// token counts) was read and billed from but never recorded. Bifrost defaults",
+                  "// stream_options.include_usage, so this frame is guaranteed on the wire.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('91.1 streaming request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "// Collect the captured raw frames from every SSE event Bifrost emitted.",
+                  "// raw_response is a string of upstream `data:` payloads joined by a blank line",
+                  "// (see docs/providers/supported-providers/overview.mdx, 'Streaming responses').",
+                  "var rawFrames = [], normalizedTotal = 0;",
+                  "(pm.response.text() || '').split('\\n').forEach(function (l) {",
+                  "  if (l.indexOf('data: ') !== 0) { return; }",
+                  "  var p = l.slice(6).trim();",
+                  "  if (p === '[DONE]' || !p.length) { return; }",
+                  "  var j; try { j = JSON.parse(p); } catch (e) { return; }",
+                  "  if (j.usage && j.usage.total_tokens) { normalizedTotal = j.usage.total_tokens; }",
+                  "  if (j.response && j.response.usage && j.response.usage.total_tokens) { normalizedTotal = j.response.usage.total_tokens; }",
+                  "  var ef = j.extra_fields || {};",
+                  "  var rr = ef.raw_response;",
+                  "  if (rr === undefined || rr === null) { return; }",
+                  "  if (typeof rr !== 'string') { rr = JSON.stringify(rr); }",
+                  "  rr.split('\\n\\n').forEach(function (f) { if (f.trim().length) { rawFrames.push(f.trim()); } });",
+                  "});",
+                  "var parsedFrames = [];",
+                  "rawFrames.forEach(function (f) { try { parsedFrames.push(JSON.parse(f)); } catch (e) {} });",
+                  "var usageOnly = parsedFrames.filter(function (j) { return j.choices && j.choices.length === 0 && j.usage && j.usage.prompt_tokens > 0; });",
+                  "var finishFrames = parsedFrames.filter(function (j) { return j.choices && j.choices.length > 0 && j.choices[0].finish_reason; });",
+                  "var dbg = ' | frames=' + rawFrames.length + ' parsed=' + parsedFrames.length + ' sample=' + rawFrames.join(' ~~ ').slice(0, 1200);",
+                  "pm.test('91.1 raw_response contains the provider usage-only frame', function () {",
+                  "  pm.expect(usageOnly.length, 'no frame with choices:[] and usage.prompt_tokens found' + dbg).to.be.above(0);",
+                  "});",
+                  "pm.test('91.1 normalized usage is still reported (the frame was read, not just recorded)', function () {",
+                  "  pm.expect(normalizedTotal, 'expected a non-zero normalized total_tokens' + dbg).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"stream\": true,\n  \"max_tokens\": 48,\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Say hello in one short sentence.\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "91.2 openai/gpt-4o-mini /v1/chat/completions streaming - raw_response retains the finish-only frame exactly once - #7144",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// #7144: a chunk whose delta is {} and which carries finish_reason is how OpenAI",
+                  "// ends a completion. It never entered the content-forwarding branch, so its bytes",
+                  "// vanished. The exactly-once assertions also guard the opposite failure - capturing",
+                  "// a frame more than once - which is the shape the Responses fallback had (case 91.3).",
+                  "// Only frames that are unique by construction are counted: two identical content",
+                  "// deltas can legitimately repeat on the wire, a finish or usage frame cannot.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('91.2 streaming request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "// Collect the captured raw frames from every SSE event Bifrost emitted.",
+                  "// raw_response is a string of upstream `data:` payloads joined by a blank line",
+                  "// (see docs/providers/supported-providers/overview.mdx, 'Streaming responses').",
+                  "var rawFrames = [], normalizedTotal = 0;",
+                  "(pm.response.text() || '').split('\\n').forEach(function (l) {",
+                  "  if (l.indexOf('data: ') !== 0) { return; }",
+                  "  var p = l.slice(6).trim();",
+                  "  if (p === '[DONE]' || !p.length) { return; }",
+                  "  var j; try { j = JSON.parse(p); } catch (e) { return; }",
+                  "  if (j.usage && j.usage.total_tokens) { normalizedTotal = j.usage.total_tokens; }",
+                  "  if (j.response && j.response.usage && j.response.usage.total_tokens) { normalizedTotal = j.response.usage.total_tokens; }",
+                  "  var ef = j.extra_fields || {};",
+                  "  var rr = ef.raw_response;",
+                  "  if (rr === undefined || rr === null) { return; }",
+                  "  if (typeof rr !== 'string') { rr = JSON.stringify(rr); }",
+                  "  rr.split('\\n\\n').forEach(function (f) { if (f.trim().length) { rawFrames.push(f.trim()); } });",
+                  "});",
+                  "var parsedFrames = [];",
+                  "rawFrames.forEach(function (f) { try { parsedFrames.push(JSON.parse(f)); } catch (e) {} });",
+                  "var usageOnly = parsedFrames.filter(function (j) { return j.choices && j.choices.length === 0 && j.usage && j.usage.prompt_tokens > 0; });",
+                  "var finishFrames = parsedFrames.filter(function (j) { return j.choices && j.choices.length > 0 && j.choices[0].finish_reason; });",
+                  "var dbg = ' | frames=' + rawFrames.length + ' parsed=' + parsedFrames.length + ' sample=' + rawFrames.join(' ~~ ').slice(0, 1200);",
+                  "pm.test('91.2 raw_response contains a finish_reason frame', function () {",
+                  "  pm.expect(finishFrames.length, 'no frame carrying finish_reason found' + dbg).to.be.above(0);",
+                  "});",
+                  "pm.test('91.2 the finish_reason frame is captured exactly once', function () {",
+                  "  pm.expect(finishFrames.length, 'finish_reason frame captured ' + finishFrames.length + ' times' + dbg).to.eql(1);",
+                  "});",
+                  "pm.test('91.2 the usage-only frame is captured exactly once', function () {",
+                  "  pm.expect(usageOnly.length, 'usage-only frame captured ' + usageOnly.length + ' times' + dbg).to.eql(1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"stream\": true,\n  \"max_tokens\": 48,\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Say hello in one short sentence.\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "91.3 deepseek/deepseek-v4-flash /v1/responses streaming - Responses-over-Chat fallback does not duplicate raw frames - #7144",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// On the Responses-over-Chat fallback one upstream chat frame is spread into several",
+                  "// Responses events, and every one of them used to be stamped with the same payload -",
+                  "// so the reconstructed raw_response reported a single frame N times (measured: the",
+                  "// finish frame 4x). DeepSeek takes this fallback unconditionally on the",
+                  "// OpenAI-compatible path (core/providers/deepseek/deepseek.go:387).",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('91.3 streaming request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "// Collect the captured raw frames from every SSE event Bifrost emitted.",
+                  "// raw_response is a string of upstream `data:` payloads joined by a blank line",
+                  "// (see docs/providers/supported-providers/overview.mdx, 'Streaming responses').",
+                  "var rawFrames = [], normalizedTotal = 0;",
+                  "(pm.response.text() || '').split('\\n').forEach(function (l) {",
+                  "  if (l.indexOf('data: ') !== 0) { return; }",
+                  "  var p = l.slice(6).trim();",
+                  "  if (p === '[DONE]' || !p.length) { return; }",
+                  "  var j; try { j = JSON.parse(p); } catch (e) { return; }",
+                  "  if (j.usage && j.usage.total_tokens) { normalizedTotal = j.usage.total_tokens; }",
+                  "  if (j.response && j.response.usage && j.response.usage.total_tokens) { normalizedTotal = j.response.usage.total_tokens; }",
+                  "  var ef = j.extra_fields || {};",
+                  "  var rr = ef.raw_response;",
+                  "  if (rr === undefined || rr === null) { return; }",
+                  "  if (typeof rr !== 'string') { rr = JSON.stringify(rr); }",
+                  "  rr.split('\\n\\n').forEach(function (f) { if (f.trim().length) { rawFrames.push(f.trim()); } });",
+                  "});",
+                  "var parsedFrames = [];",
+                  "rawFrames.forEach(function (f) { try { parsedFrames.push(JSON.parse(f)); } catch (e) {} });",
+                  "var usageOnly = parsedFrames.filter(function (j) { return j.choices && j.choices.length === 0 && j.usage && j.usage.prompt_tokens > 0; });",
+                  "var finishFrames = parsedFrames.filter(function (j) { return j.choices && j.choices.length > 0 && j.choices[0].finish_reason; });",
+                  "var dbg = ' | frames=' + rawFrames.length + ' parsed=' + parsedFrames.length + ' sample=' + rawFrames.join(' ~~ ').slice(0, 1200);",
+                  "pm.test('91.3 the finish_reason frame is not duplicated across spread events', function () {",
+                  "  pm.expect(finishFrames.length, 'finish_reason frame captured ' + finishFrames.length + ' times; expected at most once' + dbg).to.be.below(2);",
+                  "});",
+                  "pm.test('91.3 the usage-only frame is not duplicated across spread events', function () {",
+                  "  pm.expect(usageOnly.length, 'usage-only frame captured ' + usageOnly.length + ' times; expected at most once' + dbg).to.be.below(2);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"stream\": true,\n  \"max_output_tokens\": 48,\n  \"input\": [\n    { \"role\": \"user\", \"content\": \"Say hello in one short sentence.\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }
