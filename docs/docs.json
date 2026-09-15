@@ -2044,6 +2044,7 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v2.2.0",
               "changelogs/ent-v2.1.1",
               "changelogs/ent-v2.1.0",
               "changelogs/ent-v2.0.1",
@@ -2137,12 +2138,23 @@
             "item": "Edge",
             "icon": "grip",
             "pages": [
+              "changelogs/edge-v0.7.0",
               "changelogs/edge-v0.6.0",
-              "changelogs/edge-v0.5.6",
-              "changelogs/edge-v0.4.0",
-              "changelogs/edge-v0.3.0",
-              "changelogs/edge-v0.2.0",
-              "changelogs/edge-v0.1.0"
+              {
+                "group": "August 2026",
+                "pages": [
+                  "changelogs/edge-v0.5.6",
+                  "changelogs/edge-v0.4.0"
+                ]
+              },
+              {
+                "group": "July 2026",
+                "pages": [
+                  "changelogs/edge-v0.3.0",
+                  "changelogs/edge-v0.2.0",
+                  "changelogs/edge-v0.1.0"
+                ]
+              }
             ]
           },
           {
