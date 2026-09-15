@@ -173,6 +173,7 @@
               },
               "providers/routing-rules",
               "providers/provider-routing",
+              "providers/session-affinity",
               "providers/aliasing-models",
               "providers/reasoning",
               "providers/performance",
