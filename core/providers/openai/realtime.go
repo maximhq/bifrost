@@ -167,6 +167,8 @@ func newRealtimeWebRTCSDPError(status int, errorType, message string, err error)
 	return bifrostErr
 }
 
+// ShouldStartRealtimeTurn identifies manual requests and automatic response starts.
+// Audio commit acknowledgments only accept input and do not start response turns.
 func (provider *OpenAIProvider) ShouldStartRealtimeTurn(event *schemas.BifrostRealtimeEvent) bool {
 	if event == nil {
 		return false

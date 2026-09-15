@@ -905,6 +905,8 @@ func (r *webrtcRealtimeRelay) handleDownstreamMessage(msg webrtc.DataChannelMess
 	r.sendUpstream(providerEvent, msg.IsString)
 }
 
+// handleUpstreamMessage translates a provider data-channel event, updates turn
+// hooks for the session mode, and forwards the event to the browser.
 func (r *webrtcRealtimeRelay) handleUpstreamMessage(msg webrtc.DataChannelMessage) {
 	event, err := r.provider.ToBifrostRealtimeEvent(msg.Data)
 	if err != nil {

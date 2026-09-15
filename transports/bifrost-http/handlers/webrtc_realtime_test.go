@@ -3,17 +3,215 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"net"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
+	azureProvider "github.com/maximhq/bifrost/core/providers/azure"
+	openaiProvider "github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
+	"github.com/pion/webrtc/v4"
 	"github.com/valyala/fasthttp"
 )
+
+// TestWebRTCRealtimeAudioTurnLifecycle exercises the data-channel callbacks,
+// including provider turn selection: the WebRTC relay owns its own wiring.
+func TestWebRTCRealtimeAudioTurnLifecycle(t *testing.T) {
+	if logger == nil {
+		SetLogger(bifrost.NewDefaultLogger(schemas.LogLevelError))
+	}
+	for _, provider := range []struct {
+		name schemas.ModelProvider
+		impl schemas.RealtimeProvider
+	}{
+		{schemas.OpenAI, &openaiProvider.OpenAIProvider{}},
+		{schemas.Azure, &azureProvider.AzureProvider{}},
+	} {
+		for _, mode := range []string{"manual", "automatic", "transcription"} {
+			t.Run(string(provider.name)+"/"+mode, func(t *testing.T) {
+				client, err := bifrost.Init(t.Context(), schemas.BifrostConfig{
+					Account: wsSpanTestAccount{},
+					Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(client.Shutdown)
+				session := bfws.NewSession(nil)
+				relay := &webrtcRealtimeRelay{
+					client: client, session: session,
+					bifrostCtx: schemas.NewBifrostContext(t.Context(), schemas.NoDeadline),
+					provider:   provider.impl, providerKey: provider.name,
+					model: "gpt-realtime", key: &schemas.Key{ID: "test-key-1"},
+					transcriptionSession: mode == "transcription",
+				}
+				browser, browserMessages := newRealtimeTestDataChannel(t, relay.bindDownstreamChannel)
+				upstream, upstreamMessages := newRealtimeTestDataChannel(t, relay.bindUpstreamChannel)
+				t.Cleanup(relay.close)
+				read := func(messages <-chan string) string {
+					t.Helper()
+					select {
+					case message := <-messages:
+						return message
+					case <-time.After(5 * time.Second):
+						t.Fatal("timed out waiting for relayed data-channel message")
+						return ""
+					}
+				}
+				send := func(dc *webrtc.DataChannel, payload string) {
+					t.Helper()
+					if err := dc.SendText(payload); err != nil {
+						t.Fatal(err)
+					}
+				}
+				providerEvent := func(payload string) {
+					t.Helper()
+					send(upstream, payload)
+					got := read(browserMessages)
+					var actual, expected any
+					if err := json.Unmarshal([]byte(got), &actual); err != nil {
+						t.Fatal(err)
+					}
+					if err := json.Unmarshal([]byte(payload), &expected); err != nil {
+						t.Fatal(err)
+					}
+					if !reflect.DeepEqual(actual, expected) {
+						t.Fatalf("provider event = %s, want %s", got, payload)
+					}
+				}
+				startTurn := func() {
+					t.Helper()
+					send(browser, `{"type":"input_audio_buffer.commit"}`)
+					if got := read(upstreamMessages); got != `{"type":"input_audio_buffer.commit"}` {
+						t.Fatalf("audio commit was not forwarded: %s", got)
+					}
+					providerEvent(`{"type":"input_audio_buffer.committed","item_id":"audio-input"}`)
+					if mode == "transcription" {
+						if session.PeekRealtimeTurnHooks() == nil {
+							t.Fatal("transcription commit did not start hooks")
+						}
+						return
+					}
+					if session.PeekRealtimeTurnHooks() != nil {
+						t.Fatal("audio commit started response hooks")
+					}
+					if mode == "manual" {
+						send(browser, `{"type":"response.create"}`)
+						if got := read(upstreamMessages); got != `{"type":"response.create"}` {
+							t.Fatalf("response.create was not forwarded: %s", got)
+						}
+					}
+					previousHooks := session.PeekRealtimeTurnHooks()
+					providerEvent(`{"type":"response.created","response":{"id":"response-1","status":"in_progress"}}`)
+					hooks := session.PeekRealtimeTurnHooks()
+					if hooks == nil {
+						t.Fatal("response.created did not start hooks")
+					}
+					if mode == "manual" && (previousHooks == nil || hooks != previousHooks) {
+						t.Fatal("response.created replaced the client-created hooks")
+					}
+					send(browser, `{"type":"response.create"}`)
+					if got := read(browserMessages); !strings.Contains(got, "active response in progress") {
+						t.Fatalf("duplicate response error = %s", got)
+					}
+					if session.PeekRealtimeTurnHooks() != hooks {
+						t.Fatal("duplicate response replaced active hooks")
+					}
+				}
+				for turn := 0; turn < 2; turn++ {
+					startTurn()
+					if mode == "transcription" {
+						providerEvent(`{"type":"conversation.item.input_audio_transcription.completed","item_id":"audio-input","transcript":"hello"}`)
+					} else {
+						providerEvent(`{"type":"response.done","response":{"id":"response-1","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`)
+					}
+					if session.PeekRealtimeTurnHooks() != nil {
+						t.Fatal("completed turn left hooks active")
+					}
+				}
+				startTurn()
+				relay.closeWithShutdownSignal()
+				if session.PeekRealtimeTurnHooks() != nil {
+					t.Fatal("closing an active relay left hooks active")
+				}
+			})
+		}
+	}
+}
+
+// newRealtimeTestDataChannel connects two local peers without STUN or a provider.
+// Negotiated channels let production callbacks be installed before messages arrive.
+func newRealtimeTestDataChannel(t *testing.T, bind func(*webrtc.DataChannel)) (*webrtc.DataChannel, <-chan string) {
+	t.Helper()
+	newPeer := func() *webrtc.PeerConnection {
+		t.Helper()
+		settings := webrtc.SettingEngine{}
+		settings.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
+		settings.SetIncludeLoopbackCandidate(true)
+		settings.SetIPFilter(func(ip net.IP) bool { return ip.IsLoopback() })
+		pc, err := webrtc.NewAPI(webrtc.WithSettingEngine(settings)).NewPeerConnection(webrtc.Configuration{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = pc.Close() })
+		return pc
+	}
+	relayPC, remotePC := newPeer(), newPeer()
+	negotiated, id := true, uint16(0)
+	options := &webrtc.DataChannelInit{Negotiated: &negotiated, ID: &id}
+	relayDC, err := relayPC.CreateDataChannel("oai-events", options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bind(relayDC)
+	remoteDC, err := remotePC.CreateDataChannel("oai-events", options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages := make(chan string, 16)
+	remoteDC.OnMessage(func(message webrtc.DataChannelMessage) { messages <- string(message.Data) })
+	opened := make(chan struct{})
+	remoteDC.OnOpen(func() { close(opened) })
+	exchange := func(from, to *webrtc.PeerConnection, description webrtc.SessionDescription) {
+		t.Helper()
+		gathered := webrtc.GatheringCompletePromise(from)
+		if err := from.SetLocalDescription(description); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-gathered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("local ICE gathering timed out")
+		}
+		if err := to.SetRemoteDescription(*from.LocalDescription()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	offer, err := relayPC.CreateOffer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exchange(relayPC, remotePC, offer)
+	answer, err := remotePC.CreateAnswer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exchange(remotePC, relayPC, answer)
+	select {
+	case <-opened:
+	case <-time.After(10 * time.Second):
+		t.Fatal("local data channel did not open")
+	}
+	return remoteDC, messages
+}
 
 type testKVSyncDelegate struct {
 	destination *kvstore.Store
