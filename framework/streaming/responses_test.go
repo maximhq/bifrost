@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -151,6 +152,34 @@ func TestDeepCopyResponsesStreamResponseCopiesToolCaller(t *testing.T) {
 	}
 	if copied.Item.ResponsesToolMessage.Caller.ToolID == original.Item.ResponsesToolMessage.Caller.ToolID {
 		t.Fatal("caller tool id pointer was aliased")
+	}
+}
+
+// TestDeepCopyResponsesMessagePreservesBareStringAction verifies that a
+// bare-string action (e.g. image_generation_call's "generate") survives the
+// accumulator's deep copy instead of being dropped as an empty action struct.
+func TestDeepCopyResponsesMessagePreservesBareStringAction(t *testing.T) {
+	action := &schemas.ResponsesToolMessageActionStruct{}
+	actionField := reflect.ValueOf(action).Elem().FieldByName("ResponsesToolCallActionStr")
+	if !actionField.IsValid() {
+		t.Skip("released core dependency predates bare-string tool call actions")
+	}
+	actionField.Set(reflect.ValueOf(schemas.Ptr("generate")))
+
+	copied := deepCopyResponsesMessage(schemas.ResponsesMessage{
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			Action: action,
+		},
+	})
+	if copied.ResponsesToolMessage == nil || copied.ResponsesToolMessage.Action == nil {
+		t.Fatalf("unexpected copied message: %#v", copied)
+	}
+	copiedField := reflect.ValueOf(copied.ResponsesToolMessage.Action).Elem().FieldByName("ResponsesToolCallActionStr")
+	if copiedField.IsNil() || copiedField.Elem().String() != "generate" {
+		t.Fatal("bare-string action was not preserved")
+	}
+	if copiedField.Pointer() == actionField.Pointer() {
+		t.Fatal("bare-string action pointer was aliased")
 	}
 }
 
