@@ -687,6 +687,26 @@ func TestWarpRecordTurnFilesQuestionTurns(t *testing.T) {
 	require.Equal(t, "question", thread.Messages[1].FinishReason)
 }
 
+// Preamble text before the model calls ask_user still lands in response.Answer
+// (the prompt tells the model not to answer and ask in the same turn, but
+// nothing enforces that at the type level), and the question must still win:
+// the turn ended by asking, so the question - not the preamble - is what a
+// reopened thread should show as this turn's content.
+func TestWarpRecordTurnQuestionWinsOverPreambleAnswer(t *testing.T) {
+	store := newMemoryConversations()
+	service := historyService(store)
+	id := service.recordTurn(ownerCtx("u1"), &Turn{ConversationID: "t-preamble", IsNew: true, question: "what did we spend?"}, ChatResponse{
+		Answer:       "Let me check a few things first.",
+		FinishReason: "question",
+		Question:     &Question{Question: "Which time range?", Options: []QuestionOpt{{Label: "Last 7 days", Hint: "-7d"}}},
+	})
+	thread := store.threads[id]
+	require.NotNil(t, thread)
+	require.Len(t, thread.Messages, 2)
+	require.Equal(t, "Which time range?", thread.Messages[1].Content, "the question must win over preamble answer text")
+	require.Equal(t, "question", thread.Messages[1].FinishReason)
+}
+
 // The fold has to carry the question for the above to work: it is the only
 // thing the JSON transport and the recorder see.
 func TestWarpFoldCarriesQuestion(t *testing.T) {

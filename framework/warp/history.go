@@ -330,16 +330,15 @@ func (s *Service) recordTurn(ctx context.Context, turn *Turn, response ChatRespo
 	if response.Error != nil {
 		stored.Error = response.Error.Message
 	}
-	// A turn that ended by asking is filed with the question as its content.
-	// The thread id has already gone to the client on the done frame, so the
-	// thread must exist now or every later turn will arrive for a thread that
-	// was never created. Warp usually asks about the window or the scope
-	// first, which made this the common case rather than the edge.
-	// Whenever a question was posed, not only when it arrived alone. The model
-	// often narrates before asking ("let me check the window first..."), and
-	// fold.result() then sets both Answer and Question - so keying on an empty
-	// answer filed the narration and dropped the pending question, and reopening
-	// the thread showed prose with nothing to reply to.
+	// A turn that ended by asking is filed with the question as its content,
+	// regardless of whether the model also emitted preamble text before
+	// calling ask_user (e.g. "Let me check a few things first.") - that text
+	// still lands in response.Answer, and gating this on Answer == "" would
+	// silently file the preamble instead of the question the turn actually
+	// ended on. The thread id has already gone to the client on the done
+	// frame, so the thread must exist now or every later turn will arrive for
+	// a thread that was never created. Warp usually asks about the window or
+	// the scope first, which made this the common case rather than the edge.
 	if response.Question != nil {
 		stored.Content = response.Question.Question
 		stored.FinishReason = response.FinishReason

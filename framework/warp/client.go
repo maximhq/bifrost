@@ -256,11 +256,38 @@ func (c *Client) Chat(ctx context.Context, config *schemas.WarpConfig, conversat
 // header is the only way a specific key reaches the selector.
 const PinnedKeyHeader = "x-bf-api-key-id"
 
+// ExcludeMCPToolsHeader is Bifrost's MCP client-filtering header (see
+// core/mcp/utils.go's shouldIncludeClient and the doc comment on
+// schemas.MCPContextKeyIncludeClients). With the default BaseURL, Warp's
+// calls round-trip through this same Bifrost's public API (see BaseURL above)
+// exactly like any other client's, which means they pick up every MCP server
+// this deployment has configured for real end-user traffic - Apollo, GitHub,
+// Notion, Playwright, whatever else - none of which Warp ever calls. Those
+// tool declarations are not bounded the way Warp's own tool results and
+// history are, and on a deployment with several MCP servers configured they
+// can dwarf Warp's own ~10 tools by fifty times or more, resent on every
+// iteration of the research loop - enough on its own to exceed a 200k-token
+// context window on a single, simple question, independent of how much log
+// data exists. excludeMCPToolsValue names no real MCP client, so
+// shouldIncludeClient's per-client match excludes every one of them; this
+// only narrows Warp's own calls; it does not touch the deployment's MCP
+// configuration for anyone else.
+const ExcludeMCPToolsHeader = "x-bf-mcp-include-clients"
+
+// excludeMCPToolsValue is the sentinel sent on ExcludeMCPToolsHeader. Any
+// value that matches no configured MCP client name works; this one is chosen
+// to read as intentional in a request log rather than a stray real name.
+const excludeMCPToolsValue = "warp-excludes-all-mcp-tools"
+
 // requestHeaders builds the extra headers for one of Warp's upstream calls.
-// The User-Agent is always set so Warp's traffic is labelled even for calls
-// outside a conversation; the rest are present only when they mean something.
+// The User-Agent and MCP exclusion are always set so every one of Warp's
+// calls carries them, including ones outside a conversation; the rest are
+// present only when they mean something.
 func requestHeaders(config *schemas.WarpConfig, conversationID string) map[string][]string {
-	headers := map[string][]string{"User-Agent": {UserAgent}}
+	headers := map[string][]string{
+		"User-Agent":          {UserAgent},
+		ExcludeMCPToolsHeader: {excludeMCPToolsValue},
+	}
 	if conversationID != "" {
 		// Both headers carry the same value for different ends: one groups the
 		// thread's rows in the log table, the other keeps it on one key.

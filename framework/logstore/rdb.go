@@ -3018,6 +3018,15 @@ func (s *RDBLogStore) GetUserRankings(ctx context.Context, filters SearchFilters
 
 // GetDimensionRankings returns entities ranked by usage with trend comparison, grouped by the given dimension.
 func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFilters, dimension RankingDimension) (*DimensionRankingResult, error) {
+	// error_type / error_code / fail_reason / guardrail_rule / guardrail_action
+	// have no real column behind them (see jsonfielddimensions.go) and diverge
+	// enough from the rollup dimensions below - no matview path, no Unassigned
+	// bucket - to warrant their own function rather than a parameter threaded
+	// through this one.
+	if _, isJSONField := jsonFieldDimensions[dimension]; isJSONField {
+		return s.GetJSONFieldDimensionRankings(ctx, filters, dimension)
+	}
+
 	idCol, nameCol, ok := DimensionColumnDef(dimension)
 	if !ok {
 		return nil, fmt.Errorf("invalid ranking dimension: %s", dimension)

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -73,9 +74,14 @@ type Event struct {
 	// DurationMs and Failed describe a finished tool call. The result payload is
 	// deliberately absent: the model consumed it, and the UI only shows a chip.
 	// Echoing it would double the transcript's size for no reader benefit.
-	// No omitempty: a tool that finishes in under a millisecond reports 0, and
-	// the client reads a missing duration as "still running" - so the fastest
-	// calls left their row spinning forever.
+	//
+	// DurationMs is deliberately not omitempty: a call that fails validation
+	// before doing any real work can finish in under a millisecond, and
+	// time.Duration.Milliseconds() truncates that to exactly 0. omitempty would
+	// drop the field from the wire entirely in that case, and the client reads
+	// its absence as "still running" (see ChatToolCall.DurationMs below, whose
+	// tag already omits omitempty for the same reason) - so a fast failure's
+	// row would spin forever even though failed and tool_error arrived fine.
 	DurationMs int64 `json:"duration_ms"`
 	Failed     bool  `json:"failed,omitempty"`
 	// ToolError is the executor's own message, carried so the panel can show why
@@ -339,7 +345,101 @@ const (
 	// safety net against a shared resource, not a knob most deployments will
 	// ever need to touch.
 	maxConcurrentToolCalls = 8
+
+	// MaxConversationEstimatedTokens caps how large this turn's own
+	// accumulated conversation - the model's own output plus every tool
+	// result, replayed in full on every iteration - may grow before Warp is
+	// forced to answer from what it already has rather than keep researching.
+	// Each tool result is individually bounded (MaxToolResultBytes), and each
+	// step's own tool calls are bounded (MaxToolCallsPerTurn), but nothing
+	// previously bounded their sum across iterations: a model that filled every
+	// iteration's budget could still assemble a request the underlying
+	// provider rejects outright as too large, failing the whole turn with an
+	// opaque upstream error instead of a partial answer. Sized well under
+	// every provider's context window, including the smallest common one
+	// (128k tokens), leaving room for the system prompt, the client-sent
+	// history and the model's own next response.
+	MaxConversationEstimatedTokens = 100_000
+	// bytesPerTokenEstimate approximates how many UTF-8 bytes one ASCII-range
+	// token occupies, for the running budget above. Real text averages closer
+	// to 4; this is deliberately smaller so the estimate errs toward
+	// overcounting tokens, which trips the budget earlier rather than later.
+	// It only applies to ASCII bytes - see estimateTokensForBytes for why
+	// non-ASCII content is not scaled down the same way.
+	bytesPerTokenEstimate = 3
+
+	// maxStepOutputTokens bounds a non-final step's own generation (narration
+	// plus tool call arguments) - never the answer-only final step, which is
+	// deliberately left uncapped. Without a real cap here, maxToolRoundGrowthTokens
+	// below would only be an assumption: a reasoning model can otherwise emit far
+	// more than that, and the request built right after - possibly the
+	// answer-only one - would inherit however much it actually wrote.
+	maxStepOutputTokens = 8192
+	// maxToolRoundGrowthTokens is the most one non-final step can add to
+	// conversationTokens: every queued tool call maxed out at
+	// MaxToolResultBytes, plus the model's own output capped at
+	// maxStepOutputTokens. Reserved as headroom before another tool round is
+	// allowed (see finalStep below) - otherwise a step that was safely under
+	// MaxConversationEstimatedTokens when it started could still leave the
+	// conversation well past it once its results land, and the very next
+	// request, tool round or answer-only, would be built from that
+	// already-oversized total with nothing left to shrink it.
+	//
+	// MaxToolResultBytes is not divided by bytesPerTokenEstimate here: that
+	// ratio only holds for ASCII (see estimateTokensForBytes), and a tool
+	// result maxed out on dense non-ASCII content estimates at close to one
+	// token per byte, not one per three. Using the discounted figure would
+	// undersize this reservation for exactly the content it exists to guard
+	// against.
+	maxToolRoundGrowthTokens = MaxToolCallsPerTurn*MaxToolResultBytes + maxStepOutputTokens
 )
+
+// estimateMessageTokens roughly sizes messages for the running conversation
+// budget. It does not need to be exact - a byte-based estimate is cheap enough
+// to run every iteration, and only needs to trip the budget meaningfully
+// before the real request would overflow the model's context window.
+func estimateMessageTokens(messages ...schemas.ResponsesMessage) int {
+	total := 0
+	for _, message := range messages {
+		encoded, err := sonic.Marshal(message)
+		if err != nil {
+			continue
+		}
+		total += estimateTokensForBytes(encoded)
+	}
+	return total
+}
+
+// estimateTokensForBytes bounds the token estimate for one already-encoded
+// payload without a real tokenizer for whichever provider/model is
+// configured - Warp has no local tokenizer for most of them, and even a
+// borrowed one (e.g. tiktoken for an OpenAI model) would misestimate for
+// every other provider, so this stays a byte-based heuristic rather than
+// pretending to be exact for one provider and silently wrong for the rest.
+//
+// The bytesPerTokenEstimate ratio only holds for ASCII: a trained BPE
+// vocabulary is dominated by merged multi-byte ASCII tokens (common words,
+// punctuation, JSON structure), so real text rarely falls back anywhere near
+// one token per byte there. Non-ASCII bytes get no such discount and are
+// counted close to 1:1 - a tokenizer's byte-fallback path, taken for a
+// multi-byte UTF-8 sequence it has no merged token for, can turn each of
+// those bytes into its own token, and no tokenizer can produce more tokens
+// than input bytes. Without this split, a message that is mostly dense or
+// unusual Unicode (heavy CJK/emoji, or content shaped to defeat the estimate)
+// could undercount by up to bytesPerTokenEstimate, letting a request past the
+// budget check that the provider would still reject as too large. A single
+// pass with no allocation keeps this as cheap as the flat division it
+// replaces.
+func estimateTokensForBytes(encoded []byte) int {
+	ascii := 0
+	for _, b := range encoded {
+		if b < utf8.RuneSelf {
+			ascii++
+		}
+	}
+	nonASCII := len(encoded) - ascii
+	return ascii/bytesPerTokenEstimate + nonASCII
+}
 
 // toolCallSem is the semaphore maxConcurrentToolCalls describes. Package-level
 // rather than a field on Agent, since a fresh Agent is built for every turn
@@ -413,6 +513,11 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 	instructions := systemInstructions(a.config, a.deps != nil && a.deps.semantic != nil, timeContext{timezone: a.timezone, utcOffsetMinutes: a.utcOffsetMinutes})
 	finalInstructions := instructions + finalStepInstructions
 	conversation := append([]schemas.ResponsesMessage{}, messages...)
+	// conversationTokens tracks the running estimate behind
+	// MaxConversationEstimatedTokens. Updated incrementally as conversation
+	// grows rather than re-estimated from scratch each iteration, since only
+	// what was just appended is new.
+	conversationTokens := estimateMessageTokens(conversation...)
 	var usage *schemas.BifrostLLMUsage
 	// executed remembers every tool call that ran in an earlier step, keyed on
 	// name and raw arguments, so an identical repeat is refused instead of
@@ -439,9 +544,15 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 		// spends it on one more query and the whole run ends as an error that
 		// discards everything the earlier steps learned. A budget of one step
 		// is exempt: taking its tools away would leave Warp unable to look at
-		// anything at all.
-		finalStep := iteration == a.maxIterations && a.maxIterations > 1
-		params := &schemas.ResponsesParameters{Instructions: &instructions, Tools: declared}
+		// anything at all. The token check trips before conversationTokens
+		// itself reaches the budget, once what's left is no longer enough to
+		// cover one more tool round's worst case (maxToolRoundGrowthTokens) -
+		// so whatever request comes next, tool round or answer-only, is built
+		// from a conversation already known to fit, rather than discovering
+		// after the fact that the just-finished round pushed it past what the
+		// provider will accept.
+		finalStep := (iteration == a.maxIterations || conversationTokens >= MaxConversationEstimatedTokens-maxToolRoundGrowthTokens) && a.maxIterations > 1
+		params := &schemas.ResponsesParameters{Instructions: &instructions, Tools: declared, MaxOutputTokens: new(maxStepOutputTokens)}
 		if finalStep {
 			params = &schemas.ResponsesParameters{Instructions: &finalInstructions}
 		}
@@ -491,6 +602,7 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 		// a reasoning model's own items is what lets it continue the thought it
 		// started; dropping them makes each iteration start over.
 		conversation = append(conversation, response.Output...)
+		conversationTokens += estimateMessageTokens(response.Output...)
 
 		text := responsesText(response.Output)
 		toolCalls := responsesToolCalls(response.Output)
@@ -710,6 +822,7 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 		for _, result := range results {
 			if result != nil {
 				conversation = append(conversation, *result)
+				conversationTokens += estimateMessageTokens(*result)
 			}
 		}
 		for _, q := range queued {

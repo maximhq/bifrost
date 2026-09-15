@@ -206,16 +206,41 @@ func TestWarpAccountKeyAlwaysCarriesAValue(t *testing.T) {
 // (x-bf-api-key-id), not a bearer concern - governance ignores a bearer that is
 // not a virtual key. The header is emitted only when a key is actually pinned.
 func TestWarpRequestHeadersPinSelectedKey(t *testing.T) {
-	pinned := requestHeaders(&schemas.WarpConfig{APIKeyID: "key-123"}, "conv-1")
-	require.Equal(t, []string{"key-123"}, pinned[PinnedKeyHeader])
-	require.Equal(t, []string{"conv-1"}, pinned[ConversationHeader])
-	require.Equal(t, []string{"conv-1"}, pinned[SessionHeader])
-	require.Equal(t, []string{UserAgent}, pinned["User-Agent"])
+	cases := []struct {
+		name           string
+		config         *schemas.WarpConfig
+		conversationID string
+		wantPin        string
+		wantConv       string
+	}{
+		{name: "pinned key and conversation", config: &schemas.WarpConfig{APIKeyID: "key-123"}, conversationID: "conv-1", wantPin: "key-123", wantConv: "conv-1"},
+		{name: "pinned key, no conversation", config: &schemas.WarpConfig{APIKeyID: "key-123"}, wantPin: "key-123"},
+		{name: "conversation, no pinned key", config: &schemas.WarpConfig{}, conversationID: "conv-1", wantConv: "conv-1"},
+		{name: "neither", config: &schemas.WarpConfig{}},
+		{name: "nil config", config: nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			headers := requestHeaders(tc.config, tc.conversationID)
 
-	anyKey := requestHeaders(&schemas.WarpConfig{}, "")
-	_, hasPin := anyKey[PinnedKeyHeader]
-	require.False(t, hasPin, "no key pinned means no pin header")
-	_, hasConversation := anyKey[ConversationHeader]
-	require.False(t, hasConversation, "no conversation means no grouping header")
-	require.Equal(t, []string{UserAgent}, anyKey["User-Agent"], "Warp's traffic is always labelled")
+			// Always set, whatever else is: Warp's traffic is always labelled, and
+			// every call must keep the deployment's end-user MCP tools out of its
+			// context, including calls outside a conversation.
+			require.Equal(t, []string{UserAgent}, headers["User-Agent"], "Warp's traffic is always labelled")
+			require.Equal(t, []string{excludeMCPToolsValue}, headers[ExcludeMCPToolsHeader], "every call must exclude the deployment's MCP tools")
+
+			if tc.wantPin != "" {
+				require.Equal(t, []string{tc.wantPin}, headers[PinnedKeyHeader])
+			} else {
+				require.NotContains(t, headers, PinnedKeyHeader, "no key pinned means no pin header")
+			}
+			if tc.wantConv != "" {
+				require.Equal(t, []string{tc.wantConv}, headers[ConversationHeader])
+				require.Equal(t, []string{tc.wantConv}, headers[SessionHeader])
+			} else {
+				require.NotContains(t, headers, ConversationHeader, "no conversation means no grouping header")
+				require.NotContains(t, headers, SessionHeader, "no conversation means no session header")
+			}
+		})
+	}
 }

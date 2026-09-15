@@ -693,7 +693,16 @@ type logRow struct {
 	VirtualKeyName string  `json:"virtual_key_name,omitempty"`
 	UserID         string  `json:"user_id,omitempty"`
 	ErrorMessage   string  `json:"error_message,omitempty"`
-	Content        string  `json:"content,omitempty"`
+	// ErrorType, ErrorCode and StatusCode are the structured classification
+	// behind ErrorMessage - the same fields get_request_trace reads. Exposing
+	// them here is what lets a "what kinds of errors" question be answered by
+	// tallying a field query_logs already returns, rather than reading 25
+	// free-text messages and guessing at how many distinct failures they
+	// represent.
+	ErrorType  string `json:"error_type,omitempty"`
+	ErrorCode  string `json:"error_code,omitempty"`
+	StatusCode int    `json:"status_code,omitempty"`
+	Content    string `json:"content,omitempty"`
 	// Link opens this request in the Logs view. Built server-side so the
 	// model repeats it rather than guessing the dashboard's URL scheme.
 	Link string `json:"link,omitempty"`
@@ -720,8 +729,19 @@ func projectLog(entry *logstore.Log, includeContent bool, contentLimit int) logR
 		UserID:         derefString(entry.UserID),
 		Link:           logDetailLink(entry.ID),
 	}
-	if entry.ErrorDetailsParsed != nil && entry.ErrorDetailsParsed.Error != nil {
-		row.ErrorMessage = truncateText(entry.ErrorDetailsParsed.Error.Message, 300)
+	if be := entry.ErrorDetailsParsed; be != nil {
+		row.ErrorMessage = truncateText(be.GetErrorString(), 300)
+		if be.StatusCode != nil {
+			row.StatusCode = *be.StatusCode
+		}
+		if be.Error != nil {
+			if be.Error.Type != nil {
+				row.ErrorType = *be.Error.Type
+			}
+			if be.Error.Code != nil {
+				row.ErrorCode = *be.Error.Code
+			}
+		}
 	}
 	if includeContent {
 		row.Content = truncateText(logContent(entry), contentLimit)
@@ -833,6 +853,7 @@ func buildToolsFor(searcher *SemanticSearcher) []Tool {
 		queryLogsTool(),
 		countLogsTool(),
 		getLogDetailTool(),
+		getRequestTraceTool(),
 		queryMetricsTool(),
 		queryUsageByTool(),
 		queryModelsTool(),
