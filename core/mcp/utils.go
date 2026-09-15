@@ -674,12 +674,11 @@ func convertMCPToolToBifrostSchema(mcpTool *mcp.Tool, logger schemas.Logger) sch
 		// Fix array schemas on the source map before copying to OrderedMap
 		FixArraySchemas(mcpTool.InputSchema.Properties, logger)
 
-		orderedProps := schemas.NewOrderedMapWithCapacity(len(mcpTool.InputSchema.Properties))
-		for k, v := range mcpTool.InputSchema.Properties {
-			orderedProps.Set(k, v)
-		}
-
-		properties = orderedProps
+		// mcp-go decodes properties into a Go map, so the server's key order is
+		// already lost here. Sort the keys: ranging over the map would give a
+		// different order on each tools/list sync, which changes the tool JSON
+		// sent to providers (breaking prompt caching) and the tools hash.
+		properties = schemas.OrderedMapFromMap(mcpTool.InputSchema.Properties)
 	} else {
 		// For tools with no parameters, initialize an empty properties map
 		// This is required by some providers (e.g., OpenAI) which expect
@@ -698,11 +697,8 @@ func convertMCPToolToBifrostSchema(mcpTool *mcp.Tool, logger schemas.Logger) sch
 		// to Properties above.
 		FixArraySchemas(mcpTool.InputSchema.Defs, logger)
 
-		orderedDefs := schemas.NewOrderedMapWithCapacity(len(mcpTool.InputSchema.Defs))
-		for k, v := range mcpTool.InputSchema.Defs {
-			orderedDefs.Set(k, v)
-		}
-		defs = orderedDefs
+		// Sorted for the same reason as properties above.
+		defs = schemas.OrderedMapFromMap(mcpTool.InputSchema.Defs)
 	}
 
 	// Preserve MCP tool annotations if any are set.
