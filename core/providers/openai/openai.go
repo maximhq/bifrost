@@ -1296,14 +1296,12 @@ func HandleOpenAIChatCompletionStreaming(
 		var serviceTier *schemas.BifrostServiceTier
 		forwardedTerminalFinishReason := false
 		// Upstream frames read but not yet handed to a chunk. Raw capture must not
-		// depend on whether a frame becomes a forwarded chunk: role-only,
-		// finish-only and usage-only frames are documented parts of an OpenAI
-		// stream - and the usage frame is the one Bifrost bills from - yet none of
-		// them reaches the content-forwarding branch that used to be the only place
-		// RawResponse was set. Buffering here and draining on the next forwarded
+		// depend on whether a frame becomes a forwarded chunk: finish-only and
+		// usage-only frames are documented parts of an OpenAI stream - and the usage
+		// frame is the one Bifrost bills from - yet neither reaches the semantic
+		// chunk-forwarding branch. Buffering here and draining on the next forwarded
 		// chunk (or the synthetic terminal chunk) keeps every frame in upstream
-		// order, which appending them all to the final chunk would not: the
-		// role-only frame arrives before the content. See
+		// order. See
 		// https://github.com/maximhq/bifrost/issues/7144.
 		//
 		// Only populated when sendBackRawResponse is set, and drained on every chunk
@@ -1611,7 +1609,9 @@ func HandleOpenAIChatCompletionStreaming(
 					created = response.Created
 				}
 
-				// Handle regular content chunks, including reasoning
+				// Handle regular content chunks, including the initial role-only delta.
+				// OpenAI commonly sends role:"assistant" with empty content first; dropping
+				// it leaves strict streaming clients unable to reconstruct a valid message.
 				// Refusal and Annotations are answer-bearing delta fields just like
 				// Content: a refusal IS the model's reply, and annotations carry the
 				// URL citations behind a web-search answer. Omitting them here dropped
@@ -1621,7 +1621,8 @@ func HandleOpenAIChatCompletionStreaming(
 				// OpenAI-compatible provider.
 				if choice.ChatStreamResponseChoice != nil &&
 					choice.ChatStreamResponseChoice.Delta != nil &&
-					((choice.ChatStreamResponseChoice.Delta.Content != nil && *choice.ChatStreamResponseChoice.Delta.Content != "") ||
+					(choice.ChatStreamResponseChoice.Delta.Role != nil ||
+						(choice.ChatStreamResponseChoice.Delta.Content != nil && *choice.ChatStreamResponseChoice.Delta.Content != "") ||
 						(choice.ChatStreamResponseChoice.Delta.Refusal != nil && *choice.ChatStreamResponseChoice.Delta.Refusal != "") ||
 						len(choice.ChatStreamResponseChoice.Delta.Annotations) > 0 ||
 						choice.ChatStreamResponseChoice.Delta.Reasoning != nil ||
