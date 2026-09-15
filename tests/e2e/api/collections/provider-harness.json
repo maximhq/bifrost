@@ -150106,6 +150106,127 @@
           }
         }
       ]
+    },
+    {
+      "name": "90. Codex embedded local MCP tools across providers (codex-local-mcp-hoist)",
+      "description": "Codex declares local MCP functions inside additional_tools input items. On namespace-incompatible provider wires these declarations must be promoted before namespace flattening, so Anthropic receives callable schemas and the caller receives its original namespace/name. Both cases force the embedded function: before the fix the tool declaration is missing. Streaming also checks completed output-item events and terminal response restoration. Tools execute locally in the client; these fixtures do not connect to an MCP server.",
+      "item": [
+        {
+          "name": "90.1 anthropic/claude-sonnet-4-5 codex-local-mcp-hoist non-stream",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-5\",\n  \"input\": [\n    {\n      \"type\": \"additional_tools\",\n      \"role\": \"developer\",\n      \"tools\": [\n        {\n          \"type\": \"namespace\",\n          \"name\": \"mcp__local\",\n          \"description\": \"Tools executed by the caller's local MCP server.\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"read\",\n              \"description\": \"Read a local note.\",\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"path\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"path\"\n                ],\n                \"additionalProperties\": false\n              }\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": \"Use the read tool to read note.txt.\"\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"name\": \"read\"\n  },\n  \"max_output_tokens\": 256,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('codex-local-mcp-hoist: request succeeded', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});",
+                  "var calls = (pm.response.json().output || []).filter(function (item) { return item.type === 'function_call'; });",
+                  "pm.test('codex-local-mcp-hoist: local call identity and arguments survive', function () {",
+                  "  pm.expect(calls.length, pm.response.text()).to.be.above(0);",
+                  "  calls.forEach(function (call) {",
+                  "    pm.expect(call.name).to.equal('read');",
+                  "    pm.expect(call.namespace).to.equal('mcp__local');",
+                  "    pm.expect(call.call_id).to.be.a('string').and.not.empty;",
+                  "    pm.expect(JSON.parse(call.arguments).path).to.equal('note.txt');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "90.2 anthropic/claude-sonnet-4-5 codex-local-mcp-hoist stream",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-5\",\n  \"input\": [\n    {\n      \"type\": \"additional_tools\",\n      \"role\": \"developer\",\n      \"tools\": [\n        {\n          \"type\": \"namespace\",\n          \"name\": \"mcp__local\",\n          \"description\": \"Tools executed by the caller's local MCP server.\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"read\",\n              \"description\": \"Read a local note.\",\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"path\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"path\"\n                ],\n                \"additionalProperties\": false\n              }\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": \"Use the read tool to read note.txt.\"\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"name\": \"read\"\n  },\n  \"max_output_tokens\": 256,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('codex-local-mcp-hoist: request succeeded', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});",
+                  "var events = [];",
+                  "pm.response.text().split(/\\r?\\n/).forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var raw = line.slice(5).trim();",
+                  "  if (!raw || raw === '[DONE]') { return; }",
+                  "  events.push(JSON.parse(raw));",
+                  "});",
+                  "var calls = events.filter(function (event) { return event.type === 'response.output_item.done' && event.item && event.item.type === 'function_call'; }).map(function (event) { return event.item; });",
+                  "var completed = events.filter(function (event) { return event.type === 'response.completed'; });",
+                  "pm.test('codex-local-mcp-hoist: stream completed with a local call', function () {",
+                  "  pm.expect(completed.length, pm.response.text()).to.equal(1);",
+                  "  pm.expect(calls.length, pm.response.text()).to.be.above(0);",
+                  "});",
+                  "completed.forEach(function (event) { calls = calls.concat((event.response.output || []).filter(function (item) { return item.type === 'function_call'; })); });",
+                  "pm.test('codex-local-mcp-hoist: local call identity and arguments survive', function () {",
+                  "  pm.expect(calls.length, pm.response.text()).to.be.above(0);",
+                  "  calls.forEach(function (call) {",
+                  "    pm.expect(call.name).to.equal('read');",
+                  "    pm.expect(call.namespace).to.equal('mcp__local');",
+                  "    pm.expect(call.call_id).to.be.a('string').and.not.empty;",
+                  "    pm.expect(JSON.parse(call.arguments).path).to.equal('note.txt');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
