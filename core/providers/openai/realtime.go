@@ -21,12 +21,14 @@ func (provider *OpenAIProvider) SupportsRealtimeAPI() bool {
 }
 
 // RealtimeWebSocketURL returns the WSS URL for the OpenAI Realtime API.
-// Format: wss://api.openai.com/v1/realtime?model=<model>
-func (provider *OpenAIProvider) RealtimeWebSocketURL(key schemas.Key, model string) string {
+func (provider *OpenAIProvider) RealtimeWebSocketURL(_ schemas.Key, model, intent string) (string, *schemas.BifrostError) {
 	base := provider.networkConfig.BaseURL
 	base = strings.Replace(base, "https://", "wss://", 1)
 	base = strings.Replace(base, "http://", "ws://", 1)
-	return base + "/v1/realtime?model=" + url.QueryEscape(model)
+	if intent != "" {
+		return base + "/v1/realtime?intent=" + url.QueryEscape(intent), nil
+	}
+	return base + "/v1/realtime?model=" + url.QueryEscape(model), nil
 }
 
 // RealtimeHeaders returns the headers required for the OpenAI Realtime WebSocket connection.
@@ -210,14 +212,13 @@ func (provider *OpenAIProvider) ShouldAccumulateRealtimeOutput(eventType schemas
 func (provider *OpenAIProvider) CreateRealtimeClientSecret(
 	ctx *schemas.BifrostContext,
 	key schemas.Key,
-	endpointType schemas.RealtimeSessionEndpointType,
 	rawRequest json.RawMessage,
 ) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.RealtimeRequest); err != nil {
 		return nil, err
 	}
 
-	normalizedBody, _, bifrostErr := NormalizeRealtimeClientSecretRequest(rawRequest, provider.GetProviderKey(), endpointType)
+	normalizedBody, _, bifrostErr := NormalizeRealtimeClientSecretRequest(rawRequest, provider.GetProviderKey())
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -226,11 +227,11 @@ func (provider *OpenAIProvider) CreateRealtimeClientSecret(
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	upstreamURL := provider.buildRequestURL(ctx, realtimeSessionUpstreamPath(endpointType), schemas.RealtimeRequest)
+	upstreamURL := provider.buildRequestURL(ctx, "/v1/realtime/client_secrets", schemas.RealtimeRequest)
 	req.SetRequestURI(upstreamURL)
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
-	for k, v := range provider.realtimeSessionHeaders(key, endpointType) {
+	for k, v := range provider.realtimeSessionHeaders(key) {
 		req.Header.Set(k, v)
 	}
 	req.SetBody(normalizedBody)
@@ -276,7 +277,6 @@ func (provider *OpenAIProvider) CreateRealtimeClientSecret(
 func NormalizeRealtimeClientSecretRequest(
 	rawRequest json.RawMessage,
 	defaultProvider schemas.ModelProvider,
-	endpointType schemas.RealtimeSessionEndpointType,
 ) ([]byte, string, *schemas.BifrostError) {
 	root, bifrostErr := schemas.ParseRealtimeClientSecretBody(rawRequest)
 	if bifrostErr != nil {
@@ -296,10 +296,6 @@ func NormalizeRealtimeClientSecretRequest(
 	}
 	if providerKey == "" {
 		return nil, "", newRealtimeClientSecretError(fasthttp.StatusBadRequest, "invalid_request_error", "unable to determine provider from model", nil)
-	}
-
-	if endpointType == schemas.RealtimeSessionEndpointSessions {
-		return normalizeRealtimeSessionsRequest(root, normalizedModel)
 	}
 
 	return normalizeRealtimeClientSecretsRequest(root, normalizedModel)
@@ -414,38 +410,6 @@ func writeGASessionTranscriptionModel(session map[string]json.RawMessage, modelJ
 	return nil
 }
 
-func normalizeRealtimeSessionsRequest(
-	root map[string]json.RawMessage,
-	normalizedModel string,
-) ([]byte, string, *schemas.BifrostError) {
-	if existingSession, ok := root["session"]; ok && len(existingSession) > 0 && !bytes.Equal(existingSession, []byte("null")) {
-		session := map[string]json.RawMessage{}
-		if err := json.Unmarshal(existingSession, &session); err != nil {
-			return nil, "", newRealtimeClientSecretError(fasthttp.StatusBadRequest, "invalid_request_error", "session must be an object", err)
-		}
-		for key, value := range session {
-			if _, exists := root[key]; !exists {
-				root[key] = value
-			}
-		}
-	}
-
-	modelJSON, marshalErr := json.Marshal(normalizedModel)
-	if marshalErr != nil {
-		return nil, "", newRealtimeClientSecretError(fasthttp.StatusInternalServerError, "server_error", "failed to encode normalized model", marshalErr)
-	}
-	root["model"] = modelJSON
-	delete(root, "session")
-	StripNestedModelPrefixes(root)
-
-	normalizedBody, marshalErr := json.Marshal(root)
-	if marshalErr != nil {
-		return nil, "", newRealtimeClientSecretError(fasthttp.StatusInternalServerError, "server_error", "failed to encode realtime request", marshalErr)
-	}
-
-	return normalizedBody, normalizedModel, nil
-}
-
 // StripNestedModelPrefixes removes provider prefixes (e.g. "openai/whisper-1" → "whisper-1")
 // from known nested model fields in the realtime session config. This prevents forwarding
 // Bifrost-style "provider/model" strings to upstream providers that expect bare model names.
@@ -508,27 +472,14 @@ func stripModelInNestedObject(parent map[string]json.RawMessage, key string) boo
 	return false
 }
 
-func (provider *OpenAIProvider) realtimeSessionHeaders(
-	key schemas.Key,
-	endpointType schemas.RealtimeSessionEndpointType,
-) map[string]string {
+func (provider *OpenAIProvider) realtimeSessionHeaders(key schemas.Key) map[string]string {
 	headers := map[string]string{
 		"Authorization": "Bearer " + key.Value.GetValue(),
-	}
-	if endpointType == schemas.RealtimeSessionEndpointSessions {
-		headers["OpenAI-Beta"] = "realtime=v1"
 	}
 	for k, v := range provider.networkConfig.ExtraHeaders {
 		headers[k] = v
 	}
 	return headers
-}
-
-func realtimeSessionUpstreamPath(endpointType schemas.RealtimeSessionEndpointType) string {
-	if endpointType == schemas.RealtimeSessionEndpointSessions {
-		return "/v1/realtime/sessions"
-	}
-	return "/v1/realtime/client_secrets"
 }
 
 func newRealtimeClientSecretError(status int, errorType, message string, err error) *schemas.BifrostError {
@@ -857,39 +808,52 @@ func (provider *OpenAIProvider) ExtractRealtimeTurnUsage(terminalEventRaw []byte
 	}
 
 	var parsed openAIRealtimeResponseDoneEnvelope
-	if err := json.Unmarshal(terminalEventRaw, &parsed); err != nil || parsed.Response.Usage == nil {
+	if err := json.Unmarshal(terminalEventRaw, &parsed); err != nil {
 		return nil
 	}
-
-	usage := &schemas.BifrostLLMUsage{
-		PromptTokens:     parsed.Response.Usage.InputTokens,
-		CompletionTokens: parsed.Response.Usage.OutputTokens,
-		TotalTokens:      parsed.Response.Usage.TotalTokens,
+	usage := parsed.Response.Usage
+	if usage == nil {
+		usage = parsed.Usage
+	}
+	if usage == nil {
+		return nil
+	}
+	if usage.Type == "duration" {
+		if usage.Seconds <= 0 {
+			return nil
+		}
+		return &schemas.BifrostLLMUsage{AudioSeconds: &usage.Seconds}
 	}
 
-	if parsed.Response.Usage.InputTokenDetails != nil {
-		usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
-			TextTokens:       parsed.Response.Usage.InputTokenDetails.TextTokens,
-			AudioTokens:      parsed.Response.Usage.InputTokenDetails.AudioTokens,
-			ImageTokens:      parsed.Response.Usage.InputTokenDetails.ImageTokens,
-			CachedReadTokens: parsed.Response.Usage.InputTokenDetails.CachedTokens,
+	result := &schemas.BifrostLLMUsage{
+		PromptTokens:     usage.InputTokens,
+		CompletionTokens: usage.OutputTokens,
+		TotalTokens:      usage.TotalTokens,
+	}
+
+	if usage.InputTokenDetails != nil {
+		result.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
+			TextTokens:       usage.InputTokenDetails.TextTokens,
+			AudioTokens:      usage.InputTokenDetails.AudioTokens,
+			ImageTokens:      usage.InputTokenDetails.ImageTokens,
+			CachedReadTokens: usage.InputTokenDetails.CachedTokens,
 		}
 	}
 
-	if parsed.Response.Usage.OutputTokenDetails != nil {
-		usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
-			TextTokens:               parsed.Response.Usage.OutputTokenDetails.TextTokens,
-			AudioTokens:              parsed.Response.Usage.OutputTokenDetails.AudioTokens,
-			ReasoningTokens:          parsed.Response.Usage.OutputTokenDetails.ReasoningTokens,
-			ImageTokens:              parsed.Response.Usage.OutputTokenDetails.ImageTokens,
-			CitationTokens:           parsed.Response.Usage.OutputTokenDetails.CitationTokens,
-			NumSearchQueries:         parsed.Response.Usage.OutputTokenDetails.NumSearchQueries,
-			AcceptedPredictionTokens: parsed.Response.Usage.OutputTokenDetails.AcceptedPredictionTokens,
-			RejectedPredictionTokens: parsed.Response.Usage.OutputTokenDetails.RejectedPredictionTokens,
+	if usage.OutputTokenDetails != nil {
+		result.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
+			TextTokens:               usage.OutputTokenDetails.TextTokens,
+			AudioTokens:              usage.OutputTokenDetails.AudioTokens,
+			ReasoningTokens:          usage.OutputTokenDetails.ReasoningTokens,
+			ImageTokens:              usage.OutputTokenDetails.ImageTokens,
+			CitationTokens:           usage.OutputTokenDetails.CitationTokens,
+			NumSearchQueries:         usage.OutputTokenDetails.NumSearchQueries,
+			AcceptedPredictionTokens: usage.OutputTokenDetails.AcceptedPredictionTokens,
+			RejectedPredictionTokens: usage.OutputTokenDetails.RejectedPredictionTokens,
 		}
 	}
 
-	return usage
+	return result
 }
 
 func (provider *OpenAIProvider) ExtractRealtimeTurnOutput(terminalEventRaw []byte) *schemas.ChatMessage {
@@ -924,6 +888,7 @@ type openAIRealtimeResponseDoneEnvelope struct {
 		Output []openAIRealtimeResponseDoneOutput `json:"output"`
 		Usage  *openAIRealtimeResponseDoneUsage   `json:"usage"`
 	} `json:"response"`
+	Usage *openAIRealtimeResponseDoneUsage `json:"usage"`
 }
 
 type openAIRealtimeResponseDoneOutput struct {
@@ -942,6 +907,8 @@ type openAIRealtimeResponseDoneBlock struct {
 }
 
 type openAIRealtimeResponseDoneUsage struct {
+	Type               string                                      `json:"type"`
+	Seconds            float64                                     `json:"seconds"`
 	TotalTokens        int                                         `json:"total_tokens"`
 	InputTokens        int                                         `json:"input_tokens"`
 	OutputTokens       int                                         `json:"output_tokens"`

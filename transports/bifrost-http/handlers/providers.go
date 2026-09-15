@@ -1258,6 +1258,9 @@ func keyAllowsModelForList(key schemas.Key, model string, catalog *modelcatalog.
 		// should also grant access to its base model "gpt-4o" in listings.
 		if catalog != nil {
 			for _, allowed := range key.Models {
+				if schemas.IsRegexEntry(allowed) {
+					continue
+				}
 				if strings.EqualFold(
 					catalog.GetBaseModelName(allowed),
 					catalog.GetBaseModelName(model),

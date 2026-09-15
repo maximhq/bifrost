@@ -8,31 +8,26 @@ import { getRegistrationLabel } from "../utils";
 export function VSCodeHarnessInstall({
 	canGenerateCommand,
 	clientConfig,
+	emptyMessage,
+	headers,
 	platform,
 	selectedServers,
 	serverScope,
-	virtualKey,
 }: HarnessInstallProps) {
 	const [configScope, setConfigScope] = useState<VSCodeConfigScope>("workspace");
 
 	const serverArgs = useMemo(
 		() => ({
 			clientConfig,
+			headers,
 			selectedServers: serverScope === "selected" ? selectedServers : undefined,
-			virtualKey: virtualKey!,
 		}),
-		[clientConfig, selectedServers, serverScope, virtualKey],
+		[clientConfig, headers, selectedServers, serverScope],
 	);
 
-	const config = useMemo(() => {
-		if (!virtualKey) return "";
-		return buildVSCodeConfig(serverArgs);
-	}, [serverArgs, virtualKey]);
+	const config = useMemo(() => buildVSCodeConfig(serverArgs), [serverArgs]);
 
-	const deeplink = useMemo(() => {
-		if (!virtualKey) return "";
-		return buildVSCodeDeeplink(serverArgs);
-	}, [serverArgs, virtualKey]);
+	const deeplink = useMemo(() => buildVSCodeDeeplink(serverArgs), [serverArgs]);
 
 	const userConfigPath = {
 		linux: "~/.config/Code/User/mcp.json",
@@ -58,7 +53,7 @@ export function VSCodeHarnessInstall({
 			}
 			copySuccessMessage="Config copied"
 			deeplink={deeplink}
-			emptyMessage={virtualKey ? "Select servers or use Gateway root." : "Select a virtual key to generate the config."}
+			emptyMessage={emptyMessage}
 			harnessName="VS Code"
 			label="Config"
 			logoSrc="/images/harness/vscode.svg"

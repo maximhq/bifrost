@@ -50,6 +50,7 @@ dependencies = [
     "langchain-cohere>=0.4.0",
     "pytest-xdist>=3.8.0",
     "pyasn1>=0.6.4",
+    "griffe>=2.3.0",
 ]
 
 [build-system]
@@ -73,6 +74,9 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
+# LangChain's standard integration suite includes unmarked async tests. Run
+# those tests through pytest-asyncio instead of rejecting them in strict mode.
+asyncio_mode = "auto"
 # Test discovery
 testpaths = ["."]
 python_files = "test_*.py"

@@ -154,6 +154,18 @@ type TableModelPricing struct {
 	OCRCostPerPage        *float64 `gorm:"default:null;column:ocr_cost_per_page" json:"ocr_cost_per_page,omitempty"`
 	AnnotationCostPerPage *float64 `gorm:"default:null;column:annotation_cost_per_page" json:"annotation_cost_per_page,omitempty"`
 
+	// Costs - Time of day
+	//
+	// Some providers (e.g. DeepSeek) bill the same model at different rates
+	// depending on when the request is made. The convention is that every base
+	// rate above is the PEAK (higher) price and OffPeakCostMultiplier scales it
+	// down outside the windows declared in PeakHours. Holding the base at peak
+	// means a row that carries a schedule but no multiplier — or one whose
+	// schedule fails to evaluate — bills at the higher rate rather than
+	// silently under-billing.
+	OffPeakCostMultiplier *float64           `gorm:"default:null;column:off_peak_cost_multiplier" json:"off_peak_cost_multiplier,omitempty"`
+	PeakHours             *PeakHoursSchedule `gorm:"type:text;serializer:json;default:null;column:peak_hours" json:"peak_hours,omitempty"`
+
 	// AdditionalAttributes holds editorial per-model metadata (e.g. description,
 	// tags). Persisted as a JSON string in the additional_attributes column and
 	// surfaced as a typed map via BeforeSave/AfterFind. This column is
@@ -165,6 +177,31 @@ type TableModelPricing struct {
 
 // TableName sets the table name for each model
 func (TableModelPricing) TableName() string { return "governance_model_pricing" }
+
+// PeakHoursSchedule declares the windows during which a model is billed at its
+// peak (base) rates. Any instant falling outside every window is off-peak and
+// is discounted by TableModelPricing.OffPeakCostMultiplier.
+//
+// Lives in this package rather than in the datasheet package because
+// TableModelPricing must reference it and datasheet already imports tables;
+// the datasheet package aliases it back out.
+type PeakHoursSchedule struct {
+	// Timezone is an IANA location name (e.g. "UTC", "Asia/Shanghai"). Empty
+	// means UTC.
+	Timezone string            `json:"timezone,omitempty"`
+	Windows  []PeakHoursWindow `json:"windows,omitempty"`
+}
+
+// PeakHoursWindow is one recurring weekly peak-rate window. Start and End are
+// "HH:MM" in the schedule's timezone and describe the half-open interval
+// [Start, End). An End less than or equal to Start wraps past midnight, in
+// which case Days names the weekday the window *starts* on.
+type PeakHoursWindow struct {
+	// Days uses Go's time.Weekday numbering (0 = Sunday .. 6 = Saturday).
+	Days  []int  `json:"days"`
+	Start string `json:"start"`
+	End   string `json:"end"`
+}
 
 // BeforeSave marshals AdditionalAttributes → AdditionalAttributesJSON. A nil
 // or empty map serializes to "{}" so the column always holds a valid JSON

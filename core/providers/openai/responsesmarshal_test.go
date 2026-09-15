@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -1160,6 +1161,53 @@ func TestEffortPredicatesAgainstCatalogIDs(t *testing.T) {
 	}
 }
 
+// TestAllTurnsContextPredicateAgainstCatalogIDs pins the name default
+// for reasoning.context "all_turns" against model IDs as they appear in the
+// datasheet, prefixed and dated variants included. Substring matching, for the
+// same reason as the xhigh/max needles above.
+func TestAllTurnsContextPredicateAgainstCatalogIDs(t *testing.T) {
+	cases := []struct {
+		model string
+		want  bool
+	}{
+		// original gpt-5 family and its variants: only auto/current_turn
+		{"gpt-5", false},
+		{"gpt-5-pro", false},
+		{"gpt-5-pro-2025-10-06", false},
+		{"gpt-5-mini-2025-08-07", false},
+		{"gpt-5-codex", false},
+		{"azure/gpt-5-pro", false},
+		// dot-revisions before 5.4
+		{"gpt-5.1", false},
+		{"gpt-5.2-pro", false},
+		{"gpt-5.3-codex", false},
+		// o-series and non-reasoning models
+		{"o1", false},
+		{"o3-pro", false},
+		{"gpt-4o", false},
+		// families that accept all_turns
+		{"gpt-5.4", true},
+		{"azure/eu/gpt-5.4", true},
+		{"gpt-5.4-mini-2026-03-17", true},
+		{"gpt-5.5-pro-2026-04-23", true},
+		{"gpt-5.6-terra", true},
+		{"openai.gpt-5.6-sol", true},
+		{"gpt-6", true},
+	}
+	for _, c := range cases {
+		if got := acceptsAllTurnsContext(c.model); got != c.want {
+			t.Errorf("acceptsAllTurnsContext(%q) = %v, want %v", c.model, got, c.want)
+		}
+		contexts := defaultReasoningContexts(c.model)
+		if !slices.Contains(contexts, schemas.ReasoningContextAuto) || !slices.Contains(contexts, schemas.ReasoningContextCurrentTurn) {
+			t.Errorf("defaultReasoningContexts(%q) = %v, must always carry auto and current_turn", c.model, contexts)
+		}
+		if got := slices.Contains(contexts, schemas.ReasoningContextAllTurns); got != c.want {
+			t.Errorf("defaultReasoningContexts(%q) lists all_turns = %v, want %v", c.model, got, c.want)
+		}
+	}
+}
+
 // TestToOpenAIResponsesRequest_OpenRouterCacheControlBreakpoint is the
 // Responses-path parallel of TestToOpenAIChatRequest_CacheControl_OpenRouterOnly
 // (added by the Chat-path fix in #4203). Regression test for #6290.
@@ -1855,4 +1903,64 @@ func TestToOpenAIResponsesRequest_CustomProviderResolvesBaseForCacheBreakpoints(
 			t.Errorf("an Anthropic-based provider must not gain prompt_cache_options; raw=%s", raw)
 		}
 	})
+}
+
+// Gemini's per-part media resolution rides on the shared ResponsesMessageContentBlock, and
+// OpenAI's Responses input is those blocks marshalled straight onto the wire behind a denylist.
+// A /genai request that falls back to OpenAI must therefore have the field stripped, exactly as
+// cache_control and citations are, or OpenAI 400s with "Unknown parameter".
+func TestOpenAIResponsesRequest_MarshalJSON_StripsMediaResolution(t *testing.T) {
+	messageType := schemas.ResponsesMessageTypeMessage
+	role := schemas.ResponsesInputMessageRoleUser
+	imageURL := "data:image/jpeg;base64,/9j/4AAQSkZJRg=="
+	callID := "call_1"
+
+	input := OpenAIResponsesRequestInput{
+		OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+			{
+				Type: &messageType,
+				Role: &role,
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+						Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+						ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+							ImageURL: &imageURL,
+						},
+						MediaResolution: &schemas.MediaResolution{Level: "MEDIA_RESOLUTION_ULTRA_HIGH"},
+					}},
+				},
+			},
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: &callID,
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{{
+							Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+							ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+								ImageURL: &imageURL,
+							},
+							MediaResolution: &schemas.MediaResolution{Level: "MEDIA_RESOLUTION_HIGH"},
+						}},
+					},
+				},
+			},
+		},
+	}
+
+	data, err := input.MarshalJSON()
+	if err != nil {
+		t.Fatalf("MarshalJSON returned error: %v", err)
+	}
+	if strings.Contains(string(data), "media_resolution") {
+		t.Errorf("media_resolution must not reach OpenAI's wire, got: %s", string(data))
+	}
+	if !strings.Contains(string(data), "image_url") {
+		t.Errorf("stripping media_resolution must not drop the image itself, got: %s", string(data))
+	}
+
+	// The source request is shared across retries and fallbacks, so sanitizing must copy.
+	if input.OpenAIResponsesRequestInputArray[0].Content.ContentBlocks[0].MediaResolution == nil {
+		t.Error("sanitization must not mutate the caller's request")
+	}
 }

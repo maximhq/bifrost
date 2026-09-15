@@ -318,6 +318,7 @@ Access depends on the `allow_all_providers` value and whether the provider has a
 When `allow_all_providers` is `true`:
 
 - A listed provider's `allowed_models` and `blacklisted_models` still apply. Allow-all never widens an allowlist: a model outside a listed provider's `allowed_models` stays denied, and a model in its `blacklisted_models` stays denied.
+- An entry in either list that starts with `regex:` is an RE2 pattern instead of a name. It must match the whole model name and is case-insensitive, so `"allowed_models": ["gpt-4o", "regex:^claude-3-.*"]` allows `gpt-4o` and every `claude-3-` model, and `"blacklisted_models": ["regex:.*-preview$"]` blocks every preview. A pattern that is empty, `*`, or does not compile is refused with 400. Patterns in `blacklisted_models` win over `allowed_models`, and patterns are never listed as models.
 - A listed provider's budgets, rate limits, and `key_ids` selection still apply. Allow-all does not lift per-provider limits on providers you have configured.
 - Only providers with no `provider_configs` entry get the open treatment (all models, all keys, no limits).
 - Providers added to Bifrost after the key was created are treated as unlisted, so they are allowed automatically without editing the key.

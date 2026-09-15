@@ -95,6 +95,31 @@ export function MCPFilterSidebar({ filters, onFiltersChange }: MCPFilterSidebarP
 					<ServersFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<AppFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<VirtualKeysFilter filters={filters} onFiltersChange={onFiltersChange} />
+					{(
+						[
+							["user_ids", "Users"],
+							["team_ids", "Teams"],
+							["customer_ids", "Customers"],
+							["business_unit_ids", "Business units"],
+							["project_ids", "Projects"],
+							["device_ids", "Devices"],
+						] as const
+					).map(([key, label]) =>
+						filters[key]?.length ? (
+							<FilterSection key={key} title={label} defaultOpen>
+								<Button
+									variant="ghost"
+									size="sm"
+									className="w-full justify-between"
+									data-testid={`mcp-clear-${key}`}
+									onClick={() => onFiltersChange({ ...filters, [key]: [] })}
+								>
+									<span>{filters[key]!.length} selected</span>
+									<RotateCcw className="size-3" />
+								</Button>
+							</FilterSection>
+						) : null,
+					)}
 				</div>
 			</ScrollArea>
 		</div>
@@ -120,7 +145,7 @@ function StatusFilter({ filters, onFiltersChange, defaultOpen }: FilterComponent
 
 	return (
 		<FilterSection title="Status" defaultOpen={defaultOpen || hasActive}>
-			{Statuses.map((status) => (
+			{[...Statuses, "unknown"].map((status) => (
 				<CheckboxFilterItem
 					key={status}
 					labelClassName="capitalize"

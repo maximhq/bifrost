@@ -293,6 +293,8 @@ const (
 	BifrostContextKeyURLPath                             BifrostContextKey = "bifrost-extra-url-path"                  // string
 	BifrostContextKeyUseRawRequestBody                   BifrostContextKey = "bifrost-use-raw-request-body"
 	BifrostContextKeyRawRequestBodyTextRewriter          BifrostContextKey = "bifrost-raw-request-body-text-rewriter"           // RawRequestBodyTextRewriter (set by native integrations because raw passthrough bypasses normalized runtime redaction)
+	BifrostContextKeyRawRequestBodyTextTransformer       BifrostContextKey = "bifrost-raw-request-body-text-transformer"        // RawRequestBodyTextTransformer (set by native integrations for exact provider-managed transformations)
+	BifrostContextKeyRawResponseTextTransformer          BifrostContextKey = "bifrost-raw-response-text-transformer"            // RawResponseTextTransformer (set by native integrations that forward a native non-stream response)
 	BifrostContextKeyRawStreamTextCodec                  BifrostContextKey = "bifrost-raw-stream-text-codec"                    // RawStreamTextCodec (set by native integrations whose client response forwards provider-native stream events)
 	BifrostContextKeyChangeRequestType                   BifrostContextKey = "bifrost-change-request-type"                      // RequestType (set by plugins to trigger request type conversion in core, e.g. text->chat or chat->responses)
 	BifrostContextKeySendBackRawRequest                  BifrostContextKey = "bifrost-send-back-raw-request"                    // bool (per-request override — read by bifrost.go, never overwritten)
@@ -342,6 +344,7 @@ const (
 	BifrostContextKeyIsCustomProvider                    BifrostContextKey = "bifrost-is-custom-provider"                       // bool (set by bifrost - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyBaseProviderType                    BifrostContextKey = "bifrost-base-provider-type"                       // ModelProvider (set by bifrost - DO NOT SET THIS MANUALLY) — built-in provider backing this attempt (custom providers resolve to their BaseProviderType)
 	BifrostContextKeyDoesNotSendDoneMarker               BifrostContextKey = "bifrost-does-not-send-done-marker"                // bool (set by bifrost from custom_provider_config.does_not_send_done_marker - DO NOT SET THIS MANUALLY) — ends the SSE read loop on finish_reason instead of waiting for [DONE]
+	BifrostContextKeyWaitForUsage                        BifrostContextKey = "bifrost-wait-for-usage"                           // bool (set by bifrost from custom_provider_config.wait_for_usage - DO NOT SET THIS MANUALLY) — keeps the SSE read loop open past finish_reason until the trailing usage-only chunk arrives
 	BifrostContextKeyHTTPRequestType                     BifrostContextKey = "bifrost-http-request-type"                        // RequestType (set by bifrost - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyHTTPRoute                           BifrostContextKey = "bifrost-http-route"                               // string (set by bifrost - DO NOT SET THIS MANUALLY — matched route template, set by HTTP transport; used as the low-cardinality metrics `path` label)
 	BifrostContextKeyPassthroughExtraParams              BifrostContextKey = "bifrost-passthrough-extra-params"                 // bool
@@ -1756,7 +1759,10 @@ func (r *BifrostMCPResponse) PopulateExtraFields(mcpRequestType MCPRequestType, 
 // BifrostResponseExtraFields contains additional fields in a response.
 type BifrostResponseExtraFields struct {
 	RequestType RequestType `json:"request_type"`
-	RoutingInfo RoutingInfo `json:"routing_info"`
+	// PricingRequestType selects a catalog mode without changing the request type
+	// exposed to plugins and logs.
+	PricingRequestType RequestType `json:"pricing_request_type,omitempty"`
+	RoutingInfo        RoutingInfo `json:"routing_info"`
 	// Deprecated: use RoutingInfo.Provider. Still populated for backward
 	// compatibility; new consumers should read from RoutingInfo.
 	Provider ModelProvider `json:"provider,omitempty"`
@@ -1899,13 +1905,6 @@ type BifrostRoutingCall struct {
 	// budget attribution); it is never budget-enforced.
 	CountTowardBudgets bool `json:"count_toward_budgets,omitempty"`
 }
-
-const (
-	RequestCancelled         = "request_cancelled"
-	RequestTimedOut          = "request_timed_out"
-	RequestDropped           = "request_dropped"
-	ProviderConnectionFailed = "provider_connection_failed"
-)
 
 // BifrostStreamChunk represents a stream of responses from the Bifrost system.
 // Either BifrostResponse or BifrostError will be non-nil.
@@ -2136,4 +2135,11 @@ type BifrostErrorExtraFields struct {
 	// the provider actually billed us for. Nil when the failure consumed no
 	// tokens (e.g. 401/403/429 before the model ran).
 	BilledUsage *BifrostLLMUsage `json:"billed_usage,omitempty"`
+
+	// ErrorType is this failure's normalized classification, declared by whoever
+	// produced the error. ClassifyErrorType returns it verbatim when set and infers
+	// only when it is not, so a refusal that forgets to declare lands in
+	// ErrorTypeOther rather than in a wrong bucket. Empty is normal for provider
+	// errors, which are still inferred.
+	ErrorType ErrorType `json:"error_type,omitempty"`
 }

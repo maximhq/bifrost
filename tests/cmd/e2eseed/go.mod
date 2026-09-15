@@ -84,9 +84,9 @@ require (
 	github.com/mailru/easyjson v0.9.1 // indirect
 	github.com/mark3labs/mcp-go v0.43.2 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
-	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect
-	github.com/maximhq/bifrost/core v1.8.5 // indirect
+	github.com/maximhq/bifrost/core v1.8.6 // indirect
 	github.com/maximhq/bifrost/framework v1.3.16 // indirect
 	github.com/molecule-man/go-brrr v1.0.1 // indirect
 	github.com/paulmach/orb v0.11.1 // indirect

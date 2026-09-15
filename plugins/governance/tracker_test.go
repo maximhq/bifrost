@@ -2,6 +2,8 @@ package governance
 
 import (
 	"context"
+	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -282,4 +284,89 @@ func TestUsageTracker_Cleanup(t *testing.T) {
 	// Should cleanup without error
 	err = tracker.Cleanup()
 	assert.NoError(t, err, "Cleanup should succeed")
+}
+
+type cleanupOrderingStore struct {
+	GovernanceStore
+	periodicEntered       chan struct{}
+	periodicExited        chan struct{}
+	finalDumped           chan struct{}
+	finalBeforeWorkerExit atomic.Bool
+}
+
+func (s *cleanupOrderingStore) ResetExpiredRateLimitsInMemory(context.Context, bool, ...string) []*configstoreTables.TableRateLimit {
+	return nil
+}
+
+func (s *cleanupOrderingStore) ResetExpiredBudgetsInMemory(context.Context, bool, ...string) []*configstoreTables.TableBudget {
+	return nil
+}
+
+func (s *cleanupOrderingStore) ResetExpiredRateLimits(context.Context, []*configstoreTables.TableRateLimit) error {
+	return nil
+}
+
+func (s *cleanupOrderingStore) ResetExpiredBudgets(context.Context, []*configstoreTables.TableBudget) error {
+	return nil
+}
+
+func (s *cleanupOrderingStore) DumpBudgets(context.Context, map[string]float64) error {
+	return nil
+}
+
+func (s *cleanupOrderingStore) DumpRateLimits(ctx context.Context, _ map[string]int64, _ map[string]int64) error {
+	if ctx.Done() == nil {
+		select {
+		case <-s.periodicExited:
+		default:
+			s.finalBeforeWorkerExit.Store(true)
+		}
+		close(s.finalDumped)
+		return nil
+	}
+
+	close(s.periodicEntered)
+	<-ctx.Done()
+	close(s.periodicExited)
+	return fmt.Errorf("failed to dump rate limits to database: failed to dump 4 rate limits: %w", ctx.Err())
+}
+
+// Cleanup must first cancel and join an in-flight periodic dump, then take the
+// final snapshot. Cancellation is expected during shutdown and must not be
+// reported as a database failure.
+func TestUsageTracker_CleanupWaitsForPeriodicDumpBeforeFinalFlush(t *testing.T) {
+	store := &cleanupOrderingStore{
+		periodicEntered: make(chan struct{}),
+		periodicExited:  make(chan struct{}),
+		finalDumped:     make(chan struct{}),
+	}
+	logger := NewMockLogger()
+	tracker := NewUsageTracker(context.Background(), store, nil, nil, logger)
+
+	// Enter the same reset cycle as resetWorker without waiting for the
+	// production ten-second ticker, and account for it in the worker wait group.
+	tracker.wg.Add(1)
+	go func() {
+		defer tracker.wg.Done()
+		tracker.resetExpiredCounters(tracker.trackerCtx)
+	}()
+
+	select {
+	case <-store.periodicEntered:
+	case <-time.After(time.Second):
+		t.Fatal("periodic dump did not start")
+	}
+
+	require.NoError(t, tracker.Cleanup())
+	assert.False(t, store.finalBeforeWorkerExit.Load(), "final dump raced the periodic worker")
+	select {
+	case <-store.finalDumped:
+	default:
+		t.Fatal("final rate-limit dump was not called")
+	}
+
+	logger.mu.Lock()
+	defer logger.mu.Unlock()
+	assert.NotContains(t, logger.errors, "failed to dump rate limits to database: %v",
+		"shutdown cancellation must not be logged as a database failure")
 }

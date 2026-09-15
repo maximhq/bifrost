@@ -3,6 +3,7 @@ package governance
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -177,6 +178,12 @@ func (t *UsageTracker) resetWorker(ctx context.Context) {
 	for {
 		select {
 		case <-t.resetTicker.C:
+			// Cleanup cancels trackerCtx before waiting for this worker. If a
+			// queued tick wins the select alongside done, do not start another
+			// reset cycle during shutdown.
+			if ctx.Err() != nil {
+				return
+			}
 			t.resetExpiredCounters(ctx)
 
 		case <-t.done:
@@ -197,25 +204,49 @@ func (t *UsageTracker) resetWorker(ctx context.Context) {
 // boundary falls further behind, so the only symptom is a stale last_reset.
 // The overrun warning below exists to make that state say so out loud.
 func (t *UsageTracker) resetExpiredCounters(ctx context.Context) {
+	if ctx.Err() != nil {
+		return
+	}
 	start := time.Now()
 
 	// ==== PART 1: Reset Rate Limits ====
 	resetRateLimits := t.store.ResetExpiredRateLimitsInMemory(ctx, true)
 	if err := t.store.ResetExpiredRateLimits(ctx, resetRateLimits); err != nil {
+		if ctx.Err() != nil && errors.Is(err, context.Canceled) {
+			return
+		}
 		t.logger.Error("failed to reset expired rate limits: %v", err)
+	}
+	if ctx.Err() != nil {
+		return
 	}
 
 	// ==== PART 2: Reset Budgets ====
 	resetBudgets := t.store.ResetExpiredBudgetsInMemory(ctx, true)
 	if err := t.store.ResetExpiredBudgets(ctx, resetBudgets); err != nil {
+		if ctx.Err() != nil && errors.Is(err, context.Canceled) {
+			return
+		}
 		t.logger.Error("failed to reset expired budgets: %v", err)
+	}
+	if ctx.Err() != nil {
+		return
 	}
 
 	// ==== PART 3: Dump all rate limits and budgets to database ====
 	if err := t.store.DumpRateLimits(ctx, nil, nil); err != nil {
+		if ctx.Err() != nil && errors.Is(err, context.Canceled) {
+			return
+		}
 		t.logger.Error("failed to dump rate limits to database: %v", err)
 	}
+	if ctx.Err() != nil {
+		return
+	}
 	if err := t.store.DumpBudgets(ctx, nil); err != nil {
+		if ctx.Err() != nil && errors.Is(err, context.Canceled) {
+			return
+		}
 		t.logger.Error("failed to dump budgets to database: %v", err)
 	}
 
@@ -369,25 +400,28 @@ func (t *UsageTracker) validateStartupResetDurations(ctx context.Context) []erro
 
 // Cleanup stops all background workers and flushes pending operations
 func (t *UsageTracker) Cleanup() error {
-	// Final flush of in-memory deltas to DB before shutdown. Without this,
-	// any deltas accumulated since the last `workerInterval` tick are lost.
+	// Stop and join the periodic worker before taking the final snapshots. A
+	// final dump must be the last database writer: otherwise an in-flight cycle
+	// can be cancelled after mutating in-memory reset state, or can race the
+	// final rate-limit dump with a stale snapshot.
+	if t.trackerCancel != nil {
+		t.trackerCancel()
+	}
+	if t.resetTicker != nil {
+		t.resetTicker.Stop()
+	}
+	close(t.done)
+	t.wg.Wait()
+
+	// Flush all in-memory state after the worker has fully stopped. The plugin
+	// waits for its asynchronous accounting goroutines before calling Cleanup,
+	// so these snapshots include every accepted update since the last tick.
 	if err := t.store.DumpBudgets(context.Background(), nil); err != nil {
 		t.logger.Error("final budget dump on shutdown failed: %v", err)
 	}
 	if err := t.store.DumpRateLimits(context.Background(), nil, nil); err != nil {
 		t.logger.Error("final rate-limit dump on shutdown failed: %v", err)
 	}
-
-	// Stop background workers
-	if t.trackerCancel != nil {
-		t.trackerCancel()
-	}
-	close(t.done)
-	if t.resetTicker != nil {
-		t.resetTicker.Stop()
-	}
-	// Wait for workers to finish
-	t.wg.Wait()
 
 	t.logger.Debug("usage tracker cleanup completed")
 	return nil

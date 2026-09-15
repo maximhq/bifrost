@@ -228,3 +228,97 @@ func TestProviderConfig_Redacted_FullJSONHasNoLeakedEnvSecrets(t *testing.T) {
 			"env var reference %q missing from redacted JSON output", ref)
 	}
 }
+
+// TestProviderConfig_Redacted_SurfacesLiteralIdentifiers pins the rule that a
+// region or a self-hosted service URL is an identifier, not a credential: when
+// it is stored as a literal it must read back verbatim so the update form shows
+// something an operator can actually read.
+func TestProviderConfig_Redacted_SurfacesLiteralIdentifiers(t *testing.T) {
+	config := ProviderConfig{
+		Keys: []schemas.Key{{
+			ID:    "k1",
+			Name:  "test",
+			Value: schemas.SecretVar{Val: ""},
+			VertexKeyConfig: &schemas.VertexKeyConfig{
+				Region: *schemas.NewSecretVar("us-central1"),
+			},
+			BedrockKeyConfig: &schemas.BedrockKeyConfig{
+				AccessKey: schemas.SecretVar{Val: ""},
+				SecretKey: schemas.SecretVar{Val: ""},
+				Region:    schemas.NewSecretVar("us-east-1"),
+			},
+			BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
+				AccessKey: schemas.SecretVar{Val: ""},
+				SecretKey: schemas.SecretVar{Val: ""},
+				Region:    schemas.NewSecretVar("us-east-1"),
+			},
+			VLLMKeyConfig: &schemas.VLLMKeyConfig{
+				URL: *schemas.NewSecretVar("http://vllm.internal.example.com:8000"),
+			},
+			OllamaKeyConfig: &schemas.OllamaKeyConfig{
+				URL: *schemas.NewSecretVar("http://ollama.internal.example.com:11434"),
+			},
+			SGLKeyConfig: &schemas.SGLKeyConfig{
+				URL: *schemas.NewSecretVar("http://sgl.internal.example.com:30000"),
+			},
+		}},
+	}
+
+	redacted := config.Redacted()
+	require.NotNil(t, redacted)
+	require.Len(t, redacted.Keys, 1)
+	key := redacted.Keys[0]
+
+	assert.Equal(t, "us-central1", key.VertexKeyConfig.Region.GetValue())
+	assert.Equal(t, "us-east-1", key.BedrockKeyConfig.Region.GetValue())
+	assert.Equal(t, "us-east-1", key.BedrockMantleKeyConfig.Region.GetValue())
+	assert.Equal(t, "http://vllm.internal.example.com:8000", key.VLLMKeyConfig.URL.GetValue())
+	assert.Equal(t, "http://ollama.internal.example.com:11434", key.OllamaKeyConfig.URL.GetValue())
+	assert.Equal(t, "http://sgl.internal.example.com:30000", key.SGLKeyConfig.URL.GetValue())
+
+	// The redacted copy must not alias the live config: these are pointer
+	// fields, and an API response handing out the live SecretVar would let a
+	// caller edit the running configuration.
+	assert.NotSame(t, config.Keys[0].BedrockKeyConfig.Region, key.BedrockKeyConfig.Region)
+	assert.NotSame(t, config.Keys[0].BedrockMantleKeyConfig.Region, key.BedrockMantleKeyConfig.Region)
+}
+
+// TestProviderConfig_Redacted_MasksSecretBackedIdentifiers is the other half of
+// the rule: an operator who deliberately sourced a region or URL from env/vault
+// still gets the resolved value masked, with the reference intact for the UI.
+func TestProviderConfig_Redacted_MasksSecretBackedIdentifiers(t *testing.T) {
+	t.Setenv("LEAK_TEST_REGION", "ap-southeast-2")
+	t.Setenv("LEAK_TEST_VLLM_URL", "http://vllm-secret.internal.example.com:8000")
+
+	config := ProviderConfig{
+		Keys: []schemas.Key{{
+			ID:    "k1",
+			Name:  "test",
+			Value: schemas.SecretVar{Val: ""},
+			BedrockKeyConfig: &schemas.BedrockKeyConfig{
+				AccessKey: schemas.SecretVar{Val: ""},
+				SecretKey: schemas.SecretVar{Val: ""},
+				Region:    schemas.NewSecretVar("env.LEAK_TEST_REGION"),
+			},
+			VLLMKeyConfig: &schemas.VLLMKeyConfig{
+				URL: *schemas.NewSecretVar("env.LEAK_TEST_VLLM_URL"),
+			},
+		}},
+	}
+	require.Equal(t, "ap-southeast-2", config.Keys[0].BedrockKeyConfig.Region.GetValue(),
+		"setup: region should resolve from the environment")
+
+	redacted := config.Redacted()
+	data, err := json.Marshal(redacted)
+	require.NoError(t, err)
+	jsonStr := string(data)
+
+	for _, secret := range []string{"ap-southeast-2", "vllm-secret.internal.example.com"} {
+		assert.NotContains(t, jsonStr, secret,
+			"resolved env value %q leaked into redacted JSON output", secret)
+	}
+	for _, ref := range []string{"env.LEAK_TEST_REGION", "env.LEAK_TEST_VLLM_URL"} {
+		assert.Contains(t, jsonStr, ref,
+			"env var reference %q missing from redacted JSON output", ref)
+	}
+}

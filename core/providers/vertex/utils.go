@@ -346,6 +346,9 @@ func buildResponseFromConfig(deployments schemas.KeyAliases, allowedModels schem
 		return response
 	}
 	for _, allowedModel := range allowedModels {
+		if schemas.IsRegexEntry(allowedModel) {
+			continue
+		}
 		modelID := string(schemas.Vertex) + "/" + allowedModel
 		if addedModelIDs[modelID] {
 			continue

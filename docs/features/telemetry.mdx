@@ -51,7 +51,7 @@ These metrics track requests forwarded to AI providers:
 | ---------------------------------- | --------- | ----------------------------------------------------------------- | ----------------------------------------------------- |
 | `bifrost_upstream_requests_total`  | Counter   | Total requests forwarded to upstream providers                    | Base Labels, custom labels                            |
 | `bifrost_success_requests_total`   | Counter   | Total successful requests to upstream providers                   | Base Labels, custom labels                            |
-| `bifrost_error_requests_total`     | Counter   | Total failed requests to upstream providers                       | Base Labels, `status_code`, custom labels             |
+| `bifrost_error_requests_total`     | Counter   | Total failed requests, by raw status and normalized reason         | Base Labels, `status_code`, `error_type`, custom labels |
 | `bifrost_upstream_latency_seconds` | Histogram | Latency of upstream provider requests                             | Base Labels, `is_success`, custom labels              |
 | `bifrost_overhead_latency_microseconds`   | Histogram | Total Bifrost overhead per request in microseconds (Bifrost's own work, excluding upstream provider time) | Base Labels, custom labels                            |
 | `bifrost_overhead_component_microseconds` | Histogram | Same overhead broken down by internal component. Opt-in via `overhead_breakdown_enabled`; populated only when tracing is active | Base Labels, `overhead_component`, custom labels      |
@@ -340,7 +340,13 @@ Configure alerts for critical scenarios using the new metrics:
 
 ```yaml
 - alert: BifrostHighErrorRate
-  expr: sum by (provider) (rate(bifrost_error_requests_total[5m])) / sum by (provider) (rate(bifrost_upstream_requests_total[5m])) > 0.05
+  # Excludes caller_* (bad model names, malformed requests) and policy_* (governance
+  # refusals: budgets, rate limits, blocked models). Neither is a provider or gateway
+  # failure, and policy refusals short-circuit before any provider call while still
+  # counting in bifrost_upstream_requests_total — so without this they inflate both
+  # sides of the ratio. provider_* and bifrost_* are what this alert is for. See the
+  # error_type reference: /features/observability/prometheus#error-types
+  expr: sum by (provider) (rate(bifrost_error_requests_total{error_type!~"(caller|policy)_.*"}[5m])) / sum by (provider) (rate(bifrost_upstream_requests_total[5m])) > 0.05
   for: 2m
   labels:
     severity: warning

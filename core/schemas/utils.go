@@ -1373,6 +1373,11 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 			copy.ResponsesToolMessage.Arguments = &copyArguments
 		}
 
+		if original.ResponsesToolMessage.ResponsesCustomToolCall != nil {
+			copyCustomToolCall := *original.ResponsesToolMessage.ResponsesCustomToolCall
+			copy.ResponsesToolMessage.ResponsesCustomToolCall = &copyCustomToolCall
+		}
+
 		if original.ResponsesToolMessage.Namespace != nil {
 			copyNamespace := *original.ResponsesToolMessage.Namespace
 			copy.ResponsesToolMessage.Namespace = &copyNamespace
@@ -1531,6 +1536,16 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 	if original.EncryptedContent != nil {
 		copy.EncryptedContent = new(string)
 		*copy.EncryptedContent = *original.EncryptedContent
+	}
+
+	// Gemini's per-part media resolution is replayed to the provider verbatim, so it has to
+	// survive the copy -- and must not share the NumTokens pointer with the original.
+	if original.MediaResolution != nil {
+		copyMediaResolution := &MediaResolution{Level: original.MediaResolution.Level}
+		if original.MediaResolution.NumTokens != nil {
+			copyMediaResolution.NumTokens = new(*original.MediaResolution.NumTokens)
+		}
+		copy.MediaResolution = copyMediaResolution
 	}
 
 	// Deep copy ResponsesInputMessageContentBlockImage
@@ -1793,6 +1808,34 @@ func IsElevenlabsSoundModel(model string) bool {
 // explicit prompt-caching cache points in the Converse API request.
 func BedrockModelSupportsCachePoints(model string) bool {
 	return IsAnthropicModel(model) || IsNovaModel(model)
+}
+
+// BedrockModelSupportsToolResultImages reports whether the Bedrock model accepts
+// image blocks inside a Converse toolResult.
+func BedrockModelSupportsToolResultImages(model string) bool {
+	return !IsOpenAIModel(model) && !IsGrokModel(model)
+}
+
+// ResolveBedrockMantleBasePath returns the URL base path Bedrock Mantle serves the
+// model's OpenAI-compatible APIs on, preferring the datasheet and falling back to
+// family detection.
+//
+// Mantle answers a model on exactly one of its two paths and 400s on the other
+// ("model `openai.gpt-6-astra` isn't supported on this route"), so the fallback has
+// to name every closed generation explicitly: one that nothing matches drops to the
+// bare path the open-weight families use and fails outright. That is why the
+// datasheet leads — a new generation becomes a published row rather than a release.
+//
+// Takes the canonical (capability-resolved) model; the request body still carries
+// the wire model.
+func ResolveBedrockMantleBasePath(model string) BedrockMantleBasePath {
+	fallback := BedrockMantleBasePathV1
+	lower := strings.ToLower(model)
+	if strings.Contains(lower, "gpt-5") || strings.Contains(lower, "gpt-6") ||
+		strings.Contains(lower, "gemma-4") || IsGrokModel(model) {
+		fallback = BedrockMantleBasePathOpenAIV1
+	}
+	return ResolveModelCaps(BedrockMantle, model).BedrockMantleBasePath(fallback)
 }
 
 // ModelSupportsPromptCaching is the datasheet-independent fallback for

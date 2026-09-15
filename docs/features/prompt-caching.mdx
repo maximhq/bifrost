@@ -73,7 +73,7 @@ the former.
 |----------|---------------------------|-------------|-----|
 | Anthropic | All Claude models | `cache_control: {"type": "ephemeral"}` on the content block | `5m` default, `1h` with `ttl` |
 | Vertex AI | Claude models only. Gemini caches through a server-side `cachedContent` resource, so injection is a no-op there | `cache_control` | `5m` default, `1h` with `ttl` |
-| Bedrock | Claude and Amazon Nova on the Converse API. gpt-5.6 ids that resolve to the Mantle surface follow the OpenAI row | `cachePoint` block | Claude only. Nova accepts only the default and returns 400 for `1h` |
+| Bedrock | Claude and Amazon Nova on the Converse API. gpt-5.6 ids that resolve to the Mantle surface, or that a key with `use_openai_endpoints` sends to `/openai/v1`, follow the OpenAI row. A gpt-5.6 id served by Converse (cross-region ids such as `global.openai.gpt-5.6-luna` on a default key) gets Bedrock's implicit, best-effort prefix caching with no marker at all. Mid-conversation `role: "system"` messages are inlined in place for every model family so the cached prefix stays stable across turns | `cachePoint` block | Claude only. Nova accepts only the default and returns 400 for `1h` |
 | Bedrock Mantle | Claude, Amazon Nova, and the gpt-5.6 family | `cachePoint` for Claude and Nova, `prompt_cache_breakpoint` for gpt-5.6 | Same as Bedrock |
 | OpenAI | gpt-5.6 family on the Responses API. Earlier models cache implicitly, and Chat Completions strips the marker for every model | `prompt_cache_breakpoint` on the block plus `prompt_cache_options.mode: "explicit"` on the request | Ignored |
 | Azure OpenAI | gpt-5.6 family on the Responses API | Same as OpenAI | Ignored |
