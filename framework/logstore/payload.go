@@ -59,7 +59,7 @@ var payloadFields = []string{
 // ExtractPayload reads the serialized TEXT payload fields from a Log into a map.
 // The map keys are the DB column names.
 func ExtractPayload(l *Log) map[string]string {
-	m := make(map[string]string, len(payloadFields)+25)
+	m := make(map[string]string, len(payloadFields)+26)
 	m["input_history"] = l.InputHistory
 	m["responses_input_history"] = l.ResponsesInputHistory
 	m["output_message"] = l.OutputMessage
@@ -116,6 +116,7 @@ func ExtractPayload(l *Log) map[string]string {
 	putIfPresent(m, "virtual_key_name", l.VirtualKeyName)
 	putIfPresent(m, "user_id", l.UserID)
 	putIfPresent(m, "user_name", l.UserName)
+	putIfPresent(m, "user_email", l.UserEmail)
 	putIfPresent(m, "team_id", l.TeamID)
 	putIfPresent(m, "team_name", l.TeamName)
 	putIfPresent(m, "team_ids", l.TeamIDs)
