@@ -95,6 +95,7 @@ func (a *Accumulator) processAccumulatedTranscriptionStreamingChunks(requestID s
 		}
 		if lastChunk.Cost != nil {
 			data.Cost = lastChunk.Cost
+			data.CostIsComplete = lastChunk.CostIsComplete
 		}
 		if lastChunk.SemanticCacheDebug != nil {
 			data.CacheDebug = lastChunk.SemanticCacheDebug
@@ -163,8 +164,9 @@ func (a *Accumulator) processTranscriptionStreamingResponse(ctx *schemas.Bifrost
 		}
 		if isFinalChunk {
 			if a.pricingManager != nil {
-				cost := a.pricingManager.CalculateCost(result, modelcatalog.PricingLookupScopesFromContext(ctx, string(result.GetExtraFields().Provider)))
-				chunk.Cost = bifrost.Ptr(cost)
+				cost := a.pricingManager.CalculateCostWithStatus(result, modelcatalog.PricingLookupScopesFromContext(ctx, string(result.GetExtraFields().Provider)))
+				chunk.Cost = cost.AmountUSD
+				chunk.CostIsComplete = cost.IsComplete
 			}
 			chunk.SemanticCacheDebug = result.GetExtraFields().CacheDebug
 		}

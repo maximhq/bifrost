@@ -149881,6 +149881,148 @@
           ]
         }
       ]
+    },
+    {
+      "name": "89. Request Cost Receipts (native JSON and SSE)",
+      "description": "The logging plugin exposes its calculated request costs in extra_fields.request_costs before the response is sent. These native /v1/chat/completions cases require logging.config.include_request_costs=true and a loaded model catalog. The non-streaming response and final usage-bearing SSE chunk must contain a versioned USD receipt with a known positive cost for this single successful OpenAI request. Earlier SSE chunks must omit the receipt. Without request cost receipts both cases fail even when content and usage are otherwise valid. x-bf-expect-cost also retains the existing logs DB accounting check. Unknown pricing, explicit zero cost, failures, and logging-disabled omission are covered by offline Go tests.",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini request cost receipt in completed JSON",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Request cost receipt is available in the completed JSON response', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.usage.total_tokens, body).to.be.above(0);",
+                  "  var receipt = response.extra_fields && response.extra_fields.request_costs;",
+                  "  pm.expect(receipt, 'missing extra_fields.request_costs: ' + body).to.be.an('object');",
+                  "  pm.expect(receipt.version).to.equal(1);",
+                  "  pm.expect(receipt.currency).to.equal('USD');",
+                  "  pm.expect(receipt.is_complete, 'successful priced request must be complete: ' + body).to.equal(true);",
+                  "  pm.expect(receipt.requests).to.be.an('array').with.lengthOf(1);",
+                  "  var request = receipt.requests[0];",
+                  "  pm.expect(request.request_id).to.be.a('string').and.not.empty;",
+                  "  pm.expect(request.provider).to.equal('openai');",
+                  "  pm.expect(request.model).to.include('gpt-4o-mini');",
+                  "  pm.expect(request.is_complete).to.equal(true);",
+                  "  pm.expect(request.amount_usd, 'expected a calculated cost in the response: ' + body).to.be.a('number').and.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "request-cost-json-{{$guid}}"
+              },
+              {
+                "key": "x-bf-expect-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the word pong.\"\n    }\n  ],\n  \"max_tokens\": 32\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini request cost receipt on final SSE chunk",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Request cost receipt is delivered exactly once on the final SSE chunk', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'stream request failed: ' + body).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('Content-Type'), body).to.include('text/event-stream');",
+                  "  var data = body.split(/\\r?\\n/).filter(function (line) { return line.indexOf('data: ') === 0; }).map(function (line) { return line.slice(6).trim(); });",
+                  "  pm.expect(data.length, 'expected SSE chunks: ' + body).to.be.above(1);",
+                  "  pm.expect(data[data.length - 1], 'clean stream must end with [DONE]: ' + body).to.equal('[DONE]');",
+                  "  var chunks = data.slice(0, -1).map(function (value) { return JSON.parse(value); });",
+                  "  var finalChunk = chunks[chunks.length - 1];",
+                  "  chunks.slice(0, -1).forEach(function (chunk) {",
+                  "    pm.expect(chunk.extra_fields && chunk.extra_fields.request_costs, 'cost must not appear before the final chunk: ' + body).to.equal(undefined);",
+                  "  });",
+                  "  pm.expect(finalChunk.usage.total_tokens, 'final chunk must contain usage: ' + body).to.be.above(0);",
+                  "  var receipt = finalChunk.extra_fields && finalChunk.extra_fields.request_costs;",
+                  "  pm.expect(receipt, 'missing extra_fields.request_costs: ' + body).to.be.an('object');",
+                  "  pm.expect(receipt.version).to.equal(1);",
+                  "  pm.expect(receipt.currency).to.equal('USD');",
+                  "  pm.expect(receipt.is_complete, 'successful priced request must be complete: ' + body).to.equal(true);",
+                  "  pm.expect(receipt.requests).to.be.an('array').with.lengthOf(1);",
+                  "  var request = receipt.requests[0];",
+                  "  pm.expect(request.request_id).to.be.a('string').and.not.empty;",
+                  "  pm.expect(request.provider).to.equal('openai');",
+                  "  pm.expect(request.model).to.include('gpt-4o-mini');",
+                  "  pm.expect(request.is_complete).to.equal(true);",
+                  "  pm.expect(request.amount_usd, 'expected a calculated cost in the response: ' + body).to.be.a('number').and.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "request-cost-stream-{{$guid}}"
+              },
+              {
+                "key": "x-bf-expect-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the word pong.\"\n    }\n  ],\n  \"max_tokens\": 32,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

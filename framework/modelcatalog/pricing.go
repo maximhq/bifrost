@@ -97,6 +97,39 @@ func (mc *ModelCatalog) CalculateCostBreakdownForUsage(usage *schemas.BifrostLLM
 	return mc.datasheet.CalculateCostBreakdownForUsage(usage, provider, model, requestType, (*datasheet.LookupScopes)(scopes))
 }
 
+// CalculateCostWithStatus returns the calculated total and its completeness.
+func (mc *ModelCatalog) CalculateCostWithStatus(result *schemas.BifrostResponse, scopes *PricingLookupScopes) schemas.CostCalculation {
+	_, calculation := mc.CalculateCostBreakdownWithStatus(result, scopes)
+	return calculation
+}
+
+// CalculateCostBreakdownWithStatus returns the breakdown and completeness from
+// a single calculation so callers can persist both without recalculating.
+func (mc *ModelCatalog) CalculateCostBreakdownWithStatus(result *schemas.BifrostResponse, scopes *PricingLookupScopes) (*schemas.BifrostCost, schemas.CostCalculation) {
+	var store *datasheet.Store
+	if mc != nil {
+		store = mc.datasheet
+	}
+	return store.CalculateCostBreakdownWithStatus(result, (*datasheet.LookupScopes)(scopes))
+}
+
+// CalculateCostForUsageWithStatus prices partial usage without interpreting
+// missing usage or missing prices as a free request.
+func (mc *ModelCatalog) CalculateCostForUsageWithStatus(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *PricingLookupScopes) schemas.CostCalculation {
+	_, calculation := mc.CalculateCostBreakdownForUsageWithStatus(usage, provider, model, requestType, scopes)
+	return calculation
+}
+
+// CalculateCostBreakdownForUsageWithStatus returns the breakdown and
+// completeness for bare usage from a single calculation.
+func (mc *ModelCatalog) CalculateCostBreakdownForUsageWithStatus(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *PricingLookupScopes) (*schemas.BifrostCost, schemas.CostCalculation) {
+	var store *datasheet.Store
+	if mc != nil {
+		store = mc.datasheet
+	}
+	return store.CalculateCostBreakdownForUsageWithStatus(usage, provider, model, requestType, (*datasheet.LookupScopes)(scopes))
+}
+
 // CalculateRoutingCallCost prices one routing-classification call — a
 // semantic classification embed, or an llm classification completion when the
 // call carries OutputTokens.

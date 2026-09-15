@@ -14,6 +14,64 @@ Metadata is what dashboards, budgets, and alerts run on. Content is what makes a
 There is no single switch. Content is stripped **independently at each destination**, from that destination's own setting. A log store with content disabled says nothing about what your BigQuery table or Datadog spans contain. This page covers how the layers compose.
 </Note>
 
+
+## Request costs in inference responses
+
+Operators can enable `include_request_costs` in the logging plugin configuration
+to disclose request costs to inference callers. It is disabled by default and
+cannot be enabled with a request header. When enabled, native `/v1/chat/completions` responses include
+`extra_fields.request_costs` after the request finishes. For streaming, the receipt
+is attached to the final SSE chunk, including a terminal error when one is delivered.
+Earlier chunks omit the receipt. The provider's `usage` object is unchanged.
+
+```json
+{
+  "plugins": [
+    {
+      "name": "logging",
+      "enabled": true,
+      "config": { "include_request_costs": true }
+    }
+  ]
+}
+```
+
+The completed response contains:
+
+```json
+{
+  "request_costs": {
+    "version": 1,
+    "currency": "USD",
+    "is_complete": true,
+    "requests": [
+      {
+        "request_id": "request-123",
+        "provider": "openai",
+        "model": "gpt-4o-mini",
+        "amount_usd": 0.000285,
+        "is_complete": true
+      }
+    ]
+  }
+}
+```
+
+Each amount is copied from the result calculated for the corresponding log entry;
+it is available before asynchronous log storage finishes. Earlier logged fallback
+attempts are included in the same receipt, with `parent_request_id` linking them to
+the original request. Deduplicate by `request_id` when combining repeated receipts.
+Semantic-cache embedding lookups bypass separate request logging, so their cost is
+included once in the main request amount.
+
+A calculated zero is `amount_usd: 0`. Missing pricing or usage produces `null`, or a
+known partial amount with `is_complete: false`. Internal retries whose individual
+usage is not observable also make the receipt incomplete. Treat a missing receipt
+as unavailable, including when logging is disabled; it does not mean the request
+was free. These amounts follow Bifrost's catalog and pricing overrides, rather than
+an independently reconciled provider invoice. Other modalities can return a known
+amount with incomplete status until their usage and rate coverage is verified.
+
 ---
 
 ## What counts as content

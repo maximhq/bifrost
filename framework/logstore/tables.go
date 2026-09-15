@@ -281,6 +281,7 @@ type Log struct {
 	OutputCost     float64  `gorm:"default:0" json:"-"`
 	AdditionalCost float64  `gorm:"default:0" json:"-"`
 	Cost           *float64 `gorm:"index" json:"cost,omitempty"` // Cost in dollars (total cost of the request - includes cache lookup cost)
+	CostIsComplete bool     `gorm:"-" json:"-"`                  // Ephemeral pricing status for the response receipt
 	// Virtual: one cost breakdown the UI reads across every row type. Assembled in
 	// DeserializeFields from token_usage.cost when present (full detail), else from
 	// the denormalized columns. Never stored.

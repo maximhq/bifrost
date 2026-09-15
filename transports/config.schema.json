@@ -2541,6 +2541,11 @@
                   "type": "object",
                   "description": "Configuration for the logging plugin",
                   "properties": {
+                    "include_request_costs": {
+                      "type": "boolean",
+                      "description": "Expose the costs recorded for this request and its fallback attempts in inference response metadata. Includes catalog prices and configured overrides. Disabled by default.",
+                      "default": false
+                    },
                     "disable_content_logging": {
                       "type": "boolean",
                       "description": "Disable logging of request and response content"

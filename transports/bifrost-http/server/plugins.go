@@ -231,6 +231,15 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 		if s.Config.LogsStoreConfig != nil {
 			config.Writer = s.Config.LogsStoreConfig.Writer
 		}
+		if pluginConfig := s.getPluginConfig(logging.PluginName); pluginConfig != nil && pluginConfig.Enabled && pluginConfig.Config != nil {
+			configured, err := MarshalPluginConfig[logging.Config](pluginConfig.Config)
+			if err != nil {
+				return fmt.Errorf("failed to marshal logging plugin config: %w", err)
+			}
+			if configured != nil {
+				config.IncludeRequestCosts = configured.IncludeRequestCosts
+			}
+		}
 		s.registerPluginWithStatus(ctx, logging.PluginName, nil, config, false)
 	} else {
 		s.markPluginDisabled(logging.PluginName)

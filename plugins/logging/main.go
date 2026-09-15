@@ -250,9 +250,10 @@ func (p *LoggerPlugin) applyErrorBillingFromBilledUsage(ctx *schemas.BifrostCont
 	}
 	if entry.Cost == nil && p.pricingManager != nil {
 		pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
-		if bd := p.pricingManager.CalculateCostBreakdownForUsage(billed, schemas.ModelProvider(entry.Provider), entry.Model, requestType, pricingScopes); bd != nil && bd.TotalCost > 0 {
-			total := bd.TotalCost
-			entry.Cost = &total
+		bd, cost := p.pricingManager.CalculateCostBreakdownForUsageWithStatus(billed, schemas.ModelProvider(entry.Provider), entry.Model, requestType, pricingScopes)
+		entry.Cost = cost.AmountUSD
+		entry.CostIsComplete = cost.IsComplete
+		if cost.AmountUSD != nil && bd != nil {
 			// Attach the breakdown to the stored usage so SerializeFields
 			// denormalizes the input/output/additional split, not just the total.
 			if entry.TokenUsageParsed != nil && entry.TokenUsageParsed.Cost == nil {
@@ -297,14 +298,17 @@ func (p *LoggerPlugin) applyInternalCallCosts(ctx *schemas.BifrostContext, entry
 	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
 	var cacheCost, guardrailCost, routingCost float64
 	if cacheMetadata, ok := schemas.CacheMetadataFromContext(ctx); ok {
+		entry.CostIsComplete = false
 		cacheCost = p.pricingManager.CalculateCacheEmbeddingCost(cacheMetadata, pricingScopes)
 	}
 	if guardrailMetadata != nil {
+		entry.CostIsComplete = false
 		guardrailCost = p.pricingManager.CalculateGuardrailCost(guardrailMetadata, pricingScopes)
 	}
 	if routingMetadata, ok := schemas.InitialAttemptRoutingMetadataFromContext(ctx); ok {
 		for _, call := range routingMetadata.Calls {
 			if call.CountTowardBudgets {
+				entry.CostIsComplete = false
 				routingCost += p.pricingManager.CalculateRoutingCallCost(call, pricingScopes)
 			}
 		}
@@ -1072,6 +1076,7 @@ type MCPToolLogCallback func(*logstore.MCPToolLog)
 
 // Config controls logging plugin behavior.
 type Config struct {
+	IncludeRequestCosts          bool                   `json:"include_request_costs"` // Expose logged costs to inference callers; disabled by default
 	DisableContentLogging        *bool                  `json:"disable_content_logging"`
 	RetainContentInObjectStorage *bool                  `json:"retain_content_in_object_storage"` // Pointer to live config value; when true, content-disabled requests are offloaded to object storage as hidden instead of dropped
 	LoggingHeaders               *[]string              `json:"logging_headers"`                  // Pointer to live config slice; changes are reflected immediately without restart
@@ -1122,6 +1127,7 @@ type compiledUserAgentMapping struct {
 
 // LoggerPlugin implements the schemas.LLMPlugin and schemas.MCPPlugin interfaces
 type LoggerPlugin struct {
+	includeRequestCosts          bool
 	ctx                          context.Context
 	store                        logstore.LogStore
 	batchStore                   jobaccounting.SweepStore // configstore-backed mutable batch coordination state (nil disables batch accounting)
@@ -1201,6 +1207,7 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 		batchStore:                   batchStore,
 		pricingManager:               pricingManager,
 		mcpCatalog:                   mcpCatalog,
+		includeRequestCosts:          config.IncludeRequestCosts,
 		disableContentLogging:        config.DisableContentLogging,
 		retainContentInObjectStorage: config.RetainContentInObjectStorage,
 		objectStorageEnabled:         config.ObjectStorageEnabled,
@@ -1840,6 +1847,9 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 //   - *schemas.BifrostError: The processed error
 //   - error: Any error that occurred during processing
 func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	// Cached responses can contain an earlier receipt. Only publish this request's
+	// freshly completed log snapshot, never a receipt replayed from the cache.
+	attachRequestCosts(result, bifrostErr, nil)
 	if ctx == nil {
 		// Log error but don't fail the request
 		p.logger.Error("context is nil in PostLLMHook")
@@ -1942,12 +1952,14 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			entry.ErrorDetailsParsed = sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)
 			entry.GuardrailDebugParsed = guardrailMetadata
 			entry.RoutingMetadataParsed = routingMetadata
+			entry.NumberOfRetries = bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
+			p.applyErrorBillingFromBilledUsage(ctx, entry, bifrostErr.ExtraFields.BilledUsage, requestType)
 			p.applyInternalCallCosts(ctx, entry, guardrailMetadata)
 			if nodeID, _ := p.clusterNodeID.Load().(string); nodeID != "" {
 				entry.ClusterNodeID = &nodeID
 			}
 			applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
-			p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
+			attachRequestCosts(result, bifrostErr, p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil)))
 		} else {
 			p.logger.Warn("no pending log data found for request %s, skipping log write", requestID)
 		}
@@ -2157,7 +2169,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		p.applyErrorBillingFromBilledUsage(ctx, entry, bifrostErr.ExtraFields.BilledUsage, requestType)
 		p.applyInternalCallCosts(ctx, entry, guardrailMetadata)
 		applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
-		p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
+		attachRequestCosts(result, bifrostErr, p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil)))
 		p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
 		return result, bifrostErr, nil
 	}
@@ -2249,9 +2261,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			// Compute cost for streaming passthrough using StreamUsage set by the accumulator.
 			if entry.Cost == nil && p.pricingManager != nil && result.PassthroughResponse.PassthroughUsage != nil {
 				pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
-				if cost := p.pricingManager.CalculateCost(result, pricingScopes); cost > 0 {
-					entry.Cost = &cost
-				}
+				cost := p.pricingManager.CalculateCostWithStatus(result, pricingScopes)
+				entry.Cost = cost.AmountUSD
+				entry.CostIsComplete = cost.IsComplete
 			}
 		}
 		applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
@@ -2260,8 +2272,10 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		}
 		// Attach the per-category cost split to the accumulated stream usage so
 		// log detail views can surface input / output / cache costs.
-		p.attachCostBreakdown(ctx, entry, result)
-		p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
+		if entry.Cost != nil {
+			p.attachCostBreakdown(ctx, entry, result)
+		}
+		attachRequestCosts(result, bifrostErr, p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil)))
 		p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
 		return result, bifrostErr, nil
 	}
@@ -2314,9 +2328,10 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	entry.CacheDebugParsed = cacheMetadata
 	if p.pricingManager != nil {
 		pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
-		if breakdown := p.pricingManager.CalculateCostBreakdown(result, pricingScopes); breakdown != nil && breakdown.TotalCost > 0 {
-			cost := breakdown.TotalCost
-			entry.Cost = &cost
+		breakdown, cost := p.pricingManager.CalculateCostBreakdownWithStatus(result, pricingScopes)
+		entry.Cost = cost.AmountUSD
+		entry.CostIsComplete = cost.IsComplete
+		if cost.AmountUSD != nil && breakdown != nil {
 			// Attach the per-category split (input / output / cache) to the
 			// stored usage so log detail views can surface it. Preserve any
 			// provider-supplied breakdown.
@@ -2365,7 +2380,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			Name: *entry.RoutingRuleName,
 		}
 	}
-	p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
+	attachRequestCosts(result, bifrostErr, p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil)))
 	p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
 	return result, bifrostErr, nil
 }
@@ -2465,7 +2480,7 @@ drainQueue:
 // storeOrEnqueueEntry stores a log entry in pendingLogs keyed by traceID for later
 // retrieval by Inject(), or enqueues directly if no traceID is available (Go SDK path).
 // Multiple entries per traceID are supported (e.g. fallback/retry attempts within the same trace).
-func (p *LoggerPlugin) storeOrEnqueueEntry(ctx *schemas.BifrostContext, entry *logstore.Log, callback func(entry *logstore.Log)) {
+func (p *LoggerPlugin) storeOrEnqueueEntry(ctx *schemas.BifrostContext, entry *logstore.Log, callback func(entry *logstore.Log)) *schemas.RequestCosts {
 	policy := p.resolveContentPolicy(ctx)
 	// ContentHidden marks entries whose content the API/UI never serves back —
 	// both the retained-in-object-storage case and the dropped-entirely case.
@@ -2477,8 +2492,12 @@ func (p *LoggerPlugin) storeOrEnqueueEntry(ctx *schemas.BifrostContext, entry *l
 	traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
 	if traceID == "" {
 		// Fallback: no tracing (Go SDK path), enqueue directly
+		costs := p.requestCostsSnapshot([]*logstore.Log{entry})
+		if costs != nil && entry.FallbackIndex > 0 {
+			costs.IsComplete = false
+		}
 		p.enqueueLogEntry(entry, callback)
-		return
+		return costs
 	}
 	if p.traceAlreadyEnded(ctx, traceID) {
 		// The tracer has already ended this trace: the transport completes it as
@@ -2488,8 +2507,12 @@ func (p *LoggerPlugin) storeOrEnqueueEntry(ctx *schemas.BifrostContext, entry *l
 		// drain a slot parked now. Write directly (without the trace's plugin logs
 		// and latency backfill, which are gone with the trace). This holds however
 		// late the hook is; it does not depend on a timer.
+		costs := p.requestCostsSnapshot([]*logstore.Log{entry})
+		if costs != nil && entry.FallbackIndex > 0 {
+			costs.IsComplete = false
+		}
 		p.enqueueLogEntry(entry, callback)
-		return
+		return costs
 	}
 	// Append to slice for Inject() to pick up — supports multiple attempts per trace
 	existing, loaded := p.pendingLogsToInject.LoadOrStore(traceID, &pendingInjectEntries{entries: []*logstore.Log{entry}, createdAt: time.Now()})
@@ -2510,18 +2533,28 @@ func (p *LoggerPlugin) storeOrEnqueueEntry(ctx *schemas.BifrostContext, entry *l
 				}
 			}
 		}
-		return
+		pending := existing.(*pendingInjectEntries)
+		pending.mu.Lock()
+		costs := p.requestCostsSnapshot(pending.entries)
+		pending.mu.Unlock()
+		return costs
 	}
 	pending := existing.(*pendingInjectEntries)
 	pending.mu.Lock()
 	if pending.drained {
 		// Inject drained this slot between our load and this append.
 		pending.mu.Unlock()
+		costs := p.requestCostsSnapshot([]*logstore.Log{entry})
+		if costs != nil && entry.FallbackIndex > 0 {
+			costs.IsComplete = false
+		}
 		p.enqueueLogEntry(entry, callback)
-		return
+		return costs
 	}
 	pending.entries = append(pending.entries, entry)
+	costs := p.requestCostsSnapshot(pending.entries)
 	pending.mu.Unlock()
+	return costs
 }
 
 // traceAlreadyEnded reports whether the tracer has completed the request's trace.

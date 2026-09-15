@@ -40,6 +40,7 @@ type AccumulatedData struct {
 	CacheDebug            *schemas.BifrostCacheMetadata
 	GuardrailDebug        *schemas.BifrostGuardrailMetadata
 	Cost                  *float64
+	CostIsComplete        bool // Whether all observed usage was priced
 	AudioOutput           *schemas.BifrostSpeechResponse
 	TranscriptionOutput   *schemas.BifrostTranscriptionResponse
 	ImageGenerationOutput *schemas.BifrostImageGenerationResponse
@@ -57,6 +58,7 @@ type AudioStreamChunk struct {
 	TokenUsage         *schemas.SpeechUsage                 // Token usage if available
 	SemanticCacheDebug *schemas.BifrostCacheMetadata        // Semantic cache metadata if available
 	Cost               *float64                             // Cost in dollars from pricing plugin
+	CostIsComplete     bool                                 // Whether all observed usage was priced
 	ErrorDetails       *schemas.BifrostError                // Error if any
 	ChunkIndex         int                                  // Index of the chunk in the stream
 	RawResponse        *string
@@ -70,6 +72,7 @@ type TranscriptionStreamChunk struct {
 	TokenUsage         *schemas.TranscriptionUsage                 // Token usage if available
 	SemanticCacheDebug *schemas.BifrostCacheMetadata               // Semantic cache metadata if available
 	Cost               *float64                                    // Cost in dollars from pricing plugin
+	CostIsComplete     bool                                        // Whether all observed usage was priced
 	ErrorDetails       *schemas.BifrostError                       // Error if any
 	ChunkIndex         int                                         // Index of the chunk in the stream
 	RawResponse        *string
@@ -86,6 +89,7 @@ type ChatStreamChunk struct {
 	SemanticCacheDebug *schemas.BifrostCacheMetadata          // Semantic cache metadata if available
 	GuardrailDebug     *schemas.BifrostGuardrailMetadata      // Guardrail metadata if available
 	Cost               *float64                               // Cost in dollars from pricing plugin
+	CostIsComplete     bool                                   // Whether all observed usage was priced
 	ErrorDetails       *schemas.BifrostError                  // Error if any
 	ChunkIndex         int                                    // Index of the chunk in the stream
 	RawResponse        *string                                // Raw response if available
@@ -101,6 +105,7 @@ type ResponsesStreamChunk struct {
 	SemanticCacheDebug *schemas.BifrostCacheMetadata           // Semantic cache metadata if available
 	GuardrailDebug     *schemas.BifrostGuardrailMetadata       // Guardrail metadata if available
 	Cost               *float64                                // Cost in dollars from pricing plugin
+	CostIsComplete     bool                                    // Whether all observed usage was priced
 	ErrorDetails       *schemas.BifrostError                   // Error if any
 	ChunkIndex         int                                     // Index of the chunk in the stream
 	RawResponse        *string
@@ -115,6 +120,7 @@ type ImageStreamChunk struct {
 	ImageIndex         int                                           // Index of the image in the stream
 	ErrorDetails       *schemas.BifrostError                         // Error if any
 	Cost               *float64                                      // Cost in dollars from pricing plugin
+	CostIsComplete     bool                                          // Whether all observed usage was priced
 	SemanticCacheDebug *schemas.BifrostCacheMetadata                 // Semantic cache metadata if available
 	TokenUsage         *schemas.ImageUsage                           // Token usage if available
 	RawResponse        *string                                       // Raw response if available

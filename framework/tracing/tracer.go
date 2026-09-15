@@ -815,6 +815,8 @@ func (t *Tracer) ProcessStreamingChunk(ctx *schemas.BifrostContext, traceID stri
 	if ctx != nil {
 		accumCtx.SetValue(schemas.BifrostContextKeySelectedKeyID, ctx.Value(schemas.BifrostContextKeySelectedKeyID))
 		accumCtx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID))
+		accumCtx.SetValue(schemas.BifrostContextKeyUserID, ctx.Value(schemas.BifrostContextKeyUserID))
+		accumCtx.SetValue(schemas.BifrostContextKeyRequestStartTime, ctx.Value(schemas.BifrostContextKeyRequestStartTime))
 	}
 
 	processedResp, processErr := t.accumulator.ProcessStreamingResponse(accumCtx, result, err)
@@ -858,6 +860,7 @@ func (t *Tracer) ProcessStreamingChunk(ctx *schemas.BifrostContext, traceID stri
 		// rates.
 		accResult.ServiceTier = processedResp.Data.ServiceTier
 		accResult.Cost = processedResp.Data.Cost
+		accResult.CostIsComplete = processedResp.Data.CostIsComplete
 		accResult.CacheDebug = processedResp.Data.CacheDebug
 		accResult.GuardrailDebug = processedResp.Data.GuardrailDebug
 		accResult.ErrorDetails = processedResp.Data.ErrorDetails
@@ -868,9 +871,6 @@ func (t *Tracer) ProcessStreamingChunk(ctx *schemas.BifrostContext, traceID stri
 		accResult.FinishReason = processedResp.Data.FinishReason
 		accResult.RawResponse = processedResp.Data.RawResponse
 
-		if (accResult.Cost == nil || *accResult.Cost == 0.0) && accResult.TokenUsage != nil && accResult.TokenUsage.Cost != nil {
-			accResult.Cost = &accResult.TokenUsage.Cost.TotalCost
-		}
 	}
 
 	if processedResp.RawRequest != nil {

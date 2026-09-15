@@ -190,6 +190,7 @@ func (a *Accumulator) processAccumulatedImageStreamingChunks(requestID string, b
 		lastChunk := acc.ImageStreamChunks[len(acc.ImageStreamChunks)-1]
 		if lastChunk.Cost != nil {
 			data.Cost = lastChunk.Cost
+			data.CostIsComplete = lastChunk.CostIsComplete
 		}
 	}
 
@@ -275,8 +276,9 @@ func (a *Accumulator) processImageStreamingResponse(ctx *schemas.BifrostContext,
 
 		if isFinalChunk {
 			if a.pricingManager != nil {
-				cost := a.pricingManager.CalculateCost(result, modelcatalog.PricingLookupScopesFromContext(ctx, string(result.GetExtraFields().Provider)))
-				chunk.Cost = bifrost.Ptr(cost)
+				cost := a.pricingManager.CalculateCostWithStatus(result, modelcatalog.PricingLookupScopesFromContext(ctx, string(result.GetExtraFields().Provider)))
+				chunk.Cost = cost.AmountUSD
+				chunk.CostIsComplete = cost.IsComplete
 			}
 			chunk.SemanticCacheDebug = result.GetExtraFields().CacheDebug
 			chunk.FinishReason = bifrost.Ptr("completed")

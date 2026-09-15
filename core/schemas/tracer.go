@@ -25,6 +25,7 @@ type StreamAccumulatorResult struct {
 	TokenUsage       *BifrostLLMUsage    // Token usage
 	ServiceTier      *BifrostServiceTier // Served tier (for example "priority", "flex", "ultrafast", or "default"); needs its own field because it lives on the response envelope, not on BifrostLLMUsage like Speed and InferenceGeo
 	Cost             *float64            // Cost in dollars
+	CostIsComplete   bool                // Whether all observed usage was priced
 	// Debug spelling is retained for the established Go contract.
 	CacheDebug            *BifrostCacheMetadata           // Semantic cache metadata if available
 	GuardrailDebug        *BifrostGuardrailMetadata       // Guardrail metadata if available

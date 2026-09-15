@@ -847,6 +847,7 @@ func convertToProcessedStreamResponse(result *schemas.StreamAccumulatorResult, r
 		CacheDebug:            result.CacheDebug,
 		GuardrailDebug:        result.GuardrailDebug,
 		Cost:                  result.Cost,
+		CostIsComplete:        result.CostIsComplete,
 		AudioOutput:           result.AudioOutput,
 		TranscriptionOutput:   result.TranscriptionOutput,
 		ImageGenerationOutput: result.ImageGenerationOutput,

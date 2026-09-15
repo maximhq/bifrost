@@ -1757,7 +1757,8 @@ func (r *BifrostMCPResponse) PopulateExtraFields(mcpRequestType MCPRequestType, 
 
 // BifrostResponseExtraFields contains additional fields in a response.
 type BifrostResponseExtraFields struct {
-	RequestType RequestType `json:"request_type"`
+	RequestCosts *RequestCosts `json:"request_costs,omitempty"`
+	RequestType  RequestType   `json:"request_type"`
 	// PricingRequestType selects a catalog mode without changing the request type
 	// exposed to plugins and logs.
 	PricingRequestType RequestType `json:"pricing_request_type,omitempty"`
@@ -2103,7 +2104,8 @@ func (e *ErrorField) UnmarshalJSON(data []byte) error {
 
 // BifrostErrorExtraFields contains additional fields in an error response.
 type BifrostErrorExtraFields struct {
-	RoutingInfo RoutingInfo `json:"routing_info"`
+	RequestCosts *RequestCosts `json:"request_costs,omitempty"`
+	RoutingInfo  RoutingInfo   `json:"routing_info"`
 	// Deprecated: use RoutingInfo.Provider. Still populated for backward
 	// compatibility; new consumers should read from RoutingInfo.
 	Provider ModelProvider `json:"provider,omitempty"`

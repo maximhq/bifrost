@@ -262,6 +262,8 @@ type (
 // LookupScopes carries the runtime identifiers used to resolve scoped pricing
 // overrides during cost calculation.
 type LookupScopes struct {
+	costStatus *costStatus
+
 	UserID        string
 	VirtualKeyID  string
 	SelectedKeyID string

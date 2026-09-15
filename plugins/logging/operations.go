@@ -432,6 +432,7 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 	// Cost
 	if streamResponse.Data.Cost != nil {
 		entry.Cost = streamResponse.Data.Cost
+		entry.CostIsComplete = streamResponse.Data.CostIsComplete
 	}
 
 	// Cache
