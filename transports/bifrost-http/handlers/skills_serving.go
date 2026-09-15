@@ -190,7 +190,9 @@ func (h *SkillsServingHandler) buildClaudeCodeMarketplaceJSON(ctx *fasthttp.Requ
 
 	allSkillsVersion := "0.0.0"
 	if len(skills) > 0 {
-		allSkillsVersion, err = h.store.GetAllSkillsVersion(ctx)
+		versionCtx, cancel := skillsServingWorkContext()
+		allSkillsVersion, err = h.store.GetAllSkillsVersion(versionCtx)
+		cancel()
 		if err != nil {
 			logger.Error("all-skills: failed to get version: %v", err)
 			SendError(ctx, fasthttp.StatusInternalServerError, "failed to get all-skills version")
@@ -256,7 +258,9 @@ func (h *SkillsServingHandler) buildCodexMarketplaceJSON(ctx *fasthttp.RequestCt
 
 	allSkillsVersion := "0.0.0"
 	if len(skills) > 0 {
-		allSkillsVersion, err = h.store.GetAllSkillsVersion(ctx)
+		versionCtx, cancel := skillsServingWorkContext()
+		allSkillsVersion, err = h.store.GetAllSkillsVersion(versionCtx)
+		cancel()
 		if err != nil {
 			logger.Error("all-skills: failed to get version: %v", err)
 			SendError(ctx, fasthttp.StatusInternalServerError, "failed to get all-skills version")
@@ -553,9 +557,12 @@ func (h *SkillsServingHandler) servePluginGit(harness string) fasthttp.RequestHa
 
 		repoBase := "/api/skills/serve/" + harness + "/plugins/" + rawName
 
+		repoCtx, cancel := skillsServingWorkContext()
+		defer cancel()
+
 		// Handle the bundled "all skills" plugin.
 		if rawName == allSkillsPluginName {
-			spec, err := h.assembleAllSkillsRepoSpec(ctx, harness)
+			spec, err := h.assembleAllSkillsRepoSpec(repoCtx, harness)
 			if err != nil {
 				logger.Error("all-skills: failed to assemble repo spec: %v", err)
 				SendError(ctx, fasthttp.StatusInternalServerError, "failed to prepare all-skills plugin")
@@ -567,7 +574,7 @@ func (h *SkillsServingHandler) servePluginGit(harness string) fasthttp.RequestHa
 
 		// Strip the "bifrost-" prefix to look up the actual skill name.
 		skillName := strings.TrimPrefix(rawName, pluginNamePrefix)
-		skill, err := h.store.GetSkillByName(ctx, skillName)
+		skill, err := h.store.GetSkillByName(repoCtx, skillName)
 		if err != nil {
 			if errors.Is(err, configstore.ErrNotFound) {
 				SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("skill %q not found", skillName))
@@ -578,7 +585,7 @@ func (h *SkillsServingHandler) servePluginGit(harness string) fasthttp.RequestHa
 			return
 		}
 
-		spec, err := h.assemblePluginRepoSpec(ctx, skill, harness)
+		spec, err := h.assemblePluginRepoSpec(repoCtx, skill, harness)
 		if err != nil {
 			logger.Error("skill %s: failed to assemble repo spec: %v", skill.Name, err)
 			SendError(ctx, fasthttp.StatusInternalServerError, "failed to prepare plugin git repository")
@@ -1090,7 +1097,9 @@ func serveSkillFile(ctx *fasthttp.RequestCtx, file *tables.TableSkillFile, objSt
 			SendError(ctx, fasthttp.StatusInternalServerError, "file source URL not configured")
 			return
 		}
-		data, err := fetchURLSafe(ctx, *file.SourceURL)
+		fetchCtx, cancel := skillsServingWorkContext()
+		data, err := fetchURLSafe(fetchCtx, *file.SourceURL)
+		cancel()
 		if err != nil {
 			logger.Error("skill %s file %s: failed to fetch from URL %s: %v", skillName, file.Path, redactURLForLog(*file.SourceURL), err)
 			SendError(ctx, fasthttp.StatusBadGateway, "failed to fetch file from source URL")
@@ -1100,7 +1109,9 @@ func serveSkillFile(ctx *fasthttp.RequestCtx, file *tables.TableSkillFile, objSt
 		ctx.SetBody(data)
 
 	case tables.SkillSourceTypeText, tables.SkillSourceTypeDataURL, tables.SkillSourceTypeUpload:
-		data, err := fetchStoredFileContent(ctx, file, objStore)
+		fetchCtx, cancel := skillsServingWorkContext()
+		data, err := fetchStoredFileContent(fetchCtx, file, objStore)
+		cancel()
 		if err != nil {
 			logger.Error("skill %s file %s: failed to retrieve stored content: %v", skillName, file.Path, err)
 			SendError(ctx, fasthttp.StatusInternalServerError, "failed to retrieve file content")
@@ -1349,9 +1360,27 @@ func buildSkillFilePath(skillName string, file *tables.TableSkillFile) string {
 	return path.Join(skillName, file.Path)
 }
 
-// lookupSkillByPathParamTimeout bounds the DB lookup in lookupSkillByPathParam. It must
-// never be derived from the request's *fasthttp.RequestCtx (see that function's comment).
-const lookupSkillByPathParamTimeout = 10 * time.Second
+// skillsServingWorkTimeout bounds store, object-store and outbound HTTP work started while
+// serving a skills request.
+const skillsServingWorkTimeout = 30 * time.Second
+
+// skillsServingWorkContext returns the context to hand to the config store, the object store
+// and outbound HTTP clients while serving a skills request.
+//
+// Never pass the *fasthttp.RequestCtx itself. Its Done() returns a server-wide channel
+// (fasthttp.Server.done), closed only on server shutdown, not per request (fasthttp's own
+// documented tradeoff, since allocating a channel per request is expensive). Whenever
+// ctx.Done() != nil, database/sql and net/http spawn an internal cancellation-watcher
+// goroutine that keeps reading RequestCtx.s.done after the handler returns, while
+// Server.ShutdownWithContext writes s.done = nil once every connection has closed. That is an
+// unsynchronized write against a live reader: the data race seen under -race in
+// TestClaudeMarketplaceGitRepoContainsMarketplaceAndCloneablePlugin.
+//
+// Deriving from context.Background() gives up nothing, because a RequestCtx carries no
+// per-request cancellation to propagate in the first place.
+func skillsServingWorkContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), skillsServingWorkTimeout)
+}
 
 // lookupSkillByPathParam extracts the skill-name path parameter and fetches the skill.
 func (h *SkillsServingHandler) lookupSkillByPathParam(ctx *fasthttp.RequestCtx) (*tables.TableSkill, bool) {
@@ -1360,17 +1389,7 @@ func (h *SkillsServingHandler) lookupSkillByPathParam(ctx *fasthttp.RequestCtx) 
 		return nil, false
 	}
 
-	// Must not pass ctx (a *fasthttp.RequestCtx) directly as the context.Context here: its
-	// Done() returns a server-wide channel (fasthttp.Server.done), closed only on server
-	// shutdown -- not per-request (fasthttp's own documented tradeoff, since allocating a
-	// channel per request is expensive). GetSkillByName's nested Preload("Files")/
-	// Preload("Files.Blob") queries make database/sql spawn an internal cancellation-watcher
-	// goroutine per query whenever ctx.Done() != nil, and that goroutine reads
-	// RequestCtx.s.done unsynchronized against Server.Shutdown()'s write of s.done = nil --
-	// a data race confirmed under -race. Deriving from context.Background() instead (as
-	// allSkillsZipDownload/genericZipDownload already do for their streaming bodies) avoids
-	// ever handing the raw RequestCtx to anything that watches Done() asynchronously.
-	lookupCtx, cancel := context.WithTimeout(context.Background(), lookupSkillByPathParamTimeout)
+	lookupCtx, cancel := skillsServingWorkContext()
 	defer cancel()
 
 	skill, err := h.store.GetSkillByName(lookupCtx, name)
@@ -1407,8 +1426,10 @@ func decodeStringPathParam(ctx *fasthttp.RequestCtx, paramName, displayName stri
 
 // listAllSkills fetches all skills for marketplace generation.
 func (h *SkillsServingHandler) listAllSkills(ctx *fasthttp.RequestCtx) ([]tables.TableSkill, error) {
+	listCtx, cancel := skillsServingWorkContext()
+	defer cancel()
 	// Use a large limit to get all skills for the marketplace catalog
-	skills, _, err := h.store.ListSkills(ctx, configstore.SkillListQueryParams{Limit: 10000, SortBy: "name", Order: "asc"})
+	skills, _, err := h.store.ListSkills(listCtx, configstore.SkillListQueryParams{Limit: 10000, SortBy: "name", Order: "asc"})
 	if err != nil {
 		logger.Error("failed to list skills for marketplace: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, "failed to list skills")
