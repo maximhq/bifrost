@@ -1252,12 +1252,11 @@ func TestResponsesStreamFallbackSilentParkAfterFinishReasonEndsCleanlyOnIdleTime
 // Raw-response capture must be independent of semantic chunk forwarding.
 //
 // The OpenAI chat streaming loop only attaches ExtraFields.RawResponse inside the
-// branch that forwards a chunk carrying content/reasoning/audio/tool calls. Three
-// documented, perfectly normal frame shapes never enter that branch and so their
-// bytes are discarded before the framework's accumulator (which reconstructs
-// raw_response purely by concatenating chunk.RawResponse) can ever see them:
+// branch that forwards a semantic chunk. Some documented, perfectly normal frame
+// shapes never enter that branch and so their bytes would be discarded before the
+// framework's accumulator (which reconstructs raw_response purely by concatenating
+// chunk.RawResponse) could ever see them:
 //
-//   - role-only   delta {"role":"assistant"}, no content
 //   - finish-only delta {} with finish_reason set
 //   - usage-only  choices: [] with the authoritative token counts
 //
@@ -1314,7 +1313,7 @@ func reconstructRawResponse(t *testing.T, chunks []*schemas.BifrostStreamChunk) 
 // fullShapeSSEBody is the frame sequence from issue #7144: role-only, content,
 // finish-only, usage-only, [DONE].
 const (
-	rawRoleOnlyFrame   = `{"id":"chatcmpl-repro","object":"chat.completion.chunk","created":1,"model":"repro-model","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}],"usage":null}`
+	rawRoleOnlyFrame   = `{"id":"chatcmpl-repro","object":"chat.completion.chunk","created":1,"model":"repro-model","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}],"usage":null}`
 	rawContentFrame    = `{"id":"chatcmpl-repro","object":"chat.completion.chunk","created":1,"model":"repro-model","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}],"usage":null}`
 	rawFinishOnlyFrame = `{"id":"chatcmpl-repro","object":"chat.completion.chunk","created":1,"model":"repro-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":null}`
 	rawUsageOnlyFrame  = `{"id":"chatcmpl-repro","object":"chat.completion.chunk","created":1,"model":"repro-model","choices":[],"usage":{"prompt_tokens":1000,"completion_tokens":100,"total_tokens":1100}}`
@@ -1379,11 +1378,9 @@ func TestChatStreamRawResponseKeepsFinishOnlyFrame(t *testing.T) {
 	}
 }
 
-// The opening role-only frame is dropped by the same branch. It is listed
-// separately because it is the one dropped frame that arrives *before* the content
-// frames: a fix that simply appends the missing bytes to the final synthetic chunk
-// would satisfy the two tests above while silently reordering this one, so the
-// ordering assertion below is the real contract.
+// The opening role-only frame arrives before the content frames. Keeping it in this
+// ordering assertion prevents raw-response capture from silently moving it to the
+// final synthetic chunk.
 func TestChatStreamRawResponseKeepsEveryFrameInUpstreamOrder(t *testing.T) {
 	server := completeSSEServer(t, fullShapeSSEBody())
 	defer server.Close()
@@ -1461,6 +1458,34 @@ func collectChatDeltas(chunks []*schemas.BifrostStreamChunk) []*schemas.ChatStre
 		}
 	}
 	return deltas
+}
+
+// OpenAI begins many streams with role:"assistant" and empty content. Strict
+// clients use that delta to assign the role of the accumulated message, so it must
+// reach the client even though it carries no text.
+func TestChatStreamForwardsRoleOnlyDelta(t *testing.T) {
+	server := completeSSEServer(t, fullShapeSSEBody())
+	defer server.Close()
+
+	provider := newStreamTestProvider(server.URL)
+	stream, bifrostErr := provider.ChatCompletionStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), basicChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	deltas := collectChatDeltas(collectChunks(t, stream))
+	if len(deltas) < 2 {
+		t.Fatalf("expected role and content deltas, got %d", len(deltas))
+	}
+	if deltas[0].Role == nil || *deltas[0].Role != "assistant" {
+		t.Fatalf("expected first delta role assistant, got %+v", deltas[0].Role)
+	}
+	if deltas[0].Content == nil || *deltas[0].Content != "" {
+		t.Fatalf("expected empty content on first delta, got %+v", deltas[0].Content)
+	}
+	if deltas[1].Content == nil || *deltas[1].Content != "hello" {
+		t.Fatalf("expected content delta after role, got %+v", deltas[1].Content)
+	}
 }
 
 // A refusal is the model's answer. Dropping it hands the client an empty stream
