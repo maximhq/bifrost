@@ -1258,7 +1258,7 @@ func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 	if keySelectorCalls != 0 {
 		t.Errorf("first call: the pool builder should not select, got %d keySelector calls", keySelectorCalls)
 	}
-	kvKey := sessionStateKey(bfCtx, SessionStateKindKey, string(schemas.OpenAI), "gpt-4")
+	kvKey := SessionStateKey(bfCtx, SessionStateKindKey, string(schemas.OpenAI), "gpt-4")
 	if _, err := kvStore.Get(kvKey); err == nil {
 		t.Error("session bound before anything served it")
 	}
