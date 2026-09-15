@@ -487,3 +487,31 @@ func TestResolvePromptCacheConfig(t *testing.T) {
 		assert.Len(t, got.InjectionPoints, 1, "the header only flips auto_inject; points remain config-level")
 	})
 }
+
+func TestStripChatCachePoints(t *testing.T) {
+	cachePoint := &schemas.CachePoint{Type: "default"}
+	input := []schemas.ChatMessage{
+		{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("sys")}},
+		{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+			{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("hi"), CachePoint: cachePoint},
+			{CachePoint: cachePoint},
+			{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("there")},
+		}}},
+	}
+
+	out, stripped := StripChatCachePoints(input)
+	require.True(t, stripped)
+	require.Len(t, out[1].Content.ContentBlocks, 2)
+	assert.Nil(t, out[1].Content.ContentBlocks[0].CachePoint)
+	assert.Equal(t, "there", *out[1].Content.ContentBlocks[1].Text)
+	assert.Same(t, input[0].Content, out[0].Content)
+
+	// The caller's request is shared with fallbacks, so it must keep its markers.
+	require.Len(t, input[1].Content.ContentBlocks, 3)
+	assert.NotNil(t, input[1].Content.ContentBlocks[0].CachePoint)
+	assert.NotNil(t, input[1].Content.ContentBlocks[1].CachePoint)
+
+	same, stripped := StripChatCachePoints(out)
+	assert.False(t, stripped)
+	assert.Equal(t, &out[0], &same[0])
+}
