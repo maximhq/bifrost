@@ -818,6 +818,19 @@ export const ProviderIcons = {
 			</svg>
 		);
 	},
+	zro: ({ size = "md", className = "", theme }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<img
+				src={theme === "dark" ? "/images/zro-light.png" : "/images/zro-dark.svg"}
+				alt="Zro"
+				width={resolvedSize}
+				height={resolvedSize}
+				className={className}
+			/>
+		);
+	},
 	databricks: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 
