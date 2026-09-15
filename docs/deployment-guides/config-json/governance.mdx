@@ -345,7 +345,7 @@ Declare projects that requests opt into for access and accounting. A project com
           }
         ],
         "mcp_configs": [{ "mcp_client_name": "github", "tools_to_execute": ["*"] }],
-        "virtual_mcps": [{ "virtual_mcp_id": 3 }]
+        "virtual_mcps": [{ "virtual_mcp_name": "Platform Tools" }]
       }
     ]
   }
@@ -371,7 +371,7 @@ Requests reference a project by name with the `x-bf-project-name` header.
 | `rate_limit` | No | Request and token limits: `request_max_limit`, `request_reset_duration`, `token_max_limit`, `token_reset_duration` |
 | `provider_configs` | No | One entry per provider, see below |
 | `mcp_configs` | No | One entry per MCP client: `mcp_client_name` (as declared under `mcp.client_configs`) and `tools_to_execute` (`["*"]` allows every tool; empty or omitted allows none, regardless of the top-level `version`) |
-| `virtual_mcps` | No | Virtual MCPs assigned to the project, one `virtual_mcp_id` per entry. A scoped request can reach each at its `/mcp/<slug>` endpoint |
+| `virtual_mcps` | No | Virtual MCPs assigned to the project, one `virtual_mcp_name` per entry, resolved on startup. A scoped request can reach each at its `/mcp/<slug>` endpoint. `virtual_mcp_id` is accepted as an alternative and wins when both are set |
 
 Budgets and rate limits inside a project are declared without ids.
 

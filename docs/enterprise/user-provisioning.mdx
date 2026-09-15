@@ -323,7 +323,6 @@ Mappings have an optional `attributeType` field:
 ### `claimScimAttributes` field
 
 `attribute` in a role/team/business-unit mapping rule is always an **OIDC JWT claim name**, and supports dotted paths into nested objects (e.g. `realm_access.roles`). By default Bifrost also uses that same name to look up the attribute in a SCIM-provisioned user's stored profile (a flat key-value map) — so for standard SCIM attributes (`department`, `title`, `userType`, `costCenter`, etc.) mapping rules work unchanged across both the OIDC and SCIM paths.
->>>>>>> main
 
 `claimScimAttributes` is a separate, top-level config field (a sibling of `attributeTeamMappings` / `attributeBusinessUnitMappings`, not a field on each rule) for the two cases where that default isn't enough:
 

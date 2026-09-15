@@ -80,9 +80,16 @@ func TestConvertAnthropicTools_ToolSearchTypeNeverBecomesInvocable(t *testing.T)
 
 	toolConfig := req.convertAnthropicTools()
 	require.NotNil(t, toolConfig)
-	require.Len(t, toolConfig.Tools, 1, "the tool_search_tool_* entry must be skipped, only the real tool kept")
-	require.NotNil(t, toolConfig.Tools[0].ToolSpec)
-	assert.Equal(t, "keep_me", toolConfig.Tools[0].ToolSpec.Name)
+	require.Len(t, toolConfig.Tools, 2, "the tool_search_tool_* entry is carried as a marker, not dropped (#7155)")
+	// The invariant this test guards is unchanged: the entry must never become an
+	// invocable ToolSpec. It is now carried on an ingress-only marker instead of
+	// being discarded, so the egress predicate can route the request to InvokeModel.
+	require.Nil(t, toolConfig.Tools[0].ToolSpec, "tool_search must never become an invocable tool")
+	require.NotNil(t, toolConfig.Tools[0].AnthropicToolSearch)
+	assert.Equal(t, "tool_search_tool_regex_20251119", toolConfig.Tools[0].AnthropicToolSearch.Type)
+	assert.Equal(t, "tool_search_tool_regex", toolConfig.Tools[0].AnthropicToolSearch.Name)
+	require.NotNil(t, toolConfig.Tools[1].ToolSpec)
+	assert.Equal(t, "keep_me", toolConfig.Tools[1].ToolSpec.Name)
 }
 
 // TestConvertAnthropicTools_CarriesCacheControl is the regression test for #5629: a
@@ -291,7 +298,7 @@ func TestToAnthropicInvokeStreamBytes_MessageDeltaCarriesUsage(t *testing.T) {
 		},
 	}
 
-	frames, err := toAnthropicInvokeStreamBytes(resp)
+	frames, err := toAnthropicInvokeStreamBytes(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), resp)
 	require.NoError(t, err)
 	require.Len(t, frames, 2, "expected message_delta + message_stop")
 
@@ -324,7 +331,7 @@ func TestToAnthropicInvokeStreamBytes_MessageStartCarriesUsage(t *testing.T) {
 		},
 	}
 
-	frames, err := toAnthropicInvokeStreamBytes(resp)
+	frames, err := toAnthropicInvokeStreamBytes(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), resp)
 	require.NoError(t, err)
 	require.Len(t, frames, 1, "expected a single message_start frame")
 
@@ -359,7 +366,7 @@ func TestToAnthropicInvokeStreamBytes_MessageStartPrefersKnownUsage(t *testing.T
 		},
 	}
 
-	frames, err := toAnthropicInvokeStreamBytes(resp)
+	frames, err := toAnthropicInvokeStreamBytes(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), resp)
 	require.NoError(t, err)
 	require.Len(t, frames, 1)
 
@@ -528,7 +535,7 @@ func TestToAnthropicInvokeStreamBytes_ReasoningSignatureDelta(t *testing.T) {
 		Signature:    &signature,
 	}
 
-	frames, err := toAnthropicInvokeStreamBytes(resp)
+	frames, err := toAnthropicInvokeStreamBytes(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), resp)
 	require.NoError(t, err)
 	require.Len(t, frames, 1)
 
@@ -1398,4 +1405,438 @@ func TestBedrockCountTokensBody_UsesInvokeModelInputForRoutedRequests(t *testing
 		require.True(t, gjson.GetBytes(body, "input.converse").Exists(), "expected converse input, got %s", string(body))
 		require.False(t, gjson.GetBytes(body, "input.invokeModel").Exists())
 	})
+}
+
+// TestToBedrockConverseRequest_InvokeToolSearchEndToEnd is the full-pipeline regression
+// test for #7155: a tool-search request arriving on the Bedrock-native invoke ingress
+// (POST /bedrock/model/{modelId}/invoke) must keep the tool_search_tool_* server tool and
+// the per-tool defer_loading flag through the mandatory invoke -> Converse -> neutral
+// conversion, so #6908's egress predicate (responsesUsesAnthropicInvokePath) can pick
+// InvokeModel. AWS restricts server-side tool search to InvokeModel, never Converse:
+// "On Amazon Bedrock, server-side tool search is available only through the InvokeModel
+// API, not the Converse API."
+// (https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool)
+func TestToBedrockConverseRequest_InvokeToolSearchEndToEnd(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+
+	deferredTool := anthropicToolMap("get_weather", nil)
+	deferredTool["defer_loading"] = true
+
+	req := &BedrockInvokeRequest{
+		ModelID: "us.anthropic.claude-sonnet-4-6-v1:0",
+		Messages: []BedrockMessage{{
+			Role:    BedrockMessageRoleUser,
+			Content: []BedrockContentBlock{{Text: schemas.Ptr("What is the weather in Paris? Use your tools.")}},
+		}},
+		Tools: []interface{}{
+			map[string]interface{}{"type": "tool_search_tool_regex_20251119", "name": "tool_search_tool_regex"},
+			deferredTool,
+		},
+	}
+
+	converseReq := req.ToBedrockConverseRequest()
+	responsesReq, err := converseReq.ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, responsesReq.Params)
+
+	var sawToolSearch, sawDeferred bool
+	for _, tool := range responsesReq.Params.Tools {
+		if tool.Type == schemas.ResponsesToolTypeToolSearch {
+			sawToolSearch = true
+			require.NotNil(t, tool.Name, "tool_search variant must survive on Name")
+			assert.Equal(t, "tool_search_tool_regex", *tool.Name)
+		}
+		if tool.Name != nil && *tool.Name == "get_weather" && tool.DeferLoading != nil {
+			sawDeferred = *tool.DeferLoading
+		}
+	}
+	assert.True(t, sawToolSearch, "tool_search_tool_* dropped by the invoke ingress: %+v", responsesReq.Params.Tools)
+	assert.True(t, sawDeferred, "defer_loading dropped by the invoke ingress: %+v", responsesReq.Params.Tools)
+
+	assert.True(t, responsesUsesAnthropicInvokePath(ctx, responsesReq),
+		"a tool-search request on the invoke ingress must route to InvokeModel, not Converse")
+}
+
+// TestConvertAnthropicTools_DeferredToolSkipsCachePoint pins the one tool-level
+// combination Anthropic rejects outright: "A tool with defer_loading: true can't
+// also carry cache_control: the API returns a 400."
+// (https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool)
+// The invoke ingress converts cache_control into a positional cachePoint sibling
+// (#5629), so it must not manufacture one for a deferred tool. A non-deferred
+// neighbour in the same request still gets its breakpoint.
+func TestConvertAnthropicTools_DeferredToolSkipsCachePoint(t *testing.T) {
+	deferredCached := anthropicToolMap("deferred", map[string]interface{}{"type": "ephemeral"})
+	deferredCached["defer_loading"] = true
+
+	req := &BedrockInvokeRequest{
+		Tools: []interface{}{
+			deferredCached,
+			anthropicToolMap("eager", map[string]interface{}{"type": "ephemeral"}),
+		},
+	}
+
+	toolConfig := req.convertAnthropicTools()
+	require.NotNil(t, toolConfig)
+
+	// deferred tool, then eager tool, then the eager tool's cachePoint — three entries.
+	require.Len(t, toolConfig.Tools, 3, "only the non-deferred tool may get a cachePoint: %+v", toolConfig.Tools)
+
+	require.NotNil(t, toolConfig.Tools[0].ToolSpec)
+	assert.Equal(t, "deferred", toolConfig.Tools[0].ToolSpec.Name)
+	require.NotNil(t, toolConfig.Tools[0].ToolSpec.DeferLoading)
+	assert.True(t, *toolConfig.Tools[0].ToolSpec.DeferLoading)
+	assert.Nil(t, toolConfig.Tools[0].CachePoint)
+
+	require.NotNil(t, toolConfig.Tools[1].ToolSpec)
+	assert.Equal(t, "eager", toolConfig.Tools[1].ToolSpec.Name)
+	assert.Nil(t, toolConfig.Tools[1].ToolSpec.DeferLoading)
+
+	require.NotNil(t, toolConfig.Tools[2].CachePoint, "the non-deferred tool keeps its cache breakpoint")
+	assert.Nil(t, toolConfig.Tools[2].ToolSpec)
+}
+
+// TestConvertAnthropicTools_UnknownToolSearchVariantNotRouted guards the boundary
+// schemas.normalizeResponsesToolType already documents: an unrecognized tool_search
+// sibling must reach unknown-tool handling rather than silently becoming a
+// variant-less canonical tool_search. Without the variant gate the marker is created
+// anyway, ToolSearchVariantName yields no name, and toolNeedsAnthropicInvokePath still
+// matches the canonical "tool_search" prefix — so an unsupported tool would select the
+// InvokeModel route and be forwarded to AWS as though Bifrost supported it.
+func TestConvertAnthropicTools_UnknownToolSearchVariantNotRouted(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	req := &BedrockInvokeRequest{
+		ModelID: "us.anthropic.claude-sonnet-4-6-v1:0",
+		Messages: []BedrockMessage{{
+			Role:    BedrockMessageRoleUser,
+			Content: []BedrockContentBlock{{Text: schemas.Ptr("hi")}},
+		}},
+		Tools: []interface{}{
+			map[string]interface{}{
+				"type": "tool_search_tool_vector_20270101",
+				"name": "tool_search_tool_vector",
+			},
+			anthropicToolMap("keep_me", nil),
+		},
+	}
+
+	toolConfig := req.convertAnthropicTools()
+	require.NotNil(t, toolConfig)
+	for i, tool := range toolConfig.Tools {
+		assert.Nil(t, tool.AnthropicToolSearch,
+			"tool %d: an unrecognized tool_search variant must not become a tool-search marker", i)
+	}
+	require.Len(t, toolConfig.Tools, 1, "only the real tool survives: %+v", toolConfig.Tools)
+	require.NotNil(t, toolConfig.Tools[0].ToolSpec)
+	assert.Equal(t, "keep_me", toolConfig.Tools[0].ToolSpec.Name)
+
+	// End to end: the unsupported variant must not select the InvokeModel route.
+	responsesReq, err := req.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+	for _, tool := range responsesReq.Params.Tools {
+		assert.NotEqual(t, schemas.ResponsesToolTypeToolSearch, tool.Type,
+			"unrecognized variant leaked through as a canonical tool_search: %+v", responsesReq.Params.Tools)
+	}
+	assert.False(t, responsesUsesAnthropicInvokePath(ctx, responsesReq),
+		"an unsupported tool_search variant must not route to InvokeModel")
+
+	// The recognized variants still do route, so the gate is not over-broad.
+	for _, known := range []string{"tool_search_tool_regex_20251119", "tool_search_tool_bm25"} {
+		known := known
+		t.Run(known, func(t *testing.T) {
+			ok := &BedrockInvokeRequest{
+				ModelID:  "us.anthropic.claude-sonnet-4-6-v1:0",
+				Messages: req.Messages,
+				Tools: []interface{}{
+					map[string]interface{}{"type": known},
+					anthropicToolMap("keep_me", nil),
+				},
+			}
+			r, err := ok.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx)
+			require.NoError(t, err)
+			assert.True(t, responsesUsesAnthropicInvokePath(ctx, r), "%s must still route to InvokeModel", known)
+		})
+	}
+}
+
+// TestToBedrockInvokeMessagesResponse_ToolSearchCall covers the response direction
+// of #7155: once tool search actually runs on the Bedrock-native invoke ingress, the
+// server-side search must come back as the server_tool_use + tool_search_tool_result
+// pair Anthropic documents, never as an invocable tool_use. "Never return a
+// tool_result for its srvtoolu_... ID" — emitting tool_use makes the caller do
+// exactly that, and the API rejects the next turn.
+// (https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool)
+func TestToBedrockInvokeMessagesResponse_ToolSearchCall(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	const (
+		searchID  = "srvtoolu_01ABC"
+		callID    = "toolu_01XYZ"
+		found     = "get_weather"
+		searchTag = "tool_search_tool_regex"
+	)
+
+	resp := &schemas.BifrostResponsesResponse{
+		ID:    schemas.Ptr("msg_ts"),
+		Model: "us.anthropic.claude-sonnet-4-6-v1:0",
+		Output: []schemas.ResponsesMessage{
+			{
+				ID:     schemas.Ptr(searchID),
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeToolSearchCall),
+				Status: schemas.Ptr("completed"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:                  schemas.Ptr(searchID),
+					Name:                    schemas.Ptr(searchTag),
+					Arguments:               schemas.Ptr(`{"pattern":"weather"}`),
+					ResponsesToolSearchCall: &schemas.ResponsesToolSearchCall{ToolReferences: []string{found}},
+				},
+			},
+			{
+				ID:   schemas.Ptr(callID),
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:    schemas.Ptr(callID),
+					Name:      schemas.Ptr(found),
+					Arguments: schemas.Ptr(`{"city":"Paris"}`),
+				},
+			},
+		},
+	}
+
+	out, err := ToBedrockInvokeMessagesResponse(ctx, resp)
+	require.NoError(t, err)
+	encoded, err := providerUtils.MarshalSorted(out)
+	require.NoError(t, err)
+
+	blocks := gjson.GetBytes(encoded, "content").Array()
+	require.Len(t, blocks, 3, "expected server_tool_use + tool_search_tool_result + tool_use, got %s", string(encoded))
+
+	assert.Equal(t, "server_tool_use", blocks[0].Get("type").String(), "body: %s", string(encoded))
+	assert.Equal(t, searchID, blocks[0].Get("id").String())
+	assert.Equal(t, searchTag, blocks[0].Get("name").String())
+	// The query the model searched with must survive: Anthropic requires this block to
+	// be echoed back unchanged, and an input rebuilt as {} silently rewrites it.
+	assert.Equal(t, "weather", blocks[0].Get("input.pattern").String(),
+		"server_tool_use.input lost the search query: %s", string(encoded))
+
+	assert.Equal(t, "tool_search_tool_result", blocks[1].Get("type").String())
+	assert.Equal(t, searchID, blocks[1].Get("tool_use_id").String())
+	assert.Equal(t, "tool_search_tool_search_result", blocks[1].Get("content.type").String())
+	refs := blocks[1].Get("content.tool_references").Array()
+	require.Len(t, refs, 1)
+	assert.Equal(t, "tool_reference", refs[0].Get("type").String())
+	assert.Equal(t, found, refs[0].Get("tool_name").String())
+
+	// The discovered tool's own call is a real client tool_use and still drives stop_reason.
+	assert.Equal(t, "tool_use", blocks[2].Get("type").String())
+	assert.Equal(t, callID, blocks[2].Get("id").String())
+	assert.Equal(t, "tool_use", gjson.GetBytes(encoded, "stop_reason").String())
+
+	// The server-side search must never be presented as an invocable tool.
+	for _, b := range blocks {
+		if b.Get("id").String() == searchID {
+			assert.NotEqual(t, "tool_use", b.Get("type").String(),
+				"the srvtoolu_ block must never be a client tool_use: %s", string(encoded))
+		}
+	}
+}
+
+// TestToBedrockInvokeMessagesStreamResponse_ToolSearchNotToolUse is the streaming
+// twin of TestToBedrockInvokeMessagesResponse_ToolSearchCall. output_item.added for
+// a tool_search_call must open a server_tool_use block, not a tool_use: a caller that
+// sees tool_use executes the srvtoolu_ id and returns a tool_result for it, which
+// Anthropic rejects on the next turn.
+// (https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool)
+func TestToBedrockInvokeMessagesStreamResponse_ToolSearchNotToolUse(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	const searchID = "srvtoolu_01ABC"
+
+	added := func(itemType schemas.ResponsesMessageType, id, name string) *schemas.BifrostResponsesStreamResponse {
+		return &schemas.BifrostResponsesStreamResponse{
+			Type:         schemas.ResponsesStreamResponseTypeOutputItemAdded,
+			ContentIndex: schemas.Ptr(0),
+			Item: &schemas.ResponsesMessage{
+				ID:   schemas.Ptr(id),
+				Type: schemas.Ptr(itemType),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr(id),
+					Name:   schemas.Ptr(name),
+				},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{ResolvedModelUsed: "us.anthropic.claude-sonnet-4-6-v1:0"},
+		}
+	}
+
+	t.Run("tool_search_call opens server_tool_use", func(t *testing.T) {
+		_, event, err := ToBedrockInvokeMessagesStreamResponse(ctx, added(schemas.ResponsesMessageTypeToolSearchCall, searchID, "tool_search_tool_regex"))
+		require.NoError(t, err)
+		bedrockEvent, ok := event.(*BedrockStreamEvent)
+		require.True(t, ok, "expected a BedrockStreamEvent, got %T", event)
+		require.Len(t, bedrockEvent.InvokeModelRawChunks, 1)
+		raw := bedrockEvent.InvokeModelRawChunks[0]
+
+		assert.Equal(t, "server_tool_use", gjson.GetBytes(raw, "content_block.type").String(),
+			"the srvtoolu_ block must never open as a client tool_use: %s", string(raw))
+		assert.Equal(t, searchID, gjson.GetBytes(raw, "content_block.id").String())
+	})
+
+	t.Run("ordinary function_call still opens tool_use", func(t *testing.T) {
+		_, event, err := ToBedrockInvokeMessagesStreamResponse(ctx, added(schemas.ResponsesMessageTypeFunctionCall, "toolu_01XYZ", "get_weather"))
+		require.NoError(t, err)
+		bedrockEvent, ok := event.(*BedrockStreamEvent)
+		require.True(t, ok)
+		require.Len(t, bedrockEvent.InvokeModelRawChunks, 1)
+		assert.Equal(t, "tool_use", gjson.GetBytes(bedrockEvent.InvokeModelRawChunks[0], "content_block.type").String())
+	})
+	t.Run("tool_search_call stop closes the block its start opened", func(t *testing.T) {
+		streamCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+		_, startEvent, err := ToBedrockInvokeMessagesStreamResponse(streamCtx, added(schemas.ResponsesMessageTypeToolSearchCall, searchID, "tool_search_tool_regex"))
+		require.NoError(t, err)
+		startBedrock, ok := startEvent.(*BedrockStreamEvent)
+		require.True(t, ok, "expected a BedrockStreamEvent, got %T", startEvent)
+		require.Len(t, startBedrock.InvokeModelRawChunks, 1)
+		startRaw := startBedrock.InvokeModelRawChunks[0]
+		require.Equal(t, "content_block_start", gjson.GetBytes(startRaw, "type").String())
+
+		// The neutral stream collapses server_tool_use + tool_search_tool_result into one
+		// item, so output_item.done arrives carrying the result block's content index.
+		done := &schemas.BifrostResponsesStreamResponse{
+			Type:         schemas.ResponsesStreamResponseTypeOutputItemDone,
+			ContentIndex: schemas.Ptr(1),
+			Item: &schemas.ResponsesMessage{
+				ID:   schemas.Ptr(searchID),
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeToolSearchCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr(searchID),
+					Name:   schemas.Ptr("tool_search_tool_regex"),
+				},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{ResolvedModelUsed: "us.anthropic.claude-sonnet-4-6-v1:0"},
+		}
+		_, stopEvent, err := ToBedrockInvokeMessagesStreamResponse(streamCtx, done)
+		require.NoError(t, err)
+		stopBedrock, ok := stopEvent.(*BedrockStreamEvent)
+		require.True(t, ok, "expected a BedrockStreamEvent, got %T", stopEvent)
+		require.Len(t, stopBedrock.InvokeModelRawChunks, 1)
+		stopRaw := stopBedrock.InvokeModelRawChunks[0]
+
+		require.Equal(t, "content_block_stop", gjson.GetBytes(stopRaw, "type").String())
+		assert.Equal(t, gjson.GetBytes(startRaw, "index").Int(), gjson.GetBytes(stopRaw, "index").Int(),
+			"content_block_stop must close the block content_block_start opened: start=%s stop=%s", string(startRaw), string(stopRaw))
+	})
+
+	t.Run("an item with no recorded start keeps its own content index", func(t *testing.T) {
+		streamCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		done := &schemas.BifrostResponsesStreamResponse{
+			Type:         schemas.ResponsesStreamResponseTypeOutputItemDone,
+			ContentIndex: schemas.Ptr(2),
+			Item:         &schemas.ResponsesMessage{ID: schemas.Ptr("msg_text_block")},
+		}
+		_, event, err := ToBedrockInvokeMessagesStreamResponse(streamCtx, done)
+		require.NoError(t, err)
+		bedrockEvent, ok := event.(*BedrockStreamEvent)
+		require.True(t, ok)
+		require.Len(t, bedrockEvent.InvokeModelRawChunks, 1)
+		assert.Equal(t, int64(2), gjson.GetBytes(bedrockEvent.InvokeModelRawChunks[0], "index").Int())
+	})
+}
+
+// TestToBedrockConverseRequest_InvokeToolSearchReplay covers turn 2 of a tool-search
+// conversation on the Bedrock-native invoke ingress. Anthropic requires the client to
+// echo the assistant's server_tool_use and tool_search_tool_result back unchanged, but
+// BedrockContentBlock.UnmarshalJSON decoded only image/tool_use/tool_result/thinking,
+// so both blocks fell through to an empty struct and vanished — leaving the model a
+// turn in which it called a tool it never discovered.
+func TestToBedrockConverseRequest_InvokeToolSearchReplay(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	const (
+		searchID = "srvtoolu_01ABC"
+		callID   = "toolu_01XYZ"
+		found    = "get_weather"
+	)
+
+	raw := `{
+		"anthropic_version": "bedrock-2023-05-31",
+		"max_tokens": 512,
+		"tools": [
+			{"type": "tool_search_tool_regex_20251119", "name": "tool_search_tool_regex"},
+			{"name": "` + found + `", "description": "weather", "input_schema": {"type":"object","properties":{}}, "defer_loading": true}
+		],
+		"messages": [
+			{"role": "user", "content": [{"type": "text", "text": "weather in Paris?"}]},
+			{"role": "assistant", "content": [
+				{"type": "server_tool_use", "id": "` + searchID + `", "name": "tool_search_tool_regex", "input": {"pattern": "weather"}},
+				{"type": "tool_search_tool_result", "tool_use_id": "` + searchID + `",
+				 "content": {"type": "tool_search_tool_search_result",
+				             "tool_references": [{"type": "tool_reference", "tool_name": "` + found + `"}]}},
+				{"type": "tool_use", "id": "` + callID + `", "name": "` + found + `", "input": {"city": "Paris"}}
+			]},
+			{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "` + callID + `", "content": "18C"}]}
+		]
+	}`
+
+	var req BedrockInvokeRequest
+	require.NoError(t, sonic.Unmarshal([]byte(raw), &req))
+	req.ModelID = "us.anthropic.claude-sonnet-4-6-v1:0"
+
+	converseReq := req.ToBedrockConverseRequest()
+	bifrostReq, err := converseReq.ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+
+	var search *schemas.ResponsesMessage
+	var sawDiscoveredCall bool
+	for i := range bifrostReq.Input {
+		m := &bifrostReq.Input[i]
+		if m.Type == nil {
+			continue
+		}
+		switch *m.Type {
+		case schemas.ResponsesMessageTypeToolSearchCall:
+			search = m
+		case schemas.ResponsesMessageTypeFunctionCall:
+			if m.ResponsesToolMessage != nil && m.ResponsesToolMessage.CallID != nil {
+				switch *m.ResponsesToolMessage.CallID {
+				case callID:
+					sawDiscoveredCall = true
+				case searchID:
+					t.Errorf("the srvtoolu_ block replayed as a client function_call")
+				}
+			}
+		}
+	}
+
+	require.NotNil(t, search, "the replayed tool_search pair was dropped: %+v", bifrostReq.Input)
+	require.NotNil(t, search.ResponsesToolMessage)
+	require.NotNil(t, search.ResponsesToolMessage.ResponsesToolSearchCall)
+	assert.Equal(t, []string{found}, search.ResponsesToolMessage.ResponsesToolSearchCall.ToolReferences,
+		"the discovered tool references must survive replay")
+	require.NotNil(t, search.ResponsesToolMessage.Name)
+	assert.Equal(t, "tool_search_tool_regex", *search.ResponsesToolMessage.Name)
+	// The query the model searched with must survive ingress too: Anthropic requires
+	// this block to be echoed back unchanged, so a replay that forgets the pattern
+	// rewrites it on the next turn.
+	require.NotNil(t, search.ResponsesToolMessage.Arguments,
+		"server_tool_use.input was dropped at the invoke ingress")
+	assert.JSONEq(t, `{"pattern":"weather"}`, *search.ResponsesToolMessage.Arguments)
+	assert.True(t, sawDiscoveredCall, "the tool_use calling the discovered tool must still replay")
+
+	// The turn must still route to InvokeModel — tool search never runs on Converse.
+	assert.True(t, responsesUsesAnthropicInvokePath(ctx, bifrostReq))
+
+	// Close the loop: the block this ingress decoded must come back out of the
+	// InvokeModel serializer with the same input, which is what "echo the assistant's
+	// content back unchanged" actually requires end to end.
+	out, err := ToBedrockInvokeMessagesResponse(ctx, &schemas.BifrostResponsesResponse{
+		ID:     schemas.Ptr("msg_replay"),
+		Model:  req.ModelID,
+		Output: []schemas.ResponsesMessage{*search},
+	})
+	require.NoError(t, err)
+	encoded, err := providerUtils.MarshalSorted(out)
+	require.NoError(t, err)
+	roundTripped := gjson.GetBytes(encoded, "content").Array()
+	require.NotEmpty(t, roundTripped)
+	assert.Equal(t, "server_tool_use", roundTripped[0].Get("type").String())
+	assert.Equal(t, "weather", roundTripped[0].Get("input.pattern").String(),
+		"the replayed block lost its search query on the way back out: %s", string(encoded))
 }
