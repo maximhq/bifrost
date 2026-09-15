@@ -940,7 +940,7 @@ func (r *webrtcRealtimeRelay) handleUpstreamMessage(msg webrtc.DataChannelMessag
 			r.session.AppendRealtimeOutputText(event.Delta.Text)
 			r.session.AppendRealtimeOutputText(event.Delta.Transcript)
 		}
-		if r.provider.ShouldStartRealtimeTurn(event) && r.session.PeekRealtimeTurnHooks() == nil {
+		if shouldStartRealtimeProviderTurn(r.provider, event, r.transcriptionSession) && r.session.PeekRealtimeTurnHooks() == nil {
 			if bifrostErr := startRealtimeTurnHooks(r.client, r.bifrostCtx, r.session, r.provider, r.providerKey, r.model, r.key, event); bifrostErr != nil {
 				r.closeWithErrorEvent(newRealtimeTurnErrorEventPayload(bifrostErr))
 				return

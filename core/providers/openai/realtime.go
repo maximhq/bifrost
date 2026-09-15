@@ -172,7 +172,9 @@ func (provider *OpenAIProvider) ShouldStartRealtimeTurn(event *schemas.BifrostRe
 		return false
 	}
 	switch event.Type {
-	case schemas.RTEventResponseCreate, schemas.RTEventInputAudioBufferCommitted:
+	case schemas.RTEventResponseCreate, schemas.RTEventResponseCreated:
+		// Committing input audio does not create a response. Manual turns start
+		// on response.create; automatic VAD turns start on response.created.
 		return true
 	default:
 		return false

@@ -772,7 +772,7 @@ func (h *WSRealtimeHandler) relayRealtimeProviderToClient(
 					session.AppendRealtimeOutputText(event.Delta.Text)
 					session.AppendRealtimeOutputText(event.Delta.Transcript)
 				}
-				if provider.ShouldStartRealtimeTurn(event) && session.PeekRealtimeTurnHooks() == nil {
+				if shouldStartRealtimeProviderTurn(provider, event, transcriptionSession) && session.PeekRealtimeTurnHooks() == nil {
 					if bifrostErr := startRealtimeTurnHooks(h.client, bifrostCtx, session, provider, providerKey, model, &key, event); bifrostErr != nil {
 						clientConn.writeRealtimeError(bifrostErr)
 						return nil

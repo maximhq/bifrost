@@ -3,16 +3,165 @@ package handlers
 import (
 	"encoding/json"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
+	azureProvider "github.com/maximhq/bifrost/core/providers/azure"
 	openaiProvider "github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
+	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
 
 	"github.com/fasthttp/router"
 	ws "github.com/fasthttp/websocket"
 	"github.com/valyala/fasthttp"
 )
+
+// TestRealtimeAudioTurnLifecycle exercises the actual websocket relay against a
+// local upstream. An audio commit accepts input; it must not reserve a response.
+func TestRealtimeAudioTurnLifecycle(t *testing.T) {
+	for _, provider := range []struct {
+		name schemas.ModelProvider
+		impl schemas.RealtimeProvider
+	}{
+		{schemas.OpenAI, &openaiProvider.OpenAIProvider{}},
+		{schemas.Azure, &azureProvider.AzureProvider{}},
+	} {
+		for _, mode := range []string{"manual", "automatic", "transcription"} {
+			t.Run(string(provider.name)+"/"+mode, func(t *testing.T) {
+				serverConn, peer, cleanup := dialRealtimeTestConn(t)
+				defer cleanup()
+				clientConn := newRealtimeClientConn(serverConn)
+				client, err := bifrost.Init(t.Context(), schemas.BifrostConfig{
+					Account: wsSpanTestAccount{},
+					Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer client.Shutdown()
+				h := &WSRealtimeHandler{client: client}
+				connections := make(chan *ws.Conn, 1)
+				release := make(chan struct{})
+				upgrader := ws.Upgrader{}
+				upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					conn, err := upgrader.Upgrade(w, r, nil)
+					if err != nil {
+						return
+					}
+					defer conn.Close()
+					connections <- conn
+					<-release
+				}))
+				defer upstreamServer.Close()
+				defer close(release)
+				upstream, err := bfws.DialUpstream("ws"+strings.TrimPrefix(upstreamServer.URL, "http"), nil, provider.name, "test-key-1", nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var remote *ws.Conn
+				select {
+				case remote = <-connections:
+				case <-time.After(5 * time.Second):
+					t.Fatal("upstream upgrade timed out")
+				}
+				session := bfws.NewSession(serverConn)
+				ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+				key := schemas.Key{ID: "test-key-1"}
+				transcription := mode == "transcription"
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					_ = h.relayRealtimeProviderToClient(clientConn, session, upstream, provider.impl, ctx, provider.name, "gpt-realtime", key, transcription)
+				}()
+				defer func() {
+					_ = upstream.Close()
+					select {
+					case <-done:
+					case <-time.After(5 * time.Second):
+						t.Error("provider relay did not stop")
+					}
+				}()
+				read := func(conn *ws.Conn) string {
+					t.Helper()
+					_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+					_, data, err := conn.ReadMessage()
+					if err != nil {
+						t.Fatalf("read websocket: %v", err)
+					}
+					return string(data)
+				}
+				providerEvent := func(data string) {
+					t.Helper()
+					_ = remote.SetWriteDeadline(time.Now().Add(2 * time.Second))
+					if err := remote.WriteMessage(ws.TextMessage, []byte(data)); err != nil {
+						t.Fatal(err)
+					}
+					if got := read(peer); got != data {
+						t.Fatalf("provider event = %s, want %s", got, data)
+					}
+				}
+				clientEvent := func(data string) {
+					t.Helper()
+					stop, err := h.processRealtimeClientMessage(clientConn, session, upstream, provider.impl, ctx, provider.name, "gpt-realtime", key, transcription, ws.TextMessage, []byte(data))
+					if stop || err != nil {
+						t.Fatalf("client event stopped relay: stop=%v err=%v", stop, err)
+					}
+				}
+				for turn := 0; turn < 2; turn++ {
+					clientEvent(`{"type":"input_audio_buffer.commit"}`)
+					if got := read(remote); !strings.Contains(got, "input_audio_buffer.commit") {
+						t.Fatal(got)
+					}
+					providerEvent(`{"type":"input_audio_buffer.committed","item_id":"audio-input"}`)
+					if transcription {
+						if session.PeekRealtimeTurnHooks() == nil {
+							t.Fatal("transcription commit did not start hooks")
+						}
+						providerEvent(`{"type":"conversation.item.input_audio_transcription.completed","item_id":"audio-input","transcript":"hello"}`)
+					} else {
+						if mode == "manual" {
+							clientEvent(`{"type":"response.create"}`)
+							_ = remote.SetReadDeadline(time.Now().Add(2 * time.Second))
+							_, data, err := remote.ReadMessage()
+							if err != nil {
+								t.Fatalf("response.create never reached upstream; gateway returned %s", read(peer))
+							}
+							if !strings.Contains(string(data), "response.create") {
+								t.Fatal(string(data))
+							}
+						} else if session.PeekRealtimeTurnHooks() != nil {
+							t.Fatal("audio commit incorrectly started response hooks before automatic response.created")
+						}
+						previousHooks := session.PeekRealtimeTurnHooks()
+						providerEvent(`{"type":"response.created","response":{"id":"response-1","status":"in_progress"}}`)
+						hooks := session.PeekRealtimeTurnHooks()
+						if hooks == nil {
+							t.Fatal("response.created did not start hooks")
+						}
+						if mode == "manual" && (previousHooks == nil || hooks != previousHooks) {
+							t.Fatal("response.created replaced the client-created turn hooks")
+						}
+						clientEvent(`{"type":"response.create"}`)
+						if got := read(peer); !strings.Contains(got, "active response in progress") {
+							t.Fatalf("duplicate response error = %s", got)
+						}
+						if session.PeekRealtimeTurnHooks() != hooks {
+							t.Fatal("duplicate replaced active hooks")
+						}
+						providerEvent(`{"type":"response.done","response":{"id":"response-1","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`)
+					}
+					if session.PeekRealtimeTurnHooks() != nil {
+						t.Fatal("completed turn left hooks active")
+					}
+				}
+			})
+		}
+	}
+}
 
 // dialRealtimeTestConn returns the server side of a live websocket connection.
 //
