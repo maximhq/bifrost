@@ -22,6 +22,9 @@ func newTestOpencodeCtx(t *testing.T, requestHeaders map[string]string) *schemas
 
 var uuidValueRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
+// TestIsSafeOpencodeSessionValue verifies header-injection protection: CR, LF,
+// and other control bytes are rejected while ordinary printable and unicode
+// values are accepted.
 func TestIsSafeOpencodeSessionValue(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -48,6 +51,9 @@ func TestIsSafeOpencodeSessionValue(t *testing.T) {
 	}
 }
 
+// TestResolveOpencodeSessionClientHeaderWins verifies the client-sent
+// x-opencode-session header is forwarded verbatim (namespaced per virtual key)
+// and takes precedence over the Bifrost session id.
 func TestResolveOpencodeSessionClientHeaderWins(t *testing.T) {
 	t.Run("forwarded verbatim and namespaced per virtual key", func(t *testing.T) {
 		ctx := newTestOpencodeCtx(t, map[string]string{
@@ -80,6 +86,9 @@ func TestResolveOpencodeSessionClientHeaderWins(t *testing.T) {
 	})
 }
 
+// TestResolveOpencodeSessionFallbackChain verifies the resolution order when the
+// client header is absent, empty, poisoned, or whitespace-only: the Bifrost
+// session id is used, otherwise a UUID is synthesized.
 func TestResolveOpencodeSessionFallbackChain(t *testing.T) {
 	t.Run("session id used when client header absent", func(t *testing.T) {
 		ctx := newTestOpencodeCtx(t, nil)
@@ -150,6 +159,8 @@ func TestResolveOpencodeSessionFallbackChain(t *testing.T) {
 	})
 }
 
+// TestResolveOpencodeSessionSynthesizesUUID verifies that with no session signal
+// at all a fresh, per-request UUID is produced and still survives namespacing.
 func TestResolveOpencodeSessionSynthesizesUUID(t *testing.T) {
 	t.Run("valid UUID when no signal at all", func(t *testing.T) {
 		ctx := newTestOpencodeCtx(t, nil)
@@ -181,6 +192,9 @@ func TestResolveOpencodeSessionSynthesizesUUID(t *testing.T) {
 	})
 }
 
+// TestResolveOpencodeSessionNamespacesPerVirtualKey verifies sessions are scoped
+// per virtual key — the same session under two keys yields distinct values,
+// the same key stays stable, and an unsafe key leaves the value unqualified.
 func TestResolveOpencodeSessionNamespacesPerVirtualKey(t *testing.T) {
 	// Same input session under two virtual keys must not produce the same
 	// upstream value; the same virtual key must stay stable across calls.
@@ -213,6 +227,9 @@ func TestResolveOpencodeSessionNamespacesPerVirtualKey(t *testing.T) {
 	})
 }
 
+// TestResolveOpencodeSessionResolvesOncePerRequest verifies the resolved value is
+// cached on the context so repeated calls for one request return the same
+// namespaced value instead of re-synthesizing.
 func TestResolveOpencodeSessionResolvesOncePerRequest(t *testing.T) {
 	ctx := newTestOpencodeCtx(t, nil)
 	first := ResolveOpencodeSession(ctx)
@@ -226,6 +243,9 @@ func TestResolveOpencodeSessionResolvesOncePerRequest(t *testing.T) {
 	}
 }
 
+// TestNamespaceOpencodeSessionNoCollision is a regression test for the naive
+// "vk:value" concatenation alias: component escaping keeps the mapping
+// injective so ("a","b:c") and ("a:b","c") map to distinct values.
 func TestNamespaceOpencodeSessionNoCollision(t *testing.T) {
 	// Regression: naive "vk:value" concatenation aliases ("a", "b:c") and
 	// ("a:b", "c") because both produce "a:b:c". Each component is escaped so
@@ -251,12 +271,17 @@ func TestNamespaceOpencodeSessionNoCollision(t *testing.T) {
 	}
 }
 
+// TestResolveOpencodeSessionNilContext verifies a nil context yields an empty
+// session value instead of panicking.
 func TestResolveOpencodeSessionNilContext(t *testing.T) {
 	if got := ResolveOpencodeSession(nil); got != "" {
 		t.Errorf("ResolveOpencodeSession(nil) = %q, want \"\"", got)
 	}
 }
 
+// TestResolveOpencodeSessionStableUnderBlockRestrictedWrites verifies the cached
+// session value survives BlockRestrictedWrites and is returned unchanged on the
+// next resolution.
 func TestResolveOpencodeSessionStableUnderBlockRestrictedWrites(t *testing.T) {
 	ctx := newTestOpencodeCtx(t, nil)
 	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "vk-1")
@@ -273,6 +298,8 @@ func TestResolveOpencodeSessionStableUnderBlockRestrictedWrites(t *testing.T) {
 	}
 }
 
+// TestResolveOpencodeSessionConcurrentSameContext verifies resolution is
+// single-flight when many goroutines resolve the same context at once.
 func TestResolveOpencodeSessionConcurrentSameContext(t *testing.T) {
 	ctx := newTestOpencodeCtx(t, nil)
 	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "vk-1")

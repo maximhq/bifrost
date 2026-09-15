@@ -61,6 +61,10 @@ func ResolveOpencodeSession(ctx *schemas.BifrostContext) string {
 	return value
 }
 
+// resolveOpencodeSessionValue computes the x-opencode-session value for a
+// request by walking the resolution chain (client header, Bifrost session id,
+// then a synthesized per-request UUID), namespacing whichever signal wins per
+// virtual key. It is called at most once per request by ResolveOpencodeSession.
 func resolveOpencodeSessionValue(ctx *schemas.BifrostContext) string {
 	// a) Client-sent header wins. The HTTP transport captures every request
 	// header into BifrostContextKeyRequestHeaders (lowercased keys), so the raw

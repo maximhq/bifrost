@@ -68,6 +68,8 @@ func newOpencodeWireCtx(t *testing.T, requestHeaders map[string]string) *schemas
 	return ctx
 }
 
+// newWireChatRequest builds a minimal user chat completion request for the given
+// provider, used by the wire tests to drive inference against the mock upstream.
 func newWireChatRequest(providerKey schemas.ModelProvider) *schemas.BifrostChatRequest {
 	return &schemas.BifrostChatRequest{
 		Provider: providerKey,
@@ -79,6 +81,9 @@ func newWireChatRequest(providerKey schemas.ModelProvider) *schemas.BifrostChatR
 	}
 }
 
+// newWireResponsesRequest builds a minimal user Responses API request for the
+// given provider, used by the wire tests to drive inference against the mock
+// upstream.
 func newWireResponsesRequest(providerKey schemas.ModelProvider) *schemas.BifrostResponsesRequest {
 	return &schemas.BifrostResponsesRequest{
 		Provider: providerKey,
