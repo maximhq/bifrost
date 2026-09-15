@@ -1,6 +1,8 @@
 package utils
 
 import (
+	"slices"
+
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -147,6 +149,42 @@ func InjectChatCacheBreakpoints(cfg *schemas.PromptCacheConfig, input []schemas.
 		msg.Content.ContentBlocks[t.block].CacheControl = marker
 	}
 	return out
+}
+
+// StripChatCachePoints returns input without Bedrock cachePoint markers, copying only the messages that carry one.
+func StripChatCachePoints(input []schemas.ChatMessage) ([]schemas.ChatMessage, bool) {
+	var out []schemas.ChatMessage
+	for i := range input {
+		content := input[i].Content
+		if content == nil || !slices.ContainsFunc(content.ContentBlocks, hasChatCachePoint) {
+			continue
+		}
+		if out == nil {
+			out = slices.Clone(input)
+		}
+		blocks := make([]schemas.ChatContentBlock, 0, len(content.ContentBlocks))
+		for _, block := range content.ContentBlocks {
+			if block.CachePoint != nil {
+				// A standalone marker has nothing else to send.
+				if block.Type == "" {
+					continue
+				}
+				block.CachePoint = nil
+			}
+			blocks = append(blocks, block)
+		}
+		contentCopy := *content
+		contentCopy.ContentBlocks = blocks
+		out[i].Content = &contentCopy
+	}
+	if out == nil {
+		return input, false
+	}
+	return out, true
+}
+
+func hasChatCachePoint(block schemas.ChatContentBlock) bool {
+	return block.CachePoint != nil
 }
 
 // injectionTarget names one place to write a marker. promoteStr means the message
