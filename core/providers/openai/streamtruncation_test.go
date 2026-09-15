@@ -3,9 +3,12 @@ package openai
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -878,5 +881,431 @@ func TestResponsesStreamFallbackSilentParkAfterFinishReasonEndsCleanlyOnIdleTime
 	}
 	if completed.Response == nil || completed.Response.StopReason == nil || *completed.Response.StopReason != "stop" {
 		t.Fatalf("expected stop_reason stop on the completed event, got %+v", completed.Response)
+	}
+}
+
+// Raw-response capture must be independent of semantic chunk forwarding.
+//
+// The OpenAI chat streaming loop only attaches ExtraFields.RawResponse inside the
+// branch that forwards a chunk carrying content/reasoning/audio/tool calls. Three
+// documented, perfectly normal frame shapes never enter that branch and so their
+// bytes are discarded before the framework's accumulator (which reconstructs
+// raw_response purely by concatenating chunk.RawResponse) can ever see them:
+//
+//   - role-only   delta {"role":"assistant"}, no content
+//   - finish-only delta {} with finish_reason set
+//   - usage-only  choices: [] with the authoritative token counts
+//
+// OpenAI documents the last two explicitly: with stream_options.include_usage the
+// usage arrives on a final chunk whose choices array is empty, preceded by a chunk
+// whose delta is {} and which carries finish_reason.
+// https://developers.openai.com/api/reference/resources/chat/subresources/completions/streaming-events
+//
+// Losing them contradicts the documented raw_response contract ("the exact response
+// body received from the provider") and specifically hides the provider's own
+// billing numbers from audit, even though Bifrost reads and bills from them.
+// See https://github.com/maximhq/bifrost/issues/7144.
+
+// rawCaptureStreamProvider is newStreamTestProvider with raw-response capture on.
+func rawCaptureStreamProvider(baseURL string) *OpenAIProvider {
+	return NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig:       schemas.NetworkConfig{BaseURL: baseURL},
+		SendBackRawResponse: true,
+	}, testNoopLogger{})
+}
+
+// reconstructRawResponse mirrors what framework/streaming reconstructs for logging
+// and plugins: sort the chunks by ChunkIndex and concatenate their RawResponse with
+// a blank line between them. Asserting here keeps the test inside core while still
+// pinning exactly the string the framework would persist.
+func reconstructRawResponse(t *testing.T, chunks []*schemas.BifrostStreamChunk) string {
+	t.Helper()
+	type indexedRaw struct {
+		index int
+		raw   string
+	}
+	var raws []indexedRaw
+	for _, chunk := range chunks {
+		if chunk.BifrostChatResponse == nil {
+			continue
+		}
+		raw := chunk.BifrostChatResponse.ExtraFields.RawResponse
+		if raw == nil {
+			continue
+		}
+		raws = append(raws, indexedRaw{
+			index: chunk.BifrostChatResponse.ExtraFields.ChunkIndex,
+			raw:   fmt.Sprintf("%v", raw),
+		})
+	}
+	sort.SliceStable(raws, func(i, j int) bool { return raws[i].index < raws[j].index })
+	parts := make([]string, 0, len(raws))
+	for _, r := range raws {
+		parts = append(parts, r.raw)
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// fullShapeSSEBody is the frame sequence from issue #7144: role-only, content,
+// finish-only, usage-only, [DONE].
+const (
+	rawRoleOnlyFrame   = `{"id":"chatcmpl-repro","object":"chat.completion.chunk","created":1,"model":"repro-model","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}],"usage":null}`
+	rawContentFrame    = `{"id":"chatcmpl-repro","object":"chat.completion.chunk","created":1,"model":"repro-model","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}],"usage":null}`
+	rawFinishOnlyFrame = `{"id":"chatcmpl-repro","object":"chat.completion.chunk","created":1,"model":"repro-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":null}`
+	rawUsageOnlyFrame  = `{"id":"chatcmpl-repro","object":"chat.completion.chunk","created":1,"model":"repro-model","choices":[],"usage":{"prompt_tokens":1000,"completion_tokens":100,"total_tokens":1100}}`
+)
+
+func fullShapeSSEBody() string {
+	return "data: " + rawRoleOnlyFrame + "\n\n" +
+		"data: " + rawContentFrame + "\n\n" +
+		"data: " + rawFinishOnlyFrame + "\n\n" +
+		"data: " + rawUsageOnlyFrame + "\n\n" +
+		"data: [DONE]\n\n"
+}
+
+// The usage-only frame carries the provider's authoritative token counts. Bifrost
+// reads them (the normalized usage below proves it) and bills from them, so
+// dropping their bytes leaves an audit trail that cannot be reconciled against the
+// invoice.
+func TestChatStreamRawResponseKeepsUsageOnlyFrame(t *testing.T) {
+	server := completeSSEServer(t, fullShapeSSEBody())
+	defer server.Close()
+
+	provider := rawCaptureStreamProvider(server.URL)
+	stream, bifrostErr := provider.ChatCompletionStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), basicChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+	chunks := collectChunks(t, stream)
+
+	// Guard: the usage really was read, so this is a raw-capture gap and not a
+	// parsing failure that would make the assertion below trivially true.
+	var total int
+	for _, chunk := range chunks {
+		if chunk.BifrostChatResponse != nil && chunk.BifrostChatResponse.Usage != nil {
+			total = chunk.BifrostChatResponse.Usage.TotalTokens
+		}
+	}
+	if total != 1100 {
+		t.Fatalf("expected normalized total_tokens 1100 (proving the usage frame was read), got %d", total)
+	}
+
+	raw := reconstructRawResponse(t, chunks)
+	if !strings.Contains(raw, rawUsageOnlyFrame) {
+		t.Errorf("captured raw response is missing the usage-only frame.\nwant to contain:\n%s\ngot:\n%s", rawUsageOnlyFrame, raw)
+	}
+}
+
+// A chunk whose delta is {} and which carries finish_reason is how OpenAI ends a
+// completion. It never reaches the content-forwarding branch, so its bytes vanish.
+func TestChatStreamRawResponseKeepsFinishOnlyFrame(t *testing.T) {
+	server := completeSSEServer(t, fullShapeSSEBody())
+	defer server.Close()
+
+	provider := rawCaptureStreamProvider(server.URL)
+	stream, bifrostErr := provider.ChatCompletionStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), basicChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	raw := reconstructRawResponse(t, collectChunks(t, stream))
+	if !strings.Contains(raw, rawFinishOnlyFrame) {
+		t.Errorf("captured raw response is missing the finish-only frame.\nwant to contain:\n%s\ngot:\n%s", rawFinishOnlyFrame, raw)
+	}
+}
+
+// The opening role-only frame is dropped by the same branch. It is listed
+// separately because it is the one dropped frame that arrives *before* the content
+// frames: a fix that simply appends the missing bytes to the final synthetic chunk
+// would satisfy the two tests above while silently reordering this one, so the
+// ordering assertion below is the real contract.
+func TestChatStreamRawResponseKeepsEveryFrameInUpstreamOrder(t *testing.T) {
+	server := completeSSEServer(t, fullShapeSSEBody())
+	defer server.Close()
+
+	provider := rawCaptureStreamProvider(server.URL)
+	stream, bifrostErr := provider.ChatCompletionStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), basicChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	raw := reconstructRawResponse(t, collectChunks(t, stream))
+
+	want := []struct {
+		name  string
+		frame string
+	}{
+		{"role-only", rawRoleOnlyFrame},
+		{"content", rawContentFrame},
+		{"finish-only", rawFinishOnlyFrame},
+		{"usage-only", rawUsageOnlyFrame},
+	}
+	prev := -1
+	for _, w := range want {
+		// Order alone is not enough: strings.Index reports only the first match, so a
+		// frame emitted twice still reads as correctly ordered. Exactly-once is the
+		// other half of the contract this path claims - the drain resets the queue
+		// after every forwarded chunk precisely so a frame cannot be replayed.
+		if n := strings.Count(raw, w.frame); n != 1 {
+			t.Errorf("%s frame appears %d times in the captured raw response; expected exactly 1", w.name, n)
+		}
+		at := strings.Index(raw, w.frame)
+		if at < 0 {
+			t.Errorf("captured raw response is missing the %s frame:\n%s", w.name, w.frame)
+			continue
+		}
+		if at <= prev {
+			t.Errorf("%s frame is out of upstream order (found at %d, previous frame at %d)", w.name, at, prev)
+		}
+		prev = at
+	}
+	if t.Failed() {
+		t.Logf("reconstructed raw response was:\n%s", raw)
+	}
+}
+
+// The chunk-forwarding predicate checks Content, Reasoning, ReasoningDetails,
+// Audio and ToolCalls - but not Refusal or Annotations, both of which are fields
+// on ChatStreamResponseChoiceDelta. A frame carrying only one of those is
+// therefore dropped outright: the client never receives it, and because
+// framework/streaming assembles ChatAssistantMessage.Refusal (chat.go:298) and
+// .Annotations (chat.go:356) purely from forwarded chunk deltas, the accumulated
+// message loses them too. That assembly code is unreachable for every
+// OpenAI-compatible provider until the predicate lets these chunks through.
+//
+// OpenAI documents delta.refusal as "The refusal message generated by the model":
+// https://developers.openai.com/api/reference/resources/chat/subresources/completions/streaming-events
+// Annotations are Bifrost's delta field for streamed URL citations.
+
+const (
+	rawRefusalFrame    = `{"id":"chatcmpl-repro","object":"chat.completion.chunk","created":1,"model":"repro-model","choices":[{"index":0,"delta":{"refusal":"I cannot help with that."},"finish_reason":null}],"usage":null}`
+	rawAnnotationFrame = `{"id":"chatcmpl-repro","object":"chat.completion.chunk","created":1,"model":"repro-model","choices":[{"index":0,"delta":{"annotations":[{"type":"url_citation","url_citation":{"start_index":0,"end_index":5,"title":"Example","url":"https://example.com"}}]},"finish_reason":null}],"usage":null}`
+)
+
+// collectChatDeltas returns the deltas of every forwarded chat chunk, which is
+// exactly what a streaming client sees and what the framework accumulates from.
+func collectChatDeltas(chunks []*schemas.BifrostStreamChunk) []*schemas.ChatStreamResponseChoiceDelta {
+	var deltas []*schemas.ChatStreamResponseChoiceDelta
+	for _, chunk := range chunks {
+		if chunk.BifrostChatResponse == nil || len(chunk.BifrostChatResponse.Choices) == 0 {
+			continue
+		}
+		choice := chunk.BifrostChatResponse.Choices[0]
+		if choice.ChatStreamResponseChoice != nil && choice.ChatStreamResponseChoice.Delta != nil {
+			deltas = append(deltas, choice.ChatStreamResponseChoice.Delta)
+		}
+	}
+	return deltas
+}
+
+// A refusal is the model's answer. Dropping it hands the client an empty stream
+// that looks like a successful, content-free completion.
+func TestChatStreamForwardsRefusalOnlyDelta(t *testing.T) {
+	body := "data: " + rawRefusalFrame + "\n\n" +
+		"data: " + rawFinishOnlyFrame + "\n\n" +
+		"data: [DONE]\n\n"
+	server := completeSSEServer(t, body)
+	defer server.Close()
+
+	provider := newStreamTestProvider(server.URL)
+	stream, bifrostErr := provider.ChatCompletionStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), basicChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	for _, delta := range collectChatDeltas(collectChunks(t, stream)) {
+		if delta.Refusal != nil && *delta.Refusal == "I cannot help with that." {
+			return
+		}
+	}
+	t.Error("the refusal-only chunk was never forwarded; the client sees an empty completion and the accumulated message has no refusal")
+}
+
+// Streamed URL citations travel on delta.annotations. Dropping them silently
+// strips every source from a web-search answer.
+func TestChatStreamForwardsAnnotationOnlyDelta(t *testing.T) {
+	body := "data: " + rawAnnotationFrame + "\n\n" +
+		"data: " + rawFinishOnlyFrame + "\n\n" +
+		"data: [DONE]\n\n"
+	server := completeSSEServer(t, body)
+	defer server.Close()
+
+	provider := newStreamTestProvider(server.URL)
+	stream, bifrostErr := provider.ChatCompletionStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), basicChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	for _, delta := range collectChatDeltas(collectChunks(t, stream)) {
+		for _, a := range delta.Annotations {
+			if a.URLCitation.URL != nil && *a.URLCitation.URL == "https://example.com" {
+				return
+			}
+		}
+	}
+	t.Error("the annotation-only chunk was never forwarded; streamed citations are lost")
+}
+
+// The fallback ingress owes the same contract as the direct chat path: every frame
+// the provider sent, exactly once, in order. It broke that contract in BOTH
+// directions.
+//
+// Too many: one upstream chat frame spreads into several Responses events and each
+// was stamped with the same jsonData, so framework/streaming/responses.go:1039
+// concatenated a single frame N times.
+//
+// Too few: a usage-only frame has choices: [], and
+// ToBifrostResponsesStreamResponse returns nil for that (core/schemas/mux.go:1710),
+// so the spread loop body never runs and the frame is dropped outright - #7144's
+// own omission, surviving on the second ingress.
+//
+// Counting occurrences rather than merely capping them is what catches the second
+// case: an earlier version of this test asserted only "not more than once" and was
+// blind to a frame that was missing entirely.
+func TestResponsesFallbackRawResponseKeepsEveryFrameExactlyOnce(t *testing.T) {
+	server := completeSSEServer(t, fullShapeSSEBody())
+	defer server.Close()
+
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig:       schemas.NetworkConfig{BaseURL: server.URL},
+		SendBackRawResponse: true,
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			AllowedRequests: &schemas.AllowedRequests{
+				ChatCompletionStream: true,
+				ResponsesStream:      false,
+			},
+		},
+	}, testNoopLogger{})
+
+	request := &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "repro-model",
+		Input: []schemas.ResponsesMessage{{
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+		}},
+	}
+	stream, bifrostErr := provider.ResponsesStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), request)
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	var raws []string
+	for _, chunk := range collectChunks(t, stream) {
+		if chunk.BifrostResponsesStreamResponse == nil {
+			continue
+		}
+		if raw := chunk.BifrostResponsesStreamResponse.ExtraFields.RawResponse; raw != nil {
+			raws = append(raws, fmt.Sprintf("%v", raw))
+		}
+	}
+	joined := strings.Join(raws, "\n\n")
+
+	prev := -1
+	for _, w := range []struct {
+		name  string
+		frame string
+	}{
+		{"role-only", rawRoleOnlyFrame},
+		{"content", rawContentFrame},
+		{"finish-only", rawFinishOnlyFrame},
+		{"usage-only", rawUsageOnlyFrame},
+	} {
+		if n := strings.Count(joined, w.frame); n != 1 {
+			t.Errorf("%s frame appears %d times in the captured raw response; expected exactly 1", w.name, n)
+		}
+		// Exactly-once says nothing about sequence, so assert order here too, exactly as
+		// the direct chat path does. On this fixture every drain happens to carry a single
+		// frame, so ordering is enforced structurally and no production change can make
+		// this particular assertion fail today. It guards the case where pendingRawFrames
+		// actually batches - which it does as soon as several non-forwarding frames arrive
+		// back to back (see TestChatStreamRawCaptureIsBoundedByBytes, which queues
+		// hundreds) - because a drain that emitted a batch out of order would go unnoticed
+		// by the exactly-once check above.
+		at := strings.Index(joined, w.frame)
+		if at < 0 {
+			continue // the count assertion above already reported the miss
+		}
+		if at <= prev {
+			t.Errorf("%s frame is out of upstream order (found at %d, previous frame at %d)", w.name, at, prev)
+		}
+		prev = at
+	}
+	if t.Failed() {
+		t.Logf("captured raw response was:\n%s", joined)
+	}
+}
+
+// Raw capture queues every frame that produces no client chunk, and nothing drains
+// that queue until a chunk is actually forwarded. An upstream that streams only
+// such frames therefore grows it for the life of the connection - and because every
+// frame read resets the idle-timeout reader, that connection stays alive
+// indefinitely. Before the byte ceiling this was an unbounded allocation driven
+// entirely by the upstream.
+//
+// The bound has to hold without damaging the stream: usage, content and the
+// terminal chunk must all still be correct, because a ceiling that corrupts the
+// response is worse than the growth it prevents.
+func TestChatStreamRawCaptureIsBoundedByBytes(t *testing.T) {
+	// Padding rides in system_fingerprint: a real OpenAI chunk field that the
+	// forwarding predicate ignores, so each frame is large, parses cleanly, and
+	// still produces no client chunk.
+	pad := strings.Repeat("p", 3500)
+	var body strings.Builder
+	const padFrames = 400 // ~1.4 MiB, comfortably past the 1 MiB ceiling
+	for i := 0; i < padFrames; i++ {
+		body.WriteString(`data: {"id":"chatcmpl-repro","object":"chat.completion.chunk","created":1,"model":"repro-model","system_fingerprint":"` + pad +
+			`","choices":[{"index":0,"delta":{},"finish_reason":null}],"usage":null}` + "\n\n")
+	}
+	body.WriteString("data: " + rawContentFrame + "\n\n")
+	body.WriteString("data: " + rawFinishOnlyFrame + "\n\n")
+	body.WriteString("data: " + rawUsageOnlyFrame + "\n\n")
+	body.WriteString("data: [DONE]\n\n")
+
+	server := completeSSEServer(t, body.String())
+	defer server.Close()
+
+	provider := rawCaptureStreamProvider(server.URL)
+	stream, bifrostErr := provider.ChatCompletionStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), basicChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+	chunks := collectChunks(t, stream)
+
+	var capturedBytes, total int
+	var sawContent bool
+	for _, chunk := range chunks {
+		if chunk.BifrostError != nil {
+			t.Fatalf("unexpected error chunk: %+v", chunk.BifrostError)
+		}
+		if chunk.BifrostChatResponse == nil {
+			continue
+		}
+		if raw := chunk.BifrostChatResponse.ExtraFields.RawResponse; raw != nil {
+			capturedBytes += len(fmt.Sprintf("%v", raw))
+		}
+		if chunk.BifrostChatResponse.Usage != nil {
+			total = chunk.BifrostChatResponse.Usage.TotalTokens
+		}
+		for _, delta := range collectChatDeltas([]*schemas.BifrostStreamChunk{chunk}) {
+			if delta.Content != nil && *delta.Content == "hello" {
+				sawContent = true
+			}
+		}
+	}
+
+	// The ceiling must not cost correctness.
+	if total != 1100 {
+		t.Errorf("expected normalized total_tokens 1100, got %d", total)
+	}
+	if !sawContent {
+		t.Error("expected the content chunk to still be forwarded")
+	}
+
+	// 1 MiB ceiling, plus one frame of slack for the frame that crosses it.
+	const limit = (1 << 20) + (8 << 10)
+	if capturedBytes > limit {
+		t.Errorf("captured raw response is %d bytes, above the %d byte ceiling; an upstream streaming non-forwarding frames can grow this without bound", capturedBytes, limit)
 	}
 }
