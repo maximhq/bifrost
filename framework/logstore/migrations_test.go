@@ -566,3 +566,32 @@ func TestMCPGovernanceSnapshotsMigrationIsRegistered(t *testing.T) {
 	}
 	t.Fatal("mcp_tool_logs_add_governance_snapshots is not registered in logstoreMigrationSteps")
 }
+
+// TestMigrationAddsUserEmailColumnToExistingLogsTable validates that the user_email column is
+// additive and does not affect entries written previously without it.
+func TestMigrationAddsUserEmailColumnToExistingLogsTable(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("CREATE TABLE logs (id TEXT PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("INSERT INTO logs (id) VALUES (?)", "existing-log").Error)
+
+	ctx := context.Background()
+	require.False(t, db.Migrator().HasColumn(&Log{}, "UserEmail"))
+	require.NoError(t, migrationAddUserEmailColumn(ctx, db, testLogger{}))
+	require.True(t, db.Migrator().HasColumn(&Log{}, "UserEmail"))
+	require.NoError(t, migrationAddSessionIDColumn(ctx, db, testLogger{}))
+
+	var count int64
+	require.NoError(t, db.Table("logs").Where("id = ?", "existing-log").Count(&count).Error)
+	assert.Equal(t, int64(1), count)
+
+	email := "test@example.com"
+	newID := "new-log"
+
+	require.NoError(t, db.Exec("INSERT INTO logs (id, user_email) VALUES (?, ?)", newID, email).Error)
+
+	var got Log
+	require.NoError(t, db.Where("id = ?", newID).First(&got).Error)
+	require.NotNil(t, got.UserEmail)
+	require.Equal(t, email, *got.UserEmail)
+}

@@ -4893,10 +4893,16 @@ func migrationAddUserEmailColumn(ctx context.Context, db *gorm.DB, logger schema
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
 			return addColumnIfNotExists(tx, logger, &Log{}, "user_email")
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
 			return dropColumnIfExists(tx, logger, &Log{}, "user_email")
 		},
 	}})
