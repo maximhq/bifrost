@@ -73,6 +73,9 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
+# LangChain's standard integration suite includes unmarked async tests. Run
+# those tests through pytest-asyncio instead of rejecting them in strict mode.
+asyncio_mode = "auto"
 # Test discovery
 testpaths = ["."]
 python_files = "test_*.py"
