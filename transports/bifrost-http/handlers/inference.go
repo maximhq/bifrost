@@ -303,6 +303,7 @@ var imageEditParamsKnownFields = map[string]bool{
 	"num_inference_steps": true,
 	"upscale_factor":      true,
 	"target_megapixels":   true,
+	"aspect_ratio":        true,
 	"stream":              true,
 }
 
