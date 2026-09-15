@@ -50,6 +50,7 @@ dependencies = [
     "langchain-cohere>=0.4.0",
     "pytest-xdist>=3.8.0",
     "pyasn1>=0.6.4",
+    "griffe>=2.3.0",
 ]
 
 [build-system]
