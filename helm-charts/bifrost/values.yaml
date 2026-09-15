@@ -990,7 +990,7 @@ bifrost:
       #     - mcp_client_name: "example-mcp"
       #       tools_to_execute: ["*"]
       #   virtual_mcps:
-      #     - virtual_mcp_id: 1
+      #     - virtual_mcp_name: "Platform Tools"
     routingRules: []
       # - id: "route-1"
       #   name: "Route to Azure"
@@ -1401,14 +1401,20 @@ bifrost:
     #             token_reset_duration: "1h"
     #             request_max_limit: 500
     #             request_reset_duration: "1h"
-    #   mcp_tool_groups:
-    #     - tool_group_id: 1
-    #   mcp_servers:
-    #     - mcp_server_id: "github"
-    #   mcp_tool_overrides:
+    #   virtual_mcps:  # Virtual MCPs this profile grants, by name (as declared under mcp.virtualMcps)
+    #     - virtual_mcp_name: "Platform Tools"
+    #   mcp_configs:  # Per-client tool allowlists: ["*"] all tools, [] none, named list only those
     #     - mcp_client_id: "github"
-    #       tool_name: "create_pull_request"
-    #       action: "include"
+    #       tools_to_execute: ["create_pull_request", "list_issues"]
+    #   # DEPRECATED — folded into virtual_mcps / mcp_configs at load time:
+    #   # mcp_tool_groups:
+    #   #   - tool_group_id: 1
+    #   # mcp_servers:
+    #   #   - mcp_server_id: "github"
+    #   # mcp_tool_overrides:
+    #   #   - mcp_client_id: "github"
+    #   #     tool_name: "create_pull_request"
+    #   #     action: "include"
 
   # Alerting: declarative alert channels and rules seeded from Helm.
   # Rendered directly as top-level `alerting` in config.json.

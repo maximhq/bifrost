@@ -4605,6 +4605,18 @@ func (s *RDBConfigStore) GetVirtualMCPByID(ctx context.Context, id uint) (*table
 	return &def, nil
 }
 
+func (s *RDBConfigStore) GetVirtualMCPByName(ctx context.Context, name string) (*tables.TableVirtualMCP, error) {
+	var def tables.TableVirtualMCP
+	err := s.ScopedDB(ctx).Where("name = ?", name).First(&def).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &def, nil
+}
+
 func (s *RDBConfigStore) GetVirtualMCPsPaginated(ctx context.Context, params VirtualMCPsQueryParams) ([]tables.TableVirtualMCP, int64, error) {
 	q := s.ScopedDB(ctx).Model(&tables.TableVirtualMCP{})
 	if params.Search != "" {
