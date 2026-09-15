@@ -1740,3 +1740,103 @@ func TestToBedrockInvokeMessagesStreamResponse_ToolSearchNotToolUse(t *testing.T
 		assert.Equal(t, int64(2), gjson.GetBytes(bedrockEvent.InvokeModelRawChunks[0], "index").Int())
 	})
 }
+
+// TestToBedrockConverseRequest_InvokeToolSearchReplay covers turn 2 of a tool-search
+// conversation on the Bedrock-native invoke ingress. Anthropic requires the client to
+// echo the assistant's server_tool_use and tool_search_tool_result back unchanged, but
+// BedrockContentBlock.UnmarshalJSON decoded only image/tool_use/tool_result/thinking,
+// so both blocks fell through to an empty struct and vanished — leaving the model a
+// turn in which it called a tool it never discovered.
+func TestToBedrockConverseRequest_InvokeToolSearchReplay(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	const (
+		searchID = "srvtoolu_01ABC"
+		callID   = "toolu_01XYZ"
+		found    = "get_weather"
+	)
+
+	raw := `{
+		"anthropic_version": "bedrock-2023-05-31",
+		"max_tokens": 512,
+		"tools": [
+			{"type": "tool_search_tool_regex_20251119", "name": "tool_search_tool_regex"},
+			{"name": "` + found + `", "description": "weather", "input_schema": {"type":"object","properties":{}}, "defer_loading": true}
+		],
+		"messages": [
+			{"role": "user", "content": [{"type": "text", "text": "weather in Paris?"}]},
+			{"role": "assistant", "content": [
+				{"type": "server_tool_use", "id": "` + searchID + `", "name": "tool_search_tool_regex", "input": {"pattern": "weather"}},
+				{"type": "tool_search_tool_result", "tool_use_id": "` + searchID + `",
+				 "content": {"type": "tool_search_tool_search_result",
+				             "tool_references": [{"type": "tool_reference", "tool_name": "` + found + `"}]}},
+				{"type": "tool_use", "id": "` + callID + `", "name": "` + found + `", "input": {"city": "Paris"}}
+			]},
+			{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "` + callID + `", "content": "18C"}]}
+		]
+	}`
+
+	var req BedrockInvokeRequest
+	require.NoError(t, sonic.Unmarshal([]byte(raw), &req))
+	req.ModelID = "us.anthropic.claude-sonnet-4-6-v1:0"
+
+	converseReq := req.ToBedrockConverseRequest()
+	bifrostReq, err := converseReq.ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+
+	var search *schemas.ResponsesMessage
+	var sawDiscoveredCall bool
+	for i := range bifrostReq.Input {
+		m := &bifrostReq.Input[i]
+		if m.Type == nil {
+			continue
+		}
+		switch *m.Type {
+		case schemas.ResponsesMessageTypeToolSearchCall:
+			search = m
+		case schemas.ResponsesMessageTypeFunctionCall:
+			if m.ResponsesToolMessage != nil && m.ResponsesToolMessage.CallID != nil {
+				switch *m.ResponsesToolMessage.CallID {
+				case callID:
+					sawDiscoveredCall = true
+				case searchID:
+					t.Errorf("the srvtoolu_ block replayed as a client function_call")
+				}
+			}
+		}
+	}
+
+	require.NotNil(t, search, "the replayed tool_search pair was dropped: %+v", bifrostReq.Input)
+	require.NotNil(t, search.ResponsesToolMessage)
+	require.NotNil(t, search.ResponsesToolMessage.ResponsesToolSearchCall)
+	assert.Equal(t, []string{found}, search.ResponsesToolMessage.ResponsesToolSearchCall.ToolReferences,
+		"the discovered tool references must survive replay")
+	require.NotNil(t, search.ResponsesToolMessage.Name)
+	assert.Equal(t, "tool_search_tool_regex", *search.ResponsesToolMessage.Name)
+	// The query the model searched with must survive ingress too: Anthropic requires
+	// this block to be echoed back unchanged, so a replay that forgets the pattern
+	// rewrites it on the next turn.
+	require.NotNil(t, search.ResponsesToolMessage.Arguments,
+		"server_tool_use.input was dropped at the invoke ingress")
+	assert.JSONEq(t, `{"pattern":"weather"}`, *search.ResponsesToolMessage.Arguments)
+	assert.True(t, sawDiscoveredCall, "the tool_use calling the discovered tool must still replay")
+
+	// The turn must still route to InvokeModel — tool search never runs on Converse.
+	assert.True(t, responsesUsesAnthropicInvokePath(ctx, bifrostReq))
+
+	// Close the loop: the block this ingress decoded must come back out of the
+	// InvokeModel serializer with the same input, which is what "echo the assistant's
+	// content back unchanged" actually requires end to end.
+	out, err := ToBedrockInvokeMessagesResponse(ctx, &schemas.BifrostResponsesResponse{
+		ID:     schemas.Ptr("msg_replay"),
+		Model:  req.ModelID,
+		Output: []schemas.ResponsesMessage{*search},
+	})
+	require.NoError(t, err)
+	encoded, err := providerUtils.MarshalSorted(out)
+	require.NoError(t, err)
+	roundTripped := gjson.GetBytes(encoded, "content").Array()
+	require.NotEmpty(t, roundTripped)
+	assert.Equal(t, "server_tool_use", roundTripped[0].Get("type").String())
+	assert.Equal(t, "weather", roundTripped[0].Get("input.pattern").String(),
+		"the replayed block lost its search query on the way back out: %s", string(encoded))
+}

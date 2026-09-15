@@ -123,7 +123,7 @@ export const createMCPColumns = (
 			const icon = appKey ? customAppIcons[appKey] || app.icon : app.icon;
 			return (
 				<div className="flex min-w-0 items-center gap-2" title={row.original.user_agent || undefined}>
-					{icon ? <img src={icon} alt={app.name} width={14} height={14} loading="lazy" decoding="async" /> : null}
+					{icon ? <img src={icon} alt={app.name} width={20} height={20} loading="lazy" decoding="async" className="shrink-0" /> : null}
 					<span className="truncate text-[12px]">{app.name}</span>
 				</div>
 			);

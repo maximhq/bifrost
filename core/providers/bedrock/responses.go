@@ -4469,6 +4469,16 @@ func createTextMessage(
 	return bifrostMsg
 }
 
+// bedrockToolSearchArguments carries a replayed server_tool_use.input onto the neutral
+// item's Arguments, so the InvokeModel serializer can echo the block back unchanged.
+// An absent input stays nil and the rebuild falls back to {}.
+func bedrockToolSearchArguments(input json.RawMessage) *string {
+	if len(input) == 0 {
+		return nil
+	}
+	return schemas.Ptr(string(input))
+}
+
 // convertSingleBedrockMessageToBifrostMessages converts a single Bedrock message to Bifrost messages
 func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, msg *BedrockMessage, isOutputMessage bool) []schemas.ResponsesMessage {
 	var outputMessages []schemas.ResponsesMessage
@@ -4518,6 +4528,15 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 		}
 	}
 
+	// Pre-scan: pair replayed tool_search_tool_result blocks to the server_tool_use they
+	// answer, so the tool_search_call item is emitted complete when the use block is hit.
+	toolSearchResults := make(map[string][]string)
+	for i := range msg.Content {
+		if r := msg.Content[i].AnthropicToolSearchResult; r != nil {
+			toolSearchResults[r.ToolUseID] = r.ToolReferences
+		}
+	}
+
 	// lastTextOutputIdx tracks the index into outputMessages of the most recently appended
 	// text message, so standalone citationsContent blocks can be attached to it as annotations.
 	lastTextOutputIdx := -1
@@ -4529,6 +4548,32 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 		}
 		// Skip nova_grounding tool results — server-managed, consumed by the pre-scan above.
 		if block.ToolResult != nil && novaGroundingToolUseIDs[block.ToolResult.ToolUseID] {
+			continue
+		}
+
+		// A replayed tool_search_tool_result is consumed by the pre-scan above; its
+		// references are attached to the matching server_tool_use block.
+		if block.AnthropicToolSearchResult != nil {
+			continue
+		}
+		if block.AnthropicToolSearchUse != nil {
+			// Rebuild the neutral tool_search_call so the pair survives the turn and the
+			// egress converter can re-emit both blocks verbatim. Without this the replayed
+			// search is dropped and the model is shown a turn where it called a tool it
+			// never discovered.
+			outputMessages = append(outputMessages, schemas.ResponsesMessage{
+				ID:     schemas.Ptr(block.AnthropicToolSearchUse.ID),
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeToolSearchCall),
+				Status: schemas.Ptr("completed"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:    schemas.Ptr(block.AnthropicToolSearchUse.ID),
+					Name:      schemas.Ptr(block.AnthropicToolSearchUse.Name),
+					Arguments: bedrockToolSearchArguments(block.AnthropicToolSearchUse.Input),
+					ResponsesToolSearchCall: &schemas.ResponsesToolSearchCall{
+						ToolReferences: toolSearchResults[block.AnthropicToolSearchUse.ID],
+					},
+				},
+			})
 			continue
 		}
 
