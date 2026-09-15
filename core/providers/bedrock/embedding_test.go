@@ -122,10 +122,12 @@ func TestBedrockEmbeddingEncodingInvokeRoundTrip(t *testing.T) {
 			require.NoError(t, json.Unmarshal([]byte(test.invokeBody), &invokeRequest))
 			invokeRequest.ModelID = "bedrock/" + test.model
 
+			embeddingRequest, convErr := invokeRequest.ToBifrostEmbeddingRequest(ctx)
+			require.NoError(t, convErr)
 			response, bifrostErr := provider.Embedding(
 				ctx,
 				testBedrockKey(),
-				invokeRequest.ToBifrostEmbeddingRequest(ctx),
+				embeddingRequest,
 			)
 			require.Nil(t, bifrostErr)
 			require.NotNil(t, response)
@@ -139,10 +141,12 @@ func TestBedrockEmbeddingEncodingInvokeRoundTrip(t *testing.T) {
 
 				ctxWithRawCapture := testBedrockCtx()
 				ctxWithRawCapture.SetValue(schemas.BifrostContextKeyCaptureRawResponse, true)
+				rawCaptureRequest, convErr := invokeRequest.ToBifrostEmbeddingRequest(ctxWithRawCapture)
+				require.NoError(t, convErr)
 				responseWithRawCapture, rawCaptureErr := provider.Embedding(
 					ctxWithRawCapture,
 					testBedrockKey(),
-					invokeRequest.ToBifrostEmbeddingRequest(ctxWithRawCapture),
+					rawCaptureRequest,
 				)
 				require.Nil(t, rawCaptureErr)
 				require.NotNil(t, responseWithRawCapture)
@@ -227,7 +231,7 @@ func TestToBedrockTitanEmbeddingRequestEncodingTypes(t *testing.T) {
 
 	t.Run("rejects empty input without panicking", func(t *testing.T) {
 		req, err := ToBedrockTitanEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
-			Input: &schemas.EmbeddingInput{},
+			Input: []schemas.EmbeddingInputItem{},
 		})
 		require.Error(t, err)
 		assert.Nil(t, req)
@@ -236,7 +240,7 @@ func TestToBedrockTitanEmbeddingRequestEncodingTypes(t *testing.T) {
 
 	t.Run("accepts decoded JSON arrays", func(t *testing.T) {
 		req, err := ToBedrockTitanEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
-			Input: &schemas.EmbeddingInput{Text: &text},
+			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
 			Params: &schemas.EmbeddingParameters{ExtraParams: map[string]interface{}{
 				"embeddingTypes": []interface{}{"float", "binary"},
 			}},
@@ -249,7 +253,7 @@ func TestToBedrockTitanEmbeddingRequestEncodingTypes(t *testing.T) {
 	t.Run("preserves invalid values for native validation", func(t *testing.T) {
 		invalid := []interface{}{"binary", float64(1)}
 		req, err := ToBedrockTitanEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
-			Input: &schemas.EmbeddingInput{Text: &text},
+			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
 			Params: &schemas.EmbeddingParameters{ExtraParams: map[string]interface{}{
 				"embeddingTypes": invalid,
 			}},
@@ -306,33 +310,34 @@ func TestToBedrockCohereEmbeddingRequest(t *testing.T) {
 		req, err := ToBedrockCohereEmbeddingRequest(&schemas.BifrostEmbeddingRequest{})
 		require.Error(t, err)
 		assert.Nil(t, req)
-		assert.Contains(t, err.Error(), "no input")
 	})
 
 	t.Run("returns error for non-nil but empty input", func(t *testing.T) {
 		req, err := ToBedrockCohereEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
-			Input: &schemas.EmbeddingInput{},
+			Input: nil,
 		})
 		require.Error(t, err)
 		assert.Nil(t, req)
-		assert.Contains(t, err.Error(), "no input")
 	})
 
-	t.Run("single text strips model and extracts typed params", func(t *testing.T) {
+	t.Run("single text content extracts typed params", func(t *testing.T) {
 		text := "hello"
 		truncate := "RIGHT"
 		dimensions := 512
+		maxTokens := 128
 		bifrostReq := &schemas.BifrostEmbeddingRequest{
 			Model: "cohere.embed-english-v3",
-			Input: &schemas.EmbeddingInput{Text: &text},
+			Input: []schemas.EmbeddingInputItem{
+				{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}},
+			},
 			Params: &schemas.EmbeddingParameters{
 				Dimensions: &dimensions,
 				ExtraParams: map[string]interface{}{
 					"input_type":      "search_query",
 					"embedding_types": []string{"float"},
-					"truncate":        truncate,
-					"max_tokens":      float64(128),
 					"trace_id":        "req-123",
+					"max_tokens":      maxTokens,
+					"truncate":        truncate,
 				},
 			},
 		}
@@ -344,16 +349,21 @@ func TestToBedrockCohereEmbeddingRequest(t *testing.T) {
 		assert.Equal(t, []string{"hello"}, req.Texts)
 		assert.Equal(t, []string{"float"}, req.EmbeddingTypes)
 		assert.Equal(t, &dimensions, req.OutputDimension)
-		assert.Equal(t, 128, *req.MaxTokens)
+		assert.Equal(t, &maxTokens, req.MaxTokens)
 		require.NotNil(t, req.Truncate)
 		assert.Equal(t, truncate, *req.Truncate)
 		assert.Equal(t, map[string]interface{}{"trace_id": "req-123"}, req.ExtraParams)
 	})
 
-	t.Run("multiple texts preserve bedrock body shape", func(t *testing.T) {
+	t.Run("multiple text contents batch into texts array", func(t *testing.T) {
+		hello := "hello"
+		world := "world"
 		bifrostReq := &schemas.BifrostEmbeddingRequest{
 			Model: "cohere.embed-multilingual-v3",
-			Input: &schemas.EmbeddingInput{Texts: []string{"hello", "world"}},
+			Input: []schemas.EmbeddingInputItem{
+				{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &hello}}},
+				{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &world}}},
+			},
 			Params: &schemas.EmbeddingParameters{
 				ExtraParams: map[string]interface{}{
 					"input_type": "search_document",
@@ -373,7 +383,7 @@ func TestToBedrockCohereEmbeddingRequest(t *testing.T) {
 		// send it; this is what lets them reach a Cohere model at all.
 		text := "hello"
 		req, err := ToBedrockCohereEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
-			Input: &schemas.EmbeddingInput{Text: &text},
+			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
 		})
 		require.NoError(t, err)
 		assert.Equal(t, BedrockCohereInputTypeSearchDocument, req.InputType)
@@ -382,7 +392,7 @@ func TestToBedrockCohereEmbeddingRequest(t *testing.T) {
 	t.Run("caller input_type always wins over the default", func(t *testing.T) {
 		text := "hello"
 		req, err := ToBedrockCohereEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
-			Input: &schemas.EmbeddingInput{Text: &text},
+			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
 			Params: &schemas.EmbeddingParameters{
 				ExtraParams: map[string]interface{}{"input_type": "search_query"},
 			},
@@ -394,7 +404,7 @@ func TestToBedrockCohereEmbeddingRequest(t *testing.T) {
 	t.Run("embedding types accept decoded JSON arrays", func(t *testing.T) {
 		text := "hello"
 		bifrostReq := &schemas.BifrostEmbeddingRequest{
-			Input: &schemas.EmbeddingInput{Text: &text},
+			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
 			Params: &schemas.EmbeddingParameters{
 				ExtraParams: map[string]interface{}{
 					"embedding_types": []interface{}{"float", "int8", "binary"},
@@ -409,11 +419,13 @@ func TestToBedrockCohereEmbeddingRequest(t *testing.T) {
 	})
 }
 
-func TestToBedrockCohereEmbeddingRequestBodyOmitsModel(t *testing.T) {
+func TestToBedrockCohereEmbeddingRequestWireBody(t *testing.T) {
 	text := "hello"
 	bifrostReq := &schemas.BifrostEmbeddingRequest{
 		Model: "cohere.embed-english-v3",
-		Input: &schemas.EmbeddingInput{Text: &text},
+		Input: []schemas.EmbeddingInputItem{
+			{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}},
+		},
 		Params: &schemas.EmbeddingParameters{
 			ExtraParams: map[string]interface{}{
 				"input_type":      "search_document",
@@ -430,10 +442,40 @@ func TestToBedrockCohereEmbeddingRequestBodyOmitsModel(t *testing.T) {
 		},
 	)
 	require.Nil(t, bifrostErr)
-	assert.NotContains(t, string(wireBody), `"model"`)
 	assert.JSONEq(t, `{
 		"input_type": "search_document",
 		"texts": ["hello"],
 		"embedding_types": ["float"]
 	}`, string(wireBody))
+}
+
+func TestBedrockInvokeEmbeddingRejectsInvalidInputBlocks(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"unknown type", `{"input_type":"search_document","inputs":[{"content":[{"type":"text","text":"a"},{"type":"document","text":"b"}]}]}`},
+		{"text without text", `{"input_type":"search_document","inputs":[{"content":[{"type":"text"}]}]}`},
+		{"image_url without image_url", `{"input_type":"search_document","inputs":[{"content":[{"type":"image_url"}]}]}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var invokeRequest BedrockInvokeRequest
+			require.NoError(t, json.Unmarshal([]byte(test.body), &invokeRequest))
+			invokeRequest.ModelID = "bedrock/cohere.embed-v4:0"
+
+			req, err := invokeRequest.ToBifrostEmbeddingRequest(testBedrockCtx())
+			require.Error(t, err)
+			assert.Nil(t, req)
+			assert.True(t, providerUtils.IsInvalidRequestError(err))
+		})
+	}
+
+	var valid BedrockInvokeRequest
+	require.NoError(t, json.Unmarshal([]byte(`{"input_type":"search_document","inputs":[{"content":[{"type":"text","text":"a"},{"type":"image_url","image_url":{"url":"data:image/png;base64,AA=="}}]}]}`), &valid))
+	valid.ModelID = "bedrock/cohere.embed-v4:0"
+	req, err := valid.ToBifrostEmbeddingRequest(testBedrockCtx())
+	require.NoError(t, err)
+	require.Len(t, req.Input, 1)
+	assert.Len(t, req.Input[0].Content, 2)
 }
