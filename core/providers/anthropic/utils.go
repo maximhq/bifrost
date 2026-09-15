@@ -3890,6 +3890,33 @@ func attachWebSearchSourcesToCall(bifrostMessages []schemas.ResponsesMessage, to
 	}
 }
 
+// attachToolSearchReferencesToCall finds the tool_search_call emitted for this
+// server_tool_use id and attaches the discovered tool names. Mirrors
+// attachWebSearchSourcesToCall: the call item and its result block arrive as two
+// separate content blocks, matched on server_tool_use.id == result.tool_use_id.
+func attachToolSearchReferencesToCall(bifrostMessages []schemas.ResponsesMessage, toolUseID string, resultBlock AnthropicContentBlock) {
+	for i := len(bifrostMessages) - 1; i >= 0; i-- {
+		msg := &bifrostMessages[i]
+		if msg.Type == nil || *msg.Type != schemas.ResponsesMessageTypeToolSearchCall ||
+			msg.ID == nil || *msg.ID != toolUseID {
+			continue
+		}
+		var refs []string
+		for _, ref := range resultBlock.DiscoveredToolReferences() {
+			if ref.ToolName != nil {
+				refs = append(refs, *ref.ToolName)
+			} else if ref.Name != nil {
+				refs = append(refs, *ref.Name)
+			}
+		}
+		if msg.ResponsesToolMessage == nil {
+			msg.ResponsesToolMessage = &schemas.ResponsesToolMessage{}
+		}
+		msg.ResponsesToolMessage.ResponsesToolSearchCall = &schemas.ResponsesToolSearchCall{ToolReferences: refs}
+		return
+	}
+}
+
 // extractWebSearchSources extracts search sources from Anthropic content blocks.
 // When includeExtendedFields is true, it includes EncryptedContent, PageAge, and Title fields.
 func extractWebSearchSources(contentBlocks []AnthropicContentBlock, includeExtendedFields bool) []schemas.ResponsesWebSearchToolCallActionSearchSource {
