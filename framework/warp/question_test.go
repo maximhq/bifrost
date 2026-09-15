@@ -64,6 +64,30 @@ func TestWarpQuestionParsing(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, question.Options, MaxQuestionOptions)
 	})
+
+	// A model call like describe_filter_space can return more real values than
+	// fit in a picker - once some of them are dropped by the cap, the person
+	// still needs a way back to one of them, so an explicit allow_other:false
+	// must not survive the truncation.
+	t.Run("forces allow_other once the option list is truncated", func(t *testing.T) {
+		options := make([]any, 0, 20)
+		for i := 0; i < 20; i++ {
+			options = append(options, map[string]any{"label": string(rune('a' + i))})
+		}
+		question, err := parseQuestion(map[string]any{"question": "Which?", "options": options, "allow_other": false})
+		require.NoError(t, err)
+		require.True(t, question.AllowOther)
+	})
+
+	t.Run("honours an explicit allow_other:false under the cap", func(t *testing.T) {
+		question, err := parseQuestion(map[string]any{
+			"question":    "Which team?",
+			"options":     []any{map[string]any{"label": "a"}, map[string]any{"label": "b"}},
+			"allow_other": false,
+		})
+		require.NoError(t, err)
+		require.False(t, question.AllowOther)
+	})
 }
 
 func TestWarpQuestionFromToolCall(t *testing.T) {
