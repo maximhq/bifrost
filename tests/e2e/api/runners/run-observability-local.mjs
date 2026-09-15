@@ -78,6 +78,10 @@ function createOtelReceiver() {
 	});
 }
 
+// createOpenAIMock serves an OpenAI-compatible upstream on a local port. It
+// answers /v1/chat/completions with a fixed "hello world" completion (or a
+// provider-style 404 when the ERROR_TRIGGER marker is present) and
+// /v1/responses with a completed response whose stop_reason is a refusal.
 function createOpenAIMock() {
 	return http.createServer(async (req, res) => {
 		const body = await readBody(req);
@@ -239,6 +243,9 @@ async function enableBuiltinPlugin(name, config) {
 	});
 }
 
+// addLocalProvider registers an ephemeral keyless custom provider (OpenAI base
+// type) that points at the mock upstream, allowing chat, chat streaming and
+// Responses API requests.
 async function addLocalProvider(mockPort) {
 	await mustRequest("POST", "/api/providers", {
 		provider: providerName,
@@ -267,6 +274,8 @@ async function addLocalProvider(mockPort) {
 	});
 }
 
+// chatHelloWorld fires the happy-path chat completion whose span, metrics and
+// log entry the rest of the check reconciles against each other.
 async function chatHelloWorld() {
 	const res = await mustRequest(
 		"POST",
@@ -647,6 +656,9 @@ function assertMockProviderRequest(wantCount = 1) {
 	}
 }
 
+// main enables the telemetry and otel plugins against local receivers, runs
+// the chat, error and Responses refusal scenarios, asserts every export, then
+// restores the original plugin config and removes the ephemeral provider.
 async function main() {
 	console.log("Running local observability API check...");
 	console.log(`  Bifrost: ${baseURL}`);

@@ -358,6 +358,9 @@ func TestPopulateResponsesResponseAttributesEmitsFinishReasons(t *testing.T) {
 	}
 }
 
+// A Responses API response without a stop_reason must not emit either finish
+// reason attribute: an empty or placeholder value would read as a real outcome
+// to OTEL consumers.
 func TestPopulateResponsesResponseAttributesOmitsFinishReasonsWhenStopReasonNil(t *testing.T) {
 	attrs := map[string]any{}
 
