@@ -1558,3 +1558,84 @@ func TestConvertAnthropicTools_UnknownToolSearchVariantNotRouted(t *testing.T) {
 		})
 	}
 }
+
+// TestToBedrockInvokeMessagesResponse_ToolSearchCall covers the response direction
+// of #7155: once tool search actually runs on the Bedrock-native invoke ingress, the
+// server-side search must come back as the server_tool_use + tool_search_tool_result
+// pair Anthropic documents, never as an invocable tool_use. "Never return a
+// tool_result for its srvtoolu_... ID" — emitting tool_use makes the caller do
+// exactly that, and the API rejects the next turn.
+// (https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool)
+func TestToBedrockInvokeMessagesResponse_ToolSearchCall(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	const (
+		searchID  = "srvtoolu_01ABC"
+		callID    = "toolu_01XYZ"
+		found     = "get_weather"
+		searchTag = "tool_search_tool_regex"
+	)
+
+	resp := &schemas.BifrostResponsesResponse{
+		ID:    schemas.Ptr("msg_ts"),
+		Model: "us.anthropic.claude-sonnet-4-6-v1:0",
+		Output: []schemas.ResponsesMessage{
+			{
+				ID:     schemas.Ptr(searchID),
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeToolSearchCall),
+				Status: schemas.Ptr("completed"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:                  schemas.Ptr(searchID),
+					Name:                    schemas.Ptr(searchTag),
+					Arguments:               schemas.Ptr(`{"pattern":"weather"}`),
+					ResponsesToolSearchCall: &schemas.ResponsesToolSearchCall{ToolReferences: []string{found}},
+				},
+			},
+			{
+				ID:   schemas.Ptr(callID),
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:    schemas.Ptr(callID),
+					Name:      schemas.Ptr(found),
+					Arguments: schemas.Ptr(`{"city":"Paris"}`),
+				},
+			},
+		},
+	}
+
+	out, err := ToBedrockInvokeMessagesResponse(ctx, resp)
+	require.NoError(t, err)
+	encoded, err := providerUtils.MarshalSorted(out)
+	require.NoError(t, err)
+
+	blocks := gjson.GetBytes(encoded, "content").Array()
+	require.Len(t, blocks, 3, "expected server_tool_use + tool_search_tool_result + tool_use, got %s", string(encoded))
+
+	assert.Equal(t, "server_tool_use", blocks[0].Get("type").String(), "body: %s", string(encoded))
+	assert.Equal(t, searchID, blocks[0].Get("id").String())
+	assert.Equal(t, searchTag, blocks[0].Get("name").String())
+	// The query the model searched with must survive: Anthropic requires this block to
+	// be echoed back unchanged, and an input rebuilt as {} silently rewrites it.
+	assert.Equal(t, "weather", blocks[0].Get("input.pattern").String(),
+		"server_tool_use.input lost the search query: %s", string(encoded))
+
+	assert.Equal(t, "tool_search_tool_result", blocks[1].Get("type").String())
+	assert.Equal(t, searchID, blocks[1].Get("tool_use_id").String())
+	assert.Equal(t, "tool_search_tool_search_result", blocks[1].Get("content.type").String())
+	refs := blocks[1].Get("content.tool_references").Array()
+	require.Len(t, refs, 1)
+	assert.Equal(t, "tool_reference", refs[0].Get("type").String())
+	assert.Equal(t, found, refs[0].Get("tool_name").String())
+
+	// The discovered tool's own call is a real client tool_use and still drives stop_reason.
+	assert.Equal(t, "tool_use", blocks[2].Get("type").String())
+	assert.Equal(t, callID, blocks[2].Get("id").String())
+	assert.Equal(t, "tool_use", gjson.GetBytes(encoded, "stop_reason").String())
+
+	// The server-side search must never be presented as an invocable tool.
+	for _, b := range blocks {
+		if b.Get("id").String() == searchID {
+			assert.NotEqual(t, "tool_use", b.Get("type").String(),
+				"the srvtoolu_ block must never be a client tool_use: %s", string(encoded))
+		}
+	}
+}
