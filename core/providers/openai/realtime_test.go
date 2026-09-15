@@ -429,8 +429,13 @@ func TestShouldStartRealtimeTurn(t *testing.T) {
 			want:  true,
 		},
 		{
-			name:  "audio buffer committed starts turn",
+			name:  "audio buffer committed does not start a response turn",
 			event: &schemas.BifrostRealtimeEvent{Type: schemas.RTEventInputAudioBufferCommitted},
+			want:  false,
+		},
+		{
+			name:  "automatic response created starts turn",
+			event: &schemas.BifrostRealtimeEvent{Type: schemas.RTEventResponseCreated},
 			want:  true,
 		},
 		{

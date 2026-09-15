@@ -905,6 +905,8 @@ func (r *webrtcRealtimeRelay) handleDownstreamMessage(msg webrtc.DataChannelMess
 	r.sendUpstream(providerEvent, msg.IsString)
 }
 
+// handleUpstreamMessage translates a provider data-channel event, updates turn
+// hooks for the session mode, and forwards the event to the browser.
 func (r *webrtcRealtimeRelay) handleUpstreamMessage(msg webrtc.DataChannelMessage) {
 	event, err := r.provider.ToBifrostRealtimeEvent(msg.Data)
 	if err != nil {
@@ -940,7 +942,7 @@ func (r *webrtcRealtimeRelay) handleUpstreamMessage(msg webrtc.DataChannelMessag
 			r.session.AppendRealtimeOutputText(event.Delta.Text)
 			r.session.AppendRealtimeOutputText(event.Delta.Transcript)
 		}
-		if r.provider.ShouldStartRealtimeTurn(event) && r.session.PeekRealtimeTurnHooks() == nil {
+		if shouldStartRealtimeProviderTurn(r.provider, event, r.transcriptionSession) && r.session.PeekRealtimeTurnHooks() == nil {
 			if bifrostErr := startRealtimeTurnHooks(r.client, r.bifrostCtx, r.session, r.provider, r.providerKey, r.model, r.key, event); bifrostErr != nil {
 				r.closeWithErrorEvent(newRealtimeTurnErrorEventPayload(bifrostErr))
 				return

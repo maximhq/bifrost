@@ -631,6 +631,19 @@ func shouldGracefullyDisconnectRealtime(bifrostErr *schemas.BifrostError) bool {
 	return false
 }
 
+// shouldStartRealtimeProviderTurn distinguishes response creation from accepted
+// audio input. Transcription-only sessions have no response.created event, so
+// their input commit acknowledgment remains the start of a transcription turn.
+func shouldStartRealtimeProviderTurn(provider schemas.RealtimeProvider, event *schemas.BifrostRealtimeEvent, transcriptionSession bool) bool {
+	if event == nil {
+		return false
+	}
+	if transcriptionSession {
+		return event.Type == schemas.RTEventInputAudioBufferCommitted
+	}
+	return provider.ShouldStartRealtimeTurn(event)
+}
+
 func startRealtimeTurnHooks(
 	client *bifrost.Bifrost,
 	baseCtx *schemas.BifrostContext,

@@ -701,6 +701,8 @@ func realtimeTurnCompletionContent(session *bfws.Session, event *schemas.Bifrost
 	return inputItemID, inputSummary, contentOverride
 }
 
+// relayRealtimeProviderToClient translates provider frames and tracks response or
+// transcription hooks through completion before forwarding events to the client.
 func (h *WSRealtimeHandler) relayRealtimeProviderToClient(
 	clientConn *realtimeClientConn,
 	session *bfws.Session,
@@ -772,7 +774,7 @@ func (h *WSRealtimeHandler) relayRealtimeProviderToClient(
 					session.AppendRealtimeOutputText(event.Delta.Text)
 					session.AppendRealtimeOutputText(event.Delta.Transcript)
 				}
-				if provider.ShouldStartRealtimeTurn(event) && session.PeekRealtimeTurnHooks() == nil {
+				if shouldStartRealtimeProviderTurn(provider, event, transcriptionSession) && session.PeekRealtimeTurnHooks() == nil {
 					if bifrostErr := startRealtimeTurnHooks(h.client, bifrostCtx, session, provider, providerKey, model, &key, event); bifrostErr != nil {
 						clientConn.writeRealtimeError(bifrostErr)
 						return nil

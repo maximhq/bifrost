@@ -180,8 +180,8 @@ type RealtimeProvider interface {
 	ExchangeRealtimeWebRTCSDP(ctx *BifrostContext, key Key, model string, sdp string, session json.RawMessage) (string, *BifrostError)
 	ToBifrostRealtimeEvent(providerEvent json.RawMessage) (*BifrostRealtimeEvent, error)
 	ToProviderRealtimeEvent(bifrostEvent *BifrostRealtimeEvent) (json.RawMessage, error)
-	// ShouldStartRealtimeTurn reports whether the canonical client-side event
-	// should start pre-hooks. Providers without an explicit turn-start signal
+	// ShouldStartRealtimeTurn reports whether the canonical client or provider event
+	// should start response pre-hooks. Providers without an explicit turn-start signal
 	// return false and rely on finalize-time fallback hooks.
 	ShouldStartRealtimeTurn(event *BifrostRealtimeEvent) bool
 	// RealtimeTurnFinalEvent returns the canonical provider event that completes

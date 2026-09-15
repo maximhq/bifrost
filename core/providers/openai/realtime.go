@@ -167,12 +167,16 @@ func newRealtimeWebRTCSDPError(status int, errorType, message string, err error)
 	return bifrostErr
 }
 
+// ShouldStartRealtimeTurn identifies manual requests and automatic response starts.
+// Audio commit acknowledgments only accept input and do not start response turns.
 func (provider *OpenAIProvider) ShouldStartRealtimeTurn(event *schemas.BifrostRealtimeEvent) bool {
 	if event == nil {
 		return false
 	}
 	switch event.Type {
-	case schemas.RTEventResponseCreate, schemas.RTEventInputAudioBufferCommitted:
+	case schemas.RTEventResponseCreate, schemas.RTEventResponseCreated:
+		// Committing input audio does not create a response. Manual turns start
+		// on response.create; automatic VAD turns start on response.created.
 		return true
 	default:
 		return false
