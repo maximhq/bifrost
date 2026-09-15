@@ -243,6 +243,8 @@ Bindings are written when a request is served, never when it fails, and are scop
 - **Switch**: `x-bf-session-affinity: off` turns affinity off for a request, at both levels; `on` is the default.
 - **Routing trail**: Decisions the session made appear in the request's routing logs under the `session-affinity` engine, which is also listed among the routing engines used.
 
+The [Session Affinity](/providers/session-affinity) guide covers the full lifecycle of a binding, how affinity composes with each routing engine, and the health checks Bifrost Enterprise runs before following one.
+
 **Coding Harness Headers:**
 
 <Info>Coding-harness session header fallback is available in **Bifrost v2.0.0 and above**.</Info>
