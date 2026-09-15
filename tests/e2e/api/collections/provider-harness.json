@@ -87,7 +87,8 @@
           "    } else if (j.candidates && j.candidates[0] && j.candidates[0].content) {",
           "        shape = 'gemini-generate-content';",
           "        var parts = j.candidates[0].content.parts || [];",
-          "        hasContent = parts.some(function (p) { return p && (p.text || p.functionCall || p.executableCode); });",
+          "        // Image-output models (responseModalities IMAGE) answer with inlineData parts only; the image IS the content.",
+          "        hasContent = parts.some(function (p) { return p && (p.text || p.functionCall || p.executableCode || (p.inlineData && p.inlineData.data)); });",
           "    } else if (typeof j.output_text === 'string' && j.output_text.length > 0) {",
           "        shape = 'openai-responses-output_text';",
           "        hasContent = true;",
@@ -149879,6 +149880,230 @@
               }
             }
           ]
+        }
+      ]
+    },
+    {
+      "name": "89. GenAI generateContent image requests: inline image at any part position + imageConfig aspectRatio passthrough (genai-image-generate-content)",
+      "description": "Two silent-success defects on native Gemini image requests sent through the /genai route to Vertex. Both returned HTTP 200 with a well-formed image that ignored part of the request.\n\n1. Image edit detection only inspected contents[0].parts[0]. With responseModalities IMAGE and the prompt text before the inlineData image, isImageEditRequest returned false, the request was classified as image generation, and ToBifrostImageGenerationRequest kept only the first text part. The image never reached Vertex (0 IMAGE prompt tokens) and the model invented a picture from the prompt alone. Google accepts inlineData at any position; its own Gemini API REST edit sample is text-first.\n\n2. imageConfig.aspectRatio was folded into a WxH size string by convertImagenFormatToSize, which only knows 1:1, 3:4, 4:3, 9:16 and 16:9 and defaults to square. ToGeminiImageGenerationRequest / ToGeminiImageEditRequest then derived 1:1 back from that size, so 3:2, 2:3, 21:9 and every other Gemini ratio was forwarded as 1:1. The fix copies aspectRatio into the typed aspect_ratio param, which both outbound converters now prefer over the size-derived ratio.\n\nCases: (A) text-first [text, inlineData] asserts IMAGE prompt tokens > 0; (B) text-to-image with aspectRatio 3:2 at 2K asserts the returned image decodes to a ~3:2 width/height; (C) image-first edit with a square input and aspectRatio 3:2 asserts the same on the edit path. B and C skip when the model answers without an image. There is no streaming variant: Vertex ImageGenerationStream is unsupported.",
+      "item": [
+        {
+          "name": "vertex/gemini-3-pro-image /genai generateContent text-first inline image reaches the model (IMAGE prompt tokens) - genai-image-generate-content",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('generateContent succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json();",
+                  "pm.test('inline image placed after the text part reaches the model (IMAGE prompt tokens reported)', function () {",
+                  "  var details = (body.usageMetadata || {}).promptTokensDetails || [];",
+                  "  var imageTokens = 0;",
+                  "  details.forEach(function (d) { if (d.modality === 'IMAGE') { imageTokens = d.tokenCount || 0; } });",
+                  "  pm.expect(imageTokens, 'IMAGE prompt tokens were 0, so the image was dropped: ' + JSON.stringify(body.usageMetadata)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Keep the shapes exactly; change only the red area to black.\"\n        },\n        {\n          \"inlineData\": {\n            \"mimeType\": \"image/png\",\n            \"data\": \"iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAIAAADTED8xAAAC4UlEQVR42u3TUQ2AMBAFwSo5JfgPIvACFviDdGfzFLQ365bCLU8gACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgJQBcM3YhwMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJgJ83x/lmHgqA4t2TAIDTxwAAp48BAK6fAQBcPwMAuH4GAHD9DADg+hkAwPUzAIDrZwAAAAAAIHz9DAAAAAAAhK+fAQAAAAAAAARA8/oZAAAAAAAAQAAAIAAAEAAACAAABAAAAgAAAQCAAABAAAAgAAAQADsY8BEAACAAABAANQO+AAAABEDSgMcHAAABkDTg2QHoGvDgAHQNeGoAugY8MgBdA54XgK4BDwtA14AnBSDKwDMCEGXg6QAoSvBQAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAAgACQAJAAkACQAJAAkACQAJAAkAaaMeP9aRD9RMIIwAAAAASUVORK5CYII=\"\n          }\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"responseModalities\": [\n      \"IMAGE\"\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3-pro-image:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex/gemini-3-pro-image:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/gemini-3-pro-image /genai generateContent imageConfig aspectRatio 3:2 returns a 3:2 image - genai-image-generate-content",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('generateContent succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json();",
+                  "var parts = (((body.candidates || [])[0] || {}).content || {}).parts || [];",
+                  "var image = parts.filter(function (p) { return p.inlineData && p.inlineData.data; })[0];",
+                  "if (!image) {",
+                  "  // Gemini image generation occasionally answers without an image; that is model behavior,",
+                  "  // not the gateway defect this case pins, so only assert when an image came back.",
+                  "  return;",
+                  "}",
+                  "// Sniff PNG/JPEG from the bytes: the /genai image response labels every image image/png.",
+                  "function imageDimensions(b64) {",
+                  "  var buf = Buffer.from(b64.slice(0, 400000), 'base64');",
+                  "  if (buf.length >= 24 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) {",
+                  "    return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) };",
+                  "  }",
+                  "  if (buf[0] === 0xFF && buf[1] === 0xD8) {",
+                  "    var i = 2;",
+                  "    while (i + 9 < buf.length) {",
+                  "      if (buf[i] !== 0xFF) { i++; continue; }",
+                  "      var marker = buf[i + 1];",
+                  "      if (marker === 0xFF) { i++; continue; }",
+                  "      if (marker === 0x01 || (marker >= 0xD0 && marker <= 0xD9)) { i += 2; continue; }",
+                  "      if (marker >= 0xC0 && marker <= 0xCF && marker !== 0xC4 && marker !== 0xC8 && marker !== 0xCC) {",
+                  "        return { w: buf.readUInt16BE(i + 7), h: buf.readUInt16BE(i + 5) };",
+                  "      }",
+                  "      i += 2 + buf.readUInt16BE(i + 2);",
+                  "    }",
+                  "  }",
+                  "  return null;",
+                  "}",
+                  "var dims = imageDimensions(image.inlineData.data);",
+                  "pm.test('generation imageConfig.aspectRatio 3:2 is honored as 3:2, not collapsed to 1:1', function () {",
+                  "  pm.expect(dims, 'could not read image dimensions (mimeType ' + image.inlineData.mimeType + ')').to.be.an('object');",
+                  "  var ratio = dims.w / dims.h;",
+                  "  pm.expect(ratio, 'expected a 3:2 image, got ' + dims.w + 'x' + dims.h).to.be.within(1.4, 1.6);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"A simple flat illustration of a red apple on a plain white background.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"responseModalities\": [\n      \"IMAGE\"\n    ],\n    \"imageConfig\": {\n      \"aspectRatio\": \"3:2\",\n      \"imageSize\": \"2K\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3-pro-image:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex/gemini-3-pro-image:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/gemini-3-pro-image /genai generateContent image edit imageConfig aspectRatio 3:2 returns a 3:2 image - genai-image-generate-content",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('generateContent succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json();",
+                  "var parts = (((body.candidates || [])[0] || {}).content || {}).parts || [];",
+                  "var image = parts.filter(function (p) { return p.inlineData && p.inlineData.data; })[0];",
+                  "if (!image) {",
+                  "  // Gemini image generation occasionally answers without an image; that is model behavior,",
+                  "  // not the gateway defect this case pins, so only assert when an image came back.",
+                  "  return;",
+                  "}",
+                  "// Sniff PNG/JPEG from the bytes: the /genai image response labels every image image/png.",
+                  "function imageDimensions(b64) {",
+                  "  var buf = Buffer.from(b64.slice(0, 400000), 'base64');",
+                  "  if (buf.length >= 24 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) {",
+                  "    return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) };",
+                  "  }",
+                  "  if (buf[0] === 0xFF && buf[1] === 0xD8) {",
+                  "    var i = 2;",
+                  "    while (i + 9 < buf.length) {",
+                  "      if (buf[i] !== 0xFF) { i++; continue; }",
+                  "      var marker = buf[i + 1];",
+                  "      if (marker === 0xFF) { i++; continue; }",
+                  "      if (marker === 0x01 || (marker >= 0xD0 && marker <= 0xD9)) { i += 2; continue; }",
+                  "      if (marker >= 0xC0 && marker <= 0xCF && marker !== 0xC4 && marker !== 0xC8 && marker !== 0xCC) {",
+                  "        return { w: buf.readUInt16BE(i + 7), h: buf.readUInt16BE(i + 5) };",
+                  "      }",
+                  "      i += 2 + buf.readUInt16BE(i + 2);",
+                  "    }",
+                  "  }",
+                  "  return null;",
+                  "}",
+                  "var dims = imageDimensions(image.inlineData.data);",
+                  "pm.test('edit imageConfig.aspectRatio 3:2 is honored as 3:2, not collapsed to 1:1', function () {",
+                  "  pm.expect(dims, 'could not read image dimensions (mimeType ' + image.inlineData.mimeType + ')').to.be.an('object');",
+                  "  var ratio = dims.w / dims.h;",
+                  "  pm.expect(ratio, 'expected a 3:2 image, got ' + dims.w + 'x' + dims.h).to.be.within(1.4, 1.6);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"inlineData\": {\n            \"mimeType\": \"image/png\",\n            \"data\": \"iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAIAAADTED8xAAAC4UlEQVR42u3TUQ2AMBAFwSo5JfgPIvACFviDdGfzFLQ365bCLU8gACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgJQBcM3YhwMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJgJ83x/lmHgqA4t2TAIDTxwAAp48BAK6fAQBcPwMAuH4GAHD9DADg+hkAwPUzAIDrZwAAAAAAIHz9DAAAAAAAhK+fAQAAAAAAAARA8/oZAAAAAAAAQAAAIAAAEAAACAAABAAAAgAAAQCAAABAAAAgAAAQADsY8BEAACAAABAANQO+AAAABEDSgMcHAAABkDTg2QHoGvDgAHQNeGoAugY8MgBdA54XgK4BDwtA14AnBSDKwDMCEGXg6QAoSvBQAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAAgACQAJAAkACQAJAAkACQAJAAkAaaMeP9aRD9RMIIwAAAAASUVORK5CYII=\"\n          }\n        },\n        {\n          \"text\": \"Keep the shapes exactly; change only the red area to black.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"responseModalities\": [\n      \"IMAGE\"\n    ],\n    \"imageConfig\": {\n      \"aspectRatio\": \"3:2\",\n      \"imageSize\": \"2K\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3-pro-image:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex/gemini-3-pro-image:generateContent"
+              ]
+            }
+          }
         }
       ]
     }

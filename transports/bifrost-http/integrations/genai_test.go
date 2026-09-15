@@ -195,6 +195,41 @@ func TestExtractAndSetModelAndRequestTypeDoesNotRawPassthroughEmbedding(t *testi
 	assert.Nil(t, bifrostCtx.Value(genAIRawRequestBodyContextKey))
 }
 
+func TestExtractAndSetModelAndRequestTypeDetectsImageEditAtAnyPartPosition(t *testing.T) {
+	textPart := `{"text":"change only the red area to black"}`
+	imagePart := `{"inlineData":{"mimeType":"image/png","data":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="}}`
+	cases := map[string]string{
+		"image first": imagePart + "," + textPart,
+		"text first":  textPart + "," + imagePart,
+	}
+
+	for name, parts := range cases {
+		t.Run(name, func(t *testing.T) {
+			rawBody := []byte(`{"contents":[{"role":"user","parts":[` + parts + `]}],"generationConfig":{"responseModalities":["IMAGE"]}}`)
+			ctx := &fasthttp.RequestCtx{}
+			ctx.SetUserValue("model", "vertex/gemini-3-pro-image:generateContent")
+			ctx.Request.Header.SetMethod("POST")
+			ctx.Request.SetBody(rawBody)
+
+			_, reqType := extractModelAndRequestType(ctx)
+			assert.Equal(t, schemas.ImageEditRequest, reqType)
+
+			req := &gemini.GeminiGenerationRequest{}
+			require.NoError(t, sonic.Unmarshal(rawBody, req))
+			bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+			require.NoError(t, extractAndSetModelAndRequestType(ctx, bifrostCtx, req))
+			assert.True(t, req.IsImageEdit)
+			assert.False(t, req.IsImageGeneration)
+
+			editReq := req.ToBifrostImageEditRequest(bifrostCtx)
+			require.NotNil(t, editReq)
+			assert.Equal(t, "change only the red area to black", editReq.Input.Prompt)
+			assert.Len(t, editReq.Input.Images, 1)
+		})
+	}
+}
+
 func TestGenAIBatchCreateConverterCarriesRawBody(t *testing.T) {
 	rawBody := []byte(`{"batch":{"inputConfig":{"requests":{"requests":[{"request":{"contents":[{"role":"user","parts":[{"text":"hello"}]}],"generationConfig":{"temperature":0.2}},"metadata":{"key":"req-1"}}]}}}}`)
 	ctx := &fasthttp.RequestCtx{}

@@ -4916,6 +4916,42 @@ func TestImageEditSizeRoundtrip(t *testing.T) {
 	assert.Equal(t, "1:1", outReq.GenerationConfig.ImageConfig.AspectRatio)
 }
 
+// TestImageAspectRatioPassthrough verifies imageConfig.aspectRatio values that size cannot express
+// reach the outbound generateContent request unchanged on both image paths.
+func TestImageAspectRatioPassthrough(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	pngPixel := "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+
+	for _, aspectRatio := range []string{"3:2", "2:3", "21:9"} {
+		t.Run(aspectRatio, func(t *testing.T) {
+			inReq := &gemini.GeminiGenerationRequest{
+				Model: "gemini-3-pro-image",
+				GenerationConfig: gemini.GenerationConfig{
+					ResponseModalities: []gemini.Modality{gemini.ModalityImage},
+					ImageConfig:        &gemini.GeminiImageConfig{ImageSize: "2K", AspectRatio: aspectRatio},
+				},
+				Contents: []gemini.Content{{
+					Role:  "user",
+					Parts: []*gemini.Part{{Text: "hello kitty"}},
+				}},
+			}
+
+			genReq := gemini.ToGeminiImageGenerationRequest(inReq.ToBifrostImageGenerationRequest(ctx))
+			require.NotNil(t, genReq)
+			require.NotNil(t, genReq.GenerationConfig.ImageConfig)
+			assert.Equal(t, aspectRatio, genReq.GenerationConfig.ImageConfig.AspectRatio)
+			assert.Equal(t, "2K", genReq.GenerationConfig.ImageConfig.ImageSize)
+
+			inReq.Contents[0].Parts = append(inReq.Contents[0].Parts, &gemini.Part{InlineData: &gemini.Blob{MIMEType: "image/png", Data: pngPixel}})
+			editReq := gemini.ToGeminiImageEditRequest(inReq.ToBifrostImageEditRequest(ctx))
+			require.NotNil(t, editReq)
+			require.NotNil(t, editReq.GenerationConfig.ImageConfig)
+			assert.Equal(t, aspectRatio, editReq.GenerationConfig.ImageConfig.AspectRatio)
+			assert.Equal(t, "2K", editReq.GenerationConfig.ImageConfig.ImageSize)
+		})
+	}
+}
+
 // TestImagenImageSizeCasing verifies that the Imagen :predict path sends uppercase imageSize.
 func TestImagenImageSizeCasing(t *testing.T) {
 	tests := []struct {
