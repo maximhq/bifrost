@@ -7017,6 +7017,13 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		} else {
 			req.Context.ClearValue(schemas.BifrostContextKeyDoesNotSendDoneMarker)
 		}
+		// Same set-or-clear discipline: wait_for_usage must never leak onto a fallback provider
+		// that did not declare it, or that provider's stream would hold past finish_reason.
+		if config.CustomProviderConfig != nil && config.CustomProviderConfig.WaitForUsage {
+			req.Context.SetValue(schemas.BifrostContextKeyWaitForUsage, true)
+		} else {
+			req.Context.ClearValue(schemas.BifrostContextKeyWaitForUsage)
+		}
 
 		bifrost.endCoreSpan(workerSetupSpan)
 

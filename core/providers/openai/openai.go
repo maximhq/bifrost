@@ -600,6 +600,10 @@ func HandleOpenAITextCompletionStreaming(
 		// Register the accumulating usage handle so a mid-stream
 		// cancel/timeout can bill for tokens the provider already processed.
 		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, usage)
+		// Whether a usage frame has arrived at or after finish_reason; gates the
+		// wait_for_usage break. A bool rather than a usage.TotalTokens test, so an upstream
+		// that legitimately reports zero tokens still terminates.
+		trailingUsageSeen := false
 
 		var finishReason *string
 		var messageID string
@@ -709,6 +713,17 @@ func HandleOpenAITextCompletionStreaming(
 				}
 			}
 
+			// Only usage observed at or after finish_reason ends a wait_for_usage wait. Some
+			// OpenAI-compatible upstreams report usage incrementally (vLLM's
+			// stream_continuous_usage_stats; see the "usage comes before final message" note
+			// below), and a preliminary frame satisfying the wait would let the finish frame
+			// end the stream before the authoritative trailing total arrives - which is #7143
+			// again. Computed before the usage block so a frame carrying BOTH usage and
+			// finish_reason still counts: that upstream has nothing further to send.
+			finishInThisFrame := len(response.Choices) > 0 &&
+				response.Choices[0].FinishReason != nil &&
+				*response.Choices[0].FinishReason != ""
+
 			// Handle usage-only chunks (when stream_options include_usage is true)
 			if response.Usage != nil {
 				// Collect usage information and send at the end of the stream
@@ -734,11 +749,24 @@ func HandleOpenAITextCompletionStreaming(
 				if response.Usage.PromptTokensDetails != nil {
 					usage.PromptTokensDetails = response.Usage.PromptTokensDetails
 				}
+				if finishReason != nil || finishInThisFrame {
+					trailingUsageSeen = true
+				}
 				response.Usage = nil
 			}
 
-			// Skip empty responses or responses without choices
+			// Skip empty responses or responses without choices. A usage-only frame lands
+			// here, so under wait_for_usage termination has to be evaluated before skipping
+			// it: that frame is the exact thing the loop stayed open for, and the check at
+			// the bottom of the loop is unreachable once we continue. Guarded and added
+			// rather than relocated - finishReason is assigned below this point, so moving
+			// the shared check up would stop plain does_not_send_done_marker from breaking
+			// on finish_reason at all.
 			if len(response.Choices) == 0 {
+				if !providerUtils.ProviderSendsDoneMarker(ctx, providerName) && finishReason != nil &&
+					providerUtils.WaitForStreamUsage(ctx) && trailingUsageSeen {
+					break
+				}
 				continue
 			}
 
@@ -774,8 +802,14 @@ func HandleOpenAITextCompletionStreaming(
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(&response, nil, nil, nil, nil, nil), responseChan, postHookSpanFinalizer)
 			}
 
-			// For providers that don't send [DONE] marker break on finish_reason
-			if !providerUtils.ProviderSendsDoneMarker(ctx, providerName) && finishReason != nil {
+			// For providers that don't send [DONE] marker break on finish_reason.
+			// wait_for_usage is the operator's statement that this upstream still sends the
+			// trailing usage-only frame Bifrost asks for via stream_options.include_usage, so
+			// hold the loop open for it - breaking here bills the request at zero tokens
+			// (#7143). The wait stays bounded: the usage frame above, the two post-finish
+			// heartbeat comments armed on finish_reason, EOF, or the stream idle timeout.
+			if !providerUtils.ProviderSendsDoneMarker(ctx, providerName) && finishReason != nil &&
+				(!providerUtils.WaitForStreamUsage(ctx) || trailingUsageSeen) {
 				break
 			}
 		}
@@ -1340,6 +1374,9 @@ func HandleOpenAIChatCompletionStreaming(
 		// Defer final completed/incomplete event until usage chunk arrives (fallback path only).
 		var pendingFinalEvent *schemas.BifrostResponsesStreamResponse
 		usageSeen := false
+		// Set only by usage seen at or after finish_reason; gates the wait_for_usage break.
+		// Kept separate from usageSeen, which the Bedrock Mantle fallback path also reads.
+		trailingUsageSeen := false
 		// Fallback path only: tracks whether the upstream ever sent a finish_reason,
 		// so a finish_reason that fails to produce a terminal event (e.g. a future
 		// regression in ToBifrostResponsesStreamResponse) is treated as truncation
@@ -1555,6 +1592,17 @@ func HandleOpenAIChatCompletionStreaming(
 					serviceTier = response.ServiceTier
 				}
 
+				// Only usage observed at or after finish_reason ends a wait_for_usage wait. Some
+				// OpenAI-compatible upstreams report usage incrementally (vLLM's
+				// stream_continuous_usage_stats; see the "usage comes before final message" note
+				// below), and a preliminary frame satisfying the wait would let the finish frame
+				// end the stream before the authoritative trailing total arrives - which is #7143
+				// again. Computed before the usage block so a frame carrying BOTH usage and
+				// finish_reason still counts: that upstream has nothing further to send.
+				finishInThisFrame := len(response.Choices) > 0 &&
+					response.Choices[0].FinishReason != nil &&
+					*response.Choices[0].FinishReason != ""
+
 				// Handle usage-only chunks (when stream_options include_usage is true)
 				if response.Usage != nil {
 					// Collect usage information and send at the end of the stream
@@ -1583,6 +1631,12 @@ func HandleOpenAIChatCompletionStreaming(
 					if response.Usage.Cost != nil {
 						usage.Cost = response.Usage.Cost
 					}
+					// usageSeen is deliberately not set here: it belongs to the Responses
+					// fallback branch above, which is the only reader (the Mantle exit and the
+					// terminal-event usage attach). This branch gates on trailingUsageSeen.
+					if finishReason != nil || finishInThisFrame {
+						trailingUsageSeen = true
+					}
 					response.Usage = nil
 				}
 
@@ -1590,8 +1644,18 @@ func HandleOpenAIChatCompletionStreaming(
 					modelName = response.Model
 				}
 
-				// Skip empty responses or responses without choices
+				// Skip empty responses or responses without choices. A usage-only frame lands
+				// here, so under wait_for_usage termination has to be evaluated before skipping
+				// it: that frame is the exact thing the loop stayed open for, and the check at
+				// the bottom of the loop is unreachable once we continue. Guarded and added
+				// rather than relocated - finishReason is assigned below this point, so moving
+				// the shared check up would stop plain does_not_send_done_marker from breaking
+				// on finish_reason at all.
 				if len(response.Choices) == 0 {
+					if !providerUtils.ProviderSendsDoneMarker(ctx, providerName) && finishReason != nil &&
+						providerUtils.WaitForStreamUsage(ctx) && trailingUsageSeen {
+						break
+					}
 					continue
 				}
 
@@ -1644,8 +1708,14 @@ func HandleOpenAIChatCompletionStreaming(
 					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, &response, nil, nil, nil, nil), responseChan, postHookSpanFinalizer)
 				}
 
-				// For providers that don't send [DONE] marker break on finish_reason
-				if !providerUtils.ProviderSendsDoneMarker(ctx, providerName) && finishReason != nil {
+				// For providers that don't send [DONE] marker break on finish_reason.
+				// wait_for_usage is the operator's statement that this upstream still sends the
+				// trailing usage-only frame Bifrost asks for via stream_options.include_usage, so
+				// hold the loop open for it - breaking here bills the request at zero tokens
+				// (#7143). The wait stays bounded: the usage frame above, the two post-finish
+				// heartbeat comments armed on finish_reason, EOF, or the stream idle timeout.
+				if !providerUtils.ProviderSendsDoneMarker(ctx, providerName) && finishReason != nil &&
+					(!providerUtils.WaitForStreamUsage(ctx) || trailingUsageSeen) {
 					break
 				}
 			}

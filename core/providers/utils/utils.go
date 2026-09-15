@@ -3812,6 +3812,20 @@ func ProviderSendsDoneMarker(ctx *schemas.BifrostContext, providerName schemas.M
 	}
 }
 
+// WaitForStreamUsage reports whether custom_provider_config.wait_for_usage is set.
+// It only has meaning alongside a provider that ends on finish_reason (see
+// ProviderSendsDoneMarker): the read loop then keeps reading past finish_reason so the
+// trailing usage-only chunk - which Bifrost always asks for via stream_options.include_usage -
+// is collected instead of dropped (#7143). Termination is still bounded: the usage chunk,
+// two post-finish heartbeat comments, EOF, or network_config.stream_idle_timeout_in_seconds.
+func WaitForStreamUsage(ctx *schemas.BifrostContext) bool {
+	if ctx == nil {
+		return false
+	}
+	waitForUsage, ok := ctx.Value(schemas.BifrostContextKeyWaitForUsage).(bool)
+	return ok && waitForUsage
+}
+
 func ProviderIsResponsesAPINative(providerName schemas.ModelProvider) bool {
 	switch providerName {
 	case schemas.OpenAI, schemas.OpenRouter, schemas.Azure:
