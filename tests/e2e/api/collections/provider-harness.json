@@ -150472,6 +150472,187 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "92. Custom provider does_not_send_done_marker keeps trailing usage with wait_for_usage (#7143) (done-marker-usage)",
+      "description": "Issue #7143: custom_provider_config.does_not_send_done_marker ended the OpenAI-compatible\nread loop the instant a non-empty finish_reason arrived. OpenAI sends the usage-only frame\nAFTER that frame and before [DONE] (see folder 91), so the loop never read it and the\nsynthesized terminal chunk carried a zero-valued usage object - logging, pricing,\nvirtual-key usage, budgets and cost attribution all recorded the request at zero tokens\nand zero cost.\n\nNo fixture upstream is needed: the flag is a declaration about the upstream, not a\ndescription of it, so pointing a custom provider carrying the flag at real OpenAI\nreproduces the loss exactly. openai_dnsdm and openai_dnsdm_wait are registered in\ntests/integrations/python/config.json for these three items.\n\n92.1 is the regression guard. 92.2 pins the documented default so it cannot change\nsilently for operators who did not opt in. 92.3 is the unconfigured control that makes\n92.2 read as a deliberate difference rather than a broken fixture.",
+      "item": [
+        {
+          "name": "92.1 openai_dnsdm_wait/gpt-4o-mini /v1/chat/completions streaming - wait_for_usage keeps the trailing usage chunk - #7143",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The fix for #7143: with wait_for_usage the loop keeps reading past finish_reason",
+                  "// until the usage frame lands, so the request is billable.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('92.1 streaming request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "// Bifrost normalizes the upstream usage-only frame onto the terminal chunk it emits,",
+                  "// so the client-visible total is the number logging, pricing, virtual-key usage and",
+                  "// budgets all read. Scan every SSE event for the highest total_tokens reported.",
+                  "var total = 0;",
+                  "(pm.response.text() || '').split('\\n').forEach(function (l) {",
+                  "  if (l.indexOf('data: ') !== 0) { return; }",
+                  "  var p = l.slice(6).trim();",
+                  "  if (p === '[DONE]' || !p.length) { return; }",
+                  "  var j; try { j = JSON.parse(p); } catch (e) { return; }",
+                  "  if (j.usage && j.usage.total_tokens > total) { total = j.usage.total_tokens; }",
+                  "});",
+                  "pm.test('92.1 trailing usage survived the finish_reason break', function () {",
+                  "  pm.expect(total, 'expected a non-zero total_tokens; 0 means the read loop stopped at finish_reason and dropped the usage frame').to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_dnsdm_wait/gpt-4o-mini\",\n  \"stream\": true,\n  \"max_tokens\": 48,\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Say hello in one short sentence.\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "92.2 openai_dnsdm/gpt-4o-mini /v1/chat/completions streaming - does_not_send_done_marker alone still drops usage (documented default) - #7143",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Unchanged behaviour, pinned deliberately. does_not_send_done_marker on its own still",
+                  "// breaks at finish_reason and discards the usage frame; that is documented in",
+                  "// docs/providers/custom-providers.mdx. This guards against changing it by accident.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('92.2 streaming request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "// Bifrost normalizes the upstream usage-only frame onto the terminal chunk it emits,",
+                  "// so the client-visible total is the number logging, pricing, virtual-key usage and",
+                  "// budgets all read. Scan every SSE event for the highest total_tokens reported.",
+                  "var total = 0;",
+                  "(pm.response.text() || '').split('\\n').forEach(function (l) {",
+                  "  if (l.indexOf('data: ') !== 0) { return; }",
+                  "  var p = l.slice(6).trim();",
+                  "  if (p === '[DONE]' || !p.length) { return; }",
+                  "  var j; try { j = JSON.parse(p); } catch (e) { return; }",
+                  "  if (j.usage && j.usage.total_tokens > total) { total = j.usage.total_tokens; }",
+                  "});",
+                  "pm.test('92.2 opt-in without wait_for_usage stops before the usage frame', function () {",
+                  "  pm.expect(total, 'expected total_tokens 0: does_not_send_done_marker alone must keep breaking on finish_reason').to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_dnsdm/gpt-4o-mini\",\n  \"stream\": true,\n  \"max_tokens\": 48,\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Say hello in one short sentence.\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "92.3 openai/gpt-4o-mini /v1/chat/completions streaming - unconfigured control reports usage normally - #7143",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Control: the same request on the plain provider, which waits for [DONE]. Proves 92.2's",
+                  "// zero is the opt-in's behaviour and not a broken request or an upstream change.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('92.3 streaming request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "// Bifrost normalizes the upstream usage-only frame onto the terminal chunk it emits,",
+                  "// so the client-visible total is the number logging, pricing, virtual-key usage and",
+                  "// budgets all read. Scan every SSE event for the highest total_tokens reported.",
+                  "var total = 0;",
+                  "(pm.response.text() || '').split('\\n').forEach(function (l) {",
+                  "  if (l.indexOf('data: ') !== 0) { return; }",
+                  "  var p = l.slice(6).trim();",
+                  "  if (p === '[DONE]' || !p.length) { return; }",
+                  "  var j; try { j = JSON.parse(p); } catch (e) { return; }",
+                  "  if (j.usage && j.usage.total_tokens > total) { total = j.usage.total_tokens; }",
+                  "});",
+                  "pm.test('92.3 control reports usage without any custom provider config', function () {",
+                  "  pm.expect(total, 'expected a non-zero total_tokens from the plain provider').to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"stream\": true,\n  \"max_tokens\": 48,\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Say hello in one short sentence.\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

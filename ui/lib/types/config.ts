@@ -443,6 +443,7 @@ export interface CustomProviderConfig {
 	base_provider_type: KnownProvider;
 	is_key_less?: boolean;
 	does_not_send_done_marker?: boolean;
+	wait_for_usage?: boolean;
 	allowed_requests?: AllowedRequests;
 	request_path_overrides?: Record<string, string>;
 }

@@ -409,6 +409,371 @@ func TestChatStreamHeartbeatAfterFinishReasonKeepsTrailingUsage(t *testing.T) {
 	}
 }
 
+// chatUsageOnlyChunk is the frame OpenAI-compatible upstreams send after finish_reason
+// when stream_options.include_usage is set - which Bifrost sets unconditionally. It has
+// no choices, so it never reaches the finish_reason branch of the read loop.
+const chatUsageOnlyChunk = `data: {"id":"chatcmpl-repro","object":"chat.completion.chunk","created":1,"model":"repro-model",` +
+	`"choices":[],"usage":{"prompt_tokens":1000,"completion_tokens":100,"total_tokens":1100}}` + "\n\n"
+
+// https://github.com/maximhq/bifrost/issues/7143: does_not_send_done_marker ends the read
+// loop on finish_reason, which lands before the trailing usage-only frame and so bills the
+// request at zero tokens. custom_provider_config.wait_for_usage is the operator's statement
+// that this upstream does send that frame, so the loop keeps reading until it arrives.
+func TestChatStreamOptInWithWaitForUsageKeepsTrailingUsage(t *testing.T) {
+	toolCalls := "tool_calls"
+	server := heartbeatSSEServer(t, chatChunk("hello", nil)+chatChunk("", &toolCalls)+chatUsageOnlyChunk)
+	defer server.Close()
+
+	ctx := newStreamTestContext()
+	ctx.SetValue(schemas.BifrostContextKeyDoesNotSendDoneMarker, true)
+	ctx.SetValue(schemas.BifrostContextKeyWaitForUsage, true)
+
+	provider := newStreamTestProvider(server.URL)
+	stream, bifrostErr := provider.ChatCompletionStream(ctx, passthroughPostHook, nil, testKey(), basicChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	chunks := collectChunks(t, stream)
+	if len(chunks) == 0 {
+		t.Fatal("expected chunks from a stream that reached finish_reason")
+	}
+	for i, chunk := range chunks {
+		if chunk.BifrostError != nil {
+			t.Fatalf("chunk %d unexpectedly carried an error: %+v", i, chunk.BifrostError)
+		}
+	}
+	final := chunks[len(chunks)-1]
+	if final.BifrostChatResponse == nil || final.BifrostChatResponse.Usage == nil {
+		t.Fatalf("expected the final chunk to carry the trailing usage, got %+v", final)
+	}
+	if final.BifrostChatResponse.Usage.TotalTokens != 1100 {
+		t.Errorf("expected total_tokens 1100 from the chunk after finish_reason, got %d", final.BifrostChatResponse.Usage.TotalTokens)
+	}
+	if len(final.BifrostChatResponse.Choices) == 0 ||
+		final.BifrostChatResponse.Choices[0].FinishReason == nil ||
+		*final.BifrostChatResponse.Choices[0].FinishReason != toolCalls {
+		t.Errorf("expected the final chunk to carry finish_reason %q, got %+v", toolCalls, final.BifrostChatResponse.Choices)
+	}
+}
+
+// Without wait_for_usage the opt-in keeps breaking on finish_reason. That discards the
+// trailing usage frame, which is the documented cost of the flag - pinned here so the
+// default can never change silently for operators who did not opt in.
+func TestChatStreamOptInWithoutWaitForUsageStillBreaksOnFinishReason(t *testing.T) {
+	toolCalls := "tool_calls"
+	server := heartbeatSSEServer(t, chatChunk("hello", nil)+chatChunk("", &toolCalls)+chatUsageOnlyChunk)
+	defer server.Close()
+
+	ctx := newStreamTestContext()
+	ctx.SetValue(schemas.BifrostContextKeyDoesNotSendDoneMarker, true)
+
+	provider := newStreamTestProvider(server.URL)
+	stream, bifrostErr := provider.ChatCompletionStream(ctx, passthroughPostHook, nil, testKey(), basicChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	chunks := collectChunks(t, stream)
+	if len(chunks) == 0 {
+		t.Fatal("expected chunks from a stream that reached finish_reason")
+	}
+	final := chunks[len(chunks)-1]
+	if final.BifrostChatResponse == nil {
+		t.Fatalf("expected a synthesized final chat chunk, got %+v", final)
+	}
+	if final.BifrostChatResponse.Usage != nil && final.BifrostChatResponse.Usage.TotalTokens != 0 {
+		t.Errorf("expected the opt-in without wait_for_usage to stop before the usage frame, got total_tokens %d",
+			final.BifrostChatResponse.Usage.TotalTokens)
+	}
+}
+
+// wait_for_usage must not turn into an unbounded wait. An upstream that sends
+// finish_reason and then goes completely silent - no usage, no heartbeat, no close -
+// ends on network_config.stream_idle_timeout_in_seconds through the #7108 path, with
+// the buffered finish_reason and no error chunk.
+// A usage-only frame carries choices: [], so it is accumulated and then skipped by the
+// empty-choices `continue` - which sits *above* the no-[DONE] termination check. Under
+// wait_for_usage that frame is the exact thing the loop is waiting for, so skipping it
+// leaves a request that is semantically finished blocked on the next read: termination
+// falls through to a heartbeat pair, EOF, or stream_idle_timeout_in_seconds.
+//
+// Asserting the usage total alone cannot catch this - it passes either way, since the
+// usage was accumulated before the stall. The defect is the *wait*, so the assertion has
+// to be the wait: this upstream sends every frame and then goes silent forever, so a
+// correct loop returns immediately and a stalled one returns only when the idle timer
+// fires.
+func TestChatStreamWaitForUsageTerminatesOnUsageFrameNotIdleTimeout(t *testing.T) {
+	stop := "stop"
+	server := silentParkSSEServer(t, chatChunk("hello", nil)+chatChunk("", &stop)+chatUsageOnlyChunk)
+	defer server.Close()
+
+	const idleTimeout = 3 * time.Second
+
+	ctx := newStreamTestContext()
+	ctx.SetValue(schemas.BifrostContextKeyDoesNotSendDoneMarker, true)
+	ctx.SetValue(schemas.BifrostContextKeyWaitForUsage, true)
+	ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, idleTimeout)
+
+	provider := newStreamTestProvider(server.URL)
+	started := time.Now()
+	stream, bifrostErr := provider.ChatCompletionStream(ctx, passthroughPostHook, nil, testKey(), basicChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+	chunks := collectChunks(t, stream)
+	elapsed := time.Since(started)
+
+	final := chunks[len(chunks)-1]
+	if final.BifrostChatResponse == nil || final.BifrostChatResponse.Usage == nil {
+		t.Fatalf("expected the final chunk to carry the trailing usage, got %+v", final)
+	}
+	if final.BifrostChatResponse.Usage.TotalTokens != 1100 {
+		t.Errorf("expected total_tokens 1100, got %d", final.BifrostChatResponse.Usage.TotalTokens)
+	}
+	// Generous bound: the point is idle-timer vs immediate, not a precise budget.
+	if elapsed > idleTimeout/3 {
+		t.Errorf("stream took %v; the usage frame should end it immediately, not wait out the %v idle timeout", elapsed, idleTimeout)
+	}
+}
+
+// The text-completion loop skips the termination check on the same empty-choices
+// `continue`, so it needs the same guarantee.
+func TestTextCompletionStreamWaitForUsageTerminatesOnUsageFrameNotIdleTimeout(t *testing.T) {
+	server := silentParkSSEServer(t, `data: {"id":"cmpl-repro","object":"text_completion","created":1,"model":"repro-model","choices":[{"index":0,"text":"hello","finish_reason":null}]}`+"\n\n"+
+		`data: {"id":"cmpl-repro","object":"text_completion","created":1,"model":"repro-model","choices":[{"index":0,"text":"","finish_reason":"stop"}]}`+"\n\n"+
+		`data: {"id":"cmpl-repro","object":"text_completion","created":1,"model":"repro-model","choices":[],"usage":{"prompt_tokens":1000,"completion_tokens":100,"total_tokens":1100}}`+"\n\n")
+	defer server.Close()
+
+	const idleTimeout = 3 * time.Second
+
+	ctx := newStreamTestContext()
+	ctx.SetValue(schemas.BifrostContextKeyDoesNotSendDoneMarker, true)
+	ctx.SetValue(schemas.BifrostContextKeyWaitForUsage, true)
+	ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, idleTimeout)
+
+	provider := newStreamTestProvider(server.URL)
+	request := &schemas.BifrostTextCompletionRequest{
+		Provider: schemas.OpenAI,
+		Model:    "repro-model",
+		Input:    &schemas.TextCompletionInput{PromptStr: schemas.Ptr("hi")},
+	}
+	started := time.Now()
+	stream, bifrostErr := provider.TextCompletionStream(ctx, passthroughPostHook, nil, testKey(), request)
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+	chunks := collectChunks(t, stream)
+	elapsed := time.Since(started)
+
+	final := chunks[len(chunks)-1]
+	if final.BifrostTextCompletionResponse == nil || final.BifrostTextCompletionResponse.Usage == nil {
+		t.Fatalf("expected the final chunk to carry the trailing usage, got %+v", final)
+	}
+	if final.BifrostTextCompletionResponse.Usage.TotalTokens != 1100 {
+		t.Errorf("expected total_tokens 1100, got %d", final.BifrostTextCompletionResponse.Usage.TotalTokens)
+	}
+	if elapsed > idleTimeout/3 {
+		t.Errorf("stream took %v; the usage frame should end it immediately, not wait out the %v idle timeout", elapsed, idleTimeout)
+	}
+}
+
+// Some OpenAI-compatible upstreams report usage incrementally rather than only in the
+// trailing frame - vLLM exposes stream_continuous_usage_stats for exactly that, and the
+// accumulation block above carries a pre-existing comment saying "in some cases usage
+// comes before final message". Usage is processed before finish_reason is assigned, so a
+// preliminary frame would otherwise satisfy wait_for_usage and let the finish frame end
+// the stream before the authoritative trailing total arrives - reintroducing #7143 through
+// a different door. Only usage observed at or after finish_reason ends the wait.
+func TestChatStreamWaitForUsageIgnoresPreliminaryUsageBeforeFinish(t *testing.T) {
+	preliminary := `data: {"id":"chatcmpl-repro","object":"chat.completion.chunk","created":1,"model":"repro-model",` +
+		`"choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}],` +
+		`"usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11}}` + "\n\n"
+	stop := "stop"
+	server := silentParkSSEServer(t, preliminary+chatChunk("", &stop)+chatUsageOnlyChunk)
+	defer server.Close()
+
+	ctx := newStreamTestContext()
+	ctx.SetValue(schemas.BifrostContextKeyDoesNotSendDoneMarker, true)
+	ctx.SetValue(schemas.BifrostContextKeyWaitForUsage, true)
+	ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, 3*time.Second)
+
+	provider := newStreamTestProvider(server.URL)
+	stream, bifrostErr := provider.ChatCompletionStream(ctx, passthroughPostHook, nil, testKey(), basicChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+	chunks := collectChunks(t, stream)
+
+	final := chunks[len(chunks)-1]
+	if final.BifrostChatResponse == nil || final.BifrostChatResponse.Usage == nil {
+		t.Fatalf("expected the final chunk to carry usage, got %+v", final)
+	}
+	if got := final.BifrostChatResponse.Usage.TotalTokens; got != 1100 {
+		t.Errorf("expected the authoritative trailing total_tokens 1100, got %d (a preliminary usage frame ended the wait early)", got)
+	}
+}
+
+// The text-completion loop orders usage before finish_reason identically.
+func TestTextCompletionStreamWaitForUsageIgnoresPreliminaryUsageBeforeFinish(t *testing.T) {
+	server := silentParkSSEServer(t, `data: {"id":"cmpl-repro","object":"text_completion","created":1,"model":"repro-model","choices":[{"index":0,"text":"hello","finish_reason":null}],"usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11}}`+"\n\n"+
+		`data: {"id":"cmpl-repro","object":"text_completion","created":1,"model":"repro-model","choices":[{"index":0,"text":"","finish_reason":"stop"}]}`+"\n\n"+
+		`data: {"id":"cmpl-repro","object":"text_completion","created":1,"model":"repro-model","choices":[],"usage":{"prompt_tokens":1000,"completion_tokens":100,"total_tokens":1100}}`+"\n\n")
+	defer server.Close()
+
+	ctx := newStreamTestContext()
+	ctx.SetValue(schemas.BifrostContextKeyDoesNotSendDoneMarker, true)
+	ctx.SetValue(schemas.BifrostContextKeyWaitForUsage, true)
+	ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, 3*time.Second)
+
+	provider := newStreamTestProvider(server.URL)
+	request := &schemas.BifrostTextCompletionRequest{
+		Provider: schemas.OpenAI,
+		Model:    "repro-model",
+		Input:    &schemas.TextCompletionInput{PromptStr: schemas.Ptr("hi")},
+	}
+	stream, bifrostErr := provider.TextCompletionStream(ctx, passthroughPostHook, nil, testKey(), request)
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+	chunks := collectChunks(t, stream)
+
+	final := chunks[len(chunks)-1]
+	if final.BifrostTextCompletionResponse == nil || final.BifrostTextCompletionResponse.Usage == nil {
+		t.Fatalf("expected the final chunk to carry usage, got %+v", final)
+	}
+	if got := final.BifrostTextCompletionResponse.Usage.TotalTokens; got != 1100 {
+		t.Errorf("expected the authoritative trailing total_tokens 1100, got %d (a preliminary usage frame ended the wait early)", got)
+	}
+}
+
+// The mirror of the case above: an upstream that puts usage ON the finish frame has
+// nothing further to send, so the wait must end there rather than hold the stream to the
+// idle timeout. Green both before and after the gating change - it pins that tightening
+// the rule to "at or after finish_reason" did not turn the same-frame shape into a stall.
+func TestChatStreamWaitForUsageAcceptsUsageOnTheFinishFrame(t *testing.T) {
+	finishWithUsage := `data: {"id":"chatcmpl-repro","object":"chat.completion.chunk","created":1,"model":"repro-model",` +
+		`"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],` +
+		`"usage":{"prompt_tokens":1000,"completion_tokens":100,"total_tokens":1100}}` + "\n\n"
+	const idleTimeout = 3 * time.Second
+	server := silentParkSSEServer(t, chatChunk("hello", nil)+finishWithUsage)
+	defer server.Close()
+
+	ctx := newStreamTestContext()
+	ctx.SetValue(schemas.BifrostContextKeyDoesNotSendDoneMarker, true)
+	ctx.SetValue(schemas.BifrostContextKeyWaitForUsage, true)
+	ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, idleTimeout)
+
+	provider := newStreamTestProvider(server.URL)
+	started := time.Now()
+	stream, bifrostErr := provider.ChatCompletionStream(ctx, passthroughPostHook, nil, testKey(), basicChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+	chunks := collectChunks(t, stream)
+	elapsed := time.Since(started)
+
+	final := chunks[len(chunks)-1]
+	if final.BifrostChatResponse == nil || final.BifrostChatResponse.Usage == nil {
+		t.Fatalf("expected the final chunk to carry usage, got %+v", final)
+	}
+	if got := final.BifrostChatResponse.Usage.TotalTokens; got != 1100 {
+		t.Errorf("expected total_tokens 1100 from the finish frame, got %d", got)
+	}
+	if elapsed > idleTimeout/3 {
+		t.Errorf("stream took %v; usage on the finish frame should end the wait immediately", elapsed)
+	}
+}
+
+func TestChatStreamWaitForUsageSilentParkEndsOnIdleTimeout(t *testing.T) {
+	stop := "stop"
+	server := silentParkSSEServer(t, chatChunk("hello", nil)+chatChunk("", &stop))
+	defer server.Close()
+
+	const idleTimeout = 300 * time.Millisecond
+
+	ctx := newStreamTestContext()
+	ctx.SetValue(schemas.BifrostContextKeyDoesNotSendDoneMarker, true)
+	ctx.SetValue(schemas.BifrostContextKeyWaitForUsage, true)
+	ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, idleTimeout)
+
+	provider := newStreamTestProvider(server.URL)
+	started := time.Now()
+	stream, bifrostErr := provider.ChatCompletionStream(ctx, passthroughPostHook, nil, testKey(), basicChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	chunks := collectChunks(t, stream)
+	elapsed := time.Since(started)
+	if len(chunks) == 0 {
+		t.Fatal("expected chunks from a stream that reached finish_reason")
+	}
+	for i, chunk := range chunks {
+		if chunk.BifrostError != nil {
+			t.Fatalf("chunk %d unexpectedly carried an error: %+v", i, chunk.BifrostError.Error)
+		}
+	}
+	final := chunks[len(chunks)-1]
+	if final.BifrostChatResponse == nil {
+		t.Fatalf("expected a synthesized final chat chunk, got %+v", final)
+	}
+	if len(final.BifrostChatResponse.Choices) == 0 ||
+		final.BifrostChatResponse.Choices[0].FinishReason == nil ||
+		*final.BifrostChatResponse.Choices[0].FinishReason != stop {
+		t.Errorf("expected the final chunk to carry finish_reason %q, got %+v", stop, final.BifrostChatResponse.Choices)
+	}
+	// The outcome above is identical whether the stream waited or ended at finish_reason,
+	// so assert the wait itself. Lower bound only: a Go timer fires after at least its
+	// duration, never early, so this cannot flake on a slow machine - it fails only if
+	// something other than the idle timer ended a stream that still had usage to wait for.
+	// time.Since subtracts on the monotonic clock, so a wall-clock change cannot fool it.
+	if elapsed < idleTimeout/2 {
+		t.Errorf("stream returned in %v; with wait_for_usage and no usage frame it must wait out the %v idle timeout, not end at finish_reason", elapsed, idleTimeout)
+	}
+}
+
+// The text-completion loop breaks on the same switch and accumulates usage the same
+// way, so wait_for_usage has to reach it too.
+func TestTextCompletionStreamOptInWithWaitForUsageKeepsTrailingUsage(t *testing.T) {
+	server := heartbeatSSEServer(t, `data: {"id":"cmpl-repro","object":"text_completion","created":1,"model":"repro-model","choices":[{"index":0,"text":"hello","finish_reason":null}]}`+"\n\n"+
+		`data: {"id":"cmpl-repro","object":"text_completion","created":1,"model":"repro-model","choices":[{"index":0,"text":"","finish_reason":"stop"}]}`+"\n\n"+
+		`data: {"id":"cmpl-repro","object":"text_completion","created":1,"model":"repro-model","choices":[],"usage":{"prompt_tokens":1000,"completion_tokens":100,"total_tokens":1100}}`+"\n\n")
+	defer server.Close()
+
+	ctx := newStreamTestContext()
+	ctx.SetValue(schemas.BifrostContextKeyDoesNotSendDoneMarker, true)
+	ctx.SetValue(schemas.BifrostContextKeyWaitForUsage, true)
+
+	provider := newStreamTestProvider(server.URL)
+	request := &schemas.BifrostTextCompletionRequest{
+		Provider: schemas.OpenAI,
+		Model:    "repro-model",
+		Input:    &schemas.TextCompletionInput{PromptStr: schemas.Ptr("hi")},
+	}
+	stream, bifrostErr := provider.TextCompletionStream(ctx, passthroughPostHook, nil, testKey(), request)
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	chunks := collectChunks(t, stream)
+	if len(chunks) == 0 {
+		t.Fatal("expected chunks from a stream that reached finish_reason")
+	}
+	for i, chunk := range chunks {
+		if chunk.BifrostError != nil {
+			t.Fatalf("chunk %d unexpectedly carried an error: %+v", i, chunk.BifrostError)
+		}
+	}
+	final := chunks[len(chunks)-1]
+	if final.BifrostTextCompletionResponse == nil || final.BifrostTextCompletionResponse.Usage == nil {
+		t.Fatalf("expected the final text completion chunk to carry the trailing usage, got %+v", final)
+	}
+	if final.BifrostTextCompletionResponse.Usage.TotalTokens != 1100 {
+		t.Errorf("expected total_tokens 1100 from the chunk after finish_reason, got %d", final.BifrostTextCompletionResponse.Usage.TotalTokens)
+	}
+}
+
 // The text-completion loop terminates on the same switch, so the opt-in has to
 // reach it too.
 func TestTextCompletionStreamHeartbeatAfterFinishReasonEndsOnOptIn(t *testing.T) {

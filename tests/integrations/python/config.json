@@ -553,6 +553,49 @@
         "default_request_timeout_in_seconds": 300
       }
     },
+    "openai_dnsdm": {
+      "keys": [
+        {
+          "name": "OpenAI API Key",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "models": [
+            "*"
+          ]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "is_key_less": false,
+        "does_not_send_done_marker": true
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300,
+        "stream_idle_timeout_in_seconds": 15
+      }
+    },
+    "openai_dnsdm_wait": {
+      "keys": [
+        {
+          "name": "OpenAI API Key",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "models": [
+            "*"
+          ]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "is_key_less": false,
+        "does_not_send_done_marker": true,
+        "wait_for_usage": true
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300,
+        "stream_idle_timeout_in_seconds": 15
+      }
+    },
     "openai_pc_auto": {
       "keys": [
         {
