@@ -51,6 +51,91 @@ func receiptPending(t *testing.T, p *LoggerPlugin, scope string) []*logstore.Log
 	return pending.(*pendingInjectEntries).entries
 }
 
+func TestRequestCostReceiptMissingFallbackHistoryAfterCleanup(t *testing.T) {
+	p := newCostFidelityPlugin(t)
+	p.includeRequestCosts = true
+	store := tracing.NewTraceStore(time.Minute, testLogger{})
+	tracer := tracing.NewTracer(store, p.pricingManager, testLogger{})
+	t.Cleanup(tracer.Stop)
+	traceID := tracer.CreateTrace("")
+	ctx := receiptContext(t, "main", traceID)
+	tracer.StartSpan(ctx, "http-request", schemas.SpanKindHTTPRequest)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	receiptPreHook(t, p, ctx, schemas.ChatCompletionRequest)
+	failure := &schemas.BifrostError{Error: &schemas.ErrorField{Message: "provider failure"}, ExtraFields: schemas.BifrostErrorExtraFields{
+		RequestType: schemas.ChatCompletionRequest, Provider: schemas.OpenAI,
+		OriginalModelRequested: "gpt-4o", ResolvedModelUsed: "gpt-4o",
+		BilledUsage: &schemas.BifrostLLMUsage{PromptTokens: 40, CompletionTokens: 10, TotalTokens: 50},
+	}}
+	_, _, err := p.PostLLMHook(ctx, nil, failure)
+	require.NoError(t, err)
+	require.True(t, failure.ExtraFields.RequestCosts.IsComplete)
+
+	ctx.SetValue(schemas.BifrostContextKeyFallbackRequestID, "fallback")
+	ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, 1)
+	receiptPreHook(t, p, ctx, schemas.ChatCompletionStreamRequest)
+	first := receiptResponse(schemas.ChatCompletionStreamRequest)
+	first.ChatResponse.Usage = nil
+	_, _, err = p.PostLLMHook(ctx, first, nil)
+	require.NoError(t, err)
+	// A stream can remain active after the completed primary's ledger expires.
+	expired := time.Now().Add(-pendingLogTTL - time.Minute)
+	ledger, ok := p.pendingLogsToInject.Load(traceID)
+	require.True(t, ok)
+	ledger.(*pendingInjectEntries).createdAt = expired
+	pending, ok := p.pendingLogsEntries.Load("fallback")
+	require.True(t, ok)
+	pending.(*PendingLogData).CreatedAt = expired
+	p.cleanupStalePendingLogs()
+	_, ok = p.pendingLogsToInject.Load(traceID)
+	require.False(t, ok, "the completed primary ledger has expired")
+	_, ok = p.pendingLogsEntries.Load("fallback")
+	require.True(t, ok, "recent chunks keep the fallback input alive")
+
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	response := receiptResponse(schemas.ChatCompletionStreamRequest)
+	response.GetExtraFields().ChunkIndex = 1
+	_, _, err = p.PostLLMHook(ctx, response, nil)
+	require.NoError(t, err)
+	costs := response.GetExtraFields().RequestCosts
+	require.NotNil(t, costs)
+	require.Len(t, costs.Requests, 1)
+	require.True(t, costs.Requests[0].IsComplete, "the observed fallback cost remains known")
+	require.Equal(t, *receiptPending(t, p, traceID)[0].Cost, *costs.Requests[0].AmountUSD)
+	require.False(t, costs.IsComplete, "the missing primary cost makes the aggregate incomplete")
+}
+
+func TestRequestCostReceiptFallbackCoverage(t *testing.T) {
+	attempt := func(id, parent string, index int) *logstore.Log {
+		entry := &logstore.Log{ID: id, FallbackIndex: index, Cost: bifrost.Ptr(1.0), CostIsComplete: true}
+		if parent != "" {
+			entry.ParentRequestID = bifrost.Ptr(parent)
+		}
+		return entry
+	}
+	for _, tc := range []struct {
+		name     string
+		entries  []*logstore.Log
+		complete bool
+	}{
+		{"complete", []*logstore.Log{attempt("main", "", 0), attempt("first", "main", 1), attempt("last", "main", 2)}, true},
+		{"missing-middle", []*logstore.Log{attempt("main", "", 0), attempt("last", "main", 2)}, false},
+		{"unrelated-fallback", []*logstore.Log{attempt("main", "", 0), attempt("last", "main", 2), attempt("other", "", 0), attempt("other-first", "other", 1)}, false},
+		{"duplicate-request", []*logstore.Log{attempt("main", "", 0), attempt("same", "main", 1), attempt("same", "main", 2)}, false},
+		{"missing-parent", []*logstore.Log{attempt("main", "", 0), attempt("first", "", 1)}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &LoggerPlugin{includeRequestCosts: true}
+			costs := p.requestCostsSnapshot(tc.entries)
+			require.Equal(t, tc.complete, costs.IsComplete)
+			for _, cost := range costs.Requests {
+				require.True(t, cost.IsComplete)
+				require.Equal(t, 1.0, *cost.AmountUSD)
+			}
+		})
+	}
+}
+
 func TestRequestCostReceiptMatchesLog(t *testing.T) {
 	p := newCostFidelityPlugin(t)
 	p.includeRequestCosts = true
