@@ -4047,7 +4047,8 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, model string, 
 			if isConverseResponseRendering(ctx) {
 				reasoningBlocks = convertBifrostReasoningToConverseResponseReasoning(&msg)
 			} else {
-				reasoningBlocks = convertBifrostReasoningToBedrockReasoning(&msg, converseReasoningShape(model), converseRequiresSignedReasoning(model))
+				requireSigned := converseRequiresSignedReasoning(model)
+				reasoningBlocks = convertBifrostReasoningToBedrockReasoning(&msg, converseReasoningShape(model), requireSigned, !requireSigned)
 			}
 			if len(reasoningBlocks) > 0 {
 				pendingReasoningContentBlocks = append(pendingReasoningContentBlocks, reasoningBlocks...)
@@ -5051,15 +5052,15 @@ func convertBifrostReasoningToConverseResponseReasoning(msg *schemas.ResponsesMe
 		// Converse ingress stores text blocks (with their own signatures) on
 		// Content and a separate opaque block on EncryptedContent. Render both.
 		// Isolate Content so summary signatures are not mistaken for opaque blocks.
-		textBlocks := convertBifrostReasoningToBedrockReasoning(&schemas.ResponsesMessage{Content: msg.Content}, schemas.BedrockReasoningShapeText, false)
+		textBlocks := convertBifrostReasoningToBedrockReasoning(&schemas.ResponsesMessage{Content: msg.Content}, schemas.BedrockReasoningShapeText, false, false)
 		if len(textBlocks) > 0 {
-			return append(textBlocks, convertBifrostReasoningToBedrockReasoning(msg, schemas.BedrockReasoningShapeRedacted, false)...)
+			return append(textBlocks, convertBifrostReasoningToBedrockReasoning(msg, schemas.BedrockReasoningShapeRedacted, false, false)...)
 		}
 	}
 	if reasoningMessageHasText(msg) {
-		return convertBifrostReasoningToBedrockReasoning(msg, schemas.BedrockReasoningShapeText, false)
+		return convertBifrostReasoningToBedrockReasoning(msg, schemas.BedrockReasoningShapeText, false, false)
 	}
-	return convertBifrostReasoningToBedrockReasoning(msg, schemas.BedrockReasoningShapeRedacted, false)
+	return convertBifrostReasoningToBedrockReasoning(msg, schemas.BedrockReasoningShapeRedacted, false, false)
 }
 
 func reasoningMessageHasText(msg *schemas.ResponsesMessage) bool {
@@ -5083,7 +5084,7 @@ func reasoningMessageHasText(msg *schemas.ResponsesMessage) bool {
 	return false
 }
 
-func convertBifrostReasoningToBedrockReasoning(msg *schemas.ResponsesMessage, shape schemas.BedrockReasoningShape, requireSigned bool) []BedrockContentBlock {
+func convertBifrostReasoningToBedrockReasoning(msg *schemas.ResponsesMessage, shape schemas.BedrockReasoningShape, requireSigned, stripBlockSignatures bool) []BedrockContentBlock {
 	if shape == schemas.BedrockReasoningShapeRedacted {
 		// These models reject reasoningText in every form -- with a signature,
 		// without one, empty or not -- with an opaque 500. Only the blob carried
@@ -5113,6 +5114,9 @@ func convertBifrostReasoningToBedrockReasoning(msg *schemas.ResponsesMessage, sh
 		for _, block := range msg.Content.ContentBlocks {
 			if block.Type == schemas.ResponsesOutputMessageContentTypeReasoning && block.Text != nil {
 				signature := reasoningSignatureForBedrock(block.Signature)
+				if stripBlockSignatures {
+					signature = nil
+				}
 				if signature == nil && requireSigned {
 					// Unsigned and unverifiable; skipped, and not counted as
 					// emitted so the ResponsesReasoning fall-through below still
@@ -5229,10 +5233,17 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 				}
 				if block.Text != nil {
 					signature := reasoningSignatureForBedrock(block.Signature)
-					if !isConverseResponseRendering(ctx) && signature == nil && converseRequiresSignedReasoning(model) {
-						// Unsigned thinking cannot be replayed to a model that
-						// verifies signatures (#6624); drop the block, keep the turn.
-						continue
+					if !isConverseResponseRendering(ctx) {
+						requireSigned := converseRequiresSignedReasoning(model)
+						if !requireSigned {
+							// Only models that verify signatures accept the field.
+							signature = nil
+						}
+						if signature == nil && requireSigned {
+							// Unsigned thinking cannot be replayed to a model that
+							// verifies signatures (#6624); drop the block, keep the turn.
+							continue
+						}
 					}
 					bedrockBlock.ReasoningContent = &BedrockReasoningContent{
 						ReasoningText: &BedrockReasoningContentText{

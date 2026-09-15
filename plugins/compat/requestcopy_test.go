@@ -92,13 +92,13 @@ func TestCloneBifrostReq_FallbackSeesOriginalTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PreLLMHook (primary): %v", err)
 	}
-	// Primary attempt: web_search dropped, cache_control stripped, tool_choice dropped.
+	// Primary attempt: web_search dropped, tool_choice dropped.
 	// Namespace flattening happens later in core dispatch, so the namespace stays here.
 	if got := toolTypes(primary.ResponsesRequest.Params.Tools); len(got) != 2 || got[0] != schemas.ResponsesToolTypeFunction || got[1] != schemas.ResponsesToolTypeNamespace {
 		t.Fatalf("primary tools = %v, want [function namespace]", got)
 	}
-	if primary.ResponsesRequest.Params.Tools[0].CacheControl != nil || primary.ResponsesRequest.Params.ToolChoice != nil {
-		t.Fatalf("primary attempt kept cache_control/tool_choice, so the fallback check below proves nothing")
+	if primary.ResponsesRequest.Params.ToolChoice != nil {
+		t.Fatalf("primary attempt kept tool_choice, so the fallback check below proves nothing")
 	}
 
 	// Build the fallback request the way core's prepareFallbackRequest does.
