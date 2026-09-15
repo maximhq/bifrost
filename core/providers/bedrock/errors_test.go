@@ -201,7 +201,7 @@ func TestNewBedrockStreamException_TypeFromHeader(t *testing.T) {
 // two exceptions whose native status (424 / 408) the retry gate does not
 // recognize and which must be mapped to a transient code.
 func TestNewBedrockStreamException_Retryable(t *testing.T) {
-	// status codes the retry gate honors (transientServerStatusCodes ∪ perKeyFailureStatusCodes).
+	// status codes the retry gate honors (the transient set and the per-key statuses in ClassifyFailure).
 	gateRetryable := map[int]bool{500: true, 502: true, 503: true, 504: true, 429: true}
 
 	cases := []struct {
