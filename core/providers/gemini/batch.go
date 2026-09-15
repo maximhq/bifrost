@@ -286,7 +286,7 @@ func (provider *GeminiProvider) downloadBatchResultsFile(ctx context.Context, ke
 	// Build download URL - use the download endpoint with alt=media
 	// The base URL is like https://generativelanguage.googleapis.com/v1beta
 	// We need to change it to https://generativelanguage.googleapis.com/download/v1beta
-	baseURL := strings.Replace(provider.networkConfig.BaseURL, "/v1beta", "/download/v1beta", 1)
+	baseURL := strings.Replace(provider.networkConfig.BaseURL.GetValue(), "/v1beta", "/download/v1beta", 1)
 
 	// Ensure fileName has proper format
 	fileID := fileName
@@ -296,7 +296,7 @@ func (provider *GeminiProvider) downloadBatchResultsFile(ctx context.Context, ke
 
 	url := fmt.Sprintf("%s/%s:download?alt=media", baseURL, fileID)
 
-	provider.logger.Debug("gemini batch results file download url: " + url)
+	provider.logger.Debug("gemini batch results file download url: " + providerUtils.LoggableURL(provider.networkConfig.BaseURL, url))
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(url)
 	req.Header.SetMethod(http.MethodGet)

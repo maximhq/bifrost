@@ -52,10 +52,7 @@ func NewSarvamProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 	// Set default BaseURL if not provided
-	if config.NetworkConfig.BaseURL == "" {
-		config.NetworkConfig.BaseURL = "https://api.sarvam.ai"
-	}
-	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
+	providerUtils.NormalizeBaseURL(&config.NetworkConfig, "https://api.sarvam.ai")
 
 	return &SarvamProvider{
 		logger:              logger,
@@ -78,7 +75,7 @@ func (provider *SarvamProvider) ListModels(ctx *schemas.BifrostContext, keys []s
 		ctx,
 		provider.client,
 		request,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/models"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/models"),
 		keys,
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
@@ -102,7 +99,7 @@ func (provider *SarvamProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
@@ -124,7 +121,7 @@ func (provider *SarvamProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamingClient,
-		provider.networkConfig.BaseURL+"/v1/chat/completions",
+		provider.networkConfig.BaseURL.GetValue()+"/v1/chat/completions",
 		request,
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
@@ -195,7 +192,7 @@ func (provider *SarvamProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	req.SetRequestURI(provider.networkConfig.BaseURL + "/text-to-speech")
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + "/text-to-speech")
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	if key.Value.GetValue() != "" {
@@ -307,7 +304,7 @@ func (provider *SarvamProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	req.SetRequestURI(provider.networkConfig.BaseURL + "/text-to-speech/stream")
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + "/text-to-speech/stream")
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	if key.Value.GetValue() != "" {
@@ -473,7 +470,7 @@ func (provider *SarvamProvider) Transcription(ctx *schemas.BifrostContext, key s
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	req.SetRequestURI(provider.networkConfig.BaseURL + "/speech-to-text")
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + "/speech-to-text")
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType(contentType)
 	if key.Value.GetValue() != "" {

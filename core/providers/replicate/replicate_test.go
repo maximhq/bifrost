@@ -70,7 +70,7 @@ func TestFileUpload_OrdersMetadataBeforeFile(t *testing.T) {
 	defer server.Close()
 
 	provider, err := replicate.NewReplicateProvider(&schemas.ProviderConfig{
-		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+		NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(server.URL)},
 	}, &testLogger{})
 	require.NoError(t, err)
 

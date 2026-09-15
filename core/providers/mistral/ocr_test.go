@@ -604,7 +604,7 @@ func TestOCRWithMockServer(t *testing.T) {
 
 			provider := NewMistralProvider(&schemas.ProviderConfig{
 				NetworkConfig: schemas.NetworkConfig{
-					BaseURL:                        server.URL,
+					BaseURL:                        schemas.NewSecretVar(server.URL),
 					DefaultRequestTimeoutInSeconds: 300,
 				},
 			}, &testLogger{})
@@ -638,7 +638,7 @@ func TestOCRNilInput(t *testing.T) {
 
 	provider := NewMistralProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			BaseURL:                        "https://api.mistral.ai",
+			BaseURL:                        schemas.NewSecretVar("https://api.mistral.ai"),
 			DefaultRequestTimeoutInSeconds: 300,
 		},
 	}, &testLogger{})
@@ -685,7 +685,7 @@ func TestOCRRequestValidation(t *testing.T) {
 
 	provider := NewMistralProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			BaseURL:                        server.URL,
+			BaseURL:                        schemas.NewSecretVar(server.URL),
 			DefaultRequestTimeoutInSeconds: 300,
 		},
 	}, &testLogger{})
@@ -724,7 +724,7 @@ func TestMistralOCRIntegration(t *testing.T) {
 
 	provider := NewMistralProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			BaseURL:                        "https://api.mistral.ai",
+			BaseURL:                        schemas.NewSecretVar("https://api.mistral.ai"),
 			DefaultRequestTimeoutInSeconds: 60,
 		},
 	}, &testLogger{})

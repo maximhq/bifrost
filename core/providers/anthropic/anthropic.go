@@ -105,10 +105,7 @@ func NewAnthropicProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 	// Set default BaseURL if not provided
-	if config.NetworkConfig.BaseURL == "" {
-		config.NetworkConfig.BaseURL = "https://api.anthropic.com"
-	}
-	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
+	providerUtils.NormalizeBaseURL(&config.NetworkConfig, "https://api.anthropic.com")
 
 	return &AnthropicProvider{
 		logger:               logger,
@@ -133,7 +130,7 @@ func (provider *AnthropicProvider) buildRequestURL(ctx *schemas.BifrostContext, 
 	if isCompleteURL {
 		return path
 	}
-	return provider.networkConfig.BaseURL + path
+	return provider.networkConfig.BaseURL.GetValue() + path
 }
 
 func setAnthropicRequestBody(ctx *schemas.BifrostContext, req *fasthttp.Request, body []byte) bool {
@@ -2144,7 +2141,7 @@ func (provider *AnthropicProvider) BatchCancel(ctx *schemas.BifrostContext, keys
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/messages/batches/" + request.BatchID + "/cancel")
+		req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + "/v1/messages/batches/" + request.BatchID + "/cancel")
 		req.Header.SetMethod(http.MethodPost)
 		req.Header.SetContentType("application/json")
 
@@ -2257,7 +2254,7 @@ func (provider *AnthropicProvider) BatchResults(ctx *schemas.BifrostContext, key
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/messages/batches/" + request.BatchID + "/results")
+		req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + "/v1/messages/batches/" + request.BatchID + "/results")
 		req.Header.SetMethod(http.MethodGet)
 
 		if key.Value.GetValue() != "" {
@@ -2744,7 +2741,7 @@ func (provider *AnthropicProvider) FileDelete(ctx *schemas.BifrostContext, keys 
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + request.FileID)
+		req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + "/v1/files/" + request.FileID)
 		req.Header.SetMethod(http.MethodDelete)
 		req.Header.SetContentType("application/json")
 
@@ -2856,7 +2853,7 @@ func (provider *AnthropicProvider) FileContent(ctx *schemas.BifrostContext, keys
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + request.FileID + "/content")
+		req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + "/v1/files/" + request.FileID + "/content")
 		req.Header.SetMethod(http.MethodGet)
 
 		if key.Value.GetValue() != "" {
@@ -3098,7 +3095,7 @@ func (provider *AnthropicProvider) Passthrough(
 		return nil, err
 	}
 
-	url := provider.networkConfig.BaseURL + req.Path
+	url := provider.networkConfig.BaseURL.GetValue() + req.Path
 	if req.RawQuery != "" {
 		url += "?" + req.RawQuery
 	}
@@ -3169,7 +3166,7 @@ func (provider *AnthropicProvider) PassthroughStream(
 		return nil, err
 	}
 
-	url := provider.networkConfig.BaseURL + req.Path
+	url := provider.networkConfig.BaseURL.GetValue() + req.Path
 	if req.RawQuery != "" {
 		url += "?" + req.RawQuery
 	}

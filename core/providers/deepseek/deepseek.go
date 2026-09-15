@@ -4,7 +4,6 @@ package deepseek
 import (
 	"context"
 	"maps"
-	"strings"
 	"time"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
@@ -47,10 +46,7 @@ func NewDeepSeekProvider(config *schemas.ProviderConfig, logger schemas.Logger) 
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 	// Set default BaseURL if not provided
-	if config.NetworkConfig.BaseURL == "" {
-		config.NetworkConfig.BaseURL = "https://api.deepseek.com"
-	}
-	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
+	providerUtils.NormalizeBaseURL(&config.NetworkConfig, "https://api.deepseek.com")
 
 	return &DeepSeekProvider{
 		logger:              logger,
@@ -167,7 +163,7 @@ func (provider *DeepSeekProvider) ListModels(ctx *schemas.BifrostContext, keys [
 		ctx,
 		provider.client,
 		request,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/models"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/models"),
 		keys,
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
@@ -184,7 +180,7 @@ func (provider *DeepSeekProvider) TextCompletion(ctx *schemas.BifrostContext, ke
 	return openai.HandleOpenAITextCompletionRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/beta/completions"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/beta/completions"),
 		request,
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
@@ -205,7 +201,7 @@ func (provider *DeepSeekProvider) TextCompletionStream(ctx *schemas.BifrostConte
 	return openai.HandleOpenAITextCompletionStreaming(
 		ctx,
 		provider.streamingClient,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/beta/completions"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/beta/completions"),
 		request,
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
@@ -228,7 +224,7 @@ func (provider *DeepSeekProvider) ChatCompletion(ctx *schemas.BifrostContext, ke
 		return anthropic.HandleAnthropicChatCompletionRequest(
 			ctx,
 			provider.client,
-			provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/anthropic/v1/messages"),
+			provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/anthropic/v1/messages"),
 			request,
 			anthropic.AnthropicRequestBuildConfig{
 				Provider:                  schemas.DeepSeek,
@@ -247,7 +243,7 @@ func (provider *DeepSeekProvider) ChatCompletion(ctx *schemas.BifrostContext, ke
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/chat/completions"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/chat/completions"),
 		request,
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
@@ -279,7 +275,7 @@ func (provider *DeepSeekProvider) ChatCompletionStream(ctx *schemas.BifrostConte
 		return anthropic.HandleAnthropicChatCompletionStreaming(
 			ctx,
 			provider.streamingClient,
-			provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/anthropic/v1/messages"),
+			provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/anthropic/v1/messages"),
 			jsonData,
 			provider.anthropicHeaders(key),
 			provider.networkConfig.ExtraHeaders,
@@ -301,7 +297,7 @@ func (provider *DeepSeekProvider) ChatCompletionStream(ctx *schemas.BifrostConte
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamingClient,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/chat/completions"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/chat/completions"),
 		request,
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
@@ -327,7 +323,7 @@ func (provider *DeepSeekProvider) Responses(ctx *schemas.BifrostContext, key sch
 		return anthropic.HandleAnthropicResponsesRequest(
 			ctx,
 			provider.client,
-			provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/anthropic/v1/messages"),
+			provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/anthropic/v1/messages"),
 			request,
 			anthropic.AnthropicRequestBuildConfig{
 				Provider:                  schemas.DeepSeek,
@@ -367,7 +363,7 @@ func (provider *DeepSeekProvider) ResponsesStream(ctx *schemas.BifrostContext, p
 		return anthropic.HandleAnthropicResponsesStream(
 			ctx,
 			provider.streamingClient,
-			provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/anthropic/v1/messages"),
+			provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/anthropic/v1/messages"),
 			jsonData,
 			provider.anthropicHeaders(key),
 			provider.networkConfig.ExtraHeaders,
@@ -549,7 +545,7 @@ func (provider *DeepSeekProvider) CountTokens(ctx *schemas.BifrostContext, key s
 	return anthropic.HandleAnthropicCountTokensRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/anthropic/v1/messages/count_tokens"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/anthropic/v1/messages/count_tokens"),
 		request,
 		anthropic.AnthropicRequestBuildConfig{
 			Provider:                  schemas.DeepSeek,

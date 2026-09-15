@@ -60,7 +60,7 @@ func TestMistralProvider_CustomAliasChatStreamUsesBaseCompatibilityAndAliasMetad
 	defer server.Close()
 
 	provider := NewMistralProvider(&schemas.ProviderConfig{
-		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+		NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(server.URL)},
 		CustomProviderConfig: &schemas.CustomProviderConfig{
 			CustomProviderKey: string(customMistralProviderName),
 			BaseProviderType:  schemas.Mistral,
@@ -136,7 +136,7 @@ func TestMistralProvider_CustomAliasEmbeddingReportsAliasMetadata(t *testing.T) 
 	defer server.Close()
 
 	provider := NewMistralProvider(&schemas.ProviderConfig{
-		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+		NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(server.URL)},
 		CustomProviderConfig: &schemas.CustomProviderConfig{
 			CustomProviderKey: string(customMistralProviderName),
 			BaseProviderType:  schemas.Mistral,

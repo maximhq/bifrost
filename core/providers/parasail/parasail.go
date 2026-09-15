@@ -4,7 +4,6 @@ package parasail
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"github.com/maximhq/bifrost/core/providers/openai"
@@ -46,10 +45,7 @@ func NewParasailProvider(config *schemas.ProviderConfig, logger schemas.Logger) 
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 	// Set default BaseURL if not provided
-	if config.NetworkConfig.BaseURL == "" {
-		config.NetworkConfig.BaseURL = "https://api.parasail.io"
-	}
-	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
+	providerUtils.NormalizeBaseURL(&config.NetworkConfig, "https://api.parasail.io")
 
 	return &ParasailProvider{
 		logger:              logger,
@@ -72,7 +68,7 @@ func (provider *ParasailProvider) ListModels(ctx *schemas.BifrostContext, keys [
 		ctx,
 		provider.client,
 		request,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/models"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/models"),
 		keys,
 		provider.networkConfig.ExtraHeaders,
 		schemas.Parasail,
@@ -98,7 +94,7 @@ func (provider *ParasailProvider) ChatCompletion(ctx *schemas.BifrostContext, ke
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
@@ -120,7 +116,7 @@ func (provider *ParasailProvider) ChatCompletionStream(ctx *schemas.BifrostConte
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamingClient,
-		provider.networkConfig.BaseURL+"/v1/chat/completions",
+		provider.networkConfig.BaseURL.GetValue()+"/v1/chat/completions",
 		request,
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,

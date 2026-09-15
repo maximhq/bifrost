@@ -592,7 +592,7 @@ func TestTranscriptionWithMockServer(t *testing.T) {
 			// Create provider
 			provider := NewMistralProvider(&schemas.ProviderConfig{
 				NetworkConfig: schemas.NetworkConfig{
-					BaseURL:                        server.URL,
+					BaseURL:                        schemas.NewSecretVar(server.URL),
 					DefaultRequestTimeoutInSeconds: 300,
 				},
 			}, &testLogger{})
@@ -636,7 +636,7 @@ func TestTranscriptionNilInput(t *testing.T) {
 
 	provider := NewMistralProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			BaseURL:                        "https://api.mistral.ai",
+			BaseURL:                        schemas.NewSecretVar("https://api.mistral.ai"),
 			DefaultRequestTimeoutInSeconds: 300,
 		},
 	}, &testLogger{})
@@ -786,7 +786,7 @@ func TestTranscriptionStreamWithMockServer(t *testing.T) {
 			// Create provider
 			provider := NewMistralProvider(&schemas.ProviderConfig{
 				NetworkConfig: schemas.NetworkConfig{
-					BaseURL:                        server.URL,
+					BaseURL:                        schemas.NewSecretVar(server.URL),
 					DefaultRequestTimeoutInSeconds: 300,
 				},
 			}, &testLogger{})
@@ -841,7 +841,7 @@ func TestTranscriptionStreamNilInput(t *testing.T) {
 
 	provider := NewMistralProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			BaseURL:                        "https://api.mistral.ai",
+			BaseURL:                        schemas.NewSecretVar("https://api.mistral.ai"),
 			DefaultRequestTimeoutInSeconds: 300,
 		},
 	}, &testLogger{})
@@ -1271,7 +1271,7 @@ func TestTranscriptionStreamEdgeCases(t *testing.T) {
 			// Create provider
 			provider := NewMistralProvider(&schemas.ProviderConfig{
 				NetworkConfig: schemas.NetworkConfig{
-					BaseURL:                        server.URL,
+					BaseURL:                        schemas.NewSecretVar(server.URL),
 					DefaultRequestTimeoutInSeconds: 300,
 				},
 			}, &testLogger{})
@@ -1341,7 +1341,7 @@ func TestTranscriptionStreamContextCancellation(t *testing.T) {
 
 	provider := NewMistralProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			BaseURL:                        server.URL,
+			BaseURL:                        schemas.NewSecretVar(server.URL),
 			DefaultRequestTimeoutInSeconds: 300,
 		},
 	}, &testLogger{})
@@ -1531,7 +1531,7 @@ func TestMistralTranscriptionIntegration(t *testing.T) {
 	// Create provider
 	provider := NewMistralProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			BaseURL:                        "https://api.mistral.ai",
+			BaseURL:                        schemas.NewSecretVar("https://api.mistral.ai"),
 			DefaultRequestTimeoutInSeconds: 60,
 		},
 	}, &testLogger{})
@@ -1591,7 +1591,7 @@ func TestMistralTranscriptionStreamIntegration(t *testing.T) {
 	// Create provider
 	provider := NewMistralProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			BaseURL:                        "https://api.mistral.ai",
+			BaseURL:                        schemas.NewSecretVar("https://api.mistral.ai"),
 			DefaultRequestTimeoutInSeconds: 60,
 		},
 	}, &testLogger{})

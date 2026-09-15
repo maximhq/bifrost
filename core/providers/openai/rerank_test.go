@@ -91,7 +91,7 @@ func TestCustomOpenAIProviderRerankUsesGenericEndpoint(t *testing.T) {
 	defer server.Close()
 
 	provider := NewOpenAIProvider(&schemas.ProviderConfig{
-		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+		NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(server.URL)},
 		CustomProviderConfig: &schemas.CustomProviderConfig{
 			CustomProviderKey: "hawk",
 			BaseProviderType:  schemas.OpenAI,
@@ -166,7 +166,7 @@ func TestCustomOpenAIRerankPreservesUpstreamDocument(t *testing.T) {
 	defer server.Close()
 
 	provider := NewOpenAIProvider(&schemas.ProviderConfig{
-		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+		NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(server.URL)},
 		CustomProviderConfig: &schemas.CustomProviderConfig{
 			CustomProviderKey: "hawk",
 			BaseProviderType:  schemas.OpenAI,
@@ -221,7 +221,7 @@ func TestCustomOpenAIRerankLargeResponseThresholdReturnsResults(t *testing.T) {
 	defer server.Close()
 
 	provider := NewOpenAIProvider(&schemas.ProviderConfig{
-		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+		NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(server.URL)},
 		CustomProviderConfig: &schemas.CustomProviderConfig{
 			CustomProviderKey: "hawk",
 			BaseProviderType:  schemas.OpenAI,
@@ -260,7 +260,7 @@ func TestCustomOpenAIRerankLargeResponseThresholdReturnsResults(t *testing.T) {
 
 func TestOpenAIRerankUnsupportedForNativeProvider(t *testing.T) {
 	provider := NewOpenAIProvider(&schemas.ProviderConfig{
-		NetworkConfig: schemas.NetworkConfig{BaseURL: "http://127.0.0.1:1"},
+		NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar("http://127.0.0.1:1")},
 	}, testNoopLogger{})
 	_, bifrostErr := provider.Rerank(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), schemas.Key{}, &schemas.BifrostRerankRequest{Model: "rerank"})
 	assertUnsupportedRerank(t, bifrostErr, schemas.OpenAI)
@@ -268,7 +268,7 @@ func TestOpenAIRerankUnsupportedForNativeProvider(t *testing.T) {
 
 func TestCustomOpenAIRerankHonorsAllowedRequests(t *testing.T) {
 	provider := NewOpenAIProvider(&schemas.ProviderConfig{
-		NetworkConfig: schemas.NetworkConfig{BaseURL: "http://127.0.0.1:1"},
+		NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar("http://127.0.0.1:1")},
 		CustomProviderConfig: &schemas.CustomProviderConfig{
 			CustomProviderKey: "hawk",
 			BaseProviderType:  schemas.OpenAI,
@@ -315,7 +315,7 @@ func TestCustomOpenAIRerankMapsSearchUnits(t *testing.T) {
 	defer server.Close()
 
 	provider := NewOpenAIProvider(&schemas.ProviderConfig{
-		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+		NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(server.URL)},
 		CustomProviderConfig: &schemas.CustomProviderConfig{
 			CustomProviderKey: "hawk",
 			BaseProviderType:  schemas.OpenAI,
@@ -370,7 +370,7 @@ func TestCustomOpenAIRerankLargePayloadStreamsBody(t *testing.T) {
 	defer server.Close()
 
 	provider := NewOpenAIProvider(&schemas.ProviderConfig{
-		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+		NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(server.URL)},
 		CustomProviderConfig: &schemas.CustomProviderConfig{
 			CustomProviderKey: "hawk",
 			BaseProviderType:  schemas.OpenAI,
