@@ -198,6 +198,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Wafer,
 		schemas.Databricks,
 		schemas.GithubCopilot,
+		schemas.Nadir,
 		ProviderOpenAICustom,
 	}, nil
 }
@@ -527,6 +528,15 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 					RepositoryID:   *schemas.NewSecretVar("env.GITHUB_COPILOT_REPOSITORY_ID"),
 					PrivateKey:     *schemas.NewSecretVar("env.GITHUB_COPILOT_PRIVATE_KEY"),
 				},
+			},
+		}, nil
+	case schemas.Nadir:
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewSecretVar("env.NADIR_API_KEY"),
+				Models:         []string{"*"},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
 	case schemas.Gemini:
@@ -940,6 +950,19 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				MaxRetries:                     10,
 				RetryBackoffInitial:            5 * time.Second,
 				RetryBackoffMax:                3 * time.Minute,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.Nadir:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 300,
+				MaxRetries:                     10, // Nadir can be variable (router in front of several upstreams)
+				RetryBackoffInitial:            1 * time.Second,
+				RetryBackoffMax:                12 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 				Concurrency: Concurrency,

@@ -445,6 +445,9 @@
         "parasail": {
           "$ref": "#/$defs/provider"
         },
+        "nadir": {
+          "$ref": "#/$defs/provider"
+        },
         "perplexity": {
           "$ref": "#/$defs/provider"
         },
@@ -2676,6 +2679,7 @@
                         "cerebras",
                         "deepseek",
                         "vllm",
+                        "nadir",
                         "parasail",
                         "perplexity",
                         "replicate",
@@ -8724,6 +8728,7 @@
             "opencode-go",
             "opencode-zen",
             "sgl",
+            "nadir",
             "parasail",
             "perplexity",
             "cerebras",
