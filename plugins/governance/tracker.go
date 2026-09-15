@@ -264,7 +264,7 @@ func (t *UsageTracker) resetExpiredCounters(ctx context.Context) {
 	}
 
 	// ==== PART 3: Dump all rate limits and budgets to database ====
-	if err := t.store.DumpRateLimits(ctx, nil, nil); err != nil {
+	if err := t.store.DumpRateLimits(ctx, nil); err != nil {
 		t.logger.Error("failed to dump rate limits to database: %v", err)
 	}
 	if err := t.store.DumpBudgets(ctx, nil); err != nil {
@@ -397,7 +397,7 @@ func (t *UsageTracker) Cleanup() error {
 	if err := t.store.DumpBudgets(context.Background(), nil); err != nil {
 		t.logger.Error("final budget dump on shutdown failed: %v", err)
 	}
-	if err := t.store.DumpRateLimits(context.Background(), nil, nil); err != nil {
+	if err := t.store.DumpRateLimits(context.Background(), nil); err != nil {
 		t.logger.Error("final rate-limit dump on shutdown failed: %v", err)
 	}
 

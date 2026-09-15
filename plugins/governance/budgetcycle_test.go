@@ -395,7 +395,7 @@ func TestVirtualKeyReloadDoesNotResurrectOverrideCycles(t *testing.T) {
 	require.Equal(t, 2, reset.OverrideCyclesRemaining, "one window closed, so one cycle should be spent")
 
 	// A virtual-key reload lands, replaying the pristine grant.
-	store.UpdateVirtualKeyInMemory(ctx, pristine, nil, nil, nil)
+	store.UpdateVirtualKeyInMemory(ctx, pristine, nil, nil)
 
 	got := store.LoadBudget(ctx, budget.ID)
 	require.NotNil(t, got)
@@ -693,7 +693,7 @@ func TestQuarterDefinitionSurvivesVirtualKeyReload(t *testing.T) {
 	// delegates to CreateVirtualKeyInMemory when nothing is cached yet.
 	t.Run("first load", func(t *testing.T) {
 		store := newStandaloneStore(t)
-		store.UpdateVirtualKeyInMemory(ctx, newQuarterlyVK(time.February, 250), nil, nil, nil)
+		store.UpdateVirtualKeyInMemory(ctx, newQuarterlyVK(time.February, 250), nil, nil)
 		assertQuarterly(t, store.LoadBudget(ctx, "vk-quarterly-budget"), 250)
 	})
 
@@ -704,7 +704,7 @@ func TestQuarterDefinitionSurvivesVirtualKeyReload(t *testing.T) {
 	// definition dropped only here would survive every first-load test.
 	t.Run("reload over an existing virtual key", func(t *testing.T) {
 		store := newStandaloneStore(t)
-		store.UpdateVirtualKeyInMemory(ctx, newQuarterlyVK(time.January, 0), nil, nil, nil)
+		store.UpdateVirtualKeyInMemory(ctx, newQuarterlyVK(time.January, 0), nil, nil)
 
 		// Simulate accrued spend on the cached copy, then reload with an edited
 		// fiscal calendar, exactly as a peer would after the operator changes it.
@@ -713,7 +713,7 @@ func TestQuarterDefinitionSurvivesVirtualKeyReload(t *testing.T) {
 		cached.CurrentUsage = 250
 		store.storeBudget(cached.ID, cached)
 
-		store.UpdateVirtualKeyInMemory(ctx, newQuarterlyVK(time.February, 0), nil, nil, nil)
+		store.UpdateVirtualKeyInMemory(ctx, newQuarterlyVK(time.February, 0), nil, nil)
 		assertQuarterly(t, store.LoadBudget(ctx, "vk-quarterly-budget"), 250)
 	})
 }

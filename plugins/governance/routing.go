@@ -150,7 +150,7 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 		iterCtx.Model = currentModel
 		// Refresh budget/rate-limit status for the current provider/model so chained
 		// rules that test budget_used, tokens_used, or request see fresh data.
-		iterCtx.BudgetAndRateLimitStatus = re.store.GetBudgetAndRateLimitStatus(ctx, currentModel, currentProvider, routingCtx.VirtualKey, nil, nil, nil)
+		iterCtx.BudgetAndRateLimitStatus = re.store.GetBudgetAndRateLimitStatus(ctx, currentModel, currentProvider, routingCtx.VirtualKey, nil, nil)
 
 		variables, err := extractRoutingVariables(&iterCtx)
 		if err != nil {
