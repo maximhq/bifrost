@@ -4,6 +4,9 @@ import (
 	"context"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/providers/anthropic"
+	"github.com/maximhq/bifrost/core/providers/openai"
+
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -17,6 +20,166 @@ import (
 // The injector's own behaviour is covered in core/providers/utils/promptcache_test.go.
 // What can only be tested here is fallback isolation, because req.BifrostRequest
 // outlives a single attempt.
+
+// TestPrepareResponsesAdditionalTools preserves embedded local MCP declarations and their call identities across providers.
+func TestPrepareResponsesAdditionalTools(test *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	var incoming openai.OpenAIResponsesRequest
+	require.NoError(test, schemas.Unmarshal([]byte(`{
+		"model":"anthropic/claude-sonnet-4-5",
+		"input":[
+			{"type":"additional_tools","role":"developer","tools":[
+				{"type":"namespace","name":"functions","tools":[{"type":"function","name":"shell","parameters":{"type":"object","properties":{}}}]},
+				{"type":"namespace","name":"mcp__local","tools":[
+					{"type":"function","name":"read","description":"Read a local note","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}},
+					{"type":"function","name":"search","parameters":{"type":"object","properties":{}}},
+					{"type":"function","name":"list","parameters":{"type":"object","properties":{}}},
+					{"type":"function","name":"write","parameters":{"type":"object","properties":{}}}
+				]}
+			]},
+			{"type":"message","role":"user","content":"Read the note"}
+		]
+	}`), &incoming))
+	request := incoming.ToBifrostResponsesRequest(ctx)
+	before, err := schemas.Marshal(request)
+	require.NoError(test, err)
+
+	prepared, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.Anthropic}, schemas.Key{}, request)
+	require.Nil(test, bifrostErr)
+	require.NotNil(test, prepared.Params)
+	require.Len(test, prepared.Params.Tools, 5)
+	assert.Equal(test, "shell", *prepared.Params.Tools[0].Name)
+	assert.Equal(test, "mcp__local__read", *prepared.Params.Tools[1].Name)
+	require.Len(test, prepared.Input, 1)
+
+	wire, err := anthropic.ToAnthropicResponsesRequest(ctx, prepared)
+	require.NoError(test, err)
+	require.Len(test, wire.Tools, 5)
+	encoded, err := schemas.Marshal(wire)
+	require.NoError(test, err)
+	assert.Contains(test, string(encoded), "\"name\":\"mcp__local__read\"")
+	assert.Contains(test, string(encoded), "\"path\":{\"type\":\"string\"}")
+	assert.NotContains(test, string(encoded), "additional_tools")
+	assert.NotContains(test, string(encoded), "\"messages\":null")
+
+	for _, eventType := range []schemas.ResponsesStreamResponseType{
+		schemas.ResponsesStreamResponseTypeOutputItemAdded,
+		schemas.ResponsesStreamResponseTypeOutputItemDone,
+	} {
+		response := &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type: eventType,
+			Item: &schemas.ResponsesMessage{
+				Type: new(schemas.ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					Name: new("mcp__local__read"), CallID: new("call_local"), Arguments: new("{\"path\":\"note\"}"),
+				},
+			},
+		}}
+		providerUtils.RestoreResponsesNamespaceToolCalls(prepared.NamespaceToolAliases, response)
+		assert.Equal(test, "read", *response.ResponsesStreamResponse.Item.Name)
+		assert.Equal(test, "mcp__local", *response.ResponsesStreamResponse.Item.Namespace)
+		assert.Equal(test, "call_local", *response.ResponsesStreamResponse.Item.CallID)
+	}
+
+	after, err := schemas.Marshal(request)
+	require.NoError(test, err)
+	assert.JSONEq(test, string(before), string(after))
+	native, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.OpenAI}, schemas.Key{}, request)
+	require.Nil(test, bifrostErr)
+	assert.Same(test, request, native)
+	assert.Nil(test, native.NamespaceToolAliases)
+}
+
+// TestPrepareResponsesClaudeLocalMCP verifies that Claude's local function declarations survive conversion to OpenAI.
+func TestPrepareResponsesClaudeLocalMCP(test *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	var incoming anthropic.AnthropicMessageRequest
+	require.NoError(test, schemas.Unmarshal([]byte(`{
+		"model":"openai/gpt-4o-mini","max_tokens":128,
+		"messages":[{"role":"user","content":"Read the note"}],
+		"tools":[{"name":"mcp__local__read","description":"Read a local note","input_schema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}]
+	}`), &incoming))
+	request := incoming.ToBifrostResponsesRequest(ctx)
+	prepared, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.OpenAI}, schemas.Key{}, request)
+	require.Nil(test, bifrostErr)
+	wire := openai.ToOpenAIResponsesRequest(ctx, prepared)
+	require.Len(test, wire.Tools, 1)
+	assert.Equal(test, "mcp__local__read", *wire.Tools[0].Name)
+	assert.Equal(test, schemas.ResponsesToolTypeFunction, wire.Tools[0].Type)
+}
+
+// TestPrepareResponsesAdditionalToolsHistory keeps forced calls and replay aligned with the promoted declarations.
+func TestPrepareResponsesAdditionalToolsHistory(test *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	var request schemas.BifrostResponsesRequest
+	require.NoError(test, schemas.Unmarshal([]byte(`{
+		"provider":"anthropic","model":"claude-sonnet-4-5",
+		"input":[
+			{"type":"additional_tools","role":"developer","tools":[{"type":"namespace","name":"mcp__local","tools":[{"type":"function","name":"read","parameters":{"type":"object","properties":{"path":{"type":"string"}}}}]}]},
+			{"type":"function_call","namespace":"mcp__local","name":"read","call_id":"call_1","arguments":"{\"path\":\"note\"}"},
+			{"type":"function_call_output","call_id":"call_1","output":"local note contents"}
+		],
+		"params":{
+			"tools":[{"type":"function","name":"shell","parameters":{"type":"object","properties":{}}}],
+			"tool_choice":{"type":"function","name":"read"}
+		}
+	}`), &request))
+	before, err := schemas.Marshal(request)
+	require.NoError(test, err)
+	prepared, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.Anthropic}, schemas.Key{}, &request)
+	require.Nil(test, bifrostErr)
+	require.Len(test, prepared.Params.Tools, 2)
+	assert.Equal(test, "shell", *prepared.Params.Tools[0].Name)
+	require.Len(test, prepared.Input, 2)
+	assert.Equal(test, "mcp__local__read", *prepared.Input[0].Name)
+	assert.Nil(test, prepared.Input[0].Namespace)
+	assert.Equal(test, "call_1", *prepared.Input[1].CallID)
+	choice, err := schemas.Marshal(prepared.Params.ToolChoice)
+	require.NoError(test, err)
+	assert.Contains(test, string(choice), "mcp__local__read")
+	after, err := schemas.Marshal(request)
+	require.NoError(test, err)
+	assert.JSONEq(test, string(before), string(after))
+}
+
+// TestHoistResponsesAdditionalTools validates malformed declarations instead of silently losing tools.
+func TestHoistResponsesAdditionalTools(test *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		raw       string
+		wantError bool
+	}{
+		{name: "flat function with nil params", raw: `[{"type":"function","name":"mcp__local__read","parameters":{"type":"object","properties":{}}}]`},
+		{name: "empty list", raw: `[]`},
+		{name: "object instead of array", raw: `{"type":"function","name":"read"}`, wantError: true},
+		{name: "missing tools", wantError: true},
+	} {
+		test.Run(testCase.name, func(test *testing.T) {
+			request := &schemas.BifrostResponsesRequest{
+				Input: []schemas.ResponsesMessage{{
+					Type:            new(schemas.ResponsesMessageTypeAdditionalTools),
+					AdditionalTools: []byte(testCase.raw),
+				}},
+			}
+			prepared, bifrostErr := hoistResponsesAdditionalTools(request)
+			if testCase.wantError {
+				require.NotNil(test, bifrostErr)
+				assert.Nil(test, prepared)
+			} else {
+				require.Nil(test, bifrostErr)
+				require.NotNil(test, prepared.Params)
+				assert.Empty(test, prepared.Input)
+				if testCase.name == "flat function with nil params" {
+					require.Len(test, prepared.Params.Tools, 1)
+					assert.Equal(test, "mcp__local__read", *prepared.Params.Tools[0].Name)
+				}
+			}
+			assert.Nil(test, request.Params)
+			require.Len(test, request.Input, 1)
+			assert.Equal(test, testCase.raw, string(request.Input[0].AdditionalTools))
+		})
+	}
+}
 
 func promptCacheOn() *schemas.ProviderConfig {
 	return &schemas.ProviderConfig{PromptCache: &schemas.PromptCacheConfig{AutoInject: true}}

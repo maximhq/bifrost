@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -332,5 +333,125 @@ func TestToolSearch_ReverseSkipsWhenNoToolUseID(t *testing.T) {
 	}
 	if blocks := convertBifrostToolSearchCallToAnthropicBlocks(&msg); blocks != nil {
 		t.Fatalf("expected nil (no tool-use id), got %+v", blocks)
+	}
+}
+
+// toolSearchWireResultBlock is the tool_search_tool_result block exactly as
+// Anthropic documents it on the wire — tool_references nested inside a
+// tool_search_tool_search_result "content" object, NOT flat on the block:
+//
+//	{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_01ABC123",
+//	 "content":{"type":"tool_search_tool_search_result",
+//	            "tool_references":[{"type":"tool_reference","tool_name":"get_weather"}]}}
+//
+// https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool
+const toolSearchWireResultBlock = `{
+	"type": "tool_search_tool_result",
+	"tool_use_id": "` + tsServerToolUseID + `",
+	"content": {
+		"type": "tool_search_tool_search_result",
+		"tool_references": [{"type": "tool_reference", "tool_name": "` + tsDiscoveredTool + `"}]
+	}
+}`
+
+// TestToolSearch_WireShapeCarriesToolReferences decodes the documented wire shape
+// and asserts the discovered tool names are recoverable from the decoded block.
+// AnthropicContentBlock.ToolReferences is declared flat (`json:"tool_references"`),
+// so real traffic leaves it nil and the references survive only one level down in
+// Content. Every reader in the provider reads the flat field.
+func TestToolSearch_WireShapeCarriesToolReferences(t *testing.T) {
+	t.Parallel()
+
+	var block AnthropicContentBlock
+	if err := sonic.Unmarshal([]byte(toolSearchWireResultBlock), &block); err != nil {
+		t.Fatalf("documented wire block must decode: %v", err)
+	}
+	if block.Type != AnthropicContentBlockTypeToolSearchToolResult {
+		t.Fatalf("block type = %q, want tool_search_tool_result", block.Type)
+	}
+
+	names := make([]string, 0, 1)
+	for _, ref := range block.ToolReferences {
+		if ref.ToolName != nil {
+			names = append(names, *ref.ToolName)
+		}
+	}
+	if len(names) != 1 || names[0] != tsDiscoveredTool {
+		t.Fatalf("block.ToolReferences = %v, want [%q] — nested tool_references were not hoisted onto the block",
+			names, tsDiscoveredTool)
+	}
+}
+
+// TestToolSearch_NonStreamingForwardsToolReferences is the non-streaming twin of
+// TestToolSearch_ForwardsToolReferences. The streaming state machine emits a
+// tool_search_call item; the non-streaming converter's server_tool_use dispatch
+// handles web_search / web_fetch / advisor / code_execution only, so a
+// tool_search server_tool_use and its tool_search_tool_result are both dropped
+// and the caller sees no tool_search_call at all.
+func TestToolSearch_NonStreamingForwardsToolReferences(t *testing.T) {
+	t.Parallel()
+
+	var resultBlock AnthropicContentBlock
+	if err := sonic.Unmarshal([]byte(toolSearchWireResultBlock), &resultBlock); err != nil {
+		t.Fatalf("documented wire block must decode: %v", err)
+	}
+
+	resp := &AnthropicMessageResponse{
+		ID:         "msg_ts_nonstream",
+		Type:       "message",
+		Role:       "assistant",
+		Model:      "claude-sonnet-4-6",
+		StopReason: AnthropicStopReasonToolUse,
+		Content: []AnthropicContentBlock{
+			{
+				Type: AnthropicContentBlockTypeServerToolUse,
+				ID:   schemas.Ptr(tsServerToolUseID),
+				Name: schemas.Ptr(string(AnthropicToolNameToolSearchRegex)),
+			},
+			resultBlock,
+			{
+				Type: AnthropicContentBlockTypeToolUse,
+				ID:   schemas.Ptr(tsDiscoveredCallID),
+				Name: schemas.Ptr(tsDiscoveredTool),
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostResp := resp.ToBifrostResponsesResponse(ctx)
+	if bifrostResp == nil {
+		t.Fatal("converter returned nil")
+	}
+
+	var search *schemas.ResponsesMessage
+	var sawDiscoveredCall bool
+	for i := range bifrostResp.Output {
+		item := &bifrostResp.Output[i]
+		if item.Type == nil {
+			continue
+		}
+		switch *item.Type {
+		case schemas.ResponsesMessageTypeToolSearchCall:
+			search = item
+		case schemas.ResponsesMessageTypeFunctionCall:
+			if item.ResponsesToolMessage != nil && item.ResponsesToolMessage.Name != nil &&
+				*item.ResponsesToolMessage.Name == tsDiscoveredTool {
+				sawDiscoveredCall = true
+			}
+		}
+	}
+
+	if search == nil {
+		t.Fatal("no tool_search_call item in non-streaming output — the server_tool_use and tool_search_tool_result blocks were dropped")
+	}
+	if search.ResponsesToolMessage == nil || search.ResponsesToolMessage.ResponsesToolSearchCall == nil {
+		t.Fatal("tool_search_call item carries no ResponsesToolSearchCall payload")
+	}
+	refs := search.ResponsesToolMessage.ResponsesToolSearchCall.ToolReferences
+	if len(refs) != 1 || refs[0] != tsDiscoveredTool {
+		t.Fatalf("non-streaming tool_references = %v, want [%q]", refs, tsDiscoveredTool)
+	}
+	if !sawDiscoveredCall {
+		t.Errorf("the follow-up tool_use calling the discovered tool must still be forwarded as a function_call")
 	}
 }

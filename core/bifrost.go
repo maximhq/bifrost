@@ -7598,8 +7598,8 @@ func promptCacheResponsesRequest(ctx *schemas.BifrostContext, config *schemas.Pr
 }
 
 // prepareResponsesRequest returns the Responses request to dispatch for one attempt:
-// prompt-cache breakpoints first, then namespace tools flattened when the target wire
-// does not understand them (#7048). Both steps are copy-on-write, so the shared
+// prompt-cache breakpoints first, then embedded client tools promoted and namespace
+// tools flattened when the target wire does not understand them. All steps are copy-on-write, so the shared
 // req.BifrostRequest keeps the caller's namespaces for a later fallback attempt against
 // a wire that does.
 //
@@ -7612,18 +7612,25 @@ func prepareResponsesRequest(ctx *schemas.BifrostContext, config *schemas.Provid
 	if r == nil {
 		return nil, nil
 	}
+	var supported bool
+	if capable, ok := provider.(schemas.ResponsesNamespaceToolProvider); ok {
+		supported = capable.SupportsResponsesNamespaceTools(ctx, key, r.Model)
+	} else {
+		supported = providerUtils.ResponsesNamespaceToolsSupported(ctx, schemas.ResolveBaseProvider(ctx, provider.GetProviderKey()), r.Model)
+	}
+	if !supported {
+		var bifrostErr *schemas.BifrostError
+		r, bifrostErr = hoistResponsesAdditionalTools(r)
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+	}
 	// Codex's explicit "functions" namespace is the default namespace by definition,
 	// so it is unwrapped for every wire before the support check: Bedrock Mantle
 	// reserves the name, and flattening wires would otherwise prefix its members.
 	r, bifrostErr := providerUtils.UnwrapDefaultNamespaceTools(r)
 	if bifrostErr != nil {
 		return nil, bifrostErr
-	}
-	var supported bool
-	if capable, ok := provider.(schemas.ResponsesNamespaceToolProvider); ok {
-		supported = capable.SupportsResponsesNamespaceTools(ctx, key, r.Model)
-	} else {
-		supported = providerUtils.ResponsesNamespaceToolsSupported(ctx, schemas.ResolveBaseProvider(ctx, provider.GetProviderKey()), r.Model)
 	}
 	if supported {
 		// Pass-through: the request carries no alias map, so nothing is restored.
