@@ -1469,6 +1469,79 @@ func TestSelectKeyFromProviderForModel_BlacklistedModels(t *testing.T) {
 	})
 }
 
+func TestSelectKeyFromProviderForModel_VLLMAliasResolution(t *testing.T) {
+	account := NewMockAccount()
+	bifrost := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError)}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	newVLLMKey := func(id, modelName string, models schemas.WhiteList, aliases schemas.KeyAliases) schemas.Key {
+		return schemas.Key{
+			ID:      id,
+			Name:    id,
+			Value:   *schemas.NewSecretVar("test-key"),
+			Models:  models,
+			Aliases: aliases,
+			Weight:  1,
+			VLLMKeyConfig: &schemas.VLLMKeyConfig{
+				URL:       *schemas.NewSecretVar("http://localhost:8000"),
+				ModelName: modelName,
+			},
+		}
+	}
+
+	t.Run("resolves alias independently for each key", func(t *testing.T) {
+		account.SetKeysForProvider(schemas.VLLM, []schemas.Key{
+			newVLLMKey("vllm-a", "served-model-a", schemas.WhiteList{"chat-model"}, schemas.KeyAliases{
+				"chat-model": {ModelID: "served-model-a"},
+			}),
+			newVLLMKey("vllm-b", "served-model-b", schemas.WhiteList{"chat-model"}, schemas.KeyAliases{
+				"chat-model": {ModelID: "served-model-b"},
+			}),
+		})
+
+		keys, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, schemas.ChatCompletionRequest, schemas.VLLM, "chat-model", schemas.VLLM)
+		if err != nil {
+			t.Fatalf("selectKeyFromProviderForModelWithPool: %v", err)
+		}
+		if !canRotate {
+			t.Fatal("canRotate = false, want true for two matching keys")
+		}
+		if len(keys) != 2 || keys[0].ID != "vllm-a" || keys[1].ID != "vllm-b" {
+			t.Fatalf("got keys %v, want [vllm-a vllm-b]", keys)
+		}
+	})
+
+	t.Run("keeps allowlist checks on requested alias", func(t *testing.T) {
+		account.SetKeysForProvider(schemas.VLLM, []schemas.Key{
+			newVLLMKey("vllm-a", "served-model-a", schemas.WhiteList{"chat-model"}, schemas.KeyAliases{
+				"chat-model": {ModelID: "served-model-a"},
+			}),
+		})
+
+		_, _, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, schemas.ChatCompletionRequest, schemas.VLLM, "served-model-a", schemas.VLLM)
+		if err == nil {
+			t.Fatal("expected direct model request to be rejected when only the alias is allowlisted")
+		}
+	})
+
+	t.Run("still supports direct model names", func(t *testing.T) {
+		account.SetKeysForProvider(schemas.VLLM, []schemas.Key{
+			newVLLMKey("vllm-a", "served-model-a", schemas.WhiteList{"served-model-a"}, nil),
+		})
+
+		keys, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, schemas.ChatCompletionRequest, schemas.VLLM, "served-model-a", schemas.VLLM)
+		if err != nil {
+			t.Fatalf("selectKeyFromProviderForModelWithPool: %v", err)
+		}
+		if canRotate {
+			t.Fatal("canRotate = true, want false for one matching key")
+		}
+		if len(keys) != 1 || keys[0].ID != "vllm-a" {
+			t.Fatalf("got keys %v, want [vllm-a]", keys)
+		}
+	})
+}
+
 // Test key rotation in executeRequestWithRetries on rate-limit errors
 func TestExecuteRequestWithRetries_KeyRotation(t *testing.T) {
 	config := createTestConfig(3, 0, 0)
