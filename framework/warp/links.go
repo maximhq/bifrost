@@ -2,11 +2,38 @@ package warp
 
 import (
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/maximhq/bifrost/framework/logstore"
 )
+
+// logsLinkMangled matches a markdown link target that is clearly meant to be
+// the Logs page but had its path mangled in transit through the model: a
+// scheme and bogus host prepended ("https://workspace/logs?..."), the
+// "workspace" segment dropped entirely ("/logs?..."), or a missing leading
+// slash. Despite prompt.go's "never invent a link, use it exactly as given"
+// instruction, models don't reliably leave a root-relative path alone - one
+// "fixes" what looks like a URL with no domain by adding a scheme, another
+// drops a path segment it doesn't recognise - so this is corrected here
+// rather than left to prompt compliance alone. The query string (built
+// server-side by logDetailLink/logsViewLink and, per that same instruction,
+// the one part models do tend to reproduce faithfully) is preserved as-is.
+//
+// The host, when present, must be exactly "workspace" - the mangled path
+// segment models reinterpret as a hostname - so a genuinely external link
+// (e.g. "https://example.com/logs", or an actual customer domain that
+// happens to end in "/logs") is left alone rather than rewritten into a
+// workspace-relative one.
+var logsLinkMangled = regexp.MustCompile(`\]\(\s*(?:[a-zA-Z][a-zA-Z0-9+.-]*://workspace)?/?(?:workspace/)?logs(\?[^)\s]*)?\)`)
+
+// sanitizeAnswerLinks repairs logsLinkMangled matches back to the canonical
+// root-relative Logs link, so a broken link doesn't reach the client or get
+// persisted to conversation history.
+func sanitizeAnswerLinks(answer string) string {
+	return logsLinkMangled.ReplaceAllString(answer, "]("+logsViewPath+"$1)")
+}
 
 // logsViewPath is the dashboard's Logs page. Links are built here rather than
 // left to the model so the URL scheme lives in one place and the model only

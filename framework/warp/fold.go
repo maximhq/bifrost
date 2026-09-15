@@ -48,6 +48,6 @@ func (f *fold) apply(event Event) {
 // result returns the turn as assembled so far.
 func (f *fold) result() ChatResponse {
 	response := f.response
-	response.Answer = string(f.answer)
+	response.Answer = sanitizeAnswerLinks(string(f.answer))
 	return response
 }

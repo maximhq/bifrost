@@ -108,6 +108,10 @@ func (h *WarpHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.Bi
 type warpBackfillRequest struct {
 	StartTime time.Time `json:"start_time"`
 	EndTime   time.Time `json:"end_time"`
+	// Restart discards a resumable checkpoint from a prior failed/cancelled run
+	// over this same window and scans from the beginning anyway. Omitted (the
+	// common case) resumes automatically when one is found.
+	Restart bool `json:"restart,omitempty"`
 }
 
 type warpBackfillCancelRequest struct {
@@ -153,7 +157,7 @@ func (h *WarpHandler) startBackfill(ctx *fasthttp.RequestCtx) {
 		SendJSON(ctx, warpBackfillStatusFromRow(existing))
 		return
 	}
-	metadata, err := h.service.BuildBackfillJobMeta(ctx, request.StartTime, request.EndTime)
+	metadata, err := h.service.BuildBackfillJobMeta(ctx, request.StartTime, request.EndTime, request.Restart)
 	switch {
 	case errors.Is(err, warp.ErrInvalidConfig):
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
