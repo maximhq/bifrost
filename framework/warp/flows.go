@@ -818,7 +818,8 @@ func describeFilterSpaceTool() Tool {
 		description: "Report who is asking, what teams/customers/business units they could mean, and the real values that appear in this deployment's logs - models, apps, stop reasons, virtual keys - up to 50 of each, not necessarily every one that exists. " +
 			"Call this before filtering by a name you are not certain about: guessing a model or key name returns an empty result that looks like a real finding. " +
 			"If a deployment has more than 50 of something, this list is a sample, not the full set - pass search to narrow to the specific value you need rather than treating an absence here as proof it does not exist. " +
-			"Also call it whenever a question about usage, spend or performance does not say whose traffic it means - with a known user, their own traffic is the default; without one there is no default, so ask which team, customer or business unit is meant before querying.",
+			"Also call it whenever a question about usage, spend or performance does not say whose traffic it means - with a known user, their own traffic is the default; without one there is no default, so ask. " +
+			"ask_user accepts at most 8 options, well under what teams, customers and business units here can add up to together, so narrow before asking: use any wording already in the question to filter this tool's results down to a short list, or, if the question gives no hint which of team, customer or business unit it means, ask that first and only list one dimension's values (still narrowed to 8) once they answer. Never pass every team, customer and business unit into one ask_user call.",
 		schemaJSON: `{
   "type": "object",
   "properties": {
