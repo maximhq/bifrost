@@ -1,0 +1,46 @@
+# export RUNPOD_API_KEY=...
+
+# gpt-oss-20b | glm-4.7-flash | kimi-linear-48b-a3b | qwen3.8-27b | qwen3.6-35b-a3b
+# qwen3-coder-30b-a3b | nemotron-3.5-lightning-30b-a3b | gemma-4-31b-it
+model = "gpt-oss-20b"
+
+# hf_token = "hf_..."          # gated models (gemma)
+# api_key  = "my-key"          # generated when unset
+
+# --- Image ---
+# vllm_channel = "nightly"     # default comes from the preset
+# vllm_version = "v0.29.0"
+# cuda_version = "12.9"        # or "13.0"
+# vllm_image   = "vllm/vllm-openai:nightly-<sha>"
+
+# --- Per-model tweaks ---
+# hf_model         = "nm-testing/Kimi-Linear-48B-A3B-Instruct-FP8-DYNAMIC"
+# max_model_len    = 32768
+# reasoning_parser = ""        # "" disables
+# extra_args       = ["--kv-cache-dtype", "fp8"]
+# extra_env        = { VLLM_LOGGING_LEVEL = "DEBUG" }
+
+# --- Pod ---
+# gpu_type_ids    = ["NVIDIA A40", "NVIDIA RTX A6000"]
+# gpu_type_priority = "availability"
+# gpu_count       = 1
+# cloud_type      = "COMMUNITY"
+# data_center_ids = ["US-TX-3", "US-KS-2"]
+# interruptible   = true
+# volume_gb       = 150
+
+# --- Teardown ---
+# teardown_after_minutes = 60           # 0 disables
+# teardown_action        = "terminate"  # or "stop"
+
+# --- Custom model ---
+# model = "seed-oss-36b"
+# custom_presets = {
+#   "seed-oss-36b" = {
+#     hf_model         = "ByteDance-Seed/Seed-OSS-36B-Instruct"
+#     tool_call_parser = "seed_oss"
+#     reasoning_parser = "seed_oss"
+#     max_model_len    = 32768
+#     gpu_type_ids     = ["NVIDIA H200"]
+#   }
+# }
