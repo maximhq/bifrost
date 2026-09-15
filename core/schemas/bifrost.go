@@ -492,10 +492,16 @@ const (
 // KeyAttemptRecord captures the outcome of a single request attempt within executeRequestWithRetries.
 // One record is appended per attempt regardless of whether the key changed between attempts.
 //
-// FailReason is populated on every failed attempt (retryable or terminal) and is nil only on a
-// successful attempt. Status-derived values are: `rate_limit_error` (429), `authentication_error`
-// (401/403), `billing_error` (402); otherwise the provider's error Type is used, falling back to
-// `unknown`. Use it to inspect what went wrong on a given try.
+// FailureClass and StatusCode are set on every failed attempt the provider answered (retryable or
+// terminal) and are empty on a successful attempt, on a cancelled one, and on an internal Bifrost
+// error. FailureClass is what the retry loop acted on; StatusCode is the raw status it was derived
+// from, kept so a consumer can tell a 401 from a 403 within the same class.
+//
+// FailReason is populated on the same attempts and is nil on the others. For the classes that
+// name what the provider refused it is the class's label: `rate_limit_error`, `authentication_error`,
+// `billing_error`, `model_access_error`, `model_retired_error`, `region_blocked_error`; otherwise the
+// provider's error Type is used, falling back to `unknown`. Use it to inspect what went wrong on a
+// given try.
 //
 // TriggeredRotation is true iff this attempt's per-key failure caused the next attempt to actually
 // rotate to a *different* key. It is false on:
@@ -507,11 +513,13 @@ const (
 //
 // Use this (not FailReason) to count actual key rotations.
 type KeyAttemptRecord struct {
-	Attempt           int     `json:"attempt"`
-	KeyID             string  `json:"key_id"`
-	KeyName           string  `json:"key_name"`
-	FailReason        *string `json:"fail_reason,omitempty"`
-	TriggeredRotation bool    `json:"triggered_rotation"`
+	Attempt           int          `json:"attempt"`
+	KeyID             string       `json:"key_id"`
+	KeyName           string       `json:"key_name"`
+	FailReason        *string      `json:"fail_reason,omitempty"`
+	FailureClass      FailureClass `json:"failure_class,omitempty"`
+	StatusCode        *int         `json:"status_code,omitempty"`
+	TriggeredRotation bool         `json:"triggered_rotation"`
 }
 
 // RoutingEngineLogEntry represents a log entry from a routing engine
