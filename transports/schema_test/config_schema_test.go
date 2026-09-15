@@ -1910,3 +1910,115 @@ func TestSchemaGithubCopilotCredentialRequired(t *testing.T) {
 		})
 	}
 }
+
+// TestSchemaAccessProfileMCPGrants covers the access-profile MCP keys. The
+// schema drifted from the Go struct once already: the profile grant model was
+// renamed to virtual_mcps / mcp_configs while the schema still declared only the
+// retired spellings under additionalProperties:false, so every GitOps file that
+// used the current keys failed validation.
+func TestSchemaAccessProfileMCPGrants(t *testing.T) {
+	profileConfig := func(body string) string {
+		return fmt.Sprintf(`{"access_profiles": [{"name": "platform-default", %s}]}`, body)
+	}
+
+	t.Run("access_profile def declares virtual_mcps and mcp_configs", func(t *testing.T) {
+		schema := loadSchema(t)
+		for _, key := range []string{"virtual_mcps", "mcp_configs"} {
+			if _, found := navigateJSON(schema, "$defs", "access_profile", "properties", key); !found {
+				t.Errorf("$defs/access_profile is missing %q — TableAccessProfile serializes this field", key)
+			}
+		}
+	})
+
+	t.Run("virtual_mcps assignment validates", func(t *testing.T) {
+		compiled := compileSchema(t)
+		if err := validateConfig(t, compiled, profileConfig(`"virtual_mcps": [{"virtual_mcp_id": 1}]`)); err != nil {
+			t.Errorf("virtual_mcps assignment should be valid, got: %v", err)
+		}
+	})
+
+	t.Run("mcp_configs allowlist validates", func(t *testing.T) {
+		compiled := compileSchema(t)
+		body := `"mcp_configs": [{"mcp_client_id": "github", "tools_to_execute": ["create_pull_request"]}]`
+		if err := validateConfig(t, compiled, profileConfig(body)); err != nil {
+			t.Errorf("mcp_configs allowlist should be valid, got: %v", err)
+		}
+	})
+
+	t.Run("mcp_configs allow-all and deny-all allowlists validate", func(t *testing.T) {
+		compiled := compileSchema(t)
+		for _, tools := range []string{`["*"]`, `[]`} {
+			body := fmt.Sprintf(`"mcp_configs": [{"mcp_client_id": "github", "tools_to_execute": %s}]`, tools)
+			if err := validateConfig(t, compiled, profileConfig(body)); err != nil {
+				t.Errorf("tools_to_execute %s should be valid, got: %v", tools, err)
+			}
+		}
+	})
+
+	t.Run("virtual_mcps entry missing virtual_mcp_id rejected", func(t *testing.T) {
+		compiled := compileSchema(t)
+		if err := validateConfig(t, compiled, profileConfig(`"virtual_mcps": [{}]`)); err == nil {
+			t.Error("virtual_mcps entry without virtual_mcp_id must be rejected")
+		}
+	})
+
+	t.Run("virtual_mcps entry still rejects the retired tool_group_id key", func(t *testing.T) {
+		compiled := compileSchema(t)
+		if err := validateConfig(t, compiled, profileConfig(`"virtual_mcps": [{"tool_group_id": 1}]`)); err == nil {
+			t.Error("virtual_mcps entry must not accept the retired tool_group_id spelling")
+		}
+	})
+
+	t.Run("deprecated grant keys still validate for backward compatibility", func(t *testing.T) {
+		compiled := compileSchema(t)
+		body := `"mcp_tool_groups": [{"tool_group_id": 1}],
+			"mcp_servers": [{"mcp_server_id": "github"}],
+			"mcp_tool_overrides": [{"mcp_client_id": "github", "tool_name": "create_pull_request", "action": "include"}]`
+		if err := validateConfig(t, compiled, profileConfig(body)); err != nil {
+			t.Errorf("deprecated access-profile grant keys should still validate, got: %v", err)
+		}
+	})
+}
+
+func TestSchemaVirtualMCPByName(t *testing.T) {
+	compiled := compileSchema(t)
+
+	profile := func(body string) string {
+		return fmt.Sprintf(`{"access_profiles": [{"name": "p", "virtual_mcps": [%s]}]}`, body)
+	}
+	project := func(body string) string {
+		return fmt.Sprintf(`{"governance": {"projects": [{"name": "proj", "access_rule": "union", "virtual_mcps": [%s]}]}}`, body)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		body  string
+		valid bool
+	}{
+		{"name only", `{"virtual_mcp_name": "Platform Tools"}`, true},
+		{"id only still valid", `{"virtual_mcp_id": 1}`, true},
+		{"both accepted, id wins at load", `{"virtual_mcp_name": "Platform Tools", "virtual_mcp_id": 1}`, true},
+		{"neither rejected", `{}`, false},
+		{"unknown key rejected", `{"virtual_mcp_slug": "x"}`, false},
+		{"id zero rejected", `{"virtual_mcp_id": 0}`, false},
+	} {
+		t.Run("access_profile/"+tc.name, func(t *testing.T) {
+			err := validateConfig(t, compiled, profile(tc.body))
+			if tc.valid && err != nil {
+				t.Errorf("expected valid, got: %v", err)
+			}
+			if !tc.valid && err == nil {
+				t.Error("expected rejection")
+			}
+		})
+		t.Run("project/"+tc.name, func(t *testing.T) {
+			err := validateConfig(t, compiled, project(tc.body))
+			if tc.valid && err != nil {
+				t.Errorf("expected valid, got: %v", err)
+			}
+			if !tc.valid && err == nil {
+				t.Error("expected rejection")
+			}
+		})
+	}
+}

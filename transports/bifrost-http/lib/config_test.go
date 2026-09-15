@@ -1099,6 +1099,10 @@ func (m *MockConfigStore) GetVirtualMCPByID(ctx context.Context, id uint) (*tabl
 	return nil, nil
 }
 
+func (m *MockConfigStore) GetVirtualMCPByName(ctx context.Context, name string) (*tables.TableVirtualMCP, error) {
+	return nil, configstore.ErrNotFound
+}
+
 func (m *MockConfigStore) GetVirtualMCPsPaginated(ctx context.Context, params configstore.VirtualMCPsQueryParams) ([]tables.TableVirtualMCP, int64, error) {
 	return nil, 0, nil
 }
