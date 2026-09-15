@@ -365,9 +365,9 @@ func airToModelSlug(air string) string {
 	return replacer.Replace(slug)
 }
 
-// applyRunwareOffer fills the price and context limits /v1/models reports. Only fields the datasheet
-// leaves unset are written, since modelcatalog.ApplyModelInfo treats a populated Pricing as
-// authoritative and Runware's live numbers are the more specific source.
+// applyRunwareOffer fills the price, context limits and modalities /v1/models reports. Only fields
+// the datasheet leaves unset are written, since modelcatalog.ApplyModelInfo treats a populated
+// Pricing as authoritative and Runware's live numbers are the more specific source.
 func applyRunwareOffer(model *schemas.Model, offer RunwareModelEnvelope) {
 	if offer.ContextLength != nil && model.ContextLength == nil {
 		model.ContextLength = new(*offer.ContextLength)
@@ -386,6 +386,21 @@ func applyRunwareOffer(model *schemas.Model, offer RunwareModelEnvelope) {
 		if *pricing != (schemas.Pricing{}) {
 			model.Pricing = pricing
 		}
+	}
+	// A catalog entry with no io: capability yields no modalities of its own, so the offer is the
+	// only source left for them. The two Runware feeds are updated independently, and a model that
+	// reaches /v1/models before modelSearch publishes its io: tags would otherwise list bare.
+	if len(offer.InputModalities) == 0 && len(offer.OutputModalities) == 0 {
+		return
+	}
+	if model.Architecture == nil {
+		model.Architecture = &schemas.Architecture{}
+	}
+	if model.Architecture.InputModalities == nil {
+		model.Architecture.InputModalities = slices.Clone(offer.InputModalities)
+	}
+	if model.Architecture.OutputModalities == nil {
+		model.Architecture.OutputModalities = slices.Clone(offer.OutputModalities)
 	}
 }
 

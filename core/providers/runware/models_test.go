@@ -168,6 +168,64 @@ func TestApplyRunwareOffer_EmptyPricingIgnored(t *testing.T) {
 	if model.Pricing != nil {
 		t.Fatalf("empty pricing block should not attach, got %+v", model.Pricing)
 	}
+	if model.Architecture != nil {
+		t.Fatalf("no modalities on the offer should not create an architecture, got %+v", model.Architecture)
+	}
+}
+
+// A catalog entry with no io: capability carries no modalities of its own, so the offer's are the
+// only ones available and must land on the entry.
+func TestApplyRunwareOffer_FillsMissingModalities(t *testing.T) {
+	// runwareModelArchitecture returns a non-nil Architecture with nil slices for an entry that
+	// declares an architecture string but no io: tags.
+	model := &schemas.Model{Architecture: &schemas.Architecture{Tokenizer: schemas.Ptr("flux_dev")}}
+	applyRunwareOffer(model, RunwareModelEnvelope{
+		InputModalities:  []string{"text", "image"},
+		OutputModalities: []string{"image"},
+	})
+
+	if got := model.Architecture.InputModalities; len(got) != 2 || got[0] != "text" || got[1] != "image" {
+		t.Fatalf("input modalities = %v, want [text image]", got)
+	}
+	if got := model.Architecture.OutputModalities; len(got) != 1 || got[0] != "image" {
+		t.Fatalf("output modalities = %v, want [image]", got)
+	}
+	// The architecture the catalog already gave must survive.
+	if model.Architecture.Tokenizer == nil || *model.Architecture.Tokenizer != "flux_dev" {
+		t.Fatalf("existing architecture fields were dropped: %+v", model.Architecture)
+	}
+}
+
+// Modalities the catalog derived from io: tags win; the offer only fills what is missing.
+func TestApplyRunwareOffer_KeepsCatalogModalities(t *testing.T) {
+	model := &schemas.Model{Architecture: &schemas.Architecture{
+		InputModalities:  []string{"text"},
+		OutputModalities: []string{"text"},
+	}}
+	applyRunwareOffer(model, RunwareModelEnvelope{
+		InputModalities:  []string{"text", "image", "video"},
+		OutputModalities: []string{"text", "image"},
+	})
+
+	if got := model.Architecture.InputModalities; len(got) != 1 || got[0] != "text" {
+		t.Fatalf("catalog input modalities overwritten: %v", got)
+	}
+	if got := model.Architecture.OutputModalities; len(got) != 1 || got[0] != "text" {
+		t.Fatalf("catalog output modalities overwritten: %v", got)
+	}
+}
+
+// The offer's slices are cloned, not aliased: a caller reusing the offers map must not be able to
+// mutate a listed model through it.
+func TestApplyRunwareOffer_ClonesModalities(t *testing.T) {
+	offer := RunwareModelEnvelope{InputModalities: []string{"text"}, OutputModalities: []string{"text"}}
+	model := &schemas.Model{}
+	applyRunwareOffer(model, offer)
+
+	offer.InputModalities[0] = "mutated"
+	if model.Architecture.InputModalities[0] != "text" {
+		t.Fatalf("input modalities alias the offer slice: %v", model.Architecture.InputModalities)
+	}
 }
 
 // A datasheet-filled field is never overwritten by the live offer.
