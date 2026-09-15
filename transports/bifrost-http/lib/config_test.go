@@ -356,6 +356,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -376,8 +377,17 @@ import (
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/objectstore"
 	"github.com/maximhq/bifrost/framework/vectorstore"
+	"github.com/maximhq/bifrost/plugins/compat"
+	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/plugins/logging"
+	"github.com/maximhq/bifrost/plugins/maxim"
+	"github.com/maximhq/bifrost/plugins/modelcatalogresolver"
 	otelPlugin "github.com/maximhq/bifrost/plugins/otel"
+	"github.com/maximhq/bifrost/plugins/prompts"
+	"github.com/maximhq/bifrost/plugins/routing"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
+	"github.com/maximhq/bifrost/plugins/semanticcache"
+	"github.com/maximhq/bifrost/plugins/telemetry"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
@@ -14326,6 +14336,65 @@ func TestSetPluginOrderInfo_Defaults(t *testing.T) {
 	info = config.pluginOrderMap["plugin-c"]
 	require.Equal(t, schemas.PluginPlacementBuiltin, info.Placement)
 	require.Equal(t, 1, info.Order)
+}
+
+// TestSetPluginOrderInfo_BuiltinPluginsUseFixedOrdering verifies that persisted
+// placement and order values cannot move built-in plugins during a hot reload.
+func TestSetPluginOrderInfo_BuiltinPluginsUseFixedOrdering(t *testing.T) {
+	config := newTestConfigForPlugins()
+	placement := schemas.PluginPlacementPostBuiltin
+	order := 99
+	expectedNames := []string{
+		telemetry.PluginName,
+		prompts.PluginName,
+		logging.PluginName,
+		governance.PluginName,
+		routing.PluginName,
+		otelPlugin.PluginName,
+		semanticcache.PluginName,
+		compat.PluginName,
+		maxim.PluginName,
+	}
+	require.Equal(t, expectedNames, builtinPluginNames, "built-in plugin order must remain canonical")
+
+	for i, name := range expectedNames {
+		config.SetPluginOrderInfo(name, &placement, &order)
+
+		info := config.pluginOrderMap[name]
+		require.Equal(t, schemas.PluginPlacementBuiltin, info.Placement, name)
+		require.Equal(t, i+1, info.Order, name)
+	}
+}
+
+// TestSetPluginOrderInfo_ModelCatalogResolverUsesFixedOrdering verifies that the
+// final routing fallback cannot be moved ahead of other routing plugins.
+func TestSetPluginOrderInfo_ModelCatalogResolverUsesFixedOrdering(t *testing.T) {
+	config := newTestConfigForPlugins()
+	placement := schemas.PluginPlacementPreBuiltin
+	order := -1
+
+	config.SetPluginOrderInfo(modelcatalogresolver.PluginName, &placement, &order)
+
+	info := config.pluginOrderMap[modelcatalogresolver.PluginName]
+	require.Equal(t, schemas.PluginPlacementPostBuiltin, info.Placement)
+	require.Equal(t, math.MaxInt, info.Order)
+}
+
+// TestSortAndRebuildPlugins_ModelCatalogResolverRunsLast verifies the final sorted
+// execution order after caller-provided values attempt to move loader-managed plugins.
+func TestSortAndRebuildPlugins_ModelCatalogResolverRunsLast(t *testing.T) {
+	config := newTestConfigForPlugins()
+	plugins := []string{modelcatalogresolver.PluginName, "enterprise-router", routing.PluginName}
+	for _, name := range plugins {
+		require.NoError(t, config.ReloadPlugin(&mockPlugin{name: name}))
+	}
+
+	config.SetPluginOrderInfo(modelcatalogresolver.PluginName, schemas.Ptr(schemas.PluginPlacementPreBuiltin), schemas.Ptr(-1))
+	config.SetPluginOrderInfo("enterprise-router", schemas.Ptr(schemas.PluginPlacementPostBuiltin), schemas.Ptr(math.MaxInt-1))
+	config.SetPluginOrderInfo(routing.PluginName, schemas.Ptr(schemas.PluginPlacementPostBuiltin), schemas.Ptr(99))
+	config.SortAndRebuildPlugins()
+
+	require.Equal(t, []string{routing.PluginName, "enterprise-router", modelcatalogresolver.PluginName}, config.GetPluginOrder())
 }
 
 // TestSortAndRebuildPlugins_PlacementGroups verifies plugins sort into pre_builtin → builtin → post_builtin.
