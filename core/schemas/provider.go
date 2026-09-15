@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"os"
+	"regexp"
+	"strings"
 	"time"
 )
 
@@ -58,7 +61,8 @@ const (
 //   - Duration string: "500ms", "5s", "1m" — parsed via time.ParseDuration (preferred)
 //   - Integer: treated as milliseconds (legacy format, e.g. 500 means 500ms)
 type NetworkConfig struct {
-	// BaseURL is supported for OpenAI, Anthropic, Cohere, Mistral, and Ollama providers (required for Ollama)
+	// BaseURL is supported for OpenAI, Anthropic, Cohere, Mistral, and Ollama providers (required for Ollama).
+	// Supports "env.VAR_NAME" to resolve the value from an environment variable at load time.
 	BaseURL                        string            `json:"base_url,omitempty"`                       // Base URL for the provider (optional)
 	ExtraHeaders                   map[string]string `json:"extra_headers,omitempty"`                  // Additional headers to include in requests (optional)
 	DefaultRequestTimeoutInSeconds int               `json:"default_request_timeout_in_seconds"`       // Default timeout for requests
@@ -108,7 +112,11 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 	}
 
 	// Copy all non-duration fields
-	nc.BaseURL = alias.BaseURL
+	resolvedBaseURL, err := resolveEnvString(alias.BaseURL, "base_url")
+	if err != nil {
+		return err
+	}
+	nc.BaseURL = resolvedBaseURL
 	nc.ExtraHeaders = alias.ExtraHeaders
 	nc.DefaultRequestTimeoutInSeconds = alias.DefaultRequestTimeoutInSeconds
 	nc.MaxRetries = alias.MaxRetries
@@ -172,6 +180,32 @@ func parseNetworkBackoffDuration(data json.RawMessage, fieldName string) (time.D
 		return 0, fmt.Errorf("invalid %s: expected a duration string (e.g. \"500ms\") or integer milliseconds: %w", fieldName, err)
 	}
 	return time.Duration(ms) * time.Millisecond, nil
+}
+
+// envVarNamePattern matches valid POSIX environment variable names: a letter
+// or underscore followed by letters, digits, or underscores. No whitespace,
+// no other punctuation.
+var envVarNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// resolveEnvString resolves an "env.VAR_NAME"-prefixed string to the named
+// environment variable's value, mirroring the plain-string env resolution
+// SecretVar performs for other fields (e.g. Key.Value, CACertPEM). The check
+// is an explicit prefix match so values that merely contain "env." elsewhere
+// (e.g. embedded in a path) are left untouched. Values without the prefix are
+// returned unchanged.
+func resolveEnvString(value, fieldName string) (string, error) {
+	envKey, ok := strings.CutPrefix(value, "env.")
+	if !ok {
+		return value, nil
+	}
+	if !envVarNamePattern.MatchString(envKey) {
+		return "", fmt.Errorf("%s: invalid environment variable name %q; must match %s", fieldName, envKey, envVarNamePattern.String())
+	}
+	envValue, ok := os.LookupEnv(envKey)
+	if !ok {
+		return "", fmt.Errorf("%s: environment variable %s not found", fieldName, envKey)
+	}
+	return envValue, nil
 }
 
 // MarshalJSON customizes JSON marshaling for NetworkConfig.
