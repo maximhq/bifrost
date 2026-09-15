@@ -323,6 +323,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_served_model_column"}, run: migrationAddServedModelColumn},
 	{IDs: []string{"logs_add_tool_call_names_column"}, run: migrationAddToolCallNamesColumn},
 	{IDs: []string{"mcp_tool_logs_add_governance_snapshots"}, run: migrationAddMCPGovernanceSnapshots},
+	{IDs: []string{"logs_init_add_user_email_column"}, run: migrationAddUserEmailColumn},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -4877,6 +4878,31 @@ func migrationAddMCPGovernanceSnapshots(ctx context.Context, db *gorm.DB, logger
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while adding governance snapshot columns to mcp tool logs: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddUserEmailColumn adds the user_email column to the logs table.
+func migrationAddUserEmailColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_init_add_user_email_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &Log{}, "user_email")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &Log{}, "user_email")
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding user_email column: %s", err.Error())
 	}
 	return nil
 }

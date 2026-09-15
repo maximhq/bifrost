@@ -1917,6 +1917,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			if projectName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectName); projectName != "" {
 				entry.ProjectName = &projectName
 			}
+			if userEmail := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserEmail); userEmail != "" {
+				entry.UserEmail = &userEmail
+			}
 			applyModelAlias(entry, originalModelRequested, resolvedModelUsed)
 			applyResolvedAliasInfo(entry, resolvedKeyAlias)
 			// Read here rather than with the rest of the governance fields below:
