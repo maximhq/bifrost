@@ -456,7 +456,13 @@
 		"rowsPerPage": "每页行数",
 		"resetZoom": "重置缩放",
 		"entryRange": "第 {{start}}–{{end}} 条，共 {{total}} 条",
-		"pageRange": "第 {{page}} 页，共 {{total}} 页"
+		"pageRange": "第 {{page}} 页，共 {{total}} 页",
+		"realtime": {
+			"toolResult": "工具结果：{{message}}",
+			"user": "用户：{{message}}",
+			"assistantToolCall": "助手工具调用：{{message}}",
+			"assistant": "助手：{{message}}"
+		}
 	},
 	"mcpLogs": {
 		"searchPlaceholder": "搜索 MCP 日志",

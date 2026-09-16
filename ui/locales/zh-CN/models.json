@@ -270,7 +270,8 @@
 			"customPath": "自定义路径或 URL",
 			"pathDescription": "使用路径（例如 /v1/chat）覆盖默认路径，或使用完整 URL（例如 https://api.example.com/chat）绕过 base_url。",
 			"unsupported": "{{provider}} 不支持此请求类型"
-		}
+		},
+		"secretReferenceHelp": "{{error}}；请确认服务器上已配置此机密引用"
 	},
 	"modelCatalog": {
 		"title": "模型目录",
