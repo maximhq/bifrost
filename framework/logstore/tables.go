@@ -1354,6 +1354,28 @@ func costsReconcile(a, b float64) bool {
 // MCPToolLog represents a log entry for MCP tool executions
 // This is separate from the main Log table since MCP tool calls have different fields
 type MCPToolLog struct {
+	// Governance names are snapshots recorded beside their IDs at ingestion, the
+	// way the logs table records them. They are what the entity was called when
+	// the call was made, so a later rename or deletion leaves the row readable.
+	UserName         *string `gorm:"type:varchar(255)" json:"user_name,omitempty"`
+	TeamName         *string `gorm:"type:varchar(255)" json:"team_name,omitempty"`
+	CustomerName     *string `gorm:"type:varchar(255)" json:"customer_name,omitempty"`
+	BusinessUnitName *string `gorm:"type:varchar(255)" json:"business_unit_name,omitempty"`
+
+	// Multi-valued attribution, mirroring the logs table. Each names column is
+	// index-aligned with its ids column — names[i] names ids[i] — which is what
+	// lets a reader filter the two together; they are always written as a pair.
+	// Budgets and rate limits are ids only here, as they are on logs: neither
+	// carries a display name.
+	TeamIDs           *string `gorm:"type:text" json:"-"` // JSON serialized []string
+	TeamNames         *string `gorm:"type:text" json:"-"` // JSON serialized []string
+	CustomerIDs       *string `gorm:"type:text" json:"-"` // JSON serialized []string
+	CustomerNames     *string `gorm:"type:text" json:"-"` // JSON serialized []string
+	BusinessUnitIDs   *string `gorm:"type:text" json:"-"` // JSON serialized []string
+	BusinessUnitNames *string `gorm:"type:text" json:"-"` // JSON serialized []string
+	BudgetIDs         *string `gorm:"type:text" json:"-"` // JSON serialized []string
+	RateLimitIDs      *string `gorm:"type:text" json:"-"` // JSON serialized []string
+
 	ID             string    `gorm:"primaryKey;type:varchar(255)" json:"id"`
 	RequestID      string    `gorm:"type:varchar(255);column:request_id;index:idx_mcp_logs_request_id" json:"request_id,omitempty"`             // The original request ID from context
 	LLMRequestID   *string   `gorm:"type:varchar(255);column:llm_request_id;index:idx_mcp_logs_llm_request_id" json:"llm_request_id,omitempty"` // Links to the LLM request that triggered this tool call
@@ -1388,18 +1410,26 @@ type MCPToolLog struct {
 	// Endpoint-agent context. These are populated for tool calls observed on a
 	// developer machine by the Bifrost Edge agent (rather than proxied by the
 	// gateway). Source distinguishes the origin: empty/null for gateway-proxied
-	// calls, "endpoint" for agent-observed calls.
+	// calls, "endpoint" for agent-observed MCP calls, "native" for harness tools.
 	DeviceID *string `gorm:"type:varchar(255);index:idx_mcp_logs_device_id" json:"device_id,omitempty"`
 	AppKey   *string `gorm:"type:varchar(64)" json:"app_key,omitempty"` // Canonical policy key of the detected client app (schemas.AppKeyFromName), e.g. "claude-code"; a slug like App, not a secret or credential
 	Decision *string `gorm:"type:varchar(16)" json:"decision,omitempty"`
 	Source   *string `gorm:"type:varchar(16);index:idx_mcp_logs_source" json:"source,omitempty"`
 
 	// Virtual fields for JSON output - populated when needed
-	ArgumentsParsed    interface{}             `gorm:"-" json:"arguments,omitempty"`
-	ResultParsed       interface{}             `gorm:"-" json:"result,omitempty"`
-	ErrorDetailsParsed *schemas.BifrostError   `gorm:"-" json:"error_details,omitempty"`
-	MetadataParsed     map[string]interface{}  `gorm:"-" json:"metadata,omitempty"`
-	VirtualKey         *tables.TableVirtualKey `gorm:"-" json:"virtual_key,omitempty"`
+	TeamIDsParsed           []string                `gorm:"-" json:"team_ids,omitempty"`
+	TeamNamesParsed         []string                `gorm:"-" json:"team_names,omitempty"`
+	CustomerIDsParsed       []string                `gorm:"-" json:"customer_ids,omitempty"`
+	CustomerNamesParsed     []string                `gorm:"-" json:"customer_names,omitempty"`
+	BusinessUnitIDsParsed   []string                `gorm:"-" json:"business_unit_ids,omitempty"`
+	BusinessUnitNamesParsed []string                `gorm:"-" json:"business_unit_names,omitempty"`
+	BudgetIDsParsed         []string                `gorm:"-" json:"budget_ids,omitempty"`
+	RateLimitIDsParsed      []string                `gorm:"-" json:"rate_limit_ids,omitempty"`
+	ArgumentsParsed         interface{}             `gorm:"-" json:"arguments,omitempty"`
+	ResultParsed            interface{}             `gorm:"-" json:"result,omitempty"`
+	ErrorDetailsParsed      *schemas.BifrostError   `gorm:"-" json:"error_details,omitempty"`
+	MetadataParsed          map[string]interface{}  `gorm:"-" json:"metadata,omitempty"`
+	VirtualKey              *tables.TableVirtualKey `gorm:"-" json:"virtual_key,omitempty"`
 }
 
 // TableName sets the table name for GORM
@@ -1425,6 +1455,73 @@ func (l *MCPToolLog) AfterFind(tx *gorm.DB) error {
 
 // SerializeFields converts Go structs to JSON strings for storage
 func (l *MCPToolLog) SerializeFields() error {
+	// Multi-valued attribution. Each ids/names pair is written together so the
+	// two stay index-aligned on the row.
+	if len(l.TeamIDsParsed) > 0 {
+		data, err := sonic.Marshal(l.TeamIDsParsed)
+		if err != nil {
+			return err
+		}
+		value := string(data)
+		l.TeamIDs = &value
+	}
+	if len(l.TeamNamesParsed) > 0 {
+		data, err := sonic.Marshal(l.TeamNamesParsed)
+		if err != nil {
+			return err
+		}
+		value := string(data)
+		l.TeamNames = &value
+	}
+	if len(l.CustomerIDsParsed) > 0 {
+		data, err := sonic.Marshal(l.CustomerIDsParsed)
+		if err != nil {
+			return err
+		}
+		value := string(data)
+		l.CustomerIDs = &value
+	}
+	if len(l.CustomerNamesParsed) > 0 {
+		data, err := sonic.Marshal(l.CustomerNamesParsed)
+		if err != nil {
+			return err
+		}
+		value := string(data)
+		l.CustomerNames = &value
+	}
+	if len(l.BusinessUnitIDsParsed) > 0 {
+		data, err := sonic.Marshal(l.BusinessUnitIDsParsed)
+		if err != nil {
+			return err
+		}
+		value := string(data)
+		l.BusinessUnitIDs = &value
+	}
+	if len(l.BusinessUnitNamesParsed) > 0 {
+		data, err := sonic.Marshal(l.BusinessUnitNamesParsed)
+		if err != nil {
+			return err
+		}
+		value := string(data)
+		l.BusinessUnitNames = &value
+	}
+	if len(l.BudgetIDsParsed) > 0 {
+		data, err := sonic.Marshal(l.BudgetIDsParsed)
+		if err != nil {
+			return err
+		}
+		value := string(data)
+		l.BudgetIDs = &value
+	}
+	if len(l.RateLimitIDsParsed) > 0 {
+		data, err := sonic.Marshal(l.RateLimitIDsParsed)
+		if err != nil {
+			return err
+		}
+		value := string(data)
+		l.RateLimitIDs = &value
+	}
+
 	if l.ArgumentsParsed != nil {
 		if data, err := sonic.Marshal(l.ArgumentsParsed); err != nil {
 			return err
@@ -1465,6 +1562,47 @@ func (l *MCPToolLog) SerializeFields() error {
 
 // DeserializeFields converts JSON strings back to Go structs
 func (l *MCPToolLog) DeserializeFields() error {
+	if l.TeamIDs != nil && *l.TeamIDs != "" {
+		if err := sonic.Unmarshal([]byte(*l.TeamIDs), &l.TeamIDsParsed); err != nil {
+			l.TeamIDsParsed = nil
+		}
+	}
+	if l.TeamNames != nil && *l.TeamNames != "" {
+		if err := sonic.Unmarshal([]byte(*l.TeamNames), &l.TeamNamesParsed); err != nil {
+			l.TeamNamesParsed = nil
+		}
+	}
+	if l.CustomerIDs != nil && *l.CustomerIDs != "" {
+		if err := sonic.Unmarshal([]byte(*l.CustomerIDs), &l.CustomerIDsParsed); err != nil {
+			l.CustomerIDsParsed = nil
+		}
+	}
+	if l.CustomerNames != nil && *l.CustomerNames != "" {
+		if err := sonic.Unmarshal([]byte(*l.CustomerNames), &l.CustomerNamesParsed); err != nil {
+			l.CustomerNamesParsed = nil
+		}
+	}
+	if l.BusinessUnitIDs != nil && *l.BusinessUnitIDs != "" {
+		if err := sonic.Unmarshal([]byte(*l.BusinessUnitIDs), &l.BusinessUnitIDsParsed); err != nil {
+			l.BusinessUnitIDsParsed = nil
+		}
+	}
+	if l.BusinessUnitNames != nil && *l.BusinessUnitNames != "" {
+		if err := sonic.Unmarshal([]byte(*l.BusinessUnitNames), &l.BusinessUnitNamesParsed); err != nil {
+			l.BusinessUnitNamesParsed = nil
+		}
+	}
+	if l.BudgetIDs != nil && *l.BudgetIDs != "" {
+		if err := sonic.Unmarshal([]byte(*l.BudgetIDs), &l.BudgetIDsParsed); err != nil {
+			l.BudgetIDsParsed = nil
+		}
+	}
+	if l.RateLimitIDs != nil && *l.RateLimitIDs != "" {
+		if err := sonic.Unmarshal([]byte(*l.RateLimitIDs), &l.RateLimitIDsParsed); err != nil {
+			l.RateLimitIDsParsed = nil
+		}
+	}
+
 	if l.Arguments != "" {
 		if err := sonic.Unmarshal([]byte(l.Arguments), &l.ArgumentsParsed); err != nil {
 			l.ArgumentsParsed = nil
@@ -1694,6 +1832,13 @@ type WebhookDeliverySearchFilters struct {
 
 // MCPToolLogSearchFilters represents the available filters for MCP tool log searches
 type MCPToolLogSearchFilters struct {
+	UserIDs         []string `json:"user_ids,omitempty"`
+	TeamIDs         []string `json:"team_ids,omitempty"`
+	CustomerIDs     []string `json:"customer_ids,omitempty"`
+	BusinessUnitIDs []string `json:"business_unit_ids,omitempty"`
+	ProjectIDs      []string `json:"project_ids,omitempty"`
+	DeviceIDs       []string `json:"device_ids,omitempty"`
+
 	ToolNames     []string   `json:"tool_names,omitempty"`
 	ServerLabels  []string   `json:"server_labels,omitempty"`
 	Status        []string   `json:"status,omitempty"`
@@ -2315,6 +2460,7 @@ var dimensionColumns = map[RankingDimension]dimensionColumnDef{
 	RankingDimensionUserAgent:    {IDCol: "user_agent", NameCol: "user_agent"},
 }
 
+// DimensionColumnDef returns the column pair for a supported ranking dimension.
 func DimensionColumnDef(d RankingDimension) (idCol, nameCol string, ok bool) {
 	def, exists := dimensionColumns[d]
 	return def.IDCol, def.NameCol, exists

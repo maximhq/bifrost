@@ -2,6 +2,7 @@ import type { MCPCostHistogramResponse } from "@/lib/types/logs";
 import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { CHART_COLORS, formatCost, formatFullTimestamp, formatTimestamp } from "../../utils/chartUtils";
+import { barShape } from "./barShape";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 
@@ -82,14 +83,7 @@ function MCPCostChartImpl({ data, chartType, startTime, endTime }: MCPCostChartP
 							allowDataOverflow={false}
 						/>
 						<Tooltip content={<CustomTooltip />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
-						<Bar
-							isAnimationActive={false}
-							dataKey="total_cost"
-							fill={CHART_COLORS.cost}
-							fillOpacity={0.9}
-							radius={[2, 2, 0, 0]}
-							barSize={30}
-						/>
+						<Bar isAnimationActive={false} dataKey="total_cost" fill={CHART_COLORS.cost} fillOpacity={0.9} shape={barShape} barSize={30} />
 					</BarChart>
 				) : (
 					<AreaChart {...commonProps}>

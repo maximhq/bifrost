@@ -9,6 +9,7 @@ import {
 	getModelColor,
 	LATENCY_COLORS,
 } from "../../utils/chartUtils";
+import { barShape } from "./barShape";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 
@@ -177,7 +178,7 @@ function ProviderLatencyChartImpl({ data, chartType, startTime, endTime, selecte
 									fill={LATENCY_COLORS.avg}
 									fillOpacity={0.9}
 									barSize={8}
-									radius={[2, 2, 0, 0]}
+									shape={barShape}
 								/>
 								<Bar
 									isAnimationActive={false}
@@ -185,7 +186,7 @@ function ProviderLatencyChartImpl({ data, chartType, startTime, endTime, selecte
 									fill={LATENCY_COLORS.p90}
 									fillOpacity={0.9}
 									barSize={8}
-									radius={[2, 2, 0, 0]}
+									shape={barShape}
 								/>
 								<Bar
 									isAnimationActive={false}
@@ -193,7 +194,7 @@ function ProviderLatencyChartImpl({ data, chartType, startTime, endTime, selecte
 									fill={LATENCY_COLORS.p95}
 									fillOpacity={0.9}
 									barSize={8}
-									radius={[2, 2, 0, 0]}
+									shape={barShape}
 								/>
 								<Bar
 									isAnimationActive={false}
@@ -201,7 +202,7 @@ function ProviderLatencyChartImpl({ data, chartType, startTime, endTime, selecte
 									fill={LATENCY_COLORS.p99}
 									fillOpacity={0.9}
 									barSize={8}
-									radius={[2, 2, 0, 0]}
+									shape={barShape}
 								/>
 							</>
 						) : (
@@ -218,7 +219,7 @@ function ProviderLatencyChartImpl({ data, chartType, startTime, endTime, selecte
 										isAnimationActive={false}
 										fillOpacity={0.9}
 										barSize={8}
-										radius={[2, 2, 0, 0]}
+										shape={barShape}
 									/>
 								))}
 							</>

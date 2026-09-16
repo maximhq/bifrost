@@ -482,6 +482,17 @@ func (s *Span) SetAttribute(key string, value any) {
 	s.Attributes[key] = value
 }
 
+// GetAttribute reads one attribute under the span's lock.
+func (s *Span) GetAttribute(key string) (any, bool) {
+	if s == nil {
+		return nil, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.Attributes[key]
+	return v, ok
+}
+
 // SetAttributes merges an already-built attribute map into the span under a
 // single lock. Preferred over a caller-side range + SetAttribute loop (one lock
 // per entry) when the map already exists (e.g. the Populate*Attributes output).
@@ -977,6 +988,10 @@ const (
 	AttrBifrostComplexityMechanism = "bifrost.complexity_mechanism" // how the complexity tier was classified (semantic, llm, session, skipped)
 	AttrBifrostComplexityScore     = "bifrost.complexity_score"     // numeric confidence score produced by complexity classification
 	AttrBifrostStopSequencesJoined = "bifrost.request.stop_sequences"
+
+	// AttrBifrostErrorType is the normalized ErrorType, so span-derived connectors
+	// classify identically to the metrics. Absent on success.
+	AttrBifrostErrorType = "bifrost.error.type"
 
 	// OTel general semconv (no gen_ai prefix). The canonical error-type key,
 	// emitted from PopulateErrorAttributes.

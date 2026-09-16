@@ -1878,6 +1878,9 @@ type BifrostLLMUsage struct {
 	CompletionTokens        int                          `json:"completion_tokens,omitempty"`
 	CompletionTokensDetails *ChatCompletionTokensDetails `json:"completion_tokens_details,omitempty"`
 	TotalTokens             int                          `json:"total_tokens"`
+	// AudioSeconds carries duration-based audio usage when a provider reports
+	// seconds instead of tokens.
+	AudioSeconds *float64 `json:"audio_seconds,omitempty"`
 	// SearchUnits is the billable unit for rerank: Cohere and Bedrock both define one unit as
 	// a single query against up to 100 document chunks, so a request over that many chunks
 	// bills as several. Distinct from ChatCompletionTokensDetails.NumSearchQueries, which

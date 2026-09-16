@@ -807,6 +807,11 @@ false
 {{- if $scimValues.config }}
 {{- $_ := set $scim "config" $scimValues.config }}
 {{- end }}
+{{- /* Gate on key presence, not truthiness: an explicit empty list means "clear the stored
+       allowlist" and must still render, while an undeclared key leaves it untouched. */ -}}
+{{- if hasKey $scimValues "trustedNetworks" }}
+{{- $_ := set $scim "trusted_networks" (default (list) $scimValues.trustedNetworks) }}
+{{- end }}
 {{- $_ := set $config "scim_config" $scim }}
 {{- end }}
 {{- /* Load Balancer Config */ -}}
@@ -1352,6 +1357,9 @@ false
 {{- if $client.allowedExtraHeaders }}
 {{- $_ := set $cc "allowed_extra_headers" $client.allowedExtraHeaders }}
 {{- end }}
+{{- if $client.perUserHeaderKeys }}
+{{- $_ := set $cc "per_user_header_keys" $client.perUserHeaderKeys }}
+{{- end }}
 {{- /* allowByDefault supersedes allowOnAllVirtualKeys. Emit exactly one key so the backend's
        ResolveAllowByDefault sees an unambiguous declaration: the current key when it is given,
        otherwise the deprecated one passed through untranslated. */ -}}
@@ -1614,6 +1622,12 @@ false
 {{- end }}
 {{- if $inputConfig.plugin_span_filter }}
 {{- $_ := set $otelConfig "plugin_span_filter" $inputConfig.plugin_span_filter }}
+{{- end }}
+{{- if hasKey $inputConfig "export_overhead_spans" }}
+{{- $_ := set $otelConfig "export_overhead_spans" $inputConfig.export_overhead_spans }}
+{{- end }}
+{{- if hasKey $inputConfig "overhead_breakdown_enabled" }}
+{{- $_ := set $otelConfig "overhead_breakdown_enabled" $inputConfig.overhead_breakdown_enabled }}
 {{- end }}
 {{- end }}
 {{- $plugin := dict "enabled" true "name" "otel" "config" $otelConfig }}

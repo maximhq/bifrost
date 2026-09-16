@@ -12,6 +12,7 @@ import {
 	OTHER_SERIES_KEY,
 	OTHER_SERIES_LABEL,
 } from "../../utils/chartUtils";
+import { CappedBarStack } from "./barShape";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 
@@ -61,21 +62,17 @@ function CustomTooltip({ active, payload, selectedModel, displayModels }: any) {
 					<>
 						<div className="flex items-center justify-between gap-4">
 							<span className="flex items-center gap-1.5">
-								<span className="h-2 w-2 rounded-full bg-emerald-500" />
+								<span className="bg-chart-success h-2 w-2 rounded-full" />
 								<span className="text-zinc-600 dark:text-zinc-400">Success</span>
 							</span>
-							<span className="font-medium text-emerald-600 dark:text-emerald-400">
-								{(data.by_model?.[selectedModel]?.success || 0).toLocaleString()}
-							</span>
+							<span className="text-chart-success-ink font-medium">{(data.by_model?.[selectedModel]?.success || 0).toLocaleString()}</span>
 						</div>
 						<div className="flex items-center justify-between gap-4">
 							<span className="flex items-center gap-1.5">
-								<span className="h-2 w-2 rounded-full bg-red-500" />
+								<span className="bg-chart-error h-2 w-2 rounded-full" />
 								<span className="text-zinc-600 dark:text-zinc-400">Error</span>
 							</span>
-							<span className="font-medium text-red-600 dark:text-red-400">
-								{(data.by_model?.[selectedModel]?.error || 0).toLocaleString()}
-							</span>
+							<span className="text-chart-error-ink font-medium">{(data.by_model?.[selectedModel]?.error || 0).toLocaleString()}</span>
 						</div>
 						<div className="flex items-center justify-between gap-4">
 							<span className="flex items-center gap-1.5">
@@ -183,48 +180,24 @@ function ModelUsageChartImpl({ data, chartType, startTime, endTime, selectedMode
 							cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }}
 						/>
 						{selectedModel === "all" ? (
-							displayModels.map((model, idx) => (
-								<Bar
-									isAnimationActive={false}
-									key={model}
-									dataKey={`model_${sanitizeModelKey(model)}`}
-									stackId="models"
-									fill={model === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx)}
-									fillOpacity={0.9}
-									barSize={30}
-									radius={idx === displayModels.length - 1 ? [2, 2, 0, 0] : [0, 0, 0, 0]}
-								/>
-							))
+							<CappedBarStack buckets={chartData.length}>
+								{displayModels.map((model, idx) => (
+									<Bar
+										isAnimationActive={false}
+										key={model}
+										dataKey={`model_${sanitizeModelKey(model)}`}
+										fill={model === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx)}
+										fillOpacity={0.9}
+										barSize={30}
+									/>
+								))}
+							</CappedBarStack>
 						) : (
-							<>
-								<Bar
-									isAnimationActive={false}
-									dataKey="success"
-									stackId="status"
-									fill={CHART_COLORS.success}
-									fillOpacity={0.9}
-									radius={[0, 0, 0, 0]}
-									barSize={30}
-								/>
-								<Bar
-									isAnimationActive={false}
-									dataKey="error"
-									stackId="status"
-									fill={CHART_COLORS.error}
-									fillOpacity={0.9}
-									radius={[0, 0, 0, 0]}
-									barSize={30}
-								/>
-								<Bar
-									isAnimationActive={false}
-									dataKey="cancelled"
-									stackId="status"
-									fill={CHART_COLORS.cancelled}
-									fillOpacity={0.9}
-									radius={[2, 2, 0, 0]}
-									barSize={30}
-								/>
-							</>
+							<CappedBarStack buckets={chartData.length}>
+								<Bar isAnimationActive={false} dataKey="success" fill={CHART_COLORS.success} fillOpacity={0.9} barSize={30} />
+								<Bar isAnimationActive={false} dataKey="error" fill={CHART_COLORS.error} fillOpacity={0.9} barSize={30} />
+								<Bar isAnimationActive={false} dataKey="cancelled" fill={CHART_COLORS.cancelled} fillOpacity={0.9} barSize={30} />
+							</CappedBarStack>
 						)}
 					</BarChart>
 				) : (

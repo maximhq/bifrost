@@ -155,6 +155,126 @@ const CASES = [
   },
 ];
 
+// ---------------------------------------------------------------------------------------------
+// Growing-turn cells. Every cell above replays a byte-identical round 2, which is the one shape
+// that still hits when Bifrost hoists a mid-conversation role:"system" message into the Converse
+// `system` block: the hoisted copy is identical on both rounds. Claude Code does not replay; it
+// appends a trailing role:"system" <total_tokens> reminder after EVERY turn, so each request
+// carries one more reminder than the last. Hoisting then grows the front of the prompt each turn
+// and the previous turn's prefix can never be read back (field captures against
+// bedrock/global.openai.gpt-5.6-luna: read=0, write=whole prompt, every turn). These cells send
+// turn N, then turn N+1 = turn N + assistant + user + a new trailing reminder, and assert that
+// turn N's prefix is read back and that raw_request.system did not grow.
+//
+// Two models: Claude (explicit cachePoint, always green) and GPT-5.6 on Converse, which per the
+// AWS prompt-caching guide gets Implicit Prompt Caching only: exact-prefix, best effort, no
+// cachePoint. us.openai.gpt-5.6-luna is the id the converse-redacted-reasoning rows already prove
+// access for; the customer's global. id resolves to the same bedrock-runtime surface.
+// ---------------------------------------------------------------------------------------------
+const GROW_MODELS = [
+  { key: "claude", model: BIFROST_MODEL },
+  { key: "gpt56", model: "bedrock/us.openai.gpt-5.6-luna" },
+];
+const TOTAL_TOKENS_REMINDER = "<total_tokens>15000000 tokens left</total_tokens>";
+
+function growBody(model, cellId, turns) {
+  const cc = { type: "ephemeral" };
+  const messages = [
+    { role: "user", content: [{ type: "text", text: `${SEG}\n\nDocument A. Reply ${ACK}` }] },
+    { role: "assistant", content: [{ type: "text", text: ACK }] },
+    { role: "user", content: [{ type: "text", text: `${SEG}\n\nDocument B. Reply ${ACK}` }] },
+    { role: "assistant", content: [{ type: "text", text: ACK }] },
+    // Claude Code's shape: a large injected reminder after the first exchange, then per turn a
+    // user message followed by the trailing string-form system reminder.
+    { role: "system", content: "Available agent types for the Agent tool: claude, Explore, Plan." },
+  ];
+  for (let i = 1; i <= turns; i++) {
+    if (i > 1) messages.push({ role: "assistant", content: [{ type: "text", text: "ACKNOWLEDGED" }] });
+    messages.push({ role: "user", content: [{ type: "text", text: `Turn ${i}. ${QUESTION}` }] });
+    messages.push({ role: "system", content: TOTAL_TOKENS_REMINDER });
+  }
+  // Only the newest user message carries the conversation breakpoint, as Claude Code sends it.
+  const lastUser = [...messages].reverse().find((m) => m.role === "user");
+  lastUser.content[0].cache_control = cc;
+  return {
+    model,
+    max_tokens: 32,
+    temperature: 0,
+    system: [
+      { type: "text", text: salt(cellId), cache_control: cc },
+      { type: "text", text: SEG, cache_control: cc },
+    ],
+    messages,
+  };
+}
+
+// raw_request is the Converse body Bifrost sent (send_back_raw_request is on in the harness
+// config). Its `system` length is the direct witness: one entry per leading system block, never
+// one more per turn.
+const EXTRACT_RAW_SYSTEM = `
+var raw = (j.extra_fields || {}).raw_request || {};
+var sysLen = Array.isArray(raw.system) ? raw.system.length : -1;`.trim();
+
+function growWriteScript(cellId) {
+  return `
+${EXTRACT.bifrost_messages}
+${EXTRACT_RAW_SYSTEM}
+${HIT_RATE}
+pm.test(${J(`Cache anchor (growing turn) [${cellId}] round 1 (turn 1, write) succeeds`)}, function () {
+  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);
+});
+if (pm.response.code < 400) {
+  pm.collectionVariables.set(${J(`grow_${cellId}_r1`)}, JSON.stringify({ read: read, write: write, uncached: uncached, sysLen: sysLen }));
+  console.log('[cache-anchor] ' + ${J(cellId)} + ' round1(turn 1) ' + detail + ' rawSystemLen=' + sysLen);
+}`.trim();
+}
+
+function growReadScript(m, cellId) {
+  const cellLabel = `grow_${m.key} / ${LEG_LABEL.bifrost_messages}`;
+  return `
+${EXTRACT.bifrost_messages}
+${EXTRACT_RAW_SYSTEM}
+${HIT_RATE}
+var r1 = JSON.parse(pm.collectionVariables.get(${J(`grow_${cellId}_r1`)}) || '{}');
+pm.test(${J(`Cache anchor [${cellLabel}] round 2 (turn 2 + trailing system reminder) succeeds`)}, function () {
+  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);
+});
+if (pm.response.code < 400) {
+  console.log('CACHE_ANCHOR_REPORT', JSON.stringify({ cell: ${J(cellId)}, caseKey: 'grow', caseLabel: ${J(`growing turn / ${m.key}`)}, leg: 'bifrost_messages', legLabel: ${J(LEG_LABEL.bifrost_messages)}, model: ${J(m.model)}, read: read, write: write, uncached: uncached, hitRate: hitRate, expectHit: true, hitRateFloor: ${HIT_RATE_FLOOR}, rawSystemLen: sysLen, rawSystemLenRound1: r1.sysLen }));
+  pm.test(${J(`Cache anchor [${cellLabel}] Converse system block did not grow between turns`)}, function () {
+    pm.expect(sysLen, 'raw_request missing from the response - is x-bf-send-back-raw-request set on this item?').to.be.at.least(0);
+    pm.expect(r1.sysLen, 'round 1 recorded no system length - the producer was filtered out, skipped, or ran after this item').to.be.a('number');
+    pm.expect(sysLen, 'raw_request.system length round1=' + r1.sysLen + ' round2=' + sysLen +
+      ' - a longer system block on turn 2 means the new trailing role:system reminder was hoisted into system instead of inlined (ToBedrockResponsesRequest inlineSystemReminders)').to.equal(r1.sysLen);
+  });
+  pm.test(${J(`Cache anchor [${cellLabel}] turn 2 reads turn 1's prefix back`)}, function () {
+    pm.expect(hitRate, detail + ' - turn 1 wrote ' + (r1.write || 0) + ' tokens; turn 2 extends that prefix by one exchange, so nearly all of it must come back as a read. ' +
+      'read 0 with a whole-prompt write means the prefix front changed between turns.').to.be.at.least(${HIT_RATE_FLOOR});
+  });
+}`.trim();
+}
+
+export function buildMidConvGrowingTurnItems() {
+  const items = [];
+  for (const m of GROW_MODELS) {
+    const cellId = `grow_${m.key}__bifrost_messages`;
+    items.push({
+      name: `Cache anchor (growing turn): ${m.key} / bifrost_messages round 1 (turn 1, write)`,
+      event: [{ listen: "test", script: { type: "text/javascript", exec: growWriteScript(cellId).split("\n") } }],
+      request: legRequest("bifrost_messages", growBody(m.model, cellId, 1)),
+    });
+    items.push({
+      name: `Cache anchor (growing turn): ${m.key} / bifrost_messages round 2 (turn 2 + trailing system reminder, read)`,
+      event: [
+        { listen: "prerequest", script: { type: "text/javascript", exec: [SETTLE] } },
+        { listen: "test", script: { type: "text/javascript", exec: growReadScript(m, cellId).split("\n") } },
+      ],
+      request: legRequest("bifrost_messages", growBody(m.model, cellId, 2)),
+    });
+  }
+  return items;
+}
+
 const LEG_LABEL = {
   direct: "direct Bedrock Converse (SigV4)",
   bifrost_messages: "Bifrost /anthropic/v1/messages",
@@ -363,7 +483,14 @@ function legRequest(leg, body) {
   const path = leg === "bifrost_messages" ? ["anthropic", "v1", "messages"] : ["openai", "v1", "responses"];
   return {
     ...common,
-    header: [{ key: "Content-Type", value: "application/json" }],
+    header: [
+      { key: "Content-Type", value: "application/json" },
+      // The Converse-shape assertion reads extra_fields.raw_request.system, and Bifrost only
+      // returns raw_request when asked for it. Without this header sysLen is permanently -1, so
+      // "the system block did not grow" compares two sentinels instead of two lengths and can
+      // never pass. The direct leg above must NOT get it: it bypasses Bifrost entirely.
+      { key: "x-bf-send-back-raw-request", value: "true" },
+    ],
     url: { raw: `{{baseUrl}}/${path.join("/")}`, host: ["{{baseUrl}}"], path },
   };
 }
@@ -502,7 +629,7 @@ export function buildMidConvSystemCacheParityItems() {
 }
 
 export function buildMidConvSystemCacheParityFolder() {
-  const items = buildMidConvSystemCacheParityItems();
+  const items = [...buildMidConvSystemCacheParityItems(), ...buildMidConvGrowingTurnItems()];
   return {
     name: "Cross-Cut Round 34: Mid-Conversation System Cache-Anchor Parity (generated)",
     description:
@@ -510,7 +637,8 @@ export function buildMidConvSystemCacheParityFolder() {
       "The only variable between the control and midconv arms is whether the third breakpoint rides a role:\"user\" block or a mid-conversation role:\"system\" turn. " +
       "Each arm runs three legs: direct Bedrock Converse over SigV4 with all three cachePoint elements placed by hand (ground truth for what Bifrost should emit), Bifrost /anthropic/v1/messages, and Bifrost /openai/v1/responses. " +
       `Asserts read / (read + write + uncached) >= ${HIT_RATE_FLOOR} - deliberately NOT read / prompt_tokens, which counts a cache write as a miss and is the metric artifact that masked this defect in production dashboards. ` +
-      `Model: bedrock/${BEDROCK_MODEL} (the Bedrock inlining branch is gated on IsAnthropicModelFamily, not on Opus 4.8+, so the cheapest Claude reproduces it). ` +
+      `Model: bedrock/${BEDROCK_MODEL} (the cheapest Claude reproduces the dropped-breakpoint defect). ` +
+      "Plus growing-turn cells for Claude and bedrock/us.openai.gpt-5.6-luna: turn 1 then turn 2 with a new trailing role:system <total_tokens> reminder, asserting raw_request.system did not grow and turn 1's prefix was read back (the field defect a byte-identical replay cannot see). " +
       "Plus four single-leg guard rows: role:developer, reminder-placed-last, a ContentStr-form system message that must NOT grow a breakpoint, and two cache_control-bearing reminders against Bedrock's 4-checkpoint cap. " +
       "Per-cell results are emitted as CACHE_ANCHOR_REPORT console lines. Credentials reuse {{bedrockDirectAccessKeyId}}/{{bedrockDirectSecretAccessKey}}/{{bedrockDirectRegion}} (AWS_* via Infisical, same as the Round 33 token-parity matrix).",
     item: items,

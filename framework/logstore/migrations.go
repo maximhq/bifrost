@@ -322,6 +322,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"mcp_tool_logs_add_project_columns"}, run: migrationAddProjectColumnsToMCPToolLogs},
 	{IDs: []string{"logs_add_served_model_column"}, run: migrationAddServedModelColumn},
 	{IDs: []string{"logs_add_tool_call_names_column"}, run: migrationAddToolCallNamesColumn},
+	{IDs: []string{"mcp_tool_logs_add_governance_snapshots"}, run: migrationAddMCPGovernanceSnapshots},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -4820,6 +4821,62 @@ func migrationAddServedModelColumn(ctx context.Context, db *gorm.DB, logger sche
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while adding served model column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPGovernanceSnapshots gives the tool log the attribution shape the logs table already
+// has: a name recorded beside every governance id, and the multi-valued team / customer / business
+// unit sets, so a row says who made the call without a second lookup at read time.
+//
+// Structure only. Rows written before this keep their bare ids, as they do for every other column
+// added to this table; nothing here rewrites history. Indexes are left to ensurePerformanceIndexes,
+// and names are not indexed on the logs table either.
+func migrationAddMCPGovernanceSnapshots(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "mcp_tool_logs_add_governance_snapshots"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+
+	columns := []string{
+		"user_name", "team_name", "customer_name", "business_unit_name",
+		"team_ids", "team_names", "customer_ids", "customer_names",
+		"business_unit_ids", "business_unit_names", "budget_ids", "rate_limit_ids",
+	}
+
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// Twelve ALTER TABLEs on a table that is being written to continuously.
+			// Without a bounded wait each one can sit behind a long-running log
+			// transaction holding ACCESS EXCLUSIVE, and startup stalls with it.
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			for _, col := range columns {
+				if err := addColumnIfNotExists(tx, logger, &MCPToolLog{}, col); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			for i := len(columns) - 1; i >= 0; i-- {
+				if err := dropColumnIfExists(tx, logger, &MCPToolLog{}, columns[i]); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding governance snapshot columns to mcp tool logs: %s", err.Error())
 	}
 	return nil
 }

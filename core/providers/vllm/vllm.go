@@ -188,6 +188,7 @@ func (provider *VLLMProvider) ChatCompletion(ctx *schemas.BifrostContext, key sc
 			request,
 			anthropic.AnthropicRequestBuildConfig{
 				Provider:                  schemas.VLLM,
+				BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
 				ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 				ShouldSendBackRawResponse: provider.sendBackRawResponse,
 			},
@@ -315,6 +316,8 @@ func (provider *VLLMProvider) Responses(ctx *schemas.BifrostContext, key schemas
 			request,
 			anthropic.AnthropicRequestBuildConfig{
 				Provider:                  schemas.VLLM,
+				ValidateTools:             true,
+				BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
 				ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 				ShouldSendBackRawResponse: provider.sendBackRawResponse,
 			},
@@ -353,6 +356,7 @@ func (provider *VLLMProvider) ResponsesStream(ctx *schemas.BifrostContext, postH
 	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
 		jsonData, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
 			Provider:                  schemas.VLLM,
+			ValidateTools:             true,
 			IsStreaming:               true,
 			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 			ShouldSendBackRawResponse: provider.sendBackRawResponse,
@@ -913,6 +917,7 @@ func (provider *VLLMProvider) CountTokens(ctx *schemas.BifrostContext, key schem
 		request,
 		anthropic.AnthropicRequestBuildConfig{
 			Provider:                  schemas.VLLM,
+			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
 			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 			ShouldSendBackRawResponse: provider.sendBackRawResponse,
 		},

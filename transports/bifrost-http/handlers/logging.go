@@ -301,16 +301,19 @@ func (c *filterDataCache) load(key string) (*filterDataCacheEntry, map[string]in
 	return entry, nil, false
 }
 
+// store publishes a completed filter-data cache result.
 func (c *filterDataCache) store(entry *filterDataCacheEntry, payload map[string]interface{}) {
 	entry.payload = payload
 	entry.expiresAt = time.Now().Add(filterDataCacheTTL)
 	entry.mu.Unlock()
 }
 
+// release releases a filter-data cache entry after a fetch attempt.
 func (c *filterDataCache) release(entry *filterDataCacheEntry) {
 	entry.mu.Unlock()
 }
 
+// parseParentRequestIDFilter reads the parent request ID filter from the request.
 func parseParentRequestIDFilter(ctx *fasthttp.RequestCtx) string {
 	if parentRequestID := string(ctx.QueryArgs().Peek("parent_request_id")); strings.TrimSpace(parentRequestID) != "" {
 		return parentRequestID
@@ -359,6 +362,7 @@ func (h *LoggingHandler) SetMCPLogRedactionMappingResolver(resolver MCPLogRedact
 	h.mcpLogRedactionMappingResolver = resolver
 }
 
+// shouldHideDeletedVirtualKeysInFilters reads the configured deleted-key visibility policy.
 func (h *LoggingHandler) shouldHideDeletedVirtualKeysInFilters() bool {
 	if h == nil || h.config == nil {
 		return false
@@ -413,6 +417,7 @@ func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	r.DELETE("/api/mcp-logs", lib.ChainMiddlewares(h.deleteMCPLogs, middlewares...))
 }
 
+// listUserAgentMappings returns configured client identification mappings.
 func (h *LoggingHandler) listUserAgentMappings(ctx *fasthttp.RequestCtx) {
 	mappings, err := h.logManager.ListUserAgentMappings(ctx)
 	if err != nil {
@@ -422,6 +427,7 @@ func (h *LoggingHandler) listUserAgentMappings(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, map[string]any{"mappings": mappings})
 }
 
+// createUserAgentMapping validates and creates a client identification mapping.
 func (h *LoggingHandler) createUserAgentMapping(ctx *fasthttp.RequestCtx) {
 	var mapping logstore.UserAgentMapping
 	if err := sonic.Unmarshal(ctx.PostBody(), &mapping); err != nil {
@@ -440,6 +446,7 @@ func (h *LoggingHandler) createUserAgentMapping(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, created)
 }
 
+// updateUserAgentMapping updates an identified client mapping after request validation.
 func (h *LoggingHandler) updateUserAgentMapping(ctx *fasthttp.RequestCtx) {
 	id, ok := ctx.UserValue("id").(string)
 	if !ok || strings.TrimSpace(id) == "" {
@@ -467,6 +474,7 @@ func (h *LoggingHandler) updateUserAgentMapping(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, updated)
 }
 
+// deleteUserAgentMapping deletes an identified client mapping and reports missing records.
 func (h *LoggingHandler) deleteUserAgentMapping(ctx *fasthttp.RequestCtx) {
 	id, ok := ctx.UserValue("id").(string)
 	if !ok || strings.TrimSpace(id) == "" {
@@ -1538,6 +1546,7 @@ func (h *LoggingHandler) getModelRankings(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, result)
 }
 
+// getDimensionRankings validates and serves rankings for the requested attribution dimension.
 func (h *LoggingHandler) getDimensionRankings(ctx *fasthttp.RequestCtx) {
 	dim := logstore.RankingDimension(string(ctx.QueryArgs().Peek("dimension")))
 	if dim == "" {
@@ -2420,6 +2429,7 @@ func recalcJobStatusFromRow(job *tables.TableSidekiqJob) recalcJobStatus {
 
 // Helper functions
 
+// findRedactedKey matches a redacted provider key or returns a deleted-key placeholder.
 func findRedactedKey(redactedKeys []schemas.Key, id string, name string) *schemas.Key {
 	if len(redactedKeys) == 0 {
 		return &schemas.Key{
@@ -2450,6 +2460,7 @@ func findRedactedKey(redactedKeys []schemas.Key, id string, name string) *schema
 	}
 }
 
+// findRedactedVirtualKey matches a redacted virtual key or returns a deleted-key placeholder.
 func findRedactedVirtualKey(redactedVirtualKeys []tables.TableVirtualKey, id string, name string) *tables.TableVirtualKey {
 	if len(redactedVirtualKeys) == 0 {
 		return &tables.TableVirtualKey{
@@ -2480,6 +2491,7 @@ func findRedactedVirtualKey(redactedVirtualKeys []tables.TableVirtualKey, id str
 	}
 }
 
+// findRedactedRoutingRule matches a redacted routing rule or returns a deleted-rule placeholder.
 func findRedactedRoutingRule(redactedRoutingRules []tables.TableRoutingRule, id string, name string) *tables.TableRoutingRule {
 	if len(redactedRoutingRules) == 0 {
 		return &tables.TableRoutingRule{
@@ -2585,6 +2597,13 @@ type recalculateCostFilters struct {
 // Returns an error if any required parsing fails (e.g., invalid time format, invalid number format).
 func parseMCPFiltersAndPagination(ctx *fasthttp.RequestCtx) (*logstore.MCPToolLogSearchFilters, *logstore.PaginationOptions, error) {
 	filters := &logstore.MCPToolLogSearchFilters{}
+	filters.UserIDs = parseCommaSeparated(string(ctx.QueryArgs().Peek("user_ids")))
+	filters.TeamIDs = parseCommaSeparated(string(ctx.QueryArgs().Peek("team_ids")))
+	filters.CustomerIDs = parseCommaSeparated(string(ctx.QueryArgs().Peek("customer_ids")))
+	filters.BusinessUnitIDs = parseCommaSeparated(string(ctx.QueryArgs().Peek("business_unit_ids")))
+	filters.ProjectIDs = parseCommaSeparated(string(ctx.QueryArgs().Peek("project_ids")))
+	filters.DeviceIDs = parseCommaSeparated(string(ctx.QueryArgs().Peek("device_ids")))
+
 	pagination := &logstore.PaginationOptions{}
 
 	// Extract filters from query parameters
@@ -2712,6 +2731,12 @@ func parseMCPFiltersAndPagination(ctx *fasthttp.RequestCtx) (*logstore.MCPToolLo
 // Returns an error if any required parsing fails.
 func parseMCPFilters(ctx *fasthttp.RequestCtx) (*logstore.MCPToolLogSearchFilters, error) {
 	filters := &logstore.MCPToolLogSearchFilters{}
+	filters.UserIDs = parseCommaSeparated(string(ctx.QueryArgs().Peek("user_ids")))
+	filters.TeamIDs = parseCommaSeparated(string(ctx.QueryArgs().Peek("team_ids")))
+	filters.CustomerIDs = parseCommaSeparated(string(ctx.QueryArgs().Peek("customer_ids")))
+	filters.BusinessUnitIDs = parseCommaSeparated(string(ctx.QueryArgs().Peek("business_unit_ids")))
+	filters.ProjectIDs = parseCommaSeparated(string(ctx.QueryArgs().Peek("project_ids")))
+	filters.DeviceIDs = parseCommaSeparated(string(ctx.QueryArgs().Peek("device_ids")))
 
 	// Extract filters from query parameters
 	if toolNames := string(ctx.QueryArgs().Peek("tool_names")); toolNames != "" {

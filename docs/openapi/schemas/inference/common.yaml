@@ -89,6 +89,13 @@ BifrostErrorExtraFields:
       type: string
     request_type:
       type: string
+    error_type:
+      type: string
+      description: >-
+        Normalized, low-cardinality classification of why the request failed,
+        declared by whichever component refused it. Prefixed by fault domain
+        (caller_, policy_, provider_, bifrost_). Absent on failures that were
+        not classified at source.
 
 BifrostResponseExtraFields:
   type: object

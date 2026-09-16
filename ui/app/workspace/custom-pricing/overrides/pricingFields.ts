@@ -1,3 +1,6 @@
+import type { RequestType } from "@/lib/types/config";
+import type { PricingOverrideMatchType, PricingOverridePatch } from "@/lib/types/governance";
+
 // Shared pricing-field metadata for override editing and display.
 //
 // Extracted from pricingOverrideSheet.tsx so read-only consumers (e.g. the
@@ -340,6 +343,12 @@ export const PRICING_FIELDS = [
 	{
 		key: "cost_per_request",
 		label: "Flat fee / request",
+		group: "chat",
+		requestTypeGroups: ["chat", "embedding", "rerank", "audio", "image", "video", "ocr"],
+	},
+	{
+		key: "off_peak_cost_multiplier",
+		label: "Off-peak multiplier",
 		group: "chat",
 		requestTypeGroups: ["chat", "embedding", "rerank", "audio", "image", "video", "ocr"],
 	},
@@ -715,4 +724,127 @@ export const fieldLabelByKey = Object.fromEntries(PRICING_FIELDS.map((field) => 
 >;
 export const patchKeys = PRICING_FIELDS.map((field) => field.key) as PricingFieldKey[];
 
+/**
+ * Per-field numeric bounds for fields that are not plain "any non-negative
+ * cost". Fields absent from this map keep the default `>= 0` rule.
+ */
+export const FIELD_BOUNDS: Partial<Record<PricingFieldKey, { min?: number; max?: number; message: string }>> = {
+	// Every base rate is the peak price, so the off-peak multiplier can only
+	// ever scale downward. A value of 0 would make off-peak requests free and a
+	// value above 1 would make them cost more than peak; the pricing engine
+	// rejects both and bills at peak, so reject them here too rather than
+	// silently accepting a setting that will never take effect.
+	off_peak_cost_multiplier: { min: 0, max: 1, message: "Must be greater than 0 and at most 1" },
+};
+
+/**
+ * Validates one raw form value for a pricing field. Returns an error message,
+ * or undefined when the value is acceptable. An empty value is not an error —
+ * it means "do not override this field".
+ */
+export function pricingFieldError(key: PricingFieldKey, raw: string | undefined): string | undefined {
+	if (raw == null || raw.trim() === "") return undefined;
+	const parsed = Number(raw);
+	if (!Number.isFinite(parsed)) return "Must be a number";
+
+	const bounds = FIELD_BOUNDS[key];
+	if (bounds) {
+		if (bounds.min != null && parsed <= bounds.min) return bounds.message;
+		if (bounds.max != null && parsed > bounds.max) return bounds.message;
+		return undefined;
+	}
+	if (parsed < 0) return "Must be >= 0";
+	return undefined;
+}
+
 export type FieldErrors = Partial<Record<PricingFieldKey | "name" | "scope" | "pattern" | "patch", string>>;
+
+// ---------------------------------------------------------------------------
+// Override form state
+//
+// Lives here rather than in pricingOverrideSheet.tsx so the patch-building
+// logic can be unit tested without pulling the sheet's React tree in.
+// ---------------------------------------------------------------------------
+
+export type ScopeRoot = "global" | "virtual_key" | "user";
+
+export interface FormState {
+	name: string;
+	scopeRoot: ScopeRoot;
+	userID: string;
+	virtualKeyID: string;
+	providerID: string;
+	providerKeyID: string;
+	matchType: PricingOverrideMatchType;
+	pattern: string;
+	requestTypes: RequestType[];
+	pricingValues: Partial<Record<PricingFieldKey, string>>;
+	/**
+	 * Patch fields this form does not render — currently `peak_hours`, which is
+	 * a schedule object rather than a number and is set via the API or the
+	 * datasheet. Carried through verbatim so opening and saving an override in
+	 * the UI never silently drops what the form cannot display.
+	 */
+	preservedPatch: Record<string, unknown>;
+}
+
+export const defaultFormState: FormState = {
+	name: "",
+	scopeRoot: "global",
+	userID: "",
+	virtualKeyID: "",
+	providerID: "",
+	providerKeyID: "",
+	matchType: "exact",
+	pattern: "",
+	requestTypes: [],
+	pricingValues: {},
+	preservedPatch: {},
+};
+
+/**
+ * Patch keys the form cannot render as a number but still round-trips. Today
+ * only the `peak_hours` schedule object. Anything outside this list that is
+ * also outside `patchKeys` is a typo, and the JSON editor rejects it rather
+ * than saving a key the pricing engine will ignore forever.
+ */
+export const PRESERVED_PATCH_KEYS: readonly string[] = ["peak_hours"];
+
+/**
+ * `__proto__` and friends are never valid pricing field names, and assigning
+ * them onto a plain object walks into `Object.prototype`'s accessor instead of
+ * creating an own property: the value is silently dropped and the object's
+ * prototype is mutated. JSON.parse does create `__proto__` as an own property,
+ * so a patch fetched from the API can carry one. Refuse to carry these keys at
+ * every point where an arbitrary patch key is copied.
+ */
+export function isUnsafePatchKey(key: string): boolean {
+	return key === "__proto__" || key === "constructor" || key === "prototype";
+}
+
+export function buildPatchFromForm(form: FormState): { patch: PricingOverridePatch; errors: FieldErrors } {
+	const errors: FieldErrors = {};
+	const patch: PricingOverridePatch = {};
+
+	// Only keys the form cannot render ride through. A key the form does render
+	// can still reach preservedPatch when the stored value was not a number, and
+	// copying it here would resurrect that stale value even after the user
+	// cleared the field. The rendered form stays authoritative for its own keys.
+	for (const [key, value] of Object.entries(form.preservedPatch ?? {})) {
+		if (isUnsafePatchKey(key) || patchKeys.includes(key as PricingFieldKey)) continue;
+		(patch as Record<string, unknown>)[key] = value;
+	}
+
+	for (const key of patchKeys) {
+		const raw = form.pricingValues[key];
+		if (raw == null || raw.trim() === "") continue;
+		const err = pricingFieldError(key, raw);
+		if (err) {
+			errors[key] = err;
+			continue;
+		}
+		(patch as Record<string, number>)[key] = Number(raw);
+	}
+
+	return { patch, errors };
+}

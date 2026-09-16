@@ -263,10 +263,10 @@ const SidebarItemView = ({
 		} `;
 
 	const innerContent = (
-		<div className="flex w-full items-center justify-between">
-			<div className="flex w-full items-center gap-2">
+		<div className="flex w-full min-w-0 items-center justify-between">
+			<div className="flex w-full min-w-0 items-center gap-2">
 				<item.icon className={`h-4 w-4 shrink-0 ${isActive || isAnySubItemActive ? "text-primary" : "text-muted-foreground"}`} />
-				<span className={`text-sm group-data-[collapsible=icon]:hidden ${isActive || isAnySubItemActive ? "font-medium" : "font-normal"}`}>
+				<span className={`min-w-0 truncate text-sm group-data-[collapsible=icon]:hidden ${isActive || isAnySubItemActive ? "font-medium" : "font-normal"}`}>
 					{item.title}
 				</span>
 				{item.tag && (
@@ -363,9 +363,11 @@ const SidebarItemView = ({
 							const SubItemIcon = subItem.icon;
 							const subSlug = subItem.testId ?? slug(subItem.title);
 							const inner = (
-								<div className="flex items-center gap-2">
-									{SubItemIcon && <SubItemIcon className={`h-3.5 w-3.5 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />}
-									<span className={`text-sm ${isSubItemActive ? "text-primary font-medium" : "text-slate-500 dark:text-zinc-400"}`}>
+								<div className="flex min-w-0 items-center gap-2">
+									{SubItemIcon && (
+										<SubItemIcon className={`h-3.5 w-3.5 shrink-0 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />
+									)}
+									<span className={`min-w-0 truncate text-sm ${isSubItemActive ? "text-primary font-medium" : "text-slate-500 dark:text-zinc-400"}`}>
 										{subItem.title}
 									</span>
 									{subItem.tag && (
@@ -420,9 +422,11 @@ const SidebarItemView = ({
 									: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
 							}`;
 						const subInner = (
-							<div className="flex w-full items-center gap-2">
-								{SubItemIcon && <SubItemIcon className={`h-3.5 w-3.5 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />}
-								<span className={`text-sm ${isSubItemActive ? "font-medium" : "font-normal"}`}>{subItem.title}</span>
+							<div className="flex w-full min-w-0 items-center gap-2">
+								{SubItemIcon && (
+									<SubItemIcon className={`h-3.5 w-3.5 shrink-0 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />
+								)}
+								<span className={`min-w-0 truncate text-sm ${isSubItemActive ? "font-medium" : "font-normal"}`}>{subItem.title}</span>
 								{subItem.tag && (
 									<Badge variant="secondary" className="text-muted-foreground ml-auto text-xs">
 										{subItem.tag}
