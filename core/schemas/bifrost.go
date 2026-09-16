@@ -503,6 +503,13 @@ const (
 // provider's error Type is used, falling back to `unknown`. Use it to inspect what went wrong on a
 // given try.
 //
+// RetryAfter is the provider's own hint for how long to wait before trying this key again, in
+// milliseconds, carried from the error's ExtraFields.RetryAfter (see the retry hint sources in
+// providers/utils). It is zero when the provider gave none, which is most failures: only a
+// Retry-After or retry-after-ms header, or a google.rpc.RetryInfo error detail, produces one.
+// Kept per attempt because a request that rotated away from a rate-limited key still knows how
+// long that key asked for, which the request's final error no longer says.
+//
 // TriggeredRotation is true iff this attempt's per-key failure caused the next attempt to actually
 // rotate to a *different* key. It is false on:
 //   - the final (terminal) attempt of a request, regardless of outcome,
@@ -519,6 +526,7 @@ type KeyAttemptRecord struct {
 	FailReason        *string      `json:"fail_reason,omitempty"`
 	FailureClass      FailureClass `json:"failure_class,omitempty"`
 	StatusCode        *int         `json:"status_code,omitempty"`
+	RetryAfter        int64        `json:"retry_after_ms,omitempty"`
 	TriggeredRotation bool         `json:"triggered_rotation"`
 }
 
@@ -2164,7 +2172,8 @@ type BifrostErrorExtraFields struct {
 	RawResponse               interface{}           `json:"raw_response,omitempty"`
 	ConvertedRequestType      RequestType           `json:"converted_request_type,omitempty"`
 	DroppedCompatPluginParams []string              `json:"dropped_compat_plugin_params,omitempty"`
-	Latency                   int64                 `json:"latency,omitempty"` // in milliseconds
+	Latency                   int64                 `json:"latency,omitempty"`        // in milliseconds
+	RetryAfter                int64                 `json:"retry_after_ms,omitempty"` // provider's retry hint in milliseconds, clamped to 1s..5m; zero when it gave none
 	KeyStatuses               []KeyStatus           `json:"key_statuses,omitempty"`
 	MCPAuthRequired           *MCPAuthRequiredError `json:"mcp_auth_required,omitempty"` // Set when a per-user MCP tool requires the caller to complete an inline auth flow (OAuth or headers)
 	// BilledUsage carries provider-reported token usage that was consumed even

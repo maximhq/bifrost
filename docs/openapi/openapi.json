@@ -97197,6 +97197,13 @@
           "error_type": {
             "type": "string",
             "description": "Normalized, low-cardinality classification of why the request failed, declared by whichever component refused it. Prefixed by fault domain (caller_, policy_, provider_, bifrost_). Absent on failures that were not classified at source."
+          },
+          "retry_after_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1000,
+            "maximum": 300000,
+            "description": "The provider's hint for how long to wait before retrying, in milliseconds, read from its retry-after-ms or Retry-After header or its google.rpc.RetryInfo error detail, and clamped to between 1000 and 300000. Absent when the provider gave no explicit hint."
           }
         }
       },
