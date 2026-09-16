@@ -312,6 +312,20 @@
 	}
 }
 
+/*
+Truncates from the START of a string instead of the end, so the distinctive tail
+of a long identifier survives: `us.anthropic.claude-sonnet-4-5` shows as
+`…claude-sonnet-4-5` rather than `us.anthropic.claud…`. The RTL direction
+moves the ellipsis to the left edge; wrap the text in <bdi> (see
+StartTruncatedLabel) so the characters themselves still read left to right.
+*/
+@utility truncate-start {
+	direction: rtl;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
 @utility custom-scrollbar {
 	overflow: auto !important;
 	scrollbar-width: thin; /* Firefox */

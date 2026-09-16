@@ -51,4 +51,26 @@ function TruncatedLabel({ children, className, tooltip, tooltipSide = "right", .
 	);
 }
 
-export { TruncatedLabel };
+type StartTruncatedLabelProps = {
+	children: React.ReactNode;
+	className?: string;
+} & Omit<React.ComponentProps<"span">, "children">;
+
+/**
+ * Like `truncate`, but the ellipsis lands at the start of the string so the
+ * distinctive tail stays readable. Model ids share long prefixes
+ * (`us.anthropic.claude-…`, `workers-ai/@cf/…`) and the end is what tells them
+ * apart. `<bdi>` keeps the characters in left-to-right order inside the
+ * right-to-left box that moves the ellipsis.
+ *
+ * Give it a width or `max-w-*`; without one there is nothing to truncate to.
+ */
+function StartTruncatedLabel({ children, className, ...props }: StartTruncatedLabelProps) {
+	return (
+		<span className={cn("truncate-start min-w-0 text-left", className)} {...props}>
+			<bdi>{children}</bdi>
+		</span>
+	);
+}
+
+export { StartTruncatedLabel, TruncatedLabel };
