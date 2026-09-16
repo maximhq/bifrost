@@ -149,3 +149,43 @@ func TestBase64DecodedSizeIsExact(t *testing.T) {
 		t.Errorf("padding-only = %d, want >= 0", got)
 	}
 }
+
+// A pooled span must not keep message content alive. The maps and the event
+// backing array are reused, but every value is dropped; the whole-struct reset
+// also means a field added to Span later cannot be missed here.
+func TestReleaseSnapshotRetainsNothing(t *testing.T) {
+	big := strings.Repeat("X", 8*1024)
+	span := &Span{
+		SpanID: "s1", ParentID: "p", TraceID: "t", Name: "n", Kind: SpanKindLLMCall,
+		StatusMsg:  "msg",
+		Attributes: map[string]any{AttrInputMessages: big},
+		Events:     []SpanEvent{{Name: "e", Attributes: map[string]any{"payload": big}}},
+		LLM:        &LLMSpanData{RequestModel: "gpt-4o"},
+		Enrichment: &SpanEnrichment{UserID: "u"},
+	}
+	tr := &Trace{TraceID: "t1", RootSpan: span, Spans: []*Span{span}}
+
+	snap := tr.SnapshotForExport()
+	pooled := snap.Spans[0]
+	snap.ReleaseSnapshot()
+
+	for _, v := range pooled.Attributes {
+		if s, ok := v.(string); ok && len(s) > 0 {
+			t.Errorf("attribute value retained (%d bytes)", len(s))
+		}
+	}
+	for _, e := range pooled.Events[:cap(pooled.Events)] {
+		if e.Name != "" || len(e.Attributes) > 0 {
+			t.Errorf("event retained: %+v", e)
+		}
+	}
+	if pooled.SpanID != "" || pooled.ParentID != "" || pooled.TraceID != "" ||
+		pooled.Name != "" || pooled.Kind != "" || pooled.StatusMsg != "" ||
+		pooled.LLM != nil || pooled.Enrichment != nil {
+		t.Errorf("scalar or pointer field retained: %+v", pooled)
+	}
+	// The reusable allocations are kept, which is the point of pooling.
+	if pooled.Attributes == nil {
+		t.Error("attribute map was discarded instead of cleared")
+	}
+}

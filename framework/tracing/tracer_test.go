@@ -831,3 +831,23 @@ func TestTracer_PopulateLLMResponseAttributesEmitsResponsesFinishReason(t *testi
 	require.Equal(t, []string{"refusal"}, span.Attributes[schemas.AttrFinishReasons])
 	require.Equal(t, "refusal", span.Attributes[schemas.AttrFinishReason])
 }
+
+// Before SetObservabilityPlugins runs, demand is unknown rather than absent. A
+// request in flight during boot must still get its attributes; declaring an
+// empty plugin set is what expresses "nothing is listening".
+func TestDemandUnknownBeforeRegistrationIsFull(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	if d := tracer.Demand(); !d.Any || !d.Content {
+		t.Errorf("unregistered tracer demand = %+v, want full", d)
+	}
+
+	// An explicit empty set is the opposite: nothing is listening.
+	tracer.SetObservabilityPlugins(nil, nil)
+	if d := tracer.Demand(); d.Any || d.Content {
+		t.Errorf("empty plugin set demand = %+v, want zero", d)
+	}
+}
