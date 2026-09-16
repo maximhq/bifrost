@@ -13,6 +13,59 @@ import (
 // These tests use schemas.Marshal/Unmarshal (sonic) to verify round-trip
 // behavior matches what the production pipeline actually does.
 
+func TestChatParametersStop(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   string
+		want    []string
+		wantErr bool
+	}{
+		{name: "absent", input: `{}`},
+		{name: "null", input: `{"stop":null}`},
+		{name: "empty string", input: `{"stop":""}`, want: []string{""}},
+		{name: "string", input: `{"stop":"<END>"}`, want: []string{"<END>"}},
+		{name: "escaped string", input: `{"stop":"\n\"end\""}`, want: []string{"\n\"end\""}},
+		{name: "whitespace", input: `{"stop":  "end"  }`, want: []string{"end"}},
+		{name: "empty array", input: `{"stop":[]}`, want: []string{}},
+		{name: "array", input: `{"stop":["<END>","\n"]}`, want: []string{"<END>", "\n"}},
+		{name: "number", input: `{"stop":1}`, wantErr: true},
+		{name: "boolean", input: `{"stop":false}`, wantErr: true},
+		{name: "object", input: `{"stop":{}}`, wantErr: true},
+		{name: "mixed array", input: `{"stop":["end",1]}`, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var params ChatParameters
+			err := Unmarshal([]byte(tc.input), &params)
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, params.Stop)
+			if len(tc.want) > 0 {
+				encoded, err := Marshal(params)
+				require.NoError(t, err)
+				var roundTrip struct {
+					Stop []string `json:"stop"`
+				}
+				require.NoError(t, Unmarshal(encoded, &roundTrip))
+				assert.Equal(t, tc.want, roundTrip.Stop)
+			}
+		})
+	}
+}
+
+func TestChatParametersStopReuse(t *testing.T) {
+	params := ChatParameters{Stop: []string{"existing"}}
+	require.NoError(t, Unmarshal([]byte(`{}`), &params))
+	assert.Equal(t, []string{"existing"}, params.Stop)
+	require.NoError(t, Unmarshal([]byte(`{"stop":"replacement"}`), &params))
+	assert.Equal(t, []string{"replacement"}, params.Stop)
+	require.NoError(t, Unmarshal([]byte(`{"stop":null}`), &params))
+	assert.Nil(t, params.Stop)
+}
+
 // --- ChatToolChoiceStruct ---
 
 func TestSonic_ChatToolChoiceStruct_FunctionVariant(t *testing.T) {
