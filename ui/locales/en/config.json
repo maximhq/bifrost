@@ -183,7 +183,17 @@
 		"requiredHeadersPlaceholder": "X-Tenant-ID, X-Custom-Header",
 		"routesPlaceholder": "/api/custom-webhook, /api/public-endpoint",
 		"toastSaved": "Security settings updated successfully.",
-		"toastInvalidOrigins": "Invalid origins: {{origins}}",
+		"toastInvalidOrigins": "Invalid origins: {{origins}}. Origins must be valid URLs like https://example.com, wildcard patterns like https://*.example.com, or \"*\" to allow all origins",
+		"toastInvalidCooldown": "Rotation cooldown must be a duration like \"30s\", \"5m\", or \"1h30m\" (leave empty to disable).",
+		"passwordMustInclude": "Password must include {{requirements}}.",
+		"requirementSeparator": ", ",
+		"passwordRequirement": {
+			"minLength": "at least 12 characters",
+			"uppercase": "one uppercase letter",
+			"lowercase": "one lowercase letter",
+			"number": "one number",
+			"special": "one special character"
+		},
 		"vkRotationCooldown": "Cooldown After Virtual Key Rotation",
 		"vkRotationCooldownDesc": "After rotating a virtual key, the previous value keeps authenticating for this long, giving callers time to switch to the new key. Use a duration like 30s, 5m, or 1h. Leave empty (or 0) to have the old value stop working immediately. Maximum 30 days.",
 		"authTypeUnavailable": "Could not load authentication type. Dashboard password settings are hidden until this request succeeds.",
