@@ -2105,6 +2105,20 @@ func SetExtraHeadersHTTP(ctx context.Context, req *http.Request, extraHeaders ma
 	}
 }
 
+// rootErrorMessage returns a root-level "message" string from a parsed provider error
+// body, or "" when the body carries none. AWS uses this shape for every Bedrock error
+// (the exception name travels separately, in "__type" or the X-Amzn-Errortype header),
+// while providers whose errors nest the message under "error" simply have no root-level
+// "message" for this to find.
+func rootErrorMessage(raw interface{}) string {
+	body, ok := raw.(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	message, _ := body["message"].(string)
+	return strings.TrimSpace(message)
+}
+
 // HandleProviderAPIError processes error responses from provider APIs.
 // It attempts to unmarshal the error response and returns a BifrostError
 // with the appropriate status code and error information.
@@ -2180,11 +2194,17 @@ func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 
 	// Try JSON parsing first
 	if err := sonic.Unmarshal(decodedBody, errorResp); err == nil {
-		// JSON parsing succeeded, return success
+		// JSON parsing succeeded, return success. The message is seeded from a
+		// root-level "message" so a body the caller's own error shape cannot
+		// describe still reports a reason: AWS answers every Bedrock surface
+		// (bedrock-runtime and Mantle) with a flat {"message":"..."}, which
+		// neither the Anthropic error envelope nor the OpenAI one matches, and
+		// those surfaces are served by the shared Anthropic/OpenAI handlers.
+		// Callers overwrite this as soon as their own parse finds a message.
 		return &schemas.BifrostError{
 			IsBifrostError: false,
 			StatusCode:     &statusCode,
-			Error:          &schemas.ErrorField{},
+			Error:          &schemas.ErrorField{Message: rootErrorMessage(rawErrorResponse)},
 			ExtraFields: schemas.BifrostErrorExtraFields{
 				RawResponse: rawErrorResponse,
 			},
