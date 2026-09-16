@@ -1,18 +1,18 @@
 {
 	"labels": {
-		"total": "合计",
-		"avg": "平均",
+		"total": "总计",
+		"avg": "平均值",
 		"success": "成功",
 		"error": "错误",
 		"cancelled": "已取消",
 		"input": "输入",
 		"output": "输出",
-		"cached": "缓存",
+		"cached": "已缓存",
 		"cost": "费用",
 		"latency": "延迟",
 		"tokens": "令牌",
-		"requests": "请求",
-		"throughput": "吞吐",
+		"requests": "请求数",
+		"throughput": "吞吐量",
 		"other": "其他",
 		"more": "+{{count}} 更多",
 		"nA": "N/A",
@@ -55,7 +55,7 @@
 		"ofPages": "/ {{total}} 页",
 		"count": "次数",
 		"tokensPerSec": "Token/秒",
-		"completionTokens": "补全 Token",
+		"completionTokens": "输出 token 数",
 		"direct": "直接命中",
 		"semantic": "语义命中",
 		"costLegend": "费用"
@@ -281,7 +281,28 @@
 			"video": "视频"
 		},
 		"waitingForNew": "等待新日志…",
-		"loading": "正在加载日志…"
+		"loading": "正在加载日志…",
+		"searchPlaceholders": {
+			"request_id": "按请求 ID 搜索",
+			"content": "搜索日志内容"
+		},
+		"searchModes": {
+			"auto": "自动",
+			"request_id": "请求 ID",
+			"content": "内容"
+		},
+		"searchModeHint": "选择搜索日志内容或查找请求 ID",
+		"searchModeOptions": {
+			"auto": "自动识别",
+			"content": "内容搜索",
+			"request_id": "请求 ID 搜索"
+		},
+		"exactIdSearchHint": "精确查找此请求 ID，不受所选时间范围限制。",
+		"viewDetails": "查看详情",
+		"routingDecisionLogs": "路由决策日志",
+		"noRawJson": "没有可用的原始 JSON。",
+		"rawJsonDisabled": "已在设置中禁用原始 JSON 存储",
+		"ocrInput": "OCR 输入"
 	},
 	"mcpLogs": {
 		"searchPlaceholder": "搜索 MCP 日志",
@@ -335,7 +356,26 @@
 		"execution": "执行",
 		"errorDetails": "错误详情",
 		"pluginLogs": "插件日志",
-		"loading": "正在加载 MCP 日志…"
+		"loading": "正在加载 MCP 日志…",
+		"native": "原生",
+		"local": "本地",
+		"notRecorded": "未记录",
+		"policyCheck": "策略检查",
+		"executionTime": "执行耗时",
+		"presentation": {
+			"policyApproved": "策略已允许",
+			"policyBlocked": "策略已阻止",
+			"observed": "已观测",
+			"succeeded": "成功",
+			"failed": "失败",
+			"cancelled": "已取消",
+			"processing": "处理中",
+			"approvedDescription": "执行前已获允许。此记录中没有实际执行结果。",
+			"blockedDescription": "在执行前被阻止。",
+			"observedDescription": "已捕获工具活动，但执行结果未知。",
+			"executionDescription": "已记录的工具执行结果。"
+		},
+		"noResults": "未找到结果，请尝试调整筛选条件或时间范围。"
 	},
 	"connectors": {
 		"providers": "提供商",
@@ -430,6 +470,9 @@
 		"saveOtel": "保存 OTEL 配置",
 		"saveMaxim": "保存 Maxim 配置",
 		"reset": "重置",
-		"plugins": "插件"
+		"plugins": "插件",
+		"prometheus": {
+			"pullScraping": "拉取式采集"
+		}
 	}
 }

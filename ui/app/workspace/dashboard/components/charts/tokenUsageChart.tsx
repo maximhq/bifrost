@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import type { TokenHistogramResponse } from "@/lib/types/logs";
 import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -16,6 +17,7 @@ interface TokenUsageChartProps {
 }
 
 function CustomTooltip({ active, payload }: any) {
+	const { t } = useTranslation("observability");
 	if (!active || !payload || !payload.length) return null;
 
 	const data = payload[0]?.payload;
@@ -28,14 +30,14 @@ function CustomTooltip({ active, payload }: any) {
 				<div className="flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
 						<span className="bg-chart-token-input h-2 w-2 rounded-full" />
-						<span className="text-zinc-600 dark:text-zinc-400">Input</span>
+						<span className="text-zinc-600 dark:text-zinc-400">{t("labels.input")}</span>
 					</span>
 					<span className="font-medium">{data.prompt_tokens.toLocaleString()}</span>
 				</div>
 				<div className="flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
 						<span className="bg-chart-token-output h-2 w-2 rounded-full" />
-						<span className="text-zinc-600 dark:text-zinc-400">Output</span>
+						<span className="text-zinc-600 dark:text-zinc-400">{t("labels.output")}</span>
 					</span>
 					<span className="font-medium">{data.completion_tokens.toLocaleString()}</span>
 				</div>
@@ -43,13 +45,13 @@ function CustomTooltip({ active, payload }: any) {
 					<div className="flex items-center justify-between gap-4">
 						<span className="flex items-center gap-1.5">
 							<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.cachedReadTokens }} />
-							<span className="text-zinc-600 dark:text-zinc-400">Cached</span>
+							<span className="text-zinc-600 dark:text-zinc-400">{t("labels.cached")}</span>
 						</span>
 						<span className="font-medium">{data.cached_read_tokens.toLocaleString()}</span>
 					</div>
 				)}
 				<div className="flex items-center justify-between gap-4 border-t border-zinc-200 pt-1 dark:border-zinc-700">
-					<span className="text-zinc-600 dark:text-zinc-400">Total</span>
+					<span className="text-zinc-600 dark:text-zinc-400">{t("labels.total")}</span>
 					<span className="font-medium">{data.total_tokens.toLocaleString()}</span>
 				</div>
 			</div>

@@ -271,7 +271,7 @@ export function PrometheusFormFragment({
 					<TabsContent value="pull" className="mt-2 space-y-4">
 						<div className="flex items-center justify-between gap-4">
 							<div className="flex flex-col gap-1">
-								<h3 className="text-sm font-medium">Pull-based Scraping</h3>
+								<h3 className="text-sm font-medium">{t("connectors.prometheus.pullScraping")}</h3>
 								<p className="text-muted-foreground text-xs">Prometheus can scrape metrics from the /metrics endpoint</p>
 							</div>
 							<FormField

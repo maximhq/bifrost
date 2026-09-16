@@ -30,7 +30,6 @@
 		"description": "Configure client behavior and request handling.",
 		"dropExcessRequests": "Drop Excess Requests",
 		"dropExcessRequestsHelp": "If enabled, Bifrost will drop requests that exceed pool capacity.",
-		"droppedRequests": "Have dropped {{count}} requests since last restart.",
 		"disableDbPings": "Disable DB Pings in Health Check",
 		"disableDbPingsHelp": "If enabled, the /health endpoint will skip database connectivity checks and return OK immediately.",
 		"dumpErrors": "Dump Errors in Console Logs",
@@ -73,7 +72,9 @@
 		"toastSaveClientFailed": "Failed to save client config: {{error}}",
 		"toastSaveLargePayloadFailed": "Failed to save large payload config: {{error}}",
 		"toastSavedWithRestart": "Settings updated. Large payload changes require a restart to apply.",
-		"toastSaved": "Client settings updated successfully."
+		"toastSaved": "Client settings updated successfully.",
+		"droppedRequests_one": "Have dropped {{count}} request since last restart.",
+		"droppedRequests_other": "Have dropped {{count}} requests since last restart."
 	},
 	"caching": {
 		"title": "Local Cache",
@@ -87,7 +88,9 @@
 		"enable": "enable",
 		"disable": "disable",
 		"toastUpdated": "Cache configuration updated",
-		"toastUpdateFailed": "Failed to update cache configuration: {{error}}"
+		"toastUpdateFailed": "Failed to update cache configuration: {{error}}",
+		"directOnly": "Direct only",
+		"directSemantic": "Direct + Semantic"
 	},
 	"security": {
 		"title": "Security Settings",
@@ -123,7 +126,8 @@
 		"toastSaved": "Security settings updated successfully.",
 		"toastInvalidOrigins": "Invalid origins: {{origins}}",
 		"vkRotationCooldown": "Cooldown After Virtual Key Rotation",
-		"vkRotationCooldownDesc": "After rotating a virtual key, the previous value keeps authenticating for this long, giving callers time to switch to the new key. Use a duration like 30s, 5m, or 1h. Leave empty (or 0) to have the old value stop working immediately. Maximum 30 days."
+		"vkRotationCooldownDesc": "After rotating a virtual key, the previous value keeps authenticating for this long, giving callers time to switch to the new key. Use a duration like 30s, 5m, or 1h. Leave empty (or 0) to have the old value stop working immediately. Maximum 30 days.",
+		"authTypeUnavailable": "Could not load authentication type. Dashboard password settings are hidden until this request succeeds."
 	},
 	"logging": {
 		"title": "Logs Settings",
@@ -233,7 +237,9 @@
 		"toastTimeoutPositive": "Tool execution timeout must be a positive number.",
 		"toastAuthCodeTtl": "Authorization code TTL must be between 1 and 900 seconds (15 minutes).",
 		"toastAccessTokenTtl": "Access token TTL must be at least 60 seconds.",
-		"toastSaved": "MCP settings updated successfully."
+		"toastSaved": "MCP settings updated successfully.",
+		"maxDepthHelp": "Maximum depth for MCP agent execution.",
+		"refreshIntervalHelp": "How often to refresh tool lists from MCP servers. Set to 0 to use the default of 10 minutes."
 	},
 	"modelSettings": {
 		"title": "Model Settings",
@@ -253,7 +259,8 @@
 		"title": "Pricing Configuration",
 		"description": "Configure custom pricing datasheet and sync intervals.",
 		"toastSaved": "Pricing configuration updated successfully.",
-		"toastSynced": "Pricing synced successfully."
+		"toastSynced": "Pricing synced successfully.",
+		"datasheetUrl": "Pricing Datasheet URL"
 	},
 	"proxy": {
 		"title": "Proxy Settings",
@@ -349,7 +356,7 @@
 		"downloading": "Downloading…",
 		"downloadAll": "Download All Skills",
 		"downloadAllAria": "Download all skills",
-		"newSkill": "New skill",
+		"newSkill": "New Skill",
 		"emptySearch": "No skills match your search",
 		"empty": "No skills created yet",
 		"copied": "Copied to clipboard",
@@ -361,7 +368,33 @@
 		"toastDeleted": "Skill deleted",
 		"toastDeleteFailed": "Failed to delete skill",
 		"toastBumpSuccess": "All-skills version bumped to {{version}}",
-		"toastBumpFailed": "Failed to bump all-skills version"
+		"toastBumpFailed": "Failed to bump all-skills version",
+		"marketplaceHint": "Copy a marketplace URL or CLI command",
+		"copyClaudeDesktop": "Copy Claude Desktop and Cowork marketplace Git URL",
+		"copyClaudeCode": "Copy Claude Code command",
+		"copyCodex": "Copy Codex command",
+		"deleteConfirmation": "This action cannot be undone. The skill, its files, and version history will be permanently deleted.",
+		"loadFailed": "Failed to load skills",
+		"readMoreAria": "Read more about skills (opens in new tab)",
+		"allSkillsVersion": "all-skills version",
+		"gitUnavailable": "Git is not available on the server. Install git and restart Bifrost to enable marketplace registration for Claude Code and Codex.",
+		"sortBy": "Sort by {{label}}",
+		"deleteTitle": "Delete {{name}}?",
+		"bumpVersion": "Bump {{version}}",
+		"name": "Name",
+		"descriptionColumn": "Description",
+		"version": "Version",
+		"files": "Files",
+		"updated": "Updated",
+		"actions": "Actions",
+		"previousPage": "Previous page",
+		"nextPage": "Next page",
+		"emptyDescription": "Manage SKILL.md instructions and supporting files in one place, publish immutable versions, and expose them as installable plugins for Claude Code, Codex, and other skill-aware clients.",
+		"allSkillsHelp": "When registered as a marketplace, an \"all-skills\" plugin is available that installs every skill in this repository at once. Its version bumps automatically on changes; use the dropdown to bump manually if needed.",
+		"entryRange": "{{start}}-{{end}} of {{total}} entries",
+		"pageCount": "Page {{page}} of {{total}}",
+		"fileCount_one": "<count>{{count}}</count> file",
+		"fileCount_other": "<count>{{count}}</count> files"
 	},
 	"promptRepo": {
 		"loadFailed": "Failed to load prompt repository",

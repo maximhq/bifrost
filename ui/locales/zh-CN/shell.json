@@ -14,7 +14,7 @@
 		"modelProviders": "模型提供商",
 		"budgetsLimits": "预算与限额",
 		"routingRules": "路由规则",
-		"complexityRouter": "复杂度路由",
+		"complexityRouter": "Complexity Router",
 		"circuitBreaker": "熔断器",
 		"pricingOverrides": "定价覆盖",
 		"modelSettings": "模型设置",
@@ -209,7 +209,12 @@
 	"error": {
 		"title": "出错了",
 		"description": "出了点问题，请刷新页面。",
-		"reload": "重新加载"
+		"reload": "重新加载",
+		"unreachableTitle": "无法连接到控制台",
+		"unreachableDescription": "Bifrost 未返回配置。这通常是短暂中断，尤其是在 Bifrost 升级期间。",
+		"retrying": "正在重试…",
+		"retry": "重试",
+		"dataUnaffected": "您的设置和数据不受影响。"
 	},
 	"notFound": {
 		"title": "页面未找到",

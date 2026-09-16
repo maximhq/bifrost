@@ -176,7 +176,12 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 									<FormLabel className="text-right">{t("providers.name")}</FormLabel>
 									<div className="col-span-3">
 										<FormControl>
-											<Input placeholder={t("providers.name")} data-testid="custom-provider-name" disabled={!hasProviderCreateAccess} {...field} />
+											<Input
+												placeholder={t("providers.name")}
+												data-testid="custom-provider-name"
+												disabled={!hasProviderCreateAccess}
+												{...field}
+											/>
 										</FormControl>
 										<FormMessage />
 									</div>
@@ -234,9 +239,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 											<label htmlFor="allow-private-network" className="text-sm font-medium">
 												{t("providers.allowPrivateNetwork")}
 											</label>
-											<p className="text-muted-foreground text-sm">
-												{t("providers.allowPrivateNetworkDesc")}
-											</p>
+											<p className="text-muted-foreground text-sm">{t("providers.allowPrivateNetworkDesc")}</p>
 										</div>
 										<Switch
 											id="allow-private-network"
@@ -311,12 +314,9 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 										<div className="bg-muted/50 flex items-center justify-between space-x-2 rounded-sm border p-3">
 											<div className="space-y-0.5">
 												<label htmlFor="wait-for-usage" className="text-sm font-medium">
-													Wait For Trailing Usage Chunk?
+													{t("providers.custom.waitForUsage")}
 												</label>
-												<p className="text-muted-foreground text-sm">
-													Keep reading after finish_reason so the trailing usage chunk is collected. Without this the request records zero
-													tokens and zero cost
-												</p>
+												<p className="text-muted-foreground text-sm">{t("providers.custom.waitForUsageHelp")}</p>
 											</div>
 											<Switch
 												id="wait-for-usage"

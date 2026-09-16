@@ -136,7 +136,6 @@ const getSidebarItemHref = (item: Pick<SidebarItem, "url" | "queryParam">) => {
 	return item.queryParam ? `${item.url}?tab=${item.queryParam}` : item.url;
 };
 
-
 const TimeFilterPages = new Set(["/workspace/dashboard", "/workspace/logs", "/workspace/mcp-logs"]);
 
 const preserveTimeFilters = (baseHref: string, subItemUrl: string, pathname: string, search: string): string => {
@@ -677,6 +676,7 @@ export default function AppSidebar() {
 				subItems: [
 					{
 						id: "models.catalog",
+						testId: "model-catalog",
 						title: t("nav.modelCatalog"),
 						url: "/workspace/model-catalog",
 						icon: LayoutGrid,

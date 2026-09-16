@@ -1,4 +1,5 @@
 import { StartTruncatedLabel } from "@/components/ui/truncatedLabel";
+import { useTranslation } from "react-i18next";
 import type { ProviderTokenHistogramResponse } from "@/lib/types/logs";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import { memo, useMemo } from "react";
@@ -58,6 +59,7 @@ function AllProvidersTooltip({ active, payload, displayProviders }: any) {
 }
 
 function SingleProviderTooltip({ active, payload, provider }: any) {
+	const { t } = useTranslation("observability");
 	if (!active || !payload || !payload.length) return null;
 
 	const data = payload[0]?.payload;
@@ -73,19 +75,19 @@ function SingleProviderTooltip({ active, payload, provider }: any) {
 				<div className="flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
 						<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.promptTokens }} />
-						<span className="text-zinc-600 dark:text-zinc-400">Input</span>
+						<span className="text-zinc-600 dark:text-zinc-400">{t("labels.input")}</span>
 					</span>
 					<span className="font-medium">{formatCompactNumber(stats.prompt_tokens || 0)}</span>
 				</div>
 				<div className="flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
 						<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.completionTokens }} />
-						<span className="text-zinc-600 dark:text-zinc-400">Output</span>
+						<span className="text-zinc-600 dark:text-zinc-400">{t("labels.output")}</span>
 					</span>
 					<span className="font-medium">{formatCompactNumber(stats.completion_tokens || 0)}</span>
 				</div>
 				<div className="flex items-center justify-between gap-4 border-t border-zinc-200 pt-1 dark:border-zinc-700">
-					<span className="text-zinc-600 dark:text-zinc-400">Total</span>
+					<span className="text-zinc-600 dark:text-zinc-400">{t("labels.total")}</span>
 					<span className="font-medium">{formatCompactNumber(stats.total_tokens || 0)}</span>
 				</div>
 			</div>

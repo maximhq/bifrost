@@ -39,6 +39,7 @@ import { SecretVar } from "@/lib/types/schemas";
 import {
 	buildDatabricksMigrationPlan,
 	buildMigrationSteps,
+	formatMigrationMessage,
 	DATABRICKS_PROVIDER,
 	DatabricksApiFormat,
 	ExistingTarget,
@@ -249,7 +250,7 @@ export default function DatabricksMigrationDialog({ show, provider, onDeferred, 
 							)}
 							{stage === "preview" && <p>{t("providers.databricksMigration.previewHint")}</p>}
 							{stage === "running" && <p>{t("providers.databricksMigration.runningHint")}</p>}
-							{stage === "finished" && result && <p>{result.message}</p>}
+							{stage === "finished" && result && <p>{formatMigrationMessage(result.message, t)}</p>}
 						</div>
 					</AlertDialogDescription>
 				</AlertDialogHeader>
@@ -298,7 +299,9 @@ export default function DatabricksMigrationDialog({ show, provider, onDeferred, 
 							</Button>
 							<AlertDialogCancel onClick={onDeferred}>{t("providers.databricksMigration.notNow")}</AlertDialogCancel>
 							<DisabledTooltip
-								reason={migrateDisabledReason ?? (plan && planNeedsInput(plan) ? t("providers.databricksMigration.fillMissing") : undefined)}
+								reason={
+									migrateDisabledReason ?? (plan && planNeedsInput(plan) ? t("providers.databricksMigration.fillMissing") : undefined)
+								}
 							>
 								<Button onClick={runMigration} disabled={!canMigrate} data-testid="databricks-migration-confirm">
 									{t("providers.databricksMigration.migrate")}
@@ -415,7 +418,10 @@ function MigrationPreview({ plan, onWorkspaceUrlChange, onApiFormatChange, onKey
 							<div className="text-muted-foreground flex flex-wrap gap-x-4 gap-y-1 text-xs">
 								<span>
 									{t("providers.databricksMigration.modelsLabel", {
-										value: key.models.length === 0 || key.models.includes("*") ? t("providers.databricksMigration.modelsAll") : key.models.join(", "),
+										value:
+											key.models.length === 0 || key.models.includes("*")
+												? t("providers.databricksMigration.modelsAll")
+												: key.models.join(", "),
 									})}
 								</span>
 								{key.blacklisted_models.length > 0 && (
@@ -435,7 +441,7 @@ function MigrationPreview({ plan, onWorkspaceUrlChange, onApiFormatChange, onKey
 										data-testid={`databricks-migration-token-${key.tempId}`}
 										value={key.value ?? { value: "", ref: "" }}
 										onChange={(v) => onKeyValueChange(key.tempId, v)}
-										placeholder="dapi... or env.DATABRICKS_TOKEN"
+										placeholder={t("providers.databricksMigration.tokenPlaceholder")}
 									/>
 									<p className="text-muted-foreground text-xs">
 										{key.fromHeader ? t("providers.databricksMigration.tokenUnread") : t("providers.databricksMigration.tokenMasked")}
@@ -466,13 +472,13 @@ function MigrationPreview({ plan, onWorkspaceUrlChange, onApiFormatChange, onKey
 				<dl className="text-muted-foreground grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-3">
 					<Stat label={t("providers.databricksMigration.timeout")} value={`${net.default_request_timeout_in_seconds}s`} />
 					<Stat label={t("providers.databricksMigration.retries")} value={String(net.max_retries)} />
-					<Stat
-						label={t("providers.databricksMigration.backoff")}
-						value={`${net.retry_backoff_initial}ms → ${net.retry_backoff_max}ms`}
-					/>
+					<Stat label={t("providers.databricksMigration.backoff")} value={`${net.retry_backoff_initial}ms → ${net.retry_backoff_max}ms`} />
 					<Stat label={t("providers.databricksMigration.concurrency")} value={String(perf.concurrency)} />
 					<Stat label={t("providers.databricksMigration.bufferSize")} value={String(perf.buffer_size)} />
-					<Stat label={t("providers.databricksMigration.proxy")} value={plan.providerSettings.proxy_config?.type ?? t("providers.databricksMigration.none")} />
+					<Stat
+						label={t("providers.databricksMigration.proxy")}
+						value={plan.providerSettings.proxy_config?.type ?? t("providers.databricksMigration.none")}
+					/>
 					<Stat
 						label={t("providers.databricksMigration.extraHeaders")}
 						value={otherHeaders.length > 0 ? otherHeaders.join(", ") : t("providers.databricksMigration.none")}
@@ -499,7 +505,7 @@ function MigrationPreview({ plan, onWorkspaceUrlChange, onApiFormatChange, onKey
 					<AlertDescription>
 						<ul className="list-disc space-y-1 pl-4">
 							{plan.warnings.map((warning) => (
-								<li key={warning}>{warning}</li>
+								<li key={JSON.stringify(warning)}>{formatMigrationMessage(warning, t)}</li>
 							))}
 						</ul>
 					</AlertDescription>
@@ -510,18 +516,19 @@ function MigrationPreview({ plan, onWorkspaceUrlChange, onApiFormatChange, onKey
 }
 
 function MigrationProgress({ steps }: { steps: MigrationStep[] }) {
+	const { t } = useTranslation("models");
 	return (
 		<ol className="space-y-2 text-sm" data-testid="databricks-migration-progress">
 			{steps.map((step) => (
 				<li key={step.id} className="flex items-start gap-2" data-testid={`databricks-migration-step-${step.id}`} data-status={step.status}>
 					<StepIcon status={step.status} />
 					<div className="min-w-0 flex-1">
-						<div className={step.status === "pending" ? "text-muted-foreground" : ""}>{step.label}</div>
+						<div className={step.status === "pending" ? "text-muted-foreground" : ""}>{formatMigrationMessage(step.label, t)}</div>
 						{step.detail && (
 							<div
 								className={`mt-0.5 text-xs whitespace-pre-line ${step.status === "failed" ? "text-destructive" : "text-muted-foreground"}`}
 							>
-								{step.detail}
+								{formatMigrationMessage(step.detail, t)}
 							</div>
 						)}
 					</div>

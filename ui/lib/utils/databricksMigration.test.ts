@@ -1,9 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
+import { createInstance } from "i18next";
+import { resources } from "@/lib/i18n/resources";
 
 import { ModelProvider, ModelProviderKey } from "@/lib/types/config";
 import {
 	buildDatabricksMigrationPlan,
 	buildMigrationSteps,
+	formatMigrationMessage,
+	MigrationMessage,
+	MigrationStep,
 	deriveDatabricksWorkspace,
 	isCustomDatabricksProvider,
 	extractAuthFromHeaders,
@@ -14,6 +19,12 @@ import {
 	runDatabricksMigration,
 	toDatabricksKeyPayload,
 } from "./databricksMigration";
+
+const locale = createInstance();
+beforeAll(async () => {
+	await locale.init({ lng: "en", fallbackLng: false, resources, interpolation: { escapeValue: false } });
+});
+const render = (value: MigrationMessage, language = "en") => formatMigrationMessage(value, locale.getFixedT(language, "models"));
 
 const REDACTED = "dapi************************abcd";
 
@@ -144,7 +155,7 @@ describe("buildDatabricksMigrationPlan", () => {
 			type: "http",
 			url: { value: "", ref: "env.PROXY" },
 		});
-		expect(plan.warnings.some((w) => w.includes("proxy password"))).toBe(true);
+		expect(plan.warnings.some((w) => render(w).includes("proxy password"))).toBe(true);
 	});
 
 	it("maps keyed sources, requiring re-entry for masked values and keeping refs", () => {
@@ -164,7 +175,7 @@ describe("buildDatabricksMigrationPlan", () => {
 		expect(plan.keys[0].aliases).toEqual({ alias: { model_id: "real-model" } });
 		expect(plan.keys[1].needsValue).toBe(false);
 		expect(plan.keys[1].value).toMatchObject({ ref: "env.DBX", type: "env" });
-		expect(plan.warnings.some((w) => w.includes("Authorization header"))).toBe(true);
+		expect(plan.warnings.some((w) => render(w).includes("Authorization header"))).toBe(true);
 		expect(planNeedsInput(plan)).toBe(true);
 	});
 
@@ -216,7 +227,7 @@ describe("buildDatabricksMigrationPlan", () => {
 			}),
 			[],
 		);
-		expect(plan.warnings.filter((w) => /Allowed request|path overrides|config\.json/.test(w))).toHaveLength(3);
+		expect(plan.warnings.filter((w) => /Allowed request|path overrides|config\.json/.test(render(w)))).toHaveLength(3);
 	});
 
 	it("enables migration once a masked key gets a value, and strips paths from an edited workspace url", () => {
@@ -395,7 +406,7 @@ describe("runDatabricksMigration", () => {
 		});
 		const result = await runDatabricksMigration(keyedPlan(), api, () => {});
 		expect(result).toMatchObject({ ok: true, partial: true });
-		expect(result.message).toContain("Delete it manually");
+		expect(render(result.message)).toContain("Delete it manually");
 		expect(names()).not.toContain("updateProviderKey");
 	});
 
@@ -413,5 +424,74 @@ describe("runDatabricksMigration", () => {
 		expect(result.ok).toBe(false);
 		expect(names()).toContain("deleteProviderKey");
 		expect(names().filter((n) => n === "deleteProvider")).toHaveLength(1);
+	});
+});
+
+describe("migration message descriptors", () => {
+	it("keeps migration outcomes and warnings translatable after the operation", async () => {
+		const { api } = fakeApi();
+		const result = await runDatabricksMigration(keyedPlan("my-dbx"), api, () => {});
+		expect(result.message).toMatchObject({
+			key: "providers.databricksMigration.messages.success",
+			values: { name: "my-dbx", count: 2 },
+		});
+		expect(deriveDatabricksWorkspace("http://h.cloud.databricks.com/v1").warnings[0]).toMatchObject({
+			key: "providers.databricksMigration.messages.httpsWarning",
+			values: { host: "h.cloud.databricks.com" },
+		});
+	});
+});
+
+describe("localized migration results", () => {
+	it("renders the same completed result, warnings and progress in both languages", async () => {
+		const { api } = fakeApi();
+		const plan = keyedPlan("my-dbx");
+		const history: MigrationStep[][] = [];
+		const result = await runDatabricksMigration(plan, api, (steps) => history.push(steps));
+		expect(render(result.message)).toBe('Migrated "my-dbx" to the Databricks provider with 2 keys.');
+		expect(render(result.message, "zh-CN")).toBe("已将“my-dbx”迁移到 Databricks 供应商，共 2 个密钥。");
+		for (const lang of ["en", "zh-CN"]) {
+			for (const value of [
+				...plan.warnings,
+				...history.flatMap((steps) => steps.flatMap((step) => [step.label, ...(step.detail ? [step.detail] : [])])),
+			]) {
+				expect(render(value, lang)).not.toMatch(/providers\.databricksMigration|\{\{|\[object Object\]/);
+			}
+		}
+		expect(render(buildMigrationSteps({ ...plan, keys: plan.keys.slice(0, 1) }).find((step) => step.id === "create-keys")!.label)).toBe(
+			"Create 1 key on the Databricks provider",
+		);
+		expect(render(deriveDatabricksWorkspace("http://h.cloud.databricks.com/v1").warnings[0], "zh-CN")).toContain(
+			"https://（h.cloud.databricks.com）",
+		);
+	});
+
+	it("translates nested cleanup notes and preserves API error details", async () => {
+		const error = "locked by admin: <owner> {{raw}}";
+		const { api } = fakeApi({ failOn: (call) => (call[0] === "deleteProvider" ? new Error(error) : undefined) });
+		const result = await runDatabricksMigration(keyedPlan(), api, () => {});
+		expect(render(result.message, "zh-CN")).toBe(
+			`已创建 Databricks 供应商，包含 2 个密钥，但清理未全部完成。无法删除自定义供应商“my-dbx”：${error}。请手动删除。`,
+		);
+	});
+
+	it("translates rollback details and refresh conflicts without changing statuses", async () => {
+		const { api } = fakeApi({
+			failOn: (call) => (call[0] === "createProviderKey" && call[2] === "backup-migrating" ? new Error("upstream unavailable") : undefined),
+		});
+		let progress: MigrationStep[] = [];
+		const result = await runDatabricksMigration(keyedPlan(), api, (steps) => {
+			progress = steps;
+		});
+		expect(render(result.message, "zh-CN")).toBe("创建密钥“backup-migrating”失败：upstream unavailable");
+		const failed = progress.find((step) => step.status === "failed")!;
+		expect(render(failed.detail!, "zh-CN")).toContain("移除密钥“prod-migrating”：成功\n移除 Databricks 供应商：成功");
+		const refresh = fakeApi({ failOn: (call) => (call[0] === "refreshModels" ? withStatus("busy", 409) : undefined) });
+		await runDatabricksMigration(keyedPlan(), refresh.api, (steps) => {
+			progress = steps;
+		});
+		const final = progress.find((step) => step.id === "refresh-models")!;
+		expect(final.status).toBe("done");
+		expect(render(final.detail!, "zh-CN")).toBe("已有刷新任务正在运行");
 	});
 });
