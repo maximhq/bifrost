@@ -91,7 +91,7 @@ func dimensionFanoutFrom(dialect, idCol string) (string, bool) {
 //   - the name is read positionally with json_extract(names, '$[<key>]')
 //     rather than a second json_each in a LEFT JOIN, because json_each sets
 //     `key` to the 0-based array index and json_extract accepts a runtime-built
-//     path. An id with no matching name yields NULL -> ''.
+//     path. An id with no matching name yields NULL -> ”.
 //
 // json_valid must precede json_type in both guards: json_type() throws on
 // malformed input and SQLite evaluates AND left to right.

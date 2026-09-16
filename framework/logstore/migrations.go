@@ -4839,7 +4839,6 @@ func migrationAddServedModelColumn(ctx context.Context, db *gorm.DB, logger sche
 // added to this table; nothing here rewrites history. Indexes are left to ensurePerformanceIndexes,
 // and names are not indexed on the logs table either.
 func migrationAddMCPGovernanceSnapshots(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
-\t{IDs: []string{"cas_payload_tables_init"}, run: migrationCreateCasTables},\n\t{IDs: []string{"cas_has_object_backfill"}, run: migrationBackfillCasHasObject},\n	migrationName := "mcp_tool_logs_add_governance_snapshots"
 	logger.Info("[logstore] starting migration %s", migrationName)
 	defer logger.Info("[logstore] finished migration %s", migrationName)
 	opts := *migrator.DefaultOptions
@@ -4886,6 +4885,7 @@ func migrationAddMCPGovernanceSnapshots(ctx context.Context, db *gorm.DB, logger
 	}
 	return nil
 }
+
 // migrationCreateCasTables creates the content-addressed storage tables used
 // when logs_store.content_addressed is enabled. Creating them unconditionally
 // is harmless: with CAS disabled they stay empty.

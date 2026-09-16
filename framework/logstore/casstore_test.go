@@ -70,11 +70,11 @@ func TestManifestRoundTripByteIdentical(t *testing.T) {
 		[]byte(`[{"role":"user","content":"` + big + `"},{"role":"assistant","content":"short"}, {"role":"user","content":"` + big + `"}]`),
 		[]byte(`[123, ` + big + `, true, null]`),
 		[]byte(`["` + big + `","` + big + `"]`), // identical elements -> dedup within one field
-		{0x5b, 0x22, 0xff, 0xfe, 0x22, 0x5d},   // ["\xff\xfe"] invalid UTF-8 inline -> forced blob
-		[]byte(`not json at all ` + big),       // fallback: whole field as one blob
-		[]byte(`[1, 2, 3]\n`),                  // trailing whitespace must survive (regression)
-		[]byte("\n[1, 2, 3] \n\t "),            // leading + trailing whitespace
-		[]byte(`["a","b"]  `),                  // trailing spaces, all-inline
+		{0x5b, 0x22, 0xff, 0xfe, 0x22, 0x5d},    // ["\xff\xfe"] invalid UTF-8 inline -> forced blob
+		[]byte(`not json at all ` + big),        // fallback: whole field as one blob
+		[]byte(`[1, 2, 3]\n`),                   // trailing whitespace must survive (regression)
+		[]byte("\n[1, 2, 3] \n\t "),             // leading + trailing whitespace
+		[]byte(`["a","b"]  `),                   // trailing spaces, all-inline
 	}
 	for i, raw := range payloads {
 		_, blobs, manifestBytes, fallback, err := buildManifest(raw, 64)
