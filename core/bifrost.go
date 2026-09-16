@@ -6878,6 +6878,9 @@ func executeRequestWithRetries[T any](
 				status := *bifrostError.StatusCode
 				last.StatusCode = &status
 			}
+			// The hint belongs to the attempt, not the request: by the time the request ends on
+			// another key, its final error carries that key's answer, not this one's.
+			last.RetryAfter = bifrostError.ExtraFields.RetryAfter
 			reason := class.FailReason()
 			if reason == "" {
 				reason = "unknown"

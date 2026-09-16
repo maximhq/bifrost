@@ -71,6 +71,30 @@ Raw streaming passthrough and Responses retrieval/resumption are excluded.
 See Microsoft's [Azure streaming examples](https://learn.microsoft.com/en-us/azure/foundry/openai/concepts/content-streaming)
 and [Responses event reference](https://learn.microsoft.com/en-us/rest/api/microsoft-foundry/azureopenai/responses).
 
+### Provider retry hints
+
+When a provider says how long to wait before retrying, Bifrost records it on the error as `extra_fields.retry_after_ms`, in milliseconds. It reads, in this order:
+
+| Source | Format | Sent by |
+|--------|--------|---------|
+| `google.rpc.RetryInfo` detail in the error body, including an error event in a stream | duration such as `39s` | Gemini, Vertex AI |
+| `retry-after-ms` header | milliseconds | Azure OpenAI |
+| `Retry-After` header | seconds, or an HTTP date | OpenAI, Azure OpenAI, Anthropic, Groq, OpenRouter |
+
+The value is clamped to between 1 second and 5 minutes, and the field is absent when the provider gave no explicit hint. Rate-limit reset headers (`x-ratelimit-reset-*`, `anthropic-ratelimit-*-reset`) are not used: they say when each limit refills, not how long a given request must wait.
+
+```json
+{
+  "status_code": 429,
+  "error": { "type": "tokens", "code": "rate_limit_exceeded", "message": "Rate limit reached for gpt-4o on tokens per min (TPM)" },
+  "extra_fields": { "retry_after_ms": 20000 }
+}
+```
+
+The same hint is recorded per attempt on the `attempt_trail` as `retry_after_ms`, so a key that was rotated away from still shows how long it asked for. The request's final error only carries the answer from the key it ended on.
+
+The hint is informational: Bifrost's own retries still wait according to the [backoff formula](#backoff-formula) below.
+
 ### Backoff formula
 
 Backoff applies to **same-key retries** (transient server 5xx / network errors) and to **`429` rate-limit rotations** (since account-level quotas can be shared across keys). It is skipped only when rotating away from a **permanent per-key failure** (`credential`, `quota`, `model_access`, `model_gone`) to a genuinely different key: a dead key gains nothing from waiting.
