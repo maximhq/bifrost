@@ -165,6 +165,7 @@ var loggingIdentityKeys = []any{
 	BifrostContextKeyGovernanceTeamName, BifrostContextKeyGovernanceCustomerID,
 	BifrostContextKeyGovernanceCustomerName, BifrostContextKeyUserID,
 	BifrostContextKeyUserName, BifrostContextKeyGovernanceBusinessUnitID,
+	BifrostContextKeyUserEmail,
 	BifrostContextKeyGovernanceBusinessUnitName, BifrostContextKeyGovernanceProjectID,
 	BifrostContextKeyGovernanceProjectName, BifrostContextKeyNumberOfRetries,
 	BifrostContextKeyAttemptTrail,
