@@ -216,7 +216,11 @@ export function MCPLogsDataTable({
 				{/* Pagination Footer */}
 				<div className="flex items-center justify-between text-xs" data-testid="pagination">
 					<div className="text-muted-foreground flex items-center gap-2">
-						{startItemDisplay.toLocaleString()}-{endItemDisplay.toLocaleString()} of {totalItems.toLocaleString()} entries
+						{t("logs.entryRange", {
+							start: startItemDisplay.toLocaleString(),
+							end: endItemDisplay.toLocaleString(),
+							total: totalItems.toLocaleString(),
+						})}
 					</div>
 
 					<div className="flex items-center gap-2">
@@ -231,11 +235,7 @@ export function MCPLogsDataTable({
 							<ChevronLeft className="size-3" />
 						</Button>
 
-						<div className="flex items-center gap-1">
-							<span>{t("labels.page")}</span>
-							<span>{currentPage}</span>
-							<span>{t("labels.ofPages", { total: totalPages })}</span>
-						</div>
+						<div className="flex items-center gap-1">{t("logs.pageRange", { page: currentPage, total: totalPages })}</div>
 
 						<Button
 							variant="ghost"

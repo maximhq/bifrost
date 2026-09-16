@@ -185,7 +185,12 @@ export default function SessionsTable({
 							{sessions.length === 0 ? (
 								<TableRow>
 									<TableCell colSpan={9} className="h-24 text-center">
-										{hasActiveFilters ? (
+										{isFetching ? (
+											<div role="status" className="text-muted-foreground flex items-center justify-center gap-2 text-sm">
+												<Loader2 className="size-4 animate-spin" aria-hidden="true" />
+												{tc("loading")}
+											</div>
+										) : hasActiveFilters ? (
 											<div className="text-muted-foreground text-sm">{t("sessions.noMatch")}</div>
 										) : (
 											<span className="text-muted-foreground text-sm">{t("sessions.empty")}</span>
@@ -211,7 +216,9 @@ export default function SessionsTable({
 										<TableCell className="text-muted-foreground text-sm">
 											<div className="flex flex-col">
 												<span>{formatAccessExpiry(row)}</span>
-												{row.last_refreshed_at && <span className="text-xs">refreshed {formatRelativePast(row.last_refreshed_at)}</span>}
+												{row.last_refreshed_at && (
+													<span className="text-xs">{t("sessions.refreshed", { time: formatRelativePast(row.last_refreshed_at) })}</span>
+												)}
 											</div>
 										</TableCell>
 										<TableCell className="text-sm">
@@ -240,8 +247,11 @@ export default function SessionsTable({
 				{totalCount > 0 && (
 					<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 						<div className="text-muted-foreground flex items-center gap-2">
-							{(offset + 1).toLocaleString()}-{Math.min(offset + limit, totalCount).toLocaleString()} of {totalCount.toLocaleString()}{" "}
-							entries
+							{t("common.ofEntries", {
+								from: (offset + 1).toLocaleString(),
+								to: Math.min(offset + limit, totalCount).toLocaleString(),
+								total: totalCount.toLocaleString(),
+							})}
 						</div>
 
 						<div className="flex items-center gap-2">
@@ -257,9 +267,7 @@ export default function SessionsTable({
 							</Button>
 
 							<div className="flex items-center gap-1">
-								<span>Page</span>
-								<span>{Math.floor(offset / limit) + 1}</span>
-								<span>of {Math.ceil(totalCount / limit)}</span>
+								{t("common.pageRange", { page: Math.floor(offset / limit) + 1, total: Math.ceil(totalCount / limit) })}
 							</div>
 
 							<Button
@@ -297,6 +305,7 @@ function HeaderWithTooltip({ label, tooltip }: { label: string; tooltip: string 
 }
 
 function BindingCell({ row }: { row: MCPSessionRow }) {
+	const { t } = useTranslation("mcp");
 	if (row.auth_mode === "user" && row.user_id) {
 		const displayName = row.user?.name || row.user?.email;
 		return (
@@ -322,7 +331,7 @@ function BindingCell({ row }: { row: MCPSessionRow }) {
 			</div>
 		);
 	}
-	return <span className="text-muted-foreground text-sm">Session-bound</span>;
+	return <span className="text-muted-foreground text-sm">{t("sessions.sessionBound")}</span>;
 }
 
 // Granted scopes on token rows. A dash when the provider reported none, and

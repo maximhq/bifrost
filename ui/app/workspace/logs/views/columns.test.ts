@@ -7,6 +7,33 @@ import i18n from "@/lib/i18n";
 import { createColumns, getMessage } from "./columns";
 
 describe("getMessage", () => {
+	it("translates realtime labels after a language change while preserving message and tool content", async () => {
+		const log = {
+			object: "realtime.turn",
+			input_history: [
+				{ role: "tool", content: '{"result":"unchanged"}' },
+				{ role: "user", content: "hello <world>" },
+			],
+			output_message: {
+				role: "assistant",
+				content: "Hello!",
+				tool_calls: [{ function: { name: "get_weather", arguments: '{"city":"Paris"}' } }],
+			},
+		} as unknown as LogEntry;
+		try {
+			await i18n.changeLanguage("zh-CN");
+			expect(getMessage(log)).toBe(
+				'工具结果：{"result":"unchanged"}\n用户：hello <world>\n助手工具调用：get_weather({"city":"Paris"})\n助手：Hello!',
+			);
+			await i18n.changeLanguage("en");
+			expect(getMessage(log)).toBe(
+				'Tool Result: {"result":"unchanged"}\nUser: hello <world>\nAssistant Tool Call: get_weather({"city":"Paris"})\nAssistant: Hello!',
+			);
+		} finally {
+			await i18n.changeLanguage("en");
+		}
+	});
+
 	it("returns EI realtime text from input history", () => {
 		const log = {
 			object: "realtime.turn",

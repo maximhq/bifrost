@@ -456,7 +456,13 @@
 		"rowsPerPage": "Rows per page",
 		"resetZoom": "Reset zoom",
 		"entryRange": "{{start}}-{{end}} of {{total}} entries",
-		"pageRange": "Page {{page}} of {{total}}"
+		"pageRange": "Page {{page}} of {{total}}",
+		"realtime": {
+			"toolResult": "Tool Result: {{message}}",
+			"user": "User: {{message}}",
+			"assistantToolCall": "Assistant Tool Call: {{message}}",
+			"assistant": "Assistant: {{message}}"
+		}
 	},
 	"mcpLogs": {
 		"searchPlaceholder": "Search MCP logs",
