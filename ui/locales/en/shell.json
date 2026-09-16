@@ -209,7 +209,12 @@
 	"error": {
 		"title": "Something went wrong",
 		"description": "Something went wrong. Please refresh the page.",
-		"reload": "Reload"
+		"reload": "Reload",
+		"unreachableTitle": "We can't reach the dashboard",
+		"unreachableDescription": "Bifrost didn't return its configuration. This is usually a brief interruption, especially while Bifrost is being upgraded.",
+		"retrying": "Trying again…",
+		"retry": "Try again",
+		"dataUnaffected": "Your settings and data are unaffected."
 	},
 	"notFound": {
 		"title": "Page not found",

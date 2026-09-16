@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import type { MCPHistogramResponse } from "@/lib/types/logs";
 import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -16,6 +17,7 @@ interface MCPVolumeChartProps {
 }
 
 function CustomTooltip({ active, payload }: any) {
+	const { t } = useTranslation("observability");
 	if (!active || !payload || !payload.length) return null;
 
 	const data = payload[0]?.payload;
@@ -40,7 +42,7 @@ function CustomTooltip({ active, payload }: any) {
 					<span className="text-chart-error-ink font-medium">{data.error.toLocaleString()}</span>
 				</div>
 				<div className="flex items-center justify-between gap-4 border-t border-zinc-200 pt-1 dark:border-zinc-700">
-					<span className="text-zinc-600 dark:text-zinc-400">Total</span>
+					<span className="text-zinc-600 dark:text-zinc-400">{t("labels.total")}</span>
 					<span className="font-medium">{data.count.toLocaleString()}</span>
 				</div>
 			</div>

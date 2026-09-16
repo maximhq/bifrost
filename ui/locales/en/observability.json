@@ -281,7 +281,28 @@
 			"video": "Video"
 		},
 		"waitingForNew": "Waiting for new logs...",
-		"loading": "Loading logs..."
+		"loading": "Loading logs...",
+		"searchPlaceholders": {
+			"request_id": "Search by request ID",
+			"content": "Search log content"
+		},
+		"searchModes": {
+			"auto": "Auto",
+			"request_id": "Request ID",
+			"content": "Content"
+		},
+		"searchModeHint": "Choose whether the box searches log content or looks up a request ID",
+		"searchModeOptions": {
+			"auto": "Auto detect",
+			"content": "Content search",
+			"request_id": "Request ID search"
+		},
+		"exactIdSearchHint": "Looking up this request ID exactly. The selected time range is ignored so the request is found wherever it falls.",
+		"viewDetails": "View details",
+		"routingDecisionLogs": "Routing Decision Logs",
+		"noRawJson": "No raw JSON available.",
+		"rawJsonDisabled": "Raw JSON storage is disabled by settings",
+		"ocrInput": "OCR Input"
 	},
 	"mcpLogs": {
 		"searchPlaceholder": "Search MCP logs",
@@ -335,7 +356,26 @@
 		"execution": "Execution",
 		"errorDetails": "Error Details",
 		"pluginLogs": "Plugin Logs",
-		"loading": "Loading MCP logs..."
+		"loading": "Loading MCP logs...",
+		"native": "Native",
+		"local": "Local",
+		"notRecorded": "Not recorded",
+		"policyCheck": "Policy check",
+		"executionTime": "Execution time",
+		"presentation": {
+			"policyApproved": "Policy approved",
+			"policyBlocked": "Policy blocked",
+			"observed": "Observed",
+			"succeeded": "Succeeded",
+			"failed": "Failed",
+			"cancelled": "Cancelled",
+			"processing": "Processing",
+			"approvedDescription": "Allowed before execution. No execution result is recorded in this entry.",
+			"blockedDescription": "Blocked before execution.",
+			"observedDescription": "Tool activity was captured, but its execution outcome is not known.",
+			"executionDescription": "Recorded tool execution outcome."
+		},
+		"noResults": "No results found. Try adjusting your filters and/or time range."
 	},
 	"connectors": {
 		"providers": "Providers",
@@ -430,6 +470,9 @@
 		"saveOtel": "Save OTEL Configuration",
 		"saveMaxim": "Save Maxim Configuration",
 		"reset": "Reset",
-		"plugins": "Plugins"
+		"plugins": "Plugins",
+		"prometheus": {
+			"pullScraping": "Pull-based Scraping"
+		}
 	}
 }

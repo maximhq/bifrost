@@ -23,7 +23,7 @@ import { RefreshCw, WifiOff } from "lucide-react";
 import { NuqsAdapter } from "nuqs/adapters/tanstack-router";
 import { lazy, Suspense, useEffect, useState } from "react";
 import { CookiesProvider } from "react-cookie";
-import { I18nextProvider } from "react-i18next";
+import { I18nextProvider, useTranslation } from "react-i18next";
 import { toast, Toaster } from "sonner";
 
 // Lazy import — only loaded in development, completely excluded from prod bundle
@@ -207,6 +207,7 @@ function FullPage({
 }
 
 function ConfigUnreachable({ isRetrying, onRetry }: { isRetrying: boolean; onRetry: () => void }) {
+	const { t } = useTranslation("shell");
 	return (
 		<div className="h-base flex items-center justify-center p-4 sm:p-6" data-testid="config-unreachable">
 			<section className="bg-card w-full max-w-lg rounded-sm border p-6 sm:p-8" aria-labelledby="config-unreachable-title">
@@ -214,17 +215,15 @@ function ConfigUnreachable({ isRetrying, onRetry }: { isRetrying: boolean; onRet
 					<WifiOff className="size-5" aria-hidden="true" />
 				</div>
 				<h1 id="config-unreachable-title" className="text-foreground mt-5 text-xl font-semibold tracking-tight">
-					We can&apos;t reach the dashboard
+					{t("error.unreachableTitle")}
 				</h1>
-				<p className="text-muted-foreground mt-2 max-w-md text-sm leading-6">
-					Bifrost didn&apos;t return its configuration. This is usually a brief interruption, especially while Bifrost is being upgraded.
-				</p>
+				<p className="text-muted-foreground mt-2 max-w-md text-sm leading-6">{t("error.unreachableDescription")}</p>
 				<div className="mt-6 flex items-center gap-3 border-t pt-5">
 					<Button size="sm" isLoading={isRetrying} disabled={isRetrying} data-testid="config-retry-btn" onClick={onRetry}>
 						{!isRetrying && <RefreshCw aria-hidden="true" />}
-						{isRetrying ? "Trying again…" : "Try again"}
+						{isRetrying ? t("error.retrying") : t("error.retry")}
 					</Button>
-					<p className="text-muted-foreground text-xs">Your settings and data are unaffected.</p>
+					<p className="text-muted-foreground text-xs">{t("error.dataUnaffected")}</p>
 				</div>
 			</section>
 		</div>

@@ -155,9 +155,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 					<AlertDialogContent onClick={(e) => e.stopPropagation()}>
 						<AlertDialogHeader>
 							<AlertDialogTitle>{t("providers.deleteEntityTitle", { entity: EntityLabel })}</AlertDialogTitle>
-							<AlertDialogDescription>
-								{t("providers.deleteEntityDesc", { entity: entityLabel })}
-							</AlertDialogDescription>
+							<AlertDialogDescription>{t("providers.deleteEntityDesc", { entity: entityLabel })}</AlertDialogDescription>
 						</AlertDialogHeader>
 						<AlertDialogFooter className="pt-4">
 							<AlertDialogCancel onClick={() => setShowDeleteKeyDialog(undefined)} disabled={isMutatingProviderKey}>
@@ -214,12 +212,12 @@ export default function ModelProviderKeysTableView({ provider, className, header
 										onClick={handleRefreshProviderModels}
 									>
 										<RefreshCwIcon className={cn("h-4 w-4", isRefreshingProvider && "animate-spin")} />
-										<span className="hidden xl:inline">{isRefreshingProvider ? t("providers.refreshing") : t("providers.refreshModelList")}</span>
+										<span className="hidden xl:inline">
+											{isRefreshingProvider ? t("providers.refreshing") : t("providers.refreshModelList")}
+										</span>
 									</Button>
 								</TooltipTrigger>
-								<TooltipContent className="max-w-xs">
-									{t("providers.refreshTooltip")}
-								</TooltipContent>
+								<TooltipContent className="max-w-xs">{t("providers.refreshTooltip")}</TooltipContent>
 							</Tooltip>
 						) : null}
 						{!isKeyless && hasUpdateProviderAccess ? (
@@ -297,7 +295,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 																<CheckCircle2 aria-hidden className="h-4 w-4 flex-shrink-0 text-green-600" />
 															</button>
 														</TooltipTrigger>
-														<TooltipContent>List models working</TooltipContent>
+														<TooltipContent>{t("providers.listModelsWorking")}</TooltipContent>
 													</Tooltip>
 												)}
 												{key.status === "list_models_failed" &&
@@ -371,10 +369,16 @@ export default function ModelProviderKeysTableView({ provider, className, header
 													})
 														.unwrap()
 														.then(() => {
-															toast.success(checked ? t("providers.entityEnabled", { entity: EntityLabel }) : t("providers.entityDisabled", { entity: EntityLabel }));
+															toast.success(
+																checked
+																	? t("providers.entityEnabled", { entity: EntityLabel })
+																	: t("providers.entityDisabled", { entity: EntityLabel }),
+															);
 														})
 														.catch((err) => {
-															toast.error(t("providers.failedUpdateEntity", { entity: entityLabel }), { description: getErrorMessage(err) });
+															toast.error(t("providers.failedUpdateEntity", { entity: entityLabel }), {
+																description: getErrorMessage(err),
+															});
 														})
 														.finally(() => {
 															setTogglingKeyIds((prev) => {

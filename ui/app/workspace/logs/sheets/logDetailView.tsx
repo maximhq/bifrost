@@ -782,7 +782,7 @@ function OverheadBreakdown({ buckets, overheadMs }: { buckets: OverheadBucket[];
 					onClick={() => setShowDetails((v) => !v)}
 					className="text-muted-foreground hover:text-foreground flex items-center gap-1 font-mono text-[11px] transition"
 				>
-					View details
+					{t("logs.viewDetails")}
 					<ChevronDown className={cn("h-3 w-3 transition-transform", showDetails ? "rotate-180" : "rotate-0")} />
 				</button>
 			) : null}
@@ -902,6 +902,7 @@ function deriveComplexityRouting(log: LogEntry): {
 }
 
 function RoutingDecisionLogs({ logs }: { logs: string }) {
+	const { t } = useTranslation("observability");
 	const { copy } = useCopyToClipboard({ successMessage: "Copied" });
 	const [minLevel, setMinLevel] = useState<LogLevel>("debug");
 	const lines = useMemo(
@@ -919,7 +920,7 @@ function RoutingDecisionLogs({ logs }: { logs: string }) {
 	return (
 		<div className="w-full rounded-sm border">
 			<div className="flex items-center justify-between gap-3 border-b py-2 pl-6">
-				<div className="text-sm font-medium">Routing Decision Logs</div>
+				<div className="text-sm font-medium">{t("logs.routingDecisionLogs")}</div>
 				<div className="flex items-center gap-1">
 					{hasLevels && <LogLevelTabs value={minLevel} onChange={setMinLevel} testId="routing-logs-level-filter" />}
 					<button
@@ -1114,6 +1115,7 @@ interface LogDetailViewProps {
 // have failed before reaching the provider. While the setting is still being
 // fetched we show neither message - see `resolveRawJsonNoticeState`.
 function RawJsonUnavailableNotice({ provider }: { provider: string }) {
+	const { t } = useTranslation("observability");
 	const hasProvidersAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
 	const {
 		data: providers,
@@ -1135,12 +1137,12 @@ function RawJsonUnavailableNotice({ provider }: { provider: string }) {
 	}
 
 	if (noticeState === "unknown") {
-		return <div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">No raw JSON available.</div>;
+		return <div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">{t("logs.noRawJson")}</div>;
 	}
 
 	return (
 		<div className="text-muted-foreground space-y-3 rounded-sm border border-dashed p-5 text-sm">
-			<div className="text-foreground font-medium">Raw JSON storage is disabled by settings</div>
+			<div className="text-foreground font-medium">{t("logs.rawJsonDisabled")}</div>
 			<p>
 				<span className="text-foreground font-medium">{getProviderLabel(provider)}</span> is configured not to persist raw request and
 				response payloads in log records, so there is nothing to show here. To start capturing them:
@@ -1770,13 +1772,25 @@ export function LogDetailView({
 								className="w-full"
 								label={t("logs.detail.upstreamLatency")}
 								tooltip={t("logs.detail.upstreamLatencyTooltip")}
-								value={log.upstream_latency == null || isNaN(log.upstream_latency) ? t("labels.nA") : <div>{log.upstream_latency.toFixed(2)}ms</div>}
+								value={
+									log.upstream_latency == null || isNaN(log.upstream_latency) ? (
+										t("labels.nA")
+									) : (
+										<div>{log.upstream_latency.toFixed(2)}ms</div>
+									)
+								}
 							/>
 							<LogEntryDetailsView
 								className="w-full"
 								label={t("logs.detail.bifrostOverhead")}
 								tooltip={t("logs.detail.bifrostOverheadTooltip")}
-								value={log.overhead_latency == null || isNaN(log.overhead_latency) ? t("labels.nA") : <div>{log.overhead_latency.toFixed(2)}ms</div>}
+								value={
+									log.overhead_latency == null || isNaN(log.overhead_latency) ? (
+										t("labels.nA")
+									) : (
+										<div>{log.overhead_latency.toFixed(2)}ms</div>
+									)
+								}
 							/>
 						</div>
 						{log.overhead_breakdown && log.overhead_breakdown.length > 0 ? (
@@ -2295,11 +2309,7 @@ export function LogDetailView({
 									    has no cost of its own. Without this the detail view of a video
 									    generation reads as free while the list beside it shows the spend. */}
 									{log.cost == null && (log.children_cost ?? 0) > 0 && (
-										<LogEntryDetailsView
-											className="w-full"
-											label={t("logs.settledCost")}
-											value={formatCostPrecise(log.children_cost)}
-										/>
+										<LogEntryDetailsView className="w-full" label={t("logs.settledCost")} value={formatCostPrecise(log.children_cost)} />
 									)}
 									{/* Additional cost (guardrail / semantic cache / routing / MCP) on its own row below. */}
 									{(log.cost_breakdown?.additional_cost ?? 0) > 0 && (
@@ -2542,17 +2552,25 @@ export function LogDetailView({
 										{videoAccounting && (
 											<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
 												{videoAccounting.seconds != null && (
-													<LogEntryDetailsView className="w-full" label={t("logs.detail.billedSeconds")} value={String(videoAccounting.seconds)} />
+													<LogEntryDetailsView
+														className="w-full"
+														label={t("logs.detail.billedSeconds")}
+														value={String(videoAccounting.seconds)}
+													/>
 												)}
-												{videoAccounting.size && <LogEntryDetailsView className="w-full" label={t("logs.detail.resolution")} value={videoAccounting.size} />}
+												{videoAccounting.size && (
+													<LogEntryDetailsView className="w-full" label={t("logs.detail.resolution")} value={videoAccounting.size} />
+												)}
 												{videoAccounting.output_count != null && (
-													<LogEntryDetailsView className="w-full" label={t("logs.detail.clipsBilled")} value={String(videoAccounting.output_count)} />
+													<LogEntryDetailsView
+														className="w-full"
+														label={t("logs.detail.clipsBilled")}
+														value={String(videoAccounting.output_count)}
+													/>
 												)}
 											</div>
 										)}
-										{videoAccounting?.incomplete && (
-											<p className="text-muted-foreground text-xs">{t("logs.detail.incompletePricing")}</p>
-										)}
+										{videoAccounting?.incomplete && <p className="text-muted-foreground text-xs">{t("logs.detail.incompletePricing")}</p>}
 									</div>
 								</>
 							)}

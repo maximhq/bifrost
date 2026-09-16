@@ -1,4 +1,5 @@
 import { StartTruncatedLabel } from "@/components/ui/truncatedLabel";
+import { useTranslation } from "react-i18next";
 import type { CostHistogramResponse } from "@/lib/types/logs";
 import { formatCurrencyNumber } from "@/lib/utils/numbers";
 import { memo, useMemo } from "react";
@@ -27,6 +28,7 @@ interface CostChartProps {
 }
 
 function CustomTooltip({ active, payload, selectedModel, displayModels }: any) {
+	const { t } = useTranslation("observability");
 	if (!active || !payload || !payload.length) return null;
 
 	const data = payload[0]?.payload;
@@ -57,7 +59,7 @@ function CustomTooltip({ active, payload, selectedModel, displayModels }: any) {
 							);
 						})}
 						<div className="flex items-center justify-between gap-4 border-t border-zinc-200 pt-1 dark:border-zinc-700">
-							<span className="text-zinc-600 dark:text-zinc-400">Total</span>
+							<span className="text-zinc-600 dark:text-zinc-400">{t("labels.total")}</span>
 							<span className="font-medium text-zinc-900 dark:text-zinc-100">{formatCost(data.total_cost)}</span>
 						</div>
 					</>

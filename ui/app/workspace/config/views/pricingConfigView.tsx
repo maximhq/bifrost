@@ -98,7 +98,7 @@ export default function PricingConfigView() {
 					{/* Pricing Datasheet URL */}
 					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
-							<Label htmlFor="pricing-datasheet-url">Pricing Datasheet URL</Label>
+							<Label htmlFor="pricing-datasheet-url">{t("pricing.datasheetUrl")}</Label>
 							<p className="text-muted-foreground text-sm">URL to a custom pricing datasheet. Leave empty to use default pricing.</p>
 						</div>
 						<Input
