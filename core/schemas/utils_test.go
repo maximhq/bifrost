@@ -161,3 +161,17 @@ func TestIsGPT56ModelRequiresRevisionBoundary(t *testing.T) {
 		assert.False(t, IsGPT56Model(model), "expected %q NOT to resolve as gpt-5.6 family", model)
 	}
 }
+
+// TestModelSupportsPromptCacheBreakpointCoversGPT6 pins that the breakpoint fallback,
+// and the prompt-caching fallback built on it, include the gpt-6 family.
+func TestModelSupportsPromptCacheBreakpointCoversGPT6(t *testing.T) {
+	for _, model := range []string{"gpt-5.6-sol", "gpt-6-astra", "azure/gpt-6-astra", "openai.gpt-6-astra"} {
+		assert.True(t, ModelSupportsPromptCacheBreakpoint(model), model)
+	}
+	for _, model := range []string{"gpt-5.5", "gpt-5", "gpt-4o"} {
+		assert.False(t, ModelSupportsPromptCacheBreakpoint(model), model)
+	}
+	assert.True(t, ModelSupportsPromptCaching(OpenAI, "gpt-6-astra"))
+	assert.True(t, ModelSupportsPromptCaching(BedrockMantle, "openai.gpt-6-astra"))
+	assert.False(t, ModelSupportsPromptCaching(OpenAI, "gpt-5.5"))
+}

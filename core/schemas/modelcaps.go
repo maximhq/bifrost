@@ -278,6 +278,15 @@ func (c ModelCaps) SupportsCachePoint(fallback bool) bool {
 	return fallback
 }
 
+// SupportsPromptCacheBreakpoint reports whether the model accepts OpenAI's
+// per-block prompt_cache_breakpoint and request-level prompt_cache_options.
+func (c ModelCaps) SupportsPromptCacheBreakpoint(fallback bool) bool {
+	if c.record != nil && c.record.SupportsPromptCacheBreakpoint != nil {
+		return *c.record.SupportsPromptCacheBreakpoint
+	}
+	return fallback
+}
+
 // SupportsPromptCaching reports whether the model supports explicit prompt caching
 // at all. It is the base feature that SupportsPromptCachingScope and
 // SupportsExtendedCacheTTL refine, and it is what gates breakpoint injection: a

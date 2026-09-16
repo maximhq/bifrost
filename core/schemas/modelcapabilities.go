@@ -57,6 +57,7 @@ type ModelCapabilities struct {
 	SupportsSafeguards              *bool `json:"supports_safeguards,omitempty"` // Claude Code auto-mode classifier (safeguards/safeguard_results), model-gated on Anthropic and cloud surfaces (Sonnet 5, Opus 4.7+, Fable).
 	SupportsPromptCachingScope      *bool `json:"supports_prompt_caching_scope,omitempty"`
 	SupportsExtendedCacheTTL        *bool `json:"supports_extended_cache_ttl,omitempty"`
+	SupportsPromptCacheBreakpoint   *bool `json:"supports_prompt_cache_breakpoint,omitempty"` // accepts OpenAI prompt_cache_breakpoint + prompt_cache_options
 	SupportsReasoningContentBlocks  *bool `json:"supports_reasoning_content_blocks,omitempty"`
 	SupportsMultimodalToolOutput    *bool `json:"supports_multimodal_tool_output,omitempty"`
 	SupportsResponseSchemaWithTools *bool `json:"supports_response_schema_with_tools,omitempty"`
