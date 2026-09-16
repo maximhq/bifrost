@@ -896,7 +896,7 @@ function deriveComplexityRouting(log: LogEntry): {
 
 function RoutingDecisionLogs({ logs }: { logs: string }) {
 	const { t } = useTranslation("observability");
-	const { copy } = useCopyToClipboard({ successMessage: "Copied" });
+	const { copy } = useCopyToClipboard({ successMessage: t("labels.copied") });
 	const [minLevel, setMinLevel] = useState<LogLevel>("debug");
 	const lines = useMemo(
 		() =>

@@ -21,7 +21,8 @@
 		"type": "类型",
 		"created": "创建时间",
 		"revoke": "撤销",
-		"continue": "继续"
+		"continue": "继续",
+		"pageRange": "第 {{page}} 页，共 {{total}} 页"
 	},
 	"registry": {
 		"title": "MCP 服务器目录",
@@ -200,7 +201,9 @@
 		"refreshToken": "刷新 token",
 		"scopes": "权限范围",
 		"scopesHelp": "供应商在登录时授予的权限范围，来自其 token 响应。供应商未返回该信息时显示短横线。请求头提交和待完成的登录没有权限范围。",
-		"refreshTokenHelp": "供应商是否签发了刷新 token。已签发：Bifrost 会在使用时自动续期访问 token。未签发：访问 token 过期后需要重新认证。上游拒绝：供应商拒绝了上次刷新，需要重新认证。请求头记录和待完成的登录没有 token。"
+		"refreshTokenHelp": "供应商是否签发了刷新 token。已签发：Bifrost 会在使用时自动续期访问 token。未签发：访问 token 过期后需要重新认证。上游拒绝：供应商拒绝了上次刷新，需要重新认证。请求头记录和待完成的登录没有 token。",
+		"refreshed": "刷新于{{time}}",
+		"sessionBound": "绑定至会话"
 	},
 	"oauthGrants": {
 		"title": "OAuth 授权",
@@ -244,5 +247,20 @@
 	"authConfig": {
 		"unlockTitle": "解锁 MCP 鉴权配置",
 		"unlockDescription": "此功能属于 Bifrost 企业版许可。为 MCP 服务器配置鉴权以保护 MCP 连接。"
+	},
+	"credentials": {
+		"justNow": "刚刚",
+		"minutesAgo": "{{minutes}} 分钟前",
+		"hoursAgo": "{{hours}} 小时前",
+		"daysAgo": "{{days}} 天前",
+		"expired": "已过期",
+		"refreshNextUse": "下次使用时刷新",
+		"refreshAccessRestored": "访问权限恢复后刷新",
+		"inDays": "{{days}} 天后",
+		"inHours": "{{hours}} 小时后",
+		"inMinutes": "{{minutes}} 分钟后",
+		"rejected": "上游已拒绝",
+		"present": "已提供",
+		"notIssued": "未签发"
 	}
 }

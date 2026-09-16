@@ -276,7 +276,8 @@
 			"customPath": "Custom Path or URL",
 			"pathDescription": "Override with a path (e.g., /v1/chat) or a full URL (e.g., https://api.example.com/chat) to bypass base_url",
 			"unsupported": "Not supported by {{provider}}"
-		}
+		},
+		"secretReferenceHelp": "{{error}}; verify the secret reference is configured on the server"
 	},
 	"modelCatalog": {
 		"title": "Model Catalog",

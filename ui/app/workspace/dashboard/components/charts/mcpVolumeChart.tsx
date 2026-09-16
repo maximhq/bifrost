@@ -30,14 +30,14 @@ function CustomTooltip({ active, payload }: any) {
 				<div className="flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
 						<span className="bg-chart-success h-2 w-2 rounded-full" />
-						<span className="text-zinc-600 dark:text-zinc-400">Success</span>
+						<span className="text-zinc-600 dark:text-zinc-400">{t("labels.success")}</span>
 					</span>
 					<span className="text-chart-success-ink font-medium">{data.success.toLocaleString()}</span>
 				</div>
 				<div className="flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
 						<span className="bg-chart-error h-2 w-2 rounded-full" />
-						<span className="text-zinc-600 dark:text-zinc-400">Error</span>
+						<span className="text-zinc-600 dark:text-zinc-400">{t("labels.error")}</span>
 					</span>
 					<span className="text-chart-error-ink font-medium">{data.error.toLocaleString()}</span>
 				</div>

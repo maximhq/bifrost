@@ -158,10 +158,12 @@ export function getMessage(log?: LogEntry) {
 	if (log?.object === "realtime.turn") {
 		const messages = getRealtimeTurnMessages(log);
 		const parts = [
-			messages.tool ? `Tool Result: ${messages.tool}` : "",
-			messages.user ? `User: ${messages.user}` : "",
-			messages.assistantToolCall ? `Assistant Tool Call: ${messages.assistantToolCall}` : "",
-			messages.assistant ? `Assistant: ${messages.assistant}` : "",
+			messages.tool ? i18n.t("logs.realtime.toolResult", { ns: "observability", message: messages.tool }) : "",
+			messages.user ? i18n.t("logs.realtime.user", { ns: "observability", message: messages.user }) : "",
+			messages.assistantToolCall
+				? i18n.t("logs.realtime.assistantToolCall", { ns: "observability", message: messages.assistantToolCall })
+				: "",
+			messages.assistant ? i18n.t("logs.realtime.assistant", { ns: "observability", message: messages.assistant }) : "",
 		].filter(Boolean);
 		if (parts.length > 0) {
 			return parts.join("\n");
@@ -203,13 +205,13 @@ export function getMessage(log?: LogEntry) {
 	} else if (log?.speech_input) {
 		return log.speech_input.input;
 	} else if (log?.transcription_input) {
-		return "Audio file";
+		return i18n.t("logs.audioFile", { ns: "observability" });
 	} else if (log?.image_generation_input?.prompt) {
 		return log.image_generation_input.prompt;
 	}
 	const obj = log?.object as string | undefined;
 	if (obj === "image_edit" || obj === "image_edit_stream" || obj === "image_variation") {
-		return "Image file";
+		return i18n.t("logs.imageFile", { ns: "observability" });
 	}
 	if (log?.content_summary) {
 		return log.content_summary;
@@ -227,6 +229,7 @@ export function LogMessageCell({
 	/** Table rows are a fixed height, so a realtime turn's lines tighten to fit two of them instead of being cut mid-line. */
 	compact?: boolean;
 }) {
+	const { t } = useTranslation("observability");
 	const input = getMessage(log);
 	const isLargePayload = log.is_large_payload_request || log.is_large_payload_response;
 	const realtimeMessages = log.object === "realtime.turn" ? getRealtimeTurnMessages(log) : null;
@@ -236,7 +239,7 @@ export function LogMessageCell({
 			{isLargePayload && (
 				<span
 					className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/50 dark:text-amber-400"
-					title="Large payload - streamed directly to provider"
+					title={t("logs.largePayloadTitle")}
 				>
 					LP
 				</span>
@@ -250,18 +253,26 @@ export function LogMessageCell({
 						compact ? "max-h-[30px] overflow-hidden text-[11px] leading-[15px]" : "text-sm leading-5",
 					)}
 				>
-					{realtimeMessages.tool ? <div className="truncate">Tool Result: {realtimeMessages.tool}</div> : null}
-					{realtimeMessages.user ? <div className="truncate">User: {realtimeMessages.user}</div> : null}
-					{realtimeMessages.assistantToolCall ? (
-						<div className="truncate">Assistant Tool Call: {realtimeMessages.assistantToolCall}</div>
+					{realtimeMessages.tool ? (
+						<div className="truncate">{t("logs.realtime.toolResult", { message: realtimeMessages.tool })}</div>
 					) : null}
-					{realtimeMessages.assistant ? <div className="truncate">Assistant: {realtimeMessages.assistant}</div> : null}
+					{realtimeMessages.user ? <div className="truncate">{t("logs.realtime.user", { message: realtimeMessages.user })}</div> : null}
+					{realtimeMessages.assistantToolCall ? (
+						<div className="truncate">{t("logs.realtime.assistantToolCall", { message: realtimeMessages.assistantToolCall })}</div>
+					) : null}
+					{realtimeMessages.assistant ? (
+						<div className="truncate">{t("logs.realtime.assistant", { message: realtimeMessages.assistant })}</div>
+					) : null}
 				</div>
 			) : (
 				<div className={cn(contentClassName, "truncate font-mono text-[12px] font-normal")}>
 					{input ||
 						(isLargePayload
-							? `Large payload ${log.is_large_payload_request && log.is_large_payload_response ? "request & response" : log.is_large_payload_request ? "request" : "response"}`
+							? log.is_large_payload_request && log.is_large_payload_response
+								? t("logs.largePayloadRequestResponse")
+								: log.is_large_payload_request
+									? t("logs.largePayloadRequest")
+									: t("logs.largePayloadResponse")
 							: "-")}
 				</div>
 			)}

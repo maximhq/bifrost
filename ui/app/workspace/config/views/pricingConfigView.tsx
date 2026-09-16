@@ -99,7 +99,7 @@ export default function PricingConfigView() {
 					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<Label htmlFor="pricing-datasheet-url">{t("pricing.datasheetUrl")}</Label>
-							<p className="text-muted-foreground text-sm">URL to a custom pricing datasheet. Leave empty to use default pricing.</p>
+							<p className="text-muted-foreground text-sm">{t("pricing.datasheetUrlHelp")}</p>
 						</div>
 						<Input
 							id="pricing-datasheet-url"
@@ -109,12 +109,12 @@ export default function PricingConfigView() {
 							{...register("pricing_datasheet_url", {
 								pattern: {
 									value: /^(https?:\/\/)?((localhost|(\d{1,3}\.){3}\d{1,3})(:\d+)?|([\da-z\.-]+)\.([a-z\.]{2,6}))([\/\w \.-]*)*\/?$/,
-									message: "Please enter a valid URL.",
+									message: t("pricing.validUrl"),
 								},
 								validate: {
 									checkIfHttp: (value) => {
 										if (!value) return true; // Allow empty
-										return value.startsWith("http://") || value.startsWith("https://") || "URL must start with http:// or https://";
+										return value.startsWith("http://") || value.startsWith("https://") || t("pricing.httpUrl");
 									},
 								},
 							})}
@@ -126,8 +126,8 @@ export default function PricingConfigView() {
 					{/* Model Parameters URL */}
 					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
-							<Label htmlFor="model-parameters-url">Model Parameters URL</Label>
-							<p className="text-muted-foreground text-sm">URL to a custom model parameters datasheet. Leave empty to use default.</p>
+							<Label htmlFor="model-parameters-url">{t("pricing.modelParametersUrl")}</Label>
+							<p className="text-muted-foreground text-sm">{t("pricing.modelParametersUrlHelp")}</p>
 						</div>
 						<Input
 							id="model-parameters-url"
@@ -137,12 +137,12 @@ export default function PricingConfigView() {
 							{...register("model_parameters_url", {
 								pattern: {
 									value: /^(https?:\/\/)?((localhost|(\d{1,3}\.){3}\d{1,3})(:\d+)?|([\da-z\.-]+)\.([a-z\.]{2,6}))([\/\w \.-]*)*\/?$/,
-									message: "Please enter a valid URL.",
+									message: t("pricing.validUrl"),
 								},
 								validate: {
 									checkIfHttp: (value) => {
 										if (!value) return true;
-										return value.startsWith("http://") || value.startsWith("https://") || "URL must start with http:// or https://";
+										return value.startsWith("http://") || value.startsWith("https://") || t("pricing.httpUrl");
 									},
 								},
 							})}
@@ -155,22 +155,22 @@ export default function PricingConfigView() {
 					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-2">
 							<div className="space-y-0.5">
-								<Label htmlFor="pricing-sync-interval">Pricing Sync Interval (hours)</Label>
-								<p className="text-muted-foreground text-sm">How often to sync pricing data from the datasheet URL.</p>
+								<Label htmlFor="pricing-sync-interval">{t("pricing.syncInterval")}</Label>
+								<p className="text-muted-foreground text-sm">{t("pricing.syncIntervalHelp")}</p>
 							</div>
 							<Input
 								id="pricing-sync-interval"
 								type="number"
 								className={errors.pricing_sync_interval_hours ? "border-destructive" : ""}
 								{...register("pricing_sync_interval_hours", {
-									required: "Pricing sync interval is required",
+									required: t("pricing.syncIntervalRequired"),
 									min: {
 										value: 1,
-										message: "Sync interval must be at least 1 hour",
+										message: t("pricing.syncIntervalMin"),
 									},
 									max: {
 										value: 8760,
-										message: "Sync interval cannot exceed 8760 hours (1 year)",
+										message: t("pricing.syncIntervalMax"),
 									},
 									valueAsNumber: true,
 								})}
@@ -189,7 +189,7 @@ export default function PricingConfigView() {
 						disabled={isForceSyncing || !hasSettingsUpdateAccess}
 						data-testid="pricing-force-sync-btn"
 					>
-						{isForceSyncing ? "Syncing..." : "Force Sync Now"}
+						{isForceSyncing ? t("pricing.syncing") : t("pricing.forceSync")}
 					</Button>
 					<Button type="submit" disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess} data-testid="pricing-save-btn">
 						{isLoading ? t("saving") : t("saveChanges")}
