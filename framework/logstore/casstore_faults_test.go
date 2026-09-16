@@ -122,8 +122,8 @@ func requireCasGraphReachable(t *testing.T, cas *CasLogStore) {
 	}{
 		{"payload_missing_log", "SELECT COUNT(*) FROM cas_payloads p WHERE NOT EXISTS (SELECT 1 FROM logs l WHERE l.id=p.log_id)"},
 		{"payload_missing_manifest", "SELECT COUNT(*) FROM cas_payloads p WHERE NOT EXISTS (SELECT 1 FROM cas_blobs b WHERE b.hash=p.blob_hash)"},
-		{"ref_missing_owner", "SELECT COUNT(*) FROM cas_refs r WHERE NOT EXISTS (SELECT 1 FROM cas_blobs b WHERE b.hash=r.owner_hash)"},
-		{"ref_missing_target", "SELECT COUNT(*) FROM cas_refs r WHERE NOT EXISTS (SELECT 1 FROM cas_blobs b WHERE b.hash=r.target_hash)"},
+		{"ref_missing_owner", "SELECT COUNT(*) FROM cas_refs r WHERE NOT EXISTS (SELECT 1 FROM cas_blobs b WHERE b.id=r.owner_id)"},
+		{"ref_missing_target", "SELECT COUNT(*) FROM cas_refs r WHERE NOT EXISTS (SELECT 1 FROM cas_blobs b WHERE b.id=r.target_id)"},
 		{"has_object_without_pointer", "SELECT COUNT(*) FROM logs l WHERE l.has_object=1 AND NOT EXISTS (SELECT 1 FROM cas_payloads p WHERE p.log_id=l.id)"},
 		{"pointer_without_has_object", "SELECT COUNT(*) FROM logs l WHERE l.has_object=0 AND EXISTS (SELECT 1 FROM cas_payloads p WHERE p.log_id=l.id)"},
 	}
@@ -143,7 +143,13 @@ func TestCas_SQLiteFullCreateRollsBackWholeGraph(t *testing.T) {
 	require.NoError(t, cas.db.Raw("PRAGMA page_count").Scan(&pageCount).Error)
 	require.NoError(t, cas.db.Exec(fmt.Sprintf("PRAGMA max_page_count=%d", pageCount)).Error)
 
-	entry := bigChatEntry("full-create", strings.Repeat("disk full payload ", 20000))
+	// The redundant inline copy no longer forces growth; use incompressible
+	// content so the actual CAS blobs must exceed the database page budget.
+	rng := rand.New(rand.NewSource(1))
+	noise := make([]byte, 2<<20)
+	_, readErr := rng.Read(noise)
+	require.NoError(t, readErr)
+	entry := bigChatEntry("full-create", fmt.Sprintf("%x", noise))
 	require.NoError(t, entry.SerializeFields())
 	err := cas.Create(ctx, entry)
 	require.Error(t, err, "SQLITE_FULL must be surfaced")

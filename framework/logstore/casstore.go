@@ -10,8 +10,8 @@ package logstore
 //
 // Tables (same database as logs):
 //
-//	cas_blobs(hash PK, codec, orig_len, data)   immutable compressed segments + manifests
-//	cas_refs(owner_hash, target_hash)           manifest -> segment edges
+//	cas_blobs(id PK, hash UNIQUE, codec, orig_len, data)   immutable compressed segments + manifests
+//	cas_refs(owner_id, target_id)               manifest -> segment edges (cas_blobs.id keys)
 //	cas_payloads(log_id, field, blob_hash)      per-log field -> manifest pointer
 //
 // Every write path performs the log-row write and the CAS writes inside ONE
@@ -32,7 +32,6 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/maximhq/bifrost/core/schemas"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 	"gorm.io/gorm/schema"
 )
 
@@ -55,13 +54,22 @@ const (
 	// Preallocation cap when rebuilding from an untrusted manifest length;
 	// append grows past it as real segments arrive.
 	casMaxPreallocBytes = int64(1) << 20
+	// Keep generated statements below SQLite's conservative 999-variable
+	// ceiling and far below PostgreSQL's 65535-variable protocol limit. Every
+	// batched write and hash lookup derives its row count from this budget.
+	casSQLParameterLimit = 900
 )
 
 // casBlob stores one immutable content-addressed object: either a compressed
 // data segment or a compressed manifest. Insert-only with OnConflict DoNothing,
-// so concurrent writers of identical content converge on one row.
+// so concurrent writers of identical content converge on one row. The integer
+// id is the database-internal join key for cas_refs; content identity and
+// dedup stay on the full SHA-256 hash (unique index). AUTOINCREMENT keeps ids
+// from ever being reused, so a stale ref edge can only dangle (detectable),
+// never silently reattach to new content.
 type casBlob struct {
-	Hash      string `gorm:"primaryKey;column:hash"`
+	ID        int64  `gorm:"primaryKey;column:id;autoIncrement"`
+	Hash      string `gorm:"column:hash;uniqueIndex:idx_cas_blobs_hash"`
 	Codec     string `gorm:"column:codec"`
 	OrigLen   int64  `gorm:"column:orig_len"`
 	Data      []byte `gorm:"column:data"`
@@ -70,12 +78,13 @@ type casBlob struct {
 
 func (casBlob) TableName() string { return "cas_blobs" }
 
-// casRef records that manifest OwnerHash references data blob TargetHash.
-// Reachability: a data blob lives as long as some ref targets it and that
-// manifest is pointed to by a casPayload row.
+// casRef records that the manifest blob with id OwnerID references the data
+// blob with id TargetID (ids reference cas_blobs.id). Reachability: a data
+// blob lives as long as some ref targets it and that manifest is pointed to
+// by a casPayload row.
 type casRef struct {
-	OwnerHash  string `gorm:"primaryKey;column:owner_hash"`
-	TargetHash string `gorm:"primaryKey;column:target_hash"`
+	OwnerID  int64 `gorm:"primaryKey;column:owner_id"`
+	TargetID int64 `gorm:"primaryKey;column:target_id"`
 }
 
 func (casRef) TableName() string { return "cas_refs" }
@@ -201,6 +210,13 @@ func newCasLogStore(ctx context.Context, inner LogStore, cfg *ContentAddressedCo
 	excluded["cache_debug"] = struct{}{}
 	if err := initializeCASInventory(db.WithContext(ctx)); err != nil {
 		return nil, fmt.Errorf("logstore/cas: initialize inventory: %w", err)
+	}
+	// Defense in depth: the write path resolves ref edges through integer
+	// cas_blobs ids. Migrations run when the inner store opens and must have
+	// reached the integer layout; fail fast with a clear error instead of
+	// letting hash/integer mismatches surface as corrupt-looking queries.
+	if err := verifyCasIntegerLayout(db.WithContext(ctx)); err != nil {
+		return nil, fmt.Errorf("logstore/cas: cas_refs layout check failed (migrations incomplete?): %w", err)
 	}
 	return &CasLogStore{
 		LogStore:      inner,
@@ -394,55 +410,356 @@ func casReconstruct(manifestBytes []byte, lookup func(hash string) ([]byte, erro
 	return out, nil
 }
 
-// casStoreField persists one payload field's content into CAS inside tx and
-// points (logID, field) at the manifest blob. It returns the manifest hash the
-// pointer previously referenced ("" when there was none); the caller reclaims
-// it via gcForManifests after the new pointer is in place, so a replaced
-// field's old content does not leak. Idempotent per (logID, field).
-func casStoreField(tx *gorm.DB, logID, field string, content []byte, minChunk int) (oldManifest string, fallback bool, err error) {
-	_, blobs, manifestBytes, fallback, err := buildManifest(content, minChunk)
+type casPreparedField struct {
+	field         string
+	manifestHash  string
+	manifestBlob  casBlob
+	segmentBlobs  []casBlob
+	segmentHashes []string
+	fallback      bool
+}
+
+// casPrepareField performs the CPU-only part of a CAS field write. A log write
+// prepares every selected field before issuing CAS SQL so their hashes can be
+// resolved together inside the log transaction.
+func casPrepareField(field string, content []byte, minChunk int) (*casPreparedField, error) {
+	m, blobs, manifestBytes, fallback, err := buildManifest(content, minChunk)
 	if err != nil {
-		return "", fallback, err
-	}
-	for i := range blobs {
-		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&blobs[i]).Error; err != nil {
-			return "", fallback, fmt.Errorf("logstore/cas: insert segment blob: %w", err)
-		}
+		return nil, err
 	}
 	manifestHash := casHash(casManifestDomain, manifestBytes)
-	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&casBlob{
-		Hash:    manifestHash,
-		Codec:   casCodecZstd,
-		OrigLen: int64(len(manifestBytes)),
-		Data:    casEncoder.EncodeAll(manifestBytes, nil),
-	}).Error; err != nil {
-		return "", fallback, fmt.Errorf("logstore/cas: insert manifest blob: %w", err)
+	prepared := &casPreparedField{
+		field:        field,
+		manifestHash: manifestHash,
+		manifestBlob: casBlob{
+			Hash:    manifestHash,
+			Codec:   casCodecZstd,
+			OrigLen: int64(len(manifestBytes)),
+			Data:    casEncoder.EncodeAll(manifestBytes, nil),
+		},
+		segmentBlobs: blobs,
+		fallback:     fallback,
 	}
-	var m casManifest
-	if err := sonic.Unmarshal(manifestBytes, &m); err != nil {
-		return "", fallback, err
-	}
-	for _, p := range m.Parts {
-		if p.Hash == "" {
+	seen := make(map[string]struct{}, len(m.Parts))
+	for _, part := range m.Parts {
+		if part.Hash == "" {
 			continue
 		}
-		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&casRef{OwnerHash: manifestHash, TargetHash: p.Hash}).Error; err != nil {
-			return "", fallback, fmt.Errorf("logstore/cas: insert ref: %w", err)
+		if _, duplicate := seen[part.Hash]; duplicate {
+			continue
+		}
+		seen[part.Hash] = struct{}{}
+		prepared.segmentHashes = append(prepared.segmentHashes, part.Hash)
+	}
+	return prepared, nil
+}
+
+// casStorePreparedFields persists one log's prepared fields in two phases: all
+// blobs first, then one bounded transaction-local hash-to-id mapping followed
+// by refs and payload pointers. This deliberately does not collect across log
+// boundaries, even when BatchCreateIfNotExists has a wider transaction.
+func casStorePreparedFields(tx *gorm.DB, logID string, fields []*casPreparedField) ([]string, error) {
+	if len(fields) == 0 {
+		return nil, nil
+	}
+	lastField := make(map[string]int, len(fields))
+	for i, field := range fields {
+		lastField[field.field] = i
+	}
+	uniqueFields := make([]*casPreparedField, 0, len(lastField))
+	for i, field := range fields {
+		if lastField[field.field] == i {
+			uniqueFields = append(uniqueFields, field)
 		}
 	}
-	var prev []string
-	if err := tx.Model(&casPayload{}).
-		Where("log_id = ? AND field = ?", logID, field).
-		Pluck("blob_hash", &prev).Error; err != nil {
-		return "", fallback, fmt.Errorf("logstore/cas: read previous pointer: %w", err)
+	fields = uniqueFields
+	lookup := make([]string, 0, len(fields)*2)
+	seenLookup := make(map[string]struct{}, len(fields)*2)
+	blobs := make([]casBlob, 0, len(fields)*2)
+	seenBlobs := make(map[string]struct{}, len(fields)*2)
+	addLookup := func(hash string) {
+		if _, duplicate := seenLookup[hash]; duplicate {
+			return
+		}
+		seenLookup[hash] = struct{}{}
+		lookup = append(lookup, hash)
 	}
-	if len(prev) > 0 {
-		oldManifest = prev[0]
+	addBlob := func(blob casBlob) {
+		if _, duplicate := seenBlobs[blob.Hash]; duplicate {
+			return
+		}
+		seenBlobs[blob.Hash] = struct{}{}
+		blobs = append(blobs, blob)
 	}
-	if err := tx.Where("log_id = ? AND field = ?", logID, field).Delete(&casPayload{}).Error; err != nil {
-		return "", fallback, fmt.Errorf("logstore/cas: clear payload pointer: %w", err)
+	for _, field := range fields {
+		for _, blob := range field.segmentBlobs {
+			addBlob(blob)
+		}
+		addBlob(field.manifestBlob)
+		addLookup(field.manifestHash)
+		for _, hash := range field.segmentHashes {
+			addLookup(hash)
+		}
 	}
-	return oldManifest, fallback, tx.Create(&casPayload{LogID: logID, Field: field, BlobHash: manifestHash}).Error
+	if err := casInsertBlobs(tx, blobs); err != nil {
+		return nil, fmt.Errorf("logstore/cas: insert blobs: %w", err)
+	}
+
+	ids, err := casResolveBlobIDs(tx, lookup)
+	if err != nil {
+		return nil, fmt.Errorf("logstore/cas: resolve blob ids: %w", err)
+	}
+	// Validate every endpoint before refs or pointers are changed. Every blob was
+	// either inserted above or already existed by full SHA-256 identity.
+	for _, field := range fields {
+		if _, ok := ids[field.manifestHash]; !ok {
+			return nil, fmt.Errorf("logstore/cas: manifest blob id missing after insert")
+		}
+		for _, hash := range field.segmentHashes {
+			if _, ok := ids[hash]; !ok {
+				return nil, fmt.Errorf("logstore/cas: segment blob id missing after insert: %s", hash)
+			}
+		}
+	}
+
+	refs := make([]casRef, 0, len(lookup))
+	seenRefs := make(map[casRef]struct{}, len(lookup))
+	for _, field := range fields {
+		ownerID := ids[field.manifestHash]
+		for _, hash := range field.segmentHashes {
+			ref := casRef{OwnerID: ownerID, TargetID: ids[hash]}
+			if _, duplicate := seenRefs[ref]; duplicate {
+				continue
+			}
+			seenRefs[ref] = struct{}{}
+			refs = append(refs, ref)
+		}
+	}
+	if err := casInsertRefs(tx, refs); err != nil {
+		return nil, fmt.Errorf("logstore/cas: insert refs: %w", err)
+	}
+
+	payloads := make([]casPayload, 0, len(fields))
+	for _, field := range fields {
+		payloads = append(payloads, casPayload{LogID: logID, Field: field.field, BlobHash: field.manifestHash})
+	}
+	return casReplacePayloads(tx, logID, payloads)
+}
+
+// casReplacePayloads atomically replaces the selected pointer fields for one
+// log. Duplicate fields are collapsed before SQL with the final occurrence
+// winning, matching the old sequential per-field replacement semantics.
+func casReplacePayloads(tx *gorm.DB, logID string, payloads []casPayload) ([]string, error) {
+	if len(payloads) == 0 {
+		return nil, nil
+	}
+	lastIndex := make(map[string]int, len(payloads))
+	for i, payload := range payloads {
+		if payload.LogID != logID {
+			return nil, fmt.Errorf("logstore/cas: payload log id %q does not match transaction log %q", payload.LogID, logID)
+		}
+		lastIndex[payload.Field] = i
+	}
+	unique := make([]casPayload, 0, len(lastIndex))
+	fields := make([]string, 0, len(lastIndex))
+	for i, payload := range payloads {
+		if lastIndex[payload.Field] != i {
+			continue
+		}
+		unique = append(unique, payload)
+		fields = append(fields, payload.Field)
+	}
+
+	var oldManifests []string
+	// One log currently has fewer payload fields than this limit, but chunking
+	// keeps every SELECT and DELETE valid if the schema grows or focused callers
+	// use the helper with a larger field set.
+	const fixedPayloadFilterParameters = 1
+	fieldsPerFilter := casSQLParameterLimit - fixedPayloadFilterParameters
+	for start := 0; start < len(fields); start += fieldsPerFilter {
+		end := start + fieldsPerFilter
+		if end > len(fields) {
+			end = len(fields)
+		}
+		var chunkOld []string
+		if err := tx.Model(&casPayload{}).
+			Where("log_id = ? AND field IN ?", logID, fields[start:end]).
+			Pluck("blob_hash", &chunkOld).Error; err != nil {
+			return nil, fmt.Errorf("logstore/cas: read previous pointers: %w", err)
+		}
+		oldManifests = append(oldManifests, chunkOld...)
+	}
+	for start := 0; start < len(fields); start += fieldsPerFilter {
+		end := start + fieldsPerFilter
+		if end > len(fields) {
+			end = len(fields)
+		}
+		if err := tx.Where("log_id = ? AND field IN ?", logID, fields[start:end]).Delete(&casPayload{}).Error; err != nil {
+			return nil, fmt.Errorf("logstore/cas: clear payload pointers: %w", err)
+		}
+	}
+	const parametersPerPayload = 3
+	rowsPerStatement := casSQLParameterLimit / parametersPerPayload
+	for start := 0; start < len(unique); start += rowsPerStatement {
+		end := start + rowsPerStatement
+		if end > len(unique) {
+			end = len(unique)
+		}
+		var sql strings.Builder
+		sql.WriteString("INSERT INTO cas_payloads (log_id,field,blob_hash) VALUES ")
+		args := make([]interface{}, 0, (end-start)*parametersPerPayload)
+		for i := start; i < end; i++ {
+			if i > start {
+				sql.WriteByte(',')
+			}
+			sql.WriteString("(?,?,?)")
+			args = append(args, unique[i].LogID, unique[i].Field, unique[i].BlobHash)
+		}
+		if err := tx.Exec(sql.String(), args...).Error; err != nil {
+			return nil, fmt.Errorf("logstore/cas: insert payload pointers: %w", err)
+		}
+	}
+	return oldManifests, nil
+}
+
+// casStoreField retains the single-field helper used by focused tests and
+// maintenance probes; production log writes collect all fields through
+// casStorePreparedFields.
+func casStoreField(tx *gorm.DB, logID, field string, content []byte, minChunk int) (oldManifest string, fallback bool, err error) {
+	prepared, err := casPrepareField(field, content, minChunk)
+	if err != nil {
+		return "", false, err
+	}
+	old, err := casStorePreparedFields(tx, logID, []*casPreparedField{prepared})
+	if err != nil {
+		return "", prepared.fallback, err
+	}
+	if len(old) > 0 {
+		oldManifest = old[0]
+	}
+	return oldManifest, prepared.fallback, nil
+}
+
+// casResolveBlobIDs scans each bounded two-column mapping directly, avoiding
+// GORM's reflected result slice. Rows are closed before the next chunk or any
+// ref write, and the caller verifies that every requested endpoint was found.
+func casResolveBlobIDs(tx *gorm.DB, hashes []string) (map[string]int64, error) {
+	unique := make([]string, 0, len(hashes))
+	seen := make(map[string]struct{}, len(hashes))
+	for _, hash := range hashes {
+		if _, duplicate := seen[hash]; duplicate {
+			continue
+		}
+		seen[hash] = struct{}{}
+		unique = append(unique, hash)
+	}
+	ids := make(map[string]int64, len(unique))
+	for start := 0; start < len(unique); start += casSQLParameterLimit {
+		end := start + casSQLParameterLimit
+		if end > len(unique) {
+			end = len(unique)
+		}
+		rows, err := tx.Model(&casBlob{}).Select("id", "hash").Where("hash IN ?", unique[start:end]).Rows()
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var id int64
+			var hash string
+			if err := rows.Scan(&id, &hash); err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
+			ids[hash] = id
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+	}
+	return ids, nil
+}
+
+// casInsertBlobs inserts unique blobs in bounded multirow statements. It leaves
+// ID allocation to the database and resolves IDs by hash afterwards, including
+// conflicts. ON CONFLICT DO NOTHING preserves existing immutable blob content
+// and every attempted insert still advances SQLite AUTOINCREMENT/PostgreSQL
+// sequences according to the database's native conflict semantics.
+func casInsertBlobs(tx *gorm.DB, blobs []casBlob) error {
+	const parametersPerBlob = 5
+	rowsPerStatement := casSQLParameterLimit / parametersPerBlob
+	for start := 0; start < len(blobs); start += rowsPerStatement {
+		end := start + rowsPerStatement
+		if end > len(blobs) {
+			end = len(blobs)
+		}
+		var sql strings.Builder
+		sql.WriteString("INSERT INTO cas_blobs (hash,codec,orig_len,data,created_at) VALUES ")
+		args := make([]interface{}, 0, (end-start)*parametersPerBlob)
+		for i := start; i < end; i++ {
+			if i > start {
+				sql.WriteByte(',')
+			}
+			sql.WriteString("(?,?,?,?,?)")
+			createdAt := blobs[i].CreatedAt
+			if createdAt == 0 {
+				createdAt = tx.NowFunc().Unix()
+			}
+			args = append(args, blobs[i].Hash, blobs[i].Codec, blobs[i].OrigLen, blobs[i].Data, createdAt)
+		}
+		sql.WriteString(" ON CONFLICT DO NOTHING")
+		if err := tx.Exec(sql.String(), args...).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// casInsertBlob retains the single-row helper for focused callers while using
+// the same raw, no-RETURNING semantics as the transaction batch path.
+func casInsertBlob(tx *gorm.DB, blob *casBlob) error {
+	return casInsertBlobs(tx, []casBlob{*blob})
+}
+
+// casInsertRefs inserts unique ref edges in bounded multirow statements. The
+// composite primary key and ON CONFLICT DO NOTHING retain idempotency against
+// edges that already existed before this transaction.
+func casInsertRefs(tx *gorm.DB, refs []casRef) error {
+	unique := make([]casRef, 0, len(refs))
+	seen := make(map[casRef]struct{}, len(refs))
+	for _, ref := range refs {
+		if _, duplicate := seen[ref]; duplicate {
+			continue
+		}
+		seen[ref] = struct{}{}
+		unique = append(unique, ref)
+	}
+	const parametersPerRef = 2
+	rowsPerStatement := casSQLParameterLimit / parametersPerRef
+	for start := 0; start < len(unique); start += rowsPerStatement {
+		end := start + rowsPerStatement
+		if end > len(unique) {
+			end = len(unique)
+		}
+		var sql strings.Builder
+		sql.WriteString("INSERT INTO cas_refs (owner_id,target_id) VALUES ")
+		args := make([]interface{}, 0, (end-start)*parametersPerRef)
+		for i := start; i < end; i++ {
+			if i > start {
+				sql.WriteByte(',')
+			}
+			sql.WriteString("(?,?)")
+			args = append(args, unique[i].OwnerID, unique[i].TargetID)
+		}
+		sql.WriteString(" ON CONFLICT DO NOTHING")
+		if err := tx.Exec(sql.String(), args...).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // casCountPayloads returns the number of CAS pointers a log currently has

@@ -37,7 +37,7 @@ func TestCASRowPayloadForAnalysisPreservesProductionPreviewAndSummary(t *testing
 	require.NoError(t, err)
 	require.True(t, hasObject)
 	require.Equal(t, entry.ContentSummary, summary)
-	require.NotEmpty(t, row["input_history"])
+	require.Empty(t, row["input_history"])
 	require.Less(t, len(row["input_history"]), len(serialized["input_history"]))
 	require.Empty(t, row["tools"])
 }

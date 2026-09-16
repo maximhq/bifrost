@@ -52,31 +52,33 @@ type casFieldContent struct {
 	content string
 }
 
-// casWriteFields stores every eligible field inside tx and reclaims the
-// manifests any replaced pointers previously referenced.
+// casWriteFields prepares every eligible field before issuing CAS SQL, then
+// stores the whole log through one transaction-local ID mapping and reclaims
+// any manifests the replaced pointers previously referenced.
 func (c *CasLogStore) casWriteFields(tx *gorm.DB, logID string, toStore []casFieldContent) error {
-	var oldManifests []string
-	for _, s := range toStore {
-		old, fallback, err := casStoreField(tx, logID, s.field, []byte(s.content), c.minChunkBytes)
+	prepared := make([]*casPreparedField, 0, len(toStore))
+	for _, field := range toStore {
+		p, err := casPrepareField(field.field, []byte(field.content), c.minChunkBytes)
 		if err != nil {
-			return fmt.Errorf("logstore/cas: store payload for log %s: %w", logID, err)
+			return fmt.Errorf("logstore/cas: prepare payload for log %s: %w", logID, err)
 		}
-		if fallback {
+		prepared = append(prepared, p)
+	}
+	oldManifests, err := casStorePreparedFields(tx, logID, prepared)
+	if err != nil {
+		return fmt.Errorf("logstore/cas: store payload for log %s: %w", logID, err)
+	}
+	for _, field := range prepared {
+		if field.fallback {
 			c.fallbacks.Add(1)
-		}
-		if old != "" {
-			oldManifests = append(oldManifests, old)
 		}
 	}
 	return gcForManifests(tx, oldManifests)
 }
 
-// prepareCasEntry mutates dbEntry into the lightweight row form. Fields that
-// went to CAS are NOT in the keep set, so prepareDBEntry clears both their
-// TEXT and Parsed fields and writes the last-user-message preview into the
-// input columns — the same list-view semantics as hybrid mode. The full
-// payload lives in CAS and overwrites the preview on hydrate. Config-excluded
-// fields (plus token_usage/cache_debug) stay in the keep set, DB-resident.
+// prepareCasEntry keeps the shared bounded summary, then removes every CAS-
+// selected field, including the unbounded last-user preview reinserted by the
+// hybrid helper. Excluded and below-threshold fields remain DB-resident.
 func prepareCasEntry(dbEntry *Log, excluded map[string]struct{}, cleared map[string]struct{}) {
 	keep := make(map[string]struct{}, len(excluded)+len(cleared))
 	for f := range excluded {
@@ -88,6 +90,11 @@ func prepareCasEntry(dbEntry *Log, excluded map[string]struct{}, cleared map[str
 		}
 	}
 	prepareDBEntry(dbEntry, keep)
+	for field := range cleared {
+		if field != "token_usage" && field != "cache_debug" {
+			clearPayloadField(dbEntry, field)
+		}
+	}
 }
 
 // extractCasPayload mirrors hybrid's extractUploadPayload: hidden entries
@@ -607,20 +614,35 @@ func gcForManifests(tx *gorm.DB, manifestHashes []string) error {
 			return nil
 		}
 	}
-	var targets []string
+	// Dead manifests become candidate blobs by hash and ref edges by id.
+	var ownerIDs []int64
+	if err := tx.Model(&casBlob{}).
+		Where("hash IN ?", manifestHashes).
+		Pluck("id", &ownerIDs).Error; err != nil {
+		return err
+	}
+	if len(ownerIDs) == 0 {
+		return nil
+	}
+	var targetIDs []int64
 	if err := tx.Model(&casRef{}).
-		Where("owner_hash IN ?", manifestHashes).
-		Pluck("target_hash", &targets).Error; err != nil {
+		Where("owner_id IN ?", ownerIDs).
+		Pluck("target_id", &targetIDs).Error; err != nil {
 		return err
 	}
-	if err := tx.Where("owner_hash IN ?", manifestHashes).Delete(&casRef{}).Error; err != nil {
+	if err := tx.Where("owner_id IN ?", ownerIDs).Delete(&casRef{}).Error; err != nil {
 		return err
 	}
-	candidates := append(append([]string{}, manifestHashes...), targets...)
+	var candidates []string
+	if err := tx.Model(&casBlob{}).
+		Where("id IN ? OR hash IN ?", targetIDs, manifestHashes).
+		Pluck("hash", &candidates).Error; err != nil {
+		return err
+	}
 	return tx.Where(
 		"hash IN ? AND NOT EXISTS (SELECT 1 FROM cas_payloads WHERE cas_payloads.blob_hash = cas_blobs.hash)"+
-			" AND NOT EXISTS (SELECT 1 FROM cas_refs WHERE cas_refs.target_hash = cas_blobs.hash)"+
-			" AND NOT EXISTS (SELECT 1 FROM cas_refs WHERE cas_refs.owner_hash = cas_blobs.hash)",
+			" AND NOT EXISTS (SELECT 1 FROM cas_refs WHERE cas_refs.target_id = cas_blobs.id)"+
+			" AND NOT EXISTS (SELECT 1 FROM cas_refs WHERE cas_refs.owner_id = cas_blobs.id)",
 		candidates,
 	).Delete(&casBlob{}).Error
 }
@@ -648,13 +670,13 @@ func (c *CasLogStore) gcOrphanCas(ctx context.Context) error {
 			return err
 		}
 		if err := tx.Where(
-			"NOT EXISTS (SELECT 1 FROM cas_payloads WHERE cas_payloads.blob_hash = cas_refs.owner_hash)",
+			"NOT EXISTS (SELECT 1 FROM cas_payloads p JOIN cas_blobs b ON b.hash = p.blob_hash WHERE b.id = cas_refs.owner_id)",
 		).Delete(&casRef{}).Error; err != nil {
 			return err
 		}
 		return tx.Where(
 			"NOT EXISTS (SELECT 1 FROM cas_payloads WHERE cas_payloads.blob_hash = cas_blobs.hash)" +
-				" AND NOT EXISTS (SELECT 1 FROM cas_refs WHERE cas_refs.target_hash = cas_blobs.hash)",
+				" AND NOT EXISTS (SELECT 1 FROM cas_refs WHERE cas_refs.target_id = cas_blobs.id)",
 		).Delete(&casBlob{}).Error
 	})
 }

@@ -246,7 +246,7 @@ func TestCas_TamperedSameLengthBlobDetected(t *testing.T) {
 	// Replace one segment blob with valid zstd of the same length, different bytes.
 	var seg casBlob
 	require.NoError(t, cas.db.
-		Where("hash IN (SELECT target_hash FROM cas_refs LIMIT 1)").
+		Where("hash IN (SELECT b.hash FROM cas_refs r JOIN cas_blobs b ON b.id = r.target_id LIMIT 1)").
 		First(&seg).Error)
 	fake := strings.Repeat("z", int(seg.OrigLen))
 	require.NoError(t, cas.db.Model(&casBlob{}).Where("hash = ?", seg.Hash).
@@ -898,7 +898,7 @@ func TestCas_ConcurrentDeleteRecreateKeepsInvariants(t *testing.T) {
 	// pointer references.
 	var dangling int64
 	require.NoError(t, cas.db.Raw(
-		"SELECT COUNT(*) FROM cas_refs WHERE NOT EXISTS (SELECT 1 FROM cas_payloads WHERE cas_payloads.blob_hash = cas_refs.owner_hash)",
+		"SELECT COUNT(*) FROM cas_refs WHERE NOT EXISTS (SELECT 1 FROM cas_payloads p JOIN cas_blobs b ON b.hash = p.blob_hash WHERE b.id = cas_refs.owner_id)",
 	).Scan(&dangling).Error)
 	assert.Zero(t, dangling)
 }

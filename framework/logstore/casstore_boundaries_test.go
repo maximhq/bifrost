@@ -37,7 +37,7 @@ func boundaryStore(t *testing.T, pg bool) (*CasLogStore, *RDBLogStore) {
 func boundarySnapshot(t *testing.T, db *gorm.DB) map[string][]map[string]interface{} {
 	t.Helper()
 	out := map[string][]map[string]interface{}{}
-	for table, order := range map[string]string{"logs": "id", "cas_payloads": "log_id, field", "cas_refs": "owner_hash, target_hash", "cas_blobs": "hash", "cas_inventories": "log_id", "cas_inventory_state": "id"} {
+	for table, order := range map[string]string{"logs": "id", "cas_payloads": "log_id, field", "cas_refs": "owner_id, target_id", "cas_blobs": "hash", "cas_inventories": "log_id", "cas_inventory_state": "id"} {
 		if !db.Migrator().HasTable(table) {
 			continue
 		}

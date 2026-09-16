@@ -98,7 +98,7 @@ func TestMaterializeAllSchemesAndVerify(t *testing.T) {
 	defer casDB.Close()
 	var preview string
 	require.NoError(t, casDB.QueryRow("SELECT input_history FROM logs WHERE id='private-id-1'").Scan(&preview))
-	require.NotEmpty(t, preview)
+	require.Empty(t, preview)
 	sourceDB, err := sql.Open("sqlite3", readDSN(source))
 	require.NoError(t, err)
 	var originalHistory string

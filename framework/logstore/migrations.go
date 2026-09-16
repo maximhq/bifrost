@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -322,7 +323,12 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"mcp_tool_logs_add_project_columns"}, run: migrationAddProjectColumnsToMCPToolLogs},
 	{IDs: []string{"logs_add_served_model_column"}, run: migrationAddServedModelColumn},
 	{IDs: []string{"logs_add_tool_call_names_column"}, run: migrationAddToolCallNamesColumn},
-\t{IDs: []string{"cas_payload_tables_init"}, run: migrationCreateCasTables},\n\t{IDs: []string{"cas_has_object_backfill"}, run: migrationBackfillCasHasObject},\n	{IDs: []string{"mcp_tool_logs_add_governance_snapshots"}, run: migrationAddMCPGovernanceSnapshots},
+	{IDs: []string{"mcp_tool_logs_add_governance_snapshots"}, run: migrationAddMCPGovernanceSnapshots},
+	{IDs: []string{"cas_payload_tables_init"}, run: migrationCreateCasTables},
+	{IDs: []string{"cas_refs_without_rowid_v1"}, run: migrationCompactCasRefs},
+	{IDs: []string{"cas_reverse_lookup_indexes_v1"}, run: migrationCasReverseLookupIndexes},
+	{IDs: []string{"cas_integer_ref_ids_v1"}, run: migrationCasIntegerRefIDs},
+	{IDs: []string{"cas_has_object_backfill"}, run: migrationBackfillCasHasObject},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -4902,6 +4908,400 @@ func migrationCreateCasTables(ctx context.Context, db *gorm.DB, logger schemas.L
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while creating CAS tables: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationCasReverseLookupIndexes bounds reachability probes during GC and
+// payload replacement. The owner-first WITHOUT ROWID primary key does not
+// support target lookups; without these indexes GC holds the SQLite writer
+// while repeatedly scanning whole tables. Apply after the physical migration
+// for existing installations as well as newly created stores.
+func migrationCasReverseLookupIndexes(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "cas_reverse_lookup_indexes_v1",
+		Migrate: func(tx *gorm.DB) error {
+			// cas_refs may still be on the hex layout (existing stores, the
+			// integer-id migration runs later in the step order) or already
+			// integer (stores created after cas_integer_ref_ids_v1).
+			refsColumn, refsIndex := "target_id", "idx_cas_refs_target_id"
+			hexLayout, err := casRefsHexLayoutAny(tx.WithContext(ctx))
+			if err != nil {
+				return err
+			}
+			if hexLayout {
+				refsColumn, refsIndex = "target_hash", "idx_cas_refs_target_hash"
+			}
+			for _, spec := range []struct{ table, column, name string }{
+				{"cas_refs", refsColumn, refsIndex},
+				{"cas_payloads", "blob_hash", "idx_cas_payloads_blob_hash"},
+			} {
+				if err := tx.WithContext(ctx).Exec("CREATE INDEX IF NOT EXISTS " + spec.name + " ON " + spec.table + "(" + spec.column + ")").Error; err != nil {
+					return err
+				}
+				indexes, err := tx.WithContext(ctx).Migrator().GetIndexes(spec.table)
+				if err != nil {
+					return err
+				}
+				valid := false
+				for _, index := range indexes {
+					if index.Name() == spec.name {
+						columns := index.Columns()
+						valid = len(columns) == 1 && columns[0] == spec.column
+					}
+				}
+				if !valid {
+					return fmt.Errorf("CAS reverse lookup index %s has unexpected columns or table", spec.name)
+				}
+				if tx.Dialector.Name() == "sqlite" {
+					var full int64
+					if err := tx.Raw("SELECT count(*) FROM pragma_index_list(?) WHERE name = ? AND partial = 0", spec.table, spec.name).Scan(&full).Error; err != nil {
+						return err
+					}
+					if full != 1 {
+						return fmt.Errorf("CAS reverse lookup index %s must be nonpartial", spec.name)
+					}
+				} else if tx.Dialector.Name() == "postgres" {
+					var full int64
+					if err := tx.Raw("SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid WHERE i.indrelid=to_regclass(?) AND c.relname=? AND i.indisvalid AND i.indisready AND i.indpred IS NULL AND i.indexprs IS NULL", spec.table, spec.name).Scan(&full).Error; err != nil {
+						return err
+					}
+					if full != 1 {
+						return fmt.Errorf("CAS reverse lookup index %s must be valid, ready and nonpartial", spec.name)
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error { return nil },
+	}})
+	return m.Migrate()
+}
+
+func migrationCompactCasRefs(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	compact := migrator.New(db, &opts, []*migrator.Migration{{
+		ID:       "cas_refs_without_rowid_v1",
+		Migrate:  func(tx *gorm.DB) error { return MigrateCASRefs(tx.WithContext(ctx)) },
+		Rollback: func(tx *gorm.DB) error { return nil },
+	}})
+	return compact.Migrate()
+}
+
+// migrationCasIntegerRefIDs moves cas_refs from hex hash keys to integer
+// cas_blobs.id keys and gives cas_blobs a non-reusing integer primary key
+// (SQLite AUTOINCREMENT / PostgreSQL sequence). Content identity and dedup
+// stay on the full SHA-256 hash via a unique index; the integer id is only
+// the database-internal join key, cutting each stored ref edge from two
+// 64-char hex strings to two integers. Fails closed on dangling ref edges:
+// the reachability invariant must hold before the layout change, otherwise a
+// partial copy would silently alter GC semantics. Fresh stores created by
+// migrationCreateCasTables already have the integer models and only need the
+// physical WITHOUT ROWID compaction here.
+func migrationCasIntegerRefIDs(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "cas_integer_ref_ids_v1",
+		Migrate: func(tx *gorm.DB) error {
+			txx := tx.WithContext(ctx)
+			hexLayout, err := casRefsHexLayoutAny(txx)
+			if err != nil {
+				return err
+			}
+			if hexLayout {
+				if err := ensureCasBlobIntegerIDs(txx); err != nil {
+					return err
+				}
+				if err := rebuildCasRefsToIntegerIDs(txx); err != nil {
+					return err
+				}
+			} else if txx.Dialector.Name() == "sqlite" {
+				// Fresh stores get integer columns from the models but a
+				// rowid table; compact to WITHOUT ROWID like hex stores got
+				// from cas_refs_without_rowid_v1.
+				if err := compactCasRefsIntegerWithoutRowid(txx); err != nil {
+					return err
+				}
+			}
+			return verifyCasIntegerLayout(txx)
+		},
+		Rollback: func(tx *gorm.DB) error { return nil },
+	}})
+	return m.Migrate()
+}
+
+// casRefsHexLayoutAny reports whether cas_refs still has the pre-integer
+// owner_hash column, for both supported dialects.
+func casRefsHexLayoutAny(tx *gorm.DB) (bool, error) {
+	if tx.Dialector.Name() == "sqlite" {
+		return casRefsHexLayout(tx)
+	}
+	var n int64
+	if err := tx.Raw("SELECT count(*) FROM information_schema.columns WHERE table_name = 'cas_refs' AND column_name = 'owner_hash'").Scan(&n).Error; err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// ensureCasBlobIntegerIDs gives cas_blobs an integer primary key while keeping
+// the hash unique for dedup and content identity.
+func ensureCasBlobIntegerIDs(tx *gorm.DB) error {
+	if tx.Dialector.Name() == "sqlite" {
+		var cols []struct {
+			Name string
+			Pk   int64 `gorm:"column:pk"`
+		}
+		if err := tx.Raw("PRAGMA table_info(cas_blobs)").Scan(&cols).Error; err != nil {
+			return err
+		}
+		hasIDPK := false
+		for _, c := range cols {
+			if c.Name == "id" && c.Pk > 0 {
+				hasIDPK = true
+			}
+		}
+		if hasIDPK {
+			return tx.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_cas_blobs_hash ON cas_blobs(hash)").Error
+		}
+		var triggers int64
+		if err := tx.Raw("SELECT count(*) FROM sqlite_master WHERE type='trigger' AND tbl_name='cas_blobs'").Scan(&triggers).Error; err != nil {
+			return err
+		}
+		if triggers != 0 {
+			return fmt.Errorf("cas_blobs has custom triggers; migration refused")
+		}
+		for _, q := range []string{
+			"CREATE TABLE cas_blobs_idmig (id INTEGER PRIMARY KEY AUTOINCREMENT, hash TEXT NOT NULL, codec TEXT, orig_len INTEGER, data BLOB, created_at INTEGER)",
+			"INSERT INTO cas_blobs_idmig (hash, codec, orig_len, data, created_at) SELECT hash, codec, orig_len, data, created_at FROM cas_blobs",
+		} {
+			if err := tx.Exec(q).Error; err != nil {
+				return err
+			}
+		}
+		var before, after int64
+		if err := tx.Raw("SELECT count(*) FROM cas_blobs").Scan(&before).Error; err != nil {
+			return err
+		}
+		if err := tx.Raw("SELECT count(*) FROM cas_blobs_idmig").Scan(&after).Error; err != nil {
+			return err
+		}
+		if before != after {
+			return fmt.Errorf("cas_blobs copy mismatch: %d != %d", before, after)
+		}
+		for _, q := range []string{
+			"DROP TABLE cas_blobs",
+			"ALTER TABLE cas_blobs_idmig RENAME TO cas_blobs",
+			"CREATE UNIQUE INDEX idx_cas_blobs_hash ON cas_blobs(hash)",
+		} {
+			if err := tx.Exec(q).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	// PostgreSQL
+	var hasID int64
+	if err := tx.Raw("SELECT count(*) FROM information_schema.columns WHERE table_name = 'cas_blobs' AND column_name = 'id'").Scan(&hasID).Error; err != nil {
+		return err
+	}
+	if hasID == 0 {
+		for _, q := range []string{
+			"ALTER TABLE cas_blobs ADD COLUMN id BIGINT",
+			"CREATE SEQUENCE IF NOT EXISTS cas_blobs_id_seq OWNED BY cas_blobs.id",
+			"UPDATE cas_blobs SET id = nextval('cas_blobs_id_seq')",
+			"ALTER TABLE cas_blobs ALTER COLUMN id SET NOT NULL",
+			"ALTER TABLE cas_blobs ALTER COLUMN id SET DEFAULT nextval('cas_blobs_id_seq')",
+		} {
+			if err := tx.Exec(q).Error; err != nil {
+				return err
+			}
+		}
+	}
+	for _, q := range []string{
+		"ALTER TABLE cas_blobs DROP CONSTRAINT IF EXISTS cas_blobs_pkey",
+		"ALTER TABLE cas_blobs ADD CONSTRAINT idx_cas_blobs_hash UNIQUE (hash)",
+		"ALTER TABLE cas_blobs ADD PRIMARY KEY (id)",
+	} {
+		if err := tx.Exec(q).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// rebuildCasRefsToIntegerIDs rewrites hex ref edges to integer ids, failing
+// closed on edges whose endpoints are missing from cas_blobs.
+func rebuildCasRefsToIntegerIDs(tx *gorm.DB) error {
+	var dangling int64
+	if err := tx.Raw("SELECT count(*) FROM cas_refs r WHERE NOT EXISTS (SELECT 1 FROM cas_blobs b WHERE b.hash = r.owner_hash) OR NOT EXISTS (SELECT 1 FROM cas_blobs b WHERE b.hash = r.target_hash)").Scan(&dangling).Error; err != nil {
+		return err
+	}
+	if dangling != 0 {
+		return fmt.Errorf("cas_refs has %d edges with missing blob endpoints; refusing integer-id migration", dangling)
+	}
+	idType := "INTEGER"
+	if tx.Dialector.Name() == "postgres" {
+		idType = "BIGINT"
+	}
+	if tx.Dialector.Name() == "sqlite" {
+		var triggers int64
+		if err := tx.Raw("SELECT count(*) FROM sqlite_master WHERE type='trigger' AND tbl_name='cas_refs'").Scan(&triggers).Error; err != nil {
+			return err
+		}
+		if triggers != 0 {
+			return fmt.Errorf("cas_refs has custom triggers; migration refused")
+		}
+	}
+	withoutRowid := ""
+	if tx.Dialector.Name() == "sqlite" {
+		withoutRowid = " WITHOUT ROWID"
+	}
+	for _, q := range []string{
+		fmt.Sprintf("CREATE TABLE cas_refs_idmig (owner_id %s NOT NULL, target_id %s NOT NULL, PRIMARY KEY(owner_id,target_id))%s", idType, idType, withoutRowid),
+		"INSERT INTO cas_refs_idmig SELECT b1.id, b2.id FROM cas_refs r JOIN cas_blobs b1 ON b1.hash = r.owner_hash JOIN cas_blobs b2 ON b2.hash = r.target_hash",
+	} {
+		if err := tx.Exec(q).Error; err != nil {
+			return err
+		}
+	}
+	var before, after, diff int64
+	if err := tx.Raw("SELECT count(*) FROM cas_refs").Scan(&before).Error; err != nil {
+		return err
+	}
+	if err := tx.Raw("SELECT count(*) FROM cas_refs_idmig").Scan(&after).Error; err != nil {
+		return err
+	}
+	if before != after {
+		return fmt.Errorf("cas_refs copy mismatch: %d != %d", before, after)
+	}
+	if err := tx.Raw("SELECT count(*) FROM (SELECT owner_hash, target_hash FROM cas_refs EXCEPT SELECT b1.hash, b2.hash FROM cas_refs_idmig m JOIN cas_blobs b1 ON b1.id = m.owner_id JOIN cas_blobs b2 ON b2.id = m.target_id)").Scan(&diff).Error; err != nil {
+		return err
+	}
+	if diff != 0 {
+		return fmt.Errorf("cas_refs integer copy lost %d edges", diff)
+	}
+	if err := tx.Raw("SELECT count(*) FROM (SELECT b1.hash, b2.hash FROM cas_refs_idmig m JOIN cas_blobs b1 ON b1.id = m.owner_id JOIN cas_blobs b2 ON b2.id = m.target_id EXCEPT SELECT owner_hash, target_hash FROM cas_refs)").Scan(&diff).Error; err != nil {
+		return err
+	}
+	if diff != 0 {
+		return fmt.Errorf("cas_refs integer copy invented %d edges", diff)
+	}
+	for _, q := range []string{
+		"DROP TABLE cas_refs",
+		"ALTER TABLE cas_refs_idmig RENAME TO cas_refs",
+		"DROP INDEX IF EXISTS idx_cas_refs_target_hash",
+		"CREATE INDEX idx_cas_refs_target_id ON cas_refs(target_id)",
+	} {
+		if err := tx.Exec(q).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// compactCasRefsIntegerWithoutRowid rewrites an integer-layout rowid cas_refs
+// table (fresh stores) to WITHOUT ROWID, preserving all edges.
+func compactCasRefsIntegerWithoutRowid(tx *gorm.DB) error {
+	var ddl string
+	if err := tx.Raw("SELECT sql FROM sqlite_master WHERE type='table' AND name='cas_refs'").Scan(&ddl).Error; err != nil {
+		return err
+	}
+	if strings.Contains(strings.ToUpper(ddl), "WITHOUT ROWID") {
+		return nil
+	}
+	var triggers int64
+	if err := tx.Raw("SELECT count(*) FROM sqlite_master WHERE type='trigger' AND tbl_name='cas_refs'").Scan(&triggers).Error; err != nil {
+		return err
+	}
+	if triggers != 0 {
+		return fmt.Errorf("cas_refs has custom triggers; migration refused")
+	}
+	for _, q := range []string{
+		"CREATE TABLE cas_refs_idmig (owner_id INTEGER NOT NULL, target_id INTEGER NOT NULL, PRIMARY KEY(owner_id,target_id)) WITHOUT ROWID",
+		"INSERT INTO cas_refs_idmig SELECT owner_id, target_id FROM cas_refs",
+	} {
+		if err := tx.Exec(q).Error; err != nil {
+			return err
+		}
+	}
+	var before, after int64
+	if err := tx.Raw("SELECT count(*) FROM cas_refs").Scan(&before).Error; err != nil {
+		return err
+	}
+	if err := tx.Raw("SELECT count(*) FROM cas_refs_idmig").Scan(&after).Error; err != nil {
+		return err
+	}
+	if before != after {
+		return fmt.Errorf("cas_refs copy mismatch: %d != %d", before, after)
+	}
+	for _, q := range []string{
+		"DROP TABLE cas_refs",
+		"ALTER TABLE cas_refs_idmig RENAME TO cas_refs",
+		"CREATE INDEX idx_cas_refs_target_id ON cas_refs(target_id)",
+	} {
+		if err := tx.Exec(q).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// verifyCasIntegerLayout asserts the post-migration shape: integer ref
+// columns, reverse index on target_id, and hash uniqueness on cas_blobs.
+func verifyCasIntegerLayout(tx *gorm.DB) error {
+	if tx.Dialector.Name() == "sqlite" {
+		var cols []struct{ Name string }
+		if err := tx.Raw("PRAGMA table_info(cas_refs)").Scan(&cols).Error; err != nil {
+			return err
+		}
+		if len(cols) != 2 || cols[0].Name != "owner_id" || cols[1].Name != "target_id" {
+			return fmt.Errorf("cas_refs does not have the integer-id layout")
+		}
+		var full int64
+		if err := tx.Raw("SELECT count(*) FROM pragma_index_list('cas_refs') WHERE name = 'idx_cas_refs_target_id' AND partial = 0").Scan(&full).Error; err != nil {
+			return err
+		}
+		if full != 1 {
+			return fmt.Errorf("cas_refs reverse lookup index idx_cas_refs_target_id missing")
+		}
+		if err := tx.Raw("SELECT count(*) FROM pragma_index_list('cas_blobs') WHERE name = 'idx_cas_blobs_hash' AND \"unique\" = 1").Scan(&full).Error; err != nil {
+			return err
+		}
+		if full != 1 {
+			return fmt.Errorf("cas_blobs hash unique index idx_cas_blobs_hash missing")
+		}
+		var blobCols []struct {
+			Name string
+			Pk   int64 `gorm:"column:pk"`
+		}
+		if err := tx.Raw("PRAGMA table_info(cas_blobs)").Scan(&blobCols).Error; err != nil {
+			return err
+		}
+		hasIDPK := false
+		for _, c := range blobCols {
+			if c.Name == "id" && c.Pk > 0 {
+				hasIDPK = true
+			}
+		}
+		if !hasIDPK {
+			return fmt.Errorf("cas_blobs is missing the integer primary key id")
+		}
+		return nil
+	}
+	var n int64
+	if err := tx.Raw("SELECT count(*) FROM information_schema.columns WHERE table_name = 'cas_refs' AND column_name = 'owner_id'").Scan(&n).Error; err != nil {
+		return err
+	}
+	if n != 1 {
+		return fmt.Errorf("cas_refs does not have the integer-id layout")
+	}
+	if err := tx.Raw("SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid WHERE i.indrelid=to_regclass('cas_refs') AND c.relname='idx_cas_refs_target_id' AND i.indisvalid AND i.indisready").Scan(&n).Error; err != nil {
+		return err
+	}
+	if n != 1 {
+		return fmt.Errorf("cas_refs reverse lookup index idx_cas_refs_target_id missing")
 	}
 	return nil
 }

@@ -491,7 +491,7 @@ func (c *CasLogStore) CasStorageStats(ctx context.Context) (*CasStats, error) {
 			"(SELECT COALESCE(SUM(LENGTH(data)),0) FROM cas_blobs) AS blob_bytes, " +
 			"(SELECT COUNT(*) FROM cas_refs) AS refs, " +
 			"(SELECT COUNT(*) FROM cas_payloads) AS payloads, " +
-			"(SELECT COUNT(*) FROM cas_blobs b WHERE (SELECT COUNT(DISTINCT r.owner_hash) FROM cas_refs r WHERE r.target_hash = b.hash) > 1) AS segment_hits",
+			"(SELECT COUNT(*) FROM cas_blobs b WHERE (SELECT COUNT(DISTINCT r.owner_id) FROM cas_refs r WHERE r.target_id = b.id) > 1) AS segment_hits",
 	).Scan(&stats).Error
 	if err != nil {
 		return nil, err
