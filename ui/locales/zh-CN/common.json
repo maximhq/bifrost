@@ -17,6 +17,7 @@
 	"language": "语言",
 	"datePicker": {
 		"pickADate": "选择日期",
+		"pickADateTime": "选择日期和时间",
 		"fromTime": "开始时间",
 		"toTime": "结束时间",
 		"timezone": "时区",

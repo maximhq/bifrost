@@ -185,8 +185,8 @@ function Sparkline({ points, className, bucketSizeSeconds, rows }: SparklineProp
 }
 
 /** Marks a value the sparkline averaged, so it is not read as an exact total. */
-function averaged(point: SparkPoint, text: string): string {
-	return point.buckets > 1 ? `avg ${text}` : text;
+function averaged(point: SparkPoint, text: string, translate: (key: string, options: { value: string }) => string): string {
+	return point.buckets > 1 ? translate("logs.stats.averaged", { value: text }) : text;
 }
 
 /** A single-value meter, used for the two success rates. */
@@ -404,10 +404,10 @@ export function MetricStrip({ stats, requestHistogram, latencyHistogram, costHis
 							className={toneClass[requestsSignal.tone]}
 							rows={(point, index) => (
 								<>
-									<TooltipRow name={t("logs.stats.requests")}>{averaged(point, formatCount(point.value))}</TooltipRow>
+									<TooltipRow name={t("logs.stats.requests")}>{averaged(point, formatCount(point.value), t)}</TooltipRow>
 									{errorPoints[index] && errorPoints[index].value > 0 && (
 										<TooltipRow name={t("logs.stats.failed")} className={negative}>
-											{averaged(point, formatCount(errorPoints[index].value))}
+											{averaged(point, formatCount(errorPoints[index].value), t)}
 										</TooltipRow>
 									)}
 								</>
@@ -502,9 +502,9 @@ export function MetricStrip({ stats, requestHistogram, latencyHistogram, costHis
 							className={warning}
 							rows={(point, index) => (
 								<>
-									<TooltipRow name={t("logs.stats.tooltipAverage")}>{averaged(point, formatMs(point.value))}</TooltipRow>
+									<TooltipRow name={t("logs.stats.tooltipAverage")}>{averaged(point, formatMs(point.value), t)}</TooltipRow>
 									{latencyP95Points[index] && (
-										<TooltipRow name={t("logs.stats.p95")}>{averaged(point, formatMs(latencyP95Points[index].value))}</TooltipRow>
+										<TooltipRow name={t("logs.stats.p95")}>{averaged(point, formatMs(latencyP95Points[index].value), t)}</TooltipRow>
 									)}
 								</>
 							)}
@@ -564,7 +564,7 @@ export function MetricStrip({ stats, requestHistogram, latencyHistogram, costHis
 							bucketSizeSeconds={costHistogram?.bucket_size_seconds}
 							className={costChange ? toneClass[costChange.tone] : muted}
 							rows={(point) => (
-								<TooltipRow name={t("logs.stats.tooltipCost")}>{averaged(point, formatCurrencyNumber(point.value))}</TooltipRow>
+								<TooltipRow name={t("logs.stats.tooltipCost")}>{averaged(point, formatCurrencyNumber(point.value), t)}</TooltipRow>
 							)}
 						/>
 						{costChange?.text ? (

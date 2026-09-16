@@ -17,6 +17,7 @@
 	"language": "Language",
 	"datePicker": {
 		"pickADate": "Pick a date",
+		"pickADateTime": "Pick a date and time",
 		"fromTime": "From Time",
 		"toTime": "To Time",
 		"timezone": "Timezone",

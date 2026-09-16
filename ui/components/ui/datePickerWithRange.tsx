@@ -462,7 +462,7 @@ export function DateTimePicker(props: DateTimePickerProps) {
 								{format(date, "LLL dd, y")} {printTimeValue(timeValue)}
 							</>
 						) : (
-							<span>Pick a date and time</span>
+							<span>{t("datePicker.pickADateTime")}</span>
 						)}
 					</Button>
 				</PopoverTrigger>
