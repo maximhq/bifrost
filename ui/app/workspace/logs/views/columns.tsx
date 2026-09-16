@@ -1,3 +1,4 @@
+import { zhCN } from "date-fns/locale";
 import { formatCost, formatLatency } from "@/app/workspace/dashboard/utils/chartUtils";
 import { AttributionCell } from "@/components/logAttributionCell";
 import { Badge } from "@/components/ui/badge";
@@ -13,7 +14,7 @@ import {
 	mapUserAgentToApp,
 	ProviderName,
 	RequestTypeColors,
-	RequestTypeLabels,
+	getRequestTypeLabel,
 	Status,
 	StatusBarColors,
 } from "@/lib/constants/logs";
@@ -391,8 +392,12 @@ export const createColumns = (
 				}
 				return (
 					<div className="flex flex-col leading-tight">
-						<span className="font-mono text-xs tabular-nums">{format(date, "MMM dd  HH:mm:ss")}</span>
-						<span className="text-muted-foreground text-[10.5px] tabular-nums">{formatDistanceToNow(date, { addSuffix: true })}</span>
+						<span className="font-mono text-xs tabular-nums">
+							{format(date, "MMM dd  HH:mm:ss", { locale: i18n.resolvedLanguage === "zh-CN" ? zhCN : undefined })}
+						</span>
+						<span className="text-muted-foreground text-[10.5px] tabular-nums">
+							{formatDistanceToNow(date, { addSuffix: true, locale: i18n.resolvedLanguage === "zh-CN" ? zhCN : undefined })}
+						</span>
 					</div>
 				);
 			},
@@ -410,7 +415,7 @@ export const createColumns = (
 							RequestTypeColors[row.original.object as keyof typeof RequestTypeColors],
 						)}
 					>
-						{RequestTypeLabels[row.original.object as keyof typeof RequestTypeLabels]}
+						{getRequestTypeLabel(row.original.object, t)}
 					</Badge>
 				);
 			},
