@@ -153,6 +153,8 @@ ResponsesMessage:
               type: string
             image_url:
               type: string
+    async:
+      type: boolean
     action:
       type: object
     error:
@@ -430,12 +432,16 @@ ResponsesTool:
       type: string
     description:
       type: string
+    async:
+      type: boolean
     cache_control:
       $ref: "./common.yaml#/CacheControl"
     parameters:
       $ref: "./chat.yaml#/ToolFunctionParameters"
     strict:
       type: boolean
+    output_schema:
+      type: object
     vector_store_ids:
       type: array
       items:
@@ -461,6 +467,8 @@ ResponsesTool:
     server_label:
       type: string
     server_url:
+      type: string
+    tunnel_id:
       type: string
     allowed_tools:
       oneOf:

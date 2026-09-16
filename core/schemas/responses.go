@@ -1910,6 +1910,7 @@ type ResponsesToolMessage struct {
 	Namespace *string                           `json:"namespace,omitempty"` // Namespace for function_call items (set by OpenAI when namespace tools are used)
 	Arguments *string                           `json:"arguments,omitempty"`
 	Execution *string                           `json:"execution,omitempty"` // "client" on deferred calls (e.g. tool_search_call); Codex needs it to dispatch the call
+	Async     *bool                             `json:"async,omitempty"`     // true on function/custom calls to async tools; must survive replay or OpenAI 400s
 	Output    *ResponsesToolMessageOutputStruct `json:"output,omitempty"`
 	Action    *ResponsesToolMessageActionStruct `json:"action,omitempty"`
 	Error     *ResponsesToolMessageError        `json:"error,omitempty"`
@@ -2915,6 +2916,7 @@ type ResponsesTool struct {
 	Type        ResponsesToolType `json:"type"`                  // "function" | "file_search" | "computer_use_preview" | "web_search" | "web_search_2025_08_26" | "mcp" | "code_interpreter" | "image_generation" | "local_shell" | "custom" | "web_search_preview" | "web_search_preview_2025_03_11" | "x_search"
 	Name        *string           `json:"name,omitempty"`        // Common name field (Function, Custom tools)
 	Description *string           `json:"description,omitempty"` // Common description field (Function, Custom tools)
+	Async       *bool             `json:"async,omitempty"`       // OpenAI async tool calling (Function, Custom tools)
 
 	// Not in OpenAI's schemas, but sent by a few providers (Anthropic, Bedrock are some of them)
 	CacheControl *CacheControl `json:"cache_control,omitempty"`
@@ -2976,6 +2978,11 @@ func (t ResponsesTool) MarshalJSON() ([]byte, error) {
 	}
 	if t.Description != nil {
 		if data, err = sjson.SetBytes(data, "description", *t.Description); err != nil {
+			return nil, err
+		}
+	}
+	if t.Async != nil {
+		if data, err = sjson.SetBytes(data, "async", *t.Async); err != nil {
 			return nil, err
 		}
 	}
@@ -3124,6 +3131,7 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 		"input_examples",        // 6
 		"eager_input_streaming", // 7
 		"function",              // 8 — Chat Completions wrapper, lifted below
+		"async",                 // 9
 	)
 
 	// Extract type field
@@ -3146,6 +3154,9 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 	}
 	if v := fields[2]; v.Type == gjson.String {
 		t.Description = new(v.String())
+	}
+	if v := fields[9]; v.IsBool() {
+		t.Async = new(v.Bool())
 	}
 	if v := fields[3]; v.Exists() {
 		var cc CacheControl
@@ -3329,8 +3340,9 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 
 // ResponsesToolFunction represents a tool function
 type ResponsesToolFunction struct {
-	Parameters *ToolFunctionParameters `json:"parameters,omitempty"` // A JSON schema object describing the parameters
-	Strict     *bool                   `json:"strict"`               // Whether to enforce strict parameter validation
+	Parameters   *ToolFunctionParameters `json:"parameters,omitempty"`    // A JSON schema object describing the parameters
+	Strict       *bool                   `json:"strict"`                  // Whether to enforce strict parameter validation
+	OutputSchema *OrderedMap             `json:"output_schema,omitempty"` // JSON schema of the value encoded in string outputs (OpenAI)
 }
 
 // ResponsesToolFileSearch represents a tool file search
@@ -3594,6 +3606,7 @@ type ResponsesToolMCP struct {
 	RequireApproval   *ResponsesToolMCPAllowedToolsApprovalSetting `json:"require_approval,omitempty"`   // Tool approval settings
 	ServerDescription *string                                      `json:"server_description,omitempty"` // Optional server description
 	ServerURL         *string                                      `json:"server_url,omitempty"`         // The URL for the MCP server
+	TunnelID          *string                                      `json:"tunnel_id,omitempty"`          // Secure MCP Tunnel ID used instead of server_url
 }
 
 // ResponsesToolMCPAllowedTools - List of allowed tool names or a filter object
