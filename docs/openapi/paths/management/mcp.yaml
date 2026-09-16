@@ -569,6 +569,73 @@ client-reauthorize:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+client-reregister:
+  post:
+    operationId: reregisterMCPClient
+    summary: Reauthorize an MCP client against a newly registered OAuth client
+    description: |
+      Registers a replacement OAuth client (RFC 7591 Dynamic Client
+      Registration) at the config's registration_url, writes it over the
+      stored credentials, and then runs the same consent flow
+      POST /api/mcp/client/{id}/reauthorize runs, against the new client.
+
+      This exists for a provider that no longer recognises the client_id it
+      issued, which is common with Dynamic Client Registration because the
+      provider's client registry is often in memory and does not survive a
+      restart. Once that happens the stored client_id is rejected at the token
+      endpoint on every refresh and at the authorize endpoint on every
+      reauthorization, so plain reauthorize cannot recover the connection.
+
+      Replacing the client_id invalidates every token bound to the OAuth
+      config, since none of them can be refreshed against a client the
+      provider no longer associates them with. For auth_type
+      "per_user_oauth" that includes every end-user credential, not just the
+      retained admin one, and each user must authenticate again. Plain
+      reauthorize leaves end-user credentials untouched; this endpoint does
+      not.
+
+      Complete the returned flow exactly like reauthorize's: open
+      authorize_url in a browser, poll status_url until "authorized", then
+      POST complete_url.
+    tags:
+      - MCP
+      - OAuth
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: MCP client ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: |
+          Reauthorization flow initiated against the newly registered client.
+          Carries the same fields as reauthorize, plus registered_client_id
+          and previous_client_id so the caller can confirm which client the
+          consent it is about to run belongs to.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/oauth.yaml#/OAuthFlowInitiation'
+      '400':
+        description: Client is not an OAuth-based auth type (oauth, per_user_oauth), has never completed initial OAuth authorization (use initiate-verification instead), the OAuth config has no registration_url, or the provider rejected the registration request
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: MCP client not found
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '503':
+        description: OAuth provider not configured
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
 client-verify-headers:
   post:
     operationId: verifyMCPClientHeaders
