@@ -125,6 +125,11 @@ export interface VirtualKey {
 	// Lets the UI lock edits and show the managed-key notice without the separately
 	// RBAC-gated access-profile lookup.
 	is_access_profile_managed?: boolean;
+	// Read-only, server-computed: the user this key is assigned to, or null when it
+	// is assigned to a team, a customer, or nothing. Absent (rather than null) when
+	// the response came from a path that does not resolve assignees, so callers can
+	// tell "unassigned" from "unknown". Always null in OSS, which has no users.
+	assigned_user?: { id: string; name: string; email: string } | null;
 	config_hash?: string; // Present when config is synced from config.json
 }
 
