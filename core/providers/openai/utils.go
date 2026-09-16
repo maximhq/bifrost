@@ -52,6 +52,35 @@ func IsOpenAIReasoningModel(model string) bool {
 	return strings.Contains(modelLower, "gpt-5") || strings.Contains(modelLower, "gpt-6")
 }
 
+// defaultCanDisableReasoning: reasoning.effort "none" exists from GPT-5.1 on. The
+// o-series, the original GPT-5 trio, the -pro variants and GPT-6 always reason.
+func defaultCanDisableReasoning(model string) bool {
+	m := bareModelLower(model)
+	switch {
+	case strings.Contains(m, "gpt-6"), acceptsMinimalEffort(m):
+		return false
+	case strings.Contains(m, "gpt-5"):
+		return !strings.Contains(m, "-pro")
+	default:
+		return !IsOpenAIReasoningModel(m) || strings.Contains(m, "gpt-oss")
+	}
+}
+
+// omittedEffortReasons reports OpenAI reasoning models that still reason when
+// reasoning.effort is omitted. Only GPT-5.1 through GPT-5.4 default to "none";
+// their -pro variants always reason.
+func omittedEffortReasons(model string) bool {
+	if !IsOpenAIReasoningModel(model) {
+		return false
+	}
+	m := bareModelLower(model)
+	if strings.Contains(m, "-pro") {
+		return true
+	}
+	return !strings.Contains(m, "gpt-5.1") && !strings.Contains(m, "gpt-5.2") &&
+		!strings.Contains(m, "gpt-5.3") && !strings.Contains(m, "gpt-5.4")
+}
+
 // defaultEffortControl widens the base low/medium/high ladder with the effort
 // levels a model natively accepts. Only the widening is name-derived; the
 // datasheet's per-level booleans take precedence when a row exists.
