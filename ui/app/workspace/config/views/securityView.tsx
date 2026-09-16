@@ -182,28 +182,39 @@ export default function SecurityView() {
 		setAuthConfig((prev) => ({ ...prev, is_enabled: checked }));
 	}, []);
 
-	const handleAuthFieldChange = useCallback((field: "admin_username" | "admin_password", value: SecretVar) => {
-		if (field === "admin_password") {
-			passwordUnchangedRef.current = false;
-			const passwordPolicyFailures = !value.ref && value.value ? getPasswordPolicyFailures(value.value, false) : [];
-			setPasswordError(passwordPolicyFailures.length > 0 ? `Password must include ${passwordPolicyFailures.join(", ")}.` : "");
-		}
-		setAuthConfig((prev) => ({ ...prev, [field]: value }));
-	}, []);
+	const formatPasswordPolicyError = useCallback(
+		(failures: string[]) => {
+			if (failures.length === 0) return "";
+			return t("security.passwordMustInclude", {
+				requirements: failures.map((key) => t(`security.passwordRequirement.${key}`)).join(t("security.requirementSeparator")),
+			});
+		},
+		[t],
+	);
+
+	const handleAuthFieldChange = useCallback(
+		(field: "admin_username" | "admin_password", value: SecretVar) => {
+			if (field === "admin_password") {
+				passwordUnchangedRef.current = false;
+				const passwordPolicyFailures = !value.ref && value.value ? getPasswordPolicyFailures(value.value, false) : [];
+				setPasswordError(formatPasswordPolicyError(passwordPolicyFailures));
+			}
+			setAuthConfig((prev) => ({ ...prev, [field]: value }));
+		},
+		[formatPasswordPolicyError],
+	);
 
 	const handleSave = useCallback(async () => {
 		try {
 			const validation = validateOrigins(localConfig.allowed_origins);
 
 			if (!validation.isValid && localConfig.allowed_origins.length > 0) {
-				toast.error(
-					`Invalid origins: ${validation.invalidOrigins.join(", ")}. Origins must be valid URLs like https://example.com, wildcard patterns like https://*.example.com, or "*" to allow all origins`,
-				);
+				toast.error(t("security.toastInvalidOrigins", { origins: validation.invalidOrigins.join(", ") }));
 				return;
 			}
 			const cooldownInput = localValues.vk_rotation_cooldown.trim();
 			if (cooldownInput !== "" && cooldownInput !== "0" && !COOLDOWN_PATTERN.test(cooldownInput)) {
-				toast.error('Rotation cooldown must be a duration like "30s", "5m", or "1h30m" (leave empty to disable).');
+				toast.error(t("security.toastInvalidCooldown"));
 				return;
 			}
 			const hasUsername = authConfig.admin_username?.value || authConfig.admin_username?.ref;
@@ -214,15 +225,13 @@ export default function SecurityView() {
 					: [];
 
 			if (passwordPolicyFailures.length > 0) {
-				setPasswordError(`Password must include ${passwordPolicyFailures.join(", ")}.`);
+				setPasswordError(formatPasswordPolicyError(passwordPolicyFailures));
 				passwordInputRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
 				passwordInputRef.current?.focus({ preventScroll: true });
 				return;
 			}
 			if (isFirstTimeSetup && authConfig.is_enabled && !setupToken.trim()) {
-				setSetupTokenErrorMessage(
-					"Enter the setup token configured by your operator to create the first admin account. It's set via setup_token in config.json or the BIFROST_SETUP_TOKEN environment variable.",
-				);
+				setSetupTokenErrorMessage(t("security.setupTokenHelp"));
 				return;
 			}
 			setPasswordError("");
@@ -259,6 +268,7 @@ export default function SecurityView() {
 		isFirstTimeSetup,
 		setupToken,
 		t,
+		formatPasswordPolicyError,
 	]);
 
 	return (

@@ -158,6 +158,7 @@
 			"unavailable": "无法加载这些统计数据",
 			"tooltipTotal": "总计",
 			"tooltipAverage": "平均",
+			"averaged": "平均 {{value}}",
 			"tooltipCost": "成本",
 			"requests": "请求",
 			"failed": "失败",
@@ -272,6 +273,8 @@
 			"semanticCache": "语义缓存",
 			"largePayload": "大型载荷",
 			"cache": "缓存",
+			"cacheHit": "缓存（命中）",
+			"cacheMiss": "缓存（未命中）",
 			"rule": "规则",
 			"timingsRequestMetaTokensCachingMetadata": "时间统计、请求信息、token、缓存和元数据",
 			"alias": "别名",
@@ -405,7 +408,9 @@
 			"lines_one": "{{count}} 行",
 			"lines_other": "{{count}} 行",
 			"tokens_one": "{{count}} 个 token",
-			"tokens_other": "{{count}} 个 token"
+			"tokens_other": "{{count}} 个 token",
+			"messageCount_one": "{{count}} 条消息",
+			"messageCount_other": "{{count}} 条消息"
 		},
 		"media": {
 			"pause": "暂停",

@@ -158,6 +158,7 @@
 			"unavailable": "These statistics could not be loaded",
 			"tooltipTotal": "Total",
 			"tooltipAverage": "Average",
+			"averaged": "avg {{value}}",
 			"tooltipCost": "Cost",
 			"requests": "Requests",
 			"failed": "Failed",
@@ -272,6 +273,8 @@
 			"semanticCache": "Semantic Cache",
 			"largePayload": "Large Payload",
 			"cache": "Cache",
+			"cacheHit": "Cache (hit)",
+			"cacheMiss": "Cache (miss)",
 			"rule": "Rule",
 			"timingsRequestMetaTokensCachingMetadata": "timings, request meta, tokens, caching, metadata",
 			"alias": "Alias",
@@ -405,7 +408,9 @@
 			"lines_one": "{{count}} line",
 			"lines_other": "{{count}} lines",
 			"tokens_one": "{{count}} token",
-			"tokens_other": "{{count}} tokens"
+			"tokens_other": "{{count}} tokens",
+			"messageCount_one": "{{count}} Message",
+			"messageCount_other": "{{count}} Messages"
 		},
 		"media": {
 			"pause": "Pause",

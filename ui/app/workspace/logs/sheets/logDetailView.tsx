@@ -1604,7 +1604,7 @@ export function LogDetailView({
 						{log.cache_debug?.cache_id && (
 							<div className="mt-1 flex items-center gap-2">
 								<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">
-									{t("logs.detail.cache")} {log.cache_debug.cache_hit ? "(hit)" : "(miss)"}
+									{t(log.cache_debug.cache_hit ? "logs.detail.cacheHit" : "logs.detail.cacheMiss")}
 								</div>
 								<code className="text-foreground truncate font-mono text-[13px]">{log.cache_debug.cache_id}</code>
 								<CopyInlineButton text={log.cache_debug.cache_id} testId="logdetails-copy-cache-id-button" />
@@ -2984,8 +2984,7 @@ export function LogDetailView({
 															</Badge>
 														)}
 														<span className="text-muted-foreground text-[11px]">
-															{request.messages.length} {t("labels.message")}
-															{request.messages.length === 1 ? "" : "s"}
+															{t("logs.detail.messageCount", { count: request.messages.length })}
 														</span>
 													</span>
 												</AccordionTrigger>
