@@ -589,6 +589,16 @@ export interface BifrostError {
 	is_bifrost_error: boolean;
 	status_code?: number;
 	error: ErrorField;
+	extra_fields?: BifrostErrorExtraFields;
+}
+
+// Subset of Go's schemas.BifrostErrorExtraFields that the UI reads. raw_response holds the
+// provider's error body as received, which is the only place the reason survives when the
+// provider's error shape does not match what its parser expected.
+export interface BifrostErrorExtraFields {
+	raw_response?: unknown;
+	raw_request?: unknown;
+	latency?: number;
 }
 
 // Citation and Annotation types
