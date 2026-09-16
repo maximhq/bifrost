@@ -4,7 +4,7 @@ description: "Deploy Bifrost Enterprise in your cloud environment with secure, p
 icon: "info-circle"
 ---
 
-Bifrost Enterprise provides private container image distribution through dedicated registries, enabling secure deployments in AWS, GCP, Azure, and on-premise environments.
+Bifrost Enterprise provides private container image distribution through dedicated registries, enabling secure deployments in AWS, GCP, Azure, and On-Premises environments.
 
 ## Architecture
 
@@ -29,7 +29,7 @@ flowchart TB
         subgraph AzureCustomer[Azure Customers]
             AKS[AKS Cluster]
         end
-        subgraph OnPrem[On-Premise]
+        subgraph OnPrem[On-Premises]
             K8S[Kubernetes]
             Docker[Docker]
         end
@@ -52,7 +52,7 @@ flowchart TB
 | AWS | AWS ECR | Native IAM integration, lowest latency within AWS |
 | GCP | GCP Artifact Registry | Native Workload Identity, lowest latency within GCP |
 | Azure | GCP Artifact Registry | Workload Identity Federation from Azure to GCP |
-| On-Premise | GCP Artifact Registry | Basic auth with username/password credentials |
+| On-Premises | GCP Artifact Registry | Basic auth with username/password credentials |
 
 ## Authentication Methods
 
@@ -64,7 +64,7 @@ Choose the authentication method based on your deployment environment:
 | AWS ECS | [IAM Task Roles](/deployment-guides/enterprise/aws#ecs-task-roles) | High | Low |
 | GCP GKE | [Workload Identity](/deployment-guides/enterprise/gcp#workload-identity-recommended) | High | Low |
 | Azure AKS | [Azure WIF](/deployment-guides/enterprise/azure) | High | Medium |
-| On-Premise | [Basic Auth](/deployment-guides/enterprise/on-premise) | Medium | Low |
+| On-Premises | [Basic Auth](/deployment-guides/enterprise/On-Premises) | Medium | Low |
 
 <Note>
 Cloud-native identity federation (IRSA, Workload Identity, Azure WIF) is recommended over static credentials for production deployments.
@@ -109,7 +109,7 @@ Before deploying Bifrost Enterprise, ensure you have:
 - Permissions to create Managed Identities
 - `kubectl` and `az` CLI configured
 </Tab>
-<Tab title="On-Premise">
+<Tab title="On-Premises">
 - Kubernetes cluster (v1.23+) or Docker runtime
 - Network access to `us-central1-docker.pkg.dev`
 - Docker credentials provided by Bifrost team
@@ -128,7 +128,7 @@ Before deploying Bifrost Enterprise, ensure you have:
   <Card title="Azure Deployment" icon="microsoft" href="/deployment-guides/enterprise/azure">
     Deploy on AKS with Azure Workload Identity Federation
   </Card>
-  <Card title="On-Premise" icon="server" href="/deployment-guides/enterprise/on-premise">
+  <Card title="On-Premises" icon="server" href="/deployment-guides/enterprise/On-Premises">
     Deploy anywhere with Docker credentials
   </Card>
 </CardGroup>
