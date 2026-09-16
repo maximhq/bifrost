@@ -78,3 +78,19 @@ export function missingHeaderKeys(required: readonly string[] | undefined, cover
 	const have = new Set((covered ?? []).map((k) => k.trim().toLowerCase()));
 	return required.map((k) => k.trim()).filter((k) => k && !have.has(k.toLowerCase()));
 }
+
+/**
+ * providerRejectedTheClient reads a credential's recorded rejection for the
+ * OAuth error meaning the provider does not know Bifrost's client_id at all
+ * (RFC 6749 invalid_client), as opposed to the far more common case of the
+ * grant behind one token being revoked. Only the former needs a replacement
+ * client registered before consent; plain Reauthorize fixes the latter.
+ *
+ * A loose substring match is the right amount of certainty here: it decides
+ * whether to show one extra sentence of guidance, so a provider that words its
+ * rejection differently costs the admin a hint, not a broken repair. Nothing
+ * about replacing a credential keys off this.
+ */
+export function providerRejectedTheClient(statusReason?: string): boolean {
+	return !!statusReason && statusReason.toLowerCase().includes("invalid_client");
+}
