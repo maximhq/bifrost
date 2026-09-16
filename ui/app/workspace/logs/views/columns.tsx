@@ -360,7 +360,7 @@ export const createColumns = (
 		{
 			accessorKey: "model",
 			header: "Model",
-			size: 190,
+			size: 280,
 			cell: ({ row }) => {
 				const provider = row.original.provider as ProviderName | undefined;
 				const model = row.original.model || batchAccountingDisplay(row.original)?.model;
