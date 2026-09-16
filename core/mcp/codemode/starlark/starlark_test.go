@@ -371,7 +371,7 @@ func TestExtractResultFromResponsesMessage(t *testing.T) {
 		errorMsg := "Tool is not allowed by security policy: dangerous_tool"
 		msg := &schemas.ResponsesMessage{
 			ResponsesToolMessage: &schemas.ResponsesToolMessage{
-				Error: &errorMsg,
+				Error: &schemas.ResponsesToolMessageError{ResponsesToolMessageErrorStr: &errorMsg},
 			},
 		}
 
@@ -509,7 +509,7 @@ func TestExtractResultFromResponsesMessage(t *testing.T) {
 		emptyError := ""
 		msg := &schemas.ResponsesMessage{
 			ResponsesToolMessage: &schemas.ResponsesToolMessage{
-				Error: &emptyError,
+				Error: &schemas.ResponsesToolMessageError{ResponsesToolMessageErrorStr: &emptyError},
 			},
 		}
 

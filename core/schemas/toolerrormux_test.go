@@ -59,7 +59,7 @@ func TestResponsesToChatCarriesToolError(t *testing.T) {
 				Type: Ptr(ResponsesMessageTypeFunctionCallOutput),
 				ResponsesToolMessage: &ResponsesToolMessage{
 					CallID: Ptr("call_1"),
-					Error:  Ptr("ENOENT: no such file or directory"),
+					Error:  &ResponsesToolMessageError{ResponsesToolMessageErrorStr: Ptr("ENOENT: no such file or directory")},
 				},
 			},
 		},

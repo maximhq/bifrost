@@ -137,8 +137,8 @@ func extractResultFromResponsesMessage(msg *schemas.ResponsesMessage) (interface
 	}
 
 	if msg.ResponsesToolMessage != nil {
-		if msg.ResponsesToolMessage.Error != nil && *msg.ResponsesToolMessage.Error != "" {
-			return nil, fmt.Errorf("%s", *msg.ResponsesToolMessage.Error)
+		if errText := msg.ResponsesToolMessage.Error.Text(); errText != "" {
+			return nil, fmt.Errorf("%s", errText)
 		}
 
 		if msg.ResponsesToolMessage.Output != nil {
