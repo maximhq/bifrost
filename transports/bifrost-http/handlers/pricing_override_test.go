@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"testing"
@@ -98,6 +99,45 @@ func newTestRequestCtx(body string) *fasthttp.RequestCtx {
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
 	return ctx
+}
+
+func TestCreatePricingOverride_WildcardPatterns(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: pricingOverrideTestGovernanceManager{},
+	}
+
+	tests := []struct {
+		name       string
+		pattern    string
+		wantStatus int
+	}{
+		{name: "prefix", pattern: "gpt-4*", wantStatus: fasthttp.StatusCreated},
+		{name: "suffix", pattern: "*-free", wantStatus: fasthttp.StatusCreated},
+		{name: "contains", pattern: "*sonnet*", wantStatus: fasthttp.StatusCreated},
+		{name: "all", pattern: "*", wantStatus: fasthttp.StatusCreated},
+		{name: "interior wildcard", pattern: "gpt-*-mini", wantStatus: fasthttp.StatusBadRequest},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := fmt.Sprintf(`{
+				"name":"Wildcard override %d",
+				"scope_kind":"global",
+				"match_type":"wildcard",
+				"pattern":%q,
+				"request_types":["chat_completion"],
+				"patch":{"input_cost_per_token":1}
+			}`, i, tt.pattern)
+			ctx := newTestRequestCtx(body)
+
+			handler.createPricingOverride(ctx)
+
+			assert.Equal(t, tt.wantStatus, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		})
+	}
 }
 
 func TestUpdatePricingOverride_ReplacesFullBody(t *testing.T) {

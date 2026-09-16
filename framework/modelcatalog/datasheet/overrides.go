@@ -93,26 +93,51 @@ func (override *Override) validateScopeKind() error {
 }
 
 func (override *Override) validatePattern() error {
-	pattern := strings.TrimSpace(override.Pattern)
+	_, _, err := compilePricingPattern(override.MatchType, override.Pattern)
+	return err
+}
+
+// compilePricingPattern validates and compiles the public pattern syntax into
+// one of the allocation-free string matchers used during pricing lookup. Stars
+// are supported only at the beginning, end, or both ends of wildcard patterns.
+func compilePricingPattern(matchType MatchType, rawPattern string) (pricingPatternKind, string, error) {
+	pattern := strings.TrimSpace(rawPattern)
 	if pattern == "" {
-		return fmt.Errorf("pattern is required")
+		return pricingPatternExact, "", fmt.Errorf("pattern is required")
 	}
-	switch override.MatchType {
+
+	switch matchType {
 	case MatchTypeExact:
 		if strings.Contains(pattern, "*") {
-			return fmt.Errorf("exact match pattern must not contain wildcards")
+			return pricingPatternExact, "", fmt.Errorf("exact match pattern must not contain wildcards")
 		}
+		return pricingPatternExact, pattern, nil
 	case MatchTypeWildcard:
-		if !strings.HasSuffix(pattern, "*") {
-			return fmt.Errorf("wildcard pattern must end with *")
+		if pattern == "*" {
+			return pricingPatternAll, "", nil
 		}
-		if strings.Count(pattern, "*") != 1 {
-			return fmt.Errorf("wildcard pattern must contain exactly one trailing *")
+
+		startsWithWildcard := strings.HasPrefix(pattern, "*")
+		endsWithWildcard := strings.HasSuffix(pattern, "*")
+		wildcardCount := strings.Count(pattern, "*")
+
+		switch {
+		case startsWithWildcard && endsWithWildcard && wildcardCount == 2:
+			literal := pattern[1 : len(pattern)-1]
+			if literal == "" {
+				return pricingPatternExact, "", fmt.Errorf("wildcard pattern must include at least one non-wildcard character")
+			}
+			return pricingPatternContains, literal, nil
+		case startsWithWildcard && wildcardCount == 1:
+			return pricingPatternSuffix, pattern[1:], nil
+		case endsWithWildcard && wildcardCount == 1:
+			return pricingPatternPrefix, pattern[:len(pattern)-1], nil
+		default:
+			return pricingPatternExact, "", fmt.Errorf("wildcard pattern may contain * only at the beginning, end, or both ends")
 		}
 	default:
-		return fmt.Errorf("unsupported match_type %q", override.MatchType)
+		return pricingPatternExact, "", fmt.Errorf("unsupported match_type %q", matchType)
 	}
-	return nil
 }
 
 // validateRequestTypes checks that RequestTypes is non-empty and that every
@@ -174,12 +199,44 @@ func (e *customPricingEntry) matchesCatalogProvider(provider string) bool {
 	return e.providerID == "" || e.providerID == provider
 }
 
-// matchesModel reports whether the entry's pattern covers model.
+// matchesModel reports whether the entry's compiled pattern covers model.
 func (e *customPricingEntry) matchesModel(model string) bool {
-	if e.wildcard {
+	switch e.patternKind {
+	case pricingPatternExact:
+		return e.pattern == model
+	case pricingPatternPrefix:
 		return strings.HasPrefix(model, e.pattern)
+	case pricingPatternSuffix:
+		return strings.HasSuffix(model, e.pattern)
+	case pricingPatternContains:
+		return strings.Contains(model, e.pattern)
+	case pricingPatternAll:
+		return true
+	default:
+		return false
 	}
-	return e.pattern == model
+}
+
+// patternAnchorCount breaks equal-literal wildcard ties in favour of patterns
+// anchored to one edge over contains and match-all patterns. Prefix and suffix
+// patterns intentionally have equal precedence.
+func (e *customPricingEntry) patternAnchorCount() int {
+	switch e.patternKind {
+	case pricingPatternPrefix, pricingPatternSuffix:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// wildcardPatternPrecedes reports whether a is more specific than b. Longer
+// literals win first; for equal literals, an edge-anchored prefix or suffix
+// beats a contains pattern. Equal-specificity patterns retain input order.
+func wildcardPatternPrecedes(a, b customPricingEntry) bool {
+	if len(a.pattern) != len(b.pattern) {
+		return len(a.pattern) > len(b.pattern)
+	}
+	return a.patternAnchorCount() > b.patternAnchorCount()
 }
 
 // catalogScopeRank orders scope kinds most-specific-first for display. Mirrors
@@ -231,7 +288,7 @@ func (c *customPricingData) resolveEntry(model, mode string, scopes LookupScopes
 		}
 		for i := range c.wildcard {
 			e := &c.wildcard[i]
-			if e.scopeKind == scopeKind && e.matchesScope(scopes) && strings.HasPrefix(model, e.pattern) && e.matchesMode(mode) {
+			if e.scopeKind == scopeKind && e.matchesScope(scopes) && e.matchesModel(model) && e.matchesMode(mode) {
 				return e
 			}
 		}
@@ -275,17 +332,24 @@ func scopePriorityOrder(scopes LookupScopes) []ScopeKind {
 }
 
 // buildCustomPricingData constructs the lookup structure from a raw override
-// slice. Wildcards are sorted longest-prefix-first so more specific patterns
-// (e.g. "gpt-4*") win over broader ones ("gpt-*") deterministically.
+// slice. Wildcards are sorted by longest literal first, then by anchoring, so
+// more specific patterns win while equal-specificity entries retain their
+// creation/configuration order.
 func buildCustomPricingData(overrides []Override) *customPricingData {
 	data := &customPricingData{
 		exact: make(map[string][]customPricingEntry, len(overrides)),
 	}
 	for _, o := range overrides {
+		patternKind, pattern, err := compilePricingPattern(o.MatchType, o.Pattern)
+		if err != nil {
+			continue
+		}
 		entry := customPricingEntry{
-			id:        o.ID,
-			scopeKind: o.ScopeKind,
-			options:   o.Options,
+			id:          o.ID,
+			scopeKind:   o.ScopeKind,
+			pattern:     pattern,
+			patternKind: patternKind,
+			options:     o.Options,
 		}
 		if o.UserID != nil {
 			entry.userID = *o.UserID
@@ -303,19 +367,15 @@ func buildCustomPricingData(overrides []Override) *customPricingData {
 		for _, rt := range o.RequestTypes {
 			entry.requestModes[normalizeRequestType(rt)] = struct{}{}
 		}
-		pattern := strings.TrimSpace(o.Pattern)
-		switch o.MatchType {
-		case MatchTypeExact:
-			entry.pattern = pattern
+		switch patternKind {
+		case pricingPatternExact:
 			data.exact[pattern] = append(data.exact[pattern], entry)
-		case MatchTypeWildcard:
-			entry.pattern = strings.TrimSuffix(pattern, "*")
-			entry.wildcard = true
+		default:
 			data.wildcard = append(data.wildcard, entry)
 		}
 	}
-	sort.Slice(data.wildcard, func(i, j int) bool {
-		return len(data.wildcard[i].pattern) > len(data.wildcard[j].pattern)
+	sort.SliceStable(data.wildcard, func(i, j int) bool {
+		return wildcardPatternPrecedes(data.wildcard[i], data.wildcard[j])
 	})
 	return data
 }
@@ -427,12 +487,12 @@ func (s *Store) CatalogPricingOverrides(model string, provider schemas.ModelProv
 		out.AppliedPatch = &patch
 	}
 
-	matched := make(map[string]struct{})
+	matched := make(map[string]customPricingEntry)
 	collect := func(entries []customPricingEntry) {
 		for i := range entries {
 			e := &entries[i]
 			if e.matchesModel(model) && e.matchesCatalogProvider(string(provider)) {
-				matched[e.id] = struct{}{}
+				matched[e.id] = *e
 			}
 		}
 	}
@@ -453,15 +513,15 @@ func (s *Store) CatalogPricingOverrides(model string, provider schemas.ModelProv
 		if ra, rb := catalogScopeRank(a.ScopeKind), catalogScopeRank(b.ScopeKind); ra != rb {
 			return ra < rb
 		}
-		// Exact patterns are more specific than wildcards; among wildcards the
-		// longer prefix wins, matching buildCustomPricingData's ordering.
+		// Exact patterns are more specific than wildcards. Wildcard display
+		// ordering mirrors runtime resolution so the applied entry appears first.
 		if av, bv := a.MatchType == MatchTypeWildcard, b.MatchType == MatchTypeWildcard; av != bv {
 			return !av
 		}
-		if len(a.Pattern) != len(b.Pattern) {
-			return len(a.Pattern) > len(b.Pattern)
+		if a.MatchType == MatchTypeWildcard {
+			return wildcardPatternPrecedes(matched[a.ID], matched[b.ID])
 		}
-		return a.ID < b.ID
+		return false
 	})
 	return out
 }
@@ -634,8 +694,9 @@ func (s *Store) SetOverrides(rows []configstoreTables.TablePricingOverride) erro
 	return nil
 }
 
-// UpsertOverrides inserts or replaces one or more overrides, rebuilding the
-// lookup map exactly once at the end.
+// UpsertOverrides inserts or replaces one or more overrides, preserving the
+// position of existing entries so equal-specificity tie-breaks remain stable.
+// The lookup map is rebuilt exactly once at the end.
 func (s *Store) UpsertOverrides(rows ...*configstoreTables.TablePricingOverride) error {
 	seenIncoming := make(map[string]int, len(rows))
 	overrides := make([]Override, 0, len(rows))
@@ -655,13 +716,19 @@ func (s *Store) UpsertOverrides(rows ...*configstoreTables.TablePricingOverride)
 	s.overridesMu.Lock()
 	defer s.overridesMu.Unlock()
 
-	updated := make([]Override, 0, len(s.rawOverrides)+len(overrides))
-	for _, o := range s.rawOverrides {
-		if _, replacing := seenIncoming[o.ID]; !replacing {
-			updated = append(updated, o)
-		}
+	updated := slices.Clone(s.rawOverrides)
+	existing := make(map[string]int, len(updated))
+	for i := range updated {
+		existing[updated[i].ID] = i
 	}
-	updated = append(updated, overrides...)
+	for _, o := range overrides {
+		if idx, ok := existing[o.ID]; ok {
+			updated[idx] = o
+			continue
+		}
+		existing[o.ID] = len(updated)
+		updated = append(updated, o)
+	}
 	s.rawOverrides = updated
 	s.customPricing = buildCustomPricingData(updated)
 	return nil

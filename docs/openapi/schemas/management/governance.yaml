@@ -2261,7 +2261,7 @@ PricingOverride:
       description: How the pattern is matched against the model name
     pattern:
       type: string
-      description: Model name or wildcard prefix (e.g. "gpt-4o" or "claude-3*")
+      description: Model name or boundary wildcard pattern (e.g. "gpt-4o", "claude-3*", "*-free", or "*sonnet*")
     request_types:
       type: array
       minItems: 1
@@ -2318,7 +2318,7 @@ CreatePricingOverrideRequest:
         - wildcard
     pattern:
       type: string
-      description: Model name or wildcard prefix ending with * (e.g. "claude-3*")
+      description: Model name or wildcard pattern with * at the beginning, end, or both ends (e.g. "claude-3*", "*-free", or "*sonnet*")
     request_types:
       type: array
       minItems: 1
@@ -2359,7 +2359,7 @@ UpdatePricingOverrideRequest:
         - wildcard
     pattern:
       type: string
-      description: Model name or wildcard prefix ending with * (e.g. "claude-3*")
+      description: Model name or wildcard pattern with * at the beginning, end, or both ends (e.g. "claude-3*", "*-free", or "*sonnet*")
     request_types:
       type: array
       minItems: 1

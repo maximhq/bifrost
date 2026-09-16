@@ -50,20 +50,8 @@ import {
 	pricingFieldError,
 } from "./pricingFields";
 import type { FieldErrors, FormState, PricingFieldKey, ScopeRoot } from "./pricingFields";
-
-export function patternError(matchType: PricingOverrideMatchType, pattern: string): string | undefined {
-	const trimmed = pattern.trim();
-	if (!trimmed) return "Pattern is required";
-	if (matchType === "exact") {
-		if (trimmed.includes("*")) return "Exact pattern cannot contain *";
-	} else if (matchType === "wildcard") {
-		const starCount = (trimmed.match(/\*/g) || []).length;
-		if (starCount === 0) return "Wildcard pattern must end with * (example: gpt-5*)";
-		if (starCount > 1) return "Wildcard pattern can include only one *";
-		if (!trimmed.endsWith("*")) return "Wildcard supports prefix-only trailing *";
-	}
-	return undefined;
-}
+import { patternError } from "./pricingOverridePattern";
+export { patternError } from "./pricingOverridePattern";
 
 function toFormState(override: PricingOverride): FormState {
 	const values: Partial<Record<PricingFieldKey, string>> = {};
@@ -843,7 +831,7 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 												<FormControl>
 													<Input
 														data-testid="pricing-override-pattern-input"
-														placeholder={matchType === "exact" ? "e.g., gpt-4o" : "e.g., gpt-4*"}
+														placeholder={matchType === "exact" ? "e.g., gpt-4o" : "e.g., gpt-4*, *-free, or *sonnet*"}
 														{...field}
 														onChange={(e) => {
 															field.onChange(e);

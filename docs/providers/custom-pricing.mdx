@@ -10,7 +10,7 @@ Bifrost computes request costs using a built-in pricing catalog that is automati
 
 **Key capabilities:**
 - **Scoped overrides** - apply prices globally or narrow them to a specific provider, provider key, virtual key, or user
-- **Pattern matching** - target an exact model name or a wildcard prefix (e.g. `gpt-4*`)
+- **Pattern matching** - target an exact model name or use boundary wildcards for prefix, suffix, or contains matching (e.g. `gpt-4*`, `*-free`, or `*sonnet*`)
 - **Request type filtering** - restrict an override to one or more specific operations (chat, embeddings, image generation, etc.); at least one request type is required
 - **Hierarchical resolution** - the most-specific matching override always wins; broader scopes act as fallbacks
 
@@ -104,11 +104,13 @@ The `pattern` field controls which model names the override applies to. The `mat
 | Match type | Behavior | Example |
 |------------|----------|---------|
 | `exact` | Matches only the exact model name | `gpt-4o` matches only `gpt-4o` |
-| `wildcard` | Prefix match - pattern must end with `*` | `gpt-4*` matches `gpt-4o`, `gpt-4-turbo`, `gpt-4o-mini` |
+| `wildcard` | Boundary wildcard match | `gpt-4*` matches by prefix, `*-free` by suffix, and `*sonnet*` by containment |
 
 <Info>
-For wildcard patterns, append a `*` at the end of the prefix. For example, `claude-3*` will match all Claude 3 variants.
+Wildcard patterns support `*` at the beginning, end, or both ends. A standalone `*` matches every model. Interior wildcards such as `gpt-*-mini` and general regular expressions are not supported.
 </Info>
+
+Within the same scope, exact matches take precedence over wildcard matches. When multiple wildcard patterns match, the pattern with the longest literal portion wins; if the literal lengths are equal, an edge-anchored prefix or suffix wins over a contains pattern. Remaining ties preserve creation or configuration order.
 
 ---
 
@@ -162,7 +164,7 @@ When no key-level alias matches, candidates (1) and (2) are absent and the looku
 3. Fill in the form:
    - **Name** - a human-readable label
    - **Scope** - select the scope kind and provide the matching IDs
-   - **Pattern** - enter the model name or wildcard prefix
+   - **Pattern** - enter the model name or a boundary wildcard pattern
    - **Match type** - choose **Exact** or **Wildcard**
    - **Request types** - select one or more request types (required)
    - **Pricing fields** - enter the price values you want to override (only non-zero fields are applied)
@@ -284,7 +286,7 @@ Pricing overrides are defined under `governance.pricing_overrides`. Each entry r
 | `provider_id` | string | Conditional | Required for `provider`, `virtual_key_provider`, and `user_provider` scopes |
 | `provider_key_id` | string | Conditional | Required for `provider_key`, `virtual_key_provider_key`, and `user_provider_key` scopes |
 | `match_type` | string | Yes | `exact` or `wildcard` |
-| `pattern` | string | Yes | Model name or wildcard prefix ending with `*` |
+| `pattern` | string | Yes | Model name or wildcard pattern with `*` at the beginning, end, or both ends |
 | `request_types` | array | Yes | Request types this override applies to. At least one value required. |
 | `pricing_patch` | string | No | JSON-encoded pricing fields to override |
 | `config_hash` | string | No | Auto-managed. Do not set manually |

@@ -8641,7 +8641,7 @@
         },
         "pattern": {
           "type": "string",
-          "description": "Model name pattern to match (exact name or wildcard prefix ending with *)"
+          "description": "Model name pattern to match (exact name or wildcard with * at the beginning, end, or both ends)"
         },
         "request_types": {
           "type": "array",

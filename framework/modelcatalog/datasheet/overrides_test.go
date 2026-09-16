@@ -37,6 +37,151 @@ func newTestStore() *Store {
 	}
 }
 
+func TestCompilePricingPattern(t *testing.T) {
+	tests := []struct {
+		name      string
+		matchType MatchType
+		pattern   string
+		wantKind  pricingPatternKind
+		wantValue string
+		wantError string
+	}{
+		{name: "exact", matchType: MatchTypeExact, pattern: " gpt-4o ", wantKind: pricingPatternExact, wantValue: "gpt-4o"},
+		{name: "prefix", matchType: MatchTypeWildcard, pattern: "gpt-4*", wantKind: pricingPatternPrefix, wantValue: "gpt-4"},
+		{name: "suffix", matchType: MatchTypeWildcard, pattern: "*-free", wantKind: pricingPatternSuffix, wantValue: "-free"},
+		{name: "contains", matchType: MatchTypeWildcard, pattern: "*sonnet*", wantKind: pricingPatternContains, wantValue: "sonnet"},
+		{name: "all", matchType: MatchTypeWildcard, pattern: "*", wantKind: pricingPatternAll},
+		{name: "missing wildcard", matchType: MatchTypeWildcard, pattern: "gpt-4o", wantError: "only at the beginning, end, or both ends"},
+		{name: "interior wildcard", matchType: MatchTypeWildcard, pattern: "gpt-*-mini", wantError: "only at the beginning, end, or both ends"},
+		{name: "repeated leading wildcard", matchType: MatchTypeWildcard, pattern: "**-free", wantError: "only at the beginning, end, or both ends"},
+		{name: "repeated trailing wildcard", matchType: MatchTypeWildcard, pattern: "gpt-**", wantError: "only at the beginning, end, or both ends"},
+		{name: "empty contains literal", matchType: MatchTypeWildcard, pattern: "**", wantError: "at least one non-wildcard character"},
+		{name: "wildcard in exact", matchType: MatchTypeExact, pattern: "gpt-*", wantError: "must not contain wildcards"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			kind, value, err := compilePricingPattern(tt.matchType, tt.pattern)
+			if tt.wantError != "" {
+				require.ErrorContains(t, err, tt.wantError)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantKind, kind)
+			assert.Equal(t, tt.wantValue, value)
+		})
+	}
+}
+
+func TestOverrideIsValid_WildcardPatterns(t *testing.T) {
+	base := Override{
+		ScopeKind:    ScopeKindGlobal,
+		MatchType:    MatchTypeWildcard,
+		RequestTypes: []schemas.RequestType{schemas.ChatCompletionRequest},
+	}
+
+	for _, pattern := range []string{"gpt-4*", "*-free", "*sonnet*", "*"} {
+		t.Run(pattern, func(t *testing.T) {
+			override := base
+			override.Pattern = pattern
+			require.NoError(t, override.IsValid())
+		})
+	}
+
+	for _, pattern := range []string{"gpt-4o", "gpt-*-mini", "**-free", "gpt-**", "**"} {
+		t.Run("invalid "+pattern, func(t *testing.T) {
+			override := base
+			override.Pattern = pattern
+			require.Error(t, override.IsValid())
+		})
+	}
+}
+
+func TestGetPricing_WildcardBoundaryMatching(t *testing.T) {
+	tests := []struct {
+		name        string
+		pattern     string
+		model       string
+		shouldMatch bool
+	}{
+		{name: "prefix matches", pattern: "gpt-4*", model: "gpt-4o-mini", shouldMatch: true},
+		{name: "prefix does not match", pattern: "gpt-4*", model: "openai/gpt-4o", shouldMatch: false},
+		{name: "suffix matches", pattern: "*-free", model: "nvidia/llama-free", shouldMatch: true},
+		{name: "suffix does not match", pattern: "*-free", model: "nvidia/llama-free-preview", shouldMatch: false},
+		{name: "contains matches", pattern: "*sonnet*", model: "anthropic/claude-sonnet-4", shouldMatch: true},
+		{name: "contains does not match", pattern: "*sonnet*", model: "anthropic/claude-opus-4", shouldMatch: false},
+		{name: "all matches", pattern: "*", model: "any/model", shouldMatch: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newTestStore()
+			s.pricingData[makeKey(tt.model, "openai", "chat")] = configstoreTables.TableModelPricing{
+				Model:             tt.model,
+				Provider:          "openai",
+				Mode:              "chat",
+				InputCostPerToken: bifrost.Ptr(1.0),
+			}
+			providerID := "openai"
+			require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{{
+				ID:               "wildcard-override",
+				ScopeKind:        string(ScopeKindProvider),
+				ProviderID:       &providerID,
+				MatchType:        string(MatchTypeWildcard),
+				Pattern:          tt.pattern,
+				RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+				PricingPatchJSON: `{"input_cost_per_token":9}`,
+			}}))
+
+			pricing := s.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: tt.model}, schemas.ChatCompletionRequest, LookupScopes{Provider: "openai"})
+			require.NotNil(t, pricing)
+			require.NotNil(t, pricing.InputCostPerToken)
+			if tt.shouldMatch {
+				assert.Equal(t, 9.0, *pricing.InputCostPerToken)
+			} else {
+				assert.Equal(t, 1.0, *pricing.InputCostPerToken)
+			}
+		})
+	}
+}
+
+func TestGetPricing_WildcardSpecificityUsesLiteralLengthThenAnchoring(t *testing.T) {
+	s := newTestStore()
+	s.pricingData[makeKey("gpt-4o-mini", "openai", "chat")] = configstoreTables.TableModelPricing{
+		Model:             "gpt-4o-mini",
+		Provider:          "openai",
+		Mode:              "chat",
+		InputCostPerToken: bifrost.Ptr(1.0),
+	}
+
+	providerID := "openai"
+	require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{
+		{
+			ID:               "contains",
+			ScopeKind:        string(ScopeKindProvider),
+			ProviderID:       &providerID,
+			MatchType:        string(MatchTypeWildcard),
+			Pattern:          "*gpt-4o*",
+			RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+			PricingPatchJSON: `{"input_cost_per_token":8}`,
+		},
+		{
+			ID:               "prefix",
+			ScopeKind:        string(ScopeKindProvider),
+			ProviderID:       &providerID,
+			MatchType:        string(MatchTypeWildcard),
+			Pattern:          "gpt-4o*",
+			RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+			PricingPatchJSON: `{"input_cost_per_token":9}`,
+		},
+	}))
+
+	pricing := s.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o-mini"}, schemas.ChatCompletionRequest, LookupScopes{Provider: "openai"})
+	require.NotNil(t, pricing)
+	require.NotNil(t, pricing.InputCostPerToken)
+	assert.Equal(t, 9.0, *pricing.InputCostPerToken)
+}
+
 func TestGetPricing_OverridePrecedenceExactWildcard(t *testing.T) {
 	s := newTestStore()
 	s.pricingData[makeKey("gpt-4o", "openai", "chat")] = configstoreTables.TableModelPricing{
@@ -412,6 +557,61 @@ func TestGetPricing_FirstInsertionWinsOnTie(t *testing.T) {
 	require.NotNil(t, pricing)
 	require.NotNil(t, pricing.InputCostPerToken)
 	assert.Equal(t, 8.0, *pricing.InputCostPerToken)
+}
+
+func TestUpsertOverrides_PreservesTieOrder(t *testing.T) {
+	s := newTestStore()
+	s.pricingData[makeKey("foobar", "openai", "chat")] = configstoreTables.TableModelPricing{
+		Model:             "foobar",
+		Provider:          "openai",
+		Mode:              "chat",
+		InputCostPerToken: bifrost.Ptr(1.0),
+	}
+
+	providerID := "openai"
+	prefix := configstoreTables.TablePricingOverride{
+		ID:               "prefix",
+		ScopeKind:        string(ScopeKindProvider),
+		ProviderID:       &providerID,
+		MatchType:        string(MatchTypeWildcard),
+		Pattern:          "foo*",
+		RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+		PricingPatchJSON: `{"input_cost_per_token":8}`,
+	}
+	suffix := configstoreTables.TablePricingOverride{
+		ID:               "suffix",
+		ScopeKind:        string(ScopeKindProvider),
+		ProviderID:       &providerID,
+		MatchType:        string(MatchTypeWildcard),
+		Pattern:          "*bar",
+		RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+		PricingPatchJSON: `{"input_cost_per_token":9}`,
+	}
+	require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{prefix, suffix}))
+
+	assertInputCost := func(want float64) {
+		t.Helper()
+		pricing := s.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "foobar"}, schemas.ChatCompletionRequest, LookupScopes{Provider: "openai"})
+		require.NotNil(t, pricing)
+		require.NotNil(t, pricing.InputCostPerToken)
+		assert.Equal(t, want, *pricing.InputCostPerToken)
+	}
+
+	assertInputCost(8)
+
+	prefix.PricingPatchJSON = `{"input_cost_per_token":10}`
+	require.NoError(t, s.UpsertOverrides(&prefix))
+	assertInputCost(10)
+
+	result := s.CatalogPricingOverrides("foobar", schemas.OpenAI, "chat")
+	assert.Equal(t, "prefix", result.AppliedID)
+	require.Len(t, result.Matching, 2)
+	assert.Equal(t, []string{"prefix", "suffix"}, []string{result.Matching[0].ID, result.Matching[1].ID})
+
+	// A full reload uses the persisted creation order and must select the same
+	// winner as the hot-updated in-memory state.
+	require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{prefix, suffix}))
+	assertInputCost(10)
 }
 
 func TestPatchPricing_PartialPatchOnlyChangesSpecifiedFields(t *testing.T) {
@@ -898,6 +1098,46 @@ func TestCatalogPricingOverrides_WildcardLongestPrefixWins(t *testing.T) {
 	other := s.CatalogPricingOverrides("gpt-5-nano", schemas.OpenAI, "chat")
 	assert.Equal(t, "broad", other.AppliedID)
 	require.Len(t, other.Matching, 1)
+}
+
+func TestCatalogPricingOverrides_BoundaryWildcardOrdering(t *testing.T) {
+	s := newTestStore()
+
+	require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{
+		{
+			ID:               "contains",
+			ScopeKind:        string(ScopeKindGlobal),
+			MatchType:        string(MatchTypeWildcard),
+			Pattern:          "*gpt-4o*",
+			RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+			PricingPatchJSON: `{"input_cost_per_token":1}`,
+		},
+		{
+			ID:               "prefix",
+			ScopeKind:        string(ScopeKindGlobal),
+			MatchType:        string(MatchTypeWildcard),
+			Pattern:          "gpt-4o*",
+			RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+			PricingPatchJSON: `{"input_cost_per_token":2}`,
+		},
+		{
+			ID:               "suffix",
+			ScopeKind:        string(ScopeKindGlobal),
+			MatchType:        string(MatchTypeWildcard),
+			Pattern:          "*-mini",
+			RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+			PricingPatchJSON: `{"input_cost_per_token":3}`,
+		},
+	}))
+
+	result := s.CatalogPricingOverrides("gpt-4o-mini", schemas.OpenAI, "chat")
+	assert.Equal(t, "prefix", result.AppliedID)
+	require.Len(t, result.Matching, 3)
+	assert.Equal(t, []string{"prefix", "contains", "suffix"}, []string{
+		result.Matching[0].ID,
+		result.Matching[1].ID,
+		result.Matching[2].ID,
+	})
 }
 
 func TestCatalogPricingOverrides_ModeFilteringAppliesToWinnerOnly(t *testing.T) {
