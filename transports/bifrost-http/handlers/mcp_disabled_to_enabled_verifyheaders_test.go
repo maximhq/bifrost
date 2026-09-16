@@ -33,6 +33,9 @@ func (m *fakeMCPManagerVerifyOnly) UpdateMCPClientCredentials(_ context.Context,
 	return nil
 }
 func (m *fakeMCPManagerVerifyOnly) ReconnectMCPClient(_ context.Context, _ string) error { return nil }
+func (m *fakeMCPManagerVerifyOnly) RefreshMCPClientTools(_ context.Context, _ string) (int, error) {
+	return 0, nil
+}
 func (m *fakeMCPManagerVerifyOnly) CloseAndMarkNeedsReauth(_ context.Context, _ string) error {
 	return nil
 }
