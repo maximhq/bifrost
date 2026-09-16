@@ -8641,7 +8641,8 @@
         },
         "pattern": {
           "type": "string",
-          "description": "Model name pattern to match (exact name or wildcard with * at the beginning, end, or both ends)"
+          "description": "Model name pattern to match (exact name or wildcard with * at the beginning, end, or both ends)",
+          "pattern": "^(?:[^*]+|\\*|\\*[^*]+|[^*]+\\*|\\*[^*]+\\*)$"
         },
         "request_types": {
           "type": "array",
@@ -8667,6 +8668,34 @@
         "match_type",
         "pattern",
         "request_types"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "match_type": { "const": "exact" }
+            },
+            "required": ["match_type"]
+          },
+          "then": {
+            "properties": {
+              "pattern": { "pattern": "^[^*]+$" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "match_type": { "const": "wildcard" }
+            },
+            "required": ["match_type"]
+          },
+          "then": {
+            "properties": {
+              "pattern": { "pattern": "^(?:\\*|\\*[^*]+|[^*]+\\*|\\*[^*]+\\*)$" }
+            }
+          }
+        }
       ],
       "additionalProperties": false
     },

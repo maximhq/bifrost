@@ -2262,6 +2262,7 @@ PricingOverride:
     pattern:
       type: string
       description: Model name or boundary wildcard pattern (e.g. "gpt-4o", "claude-3*", "*-free", or "*sonnet*")
+      pattern: '^(?:[^*]+|\*|\*[^*]+|[^*]+\*|\*[^*]+\*)$'
     request_types:
       type: array
       minItems: 1
@@ -2319,6 +2320,7 @@ CreatePricingOverrideRequest:
     pattern:
       type: string
       description: Model name or wildcard pattern with * at the beginning, end, or both ends (e.g. "claude-3*", "*-free", or "*sonnet*")
+      pattern: '^(?:[^*]+|\*|\*[^*]+|[^*]+\*|\*[^*]+\*)$'
     request_types:
       type: array
       minItems: 1
@@ -2360,6 +2362,7 @@ UpdatePricingOverrideRequest:
     pattern:
       type: string
       description: Model name or wildcard pattern with * at the beginning, end, or both ends (e.g. "claude-3*", "*-free", or "*sonnet*")
+      pattern: '^(?:[^*]+|\*|\*[^*]+|[^*]+\*|\*[^*]+\*)$'
     request_types:
       type: array
       minItems: 1

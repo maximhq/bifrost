@@ -1,6 +1,7 @@
 package lib
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -46,6 +47,55 @@ func TestValidateConfigSchema_ValidConfig(t *testing.T) {
 	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
 	if err != nil {
 		t.Errorf("expected valid config to pass validation, got error: %v", err)
+	}
+}
+
+func TestValidateConfigSchema_PricingOverridePatterns(t *testing.T) {
+	tests := []struct {
+		name       string
+		matchType  string
+		pattern    string
+		shouldPass bool
+	}{
+		{name: "exact", matchType: "exact", pattern: "gpt-4o", shouldPass: true},
+		{name: "prefix wildcard", matchType: "wildcard", pattern: "gpt-4*", shouldPass: true},
+		{name: "suffix wildcard", matchType: "wildcard", pattern: "*-free", shouldPass: true},
+		{name: "contains wildcard", matchType: "wildcard", pattern: "*sonnet*", shouldPass: true},
+		{name: "match all wildcard", matchType: "wildcard", pattern: "*", shouldPass: true},
+		{name: "wildcard type without wildcard", matchType: "wildcard", pattern: "gpt-4o", shouldPass: false},
+		{name: "exact type with wildcard", matchType: "exact", pattern: "gpt-4*", shouldPass: false},
+		{name: "interior wildcard", matchType: "wildcard", pattern: "gpt-*-mini", shouldPass: false},
+		{name: "repeated trailing wildcard", matchType: "wildcard", pattern: "gpt-**", shouldPass: false},
+		{name: "repeated leading wildcard", matchType: "wildcard", pattern: "**-free", shouldPass: false},
+		{name: "empty contains wildcard", matchType: "wildcard", pattern: "**", shouldPass: false},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := fmt.Sprintf(`{
+				"governance": {
+					"pricing_overrides": [{
+						"id": "override-%d",
+						"name": "Wildcard override",
+						"scope_kind": "global",
+						"match_type": %q,
+						"pattern": %q,
+						"request_types": ["chat_completion"]
+					}]
+				}
+			}`, i, tt.matchType, tt.pattern)
+
+			err := ValidateConfigSchema([]byte(config), loadLocalSchema(t))
+			if tt.shouldPass {
+				if err != nil {
+					t.Fatalf("expected pattern to pass schema validation, got: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected pattern to fail schema validation")
+			}
+		})
 	}
 }
 
