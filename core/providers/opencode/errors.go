@@ -27,10 +27,13 @@ type opencodeErrorInner struct {
 // Opencode uses {"type":"error","error":{"type":"...","message":"..."}} instead
 // of OpenAI's {"error":{"message":"...","type":"...","code":...}}.
 func parseOpencodeError(resp *fasthttp.Response) *schemas.BifrostError {
-	var bifrostErr schemas.BifrostError
+	var errorResp schemas.BifrostError
 
-	// First, let the generic handler parse HTTP status and set base fields.
-	_ = providerUtils.HandleProviderAPIError(resp, &bifrostErr)
+	// First, let the generic handler set status, the raw response and the retry hint. Only
+	// what Opencode itself sent feeds the message.
+	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
+	bifrostErr.EventID = errorResp.EventID
+	bifrostErr.Error = errorResp.Error
 
 	// Ensure Error is non-nil before accessing its fields.
 	if bifrostErr.Error == nil {
@@ -59,5 +62,5 @@ func parseOpencodeError(resp *fasthttp.Response) *schemas.BifrostError {
 		}
 	}
 
-	return &bifrostErr
+	return bifrostErr
 }

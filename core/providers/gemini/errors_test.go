@@ -92,3 +92,53 @@ func TestProcessGeminiStreamChunk_MidStreamError(t *testing.T) {
 		t.Errorf("unexpected message: %q", apiErr.Err.Message)
 	}
 }
+
+// TestParseGeminiError_RetryInfo verifies a google.rpc.RetryInfo detail becomes the
+// retry hint for both body shapes, and wins over a Retry-After header.
+func TestParseGeminiError_RetryInfo(t *testing.T) {
+	body := `{"error":{"code":429,"message":"You exceeded your current quota.","status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.QuotaFailure","violations":[{"quotaId":"GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]},{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"39.844676573s"}]}}`
+	cases := []struct {
+		name       string
+		body       string
+		retryAfter string
+		want       int64
+	}{
+		{name: "object body", body: body, want: 39844},
+		{name: "array body", body: "[" + body + "]", want: 39844},
+		{name: "retry info beats the header", body: body, retryAfter: "5", want: 39844},
+		{name: "header without retry info", body: `{"error":{"code":429,"message":"Quota exceeded","status":"RESOURCE_EXHAUSTED"}}`, retryAfter: "5", want: 5000},
+		{name: "no hint", body: `{"error":{"code":400,"message":"bad request","status":"INVALID_ARGUMENT","details":[{"@type":"type.googleapis.com/google.rpc.BadRequest"}]}}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var resp fasthttp.Response
+			resp.SetStatusCode(fasthttp.StatusTooManyRequests)
+			if tc.retryAfter != "" {
+				resp.Header.Set("Retry-After", tc.retryAfter)
+			}
+			resp.SetBodyString(tc.body)
+
+			if got := parseGeminiError(&resp).ExtraFields.RetryAfter; got != tc.want {
+				t.Errorf("expected RetryAfter %d, got %d", tc.want, got)
+			}
+		})
+	}
+}
+
+// TestToGeminiStreamBifrostError_RetryInfo verifies a mid-stream error event keeps
+// the RetryInfo delay it carries as the retry hint.
+func TestToGeminiStreamBifrostError_RetryInfo(t *testing.T) {
+	_, err := processGeminiStreamChunk([]byte(`{"error":{"code":429,"message":"Resource exhausted.","status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"39s"}]}}`))
+	bifrostErr := toGeminiStreamBifrostError(err)
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 429 {
+		t.Fatalf("expected status 429, got %v", bifrostErr.StatusCode)
+	}
+	if bifrostErr.ExtraFields.RetryAfter != 39000 {
+		t.Errorf("expected RetryAfter 39000, got %d", bifrostErr.ExtraFields.RetryAfter)
+	}
+
+	_, err = processGeminiStreamChunk([]byte(`{"error":{"code":429,"message":"Resource exhausted.","status":"RESOURCE_EXHAUSTED"}}`))
+	if got := toGeminiStreamBifrostError(err).ExtraFields.RetryAfter; got != 0 {
+		t.Errorf("expected no RetryAfter without RetryInfo, got %d", got)
+	}
+}

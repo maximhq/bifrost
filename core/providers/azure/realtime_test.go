@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
 
 func TestRealtimeWebSocketURL(t *testing.T) {
@@ -116,5 +117,28 @@ func TestExchangeRealtimeWebRTCSDPUsesIntentForTranscription(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestRealtimeUpstreamErrorsCarryRetryHint(t *testing.T) {
+	t.Parallel()
+
+	var resp fasthttp.Response
+	resp.SetStatusCode(fasthttp.StatusTooManyRequests)
+	resp.Header.Set("retry-after-ms", "2500")
+	resp.SetBodyString(`{"error":{"code":"429","message":"Requests to the Realtime API have exceeded the rate limit."}}`)
+
+	provider := &AzureProvider{}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for name, bifrostErr := range map[string]*schemas.BifrostError{
+		"webrtc handshake": provider.realtimeWebRTCUpstreamError(ctx, &resp),
+		"client secret":    provider.parseRealtimeClientSecretError(ctx, &resp),
+	} {
+		if bifrostErr.Error.Message != "Requests to the Realtime API have exceeded the rate limit." {
+			t.Errorf("%s: Message = %q", name, bifrostErr.Error.Message)
+		}
+		if bifrostErr.ExtraFields.RetryAfter != 2500 {
+			t.Errorf("%s: RetryAfter = %d, want 2500", name, bifrostErr.ExtraFields.RetryAfter)
+		}
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -20,6 +21,21 @@ type GeminiStreamAPIError struct {
 
 func (e *GeminiStreamAPIError) Error() string {
 	return fmt.Sprintf("gemini api error: %d %s - %s", e.Err.Code, e.Err.Status, e.Err.Message)
+}
+
+// ApplyRetryInfo records the delay a google.rpc.RetryInfo error detail asks for as the
+// error's retry hint. It is Google's own answer for that error, so it replaces a hint read
+// from a retry header.
+func ApplyRetryInfo(bifrostErr *schemas.BifrostError, details []GeminiGenerationErrorDetails) {
+	for _, detail := range details {
+		if detail.Type != googleRetryInfoType {
+			continue
+		}
+		if delay, err := time.ParseDuration(detail.RetryDelay); err == nil {
+			providerUtils.SetRetryAfter(bifrostErr, delay)
+		}
+		return
+	}
 }
 
 // toGeminiStreamBifrostError builds the BifrostError for an error payload
@@ -42,6 +58,7 @@ func toGeminiStreamBifrostError(err error) *schemas.BifrostError {
 		if apiErr.Err.Status != "" {
 			bifrostErr.Error.Type = schemas.Ptr(apiErr.Err.Status)
 		}
+		ApplyRetryInfo(bifrostErr, apiErr.Err.Details)
 	}
 	return bifrostErr
 }
@@ -99,6 +116,7 @@ func parseGeminiError(resp *fasthttp.Response) *schemas.BifrostError {
 			if firstError.Status != "" {
 				bifrostErr.Error.Type = schemas.Ptr(firstError.Status)
 			}
+			ApplyRetryInfo(bifrostErr, firstError.Details)
 		}
 		// Set Message to trimmed concatenated message
 		bifrostErr.Error.Message = message
@@ -117,6 +135,7 @@ func parseGeminiError(resp *fasthttp.Response) *schemas.BifrostError {
 		if errorResp.Error.Status != "" {
 			bifrostErr.Error.Type = schemas.Ptr(errorResp.Error.Status)
 		}
+		ApplyRetryInfo(bifrostErr, errorResp.Error.Details)
 	}
 	return bifrostErr
 }

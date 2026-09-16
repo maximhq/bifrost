@@ -124,13 +124,15 @@ func (provider *OpenAIProvider) exchangeWebRTCSDP(
 
 	answerBody := resp.Body()
 	if resp.StatusCode() < fasthttp.StatusOK || resp.StatusCode() >= fasthttp.StatusMultipleChoices {
-		return "", providerUtils.SetErrorLatency(provider.realtimeWebRTCUpstreamError(ctx, resp.StatusCode(), answerBody), latency)
+		return "", providerUtils.SetErrorLatency(provider.realtimeWebRTCUpstreamError(ctx, resp), latency)
 	}
 
 	return string(answerBody), nil
 }
 
-func (provider *OpenAIProvider) realtimeWebRTCUpstreamError(ctx *schemas.BifrostContext, statusCode int, body []byte) *schemas.BifrostError {
+func (provider *OpenAIProvider) realtimeWebRTCUpstreamError(ctx *schemas.BifrostContext, resp *fasthttp.Response) *schemas.BifrostError {
+	statusCode := resp.StatusCode()
+	body := resp.Body()
 	bifrostErr := &schemas.BifrostError{
 		IsBifrostError: false,
 		StatusCode:     schemas.Ptr(fasthttp.StatusBadGateway),
@@ -149,6 +151,7 @@ func (provider *OpenAIProvider) realtimeWebRTCUpstreamError(ctx *schemas.Bifrost
 			"body":   string(body),
 		}
 	}
+	providerUtils.ApplyRetryAfter(bifrostErr, &resp.Header)
 	return bifrostErr
 }
 
