@@ -1,2 +1,1 @@
-- feat: add opt-in `bifrost_overhead_component_microseconds` histogram behind `overhead_breakdown_enabled`, splitting overhead latency by the `overhead_component` label (#6980)
-- chore: upgraded core to v1.8.6 and framework to v1.6.2
+- feat: `bifrost_error_requests_total` carries a normalized `error_type` label alongside `status_code`, drawn from a closed prefix-structured vocabulary (`caller_*`, `policy_*`, `provider_*`, `bifrost_*`, `_OTHER`), so alarm expressions can separate fault domains with a single regex instead of enumerating status codes (#7141)

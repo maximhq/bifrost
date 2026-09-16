@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -1464,6 +1465,79 @@ func TestSelectKeyFromProviderForModel_BlacklistedModels(t *testing.T) {
 		}
 		if len(pool) != 1 || pool[0].ID != "k2" {
 			t.Fatalf("expected pool=[k2], got %v", pool)
+		}
+	})
+}
+
+func TestSelectKeyFromProviderForModel_VLLMAliasResolution(t *testing.T) {
+	account := NewMockAccount()
+	bifrost := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError)}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	newVLLMKey := func(id, modelName string, models schemas.WhiteList, aliases schemas.KeyAliases) schemas.Key {
+		return schemas.Key{
+			ID:      id,
+			Name:    id,
+			Value:   *schemas.NewSecretVar("test-key"),
+			Models:  models,
+			Aliases: aliases,
+			Weight:  1,
+			VLLMKeyConfig: &schemas.VLLMKeyConfig{
+				URL:       *schemas.NewSecretVar("http://localhost:8000"),
+				ModelName: modelName,
+			},
+		}
+	}
+
+	t.Run("resolves alias independently for each key", func(t *testing.T) {
+		account.SetKeysForProvider(schemas.VLLM, []schemas.Key{
+			newVLLMKey("vllm-a", "served-model-a", schemas.WhiteList{"chat-model"}, schemas.KeyAliases{
+				"chat-model": {ModelID: "served-model-a"},
+			}),
+			newVLLMKey("vllm-b", "served-model-b", schemas.WhiteList{"chat-model"}, schemas.KeyAliases{
+				"chat-model": {ModelID: "served-model-b"},
+			}),
+		})
+
+		keys, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, schemas.ChatCompletionRequest, schemas.VLLM, "chat-model", schemas.VLLM)
+		if err != nil {
+			t.Fatalf("selectKeyFromProviderForModelWithPool: %v", err)
+		}
+		if !canRotate {
+			t.Fatal("canRotate = false, want true for two matching keys")
+		}
+		if len(keys) != 2 || keys[0].ID != "vllm-a" || keys[1].ID != "vllm-b" {
+			t.Fatalf("got keys %v, want [vllm-a vllm-b]", keys)
+		}
+	})
+
+	t.Run("keeps allowlist checks on requested alias", func(t *testing.T) {
+		account.SetKeysForProvider(schemas.VLLM, []schemas.Key{
+			newVLLMKey("vllm-a", "served-model-a", schemas.WhiteList{"chat-model"}, schemas.KeyAliases{
+				"chat-model": {ModelID: "served-model-a"},
+			}),
+		})
+
+		_, _, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, schemas.ChatCompletionRequest, schemas.VLLM, "served-model-a", schemas.VLLM)
+		if err == nil {
+			t.Fatal("expected direct model request to be rejected when only the alias is allowlisted")
+		}
+	})
+
+	t.Run("still supports direct model names", func(t *testing.T) {
+		account.SetKeysForProvider(schemas.VLLM, []schemas.Key{
+			newVLLMKey("vllm-a", "served-model-a", schemas.WhiteList{"served-model-a"}, nil),
+		})
+
+		keys, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, schemas.ChatCompletionRequest, schemas.VLLM, "served-model-a", schemas.VLLM)
+		if err != nil {
+			t.Fatalf("selectKeyFromProviderForModelWithPool: %v", err)
+		}
+		if canRotate {
+			t.Fatal("canRotate = true, want false for one matching key")
+		}
+		if len(keys) != 1 || keys[0].ID != "vllm-a" {
+			t.Fatalf("got keys %v, want [vllm-a]", keys)
 		}
 	})
 }
@@ -3104,6 +3178,44 @@ func (f *fakeRoutingPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schem
 	return resp, bifrostErr, nil
 }
 
+type postHookResponsePreservingPlugin struct {
+	fakeRoutingPlugin
+	block                 bool
+	seenResponseWithError bool
+}
+
+func (p *postHookResponsePreservingPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if p.block {
+		statusCode := 400
+		return resp, &schemas.BifrostError{
+			StatusCode: &statusCode,
+			Error:      &schemas.ErrorField{Message: "blocked"},
+		}, nil
+	}
+	p.seenResponseWithError = resp != nil && bifrostErr != nil
+	return resp, bifrostErr, nil
+}
+
+func TestRunPostLLMHooksPreservesProviderResponseWithGuardrailError(t *testing.T) {
+	t.Parallel()
+
+	observer := &postHookResponsePreservingPlugin{fakeRoutingPlugin: fakeRoutingPlugin{name: "observer"}}
+	guardrail := &postHookResponsePreservingPlugin{fakeRoutingPlugin: fakeRoutingPlugin{name: "guardrail"}, block: true}
+	pipeline := newRoutingCommitPipeline(observer, guardrail)
+	resp := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{Model: "gpt-4o-transcribe"}}
+
+	gotResp, gotErr := pipeline.RunPostLLMHooks(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), resp, nil, 2)
+	if gotResp != resp {
+		t.Fatalf("response = %#v, want original provider response", gotResp)
+	}
+	if gotErr == nil || gotErr.Error == nil || gotErr.Error.Message != "blocked" {
+		t.Fatalf("error = %#v, want guardrail block", gotErr)
+	}
+	if !observer.seenResponseWithError {
+		t.Fatal("downstream post-hook did not receive both the provider response and guardrail error")
+	}
+}
+
 func newRoutingCommitPipeline(plugins ...schemas.LLMPlugin) *PluginPipeline {
 	return &PluginPipeline{
 		logger:     NewDefaultLogger(schemas.LogLevelError),
@@ -3345,12 +3457,44 @@ func TestClearCtxForFallback_DropsCallerSuppliedKey(t *testing.T) {
 		t.Fatalf("RoutingPinnedAPIKeyID survived clearCtxForFallback: %q", pin)
 	}
 
+	// #6973: provider response headers belong to the provider that produced
+	// them. If a fallback attempt fails pre-flight, the previous provider's
+	// headers must not survive on the context and be forwarded with the
+	// fallback's error response.
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, map[string]string{
+		"retry-after":                  "60",
+		"x-ratelimit-remaining-tokens": "0",
+	})
+	clearCtxForFallback(ctx)
+	if headers, ok := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
+		t.Fatalf("ProviderResponseHeaders survived clearCtxForFallback: %v", headers)
+	}
+
 	keys, _, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, schemas.ChatCompletionRequest, schemas.Anthropic, "claude-opus-4-5", schemas.Anthropic)
 	if err != nil {
 		t.Fatalf("selectKeyFromProviderForModelWithPool: %v", err)
 	}
 	if len(keys) != 1 || keys[0].ID != "anthropic-configured" {
 		t.Fatalf("got %v, want the fallback provider's own key", keys)
+	}
+}
+
+func TestShouldContinueWithFallbacksHandlesIncompleteBifrostError(t *testing.T) {
+	statusCode := http.StatusServiceUnavailable
+	bifrost := &Bifrost{logger: NewDefaultLogger(schemas.LogLevelError)}
+	fallback := schemas.Fallback{Provider: schemas.Anthropic}
+	fallbackErr := &schemas.BifrostError{StatusCode: &statusCode}
+
+	if !bifrost.shouldContinueWithFallbacks(fallback, fallbackErr) {
+		t.Fatal("incomplete plugin error should allow the next fallback")
+	}
+}
+
+func TestShouldContinueWithFallbacksStopsOnNilError(t *testing.T) {
+	bifrost := &Bifrost{logger: NewDefaultLogger(schemas.LogLevelError)}
+	fallback := schemas.Fallback{Provider: schemas.Anthropic}
+	if bifrost.shouldContinueWithFallbacks(fallback, nil) {
+		t.Fatal("nil error should stop fallback processing")
 	}
 }
 
@@ -3602,5 +3746,55 @@ func TestApplyRawCaptureSignals_RunsAfterPassthroughClear(t *testing.T) {
 				t.Error("DropRawResponseFromClient = true, want false (store is off)")
 			}
 		})
+	}
+}
+
+// https://github.com/maximhq/bifrost/issues/6966: prepareFallbackRequest enumerates sub-request
+// types by hand, and the shallow copy shares any pointer it does not re-target with the
+// original request. A type it forgets therefore keeps the primary provider and model, so the
+// "fallback" attempt is routed back to the primary while RoutingInfo reports it as a fallback.
+// Deriving the cases from the schema (every sub-request that declares Fallbacks) pins every
+// fallback-capable type today and fails loudly for any type added later without an arm.
+func TestPrepareFallbackRequestRetargetsEveryFallbackCapableType(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	account.AddProvider(schemas.Azure, 1, 1)
+	bifrost := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError)}
+	fallback := schemas.Fallback{Provider: schemas.Azure, Model: "fallback-model"}
+
+	reqType := reflect.TypeOf(schemas.BifrostRequest{})
+	cases := 0
+	for i := 0; i < reqType.NumField(); i++ {
+		field := reqType.Field(i)
+		if field.Type.Kind() != reflect.Ptr || field.Type.Elem().Kind() != reflect.Struct {
+			continue
+		}
+		if _, ok := field.Type.Elem().FieldByName("Fallbacks"); !ok {
+			continue
+		}
+		cases++
+		t.Run(field.Name, func(t *testing.T) {
+			sub := reflect.New(field.Type.Elem())
+			sub.Elem().FieldByName("Provider").SetString(string(schemas.OpenAI))
+			sub.Elem().FieldByName("Model").SetString("primary-model")
+			req := &schemas.BifrostRequest{}
+			reflect.ValueOf(req).Elem().Field(i).Set(sub)
+
+			got := bifrost.prepareFallbackRequest(req, fallback)
+			if got == nil {
+				t.Fatal("prepareFallbackRequest returned nil for a configured fallback provider")
+			}
+			provider, model, _ := got.GetRequestFields()
+			if provider != fallback.Provider || model != fallback.Model {
+				t.Errorf("fallback request targets %s/%s, want %s/%s (the attempt would be routed back to the primary)", provider, model, fallback.Provider, fallback.Model)
+			}
+			origProvider, origModel, _ := req.GetRequestFields()
+			if origProvider != schemas.OpenAI || origModel != "primary-model" {
+				t.Errorf("original request was mutated to %s/%s", origProvider, origModel)
+			}
+		})
+	}
+	if cases == 0 {
+		t.Fatal("no fallback-capable sub-request types found on BifrostRequest; the reflection walk is broken")
 	}
 }

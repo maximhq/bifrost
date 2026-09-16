@@ -600,6 +600,10 @@ func HandleOpenAITextCompletionStreaming(
 		// Register the accumulating usage handle so a mid-stream
 		// cancel/timeout can bill for tokens the provider already processed.
 		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, usage)
+		// Whether a usage frame has arrived at or after finish_reason; gates the
+		// wait_for_usage break. A bool rather than a usage.TotalTokens test, so an upstream
+		// that legitimately reports zero tokens still terminates.
+		trailingUsageSeen := false
 
 		var finishReason *string
 		var messageID string
@@ -615,6 +619,17 @@ func HandleOpenAITextCompletionStreaming(
 			if readErr != nil {
 				if ctx.Err() != nil {
 					return
+				}
+				// A silent park after finish_reason (#7108): the response is complete, so the
+				// idle timeout that finally unblocked the read ends the stream cleanly instead
+				// of failing a response the client already has. The timer closed the socket
+				// and claimed ConnectionClosed, so the deferred release skips the drain.
+				if errors.Is(readErr, providerUtils.ErrStreamIdleTimeout) && finishReason != nil {
+					ctx.SetValue(schemas.BifrostContextKeyStreamParkedAfterFinish, true)
+					if usage.TotalTokens == 0 {
+						logger.Warn("provider %s went silent after finish_reason without sending usage; token counts and cost are unavailable for this request", providerName)
+					}
+					break
 				}
 				if readErr != io.EOF {
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -698,6 +713,17 @@ func HandleOpenAITextCompletionStreaming(
 				}
 			}
 
+			// Only usage observed at or after finish_reason ends a wait_for_usage wait. Some
+			// OpenAI-compatible upstreams report usage incrementally (vLLM's
+			// stream_continuous_usage_stats; see the "usage comes before final message" note
+			// below), and a preliminary frame satisfying the wait would let the finish frame
+			// end the stream before the authoritative trailing total arrives - which is #7143
+			// again. Computed before the usage block so a frame carrying BOTH usage and
+			// finish_reason still counts: that upstream has nothing further to send.
+			finishInThisFrame := len(response.Choices) > 0 &&
+				response.Choices[0].FinishReason != nil &&
+				*response.Choices[0].FinishReason != ""
+
 			// Handle usage-only chunks (when stream_options include_usage is true)
 			if response.Usage != nil {
 				// Collect usage information and send at the end of the stream
@@ -723,11 +749,24 @@ func HandleOpenAITextCompletionStreaming(
 				if response.Usage.PromptTokensDetails != nil {
 					usage.PromptTokensDetails = response.Usage.PromptTokensDetails
 				}
+				if finishReason != nil || finishInThisFrame {
+					trailingUsageSeen = true
+				}
 				response.Usage = nil
 			}
 
-			// Skip empty responses or responses without choices
+			// Skip empty responses or responses without choices. A usage-only frame lands
+			// here, so under wait_for_usage termination has to be evaluated before skipping
+			// it: that frame is the exact thing the loop stayed open for, and the check at
+			// the bottom of the loop is unreachable once we continue. Guarded and added
+			// rather than relocated - finishReason is assigned below this point, so moving
+			// the shared check up would stop plain does_not_send_done_marker from breaking
+			// on finish_reason at all.
 			if len(response.Choices) == 0 {
+				if !providerUtils.ProviderSendsDoneMarker(ctx, providerName) && finishReason != nil &&
+					providerUtils.WaitForStreamUsage(ctx) && trailingUsageSeen {
+					break
+				}
 				continue
 			}
 
@@ -763,8 +802,14 @@ func HandleOpenAITextCompletionStreaming(
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(&response, nil, nil, nil, nil, nil), responseChan, postHookSpanFinalizer)
 			}
 
-			// For providers that don't send [DONE] marker break on finish_reason
-			if !providerUtils.ProviderSendsDoneMarker(ctx, providerName) && finishReason != nil {
+			// For providers that don't send [DONE] marker break on finish_reason.
+			// wait_for_usage is the operator's statement that this upstream still sends the
+			// trailing usage-only frame Bifrost asks for via stream_options.include_usage, so
+			// hold the loop open for it - breaking here bills the request at zero tokens
+			// (#7143). The wait stays bounded: the usage frame above, the two post-finish
+			// heartbeat comments armed on finish_reason, EOF, or the stream idle timeout.
+			if !providerUtils.ProviderSendsDoneMarker(ctx, providerName) && finishReason != nil &&
+				(!providerUtils.WaitForStreamUsage(ctx) || trailingUsageSeen) {
 				break
 			}
 		}
@@ -1284,9 +1329,52 @@ func HandleOpenAIChatCompletionStreaming(
 		// service_tier is echoed on chunks; propagate to the final chunk for priority/flex billing
 		var serviceTier *schemas.BifrostServiceTier
 		forwardedTerminalFinishReason := false
+		// Upstream frames read but not yet handed to a chunk. Raw capture must not
+		// depend on whether a frame becomes a forwarded chunk: finish-only and
+		// usage-only frames are documented parts of an OpenAI stream - and the usage
+		// frame is the one Bifrost bills from - yet neither reaches the semantic
+		// chunk-forwarding branch. Buffering here and draining on the next forwarded
+		// chunk (or the synthetic terminal chunk) keeps every frame in upstream
+		// order. See
+		// https://github.com/maximhq/bifrost/issues/7144.
+		//
+		// Only populated when sendBackRawResponse is set, and drained on every chunk
+		// handed to the client, so a healthy stream holds one to three frames here.
+		//
+		// A misbehaving upstream is the case that needs a ceiling: nothing drains this
+		// queue until a chunk is actually forwarded, and every frame read resets the
+		// idle-timeout reader, so a peer that streams only non-forwarding frames keeps
+		// the connection alive while growing this without bound. Past the ceiling the
+		// queue stops accepting frames and says so once. Truncating an audit trail is
+		// unpleasant, but it beats an upstream-driven allocation with no limit, and a
+		// healthy stream never approaches it.
+		var pendingRawFrames []string
+		pendingRawBytes := 0
+		rawCaptureTruncated := false
+		const maxPendingRawBytes = 1 << 20 // 1 MiB
+		queueRawFrame := func(frame string) {
+			if pendingRawBytes+len(frame) > maxPendingRawBytes {
+				if !rawCaptureTruncated {
+					rawCaptureTruncated = true
+					logger.Warn("provider %s streamed over %d bytes of frames that produce no client chunk; raw response capture is truncated for this request", providerName, maxPendingRawBytes)
+				}
+				return
+			}
+			pendingRawFrames = append(pendingRawFrames, frame)
+			pendingRawBytes += len(frame)
+		}
+		drainPendingRawFrames := func() string {
+			joined := strings.Join(pendingRawFrames, "\n\n")
+			pendingRawFrames = pendingRawFrames[:0]
+			pendingRawBytes = 0
+			return joined
+		}
 		// Defer final completed/incomplete event until usage chunk arrives (fallback path only).
 		var pendingFinalEvent *schemas.BifrostResponsesStreamResponse
 		usageSeen := false
+		// Set only by usage seen at or after finish_reason; gates the wait_for_usage break.
+		// Kept separate from usageSeen, which the Bedrock Mantle fallback path also reads.
+		trailingUsageSeen := false
 		// Fallback path only: tracks whether the upstream ever sent a finish_reason,
 		// so a finish_reason that fails to produce a terminal event (e.g. a future
 		// regression in ToBifrostResponsesStreamResponse) is treated as truncation
@@ -1302,6 +1390,19 @@ func HandleOpenAIChatCompletionStreaming(
 			if readErr != nil {
 				if ctx.Err() != nil {
 					return
+				}
+				// A silent park after finish_reason (#7108): the response is complete, so the
+				// idle timeout that finally unblocked the read ends the stream cleanly instead
+				// of failing a response the client already has. On the Responses fallback path
+				// the terminal signal is the pending completed/incomplete event. The timer
+				// closed the socket and claimed ConnectionClosed, so the deferred release
+				// skips the drain.
+				if errors.Is(readErr, providerUtils.ErrStreamIdleTimeout) && (finishReason != nil || pendingFinalEvent != nil) {
+					ctx.SetValue(schemas.BifrostContextKeyStreamParkedAfterFinish, true)
+					if usage.TotalTokens == 0 {
+						logger.Warn("provider %s went silent after finish_reason without sending usage; token counts and cost are unavailable for this request", providerName)
+					}
+					break
 				}
 				if readErr != io.EOF {
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -1372,6 +1473,15 @@ func HandleOpenAIChatCompletionStreaming(
 				response.Choices = []schemas.BifrostResponseChoice{}
 			}
 
+			// Capture every frame read, on both ingresses. The fallback path cannot do
+			// this inside its spread loop: a usage-only frame has choices: [], and
+			// ToBifrostResponsesStreamResponse returns nil for that (mux.go:1710), so
+			// the loop body never runs and the frame would be lost exactly as #7144
+			// describes. Queued frames ride on the next emitted event instead.
+			if sendBackRawResponse {
+				queueRawFrame(jsonData)
+			}
+
 			if isResponsesToChatCompletionsFallback {
 				if len(response.Choices) > 0 && response.Choices[0].FinishReason != nil && *response.Choices[0].FinishReason != "" {
 					fallbackFinishReasonSeen = true
@@ -1407,7 +1517,7 @@ func HandleOpenAIChatCompletionStreaming(
 				convStart := time.Now()
 				spreadResponses := response.ToBifrostResponsesStreamResponse(responsesStreamState)
 				schemas.AddStreamConvert(ctx, time.Since(convStart))
-				for _, response := range spreadResponses {
+				for i, response := range spreadResponses {
 					if response.Type == schemas.ResponsesStreamResponseTypeError {
 						bifrostErr := &schemas.BifrostError{
 							Type:           schemas.Ptr(string(schemas.ResponsesStreamResponseTypeError)),
@@ -1432,8 +1542,15 @@ func HandleOpenAIChatCompletionStreaming(
 
 					response.ExtraFields.ChunkIndex = response.SequenceNumber
 
-					if sendBackRawResponse {
-						response.ExtraFields.RawResponse = jsonData
+					// One upstream chat frame spreads into several Responses events.
+					// Stamping every one of them made framework/streaming/responses.go
+					// concatenate that single frame once per event, so the captured raw
+					// response reported frames the provider never sent twice over. Only
+					// the first event drains, and it carries every frame queued since
+					// the last emitted event - including frames that produced no event
+					// of their own.
+					if sendBackRawResponse && i == 0 {
+						response.ExtraFields.RawResponse = drainPendingRawFrames()
 					}
 
 					if response.Type == schemas.ResponsesStreamResponseTypeCompleted || response.Type == schemas.ResponsesStreamResponseTypeIncomplete {
@@ -1448,13 +1565,10 @@ func HandleOpenAIChatCompletionStreaming(
 					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan, postHookSpanFinalizer)
 				}
 
-				// Bedrock Mantle ends the stream after finish_reason and never sends [DONE], so
-				// unlike the chat branch below this one has no marker to exit on. Without this it
-				// waits on the connection until the idle timeout.
-				//
-				// Mantle sends usage in the chunk *after* the one carrying finish_reason, and usage
-				// is attached to the terminal event at stream end - breaking on finish_reason alone
-				// drops it, and with it the cost.
+				// Mantle sends usage in the chunk *after* the one carrying finish_reason and then
+				// [DONE]. Usage is attached to the terminal event at stream end, so this exits as
+				// soon as both have been seen instead of waiting for the marker; breaking on
+				// finish_reason alone would drop the usage and with it the cost.
 				if fallbackFinishReasonSeen && usageSeen &&
 					(providerName == schemas.BedrockMantle || providerName == schemas.Bedrock) {
 					break
@@ -1475,6 +1589,17 @@ func HandleOpenAIChatCompletionStreaming(
 				if response.ServiceTier != nil {
 					serviceTier = response.ServiceTier
 				}
+
+				// Only usage observed at or after finish_reason ends a wait_for_usage wait. Some
+				// OpenAI-compatible upstreams report usage incrementally (vLLM's
+				// stream_continuous_usage_stats; see the "usage comes before final message" note
+				// below), and a preliminary frame satisfying the wait would let the finish frame
+				// end the stream before the authoritative trailing total arrives - which is #7143
+				// again. Computed before the usage block so a frame carrying BOTH usage and
+				// finish_reason still counts: that upstream has nothing further to send.
+				finishInThisFrame := len(response.Choices) > 0 &&
+					response.Choices[0].FinishReason != nil &&
+					*response.Choices[0].FinishReason != ""
 
 				// Handle usage-only chunks (when stream_options include_usage is true)
 				if response.Usage != nil {
@@ -1504,6 +1629,12 @@ func HandleOpenAIChatCompletionStreaming(
 					if response.Usage.Cost != nil {
 						usage.Cost = response.Usage.Cost
 					}
+					// usageSeen is deliberately not set here: it belongs to the Responses
+					// fallback branch above, which is the only reader (the Mantle exit and the
+					// terminal-event usage attach). This branch gates on trailingUsageSeen.
+					if finishReason != nil || finishInThisFrame {
+						trailingUsageSeen = true
+					}
 					response.Usage = nil
 				}
 
@@ -1511,8 +1642,18 @@ func HandleOpenAIChatCompletionStreaming(
 					modelName = response.Model
 				}
 
-				// Skip empty responses or responses without choices
+				// Skip empty responses or responses without choices. A usage-only frame lands
+				// here, so under wait_for_usage termination has to be evaluated before skipping
+				// it: that frame is the exact thing the loop stayed open for, and the check at
+				// the bottom of the loop is unreachable once we continue. Guarded and added
+				// rather than relocated - finishReason is assigned below this point, so moving
+				// the shared check up would stop plain does_not_send_done_marker from breaking
+				// on finish_reason at all.
 				if len(response.Choices) == 0 {
+					if !providerUtils.ProviderSendsDoneMarker(ctx, providerName) && finishReason != nil &&
+						providerUtils.WaitForStreamUsage(ctx) && trailingUsageSeen {
+						break
+					}
 					continue
 				}
 
@@ -1532,10 +1673,22 @@ func HandleOpenAIChatCompletionStreaming(
 					created = response.Created
 				}
 
-				// Handle regular content chunks, including reasoning
+				// Handle regular content chunks, including the initial role-only delta.
+				// OpenAI commonly sends role:"assistant" with empty content first; dropping
+				// it leaves strict streaming clients unable to reconstruct a valid message.
+				// Refusal and Annotations are answer-bearing delta fields just like
+				// Content: a refusal IS the model's reply, and annotations carry the
+				// URL citations behind a web-search answer. Omitting them here dropped
+				// those chunks entirely - the client saw a content-free completion, and
+				// the framework's ChatAssistantMessage.Refusal / .Annotations assembly
+				// (framework/streaming/chat.go) could never fire for any
+				// OpenAI-compatible provider.
 				if choice.ChatStreamResponseChoice != nil &&
 					choice.ChatStreamResponseChoice.Delta != nil &&
-					((choice.ChatStreamResponseChoice.Delta.Content != nil && *choice.ChatStreamResponseChoice.Delta.Content != "") ||
+					(choice.ChatStreamResponseChoice.Delta.Role != nil ||
+						(choice.ChatStreamResponseChoice.Delta.Content != nil && *choice.ChatStreamResponseChoice.Delta.Content != "") ||
+						(choice.ChatStreamResponseChoice.Delta.Refusal != nil && *choice.ChatStreamResponseChoice.Delta.Refusal != "") ||
+						len(choice.ChatStreamResponseChoice.Delta.Annotations) > 0 ||
 						choice.ChatStreamResponseChoice.Delta.Reasoning != nil ||
 						len(choice.ChatStreamResponseChoice.Delta.ReasoningDetails) > 0 ||
 						choice.ChatStreamResponseChoice.Delta.Audio != nil ||
@@ -1550,14 +1703,20 @@ func HandleOpenAIChatCompletionStreaming(
 					lastChunkTime = time.Now()
 
 					if sendBackRawResponse {
-						response.ExtraFields.RawResponse = jsonData
+						response.ExtraFields.RawResponse = drainPendingRawFrames()
 					}
 
 					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, &response, nil, nil, nil, nil), responseChan, postHookSpanFinalizer)
 				}
 
-				// For providers that don't send [DONE] marker break on finish_reason
-				if !providerUtils.ProviderSendsDoneMarker(ctx, providerName) && finishReason != nil {
+				// For providers that don't send [DONE] marker break on finish_reason.
+				// wait_for_usage is the operator's statement that this upstream still sends the
+				// trailing usage-only frame Bifrost asks for via stream_options.include_usage, so
+				// hold the loop open for it - breaking here bills the request at zero tokens
+				// (#7143). The wait stays bounded: the usage frame above, the two post-finish
+				// heartbeat comments armed on finish_reason, EOF, or the stream idle timeout.
+				if !providerUtils.ProviderSendsDoneMarker(ctx, providerName) && finishReason != nil &&
+					(!providerUtils.WaitForStreamUsage(ctx) || trailingUsageSeen) {
 					break
 				}
 			}
@@ -1592,6 +1751,16 @@ func HandleOpenAIChatCompletionStreaming(
 				if sendBackRawRequest {
 					providerUtils.ParseAndSetRawRequest(&pendingFinalEvent.ExtraFields, jsonBody)
 				}
+				// The usage-only frame produces no event of its own and arrives after
+				// the finish frame that created pendingFinalEvent, so the terminal
+				// event is the only carrier it will ever get.
+				if sendBackRawResponse && len(pendingRawFrames) > 0 {
+					trailing := drainPendingRawFrames()
+					if existing, ok := pendingFinalEvent.ExtraFields.RawResponse.(string); ok && existing != "" {
+						trailing = existing + "\n\n" + trailing
+					}
+					pendingFinalEvent.ExtraFields.RawResponse = trailing
+				}
 				pendingFinalEvent.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, pendingFinalEvent, nil, nil, nil), responseChan, postHookSpanFinalizer)
@@ -1612,6 +1781,12 @@ func HandleOpenAIChatCompletionStreaming(
 			// Set raw request if enabled
 			if sendBackRawRequest {
 				providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
+			}
+			// The finish-only and usage-only frames always arrive after the last
+			// forwarded content chunk, so this synthetic terminal chunk is the only
+			// carrier they will ever get.
+			if sendBackRawResponse && len(pendingRawFrames) > 0 {
+				response.ExtraFields.RawResponse = drainPendingRawFrames()
 			}
 			response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)

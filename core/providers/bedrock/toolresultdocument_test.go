@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"context"
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -170,7 +171,7 @@ func TestToolResultDocumentRejectsMissingSource(t *testing.T) {
 	}
 }
 
-func TestToolResultTextDocumentUsesSingleSourceMember(t *testing.T) {
+func TestToolResultTextDocumentUsesBytesSource(t *testing.T) {
 	tests := []struct {
 		name     string
 		fileData string
@@ -188,11 +189,12 @@ func TestToolResultTextDocumentUsesSingleSourceMember(t *testing.T) {
 				Filename: schemas.Ptr("result.txt"),
 				FileType: schemas.Ptr("text/plain"),
 			})
-			if document.Format != "txt" || document.Source == nil || document.Source.Text == nil || *document.Source.Text != "Hello from the tool" {
-				t.Fatalf("expected plain text document source, got %#v", document)
+			encoded := base64.StdEncoding.EncodeToString([]byte("Hello from the tool"))
+			if document.Format != "txt" || document.Source == nil || document.Source.Bytes == nil || *document.Source.Bytes != encoded {
+				t.Fatalf("expected base64 text document source, got %#v", document)
 			}
-			if document.Source.Bytes != nil {
-				t.Fatalf("expected DocumentSource union to contain only text, got bytes %#v", document.Source.Bytes)
+			if document.Source.Text != nil {
+				t.Fatalf("expected DocumentSource union to contain only bytes, got text %#v", document.Source.Text)
 			}
 		})
 	}

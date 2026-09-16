@@ -29,13 +29,15 @@ func (provider *AzureProvider) SupportsRealtimeAPI() bool {
 	return true
 }
 
-func (provider *AzureProvider) RealtimeWebSocketURL(key schemas.Key, model string) string {
+func (provider *AzureProvider) RealtimeWebSocketURL(key schemas.Key, model, intent string) (string, *schemas.BifrostError) {
 	endpoint := strings.TrimRight(key.AzureKeyConfig.Endpoint.GetValue(), "/")
 	endpoint = strings.Replace(endpoint, "https://", "wss://", 1)
 	endpoint = strings.Replace(endpoint, "http://", "ws://", 1)
 
-	return fmt.Sprintf("%s/openai/v1/realtime?model=%s",
-		endpoint, url.QueryEscape(model))
+	if intent != "" {
+		return fmt.Sprintf("%s/openai/v1/realtime?intent=%s", endpoint, url.QueryEscape(intent)), nil
+	}
+	return fmt.Sprintf("%s/openai/v1/realtime?model=%s", endpoint, url.QueryEscape(model)), nil
 }
 
 func (provider *AzureProvider) RealtimeHeaders(ctx *schemas.BifrostContext, key schemas.Key) (map[string]string, *schemas.BifrostError) {
@@ -77,6 +79,9 @@ func (provider *AzureProvider) ExchangeRealtimeWebRTCSDP(
 
 	upstreamURL := fmt.Sprintf("%s/openai/v1/realtime?model=%s",
 		endpoint, url.QueryEscape(model))
+	if isRealtimeTranscriptionSession(session) {
+		upstreamURL = endpoint + "/openai/v1/realtime?intent=transcription"
+	}
 
 	// Build multipart body: sdp + optional session
 	bodyBuf := &bytes.Buffer{}
@@ -194,26 +199,9 @@ func (provider *AzureProvider) ExtractRealtimeTurnOutput(terminalEventRaw []byte
 func (provider *AzureProvider) CreateRealtimeClientSecret(
 	ctx *schemas.BifrostContext,
 	key schemas.Key,
-	endpointType schemas.RealtimeSessionEndpointType,
 	rawRequest json.RawMessage,
 ) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
-	// Azure does not support the legacy /sessions endpoint.
-	if endpointType == schemas.RealtimeSessionEndpointSessions {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			StatusCode:     schemas.Ptr(fasthttp.StatusBadRequest),
-			Error: &schemas.ErrorField{
-				Type:    schemas.Ptr("invalid_request_error"),
-				Message: "Azure does not support the legacy /sessions endpoint; use /v1/realtime/client_secrets instead",
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType: schemas.RealtimeRequest,
-				Provider:    provider.GetProviderKey(),
-			},
-		}
-	}
-
-	normalizedBody, _, bifrostErr := openaiProvider.NormalizeRealtimeClientSecretRequest(rawRequest, schemas.Azure, endpointType)
+	normalizedBody, _, bifrostErr := openaiProvider.NormalizeRealtimeClientSecretRequest(rawRequest, schemas.Azure)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -310,6 +298,13 @@ func (provider *AzureProvider) realtimeWebRTCUpstreamError(ctx *schemas.BifrostC
 		}
 	}
 	return bifrostErr
+}
+
+func isRealtimeTranscriptionSession(session json.RawMessage) bool {
+	var payload struct {
+		Type string `json:"type"`
+	}
+	return json.Unmarshal(session, &payload) == nil && payload.Type == "transcription"
 }
 
 func newAzureRealtimeError(status int, errorType, message string, err error) *schemas.BifrostError {

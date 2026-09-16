@@ -116,9 +116,12 @@ func DefaultMatchFns() []MatchFn {
 	}
 }
 
-// matches reports whether a and b are considered equal by any of the provided fns.
-// Returns true on the first fn that returns true.
+// matches reports whether list entry b matches model a: a regex: entry is a full RE2
+// match, any other entry is equal by the first of the provided fns that returns true.
 func matches(a, b string, fns []MatchFn) bool {
+	if schemas.IsRegexEntry(b) {
+		return schemas.MatchEntry(b, a)
+	}
 	for _, fn := range fns {
 		if fn(a, b) {
 			return true
@@ -350,7 +353,7 @@ func (p *ListModelsPipeline) BackfillModels(included map[string]bool) []schemas.
 	if !p.Unfiltered && p.AllowedModels.IsRestricted() {
 		// Case A: backfill explicit allowlist entries not yet matched.
 		for _, entry := range p.AllowedModels {
-			if included[strings.ToLower(entry)] {
+			if schemas.IsRegexEntry(entry) || included[strings.ToLower(entry)] {
 				continue
 			}
 			// Blacklist check.

@@ -119,8 +119,51 @@ ProviderConfig:
     rate_limit:
       $ref: '#/RateLimit'
 
+AccessProfileVirtualMCPLink:
+  type: object
+  description: >-
+    A Virtual MCP granted to the profile. Assignments are a set, so a repeat
+    collapses rather than doubling.
+  anyOf:
+    - required: [virtual_mcp_name]
+    - required: [virtual_mcp_id]
+  properties:
+    virtual_mcp_name:
+      type: string
+      description: >-
+        Name of the Virtual MCP. Resolved to the stored Virtual MCP on save; a
+        name that matches none is refused.
+    virtual_mcp_id:
+      type: integer
+      format: uint
+      minimum: 1
+      description: >-
+        Virtual MCP ID, as an alternative to virtual_mcp_name. Wins when both
+        are set.
+
+AccessProfileMCPConfig:
+  type: object
+  description: The tools of one MCP client the profile may execute.
+  required:
+    - mcp_client_id
+  properties:
+    mcp_client_id:
+      type: string
+      description: >-
+        MCP client ID or name. A name is resolved to the stored client id on
+        save; a ref matching no client is kept as given.
+    tools_to_execute:
+      type: array
+      items:
+        type: string
+      description: >-
+        ["*"] allows every tool including ones added later, [] allows none, and a
+        named list allows only those tools.
+
 MCPToolGroupLink:
   type: object
+  deprecated: true
+  description: 'DEPRECATED: use AccessProfileVirtualMCPLink (virtual_mcps).'
   required:
     - tool_group_id
   properties:
@@ -203,15 +246,29 @@ AccessProfile:
           format: date-time
         - type: 'null'
       description: When the last scheduled rotation run finished.
+    virtual_mcps:
+      type: array
+      items:
+        $ref: '#/AccessProfileVirtualMCPLink'
+    mcp_configs:
+      type: array
+      items:
+        $ref: '#/AccessProfileMCPConfig'
     mcp_tool_groups:
+      deprecated: true
+      description: 'DEPRECATED: use virtual_mcps.'
       type: array
       items:
         $ref: '#/MCPToolGroupLink'
     mcp_servers:
+      deprecated: true
+      description: 'DEPRECATED: use mcp_configs. Folded in on save.'
       type: array
       items:
         $ref: '#/MCPServerLink'
     mcp_tool_overrides:
+      deprecated: true
+      description: 'DEPRECATED: use mcp_configs. Folded in on save.'
       type: array
       items:
         $ref: '#/MCPToolOverride'
@@ -279,15 +336,29 @@ CreateAccessProfileRequest:
       type: string
       format: date-time
       description: Optional first rotation time; must be in the future and requires auto_rotation_interval. Defaults to now + interval.
+    virtual_mcps:
+      type: array
+      items:
+        $ref: '#/AccessProfileVirtualMCPLink'
+    mcp_configs:
+      type: array
+      items:
+        $ref: '#/AccessProfileMCPConfig'
     mcp_tool_groups:
+      deprecated: true
+      description: 'DEPRECATED: use virtual_mcps.'
       type: array
       items:
         $ref: '#/MCPToolGroupLink'
     mcp_servers:
+      deprecated: true
+      description: 'DEPRECATED: use mcp_configs. Folded in on save.'
       type: array
       items:
         $ref: '#/MCPServerLink'
     mcp_tool_overrides:
+      deprecated: true
+      description: 'DEPRECATED: use mcp_configs. Folded in on save.'
       type: array
       items:
         $ref: '#/MCPToolOverride'
@@ -341,15 +412,29 @@ UpdateAccessProfileRequest:
           format: date-time
         - type: 'null'
       description: Override the next rotation time (must be in the future). null clears it, which is only valid when the interval is off. Omit to keep the existing schedule; a changed interval re-anchors it to now + interval.
+    virtual_mcps:
+      type: array
+      items:
+        $ref: '#/AccessProfileVirtualMCPLink'
+    mcp_configs:
+      type: array
+      items:
+        $ref: '#/AccessProfileMCPConfig'
     mcp_tool_groups:
+      deprecated: true
+      description: 'DEPRECATED: use virtual_mcps.'
       type: array
       items:
         $ref: '#/MCPToolGroupLink'
     mcp_servers:
+      deprecated: true
+      description: 'DEPRECATED: use mcp_configs. Folded in on save.'
       type: array
       items:
         $ref: '#/MCPServerLink'
     mcp_tool_overrides:
+      deprecated: true
+      description: 'DEPRECATED: use mcp_configs. Folded in on save.'
       type: array
       items:
         $ref: '#/MCPToolOverride'

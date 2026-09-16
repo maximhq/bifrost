@@ -892,6 +892,13 @@
                 "type": "string",
                 "description": "Name of the access profile (defined in access_profiles) to attach as the default for this role. Changing this field triggers a re-sync on next startup. Leave unset to let the dashboard manage the assignment."
               },
+              "access_profiles": {
+                "type": "array",
+                "description": "Names of all access profiles granted by this role. When present, this field takes precedence over access_profile; an empty list removes all profile grants.",
+                "items": {
+                  "type": "string"
+                }
+              },
               "permissions": {
                 "type": "array",
                 "description": "List of resource+operation permission pairs to grant to this role",
@@ -3869,14 +3876,14 @@
         },
         "allowed_models": {
           "type": "array",
-          "description": "Allowed models for this provider config. Use [\"*\"] to allow all models; empty array denies all (deny-by-default).",
+          "description": "Allowed models for this provider config. Use [\"*\"] to allow all models; empty array denies all (deny-by-default). An entry starting with regex: is an RE2 pattern matched case-insensitively against the whole model name.",
           "items": {
             "type": "string"
           }
         },
         "blacklisted_models": {
           "type": "array",
-          "description": "Models blocked for this provider config even if matched by allowed_models. Use [\"*\"] to block all; empty array blocks none.",
+          "description": "Models blocked for this provider config even if matched by allowed_models. Use [\"*\"] to block all; empty array blocks none. An entry starting with regex: is an RE2 pattern matched case-insensitively against the whole model name.",
           "items": {
             "type": "string"
           }
@@ -4305,7 +4312,7 @@
         "default_request_timeout_in_seconds": {
           "type": "integer",
           "minimum": 1,
-          "description": "Default request timeout in seconds"
+          "description": "Default request timeout in seconds. For streaming requests this bounds the connection, the request write and the wait for response headers; once headers arrive, stream_idle_timeout_in_seconds governs the body."
         },
         "max_retries": {
           "type": "integer",
@@ -4386,7 +4393,7 @@
         "default_request_timeout_in_seconds": {
           "type": "integer",
           "minimum": 1,
-          "description": "Default request timeout in seconds"
+          "description": "Default request timeout in seconds. For streaming requests this bounds the connection, the request write and the wait for response headers; once headers arrive, stream_idle_timeout_in_seconds governs the body."
         },
         "max_retries": {
           "type": "integer",
@@ -4542,7 +4549,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Models this key can access. Use [\"*\"] to allow all models; empty array denies all (deny-by-default)."
+          "description": "Models this key can access. Use [\"*\"] to allow all models; empty array denies all (deny-by-default). An entry starting with regex: is an RE2 pattern matched case-insensitively against the whole model name."
         },
         "weight": {
           "type": "number",
@@ -4630,6 +4637,10 @@
                   "use_anthropic_endpoints": {
                     "type": "boolean",
                     "description": "Routes chat completions and responses requests through Anthropic-compatible endpoints."
+                  },
+                  "use_openai_endpoints": {
+                    "type": "boolean",
+                    "description": "Per-alias override of use_openai_endpoints."
                   }
                 },
                 "required": ["model_id"],
@@ -4761,6 +4772,10 @@
               },
               "required": ["region"],
               "additionalProperties": false
+            },
+            "use_openai_endpoints": {
+              "type": "boolean",
+              "description": "Routes chat completions and responses requests through Bedrock's OpenAI-compatible endpoints (/openai/v1) instead of Converse, for models that serve them. Converse is used for everything else. Bedrock Guardrails, performanceConfig and requestMetadata apply only on Converse: the OpenAI-compatible endpoints accept and ignore them."
             }
           }
         }
@@ -6730,6 +6745,25 @@
         "config": {
           "type": "object",
           "description": "Provider-specific configuration"
+        },
+        "trusted_networks": {
+          "type": "array",
+          "description": "Private IP/CIDR allowlist the SSRF guard consults before outbound discovery calls (the generic provider's discover-endpoints and discover-claims flows), so a self-hosted IdP on an internal network can be reached. Declaring this key makes config.json own the whole list: it replaces whatever is stored, and an explicit empty array clears dashboard-added entries. Omit the key to leave the stored allowlist untouched.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "cidr": {
+                "type": "string",
+                "description": "IP or CIDR range to trust, e.g. 10.20.0.0/16. A bare IP is treated as a single host (/32, or /128 for IPv6). Hostnames are not accepted, since DNS would then decide which requests bypass SSRF protection."
+              },
+              "description": {
+                "type": "string",
+                "description": "Optional admin-facing label for this range, e.g. On-prem Keycloak"
+              }
+            },
+            "required": ["cidr"],
+            "additionalProperties": false
+          }
         }
       },
       "required": ["enabled"],
@@ -7822,23 +7856,40 @@
             "$ref": "#/$defs/access_profile_provider_config"
           }
         },
+        "virtual_mcps": {
+          "type": "array",
+          "description": "Virtual MCPs this profile grants. Canonical key; supersedes the deprecated mcp_tool_groups alias, which is ignored when this key is present. An explicit empty array detaches every Virtual MCP from the profile.",
+          "items": {
+            "$ref": "#/$defs/access_profile_virtual_mcp"
+          }
+        },
+        "mcp_configs": {
+          "type": "array",
+          "description": "Per-MCP-client tool allowlists this profile grants. Canonical key; supersedes the deprecated mcp_servers and mcp_tool_overrides aliases, which are folded into this shape at load time.",
+          "items": {
+            "$ref": "#/$defs/access_profile_mcp_config"
+          }
+        },
         "mcp_tool_groups": {
           "type": "array",
-          "description": "MCP tool group associations",
+          "description": "DEPRECATED: use virtual_mcps instead. MCP tool group associations, folded into virtual_mcps at load time. Ignored when virtual_mcps is present.",
+          "deprecated": true,
           "items": {
             "$ref": "#/$defs/access_profile_mcp_tool_group"
           }
         },
         "mcp_servers": {
           "type": "array",
-          "description": "MCP server associations",
+          "description": "DEPRECATED: use mcp_configs instead. Blanket MCP server grants, folded into mcp_configs at load time as [\"*\"] allowlists. A client listed in mcp_configs keeps its explicit allowlist; naming one client here and in mcp_configs by different spellings (an id in one, its name in the other) is ambiguous and refused.",
+          "deprecated": true,
           "items": {
             "$ref": "#/$defs/access_profile_mcp_server"
           }
         },
         "mcp_tool_overrides": {
           "type": "array",
-          "description": "Per-tool include/exclude MCP overrides",
+          "description": "DEPRECATED: use mcp_configs instead. Per-tool include/exclude overrides, folded into mcp_configs allowlists at load time. The new model has no exclude concept, so an exclude only narrows the tools that can be enumerated.",
+          "deprecated": true,
           "items": {
             "$ref": "#/$defs/access_profile_mcp_tool_override"
           }
@@ -8038,15 +8089,19 @@
     },
     "project_virtual_mcp": {
       "type": "object",
-      "description": "A virtual MCP assigned to a project. Assignments are a set, so a repeated id is ignored rather than doubled.",
+      "description": "A Virtual MCP assigned to a project. Assignments are a set, so a repeat collapses rather than doubling.",
       "properties": {
+        "virtual_mcp_name": {
+          "type": "string",
+          "description": "Name of the Virtual MCP (as declared under mcp.virtual_mcps) the project is assigned. Resolved to the stored Virtual MCP on startup; a name that matches no Virtual MCP is refused."
+        },
         "virtual_mcp_id": {
           "type": "integer",
           "minimum": 1,
-          "description": "Virtual MCP ID. Ids are assigned by the database, so a file that has to be portable across environments should assign virtual MCPs from the dashboard or the API instead."
+          "description": "Virtual MCP ID, as an alternative to virtual_mcp_name. Wins when both are set. Ids are assigned by the database, so prefer the name in a file that has to be portable across environments."
         }
       },
-      "required": ["virtual_mcp_id"],
+      "anyOf": [{ "required": ["virtual_mcp_name"] }, { "required": ["virtual_mcp_id"] }],
       "additionalProperties": false
     },
     "project_budget": {
@@ -8235,13 +8290,51 @@
       "required": ["mcp_client_name"],
       "additionalProperties": false
     },
+    "access_profile_virtual_mcp": {
+      "type": "object",
+      "description": "A Virtual MCP granted to an access profile. Assignments are a set, so a repeat collapses rather than doubling.",
+      "properties": {
+        "virtual_mcp_name": {
+          "type": "string",
+          "description": "Name of the Virtual MCP (as declared under mcp.virtual_mcps) the profile grants. Resolved to the stored Virtual MCP on startup; a name that matches no Virtual MCP is refused."
+        },
+        "virtual_mcp_id": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Virtual MCP ID, as an alternative to virtual_mcp_name. Wins when both are set. Ids are assigned by the database, so prefer the name in a file that has to be portable across environments."
+        }
+      },
+      "anyOf": [{ "required": ["virtual_mcp_name"] }, { "required": ["virtual_mcp_id"] }],
+      "additionalProperties": false
+    },
+    "access_profile_mcp_config": {
+      "type": "object",
+      "description": "The tools of one MCP client an access profile may execute.",
+      "properties": {
+        "mcp_client_id": {
+          "type": "string",
+          "description": "MCP client ID or name (names are resolved to client ids at startup)"
+        },
+        "tools_to_execute": {
+          "type": "array",
+          "description": "Tools the profile may execute. [\"*\"] means all tools (including future ones); [] means none; a named list means only those tools.",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["mcp_client_id"],
+      "additionalProperties": false
+    },
     "access_profile_mcp_tool_group": {
       "type": "object",
+      "description": "DEPRECATED: use access_profile_virtual_mcp (virtual_mcps) instead.",
+      "deprecated": true,
       "properties": {
         "tool_group_id": {
           "type": "integer",
           "minimum": 1,
-          "description": "MCP tool group ID"
+          "description": "MCP tool group ID (the Virtual MCP's ID; the column kept its old name across the rename)"
         }
       },
       "required": ["tool_group_id"],
@@ -8249,6 +8342,8 @@
     },
     "access_profile_mcp_server": {
       "type": "object",
+      "description": "DEPRECATED: use access_profile_mcp_config (mcp_configs) instead.",
+      "deprecated": true,
       "properties": {
         "mcp_server_id": {
           "type": "string",
@@ -8260,6 +8355,8 @@
     },
     "access_profile_mcp_tool_override": {
       "type": "object",
+      "description": "DEPRECATED: use access_profile_mcp_config (mcp_configs) instead.",
+      "deprecated": true,
       "properties": {
         "mcp_client_id": {
           "type": "string",
@@ -8646,6 +8743,10 @@
         "does_not_send_done_marker": {
           "type": "boolean",
           "description": "Whether the provider ends streams on finish_reason without sending a data: [DONE] marker"
+        },
+        "wait_for_usage": {
+          "type": "boolean",
+          "description": "With does_not_send_done_marker, keep reading past finish_reason so the trailing usage-only chunk is collected instead of dropped. Without it the request records zero tokens and zero cost. An upstream that then goes silent ends on network_config.stream_idle_timeout_in_seconds"
         },
         "base_provider_type": {
           "type": "string",

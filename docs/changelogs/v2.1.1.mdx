@@ -1,0 +1,109 @@
+---
+title: "v2.1.1"
+description: "v2.1.1 changelog - 2026-09-09"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v2.1.1
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v2.1.1
+    docker run -p 8080:8080 maximhq/bifrost:v2.1.1
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="2.1.1">
+## ✨ Features
+
+- **Claude Cowork Proxy Support** - `claude-cowork` user agents are identified as the Claude Cowork app in logs and dashboards, and text documents that Cowork sends as base64 data URLs (`text/*` and JSON media types) are decoded into Anthropic `text` document sources on both the chat and Responses paths instead of being forwarded as opaque base64 (#7012)
+- **Overhead Component Histogram** - New opt-in `bifrost_overhead_component_microseconds` histogram in the Prometheus and OTel exporters, split by `overhead_component`, enabled with `overhead_breakdown_enabled` on the telemetry and OTel plugin config (off by default, requires active tracing since it is computed from completed spans). The breakdown computation moves into a shared `framework/overhead` package, the Prometheus and OTel observability forms gain the toggle, and the UI latency breakdown renames the `scheduling` category to `miscellaneous` (#6980)
+- **Upstream-Authenticated Identity in MCP Server Auth** - When an upstream auth layer has already verified the bearer and stamped the user onto the request, the MCP server accepts that identity first instead of rejecting the foreign JWT on an unknown key ID. OAuth strict mode is excluded and still verifies every token itself (#7010)
+- **Standalone Virtual Key RBAC Operation** - New `CreateStandalone` RBAC operation on virtual keys decides whether a role may create keys outside access-profile governance; the VK sheet locks the governance fields and applies the access profile for roles without it (#7025)
+
+## 🐞 Fixed
+
+- **Bedrock Tool Result Documents** - Document blocks inside tool results are preserved when converting to Bedrock Converse instead of being dropped. Document materialization is centralized, and explicitly unsupported formats or required documents with neither inline data nor a fetchable URL are rejected up front (thanks [@michaeldunn9](https://github.com/michaeldunn9)!) (#5663)
+- **MCP JWT Identity per Token Mode** - MCP JWTs no longer record every mode as an MCP token credential on the grant: vk-mode tokens settle as the virtual key they name so governance applies that key's permit, user-mode tokens attribute the request to the user, and session-mode tokens record nothing so they are refused when authentication is enforced (#7011)
+- **Streaming First-Chunk Peek Ignored Context** - The wait for a stream's first chunk now observes the request context, so a cancelled request returns 499 and an expired deadline returns 504 immediately instead of pinning the provider worker until `stream_idle_timeout_in_seconds` elapsed. An already-buffered provider chunk still wins over a simultaneous cancellation, and the source is drained in the background so the provider's send and close complete cleanly (#6993)
+
+## 🔧 Maintenance
+
+- **Dependency Upgrades** - `google.golang.org/grpc` bumped to v1.83.2 across all Go modules; the CI newman tooling pins a patched `csv-parse` through a compat shim; Python integration test dependencies refreshed (#7019)
+
+## 🗄️ Database Migrations
+
+- No new database migrations in this release.
+
+## 🐙 Closed GitHub Issues
+
+- [#5661](https://github.com/maximhq/bifrost/issues/5661) - Anthropic document blocks are dropped from Bedrock tool results
+- [#6974](https://github.com/maximhq/bifrost/issues/6974) - Streaming first-chunk peek and drain wait ignore context, pinning workers for up to stream_idle_timeout
+
+</Update>
+<Update label="Core" description="1.8.6">
+[fix]: preserve documents in Bedrock tool results [@michaeldunn9](https://github.com/michaeldunn9)
+- feat: Claude Cowork proxy support: `claude-cowork` user agents resolve to the Claude Cowork app, and Anthropic text documents sent as base64 data URLs (`text/*`, JSON) are decoded into `text` document sources on the chat and Responses paths (#7012)
+- fix: `CheckFirstStreamChunkForError` observes the request context while waiting for the first chunk, returning 499 on cancel and 504 on deadline instead of blocking the worker until the stream idle timeout (#6993)
+
+</Update>
+<Update label="Framework" description="1.6.2">
+- feat: add `framework/overhead` package computing the per-component overhead breakdown from completed trace spans, extracted from the logging plugin so the telemetry and OTel exporters share it (#6980)
+- chore: bump google.golang.org/grpc to v1.83.2 (#7019)
+
+</Update>
+<Update label="compat" description="0.2.2">
+- chore: upgraded core to v1.8.6 and framework to v1.6.2
+
+</Update>
+<Update label="governance" description="1.7.2">
+- chore: add MCP gateway admission coverage for vk-mode, user-mode and session-mode JWT identities (#7011)
+- chore: upgraded core to v1.8.6 and framework to v1.6.2
+
+</Update>
+<Update label="jsonparser" description="1.6.2">
+- chore: upgraded core to v1.8.6
+
+</Update>
+<Update label="logging" description="1.7.2">
+- chore: overhead breakdown computation moved to the shared `framework/overhead` package (#6980)
+- chore: upgraded core to v1.8.6 and framework to v1.6.2
+
+</Update>
+<Update label="maxim" description="1.7.2">
+- chore: upgraded core to v1.8.6 and framework to v1.6.2
+
+</Update>
+<Update label="mocker" description="1.6.2">
+- chore: upgraded core to v1.8.6
+
+</Update>
+<Update label="modelcatalogresolver" description="1.1.2">
+- chore: upgraded core to v1.8.6 and framework to v1.6.2
+
+</Update>
+<Update label="otel" description="1.5.2">
+- feat: add opt-in `bifrost_overhead_component_microseconds` histogram behind `overhead_breakdown_enabled`, splitting overhead latency by the `overhead_component` attribute (#6980)
+- chore: upgraded core to v1.8.6 and framework to v1.6.2
+
+</Update>
+<Update label="prompts" description="1.1.2">
+- chore: upgraded core to v1.8.6 and framework to v1.6.2
+
+</Update>
+<Update label="routing" description="1.0.2">
+- chore: upgraded core to v1.8.6 and framework to v1.6.2
+
+</Update>
+<Update label="semanticcache" description="1.6.2">
+- chore: upgraded core to v1.8.6 and framework to v1.6.2
+
+</Update>
+<Update label="telemetry" description="1.6.2">
+- feat: add opt-in `bifrost_overhead_component_microseconds` histogram behind `overhead_breakdown_enabled`, splitting overhead latency by the `overhead_component` label (#6980)
+- chore: upgraded core to v1.8.6 and framework to v1.6.2
+
+</Update>

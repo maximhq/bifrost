@@ -325,6 +325,7 @@ The `allowed_models` field in provider configs controls which models can be used
     {
       "provider": "openai",
       "allowed_models": ["*"],
+      "key_ids": ["*"],
       "weight": 1.0
     }
   ]
@@ -373,11 +374,13 @@ curl -H "x-bf-vk: vk-123" -d '{"model": "claude-3-5-sonnet"}'
     {
       "provider": "openai",
       "allowed_models": ["gpt-4o", "gpt-4o-mini"], // Only these two
+      "key_ids": ["*"],
       "weight": 1.0
     },
     {
       "provider": "anthropic",
       "allowed_models": ["claude-3-5-sonnet-20241022"], // Specific version
+      "key_ids": ["*"],
       "weight": 1.0
     }
   ]
@@ -418,6 +421,7 @@ You can also use provider-prefixed model names in `allowed_models`. Bifrost will
     {
       "provider": "openrouter",
       "allowed_models": ["openai/gpt-4o", "anthropic/claude-3-5-sonnet"],
+      "key_ids": ["*"],
       "weight": 1.0
     }
   ]
@@ -612,11 +616,13 @@ This allows user-friendly model names in requests while supporting provider-spec
     {
       "provider": "openai",
       "allowed_models": ["gpt-4o"],
+      "key_ids": ["*"],
       "weight": 0.5
     },
     {
       "provider": "azure",
       "allowed_models": ["gpt-4o"],
+      "key_ids": ["*"],
       "weight": 0.5
     }
   ]
@@ -647,7 +653,8 @@ curl -H "x-bf-vk: vk-123" \
       "provider_configs": [
         {
           "provider": "openrouter",
-          "allowed_models": ["*"]
+          "allowed_models": ["*"],
+          "key_ids": ["*"]
         }
       ]
     }
@@ -669,11 +676,13 @@ curl -H "x-bf-vk: vk-123" \
         {
           "provider": "openai",
           "allowed_models": ["gpt-4o"],
+          "key_ids": ["*"],
           "weight": 0.01  // 1% direct to OpenAI
         },
         {
           "provider": "openrouter",
           "allowed_models": ["openai/gpt-4o"],  // Provider-prefixed
+          "key_ids": ["*"],
           "weight": 0.99  // 99% via OpenRouter
         }
       ]
@@ -697,7 +706,8 @@ curl -H "x-bf-vk: vk-123" \
       "provider_configs": [
         {
           "provider": "vertex",
-          "allowed_models": ["claude-3-5-sonnet", "gemini-1.5-pro"]
+          "allowed_models": ["claude-3-5-sonnet", "gemini-1.5-pro"],
+          "key_ids": ["*"]
         }
       ]
     }
@@ -717,7 +727,8 @@ curl -H "x-bf-vk: vk-123" \
       "provider_configs": [
         {
           "provider": "groq",
-          "allowed_models": ["gpt-3.5-turbo"]
+          "allowed_models": ["gpt-3.5-turbo"],
+          "key_ids": ["*"]
         }
       ]
     }
@@ -749,6 +760,7 @@ When a Virtual Key has `provider_configs`, governance uses the model catalog for
     {
       "provider": "openai",
       "allowed_models": ["*"],
+      "key_ids": ["*"],
       "weight": 0.5
     }
   ]
@@ -914,15 +926,19 @@ When a Virtual Key has `provider_configs` defined:
     {
       "provider": "openai",
       "allowed_models": ["gpt-4o", "gpt-4o-mini"],
+      "key_ids": ["*"],
       "weight": 0.3,
-      "budget": {
-        "max_limit": 100.0,
-        "current_usage": 45.0
-      }
+      "budgets": [
+        {
+          "max_limit": 100.0,
+          "reset_duration": "1M"
+        }
+      ]
     },
     {
       "provider": "azure",
       "allowed_models": ["gpt-4o"],
+      "key_ids": ["*"],
       "weight": 0.7,
       "rate_limit": {
         "token_max_limit": 100000,
@@ -1013,8 +1029,8 @@ When a Virtual Key has `provider_configs` defined:
     ```json
     {
       "provider_configs": [
-        {"provider": "azure", "allowed_models": ["gpt-4o"]},
-        {"provider": "bedrock", "allowed_models": ["claude-3-sonnet-20240229"]}
+        {"provider": "azure", "allowed_models": ["gpt-4o"], "key_ids": ["*"]},
+        {"provider": "bedrock", "allowed_models": ["claude-3-sonnet-20240229"], "key_ids": ["*"]}
       ]
     }
     ```
@@ -1027,6 +1043,8 @@ When a Virtual Key has `provider_configs` defined:
 **`allowed_models: []` (empty array)**: Denies **all** models - no requests will be served for this provider config. This is deny-by-default behavior introduced in v1.5.0.
 
 **Empty `provider_configs`**: When `provider_configs` is empty (no providers configured), **all providers are blocked** (deny-by-default). You must explicitly add provider configurations to allow traffic through a Virtual Key.
+
+**`key_ids: ["*"]`**: Allows every configured API key for that provider. An empty or omitted `key_ids` blocks all provider keys, so every runnable provider-config example above opts in explicitly.
 
 </Note>
 

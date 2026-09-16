@@ -31,10 +31,20 @@ export OPENAI_API_KEY=<bifrost_virtual_key>
 ```
 
 ```toml
-openai_base_url="http://localhost:8080/openai/v1"
-env_key="OPENAI_API_KEY"
 model = "openai/gpt-5.4"
+model_provider = "bifrost"
+
+[model_providers.bifrost]
+name = "Bifrost"
+base_url = "http://localhost:8080/openai/v1"
+env_key = "OPENAI_API_KEY"
+wire_api = "responses"
+supports_websockets = false
 ```
+
+<Warning>
+Use a named `model_providers` entry rather than `openai_base_url`. With `openai_base_url`, Codex keeps its built-in OpenAI provider and sends its client-side `web` namespace tool (standalone web search), which Amazon Bedrock rejects with `User-defined namespace 'web' collides with an existing tool namespace`. With a named provider, Codex sends the hosted `web_search` tool instead, which Bedrock Mantle supports.
+</Warning>
 
 Always run `codex` from the same terminal session where you exported variables, or restart the terminal after changing your profile. GUI-launched terminals or IDEs may not pick up shell-profile exports unless the environment is configured there as well.
 

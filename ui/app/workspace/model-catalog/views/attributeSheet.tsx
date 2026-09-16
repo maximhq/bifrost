@@ -15,7 +15,7 @@ import {
 	useUpsertModelCatalogEntriesMutation,
 } from "@/lib/store";
 import { KnownProvider } from "@/lib/types/config";
-import { PricingOverrideScopeKind } from "@/lib/types/governance";
+import { PeakHoursSchedule, PricingOverrideScopeKind } from "@/lib/types/governance";
 import { formatCharacterPriceFull, formatTokenPriceFull } from "@/lib/utils/numbers";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
@@ -84,11 +84,45 @@ function getPricingSourceUrl(configuredUrl: string | undefined, modelName: strin
 	return url.toString();
 }
 
+const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+// formatPeakHours renders a peak-hours schedule as a compact one-liner, e.g.
+// "Mon-Fri 01:00-04:00, 06:00-10:00 UTC".
+// The patch arrives as parsed API JSON, so the TypeScript type is a claim
+// rather than a guarantee. A non-array `windows`, or a null entry inside it,
+// would throw here and take the whole sheet's render down with it, so every
+// level is checked before it is walked.
+function formatPeakHours(value: PeakHoursSchedule): string {
+	const windows = Array.isArray(value.windows) ? value.windows : [];
+	if (windows.length === 0) return "—";
+	const tz = typeof value.timezone === "string" && value.timezone ? value.timezone : "UTC";
+	const rendered = windows
+		.map((w) => {
+			if (!w || typeof w !== "object") return null;
+			const days = (Array.isArray(w.days) ? w.days : [])
+				.filter((d) => typeof d === "number" && d >= 0 && d <= 6)
+				.map((d) => WEEKDAY_LABELS[d])
+				.join(",");
+			const start = typeof w.start === "string" ? w.start : "?";
+			const end = typeof w.end === "string" ? w.end : "?";
+			return days ? `${days} ${start}-${end}` : `${start}-${end}`;
+		})
+		.filter((w): w is string => w !== null);
+	if (rendered.length === 0) return "—";
+	return `${rendered.join("; ")} ${tz}`;
+}
+
 // formatPatchValue renders a patch value in its field's own unit: the way the
 // pricing table does for token-priced fields, as a bare multiplier for the geo
-// multiplier, and as a plain dollar amount for everything else (per-image,
-// per-second, per-page, …).
-function formatPatchValue(key: string, value: number): string {
+// and off-peak multipliers, and as a plain dollar amount for everything else
+// (per-image, per-second, per-page, …). Non-numeric patch fields — currently
+// only the peak_hours schedule object — get their own rendering; falling
+// through to the dollar branch would print "$[object Object]".
+function formatPatchValue(key: string, value: unknown): string {
+	if (key === "peak_hours" && typeof value === "object" && value !== null) {
+		return formatPeakHours(value as PeakHoursSchedule);
+	}
+	if (typeof value !== "number") return String(value);
 	switch (pricingFieldUnit(key)) {
 		case "token":
 			return formatTokenPriceFull(value);
@@ -341,7 +375,7 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 														{patchEntries.map(([key, value]) => (
 															<div key={key} className="flex items-baseline justify-between gap-3 text-xs">
 																<span className="text-muted-foreground">{fieldLabelByKey[key as PricingFieldKey] || key}</span>
-																<span className="font-mono">{formatPatchValue(key, value as number)}</span>
+																<span className="font-mono">{formatPatchValue(key, value)}</span>
 															</div>
 														))}
 													</div>

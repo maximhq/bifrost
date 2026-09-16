@@ -288,6 +288,7 @@ func buildRealtimeTurnPostResponse(
 	rawResponse []byte,
 	contentOverride string,
 	latency int64,
+	transcriptionSession bool,
 ) *schemas.BifrostResponse {
 	output := buildRealtimeTurnOutputMessages(rtProvider, rawResponse, contentOverride)
 	resp := &schemas.BifrostResponsesResponse{
@@ -300,6 +301,9 @@ func buildRealtimeTurnPostResponse(
 			OriginalModelRequested: model,
 			Latency:                latency,
 		},
+	}
+	if transcriptionSession {
+		resp.ExtraFields.PricingRequestType = schemas.TranscriptionRequest
 	}
 	if usage := extractRealtimeTurnUsage(rtProvider, rawResponse); usage != nil {
 		resp.Usage = buildRealtimeResponsesUsage(usage)
@@ -491,6 +495,7 @@ func buildRealtimeResponsesUsage(usage *schemas.BifrostLLMUsage) *schemas.Respon
 		InputTokens:  usage.PromptTokens,
 		OutputTokens: usage.CompletionTokens,
 		TotalTokens:  usage.TotalTokens,
+		AudioSeconds: usage.AudioSeconds,
 	}
 	if usage.PromptTokensDetails != nil {
 		result.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
@@ -711,6 +716,8 @@ func finalizeRealtimeTurnHooks(
 	key *schemas.Key,
 	rawResponse []byte,
 	contentOverride string,
+	terminalEventType schemas.RealtimeEventType,
+	transcriptionSession bool,
 ) *schemas.BifrostError {
 	if client == nil || session == nil {
 		return nil
@@ -733,8 +740,9 @@ func finalizeRealtimeTurnHooks(
 			rawResponse,
 			contentOverride,
 			time.Since(activeHooks.StartedAt).Milliseconds(),
+			transcriptionSession,
 		)
-		postCtx := newRealtimeTurnContext(baseCtx, activeHooks.RequestID, session.ID(), session.ProviderSessionID(), realtimeTurnSourceLM, rtProvider.RealtimeTurnFinalEvent(), key)
+		postCtx := newRealtimeTurnContext(baseCtx, activeHooks.RequestID, session.ID(), session.ProviderSessionID(), realtimeTurnSourceLM, terminalEventType, key)
 		applyRealtimeTurnContextValues(postCtx, activeHooks.PreHookValues)
 		restoreRealtimeTurnTraceContext(postCtx, activeHooks.TraceID, activeHooks.PreHookValues)
 		applyRealtimeRawStorageContext(postCtx, activeHooks.RawStore)
@@ -769,8 +777,9 @@ func finalizeRealtimeTurnHooks(
 		rawResponse,
 		contentOverride,
 		time.Since(startedAt).Milliseconds(),
+		transcriptionSession,
 	)
-	postCtx := newRealtimeTurnContext(baseCtx, requestID, session.ID(), session.ProviderSessionID(), realtimeTurnSourceLM, rtProvider.RealtimeTurnFinalEvent(), key)
+	postCtx := newRealtimeTurnContext(baseCtx, requestID, session.ID(), session.ProviderSessionID(), realtimeTurnSourceLM, terminalEventType, key)
 	applyRealtimeTurnContextValues(postCtx, preHookValues)
 	restoreRealtimeTurnTraceContext(postCtx, traceID, preHookValues)
 	applyRealtimeRawStorageContext(postCtx, storeRaw)

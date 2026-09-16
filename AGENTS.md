@@ -559,6 +559,10 @@ Only `framework/vectorstore` needs any of this. Every other framework package pa
 
 Before writing a fix, add (or extend) a test that reproduces the bug and confirm it fails for the expected reason — a wrong assertion, not a compile error or an unrelated panic. Only then implement the fix, and confirm the same test now passes. For bugs reachable through `make run-provider-harness-test`, add the harness regression case (see `.claude/skills/harness-test-writer/SKILL.md`) alongside Go-level tests: Go tests give a fast, free red/green loop while coding; the harness case is the live end-to-end pin, expected red pre-fix and green post-fix, validated structurally (`augment-provider-harness.mjs` / `filter-collection.mjs`) without needing a live paid run during development.
 
+### Add tests to existing test files, never new ones
+
+Do not create a new `_test.go` file for a package that already has one. Put the test in the existing file that covers the same code: `<name>_test.go` next to `<name>.go`, or the topical file that already exists (`chat_test.go`, `counttokens_test.go`). One test file per bug or feature scatters a package's tests across many small files and makes it hard to find what already covers a source file. Create a new test file only for a source file that has no test file yet, and name it after that source file.
+
 ### Every `core/` change ships with a provider-harness case
 
 Any change under `core/` that a client can observe on the wire must land together with a case in `tests/e2e/api/collections/provider-harness.json` (see `.claude/skills/harness-test-writer/SKILL.md`). This covers new features and refactors, not only bug fixes — the rule in the previous section is the narrower instance of this one.
@@ -575,6 +579,45 @@ node tests/e2e/api/runners/filter-collection.mjs --source tmp/harness-augmented.
 Insert into the collection surgically (a script that splices the new object in, never a whole-file reserialize) — the file is ~50k lines and a reformat buries the actual change.
 
 The narrow exemptions: changes with no wire-visible effect (comments, internal renames, log lines) and behaviour no HTTP request can reach. If a change is exempt, say so explicitly in the PR rather than leaving the omission unexplained.
+
+### Every non-exempt wire-visible fix ends with unit tests, then a harness command handed to the user
+
+Unit tests and `make test-core` are the finish line for the agent. Run the Go-level red/green loop and the regression reruns, and report what passed and what failed.
+
+The live provider harness is the user's to run, not the agent's. Do not launch it. Instead, end the report with both final commands in a plain code block, ready to paste: the `make dev` line that starts Bifrost from the code under test, and the single-line `make run-provider-harness-test` line that runs against it. No box drawing around them, since border characters make the commands impossible to select. Naming the scope is the agent's job; spending the money is the user's call.
+
+**RUN THE PROVIDER HARNESS.** Unit tests are green. The live run is yours to trigger.
+
+```bash
+# 1. port 8080 must be free
+lsof -nP -iTCP:8080 -sTCP:LISTEN
+
+# 2. start Bifrost from the code under test, then wait for /health
+make dev APP_DIR=$(pwd)/tests/integrations/python
+
+# 3. run the harness against that server
+make run-provider-harness-test PROVIDER=<provider> FEATURE="<keyword>"
+```
+
+Do not pass `APP_DIR` or `CI=1` to `run-provider-harness-test`. `APP_DIR` already defaults to `tests/integrations/python` (Makefile:2255), the same profile `make dev` is pointed at, and `CI=1` suppresses the interactive HTML viewer that makes a live run readable. `make dev` is the one that needs `APP_DIR` spelled out, because it is what decides which code and config the server runs.
+
+Never print that block with a placeholder still in it. `<provider>` and `<keyword>` belong to the template; substitute the real values for the change so every line pastes straight into a shell.
+
+The exemptions are the ones in the previous section: a change with no wire-visible effect (comments, internal renames, log lines, test-only or guidance-only edits) or behaviour no HTTP request can reach is exempt. For an exempt change, say so explicitly instead of printing the block.
+
+```bash
+# Scoped to the change (preferred): the provider and a keyword from the affected cases
+make run-provider-harness-test PROVIDER=<provider> FEATURE="<keyword>"
+
+# Curated ~100-request smoke set across all providers, when the change is cross-cutting
+make run-provider-harness-test SMOKE=1
+```
+
+The profile is the shared provider config at `tests/integrations/python/config.json` that every live check uses. Pass it to `make dev` as `APP_DIR=$(pwd)/tests/integrations/python` so a stale server or another config never answers for the code under test; the harness target already defaults to it and does not need it repeated.
+
+`HARNESS_MAX_REQUESTS=<n>` is an optional enforced spend bound: the recipe checks every newman launch against its exact filtered request count before it starts and refuses any launch that would cross the cap (exit 3), so the live total never exceeds the approved number. Add it when a run is broad enough that the cost is worth capping; a `PROVIDER=` + `FEATURE=` scoped run is usually small enough not to need it. The preflight count from `filter-collection.mjs` is only an estimate because shared producers repeat per provider fork. Stream-cancellation probes are never sent under a cap.
+
+Port 8080 is a blocking precondition worth restating in the block: the recipe reuses any server whose `/health` answers and never starts the `APP_DIR` one, so a stale listener silently tests old code. `lsof -nP -iTCP:8080 -sTCP:LISTEN` must come back empty, or show only a Bifrost started from the code under test. Starting it first with `make dev APP_DIR=$(pwd)/tests/integrations/python` and waiting for `/health` is the reliable pattern, since a cold start can outlast the recipe's 60s health wait.
 
 ### Always prefer `make test-core` over raw `go test` for provider-level tests
 
