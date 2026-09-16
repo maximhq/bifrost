@@ -16,6 +16,7 @@ config:
           enum: ["true", "false"]
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -42,6 +43,7 @@ config:
             $ref: '../../schemas/management/config.yaml#/UpdateConfigRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Configuration updated successfully
@@ -58,11 +60,13 @@ version:
   get:
     operationId: getVersion
     summary: Get version
-    description: Returns the current Bifrost version information.
+    description: |
+      Returns the current Bifrost version information.
+      Unauthenticated by design - `/api/version` is in the auth middleware's system whitelist.
     tags:
       - Configuration
-    security:
-      - ManagementBearerAuth: []
+    # Public: system-whitelisted in AuthMiddleware.APIMiddleware().
+    security: []
     responses:
       '200':
         description: Successful response
@@ -80,6 +84,7 @@ proxy-config:
       - Configuration
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -110,6 +115,7 @@ proxy-config:
             $ref: '../../schemas/management/config.yaml#/ProxyConfig'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Proxy configuration updated successfully
@@ -131,6 +137,7 @@ force-sync-pricing:
       - Configuration
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Pricing sync triggered successfully

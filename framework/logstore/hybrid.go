@@ -1028,6 +1028,12 @@ func (h *HybridLogStore) GetDistinctRoutingEngines(ctx context.Context, limit in
 	return h.inner.GetDistinctRoutingEngines(ctx, limit, query)
 }
 
+// GetDistinctToolCallNames delegates to the inner store. tool_call_names is
+// not a payload field, so the inner row carries it even when content is offloaded.
+func (h *HybridLogStore) GetDistinctToolCallNames(ctx context.Context, limit int, query string) ([]string, error) {
+	return h.inner.GetDistinctToolCallNames(ctx, limit, query)
+}
+
 // GetDistinctStopReasons delegates to the inner store and returns distinct
 // stop-reason values matching query, capped at limit.
 func (h *HybridLogStore) GetDistinctStopReasons(ctx context.Context, limit int, query string) ([]string, error) {

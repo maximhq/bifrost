@@ -669,6 +669,41 @@ func reconcileBudgetRequestsForTest(existing []configstoreTables.TableBudget, re
 	return reconciled, nil
 }
 
+func TestTeamBudgetFrequencyChangePreservesUsageWhenRequested(t *testing.T) {
+	originalLastReset := time.Now().Add(-2 * time.Hour)
+	reconciled, err := reconcileBudgetRequestsForTest(
+		[]configstoreTables.TableBudget{
+			{
+				ID:            "team-budget-1",
+				MaxLimit:      100,
+				ResetDuration: "1M",
+				CurrentUsage:  100,
+				LastReset:     originalLastReset,
+			},
+		},
+		[]CreateBudgetRequest{
+			{
+				ID:            "team-budget-1",
+				MaxLimit:      150,
+				ResetDuration: "1d",
+			},
+		},
+		false,
+	)
+	if err != nil {
+		t.Fatalf("expected reconcile to succeed: %v", err)
+	}
+	if len(reconciled) != 1 {
+		t.Fatalf("expected one budget, got %d", len(reconciled))
+	}
+	if reconciled[0].ID != "team-budget-1" || reconciled[0].ResetDuration != "1d" || reconciled[0].MaxLimit != 150 {
+		t.Fatalf("expected same team budget to be updated, got %#v", reconciled[0])
+	}
+	if reconciled[0].CurrentUsage != 100 || !reconciled[0].LastReset.Equal(originalLastReset) {
+		t.Fatalf("expected team usage and last reset to be preserved, got %#v", reconciled[0])
+	}
+}
+
 func TestVirtualKeyBudgetFrequencyChangePreservesUsageWhenRequested(t *testing.T) {
 	originalLastReset := time.Now().Add(-2 * time.Hour)
 	reconciled, err := reconcileBudgetRequestsForTest(

@@ -114,9 +114,9 @@ export default function EmbeddingConfigSheet({
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
 			<SheetContent className="flex flex-col p-0" data-testid="complexity-router-embedding-sheet">
-				<SheetHeader className="flex flex-col items-start gap-1 px-6 py-4" headerClassName="bg-card z-10 mb-0 border-b">
+				<SheetHeader className="flex flex-col items-start gap-1 py-4" headerClassName="bg-card z-10 mb-0 border-b px-4 md:px-6">
 					<SheetTitle>Embedding configuration</SheetTitle>
-					<SheetDescription className="text-xs">
+					<SheetDescription>
 						The model that embeds requests and reference phrases. API keys are inherited from the provider&apos;s main configuration.
 					</SheetDescription>
 				</SheetHeader>

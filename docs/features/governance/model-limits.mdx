@@ -16,7 +16,7 @@ They are the unified control plane for all model-level governance in Bifrost:
 - **Per-model limits** — enforce fine-grained caps on individual models for any of the above scopes
 
 <Note>
-The `user` scope is available in Bifrost Enterprise. Support for **customer** and **team** scopes is coming soon.
+The `access_profile` scope is available in Bifrost Enterprise. Support for **customer** and **team** scopes is coming soon.
 </Note>
 
 ---
@@ -25,11 +25,11 @@ The `user` scope is available in Bifrost Enterprise. Support for **customer** an
 
 Every model limit has a **scope** that determines the audience it applies to.
 
-| Scope | Who it applies to | Scope Target required? |
-|-------|-------------------|----------------------|
-| `global` | All traffic through Bifrost | No |
-| `virtual_key` | All requests made with a specific virtual key | Yes — the virtual key ID |
-| `user` | All requests made by a specific user (Enterprise only) | Yes — the user ID |
+| Scope | Who it applies to | Scope Target required? | Created how? |
+|-------|-------------------|----------------------|--------------|
+| `global` | All traffic through Bifrost | No | By you |
+| `virtual_key` | All requests made with a specific virtual key | Yes — the virtual key ID | By you |
+| `user` | All requests made by a specific user (Enterprise only) | Yes — the user | Created for you when a profile sets a per-model budget |
 
 **Scope + model name combinations:**
 
@@ -40,7 +40,6 @@ Every model limit has a **scope** that determines the audience it applies to.
 | `*` (All Models) | `anthropic` | `virtual_key` | That VK's Anthropic-only budget |
 | `gpt-4o` | `openai` | `global` | Hard cap on gpt-4o usage across all traffic |
 | `claude-3-5-sonnet-20241022` | _(none)_ | `virtual_key` | Per-VK cap on a specific model |
-
 ---
 
 ## Configuration
@@ -55,7 +54,7 @@ Navigate to **Budget & Limits → Model Limits** in the Bifrost dashboard.
 The table shows all configured model limits with their current usage. Use the toolbar to find what you need:
 
 - **Search** — filter by model name
-- **Scope** dropdown — show only `global` or `virtual_key` limits
+- **Scope** dropdown — narrow to `Global`, `Virtual Key`, or `User`. `User` covers both limits set on a user directly and those that came from their access profile.
 - **Provider** dropdown — show only limits for a specific provider
 
 The **Scope Target** column links directly back to the parent entity (e.g. clicking a virtual key badge takes you to that VK).
@@ -68,7 +67,7 @@ Click **Add Model Limit** to open the configuration sheet.
 
 1. **Provider** — select a specific provider or leave as _All Providers_
 2. **Model Name** — search and select a model, or pick _All Models_ to cover every model for the chosen provider/scope
-3. **Scope** — choose `Global` or `Virtual Key`
+3. **Scope** — choose `Global` or `Virtual Key` or `User`
 4. **Scope Target** — appears when scope is `Virtual Key`; select the target virtual key
 5. **Budget** — add one or more budget lines, each with a dollar cap and reset duration. Multiple budgets per limit are supported (e.g. `$50/day` + `$500/month`).
 6. **Rate Limits** — optionally set token and/or request limits with their own reset durations
@@ -105,7 +104,7 @@ curl "http://localhost:8080/api/governance/model-configs?scope=virtual_key&provi
 | `limit` | integer | Page size |
 | `offset` | integer | Page offset |
 | `search` | string | Filter by model name (case-insensitive) |
-| `scope` | string | Filter by scope (`global`, `virtual_key`) |
+| `scope` | string | Filter by scope. Accepts a comma-separated list, so `user,access_profile` returns both the limits set on a user directly and those that came from their access profiles — which is what the dashboard's `User` filter sends. Unknown values are ignored. |
 | `provider` | string | Filter by provider name |
 | `from_memory` | boolean | Read from in-memory cache (faster, may lag DB by one poll cycle) |
 
@@ -140,6 +139,23 @@ curl "http://localhost:8080/api/governance/model-configs?scope=virtual_key&provi
 }
 ```
 
+A limit Bifrost created from an access profile, rather than one you wrote yourself, also carries
+read-only `source_*` fields naming the profile it came from:
+
+```json
+{
+  "id": "mc_def456",
+  "model_name": "claude-opus-4-8",
+  "provider": "anthropic",
+  "scope": "access_profile",
+  "scope_id": "uap_789",
+  "scope_name": "alice@example.com",
+  "source_type": "access_profile",
+  "source_id": "12",
+  "source_name": "Engineering"
+}
+```
+
 ### Create a model limit
 
 ```bash
@@ -166,7 +182,7 @@ curl -X POST "http://localhost:8080/api/governance/model-configs" \
 |-------|------|----------|-------------|
 | `model_name` | string | Yes | Model name, or `*` for all models |
 | `provider` | string | No | Provider name; omit to cover all providers |
-| `scope` | string | No | `global` (default) or `virtual_key` |
+| `scope` | string | No | `global` (default) or `virtual_key`. `user` returns `403` (retired); `access_profile` is system-generated and cannot be created here. |
 | `scope_id` | string | Conditional | Required when `scope` is not `global` |
 | `budgets` | array | No | One or more budget lines (each needs `max_limit` + `reset_duration`) |
 | `rate_limit` | object | No | Token and/or request rate limits |
@@ -255,7 +271,7 @@ Model limits are declared under `governance.model_configs`. Each entry reference
 | `id` | string | Yes | Unique identifier |
 | `model_name` | string | Yes | Model name, or `*` for all models |
 | `provider` | string | No | Provider name; omit to apply to all providers |
-| `scope` | string | No | `global` (default) or `virtual_key` |
+| `scope` | string | No | `global` (default) or `virtual_key`. Declaring `user` or `access_profile` here is not supported — per-user model limits come from an access profile. |
 | `scope_id` | string | Conditional | Required when `scope` is not `global` |
 | `budget_ids` | string[] | No | List of `governance.budgets` IDs to attach. Supports multiple budgets (e.g. daily + monthly). Replaces `budget_id`. |
 | `budget_id` | string | No | Deprecated — single budget reference. Use `budget_ids` instead. |

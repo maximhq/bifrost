@@ -50,8 +50,9 @@ type SearchFilters struct {
 	Models               []string          `json:"models,omitempty"`
 	Aliases              []string          `json:"aliases,omitempty"`
 	Status               []string          `json:"status,omitempty"`
-	StopReasons          []string          `json:"stop_reasons,omitempty"` // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
-	Objects              []string          `json:"objects,omitempty"`      // For filtering by request type (chat.completion, text.completion, embedding)
+	StopReasons          []string          `json:"stop_reasons,omitempty"`    // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
+	ToolCallNames        []string          `json:"tool_call_names,omitempty"` // Requests whose response called ANY of these function names (matched against the tool_call_names column)
+	Objects              []string          `json:"objects,omitempty"`         // For filtering by request type (chat.completion, text.completion, embedding)
 	ParentRequestID      string            `json:"parent_request_id,omitempty"`
 	RequestID            string            `json:"request_id,omitempty"` // Exact match on the log primary key, which is the request ID. Time-range filters are skipped for it so a unique ID is never hidden by the selected window.
 	RootsOnly            bool              `json:"roots_only,omitempty"` // Hide rows whose parent_request_id points at another row matching these same filters, so each chain lists as its root request only. Ignored when ParentRequestID is set.
@@ -209,6 +210,7 @@ type Log struct {
 	VirtualKeyID            *string   `gorm:"type:varchar(255);index:idx_logs_virtual_key_id" json:"virtual_key_id"`
 	VirtualKeyName          *string   `gorm:"type:varchar(255)" json:"virtual_key_name"`
 	RoutingEnginesUsedStr   *string   `gorm:"type:varchar(255);column:routing_engines_used" json:"-"` // Comma-separated routing engines
+	ToolCallNamesStr        *string   `gorm:"type:text;column:tool_call_names" json:"-"`              // Comma-separated distinct function names the response called. Not a payload field, so it stays on the row in hybrid mode and is filterable. Names are recorded regardless of content logging; arguments live in tool_calls and follow content policy.
 	RoutingRuleID           *string   `gorm:"type:varchar(255);index:idx_logs_routing_rule_id" json:"routing_rule_id"`
 	RoutingRuleName         *string   `gorm:"type:varchar(255)" json:"routing_rule_name"`
 	ComplexityTier          *string   `gorm:"type:varchar(50);index:idx_logs_complexity_tier,where:complexity_tier IS NOT NULL" json:"complexity_tier,omitempty"`                // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); NULL when no routing rule demanded complexity. Partial index, matching its performanceIndexes entry
@@ -356,6 +358,7 @@ type Log struct {
 
 	// Virtual fields for JSON output - these will be populated when needed
 	RoutingEnginesUsed          []string                                `gorm:"-" json:"routing_engines_used,omitempty"` // Virtual field deserialized from JSON
+	ToolCallNames               []string                                `gorm:"-" json:"tool_call_names,omitempty"`      // Virtual field split from ToolCallNamesStr
 	InputHistoryParsed          []schemas.ChatMessage                   `gorm:"-" json:"input_history,omitempty"`
 	ResponsesInputHistoryParsed []schemas.ResponsesMessage              `gorm:"-" json:"responses_input_history,omitempty"`
 	OutputMessageParsed         *schemas.ChatMessage                    `gorm:"-" json:"output_message,omitempty"`
@@ -467,6 +470,43 @@ func (l *Log) AfterFind(tx *gorm.DB) error {
 	return l.DeserializeFields()
 }
 
+// maxToolCallNamesBytes caps the serialized tool_call_names column. Whole names
+// past the cap are dropped; a name is never split.
+const maxToolCallNamesBytes = 2048
+
+// joinToolCallNames joins distinct, non-empty names with commas, keeping
+// first-seen order and stopping before the joined string would exceed
+// maxToolCallNamesBytes.
+func joinToolCallNames(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	seen := make(map[string]struct{}, len(names))
+	var b strings.Builder
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" || strings.Contains(name, ",") {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		extra := len(name)
+		if b.Len() > 0 {
+			extra++
+		}
+		if b.Len()+extra > maxToolCallNamesBytes {
+			break
+		}
+		seen[name] = struct{}{}
+		if b.Len() > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(name)
+	}
+	return b.String()
+}
+
 // SerializeFields converts Go structs to JSON strings for storage
 func (l *Log) SerializeFields() error {
 	// Serialize routing engines to comma-separated string
@@ -475,6 +515,14 @@ func (l *Log) SerializeFields() error {
 		l.RoutingEnginesUsedStr = &engineStr
 	} else {
 		l.RoutingEnginesUsedStr = nil
+	}
+
+	// Serialize tool call names to a comma-separated string, capped so an
+	// agentic response with hundreds of distinct tools cannot bloat the row.
+	if joined := joinToolCallNames(l.ToolCallNames); joined != "" {
+		l.ToolCallNamesStr = &joined
+	} else {
+		l.ToolCallNamesStr = nil
 	}
 
 	if l.InputHistoryParsed != nil {
@@ -1194,6 +1242,12 @@ func (l *Log) DeserializeFields() error {
 		l.RoutingEnginesUsed = []string{}
 	}
 
+	if l.ToolCallNamesStr != nil && *l.ToolCallNamesStr != "" {
+		l.ToolCallNames = strings.Split(*l.ToolCallNamesStr, ",")
+	} else {
+		l.ToolCallNames = nil
+	}
+
 	// Hybrid log store offloads token_usage to object storage but keeps denormalized
 	// prompt/completion/total/cached columns in the DB for analytics. Rebuild the virtual
 	// field so list APIs and the UI can render tokens without hydrating from S3 —
@@ -1300,6 +1354,28 @@ func costsReconcile(a, b float64) bool {
 // MCPToolLog represents a log entry for MCP tool executions
 // This is separate from the main Log table since MCP tool calls have different fields
 type MCPToolLog struct {
+	// Governance names are snapshots recorded beside their IDs at ingestion, the
+	// way the logs table records them. They are what the entity was called when
+	// the call was made, so a later rename or deletion leaves the row readable.
+	UserName         *string `gorm:"type:varchar(255)" json:"user_name,omitempty"`
+	TeamName         *string `gorm:"type:varchar(255)" json:"team_name,omitempty"`
+	CustomerName     *string `gorm:"type:varchar(255)" json:"customer_name,omitempty"`
+	BusinessUnitName *string `gorm:"type:varchar(255)" json:"business_unit_name,omitempty"`
+
+	// Multi-valued attribution, mirroring the logs table. Each names column is
+	// index-aligned with its ids column — names[i] names ids[i] — which is what
+	// lets a reader filter the two together; they are always written as a pair.
+	// Budgets and rate limits are ids only here, as they are on logs: neither
+	// carries a display name.
+	TeamIDs           *string `gorm:"type:text" json:"-"` // JSON serialized []string
+	TeamNames         *string `gorm:"type:text" json:"-"` // JSON serialized []string
+	CustomerIDs       *string `gorm:"type:text" json:"-"` // JSON serialized []string
+	CustomerNames     *string `gorm:"type:text" json:"-"` // JSON serialized []string
+	BusinessUnitIDs   *string `gorm:"type:text" json:"-"` // JSON serialized []string
+	BusinessUnitNames *string `gorm:"type:text" json:"-"` // JSON serialized []string
+	BudgetIDs         *string `gorm:"type:text" json:"-"` // JSON serialized []string
+	RateLimitIDs      *string `gorm:"type:text" json:"-"` // JSON serialized []string
+
 	ID             string    `gorm:"primaryKey;type:varchar(255)" json:"id"`
 	RequestID      string    `gorm:"type:varchar(255);column:request_id;index:idx_mcp_logs_request_id" json:"request_id,omitempty"`             // The original request ID from context
 	LLMRequestID   *string   `gorm:"type:varchar(255);column:llm_request_id;index:idx_mcp_logs_llm_request_id" json:"llm_request_id,omitempty"` // Links to the LLM request that triggered this tool call
@@ -1334,18 +1410,26 @@ type MCPToolLog struct {
 	// Endpoint-agent context. These are populated for tool calls observed on a
 	// developer machine by the Bifrost Edge agent (rather than proxied by the
 	// gateway). Source distinguishes the origin: empty/null for gateway-proxied
-	// calls, "endpoint" for agent-observed calls.
+	// calls, "endpoint" for agent-observed MCP calls, "native" for harness tools.
 	DeviceID *string `gorm:"type:varchar(255);index:idx_mcp_logs_device_id" json:"device_id,omitempty"`
 	AppKey   *string `gorm:"type:varchar(64)" json:"app_key,omitempty"` // Canonical policy key of the detected client app (schemas.AppKeyFromName), e.g. "claude-code"; a slug like App, not a secret or credential
 	Decision *string `gorm:"type:varchar(16)" json:"decision,omitempty"`
 	Source   *string `gorm:"type:varchar(16);index:idx_mcp_logs_source" json:"source,omitempty"`
 
 	// Virtual fields for JSON output - populated when needed
-	ArgumentsParsed    interface{}             `gorm:"-" json:"arguments,omitempty"`
-	ResultParsed       interface{}             `gorm:"-" json:"result,omitempty"`
-	ErrorDetailsParsed *schemas.BifrostError   `gorm:"-" json:"error_details,omitempty"`
-	MetadataParsed     map[string]interface{}  `gorm:"-" json:"metadata,omitempty"`
-	VirtualKey         *tables.TableVirtualKey `gorm:"-" json:"virtual_key,omitempty"`
+	TeamIDsParsed           []string                `gorm:"-" json:"team_ids,omitempty"`
+	TeamNamesParsed         []string                `gorm:"-" json:"team_names,omitempty"`
+	CustomerIDsParsed       []string                `gorm:"-" json:"customer_ids,omitempty"`
+	CustomerNamesParsed     []string                `gorm:"-" json:"customer_names,omitempty"`
+	BusinessUnitIDsParsed   []string                `gorm:"-" json:"business_unit_ids,omitempty"`
+	BusinessUnitNamesParsed []string                `gorm:"-" json:"business_unit_names,omitempty"`
+	BudgetIDsParsed         []string                `gorm:"-" json:"budget_ids,omitempty"`
+	RateLimitIDsParsed      []string                `gorm:"-" json:"rate_limit_ids,omitempty"`
+	ArgumentsParsed         interface{}             `gorm:"-" json:"arguments,omitempty"`
+	ResultParsed            interface{}             `gorm:"-" json:"result,omitempty"`
+	ErrorDetailsParsed      *schemas.BifrostError   `gorm:"-" json:"error_details,omitempty"`
+	MetadataParsed          map[string]interface{}  `gorm:"-" json:"metadata,omitempty"`
+	VirtualKey              *tables.TableVirtualKey `gorm:"-" json:"virtual_key,omitempty"`
 }
 
 // TableName sets the table name for GORM
@@ -1371,6 +1455,73 @@ func (l *MCPToolLog) AfterFind(tx *gorm.DB) error {
 
 // SerializeFields converts Go structs to JSON strings for storage
 func (l *MCPToolLog) SerializeFields() error {
+	// Multi-valued attribution. Each ids/names pair is written together so the
+	// two stay index-aligned on the row.
+	if len(l.TeamIDsParsed) > 0 {
+		data, err := sonic.Marshal(l.TeamIDsParsed)
+		if err != nil {
+			return err
+		}
+		value := string(data)
+		l.TeamIDs = &value
+	}
+	if len(l.TeamNamesParsed) > 0 {
+		data, err := sonic.Marshal(l.TeamNamesParsed)
+		if err != nil {
+			return err
+		}
+		value := string(data)
+		l.TeamNames = &value
+	}
+	if len(l.CustomerIDsParsed) > 0 {
+		data, err := sonic.Marshal(l.CustomerIDsParsed)
+		if err != nil {
+			return err
+		}
+		value := string(data)
+		l.CustomerIDs = &value
+	}
+	if len(l.CustomerNamesParsed) > 0 {
+		data, err := sonic.Marshal(l.CustomerNamesParsed)
+		if err != nil {
+			return err
+		}
+		value := string(data)
+		l.CustomerNames = &value
+	}
+	if len(l.BusinessUnitIDsParsed) > 0 {
+		data, err := sonic.Marshal(l.BusinessUnitIDsParsed)
+		if err != nil {
+			return err
+		}
+		value := string(data)
+		l.BusinessUnitIDs = &value
+	}
+	if len(l.BusinessUnitNamesParsed) > 0 {
+		data, err := sonic.Marshal(l.BusinessUnitNamesParsed)
+		if err != nil {
+			return err
+		}
+		value := string(data)
+		l.BusinessUnitNames = &value
+	}
+	if len(l.BudgetIDsParsed) > 0 {
+		data, err := sonic.Marshal(l.BudgetIDsParsed)
+		if err != nil {
+			return err
+		}
+		value := string(data)
+		l.BudgetIDs = &value
+	}
+	if len(l.RateLimitIDsParsed) > 0 {
+		data, err := sonic.Marshal(l.RateLimitIDsParsed)
+		if err != nil {
+			return err
+		}
+		value := string(data)
+		l.RateLimitIDs = &value
+	}
+
 	if l.ArgumentsParsed != nil {
 		if data, err := sonic.Marshal(l.ArgumentsParsed); err != nil {
 			return err
@@ -1411,6 +1562,47 @@ func (l *MCPToolLog) SerializeFields() error {
 
 // DeserializeFields converts JSON strings back to Go structs
 func (l *MCPToolLog) DeserializeFields() error {
+	if l.TeamIDs != nil && *l.TeamIDs != "" {
+		if err := sonic.Unmarshal([]byte(*l.TeamIDs), &l.TeamIDsParsed); err != nil {
+			l.TeamIDsParsed = nil
+		}
+	}
+	if l.TeamNames != nil && *l.TeamNames != "" {
+		if err := sonic.Unmarshal([]byte(*l.TeamNames), &l.TeamNamesParsed); err != nil {
+			l.TeamNamesParsed = nil
+		}
+	}
+	if l.CustomerIDs != nil && *l.CustomerIDs != "" {
+		if err := sonic.Unmarshal([]byte(*l.CustomerIDs), &l.CustomerIDsParsed); err != nil {
+			l.CustomerIDsParsed = nil
+		}
+	}
+	if l.CustomerNames != nil && *l.CustomerNames != "" {
+		if err := sonic.Unmarshal([]byte(*l.CustomerNames), &l.CustomerNamesParsed); err != nil {
+			l.CustomerNamesParsed = nil
+		}
+	}
+	if l.BusinessUnitIDs != nil && *l.BusinessUnitIDs != "" {
+		if err := sonic.Unmarshal([]byte(*l.BusinessUnitIDs), &l.BusinessUnitIDsParsed); err != nil {
+			l.BusinessUnitIDsParsed = nil
+		}
+	}
+	if l.BusinessUnitNames != nil && *l.BusinessUnitNames != "" {
+		if err := sonic.Unmarshal([]byte(*l.BusinessUnitNames), &l.BusinessUnitNamesParsed); err != nil {
+			l.BusinessUnitNamesParsed = nil
+		}
+	}
+	if l.BudgetIDs != nil && *l.BudgetIDs != "" {
+		if err := sonic.Unmarshal([]byte(*l.BudgetIDs), &l.BudgetIDsParsed); err != nil {
+			l.BudgetIDsParsed = nil
+		}
+	}
+	if l.RateLimitIDs != nil && *l.RateLimitIDs != "" {
+		if err := sonic.Unmarshal([]byte(*l.RateLimitIDs), &l.RateLimitIDsParsed); err != nil {
+			l.RateLimitIDsParsed = nil
+		}
+	}
+
 	if l.Arguments != "" {
 		if err := sonic.Unmarshal([]byte(l.Arguments), &l.ArgumentsParsed); err != nil {
 			l.ArgumentsParsed = nil
@@ -1640,6 +1832,13 @@ type WebhookDeliverySearchFilters struct {
 
 // MCPToolLogSearchFilters represents the available filters for MCP tool log searches
 type MCPToolLogSearchFilters struct {
+	UserIDs         []string `json:"user_ids,omitempty"`
+	TeamIDs         []string `json:"team_ids,omitempty"`
+	CustomerIDs     []string `json:"customer_ids,omitempty"`
+	BusinessUnitIDs []string `json:"business_unit_ids,omitempty"`
+	ProjectIDs      []string `json:"project_ids,omitempty"`
+	DeviceIDs       []string `json:"device_ids,omitempty"`
+
 	ToolNames     []string   `json:"tool_names,omitempty"`
 	ServerLabels  []string   `json:"server_labels,omitempty"`
 	Status        []string   `json:"status,omitempty"`
@@ -2261,6 +2460,7 @@ var dimensionColumns = map[RankingDimension]dimensionColumnDef{
 	RankingDimensionUserAgent:    {IDCol: "user_agent", NameCol: "user_agent"},
 }
 
+// DimensionColumnDef returns the column pair for a supported ranking dimension.
 func DimensionColumnDef(d RankingDimension) (idCol, nameCol string, ok bool) {
 	def, exists := dimensionColumns[d]
 	return def.IDCol, def.NameCol, exists

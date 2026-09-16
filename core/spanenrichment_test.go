@@ -27,6 +27,8 @@ var contextDimSources = []struct {
 	{schemas.AttrBifrostRoutingRuleName, schemas.BifrostContextKeyGovernanceRoutingRuleName, "rr-name"},
 	{schemas.AttrBifrostTeamID, schemas.BifrostContextKeyGovernanceTeamID, "team-id"},
 	{schemas.AttrBifrostTeamName, schemas.BifrostContextKeyGovernanceTeamName, "team-name"},
+	{schemas.AttrBifrostProjectID, schemas.BifrostContextKeyGovernanceProjectID, "project-id"},
+	{schemas.AttrBifrostProjectName, schemas.BifrostContextKeyGovernanceProjectName, "project-name"},
 	{schemas.AttrBifrostCustomerID, schemas.BifrostContextKeyGovernanceCustomerID, "cust-id"},
 	{schemas.AttrBifrostCustomerName, schemas.BifrostContextKeyGovernanceCustomerName, "cust-name"},
 	{schemas.AttrBifrostBusinessUnitID, schemas.BifrostContextKeyGovernanceBusinessUnitID, "bu-id"},
@@ -45,15 +47,17 @@ var contextDimSources = []struct {
 
 // dimsEmittedElsewhere are registry dimensions NOT emitted by
 // applyContextSpanAttributes: request-sourced ones written at span creation, and
-// framework-field-sourced ones written in framework/tracing from ExtractedFields.
+// post-response ones written in framework/tracing from ExtractedFields or context.
 // Listed so the completeness check can account for every registry dimension; the
 // value records where each is actually emitted.
 var dimsEmittedElsewhere = map[string]string{
-	schemas.AttrBifrostProviderName:      "request-sourced: span creation in bifrost.go",
-	schemas.AttrRequestModel:             "request-sourced: span creation in bifrost.go",
-	schemas.AttrLegacyRequestType:        "request-sourced: span creation in bifrost.go",
-	schemas.AttrBifrostAlias:             "framework ExtractedFields: framework/tracing/tracer.go",
-	schemas.AttrBifrostRoutingEngineUsed: "framework ExtractedFields: framework/tracing/tracer.go",
+	schemas.AttrBifrostProviderName:        "request-sourced: span creation in bifrost.go",
+	schemas.AttrRequestModel:               "request-sourced: span creation in bifrost.go",
+	schemas.AttrLegacyRequestType:          "request-sourced: span creation in bifrost.go",
+	schemas.AttrBifrostAlias:               "framework ExtractedFields: framework/tracing/tracer.go",
+	schemas.AttrBifrostRoutingEngineUsed:   "framework ExtractedFields: framework/tracing/tracer.go",
+	schemas.AttrBifrostComplexityTier:      "context-sourced post-response: framework/tracing/tracer.go",
+	schemas.AttrBifrostComplexityMechanism: "context-sourced post-response: framework/tracing/tracer.go",
 }
 
 // TestContextSpanAttributesEmit drives applyContextSpanAttributes with every

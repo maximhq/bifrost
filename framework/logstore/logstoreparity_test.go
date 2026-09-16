@@ -19,8 +19,7 @@ package logstore
 // column-mapping or dialect-SQL defect in any one of them fails here). Known,
 // deliberate divergences are NOT
 // asserted here: multi-value team_ids array *filtering* (postgres-only; the
-// other backends match the scalar column), ILIKE
-// case-insensitivity (fixtures use exact case), FTS-vs-LIKE content search
+// other backends match the scalar column), FTS-vs-LIKE content search
 // semantics (the fixture term matches under all three), and inc_number
 // (Postgres-assigned; NULL elsewhere - excluded from projections).
 //
@@ -36,6 +35,7 @@ import (
 	"math"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -126,6 +126,16 @@ type parityLogSpec struct {
 	nodeID                     *string
 	budgetIDs                  *string
 	rateLimitIDs               *string
+	toolCallNames              *string
+}
+
+// splitCSVPtr mirrors the BeforeSave hook, which rebuilds tool_call_names from
+// the virtual slice and would otherwise drop the fixture's column value.
+func splitCSVPtr(p *string) []string {
+	if p == nil || *p == "" {
+		return nil
+	}
+	return strings.Split(*p, ",")
 }
 
 func (s parityLogSpec) toLog(base time.Time) *Log {
@@ -159,6 +169,8 @@ func (s parityLogSpec) toLog(base time.Time) *Log {
 		TotalTokens:           s.tokens[2],
 		StopReason:            s.stopReason,
 		RoutingEnginesUsedStr: s.routing,
+		ToolCallNamesStr:      s.toolCallNames,
+		ToolCallNames:         splitCSVPtr(s.toolCallNames),
 		ComplexityTier:        s.tier,
 		ComplexityMechanism:   s.mechanism,
 		ComplexityScore:       s.tierScore,
@@ -180,7 +192,7 @@ func paritySpecs() []parityLogSpec {
 			alias: strPtrP("a1"), canonical: strPtrP("gpt-4o-2024-11-20"), selectedKey: "sk1", vkID: strPtrP("vk1"), vkName: strPtrP("VK One"),
 			teamID: strPtrP("t1"), customerID: strPtrP("c1"), buID: strPtrP("b1"), userID: strPtrP("u1"),
 			cost: f64PtrP(0.5), latency: f64PtrP(100), tokens: [3]int{100, 50, 150}, stopReason: strPtrP("stop"),
-			routing: strPtrP("governance,loadbalancing"), metadata: strPtrP(`{"env":"prod"}`),
+			routing: strPtrP("governance,loadbalancing"), metadata: strPtrP(`{"env":"prod"}`), toolCallNames: strPtrP("search"),
 			tier: strPtrP("COMPLEX"), mechanism: strPtrP("lexical"), tierScore: f64PtrP(0.55), sessionID: strPtrP("session-1"),
 			cacheMetadata: `{"hit_type":"direct"}`, content: "alpha bravo hello", parentID: strPtrP("sess1")},
 		{id: "p2", offsetSec: 90, object: "chat.completion", provider: "openai", model: "gpt-4o", status: "success",
@@ -196,7 +208,7 @@ func paritySpecs() []parityLogSpec {
 		{id: "p4", offsetSec: 70, object: "chat.completion", provider: "anthropic", model: "claude-3", status: "success",
 			vkID: strPtrP("vk2"), vkName: strPtrP("VK Two"), teamID: strPtrP("t2"), userID: strPtrP("u3"),
 			cost: f64PtrP(2.5), latency: f64PtrP(400), tokens: [3]int{400, 100, 500}, stopReason: strPtrP("tool_calls"),
-			metadata: strPtrP(`{"env":"prod","region":"us"}`), content: "echo foxtrot"},
+			metadata: strPtrP(`{"env":"prod","region":"us"}`), content: "echo foxtrot", toolCallNames: strPtrP("get_weather,search")},
 		{id: "p5", offsetSec: 60, object: "chat.completion", provider: "anthropic", model: "claude-3", status: "processing",
 			vkID: strPtrP("vk1"), vkName: strPtrP("VK One"), teamID: strPtrP("t1"), userID: strPtrP("u1")},
 		{id: "p6", offsetSec: 50, object: "embedding", provider: "openai", model: "gpt-4o", status: "success",
@@ -588,6 +600,8 @@ func TestLogStoreParity(t *testing.T) {
 		"users":                 {UserIDs: []string{"u1"}},
 		"business_units":        {BusinessUnitIDs: []string{"b1"}},
 		"routing_engines":       {RoutingEngineUsed: []string{"loadbalancing", "routing-rule"}},
+		"tool_call_names":       {ToolCallNames: []string{"get_weather"}},
+		"tool_call_names_any":   {ToolCallNames: []string{"get_weather", "search"}},
 		"time_range":            {StartTime: timePtrP(base.Add(-75 * time.Second)), EndTime: timePtrP(base.Add(-25 * time.Second))},
 		"latency_range":         {MinLatency: f64PtrP(80), MaxLatency: f64PtrP(260)},
 		"token_range":           {MinTokens: intPtrP(100), MaxTokens: intPtrP(600)},
@@ -751,6 +765,9 @@ func TestLogStoreParity(t *testing.T) {
 			"stop_reasons": func(ctx context.Context, s LogStore) (any, error) {
 				return sorted(s.GetDistinctStopReasons(ctx, 50, ""))
 			},
+			"tool_call_names": func(ctx context.Context, s LogStore) (any, error) {
+				return sorted(s.GetDistinctToolCallNames(ctx, 50, ""))
+			},
 			"key_pairs": func(ctx context.Context, s LogStore) (any, error) {
 				pairs, err := s.GetDistinctKeyPairs(ctx, "virtual_key_id", "virtual_key_name", 50, "")
 				if err != nil {
@@ -772,6 +789,53 @@ func TestLogStoreParity(t *testing.T) {
 		}
 		for name, call := range calls {
 			t.Run(name, func(t *testing.T) { assertParity(t, stores, 1e-6, call) })
+		}
+
+		// Filterdata search must be case-insensitive on every backend. The
+		// needles are deliberately cased against the fixtures ("gpt-4o",
+		// "VK One", "search") so a bare LIKE on ClickHouse or non-ASCII SQLite
+		// would return nothing and break parity with Postgres ILIKE.
+		caseCalls := map[string]struct {
+			call func(context.Context, LogStore) (any, error)
+			want any
+		}{
+			"models_upper": {
+				call: func(ctx context.Context, s LogStore) (any, error) {
+					return sorted(s.GetDistinctModels(ctx, 50, "GPT-4O"))
+				},
+				want: []string{"gpt-4o", "gpt-4o-mini"},
+			},
+			"tool_call_names_upper": {
+				call: func(ctx context.Context, s LogStore) (any, error) {
+					return sorted(s.GetDistinctToolCallNames(ctx, 50, "SEARCH"))
+				},
+				want: []string{"search"},
+			},
+			"key_pairs_lower": {
+				call: func(ctx context.Context, s LogStore) (any, error) {
+					pairs, err := s.GetDistinctKeyPairs(ctx, "virtual_key_id", "virtual_key_name", 50, "vk one")
+					if err != nil {
+						return nil, err
+					}
+					names := make([]string, 0, len(pairs))
+					for _, p := range pairs {
+						names = append(names, p.Name)
+					}
+					sort.Strings(names)
+					return names, nil
+				},
+				want: []string{"VK One"},
+			},
+		}
+		for name, tc := range caseCalls {
+			t.Run(name, func(t *testing.T) {
+				assertParity(t, stores, 1e-6, tc.call)
+				for backend, store := range stores {
+					got, err := tc.call(context.Background(), store)
+					require.NoError(t, err, backend)
+					assert.Equal(t, tc.want, got, backend)
+				}
+			})
 		}
 	})
 

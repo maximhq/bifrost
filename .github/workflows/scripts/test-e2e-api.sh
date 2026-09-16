@@ -86,6 +86,13 @@ PYEOF
     fi
   fi
 
+  # The authenticated newman pass needs a first admin account, whose creation
+  # requires a bootstrap token the server resolves at boot from BIFROST_SETUP_TOKEN.
+  # Export it so the server process and the runner (BIFROST_E2E_SETUP_TOKEN) share it;
+  # without it set-auth-config skips the auth pass and the MCP/vMCP tests run nowhere.
+  export BIFROST_SETUP_TOKEN="${BIFROST_SETUP_TOKEN:-bifrost-e2e-setup-token}"
+  export BIFROST_E2E_SETUP_TOKEN="$BIFROST_SETUP_TOKEN"
+
   echo "🚀 Starting Bifrost on port $PORT..."
   "$BIFROST_BINARY" --app-dir "$TEMP_DIR" --port "$PORT" --log-level debug > "$SERVER_LOG" 2>&1 &
   BIFROST_PID=$!

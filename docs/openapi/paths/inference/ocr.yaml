@@ -28,7 +28,6 @@ ocr:
         $ref: '../../openapi.yaml#/components/responses/InternalError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -62,7 +61,6 @@ async-ocr:
         $ref: '../../openapi.yaml#/components/responses/InternalError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
@@ -98,6 +96,5 @@ async-ocr-job:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []

@@ -9,7 +9,7 @@ import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { RequestTypeLabels, RequestTypes, RoutingEngineUsedLabels, Statuses } from "@/lib/constants/logs";
 import { useGetAvailableFilterDataQuery, useGetProvidersQuery } from "@/lib/store";
-import { COMPLEXITY_TIER_VALUES, LEGACY_COMPLEXITY_TIER_VALUES, COMPLEXITY_MECHANISM_LABELS, COMPLEXITY_MECHANISM_VALUES } from "@/lib/types/complexityRouter";
+import { COMPLEXITY_MECHANISM_LABELS, COMPLEXITY_MECHANISM_VALUES, COMPLEXITY_TIER_VALUES, LEGACY_COMPLEXITY_TIER_VALUES } from "@/lib/types/complexityRouter";
 import type { LogFilters } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { ChevronDown, LoaderCircle, PanelLeftClose, Plus, RotateCcw, Search } from "lucide-react";
@@ -99,7 +99,7 @@ export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps
 				<div className="flex grow flex-col gap-1">
 					{/* First 2 open by default */}
 					<StatusFilter filters={filters} onFiltersChange={onFiltersChange} defaultOpen />
-					<ModelsFilter filters={filters} onFiltersChange={onFiltersChange} defaultOpen />
+					<ModelsFilter filters={filters} onFiltersChange={onFiltersChange} />
 					{/* Rest closed unless they have active filters */}
 					<SelectedKeysFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<VirtualKeysFilter filters={filters} onFiltersChange={onFiltersChange} />
@@ -121,6 +121,7 @@ export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps
 					<SessionFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<CostFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<StopReasonFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<ToolCallsFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<MetadataFilters filters={filters} onFiltersChange={onFiltersChange} />
 				</div>
 			</ScrollArea>
@@ -328,14 +329,13 @@ function SearchableCheckboxList({
 					onCheckedChange={() => onToggle(item.key)}
 					testId={
 						testIdPrefix
-							? `${testIdPrefix}-checkbox-${
-									normalizeTestIdKey
-										? item.key
-												.toLowerCase()
-												.replace(/[^a-z0-9]+/g, "-")
-												.replace(/^-+|-+$/g, "")
-										: item.key
-								}`
+							? `${testIdPrefix}-checkbox-${normalizeTestIdKey
+								? item.key
+									.toLowerCase()
+									.replace(/[^a-z0-9]+/g, "-")
+									.replace(/^-+|-+$/g, "")
+								: item.key
+							}`
 							: undefined
 					}
 				/>
@@ -432,6 +432,57 @@ function StopReasonFilter({ filters, onFiltersChange, defaultOpen }: FilterCompo
 				onSearch={setSearchQuery}
 				fetching={isFetching}
 				testIdPrefix="stop-reason-filter"
+			/>
+		</FilterSection>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// ToolCallsFilter
+// ---------------------------------------------------------------------------
+
+function ToolCallsFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const hasActive = (filters.tool_call_names || []).length > 0;
+	const [opened, setOpened] = useState(defaultOpen || hasActive);
+	const searchInputRef = useAutoFocusOnOpen(opened);
+	const [searchQuery, setSearchQuery] = useState("");
+	const {
+		data: filterData,
+		isUninitialized,
+		isLoading,
+		isFetching,
+	} = useGetAvailableFilterDataQuery({ dimensions: ["tool_call_names"], q: searchQuery || undefined }, { skip: !opened && !hasActive });
+	const availableToolCallNames = filterData?.tool_call_names || [];
+	const items = useMemo(() => {
+		const seen = new Set(availableToolCallNames);
+		const extras = (filters.tool_call_names || []).filter((n) => !seen.has(n));
+		return [...availableToolCallNames, ...extras].map((n) => ({ key: n, label: n }));
+	}, [availableToolCallNames, filters.tool_call_names]);
+
+	if (!isUninitialized && !isLoading && availableToolCallNames.length === 0 && !hasActive && !opened) return null;
+
+	return (
+		<FilterSection
+			title="Tool Calls"
+			defaultOpen={defaultOpen || hasActive}
+			loading={isLoading}
+			onOpenChange={setOpened}
+			testId="tool-calls-filter-toggle"
+		>
+			<SearchableCheckboxList
+				inputRef={searchInputRef}
+				placeholder="Search or add a function name"
+				items={items}
+				allowCustom
+				isSelected={(name) => (filters.tool_call_names || []).includes(name)}
+				onToggle={(name) => {
+					const current = filters.tool_call_names || [];
+					const next = current.includes(name) ? current.filter((n) => n !== name) : [...current, name];
+					onFiltersChange({ ...filters, tool_call_names: next });
+				}}
+				onSearch={setSearchQuery}
+				fetching={isFetching}
+				testIdPrefix="tool-calls-filter"
 			/>
 		</FilterSection>
 	);

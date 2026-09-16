@@ -8,31 +8,26 @@ import { getRegistrationLabel, getUserHomePrefix } from "../utils";
 export function CursorHarnessInstall({
 	canGenerateCommand,
 	clientConfig,
+	emptyMessage,
+	headers,
 	platform,
 	selectedServers,
 	serverScope,
-	virtualKey,
 }: HarnessInstallProps) {
 	const [configScope, setConfigScope] = useState<CursorConfigScope>("global");
 
 	const serverArgs = useMemo(
 		() => ({
 			clientConfig,
+			headers,
 			selectedServers: serverScope === "selected" ? selectedServers : undefined,
-			virtualKey: virtualKey!,
 		}),
-		[clientConfig, selectedServers, serverScope, virtualKey],
+		[clientConfig, headers, selectedServers, serverScope],
 	);
 
-	const config = useMemo(() => {
-		if (!virtualKey) return "";
-		return buildCursorConfig(serverArgs);
-	}, [serverArgs, virtualKey]);
+	const config = useMemo(() => buildCursorConfig(serverArgs), [serverArgs]);
 
-	const deeplink = useMemo(() => {
-		if (!virtualKey) return "";
-		return buildCursorDeeplink(serverArgs);
-	}, [serverArgs, virtualKey]);
+	const deeplink = useMemo(() => buildCursorDeeplink(serverArgs), [serverArgs]);
 
 	const configPath = configScope === "project" ? ".cursor/mcp.json" : `${getUserHomePrefix(platform)}/.cursor/mcp.json`;
 
@@ -53,7 +48,7 @@ export function CursorHarnessInstall({
 			}
 			copySuccessMessage="Config copied"
 			deeplink={deeplink}
-			emptyMessage={virtualKey ? "Select servers or use Gateway root." : "Select a virtual key to generate the config."}
+			emptyMessage={emptyMessage}
 			harnessName="Cursor"
 			label="Config"
 			logoSrc="/images/harness/cursor.svg"

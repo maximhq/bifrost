@@ -354,10 +354,11 @@ func SetErrorLatency(bifrostErr *schemas.BifrostError, latency time.Duration) *s
 // MakeRequestWithContextFollowRedirects. It runs do() in a goroutine and handles
 // context cancellation, latency tracking, and error classification uniformly.
 //
-// IMPORTANT: This function does NOT truly cancel the underlying fasthttp network request if the
-// context is done. The fasthttp client call will continue in its goroutine until it completes
-// or times out based on its own settings. This function merely stops *waiting* for the
-// fasthttp call and returns an error related to the context.
+// Cancellation reaches the socket: the callers bind ctx to the request
+// (bindRequestContext) and the client's contextTransport closes the upstream
+// connection when ctx ends, so the fasthttp call in the goroutine returns
+// promptly instead of running on until its own ReadTimeout. This function
+// still returns as soon as ctx is done rather than waiting for that.
 //
 // The wait function MUST be called (typically via defer) before releasing the request or
 // response objects. On the normal path it is a no-op. On the context-cancellation path it
@@ -457,14 +458,25 @@ func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration,
 // path it blocks until the background client.Do goroutine finishes, preventing a data race
 // between the still-running goroutine and the caller's release of req/resp.
 func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) (time.Duration, *schemas.BifrostError, func()) {
-	latency, bifrostErr, wait := makeRequestWithDoFunc(ctx, func() error { return client.Do(req, resp) })
+	// Bound to the goroutine that runs client.Do: the binding must outlive a
+	// ctx-cancelled return of makeRequestWithDoFunc and be gone before the
+	// caller's wait() returns, since req is pooled.
+	unbind := bindRequestContext(req, ctx)
+	latency, bifrostErr, wait := makeRequestWithDoFunc(ctx, func() error {
+		defer unbind()
+		return client.Do(req, resp)
+	})
 	return latency, bifrostErr, wait
 }
 
 // MakeRequestWithContextFollowRedirects is like MakeRequestWithContext but follows up to
 // maxRedirects HTTP redirects automatically (equivalent to curl's -L flag).
 func MakeRequestWithContextFollowRedirects(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response, maxRedirects int) (time.Duration, *schemas.BifrostError, func()) {
-	latency, bifrostErr, wait := makeRequestWithDoFunc(ctx, func() error { return client.DoRedirects(req, resp, maxRedirects) })
+	unbind := bindRequestContext(req, ctx)
+	latency, bifrostErr, wait := makeRequestWithDoFunc(ctx, func() error {
+		defer unbind()
+		return client.DoRedirects(req, resp, maxRedirects)
+	})
 	return latency, bifrostErr, wait
 }
 
@@ -477,11 +489,21 @@ func MakeRequestWithContextFollowRedirects(ctx context.Context, client *fasthttp
 // is measured separately, inside idleTimeoutReader.Read. Both are needed;
 // counting only one attributes the other to Bifrost.
 //
+// The wait for headers is bounded: ctx is bound to req for the duration of the
+// call, and the client's contextTransport applies the client's ReadTimeout
+// (default_request_timeout_in_seconds) and the ctx deadline to the header wait,
+// closes the socket when ctx is cancelled, and lifts the deadline once headers
+// arrive so the body is governed only by the stream idle timeout
+// (maximhq/bifrost#7034). A silent upstream therefore fails with
+// fasthttp.ErrTimeout instead of pinning the worker until it closes.
+//
 // Returns client.Do's error untouched so callers keep their own error
 // classification and latency bookkeeping.
 func DoStreamingRequest(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) error {
+	unbind := bindRequestContext(req, ctx)
 	startTime := time.Now()
 	err := client.Do(req, resp)
+	unbind()
 	schemas.AddUpstreamLatency(ctx, time.Since(startTime))
 	return err
 }
@@ -551,6 +573,11 @@ func ConfigureRetry(client *fasthttp.Client) *fasthttp.Client {
 func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthttp.Client {
 	// Configure stale-connection retry policy
 	client.RetryIfErr = network.StaleConnectionRetryIfErr
+
+	// Every Bifrost client goes through the context-aware transport: it applies
+	// the client's timeouts to the header phase only on streamed responses and
+	// closes the socket when the request context ends (see roundtripper.go).
+	client.Transport = NewContextTransport()
 
 	existingDial := client.Dial
 	existingDialTimeout := client.DialTimeout
@@ -892,7 +919,10 @@ func filterHeaders(headers map[string][]string) map[string][]string {
 }
 
 // providerResponseFilterHeaders are headers to exclude when forwarding provider response headers.
-// These are transport-level headers that don't apply when re-serving the response.
+// These are transport-level headers that don't apply when re-serving the response, plus the
+// exact credential names from the /genai_passthrough leak (#3954). It is one of the two rules
+// applied by shouldFilterProviderResponseHeader; the other catches credential names this list
+// does not enumerate.
 var providerResponseFilterHeaders = map[string]bool{
 	"content-length":                   true,
 	"content-encoding":                 true,
@@ -927,8 +957,22 @@ var providerResponseFilterHeaders = map[string]bool{
 	"access-control-max-age":           true,
 }
 
+// shouldFilterProviderResponseHeader reports whether a provider response header must not be
+// re-served to the caller. The name is expected to already be lowercased.
+//
+// Two rules apply. A header is dropped when it is a transport-level or known-credential name in
+// providerResponseFilterHeaders, or when schemas.IsSensitiveHeader classifies its name as
+// credential-bearing. The second rule exists because a name-by-name denylist necessarily lags:
+// network_config.extra_headers supports arbitrary custom authentication headers, and some
+// upstreams echo request headers back (e.g. Google's file-download 302), so the set of credential
+// names that can appear in a provider response is open-ended. Sharing the classifier already used
+// by the telemetry redaction path keeps the two definitions of "credential" from diverging.
+func shouldFilterProviderResponseHeader(nameLower string) bool {
+	return providerResponseFilterHeaders[nameLower] || schemas.IsSensitiveHeader(nameLower)
+}
+
 // ExtractProviderResponseHeaders extracts and filters response headers from a
-// fasthttp response. Transport-level headers are excluded.
+// fasthttp response. Transport-level and credential-bearing headers are excluded.
 func ExtractProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
 	if resp == nil {
 		return nil
@@ -936,7 +980,7 @@ func ExtractProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
 	headers := make(map[string]string)
 	resp.Header.VisitAll(func(key, value []byte) {
 		k := string(key)
-		if providerResponseFilterHeaders[strings.ToLower(k)] {
+		if shouldFilterProviderResponseHeader(strings.ToLower(k)) {
 			return
 		}
 		v := string(value)
@@ -953,7 +997,8 @@ func ExtractProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
 }
 
 // ExtractPassthroughProviderResponseHeaders extracts and filters response headers from a
-// fasthttp response. Transport-level headers are excluded.
+// fasthttp response. Transport-level and credential-bearing headers are excluded, except
+// content-type, which the passthrough response must retain.
 func ExtractPassthroughProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
 	if resp == nil {
 		return nil
@@ -962,7 +1007,7 @@ func ExtractPassthroughProviderResponseHeaders(resp *fasthttp.Response) map[stri
 	resp.Header.VisitAll(func(key, value []byte) {
 		k := string(key)
 		kLower := strings.ToLower(k)
-		if providerResponseFilterHeaders[kLower] && kLower != "content-type" {
+		if shouldFilterProviderResponseHeader(kLower) && kLower != "content-type" {
 			return
 		}
 		v := string(value)
@@ -979,15 +1024,15 @@ func ExtractPassthroughProviderResponseHeaders(resp *fasthttp.Response) map[stri
 }
 
 // ExtractProviderResponseHeadersFromHTTP extracts and filters response headers
-// from a standard net/http response. Transport-level headers are excluded.
-// Used by providers like Bedrock that use net/http instead of fasthttp.
+// from a standard net/http response. Transport-level and credential-bearing headers
+// are excluded. Used by providers like Bedrock that use net/http instead of fasthttp.
 func ExtractProviderResponseHeadersFromHTTP(resp *http.Response) map[string]string {
 	if resp == nil {
 		return nil
 	}
 	headers := make(map[string]string)
 	for k, values := range resp.Header {
-		if !providerResponseFilterHeaders[strings.ToLower(k)] && len(values) > 0 {
+		if !shouldFilterProviderResponseHeader(strings.ToLower(k)) && len(values) > 0 {
 			headers[k] = strings.Join(values, ", ")
 		}
 	}
@@ -1450,9 +1495,18 @@ func CloneFastHTTPClientConfig(base *fasthttp.Client) *fasthttp.Client {
 }
 
 // BuildStreamingClient returns a fasthttp.Client suitable for long-lived SSE
-// or EventStream responses. It clones base's dialer/proxy/TLS/pool settings,
-// then clears Read/Write timeouts so fasthttp does not pre-empt a healthy
-// stream. StreamResponseBody is forced on.
+// or EventStream responses. It clones base's dialer/proxy/TLS/pool settings and
+// forces StreamResponseBody on.
+//
+// ReadTimeout and WriteTimeout are kept from base (default_request_timeout_in_seconds).
+// On a streaming client they bound only dial, TLS handshake, request write and
+// the wait for response headers: contextTransport clears the socket deadline as
+// soon as headers are parsed, so a healthy stream is never pre-empted, while an
+// upstream that accepts the connection and never answers fails with
+// fasthttp.ErrTimeout instead of hanging (maximhq/bifrost#7034). Streaming
+// clients must be driven through DoStreamingRequest, which binds the request
+// context the transport honors; a bare client.Do gets the same header bound but
+// no cancellation.
 //
 // MaxConnDuration is deliberately preserved. It is checked once per request
 // before the request is written (fasthttp client.go:3110) and only sets
@@ -1466,15 +1520,12 @@ func CloneFastHTTPClientConfig(base *fasthttp.Client) *fasthttp.Client {
 //
 // Per-chunk idle detection is enforced at the application layer via
 // NewIdleTimeoutReader (see GetStreamIdleTimeout / StreamIdleTimeoutInSeconds).
-// The initial TCP/TLS dial still honors the base client's ReadTimeout because
-// the Dial closure installed by ConfigureDialer reads client.ReadTimeout from
-// the base client pointer captured at ConfigureDialer call time — cloning copies
-// that closure verbatim, so zeroing the clone's ReadTimeout does not affect dial.
 func BuildStreamingClient(base *fasthttp.Client) *fasthttp.Client {
 	c := CloneFastHTTPClientConfig(base)
-	c.ReadTimeout = 0
-	c.WriteTimeout = 0
 	c.StreamResponseBody = true
+	if c.Transport == nil {
+		c.Transport = NewContextTransport()
+	}
 	return c
 }
 
@@ -2670,6 +2721,9 @@ func NewBifrostBadRequestError(message string) *schemas.BifrostError {
 			Message: message,
 			Type:    &errorType,
 		},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+		},
 	}
 }
 
@@ -3380,6 +3434,10 @@ func (r *idleTimeoutReader) Read(p []byte) (n int, err error) {
 // stream_idle_timeout_in_seconds window.
 var ErrStreamIdleTimeout = errors.New("stream idle timeout: no data received within configured window")
 
+// errStreamParkedAfterFinish closes a body stream that ended on finish_reason while the
+// upstream kept the connection open. Internal to ReleaseStreamingResponse; never surfaced.
+var errStreamParkedAfterFinish = errors.New("stream ended on finish_reason with the connection still open")
+
 // ErrStreamClosed is returned when a stream has already been closed by
 // cancellation or cleanup before the next read starts.
 var ErrStreamClosed = errors.New("stream closed")
@@ -3551,6 +3609,18 @@ func ProcessAndSendNonSSEStreamError(
 // This utility reduces code duplication across streaming implementations by encapsulating
 // the common pattern of running post hooks, handling errors, and sending responses with
 // proper context cancellation handling.
+// BifrostErrorCarrier is implemented by stream-reader errors that already carry
+// a fully classified *schemas.BifrostError (retryability, status code, upstream
+// error type). ProcessAndSendError forwards such an error unchanged instead of
+// wrapping it in a terminal "Error reading stream" error, so a reader plugged
+// into a shared stream loop through SSEReaderFactory (e.g. the Bedrock
+// InvokeModel event-stream reader) keeps the same retry semantics as a provider
+// loop that calls ProcessAndSendBifrostError directly.
+type BifrostErrorCarrier interface {
+	error
+	BifrostError() *schemas.BifrostError
+}
+
 func ProcessAndSendError(
 	ctx *schemas.BifrostContext,
 	postHookRunner schemas.PostHookRunner,
@@ -3559,6 +3629,13 @@ func ProcessAndSendError(
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
 ) {
+	var carrier BifrostErrorCarrier
+	if errors.As(err, &carrier) {
+		if typed := carrier.BifrostError(); typed != nil {
+			ProcessAndSendBifrostError(ctx, postHookRunner, typed, responseChan, logger, postHookSpanFinalizer)
+			return
+		}
+	}
 	// Send scanner error through channel
 	bifrostError := &schemas.BifrostError{
 		IsBifrostError: true,
@@ -3714,15 +3791,39 @@ func GetProviderName(defaultProvider schemas.ModelProvider, customConfig *schema
 // ProviderSendsDoneMarker returns true if the provider sends the [DONE] marker in streaming responses.
 // Some OpenAI-compatible providers (like Cerebras) don't send [DONE] and instead end the stream
 // after sending the finish_reason. This function helps determine the correct stream termination logic.
-func ProviderSendsDoneMarker(providerName schemas.ModelProvider) bool {
+// A custom provider can opt into the same treatment via custom_provider_config.does_not_send_done_marker,
+// which only ever ends the read loop earlier - it cannot make a provider wait for a marker it never sends.
+func ProviderSendsDoneMarker(ctx *schemas.BifrostContext, providerName schemas.ModelProvider) bool {
+	if ctx != nil {
+		if doesNotSendDoneMarker, ok := ctx.Value(schemas.BifrostContextKeyDoesNotSendDoneMarker).(bool); ok && doesNotSendDoneMarker {
+			return false
+		}
+	}
 	switch providerName {
-	case schemas.Cerebras, schemas.Perplexity, schemas.Bedrock, schemas.BedrockMantle:
-		// Cerebras, Perplexity, Bedrock and Bedrock mantle don't send [DONE] marker, ends stream after finish_reason
+	case schemas.Cerebras, schemas.Perplexity:
+		// Cerebras and Perplexity don't send [DONE] marker, ends stream after finish_reason.
+		// Bedrock Mantle (the bedrock_mantle provider and the legacy Mantle route under the
+		// bedrock key) does send [DONE]. With include_usage it sends the usage-only chunk after
+		// the finish_reason chunk, so breaking on finish_reason drops usage and cost (#7065).
 		return false
 	default:
 		// Default to expecting [DONE] marker for safety
 		return true
 	}
+}
+
+// WaitForStreamUsage reports whether custom_provider_config.wait_for_usage is set.
+// It only has meaning alongside a provider that ends on finish_reason (see
+// ProviderSendsDoneMarker): the read loop then keeps reading past finish_reason so the
+// trailing usage-only chunk - which Bifrost always asks for via stream_options.include_usage -
+// is collected instead of dropped (#7143). Termination is still bounded: the usage chunk,
+// two post-finish heartbeat comments, EOF, or network_config.stream_idle_timeout_in_seconds.
+func WaitForStreamUsage(ctx *schemas.BifrostContext) bool {
+	if ctx == nil {
+		return false
+	}
+	waitForUsage, ok := ctx.Value(schemas.BifrostContextKeyWaitForUsage).(bool)
+	return ok && waitForUsage
 }
 
 func ProviderIsResponsesAPINative(providerName schemas.ModelProvider) bool {
@@ -3780,6 +3881,18 @@ func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Respon
 	// parseChunkSize waiting for a chunk the upstream will never send, which
 	// deadlocks this deferred cleanup and stops the stream channel from closing.
 	if exhausted, _ := ctx.Value(schemas.BifrostContextKeyStreamBodyExhausted).(bool); !exhausted {
+		// An upstream declared via custom_provider_config.does_not_send_done_marker ends on
+		// finish_reason and may then park the connection, heartbeating instead of closing.
+		// Draining that blocks here forever, so abandon the connection: closing with a
+		// non-nil error takes fasthttp's CloseConn path and keeps the half-read stream
+		// out of the idle pool. The response is left to GC as in the branches above.
+		// The same applies when the read loop itself stopped on a post-finish heartbeat.
+		parked, _ := ctx.Value(schemas.BifrostContextKeyStreamParkedAfterFinish).(bool)
+		doesNotSendDoneMarker, _ := ctx.Value(schemas.BifrostContextKeyDoesNotSendDoneMarker).(bool)
+		if parked || doesNotSendDoneMarker {
+			closeBodyStream(bodyStream, errStreamParkedAfterFinish)
+			return
+		}
 		if _, err := io.Copy(io.Discard, bodyStream); err != nil {
 			getLogger().Warn("failed to drain streaming response body before release (may cause stale connection reuse): %v", err)
 		}

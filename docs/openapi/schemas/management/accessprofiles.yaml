@@ -119,8 +119,51 @@ ProviderConfig:
     rate_limit:
       $ref: '#/RateLimit'
 
+AccessProfileVirtualMCPLink:
+  type: object
+  description: >-
+    A Virtual MCP granted to the profile. Assignments are a set, so a repeat
+    collapses rather than doubling.
+  anyOf:
+    - required: [virtual_mcp_name]
+    - required: [virtual_mcp_id]
+  properties:
+    virtual_mcp_name:
+      type: string
+      description: >-
+        Name of the Virtual MCP. Resolved to the stored Virtual MCP on save; a
+        name that matches none is refused.
+    virtual_mcp_id:
+      type: integer
+      format: uint
+      minimum: 1
+      description: >-
+        Virtual MCP ID, as an alternative to virtual_mcp_name. Wins when both
+        are set.
+
+AccessProfileMCPConfig:
+  type: object
+  description: The tools of one MCP client the profile may execute.
+  required:
+    - mcp_client_id
+  properties:
+    mcp_client_id:
+      type: string
+      description: >-
+        MCP client ID or name. A name is resolved to the stored client id on
+        save; a ref matching no client is kept as given.
+    tools_to_execute:
+      type: array
+      items:
+        type: string
+      description: >-
+        ["*"] allows every tool including ones added later, [] allows none, and a
+        named list allows only those tools.
+
 MCPToolGroupLink:
   type: object
+  deprecated: true
+  description: 'DEPRECATED: use AccessProfileVirtualMCPLink (virtual_mcps).'
   required:
     - tool_group_id
   properties:
@@ -184,15 +227,48 @@ AccessProfile:
       $ref: '#/RateLimit'
     calendar_aligned:
       type: boolean
+    allow_all_providers:
+      type: boolean
+      description: When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs.
+    auto_rotation_interval:
+      type: integer
+      format: int64
+      description: Interval between automatic rotations of the profile's managed virtual keys, in nanoseconds. 0 means automatic rotation is off.
+    next_rotation_at:
+      oneOf:
+        - type: string
+          format: date-time
+        - type: 'null'
+      description: When the next scheduled rotation is due. Absent while automatic rotation is off.
+    last_rotation_at:
+      oneOf:
+        - type: string
+          format: date-time
+        - type: 'null'
+      description: When the last scheduled rotation run finished.
+    virtual_mcps:
+      type: array
+      items:
+        $ref: '#/AccessProfileVirtualMCPLink'
+    mcp_configs:
+      type: array
+      items:
+        $ref: '#/AccessProfileMCPConfig'
     mcp_tool_groups:
+      deprecated: true
+      description: 'DEPRECATED: use virtual_mcps.'
       type: array
       items:
         $ref: '#/MCPToolGroupLink'
     mcp_servers:
+      deprecated: true
+      description: 'DEPRECATED: use mcp_configs. Folded in on save.'
       type: array
       items:
         $ref: '#/MCPServerLink'
     mcp_tool_overrides:
+      deprecated: true
+      description: 'DEPRECATED: use mcp_configs. Folded in on save.'
       type: array
       items:
         $ref: '#/MCPToolOverride'
@@ -246,15 +322,43 @@ CreateAccessProfileRequest:
       $ref: '#/RateLimit'
     calendar_aligned:
       type: boolean
+    allow_all_providers:
+      type: boolean
+      default: false
+      description: When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs.
+    auto_rotation_interval:
+      oneOf:
+        - $ref: '#/RotationIntervalString'
+        - $ref: '#/RotationIntervalNanos'
+      description: 'Schedule automatic rotation of the profile''s managed virtual keys. Accepts a day count ("30d"), a Go duration ("12h"), or integer nanoseconds. Between 1h and 365d; omit, "" or 0 to leave it off.'
+      example: 30d
+    next_rotation_at:
+      type: string
+      format: date-time
+      description: Optional first rotation time; must be in the future and requires auto_rotation_interval. Defaults to now + interval.
+    virtual_mcps:
+      type: array
+      items:
+        $ref: '#/AccessProfileVirtualMCPLink'
+    mcp_configs:
+      type: array
+      items:
+        $ref: '#/AccessProfileMCPConfig'
     mcp_tool_groups:
+      deprecated: true
+      description: 'DEPRECATED: use virtual_mcps.'
       type: array
       items:
         $ref: '#/MCPToolGroupLink'
     mcp_servers:
+      deprecated: true
+      description: 'DEPRECATED: use mcp_configs. Folded in on save.'
       type: array
       items:
         $ref: '#/MCPServerLink'
     mcp_tool_overrides:
+      deprecated: true
+      description: 'DEPRECATED: use mcp_configs. Folded in on save.'
       type: array
       items:
         $ref: '#/MCPToolOverride'
@@ -292,15 +396,45 @@ UpdateAccessProfileRequest:
     calendar_aligned:
       type: boolean
       nullable: true
+    allow_all_providers:
+      type: boolean
+      nullable: true
+      description: When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false, provider-wide access is disabled and access is deny-by-default via provider_configs. Omit to leave unchanged.
+    auto_rotation_interval:
+      oneOf:
+        - $ref: '#/RotationIntervalString'
+        - $ref: '#/RotationIntervalNanos'
+        - type: 'null'
+      description: 'Replace the rotation schedule ("30d", "12h" or nanoseconds); "" or 0 turns it off. Omit to leave the schedule unchanged.'
+    next_rotation_at:
+      oneOf:
+        - type: string
+          format: date-time
+        - type: 'null'
+      description: Override the next rotation time (must be in the future). null clears it, which is only valid when the interval is off. Omit to keep the existing schedule; a changed interval re-anchors it to now + interval.
+    virtual_mcps:
+      type: array
+      items:
+        $ref: '#/AccessProfileVirtualMCPLink'
+    mcp_configs:
+      type: array
+      items:
+        $ref: '#/AccessProfileMCPConfig'
     mcp_tool_groups:
+      deprecated: true
+      description: 'DEPRECATED: use virtual_mcps.'
       type: array
       items:
         $ref: '#/MCPToolGroupLink'
     mcp_servers:
+      deprecated: true
+      description: 'DEPRECATED: use mcp_configs. Folded in on save.'
       type: array
       items:
         $ref: '#/MCPServerLink'
     mcp_tool_overrides:
+      deprecated: true
+      description: 'DEPRECATED: use mcp_configs. Folded in on save.'
       type: array
       items:
         $ref: '#/MCPToolOverride'
@@ -585,3 +719,19 @@ AddVirtualKeyResponse:
   properties:
     virtual_key:
       $ref: '#/VirtualKeySummary'
+
+RotationIntervalString:
+  type: string
+  description: 'Rotation interval as a day count ("30d") or a Go duration ("12h", "720h"). Must resolve to between 1h and 365d. "" disables rotation.'
+  pattern: '^$|^[0-9]+d$|^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$'
+  example: 30d
+
+RotationIntervalNanos:
+  type: integer
+  format: int64
+  description: Rotation interval in nanoseconds. 0 disables rotation; otherwise between 1h (3600000000000) and 365d (31536000000000000).
+  oneOf:
+    - const: 0
+    - minimum: 3600000000000
+      maximum: 31536000000000000
+  example: 2592000000000000

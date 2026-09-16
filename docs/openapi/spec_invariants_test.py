@@ -230,6 +230,92 @@ def test_bulk_rotate_ids_requires_min_items():
     ]
     assert not drifted, "bulk rotate ids schema permits []:\n    " + "\n    ".join(drifted)
 
+def test_every_operation_declares_security():
+    """Every mounted operation must declare its own `security`.
+
+    The root `security` block is a fail-closed fallback, not a default to lean on: an
+    operation that omits `security` silently advertises the root's inference-shaped
+    credentials, which is how `/health`, `/metrics` and `/ws` drifted. `security: []`
+    is a valid, meaningful declaration (genuinely public endpoints); absence is not.
+    """
+    methods = {"get", "post", "put", "delete", "patch", "head", "options", "trace"}
+    missing: list[str] = []
+    for template, item in sorted(paths.items()):
+        if not isinstance(item, dict):
+            continue
+        ref = item.get("$ref")
+        if not ref:
+            continue
+        file_part, _, pointer = ref.partition("#/")
+        source = (HERE / file_part.lstrip("./")).resolve()
+        if not source.exists():
+            continue  # test_every_mounted_fragment_exists owns this failure
+        resolved = resolve_pointer(load(source) or {}, pointer_tokens(pointer)) or {}
+        for method, operation in resolved.items():
+            if method not in methods or not isinstance(operation, dict):
+                continue
+            # A legacy alias is a $ref to a real operation and inherits its security.
+            if "$ref" in operation:
+                continue
+            if "security" not in operation:
+                missing.append(f"{method.upper()} {template} ({file_part}#/{pointer})")
+    assert not missing, (
+        "operation does not declare `security` and falls through to the root default:\n    "
+        + "\n    ".join(missing)
+    )
+
+
+def test_virtual_key_request_contract_is_current():
+    """Virtual Key writes use multi-budget arrays and provider-scoped key IDs.
+    Guard both the modular source and published bundle against pre-v1.5 request fields."""
+    import json
+
+    source = load(HERE / "schemas" / "management" / "governance.yaml")
+    bundle = json.loads((HERE / "openapi.json").read_text(encoding="utf-8"))[
+        "components"
+    ]["schemas"]
+    problems = []
+
+    for schema_name in ("CreateVirtualKeyRequest", "UpdateVirtualKeyRequest"):
+        for where, schema in (
+            ("schemas/management/governance.yaml", source[schema_name]),
+            ("openapi.json", bundle[schema_name]),
+        ):
+            properties = schema["properties"]
+            provider_properties = properties["provider_configs"]["items"]["properties"]
+
+            for legacy in ("budget", "budget_id", "allowed_keys", "key_ids"):
+                if legacy in properties:
+                    problems.append(f"{where} {schema_name}: unexpected top-level {legacy}")
+            if "budgets" not in properties:
+                problems.append(f"{where} {schema_name}: missing top-level budgets array")
+
+            for legacy in ("budget", "budget_id", "allowed_keys"):
+                if legacy in provider_properties:
+                    problems.append(
+                        f"{where} {schema_name}.provider_configs: unexpected {legacy}"
+                    )
+            for current in ("budgets", "key_ids"):
+                if current not in provider_properties:
+                    problems.append(
+                        f"{where} {schema_name}.provider_configs: missing {current}"
+                    )
+
+            example = schema.get("example") or {}
+            example_provider = (example.get("provider_configs") or [{}])[0]
+            if not isinstance(example.get("budgets"), list):
+                problems.append(f"{where} {schema_name} example: budgets is not an array")
+            if example_provider.get("key_ids") != ["*"]:
+                problems.append(
+                    f'{where} {schema_name} example: key_ids must explicitly use ["*"]'
+                )
+            if not isinstance(example_provider.get("budgets"), list):
+                problems.append(
+                    f"{where} {schema_name} example: provider budgets is not an array"
+                )
+
+    assert not problems, "Virtual Key request contract drift:\n    " + "\n    ".join(problems)
+
 
 check("no path key has a null Path Item", test_no_null_path_items)
 check("no two paths collide after parameter normalization", test_no_duplicate_path_templates)
@@ -239,6 +325,8 @@ check("no operationId is claimed by two mounted operations", test_duplicate_oper
 check("legacy aliases are mounted and their successors documented", test_legacy_aliases_mount_legacy_fragments)
 check("vk_rotation_cooldown bounds match config.schema.json", test_vk_rotation_cooldown_bounds_match_config_schema)
 check("bulk rotate ids schema rejects empty arrays", test_bulk_rotate_ids_requires_min_items)
+check("virtual key request contract uses budgets and provider-scoped key_ids", test_virtual_key_request_contract_is_current)
+check("every operation declares its own security", test_every_operation_declares_security)
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(0 if failed == 0 else 1)

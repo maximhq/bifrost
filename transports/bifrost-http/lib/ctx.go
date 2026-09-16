@@ -213,7 +213,9 @@ func ResolveSessionIDFromRequest(h *fasthttp.RequestHeader) string {
 //
 // 6. Cancellable Context:
 //   - Creates a cancellable context that can be used to cancel upstream requests when clients disconnect
-//   - This is critical for streaming requests where write errors indicate client disconnects
+//   - A watcher peeks at the client socket and cancels the context when the client closes it
+//     before anything was written back (silent upstream, retry backoff), see clientdisconnect.go
+//   - Streaming handlers additionally cancel when an SSE write fails
 //   - Also useful for non-streaming requests to allow provider-level cancellation
 //
 // 7. Extra Headers (x-bf-eh-*):
@@ -229,6 +231,7 @@ func ResolveSessionIDFromRequest(h *fasthttp.RequestHeader) string {
 //
 // 9. Raw Capture Headers (per-request override of provider config; accepts "true" or "false"):
 //   - x-bf-send-back-raw-request: include raw provider request in the BifrostResponse returned to the caller
+//   - x-bf-prompt-cache-auto-inject: override prompt_cache.auto_inject for this request
 //   - x-bf-send-back-raw-response: include raw provider response in the BifrostResponse returned to the caller
 //   - x-bf-store-raw-request-response: capture raw request/response for logging only (stripped from client response)
 
@@ -281,7 +284,11 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			cancel = existingCancel
 		} else {
 			// Create one cancellable child context and promote it as the shared context.
+			// A context seeded by a transport hook (large-payload detection) takes this
+			// path, so the client socket is watched here too; the branch above, where a
+			// cancel func already exists, means a watcher is already running.
 			bifrostCtx, cancel = schemas.NewBifrostContextWithCancel(existing)
+			startClientDisconnectWatcher(ctx.Conn(), bifrostCtx, cancel)
 			ctx.SetUserValue(FastHTTPUserValueBifrostContext, bifrostCtx)
 			ctx.SetUserValue(FastHTTPUserValueBifrostCancel, cancel)
 		}
@@ -299,6 +306,9 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			_ = ctx.Done()
 		}()
 		bifrostCtx, cancel = schemas.NewBifrostContextWithCancel(parent)
+		// Cancel the request when the client closes its socket while the handler
+		// is still waiting on core; fasthttp offers no per-request Done (#7035).
+		startClientDisconnectWatcher(ctx.Conn(), bifrostCtx, cancel)
 		ctx.SetUserValue(FastHTTPUserValueBifrostContext, bifrostCtx)
 		ctx.SetUserValue(FastHTTPUserValueBifrostCancel, cancel)
 	}
@@ -629,6 +639,16 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 		if keyStr == "x-bf-send-back-raw-request" {
 			if b, err := strconv.ParseBool(string(value)); err == nil {
 				bifrostCtx.SetValue(schemas.BifrostContextKeySendBackRawRequest, b)
+			}
+			return true
+		}
+		// Per-request override of prompt_cache.auto_inject. Fully overrides the
+		// provider config for this request in both directions, so a caller can opt a
+		// single request in without changing config, or opt one out when the provider
+		// has it on. The model capability gate still applies.
+		if keyStr == "x-bf-prompt-cache-auto-inject" {
+			if b, err := strconv.ParseBool(string(value)); err == nil {
+				bifrostCtx.SetValue(schemas.BifrostContextKeyPromptCacheAutoInject, b)
 			}
 			return true
 		}

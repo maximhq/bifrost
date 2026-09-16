@@ -68,7 +68,6 @@ execute-tool:
         $ref: '../../openapi.yaml#/components/responses/InternalError'
     security:
       - BearerAuth: []
-      - BasicAuth: []
       - VirtualKeyAuth: []
       - ApiKeyAuth: []
 
@@ -157,6 +156,7 @@ clients:
           type: boolean
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -197,6 +197,7 @@ client:
             $ref: '../../schemas/management/mcp.yaml#/MCPClientCreateRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: |
@@ -253,6 +254,7 @@ client-by-id:
             $ref: '../../schemas/management/mcp.yaml#/MCPClientUpdateRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: MCP client updated successfully
@@ -280,6 +282,7 @@ client-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: MCP client removed successfully
@@ -314,6 +317,7 @@ client-reconnect:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: MCP client reconnected successfully
@@ -372,6 +376,7 @@ client-complete-oauth:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: MCP client connected (or re-authorized) successfully with OAuth
@@ -424,6 +429,7 @@ client-initiate-verification:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: OAuth flow initiated
@@ -473,6 +479,7 @@ client-reauthorize:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Reauthorization flow initiated
@@ -548,6 +555,7 @@ client-verify-headers:
                   surfaced on /api/mcp/sessions.
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Client verified; tools discovered and client connected
@@ -613,6 +621,7 @@ client-verify-exchange:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Client verified; tools discovered and client connected
@@ -670,6 +679,7 @@ sessions:
     tags: [MCP]
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Sessions visible to the caller
@@ -711,6 +721,7 @@ session-by-id:
         description: Session / credential / flow row ID
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '204':
         description: Revoked
@@ -751,6 +762,7 @@ session-reauth:
         description: Session row ID (OAuth token or header credential)
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Fresh flow opened
@@ -790,6 +802,7 @@ per-user-headers-flow:
         description: Flow row ID
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Flow detail
@@ -830,6 +843,7 @@ per-user-headers-flow:
             $ref: '../../schemas/management/mcp.yaml#/MCPHeadersSubmitRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Credential persisted
@@ -872,6 +886,7 @@ per-user-headers-credential:
         description: Credential row primary key
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '204':
         description: Revoked

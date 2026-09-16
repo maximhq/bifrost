@@ -531,7 +531,7 @@ func TestHybrid_ProcessMCPUploadSkipsMissingRowsWithEmptyStatus(t *testing.T) {
 }
 
 func TestHybrid_DeleteMCPToolLogsDeletesObjects(t *testing.T) {
-	hybrid, _, objStore := newTestHybrid(t)
+	hybrid, inner, objStore := newTestHybrid(t)
 	defer hybrid.Close(context.Background())
 	ctx := context.Background()
 
@@ -547,7 +547,7 @@ func TestHybrid_DeleteMCPToolLogsDeletesObjects(t *testing.T) {
 		},
 	}
 	require.NoError(t, hybrid.CreateMCPToolLog(ctx, entry))
-	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+	waitForMCPOffload(t, inner, entry.ID)
 
 	require.NoError(t, hybrid.DeleteMCPToolLogs(ctx, []string{entry.ID}))
 	assert.Equal(t, 0, objStore.Len())
@@ -588,7 +588,7 @@ func TestHybrid_PutFailureDropsUpload(t *testing.T) {
 }
 
 func TestHybrid_DeleteLog(t *testing.T) {
-	hybrid, _, objStore := newTestHybrid(t)
+	hybrid, inner, objStore := newTestHybrid(t)
 	defer hybrid.Close(context.Background())
 	ctx := context.Background()
 
@@ -603,7 +603,7 @@ func TestHybrid_DeleteLog(t *testing.T) {
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+	waitForOffload(t, inner, entry.ID)
 	assert.Equal(t, 1, objStore.Len())
 
 	err := hybrid.DeleteLog(ctx, "del-1")

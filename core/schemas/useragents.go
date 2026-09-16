@@ -15,6 +15,8 @@ var (
 	ClaudeChatWeb = UserAgentIdentifiers{"claude-chat-web", "claude-web"}
 	// ClaudeDesktop identifies requests from the Claude Desktop app.
 	ClaudeDesktop = UserAgentIdentifiers{"claude-desktop", "claude/"}
+	// ClaudeCowork identifies Edge-routed Cowork sessions independently of Claude Code.
+	ClaudeCowork = UserAgentIdentifiers{"claude-cowork"}
 	// ClaudeCLI identifies requests from Claude Code / Claude CLI clients.
 	ClaudeCLI = UserAgentIdentifiers{"claude-cli", "claude-code", "claude-vscode"}
 	// APIClient identifies generic programmatic API clients.
@@ -119,6 +121,7 @@ const (
 var UserAgentAppMatchers = []UserAgentAppMatcher{
 	{App: "Claude Chat Web", Identifiers: ClaudeChatWeb},
 	{App: "Claude Desktop", Identifiers: ClaudeDesktop},
+	{App: "Claude Cowork", Identifiers: ClaudeCowork},
 	{App: "Claude Code", Identifiers: ClaudeCLI},
 	{App: "API", Identifiers: APIClient},
 	{App: "Codex CLI", Identifiers: CodexCLI},

@@ -113,6 +113,10 @@ Then use this token as the **Bearer Token** and your deployment's SCIM endpoint 
 
 The provider configuration includes a **Provisioning source** setting that controls whether IdP login claims still provision users, or whether SCIM is the sole source of truth:
 
+<Frame caption="The Provisioning source setting in the provider configuration - choose between SCIM and login claims (default) or SCIM only.">
+  <img src="/media/user-provisioning/scim-provisioning-source.png" alt="Provisioning source dropdown showing SCIM and login claims (default) and SCIM only - ignore login claims options" />
+</Frame>
+
 | Option | Config value | Behavior |
 | --- | --- | --- |
 | **SCIM and login claims** (default) | `both` | Both SCIM and IdP login / token-refresh claims create and update users, roles, teams, and business units. |

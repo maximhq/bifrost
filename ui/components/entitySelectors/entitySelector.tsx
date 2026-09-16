@@ -130,7 +130,8 @@ interface EntitySelectorMultiProps {
  */
 interface EntitySelectorAddProps {
 	mode: "add";
-	onSelect: (option: EntitySelectorOption) => void;
+	/** The picked row, description included, so the caller can show more than its label. */
+	onSelect: (option: EntitySelectorEntry) => void;
 	multiple?: never;
 	value?: never;
 	onChange?: never;
@@ -264,7 +265,7 @@ export function EntitySelector(props: EntitySelectorProps) {
 		cacheLabel(option);
 
 		if (props.mode === "add") {
-			props.onSelect({ value: option.value, label: option.label });
+			props.onSelect(option);
 		} else if (props.multiple !== true) {
 			props.onChange(option.value);
 		}

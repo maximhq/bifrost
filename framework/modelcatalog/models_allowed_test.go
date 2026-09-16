@@ -33,11 +33,15 @@ func TestIsModelAllowedForProvider_ExplicitList(t *testing.T) {
 		want    bool
 	}{
 		{"bare direct match", "gpt-4o", schemas.WhiteList{"gpt-4o", "claude"}, true},
+		{"bare match is case-insensitive like every other list check", "gpt-4o", schemas.WhiteList{"GPT-4O"}, true},
 		{"bare no match (deny)", "gpt-4o", schemas.WhiteList{"claude", "gemini"}, false},
 		{"empty allowlist denies", "gpt-4o", schemas.WhiteList{}, false},
 		{"prefixed match", "gpt-4o", schemas.WhiteList{"openai/gpt-4o"}, true},
 		{"prefixed present but wrong model", "gpt-4o-mini", schemas.WhiteList{"openai/gpt-4o"}, false},
 		{"match after a prefixed miss (ordering)", "gpt-4o", schemas.WhiteList{"openai/other", "openai/gpt-4o"}, true},
+		{"regex entry matches the bare name", "gpt-4o-mini", schemas.WhiteList{"regex:^gpt-4.*"}, true},
+		{"regex entry is matched against the bare name only", "gpt-4o", schemas.WhiteList{"regex:^openai/gpt-4o$"}, false},
+		{"regex entry miss", "gpt-3.5-turbo", schemas.WhiteList{"regex:^gpt-4.*"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

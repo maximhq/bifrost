@@ -47,6 +47,7 @@ skills:
           default: 0
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -71,6 +72,7 @@ skills:
             $ref: '../../schemas/management/skills.yaml#/CreateSkillRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Skill created successfully
@@ -105,6 +107,7 @@ skills-by-id:
           example: 1.0.0
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -140,6 +143,7 @@ skills-by-id:
             $ref: '../../schemas/management/skills.yaml#/UpdateSkillRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Skill updated successfully
@@ -169,6 +173,7 @@ skills-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Skill deleted successfully
@@ -235,6 +240,7 @@ skill-versions:
           default: 0
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -269,6 +275,7 @@ shift-skill-version:
             $ref: '../../schemas/management/skills.yaml#/ShiftSkillVersionRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Served version shifted successfully
@@ -298,6 +305,7 @@ skill-file-upload:
             $ref: '../../schemas/management/skills.yaml#/UploadSkillFileRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: File uploaded successfully
@@ -327,6 +335,7 @@ skill-orphan-files:
           default: false
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Cleanup completed
@@ -346,6 +355,7 @@ all-skills-version:
       - Skills
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -370,6 +380,7 @@ all-skills-version:
             $ref: '../../schemas/management/skills.yaml#/BumpAllSkillsVersionRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Version bumped successfully

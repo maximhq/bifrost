@@ -477,6 +477,16 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 	}
 	span.SetAttributes(PopulateErrorAttributes(err))
 
+	// Not in PopulateErrorAttributes: that sees only the error, whose
+	// ExtraFields.RequestType is empty until the request settles.
+	if raw, ok := span.GetAttribute(schemas.AttrLegacyRequestType); ok {
+		requestType, _ := raw.(string)
+		if errorType := schemas.ClassifyErrorType(err, schemas.RequestType(requestType)); errorType != "" {
+			// Plain string: readers assert .(string); a defined type is dropped.
+			span.SetAttribute(schemas.AttrBifrostErrorType, string(errorType))
+		}
+	}
+
 	// Enrichment dimensions derivable only post-response, attached here so every
 	// connector reads them from one place (see core/schemas EnrichmentDims):
 	//   - alias: the originally requested model when it differs from the resolved

@@ -40,6 +40,16 @@ export type ProviderName = (typeof KnownProvidersNames)[number];
 
 export const ProviderNames: readonly ProviderName[] = KnownProvidersNames;
 
+// Providers that exist in code but are not yet released. They are kept out of the
+// "Add Provider" picker and the first-party-integration nudge so users cannot configure
+// them from the UI. Everything else (types, schemas, icons, labels) still resolves, so a
+// provider configured via config.json continues to render correctly.
+// TODO: remove "github-copilot" once the integration has been tested and released.
+export const HiddenProviders: ReadonlySet<ProviderName> = new Set<ProviderName>(["github-copilot"]);
+
+// Known providers that users can add from the UI.
+export const VisibleProviderNames: readonly ProviderName[] = KnownProvidersNames.filter((name) => !HiddenProviders.has(name));
+
 // Built-in providers whose Bifrost implementation supports embedding requests.
 // Custom providers must instead be checked via custom_provider_config.allowed_requests.embedding.
 export const EmbeddingSupportedProviders: readonly ProviderName[] = [
@@ -196,6 +206,7 @@ const userAgentAppMatchers: { identifiers: string[]; app: ClientApp }[] = [
 	{ identifiers: ["chatgpt-web"], app: { name: "ChatGPT Web", icon: "/images/openai.png" } },
 	{ identifiers: ["claude-chat-web", "claude-web"], app: { name: "Claude Chat Web", icon: "/images/claude-desktop.png" } },
 	{ identifiers: ["claude-desktop"], app: { name: "Claude Desktop", icon: "/images/claude-desktop.png" } },
+	{ identifiers: ["claude-cowork"], app: { name: "Claude Cowork", icon: "/images/claude-desktop.png" } },
 	{ identifiers: ["claude-code", "claude-cli", "claude-vscode"], app: { name: "Claude Code", icon: "/images/claude-code.png" } },
 	{ identifiers: ["codex-cli", "codex-tui"], app: { name: "Codex CLI", icon: "/images/codex.png" } },
 	{ identifiers: ["codex-desktop"], app: { name: "Codex Desktop", icon: "/images/codex.png" } },
@@ -216,7 +227,10 @@ export const mapAppToClientApp = (app?: string | null): ClientApp => {
 	if (!app || app.trim() === "") {
 		return { name: "Unknown" };
 	}
-	return appByName.get(app) || { name: app };
+	return (
+		appByName.get(app) ||
+		userAgentAppMatchers.find((matcher) => matcher.identifiers.includes(app.trim().toLowerCase()))?.app || { name: app }
+	);
 };
 
 // mapUserAgentToApp resolves a raw User-Agent string to a client app for display.
@@ -243,15 +257,15 @@ export const logAppDisplayName = (app: ClientApp, userAgent?: string | null): st
 };
 
 export const StatusColors = {
-	success: "bg-green-100 text-green-800",
-	error: "bg-red-100 text-red-800",
+	success: "bg-chart-success/15 text-chart-success-ink",
+	error: "bg-chart-error/15 text-chart-error-ink",
 	processing: "bg-blue-100 text-blue-800",
 	cancelled: "bg-gray-100 text-gray-800",
 } as const;
 
 export const StatusBarColors = {
-	success: "bg-green-500",
-	error: "bg-red-500",
+	success: "bg-chart-success",
+	error: "bg-chart-error",
 	processing: "bg-blue-500",
 	cancelled: "bg-gray-400",
 } as const;

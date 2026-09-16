@@ -265,6 +265,10 @@ func stripChatUnverifiableReasoning(ctx *schemas.BifrostContext, req *schemas.Bi
 	rewritten := make([]schemas.ChatMessage, len(req.Input))
 	copy(rewritten, req.Input)
 
+	// Anthropic refuses a blanked signature wherever it appears, so there the detail is
+	// dropped whole rather than emptied (see dropsWholeReasoningBlocks).
+	dropWhole := dropsWholeReasoningBlocks(ctx, req.Model)
+
 	changed := false
 	for i := range rewritten {
 		assistant := rewritten[i].ChatAssistantMessage
@@ -272,6 +276,9 @@ func stripChatUnverifiableReasoning(ctx *schemas.BifrostContext, req *schemas.Bi
 			continue
 		}
 		details, detailsChanged := stripChatReasoningDetails(assistant.ReasoningDetails)
+		if dropWhole {
+			details, detailsChanged = dropChatReasoningDetails(assistant.ReasoningDetails)
+		}
 		if !detailsChanged {
 			continue
 		}
@@ -314,15 +321,77 @@ func stripChatReasoningDetails(details []schemas.ChatReasoningDetails) ([]schema
 	return kept, true
 }
 
+// dropChatReasoningDetails removes every reasoning detail carrying an unverifiable
+// payload, reporting whether any were removed. Unlike stripChatReasoningDetails the
+// text does not survive: on Anthropic it is the thinking prose the refused signature
+// signed, and replaying it without a valid signature is itself a 400.
+func dropChatReasoningDetails(details []schemas.ChatReasoningDetails) ([]schemas.ChatReasoningDetails, bool) {
+	kept := make([]schemas.ChatReasoningDetails, 0, len(details))
+	changed := false
+	for _, detail := range details {
+		if detail.Signature != nil || detail.Data != nil {
+			changed = true
+			continue
+		}
+		kept = append(kept, detail)
+	}
+	if !changed {
+		return nil, false
+	}
+	return kept, true
+}
+
 // contentBlockReasoningCarriers name the ResponsesMessageContentBlock fields that can
 // hold a payload the next upstream cannot verify. Both are cleared in one pass: the
 // strip gets a single retry, so healing one field per attempt would need two upstream
 // calls to reach a payload the upstream accepts.
 var contentBlockReasoningCarriers = []string{"signature", "encrypted_content"}
 
+// dropsWholeReasoningBlocks reports whether the upstream this request is bound for
+// requires a replayed thinking block to be deleted outright rather than emptied.
+//
+// Anthropic verifies a thinking block's signature on every assistant turn it receives,
+// not only the latest, and answers a blanked one with "messages.N.content.M: Invalid
+// `signature` in `thinking` block". Clearing the field therefore turns a request the
+// API accepts into one it refuses -- measured against the live API on
+// claude-sonnet-4-5, claude-haiku-4-5 and claude-opus-5: the same history replays 200
+// untouched, 400 with signatures blanked, and 200 again with the blocks removed whole.
+// Removal is accepted on every turn including the latest, with tool_use present and
+// thinking still enabled, so no turn has to be spared and thinking need not be
+// disabled for the retry.
+//
+// Gated on the family rather than the provider key, because the behaviour follows the
+// model: Claude is served from Anthropic, Bedrock and Vertex alike. OpenAI keeps the
+// blanking path -- a reasoning summary without encrypted_content is legal there, and
+// dropping the item would throw away narrative the model can still use.
+func dropsWholeReasoningBlocks(ctx *schemas.BifrostContext, model string) bool {
+	return schemas.IsAnthropicModelFamily(ctx, model)
+}
+
+// dropReasoningContentBlocks removes every reasoning content block that carries an
+// unverifiable payload, reporting whether any were removed.
+func dropReasoningContentBlocks(content *schemas.ResponsesMessageContent) ([]schemas.ResponsesMessageContentBlock, bool) {
+	if content == nil || len(content.ContentBlocks) == 0 {
+		return nil, false
+	}
+	kept := make([]schemas.ResponsesMessageContentBlock, 0, len(content.ContentBlocks))
+	changed := false
+	for _, block := range content.ContentBlocks {
+		if block.Signature != nil || block.EncryptedContent != nil {
+			changed = true
+			continue
+		}
+		kept = append(kept, block)
+	}
+	if !changed {
+		return nil, false
+	}
+	return kept, true
+}
+
 // stripRawAnthropicChatThinking rewrites a buffered Anthropic Messages body so no
-// unverifiable thinking payload survives outside the one turn Anthropic protects,
-// reporting whether anything changed. Each surviving block keeps its original bytes
+// unverifiable thinking payload survives on any assistant turn, reporting whether
+// anything changed. Each surviving block keeps its original bytes
 // (minus the edited field) so fields Bifrost's schema does not model are not lost on
 // the way through.
 //
@@ -351,34 +420,16 @@ func stripRawAnthropicChatThinking(rawBody *[]byte) bool {
 		return false
 	}
 
-	// Anthropic verifies that the thinking and redacted_thinking blocks in the latest
-	// assistant message arrive exactly as it minted them: "Within the latest assistant
-	// message, the sequence of consecutive thinking blocks must match what the model
-	// generated in the original request: you can't rearrange, edit, or partially drop
-	// them. This includes redacted_thinking blocks." Blanking a signature there is an
-	// edit and dropping a redacted_thinking block is a partial drop, so a rewritten
-	// protected turn earns a second, different 400 -- "`thinking` or `redacted_thinking`
-	// blocks in the latest assistant message cannot be modified" -- and the client ends
-	// up with a more confusing error than the signature refusal the retry was spent on.
-	// Earlier turns carry no such rule ("Allowed: outside tool use, omit prior turns'
-	// thinking"), so they are still rewritten and the fail-soft still heals them.
+	// A thinking block is deleted, never emptied. Anthropic verifies the signature on
+	// every turn it appears in and answers a blanked one with "messages.N.content.M:
+	// Invalid `signature` in `thinking` block", so the rewrite that used to run here --
+	// blank the signature, keep the prose -- turned a request the API accepts into one
+	// it refuses. Removing the blocks is accepted on every turn including the latest,
+	// with tool_use present and thinking still enabled; measured against the live API on
+	// claude-sonnet-4-5, claude-haiku-4-5 and claude-opus-5.
 	// https://platform.claude.com/docs/en/build-with-claude/thinking#preserving-thinking-blocks
-	//
-	// The protected turn is the last message whose role is assistant, not the last
-	// element: a tool-result round trip ends on a user message, which is exactly the
-	// shape Anthropic documents this refusal against.
-	lastAssistantIndex := -1
-	for messageIndex, message := range messages.Array() {
-		if message.Get("role").String() == "assistant" {
-			lastAssistantIndex = messageIndex
-		}
-	}
-
 	changed := false
 	for messageIndex, message := range messages.Array() {
-		if messageIndex == lastAssistantIndex {
-			continue
-		}
 		content := message.Get("content")
 		// The shorthand string form carries no blocks, so there is nothing to rewrite.
 		if !content.IsArray() {
@@ -397,13 +448,6 @@ func stripRawAnthropicChatThinking(rawBody *[]byte) bool {
 				if !block.Get("signature").Exists() {
 					break
 				}
-				updated, err := sjson.Set(block.Raw, "signature", "")
-				if err != nil {
-					// Leave the block untouched rather than corrupting it; the retry
-					// still helps if another turn carried the unverifiable payload.
-					break
-				}
-				kept = append(kept, updated)
 				messageChanged = true
 				continue
 			}
@@ -510,6 +554,20 @@ func stripResponsesEncryptedContent(ctx *schemas.BifrostContext, req *schemas.Bi
 	}
 
 	input := *inputRef
+
+	// Anthropic refuses a blanked signature on every turn it appears in, so there the
+	// only rewrite it accepts is deleting the block (see dropsWholeReasoningBlocks).
+	targetModel := ""
+	switch {
+	case req.ResponsesRequest != nil:
+		targetModel = req.ResponsesRequest.Model
+	case req.CountTokensRequest != nil:
+		targetModel = req.CountTokensRequest.Model
+	case req.CompactionRequest != nil:
+		targetModel = req.CompactionRequest.Model
+	}
+	dropWhole := dropsWholeReasoningBlocks(ctx, targetModel)
+
 	stripped := make([]schemas.ResponsesMessage, 0, len(input))
 	changed := false
 
@@ -519,13 +577,23 @@ func stripResponsesEncryptedContent(ctx *schemas.BifrostContext, req *schemas.Bi
 		if message.ResponsesReasoning != nil && message.ResponsesReasoning.EncryptedContent != nil {
 			reasoningCopy := *message.ResponsesReasoning
 			reasoningCopy.EncryptedContent = nil
+			if dropWhole {
+				// The summary is the visible half of the same block. Anthropic replays it
+				// as the thinking text the refused signature signed, so it cannot outlive
+				// the signature the way an OpenAI summary can.
+				reasoningCopy.Summary = nil
+			}
 			message.ResponsesReasoning = &reasoningCopy
 			messageChanged = true
 		}
 
 		// A thinking signature rides on the content block rather than the reasoning
 		// item, so a message can need the strip with encrypted_content already absent.
-		if blocks, ok := stripContentBlockReasoningPayloads(message.Content); ok {
+		blocks, ok := stripContentBlockReasoningPayloads(message.Content)
+		if dropWhole {
+			blocks, ok = dropReasoningContentBlocks(message.Content)
+		}
+		if ok {
 			contentCopy := *message.Content
 			contentCopy.ContentBlocks = blocks
 			message.Content = &contentCopy
@@ -544,11 +612,19 @@ func stripResponsesEncryptedContent(ctx *schemas.BifrostContext, req *schemas.Bi
 			message.ID = nil
 		}
 
-		// Only a reasoning item is dropped when nothing survives: an ordinary message
-		// that merely carried a signature still has its own content to say.
-		if message.ResponsesReasoning != nil &&
-			len(message.ResponsesReasoning.Summary) == 0 &&
-			(message.Content == nil || (len(message.Content.ContentBlocks) == 0 && message.Content.ContentStr == nil)) {
+		// An item the strip emptied is dropped rather than forwarded as a shell: providers
+		// reject an empty content array outright. Only items the strip actually touched
+		// reach here, so an untouched message keeps its own content either way.
+		//
+		// The test is what SURVIVES, not what the item is called. Gating on the reasoning
+		// shape missed both directions in turn: a reasoning-typed item whose payload rode
+		// on a content block (the Anthropic dialect, with ResponsesReasoning left nil) was
+		// forwarded empty, and so was a message-typed item whose content was nothing but
+		// signed reasoning blocks.
+		hasSummary := message.ResponsesReasoning != nil && len(message.ResponsesReasoning.Summary) > 0
+		hasContent := message.Content != nil &&
+			(len(message.Content.ContentBlocks) > 0 || message.Content.ContentStr != nil)
+		if !hasSummary && !hasContent {
 			continue
 		}
 		stripped = append(stripped, message)

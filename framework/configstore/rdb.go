@@ -154,6 +154,7 @@ func schemaKeyFromTableKey(dbKey tables.TableKey) schemas.Key {
 		Enabled:                dbKey.Enabled,
 		UseForBatchAPI:         dbKey.UseForBatchAPI,
 		UseAnthropicEndpoints:  dbKey.UseAnthropicEndpoints,
+		UseOpenAIEndpoints:     dbKey.UseOpenAIEndpoints,
 		AzureKeyConfig:         dbKey.AzureKeyConfig,
 		VertexKeyConfig:        dbKey.VertexKeyConfig,
 		BedrockKeyConfig:       dbKey.BedrockKeyConfig,
@@ -185,6 +186,7 @@ func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tabl
 		Enabled:                key.Enabled,
 		UseForBatchAPI:         key.UseForBatchAPI,
 		UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
+		UseOpenAIEndpoints:     key.UseOpenAIEndpoints,
 		AzureKeyConfig:         key.AzureKeyConfig,
 		VertexKeyConfig:        key.VertexKeyConfig,
 		BedrockKeyConfig:       key.BedrockKeyConfig,
@@ -293,6 +295,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		LoggingHeaders:                        config.LoggingHeaders,
 		WhitelistedRoutes:                     config.WhitelistedRoutes,
 		HideDeletedVirtualKeysInFilters:       config.HideDeletedVirtualKeysInFilters,
+		HiddenRequestTypes:                    config.HiddenRequestTypes,
 		RoutingChainMaxDepth:                  config.RoutingChainMaxDepth,
 		MCPExternalClientURL:                  mcpExternalURLToString(config.MCPExternalClientURL),
 		HeaderFilterConfig:                    config.HeaderFilterConfig,
@@ -579,6 +582,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		LoggingHeaders:                        dbConfig.LoggingHeaders,
 		WhitelistedRoutes:                     dbConfig.WhitelistedRoutes,
 		HideDeletedVirtualKeysInFilters:       dbConfig.HideDeletedVirtualKeysInFilters,
+		HiddenRequestTypes:                    dbConfig.HiddenRequestTypes,
 		RoutingChainMaxDepth:                  dbConfig.RoutingChainMaxDepth,
 		MCPExternalClientURL:                  schemas.NewSecretVar(dbConfig.MCPExternalClientURL),
 		HeaderFilterConfig:                    dbConfig.HeaderFilterConfig,
@@ -705,6 +709,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 			StoreRawRequestResponse:  providerConfig.StoreRawRequestResponse,
 			CustomProviderConfig:     providerConfig.CustomProviderConfig,
 			OpenAIConfig:             providerConfig.OpenAIConfig,
+			PromptCache:              providerConfig.PromptCache,
 			ConfigHash:               providerConfig.ConfigHash,
 			Status:                   providerConfig.Status,
 			Description:              providerConfig.Description,
@@ -754,6 +759,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				Enabled:                key.Enabled,
 				UseForBatchAPI:         key.UseForBatchAPI,
 				UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
+				UseOpenAIEndpoints:     key.UseOpenAIEndpoints,
 				AzureKeyConfig:         key.AzureKeyConfig,
 				VertexKeyConfig:        key.VertexKeyConfig,
 				BedrockKeyConfig:       key.BedrockKeyConfig,
@@ -947,6 +953,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 	dbProvider.StoreRawRequestResponse = configCopy.StoreRawRequestResponse
 	dbProvider.CustomProviderConfig = configCopy.CustomProviderConfig
 	dbProvider.OpenAIConfig = configCopy.OpenAIConfig
+	dbProvider.PromptCache = configCopy.PromptCache
 	dbProvider.ConfigHash = configCopy.ConfigHash
 
 	// Save the updated provider
@@ -997,6 +1004,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			Enabled:                key.Enabled,
 			UseForBatchAPI:         key.UseForBatchAPI,
 			UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
+			UseOpenAIEndpoints:     key.UseOpenAIEndpoints,
 			AzureKeyConfig:         key.AzureKeyConfig,
 			VertexKeyConfig:        key.VertexKeyConfig,
 			BedrockKeyConfig:       key.BedrockKeyConfig,
@@ -1132,6 +1140,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 		StoreRawRequestResponse:  configCopy.StoreRawRequestResponse,
 		CustomProviderConfig:     configCopy.CustomProviderConfig,
 		OpenAIConfig:             configCopy.OpenAIConfig,
+		PromptCache:              configCopy.PromptCache,
 		ConfigHash:               configCopy.ConfigHash,
 	}
 	// Create the provider
@@ -1152,6 +1161,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 			Enabled:                key.Enabled,
 			UseForBatchAPI:         key.UseForBatchAPI,
 			UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
+			UseOpenAIEndpoints:     key.UseOpenAIEndpoints,
 			AzureKeyConfig:         key.AzureKeyConfig,
 			VertexKeyConfig:        key.VertexKeyConfig,
 			BedrockKeyConfig:       key.BedrockKeyConfig,
@@ -1305,6 +1315,7 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 			StoreRawRequestResponse:  dbProvider.StoreRawRequestResponse,
 			CustomProviderConfig:     dbProvider.CustomProviderConfig,
 			OpenAIConfig:             dbProvider.OpenAIConfig,
+			PromptCache:              dbProvider.PromptCache,
 			ConfigHash:               dbProvider.ConfigHash,
 			Status:                   dbProvider.Status,
 			Description:              dbProvider.Description,
@@ -1338,6 +1349,7 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 		StoreRawRequestResponse:  dbProvider.StoreRawRequestResponse,
 		CustomProviderConfig:     dbProvider.CustomProviderConfig,
 		OpenAIConfig:             dbProvider.OpenAIConfig,
+		PromptCache:              dbProvider.PromptCache,
 		ConfigHash:               dbProvider.ConfigHash,
 		Status:                   dbProvider.Status,
 		Description:              dbProvider.Description,
@@ -2890,6 +2902,9 @@ var pricingSyncUpdateColumns = []string{
 	// Costs - OCR
 	"ocr_cost_per_page",
 	"annotation_cost_per_page",
+	// Costs - Time of day
+	"off_peak_cost_multiplier",
+	"peak_hours",
 }
 
 // UpsertModelPrices creates or updates a model pricing record in the database.
@@ -3362,6 +3377,7 @@ func (s *RDBConfigStore) UpdatePlugin(ctx context.Context, plugin *tables.TableP
 		if plugin.Version == 0 {
 			plugin.Version = existing.Version
 		}
+		plugin.CreatedAt = existing.CreatedAt
 		if err := txDB.WithContext(ctx).Delete(&existing).Error; err != nil {
 			if localTx {
 				txDB.Rollback()
@@ -4580,6 +4596,18 @@ func (s *RDBConfigStore) MCPEndpointSlugTaken(ctx context.Context, slug string) 
 func (s *RDBConfigStore) GetVirtualMCPByID(ctx context.Context, id uint) (*tables.TableVirtualMCP, error) {
 	var def tables.TableVirtualMCP
 	err := s.ScopedDB(ctx).First(&def, id).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &def, nil
+}
+
+func (s *RDBConfigStore) GetVirtualMCPByName(ctx context.Context, name string) (*tables.TableVirtualMCP, error) {
+	var def tables.TableVirtualMCP
+	err := s.ScopedDB(ctx).Where("name = ?", name).First(&def).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrNotFound
 	}

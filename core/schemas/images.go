@@ -129,7 +129,6 @@ func (r *BifrostImageGenerationResponse) BackfillParams(req *BifrostRequest) {
 
 // getNumInputImagesSizeQualityAndAspectRatioFromRequest extracts request params for cost
 // calculation and logging. Quality is only returned when it is one of low, medium, high, auto.
-// AspectRatio is only carried by image generation requests.
 func getNumInputImagesSizeQualityAndAspectRatioFromRequest(req *BifrostRequest) (numInputImages int, size string, quality string, aspectRatio string) {
 	if req == nil {
 		return 0, "", "", ""
@@ -161,6 +160,9 @@ func getNumInputImagesSizeQualityAndAspectRatioFromRequest(req *BifrostRequest) 
 			}
 			if p.Quality != nil {
 				quality = normalizeImageQuality(*p.Quality)
+			}
+			if p.AspectRatio != nil {
+				aspectRatio = *p.AspectRatio
 			}
 		}
 	case req.ImageVariationRequest != nil:
@@ -390,6 +392,7 @@ type ImageEditParameters struct {
 	NumInferenceSteps *int                   `json:"num_inference_steps,omitempty"` // number of inference steps
 	UpscaleFactor     *int                   `json:"upscale_factor,omitempty"`      // type "upscale": multiply each dimension by N
 	TargetMegapixels  *int                   `json:"target_megapixels,omitempty"`   // type "upscale": target output size; mutually exclusive with upscale_factor
+	AspectRatio       *string                `json:"aspect_ratio,omitempty"`        // aspect ratio of the edited image
 	ExtraParams       map[string]interface{} `json:"-"`
 }
 

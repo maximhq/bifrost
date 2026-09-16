@@ -35,6 +35,23 @@ describe("parseLogSearchInput", () => {
 	});
 });
 
+describe("parseLogSearchInput with a pinned mode", () => {
+	it("looks up any string as a request ID", () => {
+		expect(parseLogSearchInput("my-custom-req-7", "request_id")).toEqual({ request_id: "my-custom-req-7" });
+		expect(parseLogSearchInput(` ${UUID} `, "request_id")).toEqual({ request_id: UUID });
+	});
+
+	it("searches any string as content, UUIDs included", () => {
+		expect(parseLogSearchInput(UUID, "content")).toEqual({ content_search: UUID });
+		expect(parseLogSearchInput("id:abc", "content")).toEqual({ content_search: "id:abc" });
+	});
+
+	it("still searches nothing for an empty input", () => {
+		expect(parseLogSearchInput("  ", "request_id")).toEqual({});
+		expect(parseLogSearchInput("", "content")).toEqual({});
+	});
+});
+
 describe("formatLogSearchInput", () => {
 	it("round-trips a UUID unchanged", () => {
 		expect(formatLogSearchInput({ request_id: UUID })).toBe(UUID);
@@ -53,11 +70,24 @@ describe("formatLogSearchInput", () => {
 	});
 });
 
+describe("formatLogSearchInput with a pinned mode", () => {
+	it("shows only the field the mode targets, without the prefix", () => {
+		expect(formatLogSearchInput({ request_id: "my-custom-req-7" }, "request_id")).toBe("my-custom-req-7");
+		expect(formatLogSearchInput({ content_search: "hello" }, "request_id")).toBe("");
+		expect(formatLogSearchInput({ request_id: UUID, content_search: "hello" }, "content")).toBe("hello");
+	});
+});
+
 describe("isLogIdSearch", () => {
 	it("reports the mode the input will resolve to", () => {
 		expect(isLogIdSearch(UUID)).toBe(true);
 		expect(isLogIdSearch("id:abc")).toBe(true);
 		expect(isLogIdSearch("id:")).toBe(false);
 		expect(isLogIdSearch("hello")).toBe(false);
+	});
+
+	it("follows a pinned mode over the input's shape", () => {
+		expect(isLogIdSearch("hello", "request_id")).toBe(true);
+		expect(isLogIdSearch(UUID, "content")).toBe(false);
 	});
 });

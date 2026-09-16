@@ -111,7 +111,7 @@ export function MCPLibrarySettingsSheet({ open, onClose }: MCPLibrarySettingsShe
 	return (
 		<Sheet open={open} onOpenChange={(sheetOpen) => !sheetOpen && onClose()}>
 			<SheetContent className="flex w-full flex-col overflow-x-hidden px-0">
-				<SheetHeader className="flex flex-col items-start px-4 pt-8 md:px-7">
+				<SheetHeader className="flex flex-col items-start pt-8" headerClassName="px-4 md:px-6">
 					<SheetTitle>MCP Library Settings</SheetTitle>
 					<SheetDescription>Configure the sync source and interval for the MCP server catalog.</SheetDescription>
 				</SheetHeader>

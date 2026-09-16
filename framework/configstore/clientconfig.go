@@ -109,6 +109,7 @@ type ClientConfig struct {
 	LoggingHeaders                        []string                              `json:"logging_headers,omitempty"`                   // Headers to capture in log metadata
 	WhitelistedRoutes                     []string                              `json:"whitelisted_routes,omitempty"`                // Routes that bypass auth middleware
 	HideDeletedVirtualKeysInFilters       bool                                  `json:"hide_deleted_virtual_keys_in_filters"`        // Hide deleted virtual keys from logs/MCP filter data
+	HiddenRequestTypes                    []string                              `json:"hidden_request_types,omitempty"`              // Request types excluded from dashboard and log API reads; logs are still written
 	RoutingChainMaxDepth                  int                                   `json:"routing_chain_max_depth"`                     // Maximum depth for routing rule chain evaluation (default: 10)
 	MCPExternalClientURL                  *schemas.SecretVar                    `json:"mcp_external_client_url,omitempty"`           // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")
 	MCPServerAuthMode                     tables.MCPServerAuthMode              `json:"mcp_server_auth_mode,omitempty"`              // How /mcp authenticates inbound clients: headers (default), both, or oauth.
@@ -358,6 +359,20 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write(data)
 	}
 
+	// Hash HiddenRequestTypes (sorted for deterministic hashing). Only hashed when
+	// set so existing config hashes do not churn on upgrade.
+	if len(c.HiddenRequestTypes) > 0 {
+		sortedHidden := make([]string, len(c.HiddenRequestTypes))
+		copy(sortedHidden, c.HiddenRequestTypes)
+		sort.Strings(sortedHidden)
+		data, err := sonic.Marshal(sortedHidden)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("hiddenRequestTypes:"))
+		hash.Write(data)
+	}
+
 	// Hash RequiredHeaders (sorted for deterministic hashing)
 	if len(c.RequiredHeaders) > 0 {
 		sortedRequired := make([]string, len(c.RequiredHeaders))
@@ -485,6 +500,7 @@ type ProviderConfig struct {
 	StoreRawRequestResponse  bool                              `json:"store_raw_request_response"`            // Capture raw request/response for internal logging only; strip from API responses returned to clients
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`               // OpenAI-specific configuration
+	PromptCache              *schemas.PromptCacheConfig        `json:"prompt_cache,omitempty"`                // Prompt-cache breakpoint injection
 	ConfigHash               string                            `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
 	Status                   string                            `json:"status,omitempty"`                      // Model discovery status for keyless providers
 	Description              string                            `json:"description,omitempty"`                 // Model discovery error message for keyless providers
@@ -505,6 +521,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		StoreRawRequestResponse:  p.StoreRawRequestResponse,
 		CustomProviderConfig:     p.CustomProviderConfig,
 		OpenAIConfig:             p.OpenAIConfig,
+		PromptCache:              p.PromptCache,
 		ConfigHash:               p.ConfigHash,
 		Status:                   p.Status,
 		Description:              p.Description,
@@ -553,6 +570,12 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		} else {
 			redactedConfig.Keys[i].UseAnthropicEndpoints = new(false)
 		}
+		// Add back use openai endpoints
+		if key.UseOpenAIEndpoints != nil {
+			redactedConfig.Keys[i].UseOpenAIEndpoints = key.UseOpenAIEndpoints
+		} else {
+			redactedConfig.Keys[i].UseOpenAIEndpoints = new(false)
+		}
 
 		// Add model discovery status and error
 		redactedConfig.Keys[i].Status = key.Status
@@ -561,11 +584,8 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		// Redact Azure key config if present
 		if key.AzureKeyConfig != nil {
 			azureConfig := &schemas.AzureKeyConfig{}
-			if key.AzureKeyConfig.Endpoint.IsFromSecret() {
-				azureConfig.Endpoint = *key.AzureKeyConfig.Endpoint.Redacted()
-			} else {
-				azureConfig.Endpoint = key.AzureKeyConfig.Endpoint
-			}
+			// The endpoint is a hostname, not a credential — surface it in plaintext.
+			azureConfig.Endpoint = *key.AzureKeyConfig.Endpoint.RedactedIfSecret()
 			if key.AzureKeyConfig.ClientID != nil {
 				azureConfig.ClientID = key.AzureKeyConfig.ClientID.Redacted()
 			}
@@ -586,7 +606,8 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			vertexConfig := &schemas.VertexKeyConfig{}
 			vertexConfig.ProjectID = *key.VertexKeyConfig.ProjectID.Redacted()
 			vertexConfig.ProjectNumber = *key.VertexKeyConfig.ProjectNumber.Redacted()
-			vertexConfig.Region = *key.VertexKeyConfig.Region.Redacted()
+			// The region is a public identifier, not a credential — surface it in plaintext.
+			vertexConfig.Region = *key.VertexKeyConfig.Region.RedactedIfSecret()
 			vertexConfig.AuthCredentials = *key.VertexKeyConfig.AuthCredentials.Redacted()
 			vertexConfig.ForceSingleRegion = key.VertexKeyConfig.ForceSingleRegion
 			redactedConfig.Keys[i].VertexKeyConfig = vertexConfig
@@ -600,8 +621,9 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			if key.BedrockKeyConfig.SessionToken != nil {
 				bedrockConfig.SessionToken = key.BedrockKeyConfig.SessionToken.Redacted()
 			}
+			// The region is a public identifier, not a credential — surface it in plaintext.
 			if key.BedrockKeyConfig.Region != nil {
-				bedrockConfig.Region = key.BedrockKeyConfig.Region.Redacted()
+				bedrockConfig.Region = key.BedrockKeyConfig.Region.RedactedIfSecret()
 			}
 			if key.BedrockKeyConfig.ARN != nil {
 				bedrockConfig.ARN = key.BedrockKeyConfig.ARN.Redacted()
@@ -641,8 +663,9 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			if key.BedrockMantleKeyConfig.SessionToken != nil {
 				mantleConfig.SessionToken = key.BedrockMantleKeyConfig.SessionToken.Redacted()
 			}
+			// The region is a public identifier, not a credential — surface it in plaintext.
 			if key.BedrockMantleKeyConfig.Region != nil {
-				mantleConfig.Region = key.BedrockMantleKeyConfig.Region.Redacted()
+				mantleConfig.Region = key.BedrockMantleKeyConfig.Region.RedactedIfSecret()
 			}
 			if key.BedrockMantleKeyConfig.RoleARN != nil {
 				mantleConfig.RoleARN = key.BedrockMantleKeyConfig.RoleARN.Redacted()
@@ -668,7 +691,8 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			vllmConfig := &schemas.VLLMKeyConfig{
 				ModelName: key.VLLMKeyConfig.ModelName,
 			}
-			vllmConfig.URL = *key.VLLMKeyConfig.URL.Redacted()
+			// The URL is a service address, not a credential — surface it in plaintext.
+			vllmConfig.URL = *key.VLLMKeyConfig.URL.RedactedIfSecret()
 			redactedConfig.Keys[i].VLLMKeyConfig = vllmConfig
 		}
 
@@ -681,13 +705,15 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 
 		if key.OllamaKeyConfig != nil {
 			ollamaConfig := &schemas.OllamaKeyConfig{}
-			ollamaConfig.URL = *key.OllamaKeyConfig.URL.Redacted()
+			// The URL is a service address, not a credential — surface it in plaintext.
+			ollamaConfig.URL = *key.OllamaKeyConfig.URL.RedactedIfSecret()
 			redactedConfig.Keys[i].OllamaKeyConfig = ollamaConfig
 		}
 
 		if key.SGLKeyConfig != nil {
 			sglConfig := &schemas.SGLKeyConfig{}
-			sglConfig.URL = *key.SGLKeyConfig.URL.Redacted()
+			// The URL is a service address, not a credential — surface it in plaintext.
+			sglConfig.URL = *key.SGLKeyConfig.URL.RedactedIfSecret()
 			redactedConfig.Keys[i].SGLKeyConfig = sglConfig
 		}
 
@@ -699,11 +725,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			}
 			// The workspace URL is a hostname, not a credential — surface it in
 			// plaintext so the UI can round-trip it, mirroring the Azure endpoint.
-			if key.DatabricksKeyConfig.WorkspaceURL.IsFromSecret() {
-				databricksConfig.WorkspaceURL = *key.DatabricksKeyConfig.WorkspaceURL.Redacted()
-			} else {
-				databricksConfig.WorkspaceURL = key.DatabricksKeyConfig.WorkspaceURL
-			}
+			databricksConfig.WorkspaceURL = *key.DatabricksKeyConfig.WorkspaceURL.RedactedIfSecret()
 			if key.DatabricksKeyConfig.ClientID != nil {
 				databricksConfig.ClientID = key.DatabricksKeyConfig.ClientID.Redacted()
 			}
@@ -776,6 +798,15 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 	// Hash OpenAIConfig
 	if p.OpenAIConfig != nil {
 		data, err := sonic.Marshal(p.OpenAIConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
+	// Hash PromptCache
+	if p.PromptCache != nil {
+		data, err := sonic.Marshal(p.PromptCache)
 		if err != nil {
 			return "", err
 		}

@@ -87,8 +87,8 @@ func (h *RealtimeClientSecretsHandler) handleRequest(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	logger.Info("[realtime-client-secrets] request: path=%s provider=%s model=%s endpoint_type=%s",
-		string(ctx.Path()), providerKey, model, route.EndpointType)
+	logger.Info("[realtime-client-secrets] request: path=%s provider=%s model=%s",
+		string(ctx.Path()), providerKey, model)
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore)
 	defer cancel()
@@ -152,7 +152,7 @@ func (h *RealtimeClientSecretsHandler) handleRequest(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	resp, bifrostErr := sessionProvider.CreateRealtimeClientSecret(bifrostCtx, key, route.EndpointType, normalizedBody)
+	resp, bifrostErr := sessionProvider.CreateRealtimeClientSecret(bifrostCtx, key, normalizedBody)
 	if bifrostErr != nil {
 		logger.Error("[realtime-client-secrets] upstream error: provider=%s model=%s error=%s",
 			providerKey, model, bifrostErr.Error)
@@ -194,24 +194,12 @@ func (h *RealtimeClientSecretsHandler) evaluateMintingGovernance(
 
 func (h *RealtimeClientSecretsHandler) realtimeSessionRoutes() []schemas.RealtimeSessionRoute {
 	routes := []schemas.RealtimeSessionRoute{
-		{
-			Path:         "/v1/realtime/client_secrets",
-			EndpointType: schemas.RealtimeSessionEndpointClientSecrets,
-		},
-		{
-			Path:         "/v1/realtime/sessions",
-			EndpointType: schemas.RealtimeSessionEndpointSessions,
-		},
+		{Path: "/v1/realtime/client_secrets"},
 	}
 
 	for _, path := range integrations.OpenAIRealtimeClientSecretPaths("/openai") {
-		endpointType := schemas.RealtimeSessionEndpointClientSecrets
-		if strings.HasSuffix(path, "/realtime/sessions") {
-			endpointType = schemas.RealtimeSessionEndpointSessions
-		}
 		routes = append(routes, schemas.RealtimeSessionRoute{
 			Path:            path,
-			EndpointType:    endpointType,
 			DefaultProvider: schemas.OpenAI,
 		})
 	}
@@ -391,16 +379,12 @@ func cacheRealtimeEphemeralKeyMapping(kv schemas.KVStore, body []byte, keyID str
 		return
 	}
 
-	payload, err := json.Marshal(realtimeEphemeralKeyMapping{
+	mapping := realtimeEphemeralKeyMapping{
 		KeyID:      strings.TrimSpace(keyID),
 		VirtualKey: strings.TrimSpace(virtualKey),
-	})
-	if err != nil {
-		logger.Warn("failed to encode realtime ephemeral key mapping for key_id=%s: %v", keyID, err)
-		return
 	}
 
-	if err := kv.SetWithTTL(buildRealtimeEphemeralKeyMappingKey(token), payload, ttl); err != nil {
+	if err := kv.SetWithTTL(buildRealtimeEphemeralKeyMappingKey(token), mapping, ttl); err != nil {
 		logger.Warn("failed to cache realtime ephemeral key mapping for key_id=%s: %v", keyID, err)
 	}
 }
