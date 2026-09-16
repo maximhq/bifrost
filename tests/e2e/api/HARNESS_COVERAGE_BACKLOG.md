@@ -36,7 +36,7 @@ Sources:
 - [ ] **Logprobs** (`logprobs: true, top_logprobs: N`)
 - [ ] **Logit bias** (`logit_bias: { token_id: bias }`)
 - [ ] **Seed for deterministic output** (`seed: 12345`)
-- [ ] **Stop sequences** (`stop: ["END"]`)
+- [x] **Stop sequences** (`stop: ["END"]`) — existing Stop Sequences Matrix; scalar string and empty-string streaming decoding in folder 93 (#7219)
 - [ ] **N completions** (`n: 3`)
 - [ ] **Temperature / top_p / frequency_penalty / presence_penalty**
 - [ ] **Stream options with usage** (`stream_options: { include_usage: true }`)

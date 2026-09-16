@@ -147,6 +147,7 @@ var chatParamsKnownFields = map[string]bool{
 	"safety_identifier":      true,
 	"service_tier":           true,
 	"stream_options":         true,
+	"stop":                   true,
 	"store":                  true,
 	"temperature":            true,
 	"tool_choice":            true,

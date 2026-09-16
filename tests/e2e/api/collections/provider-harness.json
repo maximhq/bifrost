@@ -150845,6 +150845,85 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "93. Scalar stop decoding (#7219) (scalar-stop-decoding)",
+      "description": "POST /v1/chat/completions -> ChatRequest.UnmarshalJSON -> ChatParameters.UnmarshalJSON. Scalar stop values previously failed array-only decoding with HTTP 400 before provider routing. Pin a non-empty string and the reported empty-string streaming request. Existing Stop Sequences Matrix cases cover arrays; Go tests also verify stop is not duplicated into ExtraParams.",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini non-streaming scalar stop - scalar-stop-decoding - #7219",
+          "event": [{
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                "pm.test('scalar stop returns a chat completion - #7219', function () {",
+                "  var body = pm.response.text();",
+                "  pm.expect(body).to.not.include('Invalid request payload');",
+                "  pm.expect(pm.response.code, 'failed: ' + body).to.equal(200);",
+                "  var result = pm.response.json();",
+                "  pm.expect(result.id, 'missing completion id: ' + body).to.be.a('string');",
+                "  pm.expect(result.choices, 'missing choices: ' + body).to.be.an('array').that.is.not.empty;",
+                "});"
+              ]
+            }
+          }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Say hello.\"}],\n  \"max_completion_tokens\": 16,\n  \"stop\": \"<END>\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "chat", "completions"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "openai/gpt-4o-mini streaming empty scalar stop - scalar-stop-decoding - #7219",
+          "event": [{
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                "pm.test('empty scalar stop returns a complete SSE stream - #7219', function () {",
+                "  var body = pm.response.text();",
+                "  pm.expect(body).to.not.include('Invalid request payload');",
+                "  pm.expect(pm.response.code, 'failed: ' + body).to.equal(200);",
+                "  pm.expect(body, 'missing stream terminator: ' + body).to.include('data: [DONE]');",
+                "  var chunks = body.split(/\\r?\\n/).filter(function (line) { return line.indexOf('data: ') === 0 && line !== 'data: [DONE]'; });",
+                "  pm.expect(chunks, 'missing SSE chunks: ' + body).to.not.be.empty;",
+                "  chunks.forEach(function (line) {",
+                "    var chunk = JSON.parse(line.slice(6));",
+                "    pm.expect(chunk.error, 'stream error: ' + line).to.equal(undefined);",
+                "    pm.expect(chunk.choices, 'missing choices: ' + line).to.be.an('array');",
+                "  });",
+                "});"
+              ]
+            }
+          }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Say hello.\"}],\n  \"stream\": true,\n  \"max_completion_tokens\": 16,\n  \"stop\": \"\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "chat", "completions"]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }
