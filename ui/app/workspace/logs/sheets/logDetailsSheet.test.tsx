@@ -10,7 +10,7 @@ vi.mock("@/hooks/useSheetNavigation", () => ({ useSheetNavigation: () => ({}) })
 vi.mock("@/components/sheetNavigationButtons", () => ({ SheetNavigationButtons: () => null }));
 vi.mock("@/components/ui/sheet", () => ({
 	Sheet: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-	SheetContent: ({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) => <div style={style}>{children}</div>,
+	SheetContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 	SheetTitle: ({ children }: { children: React.ReactNode }) => <h1>{children}</h1>,
 }));
 vi.mock("./logDetailView", () => ({
@@ -56,16 +56,5 @@ describe("log detail export safety", () => {
 	it("keeps successfully hydrated detail visible during polling", () => {
 		Object.assign(state.query, { data: detail, currentData: detail, isFetching: true });
 		expect(render()).toContain("COMPLETE PAYLOAD");
-	});
-});
-// SSR cannot measure a viewport. Pin the no-motion contract that prevents the
-// measured +100%-width offset even when the host pauses the animation clock.
-describe("log detail viewport positioning", () => {
-	it.each(["loading", "error", "ready"])("does not depend on animation progress in %s state", (mode) => {
-		state.query = { isLoading: mode === "loading", isError: mode === "error", currentData: mode === "ready" ? detail : undefined };
-		const html = render();
-		expect(html).toContain("animation:none");
-		expect(html).toContain("transition:none");
-		expect(html).toContain("transform:none");
 	});
 });

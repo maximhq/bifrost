@@ -77,12 +77,7 @@ export function LogDetailSheet({
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent
-				className="border-secondary flex w-full flex-col gap-4 overflow-x-hidden border p-4 sm:max-w-[60%] md:p-8"
-				// Hidden embedded browsers can suspend CSS animations at the initial
-				// translateX(100%) frame. Detail access must not depend on that clock.
-				style={{ animation: "none", transition: "none", transform: "none" }}
-			>
+			<SheetContent className="border-secondary flex w-full flex-col gap-4 overflow-x-hidden border p-4 sm:max-w-[60%] md:p-8">
 				{isError ? (
 					<div role="alert" className="flex h-full flex-col items-center justify-center gap-4" data-testid="logdetails-load-error">
 						<SheetTitle>Unable to load complete log details</SheetTitle>
