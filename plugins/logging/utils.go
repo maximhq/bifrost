@@ -715,6 +715,21 @@ func redactEmbeddingMediaData(items []schemas.EmbeddingInputItem) []schemas.Embe
 	return stripped
 }
 
+// embeddingMediaDataSize totals the inline media bytes across every item.
+func embeddingMediaDataSize(items []schemas.EmbeddingInputItem) int64 {
+	var total int64
+	for _, item := range items {
+		for _, part := range item.Content {
+			for _, media := range []*schemas.EmbeddingMediaPart{part.Image, part.Audio, part.File, part.Video} {
+				if media != nil && media.Data != nil {
+					total += int64(len(*media.Data))
+				}
+			}
+		}
+	}
+	return total
+}
+
 func extractRealtimeInputHistory(input []schemas.ResponsesMessage) []schemas.ChatMessage {
 	messages := make([]schemas.ChatMessage, 0, len(input))
 	for _, item := range input {
