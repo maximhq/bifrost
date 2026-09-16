@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { formatTokenExpiry, missingHeaderKeys } from "./mcpCredential";
+import { formatTokenExpiry, missingHeaderKeys, providerRejectedTheClient } from "./mcpCredential";
 
 describe("formatTokenExpiry", () => {
 	const now = new Date("2026-09-03T12:00:00Z");
@@ -65,5 +65,25 @@ describe("missingHeaderKeys", () => {
 
 	test("compares header names case-insensitively and ignores blanks", () => {
 		expect(missingHeaderKeys(["X-API-Key", " X-Tenant-ID ", "", "X-Region"], ["x-api-key", "X-Tenant-Id"])).toEqual(["X-Region"]);
+	});
+});
+
+describe("providerRejectedTheClient", () => {
+	test("matches the provider disowning Bifrost's client", () => {
+		expect(providerRejectedTheClient("provider rejected the refresh (HTTP 401, invalid_client: Invalid client_id)")).toBe(true);
+	});
+
+	test("matches regardless of case", () => {
+		expect(providerRejectedTheClient("HTTP 401, INVALID_CLIENT")).toBe(true);
+	});
+
+	test("does not match a revoked grant, which a plain reauthorize fixes", () => {
+		expect(providerRejectedTheClient("provider rejected the refresh (HTTP 400, invalid_grant: Token has been revoked)")).toBe(false);
+	});
+
+	test("does not match a rotation or an absent reason", () => {
+		expect(providerRejectedTheClient("OAuth client credentials were rotated")).toBe(false);
+		expect(providerRejectedTheClient("")).toBe(false);
+		expect(providerRejectedTheClient(undefined)).toBe(false);
 	});
 });
