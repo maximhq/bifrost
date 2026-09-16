@@ -32,11 +32,14 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import i18n from "@/lib/i18n";
 
-const matchTypeOptions: Array<{ value: UserAgentMappingMatchType; label: string }> = [
-	{ value: "contains", label: "Contains" },
-	{ value: "starts_with", label: "Starts with" },
-	{ value: "exact", label: "Exact match" },
-	{ value: "regex", label: "Regex" },
+const matchTypeOptions: Array<{
+	value: UserAgentMappingMatchType;
+	labelKey: string;
+}> = [
+	{ value: "contains", labelKey: "userAgent.contains" },
+	{ value: "starts_with", labelKey: "userAgent.startsWith" },
+	{ value: "exact", labelKey: "userAgent.exactMatch" },
+	{ value: "regex", labelKey: "userAgent.regex" },
 ];
 
 const emptyDraft: UserAgentMappingPayload = {
@@ -102,7 +105,12 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 			}
 			handleSheetOpenChange(false);
 		} catch (error) {
-			toast.error(t("userAgent.toastSaveFailed", { action: editingMappingId ? t("userAgent.update") : t("userAgent.add"), error: getErrorMessage(error) }));
+			toast.error(
+				t("userAgent.toastSaveFailed", {
+					action: editingMappingId ? t("userAgent.update") : t("userAgent.add"),
+					error: getErrorMessage(error),
+				}),
+			);
 		}
 	};
 
@@ -125,7 +133,7 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 				<div className="pt-2">
 					<Button type="button" size="sm" onClick={openAddSheet} disabled={controlsDisabled} data-testid="user-agent-mapping-add-btn">
 						<Plus className="h-4 w-4" />
-						Add Mapping
+						{t("userAgent.add")}
 					</Button>
 				</div>
 			</div>
@@ -146,7 +154,7 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 							onClick={() => handleSheetOpenChange(false)}
 							data-testid="user-agent-mapping-cancel-btn"
 						>
-							Cancel
+							{t("userAgent.cancel")}
 						</Button>
 						<Button type="button" onClick={handleSubmit} disabled={controlsDisabled} data-testid="user-agent-mapping-submit-btn">
 							{isEditing ? t("saveChanges") : t("userAgent.addMapping")}
@@ -158,25 +166,25 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 			<Table containerClassName="rounded-sm border">
 				<TableHeader>
 					<TableRow>
-						<TableHead>Pattern</TableHead>
-						<TableHead>Match</TableHead>
-						<TableHead>App</TableHead>
-						<TableHead>Logo</TableHead>
-						<TableHead>Active</TableHead>
-						<TableHead className="w-[92px] text-right">Actions</TableHead>
+						<TableHead>{t("userAgent.pattern")}</TableHead>
+						<TableHead>{t("userAgent.match")}</TableHead>
+						<TableHead>{t("userAgent.app")}</TableHead>
+						<TableHead>{t("userAgent.logo")}</TableHead>
+						<TableHead>{t("userAgent.active")}</TableHead>
+						<TableHead className="w-[92px] text-right">{t("userAgent.actions")}</TableHead>
 					</TableRow>
 				</TableHeader>
 				<TableBody>
 					{isLoading ? (
 						<TableRow>
 							<TableCell colSpan={6} className="text-muted-foreground py-6 text-center">
-								Loading mappings...
+								{t("userAgent.loadingMappings")}
 							</TableCell>
 						</TableRow>
 					) : mappings.length === 0 ? (
 						<TableRow>
 							<TableCell colSpan={6} className="text-muted-foreground py-6 text-center">
-								No user agent mappings configured.
+								{t("userAgent.noUserAgentMappingsConfigured")}
 							</TableCell>
 						</TableRow>
 					) : (
@@ -190,7 +198,11 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 										</span>
 									</TableCell>
 									<TableCell>
-										<span className="text-sm">{getMatchTypeLabel(mapping.match_type)}</span>
+										<span className="text-sm">
+											{t(matchTypeOptions.find((option) => option.value === mapping.match_type)?.labelKey ?? "", {
+												defaultValue: mapping.match_type,
+											})}
+										</span>
 									</TableCell>
 									<TableCell className="max-w-[220px]">
 										<span className="block truncate text-sm" title={mapping.app}>
@@ -218,7 +230,7 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 														variant="ghost"
 														size="icon"
 														disabled={controlsDisabled}
-														aria-label="Mapping actions"
+														aria-label={t("userAgent.mappingActions")}
 														data-testid={`user-agent-mapping-actions-${mapping.id}`}
 													>
 														<MoreVertical className="h-4 w-4" />
@@ -227,12 +239,12 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 												<DropdownMenuContent align="end">
 													<DropdownMenuItem onSelect={() => openEditSheet(mapping)} data-testid={`user-agent-mapping-edit-${mapping.id}`}>
 														<Pencil className="h-4 w-4" />
-														Edit
+														{t("userAgent.edit")}
 													</DropdownMenuItem>
 													<AlertDialogTrigger asChild>
 														<DropdownMenuItem variant="destructive" data-testid={`user-agent-mapping-delete-${mapping.id}`}>
 															<Trash2 className="h-4 w-4" />
-															Delete
+															{t("userAgent.delete")}
 														</DropdownMenuItem>
 													</AlertDialogTrigger>
 												</DropdownMenuContent>
@@ -240,17 +252,17 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 											<AlertDialogContent>
 												<AlertDialogHeader>
 													<AlertDialogTitle>{t("userAgent.deleteConfirmTitle")}</AlertDialogTitle>
-													<AlertDialogDescription>
-														This action cannot be undone. This will permanently delete the user agent mapping.
-													</AlertDialogDescription>
+													<AlertDialogDescription>{t("userAgent.deleteConfirmDescription")}</AlertDialogDescription>
 												</AlertDialogHeader>
 												<AlertDialogFooter>
-													<AlertDialogCancel data-testid={`user-agent-mapping-delete-cancel-${mapping.id}`}>Cancel</AlertDialogCancel>
+													<AlertDialogCancel data-testid={`user-agent-mapping-delete-cancel-${mapping.id}`}>
+														{t("userAgent.cancel")}
+													</AlertDialogCancel>
 													<AlertDialogAction
 														data-testid={`user-agent-mapping-delete-confirm-${mapping.id}`}
 														onClick={() => handleDelete(mapping.id)}
 													>
-														Delete
+														{t("userAgent.delete")}
 													</AlertDialogAction>
 												</AlertDialogFooter>
 											</AlertDialogContent>
@@ -275,15 +287,16 @@ function MappingForm({
 	onChange: (next: UserAgentMappingPayload) => void;
 	disabled?: boolean;
 }) {
+	const { t } = useTranslation("config");
 	return (
 		<div className="space-y-4">
 			<div className="space-y-2">
 				<label htmlFor="user-agent-mapping-pattern-input" className="text-sm font-medium">
-					Pattern
+					{t("userAgent.pattern")}
 				</label>
 				<Input
 					id="user-agent-mapping-pattern-input"
-					placeholder="User-Agent string or regex"
+					placeholder={t("userAgent.patternPlaceholder")}
 					value={draft.pattern}
 					onChange={(event) => onChange({ ...draft, pattern: event.target.value })}
 					disabled={disabled}
@@ -292,7 +305,7 @@ function MappingForm({
 			</div>
 			<div className="space-y-2">
 				<label htmlFor="user-agent-mapping-match-type-select" className="text-sm font-medium">
-					Match type
+					{t("userAgent.matchType")}
 				</label>
 				<MatchTypeSelect
 					id="user-agent-mapping-match-type-select"
@@ -303,11 +316,11 @@ function MappingForm({
 			</div>
 			<div className="space-y-2">
 				<label htmlFor="user-agent-mapping-app-input" className="text-sm font-medium">
-					App
+					{t("userAgent.app")}
 				</label>
 				<Input
 					id="user-agent-mapping-app-input"
-					placeholder="App"
+					placeholder={t("userAgent.app")}
 					value={draft.app}
 					onChange={(event) => onChange({ ...draft, app: event.target.value })}
 					disabled={disabled}
@@ -316,14 +329,14 @@ function MappingForm({
 			</div>
 			<div className="space-y-2">
 				<label htmlFor="user-agent-mapping-logo-upload" className="text-sm font-medium">
-					Logo
+					{t("userAgent.logo")}
 				</label>
 				<LogoInput draft={draft} onChange={onChange} disabled={disabled} />
 			</div>
 			<div className="flex items-center justify-between rounded-sm border p-3">
 				<div>
-					<p className="text-sm font-medium">Active</p>
-					<p className="text-muted-foreground text-xs">Inactive mappings are saved but ignored by detection.</p>
+					<p className="text-sm font-medium">{t("userAgent.active")}</p>
+					<p className="text-muted-foreground text-xs">{t("userAgent.inactiveHelp")}</p>
 				</div>
 				<Switch
 					checked={draft.is_active}
@@ -347,6 +360,7 @@ function MatchTypeSelect({
 	disabled?: boolean;
 	id?: string;
 }) {
+	const { t } = useTranslation("config");
 	return (
 		<Select value={value} onValueChange={(next) => onChange(next as UserAgentMappingMatchType)} disabled={disabled}>
 			<SelectTrigger id={id} className="w-full" data-testid="user-agent-mapping-match-type-select">
@@ -355,7 +369,7 @@ function MatchTypeSelect({
 			<SelectContent>
 				{matchTypeOptions.map((option) => (
 					<SelectItem key={option.value} value={option.value}>
-						{option.label}
+						{t(option.labelKey)}
 					</SelectItem>
 				))}
 			</SelectContent>
@@ -378,7 +392,7 @@ function LogoInput({
 		<div className="flex items-center gap-2">
 			{dataUrl && <img src={dataUrl} alt="" className="size-7 rounded-sm border object-contain" />}
 			<Button type="button" variant="outline" size="icon" disabled={disabled} asChild>
-				<label aria-label="Upload logo">
+				<label aria-label={t("userAgent.uploadLogo")}>
 					<Upload className="h-4 w-4" />
 					<input
 						id="user-agent-mapping-logo-upload"
@@ -396,7 +410,11 @@ function LogoInput({
 							}
 							try {
 								const logo = await fileToBase64(file);
-								onChange({ ...draft, logo, logo_mime: file.type || "application/octet-stream" });
+								onChange({
+									...draft,
+									logo,
+									logo_mime: file.type || "application/octet-stream",
+								});
 							} catch {
 								toast.error(t("userAgent.toastLogoReadFailed"));
 							}
@@ -411,7 +429,7 @@ function LogoInput({
 				size="icon"
 				disabled={disabled || !draft.logo}
 				onClick={() => onChange({ ...draft, logo: undefined, logo_mime: null })}
-				aria-label="Remove logo"
+				aria-label={t("userAgent.removeLogo")}
 				data-testid="user-agent-mapping-logo-remove"
 			>
 				<X className="h-4 w-4" />
@@ -429,10 +447,6 @@ function mappingToPayload(mapping: UserAgentMapping): UserAgentMappingPayload {
 		logo_mime: mapping.logo_mime ?? null,
 		is_active: mapping.is_active,
 	};
-}
-
-function getMatchTypeLabel(matchType: UserAgentMappingMatchType): string {
-	return matchTypeOptions.find((option) => option.value === matchType)?.label ?? matchType;
 }
 
 function validateDraft(draft?: UserAgentMappingPayload): UserAgentMappingPayload | null {

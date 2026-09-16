@@ -14,7 +14,7 @@ import { useGetSCIMProvidersQuery } from "@enterprise/lib/store/apis/scimApi";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { AlertTriangle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 const secretVarEquals = (a?: SecretVar, b?: SecretVar) =>
@@ -325,9 +325,7 @@ export default function MCPView() {
 							{t("mcpSettings.disableAutoToolInjection")}
 						</label>
 						<p className="text-muted-foreground text-sm">
-							When enabled, MCP tools are not automatically included in every request. Tools are only injected when explicitly specified via
-							request headers (<code className="text-xs">x-bf-mcp-include-tools</code>) and still must be allowed by the virtual key MCP
-							configuration.
+							<Trans t={t} i18nKey="mcpSettings.disableAutoToolInjectionHelp" components={{ code0: <code className="text-xs" /> }} />
 						</p>
 					</div>
 					<Switch
@@ -345,10 +343,7 @@ export default function MCPView() {
 						<label htmlFor="mcp-enable-temp-token-auth" className="text-sm font-medium">
 							{t("mcpSettings.allowTempToken")}
 						</label>
-						<p className="text-muted-foreground text-sm">
-							When enabled, per-user MCP OAuth links can include a short-lived scoped token so someone without an active Bifrost dashboard
-							session can complete the flow. Keep disabled to require normal dashboard authentication.
-						</p>
+						<p className="text-muted-foreground text-sm">{t("mcpSettings.tempTokenHelp")}</p>
 					</div>
 					<Switch
 						id="mcp-enable-temp-token-auth"
@@ -365,23 +360,21 @@ export default function MCPView() {
 						<label htmlFor="mcp-binding-level" className="text-sm font-medium">
 							{t("mcpSettings.codeModeBinding")}
 						</label>
-						<p className="text-muted-foreground text-sm">
-							How tools are exposed in the VFS: server-level (all tools per server) or tool-level (individual tools).
-						</p>
+						<p className="text-muted-foreground text-sm">{t("mcpSettings.bindingHelp")}</p>
 					</div>
 					<Select value={localValues.mcp_code_mode_binding_level} onValueChange={handleCodeModeBindingLevelChange}>
 						<SelectTrigger id="mcp-binding-level" data-testid="mcp-binding-level" className="w-56">
-							<SelectValue placeholder="Select binding level" />
+							<SelectValue placeholder={t("mcpSettings.selectBindingLevel")} />
 						</SelectTrigger>
 						<SelectContent>
-							<SelectItem value="server">Server-Level</SelectItem>
-							<SelectItem value="tool">Tool-Level</SelectItem>
+							<SelectItem value="server">{t("mcpSettings.serverLevel")}</SelectItem>
+							<SelectItem value="tool">{t("mcpSettings.toolLevel")}</SelectItem>
 						</SelectContent>
 					</Select>
 
 					{/* Visual Example */}
 					<div className="mt-6 space-y-2">
-						<p className="text-foreground text-xs font-semibold tracking-wide uppercase">VFS Structure:</p>
+						<p className="text-foreground text-xs font-semibold tracking-wide uppercase">{t("mcpSettings.vFSStructure")}</p>
 
 						{localValues.mcp_code_mode_binding_level === "server" ? (
 							<div className="bg-muted border-border rounded-sm border p-4">
@@ -391,7 +384,7 @@ export default function MCPView() {
 									<div className="pl-3">├─ youtube.py</div>
 									<div className="pl-3">└─ weather.py</div>
 								</div>
-								<p className="text-muted-foreground mt-3 text-xs">All tools per server in a single .py file</p>
+								<p className="text-muted-foreground mt-3 text-xs">{t("mcpSettings.allToolsPerServerInASinglePyFile")}</p>
 							</div>
 						) : (
 							<div className="bg-muted border-border rounded-sm border p-4">
@@ -406,7 +399,7 @@ export default function MCPView() {
 									<div className="pl-3">└─ weather/</div>
 									<div className="pl-6">└─ get_forecast.py</div>
 								</div>
-								<p className="text-muted-foreground mt-3 text-xs">Individual .py file for each tool</p>
+								<p className="text-muted-foreground mt-3 text-xs">{t("mcpSettings.individualPyFileForEachTool")}</p>
 							</div>
 						)}
 					</div>
@@ -416,49 +409,58 @@ export default function MCPView() {
 				<Accordion type="single" collapsible className="rounded-sm border px-4">
 					<AccordionItem value="advanced-settings" className="border-b-0">
 						<AccordionTrigger data-testid="mcp-settings-advanced-trigger">
-							<span className="text-sm font-medium">Advanced Settings</span>
+							<span className="text-sm font-medium">{t("mcpSettings.advancedSettings")}</span>
 						</AccordionTrigger>
 						<AccordionContent className="space-y-2 pt-2">
 							<label htmlFor="external-client-url" className="text-sm font-medium">
-								External Client URL
+								{t("mcpSettings.externalClientUrl")}
 							</label>
 							<p className="text-muted-foreground text-sm">
-								Override Bifrost's public base URL when it runs behind a reverse proxy. <b>Leave blank to derive the URL</b> from the
-								incoming <code className="text-xs">Host</code> header. Used as the <code className="text-xs">redirect_uri</code> Bifrost
-								registers with upstream OAuth providers when it acts as a client to an MCP server (e.g. Notion or Jira redirect the browser
-								to <code className="text-xs">{"<URL>/api/oauth/callback"}</code> after login). Supports env var syntax (e.g.{" "}
-								<code className="text-xs">env.BIFROST_EXTERNAL_URL</code>).
+								<Trans
+									t={t}
+									i18nKey="mcpSettings.externalClientUrlHelp"
+									shouldUnescape
+									components={{
+										b0: <b />,
+										code1: <code className="text-xs" />,
+										code2: <code className="text-xs" />,
+										code3: <code className="text-xs" />,
+										code4: <code className="text-xs" />,
+									}}
+								/>
 							</p>
 							<SecretVarInput
 								id="external-client-url"
 								data-testid="mcp-external-client-url-input"
-								placeholder="https://bifrost.example.com or env.BIFROST_OAUTH_REDIRECT_URL"
+								placeholder={t("mcpSettings.externalClientUrlPlaceholder")}
 								value={localConfig.mcp_external_client_url}
 								onChange={handleClientURLChange}
 								disabled={!hasSettingsUpdateAccess}
 							/>
 							<Alert variant="warning">
 								<AlertTriangle className="size-4" />
-								<AlertTitle>Changing this URL can break existing MCP clients</AlertTitle>
+								<AlertTitle>{t("mcpSettings.externalClientUrlWarning")}</AlertTitle>
 								<AlertDescription>
 									<p>
-										Upstream OAuth providers lock the <code className="text-xs">redirect_uri</code> to whatever was registered initially, so
-										MCP clients that already completed OAuth will fail with <em>&quot;Invalid redirect URI&quot;</em>. To recover, clear the
-										stored OAuth client credentials for the affected MCP servers and re-authorize so Bifrost re-runs Dynamic Client
-										Registration with the new URL.
+										<Trans
+											t={t}
+											i18nKey="mcpSettings.externalClientUrlWarningHelp"
+											components={{ code0: <code className="text-xs" />, em1: <em /> }}
+										/>
 									</p>
 								</AlertDescription>
 							</Alert>
 							{/* MCP Server Auth Mode */}
 							<div className="mt-4 space-y-2 border-t pt-4">
 								<label htmlFor="mcp-server-auth-mode" className="text-sm font-medium">
-									MCP Server Authentication Mode
+									{t("mcpSettings.authMode")}
 								</label>
 								<p className="text-muted-foreground text-sm">
-									Controls how inbound MCP clients (e.g. Claude Code, Cursor) authenticate to the <code className="text-xs">/mcp</code>{" "}
-									endpoint. <b>headers</b> (default) - VK / api-key / session headers only, OAuth discovery disabled. <b>both</b> - accepts
-									header credentials and Bifrost-issued JWTs; existing integrations are unaffected. <b>oauth</b> - JWTs only; VK and header
-									access is disabled.
+									<Trans
+										t={t}
+										i18nKey="mcpSettings.authModeHelp"
+										components={{ code0: <code className="text-xs" />, b1: <b />, b2: <b />, b3: <b /> }}
+									/>
 								</p>
 								<Select
 									value={localConfig.mcp_server_auth_mode ?? "headers"}
@@ -469,8 +471,8 @@ export default function MCPView() {
 										<SelectValue />
 									</SelectTrigger>
 									<SelectContent>
-										<SelectItem value="headers">Headers</SelectItem>
-										<SelectItem value="both">Both</SelectItem>
+										<SelectItem value="headers">{t("mcpSettings.headers")}</SelectItem>
+										<SelectItem value="both">{t("mcpSettings.both")}</SelectItem>
 										<SelectItem value="oauth">OAuth</SelectItem>
 									</SelectContent>
 								</Select>
@@ -478,11 +480,8 @@ export default function MCPView() {
 								{localConfig.mcp_server_auth_mode === "oauth" && (
 									<Alert variant="warning">
 										<AlertTriangle className="size-4" />
-										<AlertTitle>VK / header MCP access will be disabled</AlertTitle>
-										<AlertDescription>
-											All existing MCP integrations that use a virtual key, api-key, or session header will stop working immediately.
-											Clients must re-authenticate via the OAuth consent flow to obtain a JWT before they can connect.
-										</AlertDescription>
+										<AlertTitle>{t("mcpSettings.headerAccessDisabled")}</AlertTitle>
+										<AlertDescription>{t("mcpSettings.headerAccessDisabledHelp")}</AlertDescription>
 									</Alert>
 								)}
 
@@ -491,21 +490,15 @@ export default function MCPView() {
 									(config?.mcp_server_auth_mode === "both" || config?.mcp_server_auth_mode === "oauth") && (
 										<Alert variant="warning">
 											<AlertTriangle className="size-4" />
-											<AlertTitle>OAuth discovery will be disabled</AlertTitle>
-											<AlertDescription>
-												All MCP clients that authenticated via the OAuth consent flow will lose access; their JWTs will be rejected and
-												their refresh tokens will become unusable. They will need to reconfigure using a virtual key or api-key header.
-											</AlertDescription>
+											<AlertTitle>{t("mcpSettings.oauthDiscoveryDisabled")}</AlertTitle>
+											<AlertDescription>{t("mcpSettings.oauthDiscoveryDisabledHelp")}</AlertDescription>
 										</Alert>
 									)}
 
 								{/* both: informational note about additive nature */}
 								{localConfig.mcp_server_auth_mode === "both" && (config?.mcp_server_auth_mode ?? "headers") !== "both" && (
 									<Alert>
-										<AlertDescription>
-											Existing VK / header integrations continue to work unchanged. New MCP clients can connect via OAuth - they'll be
-											redirected to the consent page to pick an identity.
-										</AlertDescription>
+										<AlertDescription>{t("mcpSettings.bothAuthModesHelp")}</AlertDescription>
 									</Alert>
 								)}
 							</div>
@@ -513,23 +506,28 @@ export default function MCPView() {
 							{/* OAuth2 AS Settings — only shown when auth mode is not headers */}
 							{(localConfig.mcp_server_auth_mode === "both" || localConfig.mcp_server_auth_mode === "oauth") && (
 								<div className="mt-4 space-y-4 border-t pt-4">
-									<p className="text-sm font-medium">OAuth2 Server Settings</p>
+									<p className="text-sm font-medium">{t("mcpSettings.oauth2Settings")}</p>
 
 									{/* Issuer URL */}
 									<div className="space-y-1.5">
 										<label htmlFor="oauth2-issuer-url" className="text-sm font-medium">
-											Issuer URL
+											{t("mcpSettings.issuerUrl")}
 										</label>
 										<p className="text-muted-foreground text-sm">
-											Stable public URL advertised in discovery documents and embedded as the <code className="text-xs">iss</code> claim in
-											every JWT. Leave blank to derive it from the request <code className="text-xs">Host</code> header (sufficient for most
-											deployments). Multi-host or reverse-proxy deployments might need this. Supports env var syntax (e.g.{" "}
-											<code className="text-xs">env.BIFROST_ISSUER_URL</code>).
+											<Trans
+												t={t}
+												i18nKey="mcpSettings.issuerUrlHelp"
+												components={{
+													code0: <code className="text-xs" />,
+													code1: <code className="text-xs" />,
+													code2: <code className="text-xs" />,
+												}}
+											/>
 										</p>
 										<SecretVarInput
 											id="oauth2-issuer-url"
 											data-testid="oauth2-issuer-url-input"
-											placeholder="https://bifrost.example.com or env.BIFROST_ISSUER_URL"
+											placeholder={t("mcpSettings.issuerUrlPlaceholder")}
 											value={localConfig.oauth2_server_config?.issuer_url}
 											onChange={handleIssuerURLChange}
 											disabled={!hasSettingsUpdateAccess}
@@ -540,12 +538,9 @@ export default function MCPView() {
 									<div className="flex gap-6">
 										<div className="space-y-1.5">
 											<label htmlFor="oauth2-auth-code-ttl" className="text-sm font-medium">
-												Authorization code TTL (seconds)
+												{t("mcpSettings.authCodeTtl")}
 											</label>
-											<p className="text-muted-foreground text-xs">
-												How long the one-time code is valid after the consent page redirects back to the MCP client (default: 300, max 900 =
-												15 min).
-											</p>
+											<p className="text-muted-foreground text-xs">{t("mcpSettings.authCodeTtlHelp")}</p>
 											<Input
 												id="oauth2-auth-code-ttl"
 												data-testid="oauth2-auth-code-ttl-input"
@@ -560,12 +555,9 @@ export default function MCPView() {
 										</div>
 										<div className="space-y-1.5">
 											<label htmlFor="oauth2-access-token-ttl" className="text-sm font-medium">
-												Access token TTL (seconds)
+												{t("mcpSettings.accessTokenTtl")}
 											</label>
-											<p className="text-muted-foreground text-xs">
-												Lifetime of issued JWT Bearer tokens. Clients silently refresh when expired (default: 600 = 10 min). Also bounds how
-												long a revoked grant keeps working before it is cut off.
-											</p>
+											<p className="text-muted-foreground text-xs">{t("mcpSettings.accessTokenTtlHelp")}</p>
 											<Input
 												id="oauth2-access-token-ttl"
 												data-testid="oauth2-access-token-ttl-input"
@@ -588,13 +580,9 @@ export default function MCPView() {
 												<div className="flex items-center justify-between space-x-2">
 													<div className="space-y-0.5">
 														<label htmlFor="oauth2-disable-vk-identity" className="text-sm font-medium">
-															Require identity-provider login
+															{t("mcpSettings.requireIdpLogin")}
 														</label>
-														<p className="text-muted-foreground text-sm">
-															When enabled, the OAuth consent flow only offers identity-provider login. Virtual keys can no longer be used
-															to obtain an MCP token, and existing virtual-key OAuth sessions lose access immediately. Anonymous session
-															access is unaffected (controlled by Enforce Authentication on Inference).
-														</p>
+														<p className="text-muted-foreground text-sm">{t("mcpSettings.requireIdpLoginHelp")}</p>
 													</div>
 													<Switch
 														id="oauth2-disable-vk-identity"
@@ -608,11 +596,8 @@ export default function MCPView() {
 												{localConfig.oauth2_server_config?.disable_vk_identity && (
 													<Alert variant="warning">
 														<AlertTriangle className="size-4" />
-														<AlertTitle>Virtual-key MCP access via OAuth will stop</AlertTitle>
-														<AlertDescription>
-															MCP clients that authenticated with a virtual key will lose access immediately and must sign in through your
-															identity provider to reconnect.
-														</AlertDescription>
+														<AlertTitle>{t("mcpSettings.virtualKeyOauthDisabled")}</AlertTitle>
+														<AlertDescription>{t("mcpSettings.virtualKeyOauthDisabledHelp")}</AlertDescription>
 													</Alert>
 												)}
 											</div>

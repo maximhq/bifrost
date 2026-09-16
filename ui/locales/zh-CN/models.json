@@ -237,6 +237,39 @@
 		"custom": {
 			"waitForUsage": "等待末尾的用量数据块？",
 			"waitForUsageHelp": "在收到 finish_reason 后继续读取，以获取末尾的用量数据块。否则，该请求记录的 token 数和费用均为零。"
+		},
+		"allowedRequests": {
+			"types": {
+				"list_models": "列出模型",
+				"text_completion": "文本补全",
+				"text_completion_stream": "流式文本补全",
+				"chat_completion": "对话补全",
+				"chat_completion_stream": "流式对话补全",
+				"responses": "Responses",
+				"responses_stream": "流式 Responses",
+				"responses_retrieve": "获取 Responses",
+				"responses_delete": "删除 Responses",
+				"responses_cancel": "取消 Responses",
+				"responses_input_items": "Responses 输入项",
+				"embedding": "嵌入",
+				"speech": "语音生成",
+				"speech_stream": "流式语音生成",
+				"transcription": "语音转写",
+				"transcription_stream": "流式语音转写",
+				"image_generation": "图像生成",
+				"image_generation_stream": "流式图像生成",
+				"image_edit": "图像编辑",
+				"image_edit_stream": "流式图像编辑",
+				"image_variation": "图像变体",
+				"count_tokens": "统计 token 数"
+			},
+			"title": "允许的请求类型",
+			"description": "选择此自定义供应商可处理的请求类型。",
+			"pathHint": "点击设置图标可自定义端点路径或使用完整 URL。",
+			"customizePath": "自定义端点路径",
+			"customPath": "自定义路径或 URL",
+			"pathDescription": "使用路径（例如 /v1/chat）覆盖默认路径，或使用完整 URL（例如 https://api.example.com/chat）绕过 base_url。",
+			"unsupported": "{{provider}} 不支持此请求类型"
 		}
 	},
 	"modelCatalog": {

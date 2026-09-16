@@ -231,5 +231,34 @@
 		"autoReloadPaused": "Automatic reload paused",
 		"waiting": "Waiting for the upgrade to complete",
 		"reloadNow": "Reload now"
+	},
+	"onboarding": {
+		"expandSetupChecklist": "Expand setup checklist",
+		"setupChecklist": "Setup checklist",
+		"minimize": "Minimize",
+		"closeForNow": "Close for now",
+		"skip": "Skip",
+		"skipped": "Skipped",
+		"remindMeLater": "Remind me later",
+		"notCompletingTheseStepsKeepsYourBifrostSetupVulnerable": "Not completing these steps keeps your Bifrost setup vulnerable.",
+		"tomorrow": "Tomorrow",
+		"inAWeek": "In a week",
+		"pickADate": "Pick a date…",
+		"iAcceptTheRiskHideForEveryone": "I accept the risk - hide for everyone",
+		"progress": "{{done}} of {{total}} steps complete",
+		"steps": {
+			"cors": "Restrict CORS origins",
+			"dashboard-auth": "Set up dashboard auth",
+			"enforce-inference-auth": "Enforce auth on inference",
+			"provider-key": "Add a provider key",
+			"scim": "Configure SCIM provisioning",
+			"models": "Configure governance model catalog",
+			"virtual-keys": "Set up virtual keys / access profiles"
+		},
+		"sections": {
+			"Security": "Security",
+			"Provider Setup": "Provider Setup",
+			"Everything Else": "Everything Else"
+		}
 	}
 }

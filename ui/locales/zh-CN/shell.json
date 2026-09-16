@@ -231,5 +231,34 @@
 		"autoReloadPaused": "已暂停自动重新加载",
 		"waiting": "正在等待升级完成",
 		"reloadNow": "立即重新加载"
+	},
+	"onboarding": {
+		"expandSetupChecklist": "展开设置清单",
+		"setupChecklist": "设置清单",
+		"minimize": "最小化",
+		"closeForNow": "暂时关闭",
+		"skip": "跳过",
+		"skipped": "已跳过",
+		"remindMeLater": "稍后提醒我",
+		"notCompletingTheseStepsKeepsYourBifrostSetupVulnerable": "未完成这些步骤会使 Bifrost 处于风险状态。",
+		"tomorrow": "明天",
+		"inAWeek": "一周后",
+		"pickADate": "选择日期…",
+		"iAcceptTheRiskHideForEveryone": "我接受此风险，为所有人隐藏",
+		"progress": "已完成 {{done}} / {{total}} 个步骤",
+		"steps": {
+			"cors": "限制 CORS 来源",
+			"dashboard-auth": "设置仪表盘认证",
+			"enforce-inference-auth": "对推理请求强制认证",
+			"provider-key": "添加供应商密钥",
+			"scim": "配置 SCIM 预配",
+			"models": "配置治理模型目录",
+			"virtual-keys": "设置虚拟密钥 / 访问配置"
+		},
+		"sections": {
+			"Security": "安全",
+			"Provider Setup": "供应商设置",
+			"Everything Else": "其他设置"
+		}
 	}
 }

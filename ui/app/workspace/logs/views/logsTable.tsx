@@ -229,7 +229,7 @@ export function LogsDataTable({
 											variant={"ghost"}
 										>
 											{loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-											Refresh
+											{t("labels.refresh")}
 										</Button>
 									)}
 								</div>
@@ -302,7 +302,7 @@ export function LogsDataTable({
 						) : loading ? null : (
 							<TableRow>
 								<TableCell colSpan={columns.length} className="h-24 text-center">
-									No results found. Try adjusting your filters and/or time range.
+									{t("mcpLogs.noResults")}
 								</TableCell>
 							</TableRow>
 						)}
@@ -313,12 +313,12 @@ export function LogsDataTable({
 			{/* Pagination Footer */}
 			<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 				<div className="text-muted-foreground flex items-center gap-2">
-					{startItem.toLocaleString()}-{endItem.toLocaleString()} of {totalItems.toLocaleString()} entries
+					{t("logs.entryRange", { start: startItem.toLocaleString(), end: endItem.toLocaleString(), total: totalItems.toLocaleString() })}
 				</div>
 
 				<div className="flex items-center gap-3">
 					<div className="flex items-center gap-1.5">
-						<span className="text-muted-foreground">Rows per page</span>
+						<span className="text-muted-foreground">{t("logs.rowsPerPage")}</span>
 						<ComboboxSelect
 							options={pageSizeOptions}
 							value={String(pageSizePref)}
@@ -343,9 +343,7 @@ export function LogsDataTable({
 						</Button>
 
 						<div className="flex items-center gap-1">
-							<span>Page</span>
-							<span>{currentPage}</span>
-							<span>of {totalPages}</span>
+							<span>{t("logs.pageRange", { page: currentPage, total: totalPages })}</span>
 						</div>
 
 						<Button
