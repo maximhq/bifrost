@@ -448,6 +448,8 @@ Runtime updates run on a periodic tool sync per client. The cadence is the per-c
 
 Every discovered tool list — from the initial connect and from every periodic sync — persists to the database, so a restart doesn't lose anything a running instance had already discovered. Persistence is skipped when a sync's result is byte-identical to what's already stored, so an unchanged tick doesn't cause a write.
 
+The periodic sync is not the only way to pick up a change. `POST /api/mcp/client/{id}/refresh-tools` re-discovers a single client's tools immediately, which is what to reach for after adding or removing a tool on an upstream server rather than waiting out the interval. It applies to every client type — including per-user and other per-call clients, for which it is the only on-demand refresh path — and its result persists and re-syncs the served registry exactly like a periodic tick. See [Manual Tool Refresh](./connecting-to-servers#manual-tool-refresh).
+
 ---
 
 ### Per-User Auth on the Gateway
