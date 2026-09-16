@@ -114634,7 +114634,47 @@
             "type": "string",
             "format": "date-time"
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "match_type": {
+                  "const": "exact"
+                }
+              },
+              "required": [
+                "match_type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "pattern": {
+                  "pattern": "^[^*]+$"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "match_type": {
+                  "const": "wildcard"
+                }
+              },
+              "required": [
+                "match_type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "pattern": {
+                  "pattern": "^(?:\\*|\\*[^*]+|[^*]+\\*|\\*[^*]+\\*)$"
+                }
+              }
+            }
+          }
+        ]
       },
       "CreatePricingOverrideRequest": {
         "type": "object",
@@ -114693,7 +114733,47 @@
           "patch": {
             "$ref": "#/components/schemas/PricingPatch"
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "match_type": {
+                  "const": "exact"
+                }
+              },
+              "required": [
+                "match_type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "pattern": {
+                  "pattern": "^[^*]+$"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "match_type": {
+                  "const": "wildcard"
+                }
+              },
+              "required": [
+                "match_type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "pattern": {
+                  "pattern": "^(?:\\*|\\*[^*]+|[^*]+\\*|\\*[^*]+\\*)$"
+                }
+              }
+            }
+          }
+        ]
       },
       "UpdatePricingOverrideRequest": {
         "type": "object",
@@ -114745,7 +114825,47 @@
           "patch": {
             "$ref": "#/components/schemas/PricingPatch"
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "match_type": {
+                  "const": "exact"
+                }
+              },
+              "required": [
+                "match_type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "pattern": {
+                  "pattern": "^[^*]+$"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "match_type": {
+                  "const": "wildcard"
+                }
+              },
+              "required": [
+                "match_type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "pattern": {
+                  "pattern": "^(?:\\*|\\*[^*]+|[^*]+\\*|\\*[^*]+\\*)$"
+                }
+              }
+            }
+          }
+        ]
       },
       "PricingOverrideResponse": {
         "type": "object",

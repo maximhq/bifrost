@@ -2284,6 +2284,27 @@ PricingOverride:
     updated_at:
       type: string
       format: date-time
+  allOf:
+    - if:
+        properties:
+          match_type:
+            const: exact
+        required:
+          - match_type
+      then:
+        properties:
+          pattern:
+            pattern: '^[^*]+$'
+    - if:
+        properties:
+          match_type:
+            const: wildcard
+        required:
+          - match_type
+      then:
+        properties:
+          pattern:
+            pattern: '^(?:\*|\*[^*]+|[^*]+\*|\*[^*]+\*)$'
 
 CreatePricingOverrideRequest:
   type: object
@@ -2329,6 +2350,27 @@ CreatePricingOverrideRequest:
       description: Request types this override applies to. At least one value is required.
     patch:
       $ref: '#/PricingPatch'
+  allOf:
+    - if:
+        properties:
+          match_type:
+            const: exact
+        required:
+          - match_type
+      then:
+        properties:
+          pattern:
+            pattern: '^[^*]+$'
+    - if:
+        properties:
+          match_type:
+            const: wildcard
+        required:
+          - match_type
+      then:
+        properties:
+          pattern:
+            pattern: '^(?:\*|\*[^*]+|[^*]+\*|\*[^*]+\*)$'
 
 UpdatePricingOverrideRequest:
   type: object
@@ -2371,6 +2413,27 @@ UpdatePricingOverrideRequest:
       description: Request types this override applies to.
     patch:
       $ref: '#/PricingPatch'
+  allOf:
+    - if:
+        properties:
+          match_type:
+            const: exact
+        required:
+          - match_type
+      then:
+        properties:
+          pattern:
+            pattern: '^[^*]+$'
+    - if:
+        properties:
+          match_type:
+            const: wildcard
+        required:
+          - match_type
+      then:
+        properties:
+          pattern:
+            pattern: '^(?:\*|\*[^*]+|[^*]+\*|\*[^*]+\*)$'
 
 PricingOverrideResponse:
   type: object
