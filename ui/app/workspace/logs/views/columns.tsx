@@ -256,7 +256,7 @@ export const createColumns = (
 	metadataKeys: string[] = [],
 	customAppIcons: Record<string, string> = {},
 	groupedView = false,
-	t: TFunction<"observability"> = ((k: string) => k) as TFunction<"observability">,
+	t: TFunction<"observability"> = i18n.getFixedT(null, "observability"),
 ): ColumnDef<LogEntry>[] => {
 	// Chevron that expands a fallback chain in the grouped view. Child rows get a
 	// corner connector instead so the hierarchy stays readable in any column order.
@@ -503,9 +503,7 @@ export const createColumns = (
 								</TooltipTrigger>
 								{/* The expand chevron only exists in the grouped view, so pointing at
 								    it anywhere else sends people looking for a control that is not there. */}
-								<TooltipContent>
-									{groupedView ? t("logs.settledTooltipGrouped") : t("logs.settledTooltipFlat")}
-								</TooltipContent>
+								<TooltipContent>{groupedView ? t("logs.settledTooltipGrouped") : t("logs.settledTooltipFlat")}</TooltipContent>
 							</Tooltip>
 						);
 					}
@@ -592,7 +590,7 @@ export const createColumns = (
 		},
 		{
 			id: "project",
-			header: "Project",
+			header: t("labels.project"),
 			size: 150,
 			cell: ({ row }) => <AttributionCell name={row.original.project_name} id={row.original.project_id} />,
 		},

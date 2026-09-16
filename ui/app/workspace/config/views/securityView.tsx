@@ -249,7 +249,17 @@ export default function SecurityView() {
 				toast.error(message);
 			}
 		}
-	}, [bifrostConfig, localConfig, localValues.vk_rotation_cooldown, authConfig, showPasswordSection, updateCoreConfig, isFirstTimeSetup, setupToken]);
+	}, [
+		bifrostConfig,
+		localConfig,
+		localValues.vk_rotation_cooldown,
+		authConfig,
+		showPasswordSection,
+		updateCoreConfig,
+		isFirstTimeSetup,
+		setupToken,
+		t,
+	]);
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4">
@@ -267,8 +277,7 @@ export default function SecurityView() {
 					<Alert variant="destructive" data-testid="security-auth-type-error">
 						<AlertTriangle className="h-4 w-4" />
 						<AlertDescription>
-							Could not load authentication type. Dashboard password settings are hidden until this request succeeds.{" "}
-							{getErrorMessage(authTypeError)}
+							{t("security.authTypeUnavailable")} {getErrorMessage(authTypeError)}
 						</AlertDescription>
 					</Alert>
 				) : null}
@@ -289,7 +298,7 @@ export default function SecurityView() {
 							</div>
 							<div className="space-y-4">
 								<div className="space-y-2">
-									<Label htmlFor="admin-username">Username</Label>
+									<Label htmlFor="admin-username">{t("security.username")}</Label>
 									<SecretVarInput
 										id="admin-username"
 										type="text"
@@ -300,7 +309,7 @@ export default function SecurityView() {
 									/>
 								</div>
 								<div className="space-y-2">
-									<Label htmlFor="admin-password">Password</Label>
+									<Label htmlFor="admin-password">{t("security.password")}</Label>
 									<SecretVarInput
 										ref={passwordInputRef}
 										id="admin-password"
@@ -323,7 +332,7 @@ export default function SecurityView() {
 								</div>
 								{isFirstTimeSetup && authConfig.is_enabled ? (
 									<div className="space-y-2">
-										<Label htmlFor="setup-token">Setup token</Label>
+										<Label htmlFor="setup-token">{t("security.setupToken")}</Label>
 										<Input
 											id="setup-token"
 											data-testid="security-setup-token-input"
@@ -351,10 +360,7 @@ export default function SecurityView() {
 							{IS_ENTERPRISE ? t("security.enableAuthOnInference") : t("security.enforceVirtualKeys")}
 						</label>
 						<p className="text-muted-foreground text-sm">
-							{IS_ENTERPRISE
-								? t("security.enableAuthHelp")
-								: t("security.enforceVkHelp")}{" "}
-							See{" "}
+							{IS_ENTERPRISE ? t("security.enableAuthHelp") : t("security.enforceVkHelp")} See{" "}
 							<a
 								href="https://docs.getbifrost.ai/features/governance/virtual-keys"
 								target="_blank"
@@ -434,9 +440,7 @@ export default function SecurityView() {
 						<label htmlFor="vk-rotation-cooldown" className="text-sm font-medium">
 							{t("security.vkRotationCooldown")}
 						</label>
-						<p className="text-muted-foreground text-sm">
-							{t("security.vkRotationCooldownDesc")}
-						</p>
+						<p className="text-muted-foreground text-sm">{t("security.vkRotationCooldownDesc")}</p>
 					</div>
 					<Input
 						id="vk-rotation-cooldown"

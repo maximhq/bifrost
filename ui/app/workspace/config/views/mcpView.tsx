@@ -255,7 +255,7 @@ export default function MCPView() {
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
-	}, [bifrostConfig, localConfig, localValues, updateCoreConfig]);
+	}, [bifrostConfig, localConfig, localValues, updateCoreConfig, t]);
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4 px-4 py-6 md:px-0" data-testid="mcp-settings-view">
@@ -267,7 +267,7 @@ export default function MCPView() {
 						<label htmlFor="mcp-agent-depth" className="text-sm font-medium">
 							{t("mcpSettings.maxAgentDepth")}
 						</label>
-						<p className="text-muted-foreground text-sm">Maximum depth for MCP agent execution.</p>
+						<p className="text-muted-foreground text-sm">{t("mcpSettings.maxDepthHelp")}</p>
 					</div>
 					<Input
 						id="mcp-agent-depth"
@@ -286,7 +286,7 @@ export default function MCPView() {
 						<label htmlFor="mcp-tool-execution-timeout" className="text-sm font-medium">
 							{t("mcpSettings.toolTimeout")}
 						</label>
-						<p className="text-muted-foreground text-sm">Maximum time in seconds for tool execution.</p>
+						<p className="text-muted-foreground text-sm">{t("mcpSettings.toolTimeoutHelp")}</p>
 					</div>
 					<Input
 						id="mcp-tool-execution-timeout"
@@ -305,9 +305,7 @@ export default function MCPView() {
 						<label htmlFor="mcp-tool-sync-interval" className="text-sm font-medium">
 							{t("mcpSettings.toolSyncInterval")}
 						</label>
-						<p className="text-muted-foreground text-sm">
-							How often to refresh tool lists from MCP servers. Set to 0 to use the default of 10 minutes.
-						</p>
+						<p className="text-muted-foreground text-sm">{t("mcpSettings.refreshIntervalHelp")}</p>
 					</div>
 					<Input
 						id="mcp-tool-sync-interval"

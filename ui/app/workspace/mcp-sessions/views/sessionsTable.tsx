@@ -72,7 +72,7 @@ export default function SessionsTable({
 	onOffsetChange,
 }: SessionsTableProps) {
 	const { t } = useTranslation("mcp");
-	const { t: tCommon } = useTranslation("common");
+	const { t: tc } = useTranslation("common");
 	const { toast } = useToast();
 	const [reauth, { isLoading: reauthing }] = useReauthMCPSessionMutation();
 	const [revoke, { isLoading: revoking }] = useRevokeMCPSessionMutation();
@@ -119,21 +119,17 @@ export default function SessionsTable({
 						{pendingDelete?.kind === "header" ? (
 							<>
 								<AlertDialogTitle>{t("sessions.revokeHeaderTitle")}</AlertDialogTitle>
-								<AlertDialogDescription>
-									{t("sessions.revokeHeaderDescription")}
-								</AlertDialogDescription>
+								<AlertDialogDescription>{t("sessions.revokeHeaderDescription")}</AlertDialogDescription>
 							</>
 						) : (
 							<>
 								<AlertDialogTitle>{t("sessions.revokeSessionTitle")}</AlertDialogTitle>
-								<AlertDialogDescription>
-									{t("sessions.revokeSessionDescription")}
-								</AlertDialogDescription>
+								<AlertDialogDescription>{t("sessions.revokeSessionDescription")}</AlertDialogDescription>
 							</>
 						)}
 					</AlertDialogHeader>
 					<AlertDialogFooter>
-						<AlertDialogCancel data-testid="mcp-session-revoke-cancel">{tCommon("cancel")}</AlertDialogCancel>
+						<AlertDialogCancel data-testid="mcp-session-revoke-cancel">{tc("cancel")}</AlertDialogCancel>
 						<AlertDialogAction onClick={confirmRevoke} data-testid="mcp-session-revoke-confirm">
 							{t("sessions.actions.revoke")}
 						</AlertDialogAction>
@@ -164,40 +160,22 @@ export default function SessionsTable({
 							<TableRow>
 								<TableHead>{t("sessions.columns.mcpServer")}</TableHead>
 								<TableHead>
-									<HeaderWithTooltip
-										label={t("sessions.columns.type")}
-										tooltip={t("sessions.tooltips.type")}
-									/>
+									<HeaderWithTooltip label={t("sessions.columns.type")} tooltip={t("sessions.tooltips.type")} />
 								</TableHead>
 								<TableHead>
-									<HeaderWithTooltip
-										label={t("sessions.columns.boundTo")}
-										tooltip={t("sessions.tooltips.boundTo")}
-									/>
+									<HeaderWithTooltip label={t("sessions.columns.boundTo")} tooltip={t("sessions.tooltips.boundTo")} />
 								</TableHead>
 								<TableHead>
-									<HeaderWithTooltip
-										label={t("sessions.columns.status")}
-										tooltip={t("sessions.tooltips.status")}
-									/>
+									<HeaderWithTooltip label={t("sessions.columns.status")} tooltip={t("sessions.tooltips.status")} />
 								</TableHead>
 								<TableHead>
-									<HeaderWithTooltip
-										label="Scopes"
-										tooltip="Scopes the provider granted at sign-in, as reported in its token response. Shown as a dash when the provider did not report them. Header submissions and pending sign-ins have no scopes."
-									/>
+									<HeaderWithTooltip label={t("sessions.scopes")} tooltip={t("sessions.scopesHelp")} />
 								</TableHead>
 								<TableHead>
-									<HeaderWithTooltip
-										label={t("sessions.columns.accessTokenExpiry")}
-										tooltip={t("sessions.tooltips.accessTokenExpiry")}
-									/>
+									<HeaderWithTooltip label={t("sessions.columns.accessTokenExpiry")} tooltip={t("sessions.tooltips.accessTokenExpiry")} />
 								</TableHead>
 								<TableHead>
-									<HeaderWithTooltip
-										label="Refresh token"
-										tooltip="Whether the provider issued a refresh token. Present: Bifrost renews the access token automatically at use time. Not issued: the row must be re-authenticated once the access token expires. Rejected upstream: the provider refused the last refresh, so the row needs re-auth. Header rows and pending sign-ins have no token."
-									/>
+									<HeaderWithTooltip label={t("sessions.refreshToken")} tooltip={t("sessions.refreshTokenHelp")} />
 								</TableHead>
 								<TableHead>{t("sessions.columns.created")}</TableHead>
 								<TableHead className={`bg-muted sticky right-0 z-10 w-[56px] text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
@@ -210,9 +188,7 @@ export default function SessionsTable({
 										{hasActiveFilters ? (
 											<div className="text-muted-foreground text-sm">{t("sessions.noMatch")}</div>
 										) : (
-											<span className="text-muted-foreground text-sm">
-												{t("sessions.empty")}
-											</span>
+											<span className="text-muted-foreground text-sm">{t("sessions.empty")}</span>
 										)}
 									</TableCell>
 								</TableRow>

@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import type { LogEntry } from "@/lib/types/logs";
 
-import { getMessage } from "./columns";
+import i18n from "@/lib/i18n";
+
+import { createColumns, getMessage } from "./columns";
 
 describe("getMessage", () => {
 	it("returns EI realtime text from input history", () => {
@@ -96,5 +98,23 @@ describe("getMessage", () => {
 		} as unknown as LogEntry;
 
 		expect(getMessage(log)).toBe('User: show me a pastel palette\nAssistant Tool Call: display_color_palette({"theme":"pastel"})');
+	});
+});
+
+describe("createColumns translations", () => {
+	it("uses the current locale when no translator is supplied", async () => {
+		try {
+			for (const [locale, project] of [
+				["en", "Project"],
+				["zh-CN", "项目"],
+			]) {
+				await i18n.changeLanguage(locale);
+				const columns = createColumns(() => {});
+				expect(columns.find((column) => column.id === "project")?.header).toBe(project);
+				expect(columns.some((column) => typeof column.header === "string" && /^(logs|labels)\./.test(column.header))).toBe(false);
+			}
+		} finally {
+			await i18n.changeLanguage("en");
+		}
 	});
 });

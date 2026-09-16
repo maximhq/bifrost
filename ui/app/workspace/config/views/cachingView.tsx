@@ -322,7 +322,7 @@ export default function CachingView() {
 									<Tabs value={mode} onValueChange={(v) => setMode(v as CacheMode)}>
 										<TabsList className="flex w-full justify-start">
 											<TabsTrigger value="direct" data-testid="caching-mode-direct-tab">
-												Direct only
+												{t("caching.directOnly")}
 											</TabsTrigger>
 											<TabsTrigger
 												value="semantic"
@@ -332,7 +332,7 @@ export default function CachingView() {
 													embeddingProviders.length === 0 ? "Configure an embedding-capable provider to enable semantic mode." : undefined
 												}
 											>
-												Direct + Semantic
+												{t("caching.directSemantic")}
 											</TabsTrigger>
 										</TabsList>
 									</Tabs>

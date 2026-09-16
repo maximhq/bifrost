@@ -45,7 +45,7 @@ export default function OCRView({ ocrInput, ocrOutput }: OCRViewProps) {
 				<div className="w-full rounded-sm border">
 					<div className="flex items-center gap-2 border-b px-6 py-2 text-sm font-medium">
 						<FileText className="h-4 w-4" />
-						OCR Input
+						{t("logs.ocrInput")}
 					</div>
 					<div className="space-y-4 p-6">
 						<div>

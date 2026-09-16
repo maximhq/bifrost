@@ -196,7 +196,11 @@
 			"user": "User",
 			"virtualKeyOption": "Virtual key",
 			"session": "Session"
-		}
+		},
+		"refreshToken": "Refresh token",
+		"scopes": "Scopes",
+		"scopesHelp": "Scopes the provider granted at sign-in, as reported in its token response. Shown as a dash when the provider did not report them. Header submissions and pending sign-ins have no scopes.",
+		"refreshTokenHelp": "Whether the provider issued a refresh token. Present: Bifrost renews the access token automatically at use time. Not issued: the row must be re-authenticated once the access token expires. Rejected upstream: the provider refused the last refresh, so the row needs re-auth. Header rows and pending sign-ins have no token."
 	},
 	"oauthGrants": {
 		"title": "OAuth Grants",

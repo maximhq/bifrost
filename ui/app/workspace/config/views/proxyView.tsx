@@ -67,7 +67,7 @@ export default function ProxyView() {
 					<fieldset disabled={!hasSettingsUpdateAccess} className="space-y-4">
 						<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 							<div className="space-y-0.5">
-								<FormLabel className="text-sm font-medium">Enable Proxy</FormLabel>
+								<FormLabel className="text-sm font-medium">{t("proxy.enableProxy")}</FormLabel>
 								<p className="text-muted-foreground text-sm">{t("proxy.enableProxyHelp")}</p>
 							</div>
 							<FormField
@@ -91,7 +91,7 @@ export default function ProxyView() {
 								name="type"
 								render={({ field }) => (
 									<FormItem>
-										<FormLabel>Proxy Type</FormLabel>
+										<FormLabel>{t("proxy.proxyType")}</FormLabel>
 										<Select onValueChange={field.onChange} value={field.value} disabled={!watchedEnabled}>
 											<FormControl>
 												<SelectTrigger className="w-48">
@@ -133,7 +133,7 @@ export default function ProxyView() {
 								name="url"
 								render={({ field }) => (
 									<FormItem>
-										<FormLabel>Proxy URL</FormLabel>
+										<FormLabel>{t("proxy.proxyUrl")}</FormLabel>
 										<FormControl>
 											<Input placeholder="http://proxy.example.com:8080" disabled={!watchedEnabled} {...field} />
 										</FormControl>
