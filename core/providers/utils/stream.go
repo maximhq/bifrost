@@ -15,7 +15,6 @@ const (
 	maxStreamProbeCharacters = 256
 	maxStreamProbeChunks     = 512
 	maxStreamProbeBytes      = 1 << 20
-	minStreamProbeDuration   = 100 * time.Millisecond
 	maxStreamPreambleChunks  = 64
 	maxStreamPreambleBytes   = 256 * 1024
 )
@@ -293,9 +292,6 @@ func CheckFirstStreamChunkForError(
 		targetCharacters = maxStreamProbeCharacters
 	}
 	probeDuration := time.Duration(targetCharacters) * time.Second / time.Duration(config.MinimumOutputCharactersPerSecond)
-	if probeDuration < minStreamProbeDuration {
-		probeDuration = minStreamProbeDuration
-	}
 
 	buffered := []*schemas.BifrostStreamChunk{firstChunk}
 	characters := streamChunkCharacters(firstChunk)
@@ -483,7 +479,8 @@ func streamChunkSize(chunk *schemas.BifrostStreamChunk) int {
 	}
 	data, err := chunk.MarshalJSON()
 	if err != nil {
-		return 0
+		// A chunk that cannot be serialized counts as a full buffer so it can never bypass the byte cap.
+		return maxStreamProbeBytes
 	}
 	return len(data)
 }

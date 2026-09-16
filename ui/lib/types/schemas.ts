@@ -543,7 +543,7 @@ export const modelProviderKeySchema = z
 	);
 
 // Network config schema
-const streamThroughputGuardSchema = z.object({
+const streamThroughputGuardSchema = z.strictObject({
 	minimum_output_characters_per_second: z.number().int().min(1).max(100000),
 	probe_window_in_seconds: z.number().int().min(1).max(60).optional(),
 });
@@ -634,7 +634,7 @@ export const networkFormConfigSchema = z
 			.max(3600, "Stream idle timeout must be at most 3600 seconds i.e. 60 minutes")
 			.optional(),
 		stream_throughput_guard: z
-			.object({
+			.strictObject({
 				minimum_output_characters_per_second: z.coerce
 					.number("Minimum output rate must be a number")
 					.int("Minimum output rate must be a whole number")
