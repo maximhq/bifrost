@@ -14,5 +14,20 @@
 	"yes": "Yes",
 	"no": "No",
 	"actions": "Actions",
-	"language": "Language"
+	"language": "Language",
+	"datePicker": {
+		"pickADate": "Pick a date",
+		"fromTime": "From Time",
+		"toTime": "To Time",
+		"timezone": "Timezone",
+		"selectTimezone": "Select timezone",
+		"time": "Time"
+	},
+	"timePeriods": {
+		"1h": "Last hour",
+		"6h": "Last 6 hours",
+		"24h": "Last 24 hours",
+		"7d": "Last 7 days",
+		"30d": "Last 30 days"
+	}
 }

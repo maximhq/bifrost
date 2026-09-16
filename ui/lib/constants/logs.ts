@@ -1,3 +1,4 @@
+import type { TFunction } from "i18next";
 // Known provider names array - centralized definition
 export const KnownProvidersNames = [
 	"anthropic",
@@ -354,6 +355,11 @@ export const RequestTypeLabels = {
 	realtime: "Realtime",
 	"realtime.turn": "Realtime Turn",
 } as const;
+
+export function getRequestTypeLabel(type: string, t: TFunction): string {
+	const label = RequestTypeLabels[type as keyof typeof RequestTypeLabels];
+	return label ? t(`requestTypes.${type.replaceAll(".", "_")}`, { ns: "observability", defaultValue: label }) : type;
+}
 
 export const RequestTypeColors = {
 	"chat.completion": "bg-blue-100 text-blue-800",

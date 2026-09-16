@@ -14,5 +14,20 @@
 	"yes": "是",
 	"no": "否",
 	"actions": "操作",
-	"language": "语言"
+	"language": "语言",
+	"datePicker": {
+		"pickADate": "选择日期",
+		"fromTime": "开始时间",
+		"toTime": "结束时间",
+		"timezone": "时区",
+		"selectTimezone": "选择时区",
+		"time": "时间"
+	},
+	"timePeriods": {
+		"1h": "最近 1 小时",
+		"6h": "最近 6 小时",
+		"24h": "最近 24 小时",
+		"7d": "最近 7 天",
+		"30d": "最近 30 天"
+	}
 }
