@@ -1075,33 +1075,116 @@ func overheadMicrosFromTrace(trace *schemas.Trace) (float64, bool) {
 }
 
 // buildSpanAttrs extracts metric dimension attrs from a single attempt span.
+//
+// Reads the typed span payload where the span carries it, falling back to the
+// attribute map for spans built by paths that do not populate it. Typed reads
+// cannot silently return a zero value for a mistyped or misspelled key, which is
+// how gen_ai.response.service_tier went missing here for as long as it did.
 func buildSpanAttrs(span *schemas.Span) []attribute.KeyValue {
 	attrs := span.Attributes
-	method := getStringAttr(attrs, "request.type")
+
+	provider := getStringAttr(attrs, schemas.AttrProviderName)
+	model := getStringAttr(attrs, schemas.AttrRequestModel)
+	method := getStringAttr(attrs, schemas.AttrLegacyRequestType)
+	if llm := span.LLM; llm != nil {
+		if llm.Provider != "" {
+			provider = schemas.OTelProviderName(llm.Provider)
+		}
+		if llm.RequestModel != "" {
+			model = llm.RequestModel
+		}
+		if llm.RequestType != "" {
+			method = string(llm.RequestType)
+		}
+	}
 	if method == "" {
 		method = span.Name
 	}
-	teamIDs, teamNames := entitySetFromAttrs(attrs, schemas.AttrBifrostTeamIDs, schemas.AttrBifrostTeamNames, schemas.AttrBifrostTeamID, schemas.AttrBifrostTeamName)
-	customerIDs, customerNames := entitySetFromAttrs(attrs, schemas.AttrBifrostCustomerIDs, schemas.AttrBifrostCustomerNames, schemas.AttrBifrostCustomerID, schemas.AttrBifrostCustomerName)
-	buIDs, buNames := entitySetFromAttrs(attrs, schemas.AttrBifrostBusinessUnitIDs, schemas.AttrBifrostBusinessUnitNames, schemas.AttrBifrostBusinessUnitID, schemas.AttrBifrostBusinessUnitName)
+
+	e := span.Enrichment
+	teamIDs, teamNames := entitySet(e, attrs, entityTeam)
+	customerIDs, customerNames := entitySet(e, attrs, entityCustomer)
+	buIDs, buNames := entitySet(e, attrs, entityBusinessUnit)
+
 	return BuildBifrostAttributes(
-		getStringAttr(attrs, schemas.AttrProviderName),
-		schemas.NormalizeModelName(getStringAttr(attrs, schemas.AttrRequestModel)),
+		provider,
+		schemas.NormalizeModelName(model),
 		method,
-		getStringAttr(attrs, schemas.AttrBifrostVirtualKeyID),
-		getStringAttr(attrs, schemas.AttrBifrostVirtualKeyName),
-		getStringAttr(attrs, schemas.AttrBifrostSelectedKeyID),
-		getStringAttr(attrs, schemas.AttrBifrostSelectedKeyName),
-		getIntAttr(attrs, schemas.AttrBifrostFallbackIndex),
+		enrichedStr(e, attrs, schemas.AttrBifrostVirtualKeyID, func(e *schemas.SpanEnrichment) string { return e.VirtualKeyID }),
+		enrichedStr(e, attrs, schemas.AttrBifrostVirtualKeyName, func(e *schemas.SpanEnrichment) string { return e.VirtualKeyName }),
+		enrichedStr(e, attrs, schemas.AttrBifrostSelectedKeyID, func(e *schemas.SpanEnrichment) string { return e.SelectedKeyID }),
+		enrichedStr(e, attrs, schemas.AttrBifrostSelectedKeyName, func(e *schemas.SpanEnrichment) string { return e.SelectedKeyName }),
+		fallbackIndex(e, attrs),
 		teamIDs,
 		teamNames,
 		customerIDs,
 		customerNames,
 		buIDs,
 		buNames,
-		getStringAttr(attrs, schemas.AttrBifrostProjectID),
-		getStringAttr(attrs, schemas.AttrBifrostProjectName),
+		enrichedStr(e, attrs, schemas.AttrBifrostProjectID, func(e *schemas.SpanEnrichment) string { return e.ProjectID }),
+		enrichedStr(e, attrs, schemas.AttrBifrostProjectName, func(e *schemas.SpanEnrichment) string { return e.ProjectName }),
 	)
+}
+
+// enrichedStr prefers the typed dimension, falling back to the attribute key.
+func enrichedStr(e *schemas.SpanEnrichment, attrs map[string]any, key string, pick func(*schemas.SpanEnrichment) string) string {
+	if e != nil {
+		if v := pick(e); v != "" {
+			return v
+		}
+	}
+	return getStringAttr(attrs, key)
+}
+
+func fallbackIndex(e *schemas.SpanEnrichment, attrs map[string]any) int {
+	if e != nil && e.FallbackIndex != nil {
+		return *e.FallbackIndex
+	}
+	return getIntAttr(attrs, schemas.AttrBifrostFallbackIndex)
+}
+
+// entityKind names one of the three multi-valued governance entity sets.
+type entityKind int
+
+const (
+	entityTeam entityKind = iota
+	entityCustomer
+	entityBusinessUnit
+)
+
+// entitySet resolves a multi-valued entity set, preferring the typed dimensions.
+// A set collapses to its scalar form when only the singular dimension is present.
+func entitySet(e *schemas.SpanEnrichment, attrs map[string]any, kind entityKind) (idsCSV, namesCSV string) {
+	var idsKey, namesKey, scalarIDKey, scalarNameKey string
+	var ids, names []string
+	var scalarID, scalarName string
+	switch kind {
+	case entityTeam:
+		idsKey, namesKey = schemas.AttrBifrostTeamIDs, schemas.AttrBifrostTeamNames
+		scalarIDKey, scalarNameKey = schemas.AttrBifrostTeamID, schemas.AttrBifrostTeamName
+		if e != nil {
+			ids, names, scalarID, scalarName = e.TeamIDs, e.TeamNames, e.TeamID, e.TeamName
+		}
+	case entityCustomer:
+		idsKey, namesKey = schemas.AttrBifrostCustomerIDs, schemas.AttrBifrostCustomerNames
+		scalarIDKey, scalarNameKey = schemas.AttrBifrostCustomerID, schemas.AttrBifrostCustomerName
+		if e != nil {
+			ids, names, scalarID, scalarName = e.CustomerIDs, e.CustomerNames, e.CustomerID, e.CustomerName
+		}
+	case entityBusinessUnit:
+		idsKey, namesKey = schemas.AttrBifrostBusinessUnitIDs, schemas.AttrBifrostBusinessUnitNames
+		scalarIDKey, scalarNameKey = schemas.AttrBifrostBusinessUnitID, schemas.AttrBifrostBusinessUnitName
+		if e != nil {
+			ids, names, scalarID, scalarName = e.BusinessUnitIDs, e.BusinessUnitNames, e.BusinessUnitID, e.BusinessUnitName
+		}
+	}
+	if e == nil {
+		return entitySetFromAttrs(attrs, idsKey, namesKey, scalarIDKey, scalarNameKey)
+	}
+	if len(ids) == 0 && scalarID != "" {
+		ids, names = []string{scalarID}, []string{scalarName}
+	}
+	return schemas.CanonicalEntitySet(ids, names)
 }
 
 // buildContextAttrs builds the same metric dimension attrs as buildSpanAttrs, but sourced

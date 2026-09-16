@@ -119,3 +119,51 @@ func TestEnrichmentRegistryDimsAllEmitted(t *testing.T) {
 		}
 	}
 }
+
+// TestContextSpanEnrichmentMatchesAttributes pins the typed dimensions to the
+// attribute keys they are emitted alongside. Both derive from one mapping, so a
+// field added to SpanEnrichment without an attribute (or the reverse) shows up
+// here rather than as a connector silently reading a zero value.
+func TestContextSpanEnrichmentMatchesAttributes(t *testing.T) {
+	ctx := context.Background()
+	for _, src := range contextDimSources {
+		ctx = context.WithValue(ctx, src.ctxKey, src.value)
+	}
+	span := &schemas.Span{Attributes: map[string]any{}}
+	applyContextSpanAttributes(span, ctx)
+	span.SetRetries(3)
+
+	if span.Enrichment == nil {
+		t.Fatal("span.Enrichment is nil, want the dimensions attached")
+	}
+	if span.Enrichment.Retries != 3 {
+		t.Errorf("Retries = %d, want 3", span.Enrichment.Retries)
+	}
+
+	// Every dimension the registry marks as context-sourced must be readable
+	// from the typed struct, not only from the attribute map.
+	typed := map[string]any{
+		schemas.AttrBifrostVirtualKeyID:    span.Enrichment.VirtualKeyID,
+		schemas.AttrBifrostSelectedKeyID:   span.Enrichment.SelectedKeyID,
+		schemas.AttrBifrostRoutingRuleID:   span.Enrichment.RoutingRuleID,
+		schemas.AttrBifrostTeamID:          span.Enrichment.TeamID,
+		schemas.AttrBifrostCustomerID:      span.Enrichment.CustomerID,
+		schemas.AttrBifrostBusinessUnitID:  span.Enrichment.BusinessUnitID,
+		schemas.AttrBifrostProjectID:       span.Enrichment.ProjectID,
+		schemas.AttrBifrostUserID:          span.Enrichment.UserID,
+		schemas.AttrBifrostUserEmail:       span.Enrichment.UserEmail,
+		schemas.AttrBifrostTeamIDs:         span.Enrichment.TeamIDs,
+		schemas.AttrBifrostCustomerIDs:     span.Enrichment.CustomerIDs,
+		schemas.AttrBifrostBusinessUnitIDs: span.Enrichment.BusinessUnitIDs,
+	}
+	for attr, got := range typed {
+		want, ok := span.Attributes[attr]
+		if !ok {
+			t.Errorf("%s: attribute not emitted", attr)
+			continue
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: typed = %#v, attribute = %#v", attr, got, want)
+		}
+	}
+}

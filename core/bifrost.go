@@ -6603,7 +6603,7 @@ func executeRequestWithRetries[T any](
 		span.SetAttribute(schemas.AttrLegacyRequestType, string(requestType))
 
 		applyContextSpanAttributes(span, ctx)
-		span.SetAttribute(schemas.AttrBifrostRetries, attempts)
+		span.SetRetries(attempts)
 
 		// Surface caller-supplied extra headers (from x-bf-eh-* and direct-allowlist
 		// header forwarding) as span attributes so observability backends see the
