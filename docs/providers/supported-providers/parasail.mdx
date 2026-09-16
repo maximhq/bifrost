@@ -20,8 +20,8 @@ Parasail is an **OpenAI-compatible provider** offering high-performance inferenc
 | Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
 | Responses API | ✅ | ✅ | `/v1/chat/completions` |
 | List Models | ✅ | - | `/v1/models` |
+| Embeddings | ✅ | - | `/v1/embeddings` |
 | Text Completions | ❌ | ❌ | - |
-| Embeddings | ❌ | ❌ | - |
 | Image Generation | ❌ | ❌ | - |
 | Speech (TTS) | ❌ | ❌ | - |
 | Transcriptions (STT) | ❌ | ❌ | - |
@@ -29,7 +29,7 @@ Parasail is an **OpenAI-compatible provider** offering high-performance inferenc
 | Batch | ❌ | ❌ | - |
 
 <Note>
-**Unsupported Operations** (❌): Text Completions, Embeddings, Image Generation, Speech, Transcriptions, Files, and Batch are not supported by the upstream Parasail API. These return `UnsupportedOperationError`.
+**Unsupported Operations** (❌): Text Completions, Image Generation, Speech, Transcriptions, Files, and Batch are not supported by the upstream Parasail API. These return `UnsupportedOperationError`.
 </Note>
 
 ## Setup & Configuration
@@ -139,12 +139,19 @@ Lists available Parasail models with capabilities and context information.
 
 ---
 
+# 4. Embeddings
+
+Parasail's OpenAI-compatible `/v1/embeddings` endpoint, used through the standard embeddings interface. Accepts a single string or an array of strings, and `encoding_format` of `float` or `base64`.
+
+Embedding models are addressed either by Parasail's own ID or by the underlying HuggingFace ID, for example `parasail-bge-m3` or `BAAI/bge-m3`. Which ones your key can reach comes from `/v1/models`.
+
+---
+
 ## Unsupported Features
 
 | Feature | Reason |
 |---------|--------|
 | Text Completions | Not offered by Parasail API |
-| Embedding | Not offered by Parasail API |
 | Image Generation | Not offered by Parasail API |
 | Speech/TTS | Not offered by Parasail API |
 | Transcription/STT | Not offered by Parasail API |
