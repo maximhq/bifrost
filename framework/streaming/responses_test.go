@@ -18,6 +18,27 @@ func testResponsesAccumulator(tb testing.TB) *Accumulator {
 	return acc
 }
 
+func TestDeepCopyResponsesMessageCopiesStructuredErrorPointers(t *testing.T) {
+	original := schemas.ResponsesMessage{ResponsesToolMessage: &schemas.ResponsesToolMessage{Error: &schemas.ResponsesToolMessageError{
+		ResponsesToolMessageErrorStruct: &schemas.ResponsesToolMessageErrorStruct{
+			Type: "http_error", Code: schemas.Ptr(502), Message: schemas.Ptr("upstream failed"),
+		},
+	}}}
+
+	copied := deepCopyResponsesMessage(original)
+	originalError := original.ResponsesToolMessage.Error.ResponsesToolMessageErrorStruct
+	copiedError := copied.ResponsesToolMessage.Error.ResponsesToolMessageErrorStruct
+	require.NotNil(t, copiedError)
+	require.NotSame(t, originalError, copiedError)
+	require.NotSame(t, originalError.Code, copiedError.Code)
+	require.NotSame(t, originalError.Message, copiedError.Message)
+
+	*copiedError.Code = 503
+	*copiedError.Message = "changed"
+	require.Equal(t, 502, *originalError.Code)
+	require.Equal(t, "upstream failed", *originalError.Message)
+}
+
 func TestAccumulatedResponsesStreamPreservesServiceTierBeforeUsageOnlyChunk(t *testing.T) {
 	acc := testResponsesAccumulator(t)
 	requestID := "responses-service-tier"
