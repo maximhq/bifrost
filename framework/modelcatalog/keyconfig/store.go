@@ -32,6 +32,7 @@ type KeyEntry struct {
 	Allowed     schemas.WhiteList
 	Blacklisted schemas.BlackList
 	Aliases     schemas.KeyAliases
+	ModelName   string
 }
 
 // AliasOwner identifies which key owns an alias and carries its AliasConfig.
@@ -327,12 +328,17 @@ func (s *Store) buildState(provider schemas.ModelProvider, keys []schemas.Key, k
 
 	for _, key := range keys {
 		enabled := key.Enabled == nil || *key.Enabled
+		modelName := ""
+		if key.VLLMKeyConfig != nil {
+			modelName = key.VLLMKeyConfig.ModelName
+		}
 		entries = append(entries, KeyEntry{
 			KeyID:       key.ID,
 			Enabled:     enabled,
 			Allowed:     key.Models,
 			Blacklisted: key.BlacklistedModels,
 			Aliases:     key.Aliases,
+			ModelName:   modelName,
 		})
 
 		if !enabled || key.BlacklistedModels.IsBlockAll() {
