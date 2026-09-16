@@ -108,8 +108,8 @@ export function DeliveriesHeaderView({
 				<Radio className={`h-4 w-4 ${polling ? "animate-pulse" : ""}`} />
 				Live
 			</Button>
-			<div className="border-input flex h-7.5 min-w-[16rem] flex-1 items-center gap-2 rounded-sm border">
-				<Search className="mr-0.5 ml-2 size-4" />
+			<div className="border-input flex h-7.5 min-w-[16rem] flex-1 items-center rounded-sm border overflow-hidden">
+				<Search className="mr-2 ml-2 size-4" />
 				<Input
 					type="text"
 					className="!h-7 rounded-none border-none bg-slate-50 shadow-none outline-none focus-visible:ring-0 dark:bg-zinc-900"
@@ -121,7 +121,7 @@ export function DeliveriesHeaderView({
 				<Button
 					variant="ghost"
 					size="sm"
-					className="text-muted-foreground h-7 shrink-0 rounded-l-none text-xs"
+					className="text-muted-foreground h-7 shrink-0 rounded-none text-xs"
 					onClick={() => {
 						const next = searchField === "request_id" ? "delivery_id" : "request_id";
 						setSearchField(next);
