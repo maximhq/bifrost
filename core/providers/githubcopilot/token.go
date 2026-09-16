@@ -575,7 +575,9 @@ func exchangeInstallationToken(
 	warnOnClockSkew(resp, logger)
 
 	if status := resp.StatusCode(); status != http.StatusCreated && status != http.StatusOK {
-		return nil, classifyInstallationTokenError(status, resp.Body(), cfg)
+		bErr := classifyInstallationTokenError(status, resp.Body(), cfg)
+		providerUtils.ApplyRetryAfter(bErr, &resp.Header)
+		return nil, bErr
 	}
 
 	var parsed installationTokenResponse
@@ -635,7 +637,9 @@ func exchangeCopilotToken(
 	}
 
 	if status := resp.StatusCode(); status != http.StatusOK {
-		return nil, classifyCopilotTokenError(status, resp.Body(), cfg)
+		bErr := classifyCopilotTokenError(status, resp.Body(), cfg)
+		providerUtils.ApplyRetryAfter(bErr, &resp.Header)
+		return nil, bErr
 	}
 
 	var parsed copilotTokenResponse

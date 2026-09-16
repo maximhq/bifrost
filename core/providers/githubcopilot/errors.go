@@ -36,10 +36,14 @@ type copilotErrorBody struct {
 // moves paid traffic somewhere the operator did not choose, so 401 and 403 block
 // fallbacks. Rate limits and server errors are left alone.
 func parseCopilotError(resp *fasthttp.Response) *schemas.BifrostError {
-	var bifrostErr schemas.BifrostError
+	var errorResp schemas.BifrostError
 
-	// Let the generic handler set status and base fields first.
-	_ = providerUtils.HandleProviderAPIError(resp, &bifrostErr)
+	// Let the generic handler set status, the raw response and the retry hint first. Only
+	// what Copilot itself sent feeds the message, since the handler's wording for an empty
+	// or non-JSON body is not upstream detail.
+	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
+	bifrostErr.EventID = errorResp.EventID
+	bifrostErr.Error = errorResp.Error
 
 	if bifrostErr.Error == nil {
 		bifrostErr.Error = &schemas.ErrorField{}
@@ -86,7 +90,7 @@ func parseCopilotError(resp *fasthttp.Response) *schemas.BifrostError {
 		}
 	}
 
-	return &bifrostErr
+	return bifrostErr
 }
 
 // upstreamDetail keeps the operator-facing message readable when Copilot returns an empty

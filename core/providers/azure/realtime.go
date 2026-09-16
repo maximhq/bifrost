@@ -134,7 +134,7 @@ func (provider *AzureProvider) ExchangeRealtimeWebRTCSDP(
 
 	answerBody := resp.Body()
 	if resp.StatusCode() < fasthttp.StatusOK || resp.StatusCode() >= fasthttp.StatusMultipleChoices {
-		return "", providerUtils.SetErrorLatency(provider.realtimeWebRTCUpstreamError(ctx, resp.StatusCode(), answerBody), latency)
+		return "", providerUtils.SetErrorLatency(provider.realtimeWebRTCUpstreamError(ctx, resp), latency)
 	}
 
 	return string(answerBody), nil
@@ -268,7 +268,9 @@ func (provider *AzureProvider) CreateRealtimeClientSecret(
 // Helpers
 // ---------------------------------------------------------------------------
 
-func (provider *AzureProvider) realtimeWebRTCUpstreamError(ctx *schemas.BifrostContext, statusCode int, body []byte) *schemas.BifrostError {
+func (provider *AzureProvider) realtimeWebRTCUpstreamError(ctx *schemas.BifrostContext, resp *fasthttp.Response) *schemas.BifrostError {
+	statusCode := resp.StatusCode()
+	body := resp.Body()
 	message := fmt.Sprintf("upstream realtime handshake failed for %s", provider.GetProviderKey())
 	var parsed struct {
 		Error struct {
@@ -297,6 +299,7 @@ func (provider *AzureProvider) realtimeWebRTCUpstreamError(ctx *schemas.BifrostC
 			"body":   string(body),
 		}
 	}
+	providerUtils.ApplyRetryAfter(bifrostErr, &resp.Header)
 	return bifrostErr
 }
 
@@ -356,5 +359,6 @@ func (provider *AzureProvider) parseRealtimeClientSecretError(ctx *schemas.Bifro
 			"body":   string(body),
 		}
 	}
+	providerUtils.ApplyRetryAfter(bifrostErr, &resp.Header)
 	return bifrostErr
 }
