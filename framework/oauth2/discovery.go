@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 // OAuthMetadata contains discovered OAuth configuration from authorization server
@@ -389,6 +391,43 @@ type DynamicClientRegistrationResponse struct {
 	ClientSecretExpiresAt   int64  `json:"client_secret_expires_at,omitempty"`
 	RegistrationAccessToken string `json:"registration_access_token,omitempty"`
 	RegistrationClientURI   string `json:"registration_client_uri,omitempty"`
+}
+
+// registerDynamicClient registers Bifrost as an OAuth client at
+// registrationURL and returns the issued credentials.
+//
+// Shared by the two places a registration is obtained: the one-time bootstrap
+// in InitiateOAuthFlow (no client_id was supplied), and ReregisterDynamicClient
+// replacing a registration the provider no longer honors. Both must present
+// identical client metadata — a replacement registration that differed in
+// redirect_uris or grant_types would be rejected at the authorize or token
+// step for reasons that have nothing to do with why it was re-issued.
+func registerDynamicClient(ctx context.Context, registrationURL, redirectURI string, scopes []string) (clientID, clientSecret *schemas.SecretVar, err error) {
+	regReq := &DynamicClientRegistrationRequest{
+		ClientName:              "Bifrost MCP Gateway",
+		RedirectURIs:            []string{redirectURI},
+		GrantTypes:              []string{"authorization_code", "refresh_token"},
+		ResponseTypes:           []string{"code"},
+		TokenEndpointAuthMethod: "none", // Public client with PKCE (no client secret needed)
+	}
+	if len(scopes) > 0 {
+		regReq.Scope = strings.Join(scopes, " ")
+	}
+
+	regResp, err := RegisterDynamicClient(ctx, registrationURL, regReq)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Literal values, not NewSecretVar: these are opaque strings from an
+	// external authorization server's registration response, and NewSecretVar
+	// would parse an "env."/"vault." prefix as a reference — a registered
+	// client_id/client_secret happening to start with one of those prefixes
+	// would then resolve a local deployment secret instead of being stored
+	// as-is.
+	return &schemas.SecretVar{Val: regResp.ClientID},
+		&schemas.SecretVar{Val: regResp.ClientSecret}, // May be empty for public clients
+		nil
 }
 
 // RegisterDynamicClient performs dynamic client registration with the OAuth provider (RFC 7591)

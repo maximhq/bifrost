@@ -725,37 +725,13 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 
 		logger.Debug("client_id not provided, attempting dynamic client registration (RFC 7591)")
 
-		// Prepare registration request
-		regReq := &DynamicClientRegistrationRequest{
-			ClientName:              "Bifrost MCP Gateway",
-			RedirectURIs:            []string{config.RedirectURI},
-			GrantTypes:              []string{"authorization_code", "refresh_token"},
-			ResponseTypes:           []string{"code"},
-			TokenEndpointAuthMethod: "none", // Public client with PKCE (no client secret needed)
-		}
-
-		// Add scopes if available
-		if len(scopes) > 0 {
-			regReq.Scope = strings.Join(scopes, " ")
-		}
-
-		// Perform dynamic registration
-		regResp, err := RegisterDynamicClient(ctx, *registrationURL, regReq)
+		var err error
+		clientID, clientSecret, err = registerDynamicClient(ctx, *registrationURL, config.RedirectURI, scopes)
 		if err != nil {
 			return nil, fmt.Errorf("dynamic client registration failed: %w. Please provide client_id manually", err)
 		}
 
-		// Use dynamically registered credentials. Literal values, not
-		// NewSecretVar: these are opaque strings from an external
-		// authorization server's registration response, and NewSecretVar
-		// would parse an "env."/"vault." prefix as a reference — a
-		// registered client_id/client_secret happening to start with one of
-		// those prefixes would then resolve a local deployment secret
-		// instead of being stored as-is.
-		clientID = &schemas.SecretVar{Val: regResp.ClientID}
-		clientSecret = &schemas.SecretVar{Val: regResp.ClientSecret} // May be empty for public clients
-
-		logger.Debug("Dynamic client registration successful: client_id: %s, has_secret: %t", regResp.ClientID, clientSecret.IsSet())
+		logger.Debug("Dynamic client registration successful: client_id: %s, has_secret: %t", clientID.GetValue(), clientSecret.IsSet())
 	}
 
 	// Generate PKCE challenge
@@ -1531,6 +1507,78 @@ func (p *OAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigI
 		State:         state,
 		ExpiresAt:     expiresAt,
 	}, sessionID, nil
+}
+
+// ReregisterDynamicClient obtains a fresh client_id (and secret, if the
+// provider issues one) from the config's RFC 7591 registration endpoint and
+// writes it over the stored credentials in place. Returns the client_id it
+// replaced and the one it installed, so the caller can report the swap.
+//
+// This is the recovery path for an authorization server that no longer
+// recognises the client_id it issued through dynamic registration — a
+// registry that did not survive a restart, or a client an admin revoked
+// upstream. Once that happens the stored client_id is rejected at the token
+// endpoint on every refresh AND at the authorize endpoint on every
+// reauthorization, so redoing consent with it cannot recover the connection;
+// only a new registration can. Deliberately operator-invoked rather than
+// triggered off the provider's error response: authorization servers do not
+// report the RFC 6749 error codes consistently enough to decide credential
+// replacement on, and silently discarding a client_id an admin set by hand
+// would be worse than leaving it in place.
+//
+// Persisted through RotateMCPOAuthConfig, which cascades every token bound to
+// this config to needs_reauth in the same transaction. That cascade is the
+// point, not a side effect: tokens issued to the previous client_id cannot be
+// refreshed once it is replaced, and on a per_user_oauth server that means
+// every end user's credential, not just the admin's. A provider that answers
+// with the client_id it already issued rotates nothing and cascades nothing.
+func (p *OAuth2Provider) ReregisterDynamicClient(ctx context.Context, oauthConfigID string) (previousClientID, newClientID string, err error) {
+	templateConfig, err := p.configStore.GetOauthConfigByID(ctx, oauthConfigID)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to load template oauth config: %w", err)
+	}
+	if templateConfig == nil {
+		return "", "", schemas.ErrOAuth2ConfigNotFound
+	}
+
+	registrationURL := ""
+	if templateConfig.RegistrationURL != nil {
+		registrationURL = strings.TrimSpace(*templateConfig.RegistrationURL)
+	}
+	if registrationURL == "" {
+		return "", "", fmt.Errorf("this MCP server's OAuth provider has no registration endpoint, so a new client cannot be registered: reauthorize with the stored client_id instead, or set a registration_url")
+	}
+
+	var scopes []string
+	if templateConfig.Scopes != "" {
+		if err := json.Unmarshal([]byte(templateConfig.Scopes), &scopes); err != nil {
+			return "", "", fmt.Errorf("failed to parse stored oauth scopes for config %s: %w", oauthConfigID, err)
+		}
+	}
+
+	clientID, clientSecret, err := registerDynamicClient(ctx, registrationURL, templateConfig.RedirectURI, scopes)
+	if err != nil {
+		return "", "", fmt.Errorf("dynamic client registration failed: %w", err)
+	}
+
+	previousClientID = templateConfig.GetResolvedClientID()
+	fields := configstore.MCPOAuthConfigFields{
+		ClientID:        clientID,
+		ClientSecret:    clientSecret,
+		AuthorizeURL:    templateConfig.AuthorizeURL,
+		TokenURL:        templateConfig.TokenURL,
+		RegistrationURL: registrationURL,
+		Resource:        templateConfig.Resource,
+		Scopes:          scopes,
+	}
+	if _, err := p.configStore.RotateMCPOAuthConfig(ctx, templateConfig, fields); err != nil {
+		return "", "", fmt.Errorf("failed to persist the newly registered oauth client: %w", err)
+	}
+
+	newClientID = clientID.GetValue()
+	logger.Warn("registered a new OAuth client for config %s: client_id %s replaces %s; tokens issued under the previous client must re-authenticate",
+		oauthConfigID, newClientID, previousClientID)
+	return previousClientID, newClientID, nil
 }
 
 // CompleteUserOAuthFlow handles the OAuth callback for a per-user flow.
