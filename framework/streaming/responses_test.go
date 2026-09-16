@@ -175,6 +175,25 @@ func TestDeepCopyResponsesStreamResponseCopiesToolCaller(t *testing.T) {
 	}
 }
 
+func TestDeepCopyResponsesStreamResponseCopiesAsync(t *testing.T) {
+	original := &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeOutputItemDone,
+		Item: &schemas.ResponsesMessage{
+			ID:   schemas.Ptr("fc_1"),
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: schemas.Ptr("call_1"),
+				Async:  new(true),
+			},
+		},
+	}
+
+	copied := deepCopyResponsesStreamResponse(original)
+	require.NotNil(t, copied.Item.ResponsesToolMessage.Async)
+	require.True(t, *copied.Item.ResponsesToolMessage.Async)
+	require.NotSame(t, original.Item.ResponsesToolMessage.Async, copied.Item.ResponsesToolMessage.Async)
+}
+
 // TestBuildResponsesMessageAccumulatesReasoningSummary verifies reasoning
 // summary deltas (no content index) concatenate into a single summary entry.
 func TestBuildResponsesMessageAccumulatesReasoningSummary(t *testing.T) {
