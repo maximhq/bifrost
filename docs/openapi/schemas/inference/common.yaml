@@ -8,6 +8,7 @@ ModelProvider:
     - azure
     - bedrock
     - bedrock_mantle
+    - saladcloud
     - cerebras
     - cohere
     - deepseek
