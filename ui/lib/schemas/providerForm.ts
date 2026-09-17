@@ -41,6 +41,7 @@ const NetworkConfigSchema = z
 		ca_cert_pem: z.union([z.string(), secretVarSchema]).optional(),
 		stream_idle_timeout_in_seconds: z.number().int().min(5).max(3600).optional(),
 		keep_alive_timeout_in_seconds: z.number().int().min(1).max(3600).optional(),
+		stream_read_buffer_size_kb: z.number().int().min(1).max(16384).optional(),
 		max_conns_per_host: z.number().int().min(1).max(10000).optional(),
 		enforce_http2: z.boolean().optional(),
 		http2_ping_interval_in_seconds: z.number().int().min(0).max(3600).optional(),

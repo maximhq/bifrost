@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"bufio"
 	"io"
 	"strings"
 	"testing"
@@ -276,5 +277,34 @@ func TestSSEDataReader_PartialObjectAtEOF(t *testing.T) {
 	payloads := drainSSEDataReader(t, newDefaultSSEDataReader(nil, strings.NewReader(stream)))
 	if len(payloads) != 1 || payloads[0] != "{\n  \"error\": {" {
 		t.Errorf("unexpected payloads: %#v", payloads)
+	}
+}
+
+func TestGetSSEDataReaderSize_ZeroFallsBackToDefault(t *testing.T) {
+	stream := "data: {\"a\":1}\ndata: [DONE]\n"
+	payloads := drainSSEDataReader(t, GetSSEDataReaderSize(nil, strings.NewReader(stream), 0))
+	if len(payloads) != 1 || payloads[0] != `{"a":1}` {
+		t.Errorf("unexpected payloads: %#v", payloads)
+	}
+}
+
+// A configured size above sseMaxBufSize must raise the scanner max so a single
+// oversized SSE event is not rejected with ErrTooLong.
+func TestGetSSEDataReaderSize_RaisesMaxTokenSize(t *testing.T) {
+	payload := strings.Repeat("x", sseMaxBufSize)
+	stream := "data: " + payload + "\ndata: [DONE]\n"
+
+	defaultReader := GetSSEDataReader(nil, strings.NewReader(stream))
+	if _, err := defaultReader.ReadDataLine(); err != bufio.ErrTooLong {
+		t.Fatalf("default reader: expected ErrTooLong, got %v", err)
+	}
+
+	sized := GetSSEDataReaderSize(nil, strings.NewReader(stream), sseMaxBufSize+64)
+	data, err := sized.ReadDataLine()
+	if err != nil {
+		t.Fatalf("sized reader: %v", err)
+	}
+	if string(data) != payload {
+		t.Fatalf("sized reader got %d bytes, want %d", len(data), len(payload))
 	}
 }

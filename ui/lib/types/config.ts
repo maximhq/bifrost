@@ -317,6 +317,7 @@ export interface NetworkConfig {
 	ca_cert_pem?: SecretVar;
 	stream_idle_timeout_in_seconds?: number;
 	keep_alive_timeout_in_seconds?: number;
+	stream_read_buffer_size_kb?: number;
 	max_conns_per_host?: number;
 	enforce_http2?: boolean;
 	http2_ping_interval_in_seconds?: number;
