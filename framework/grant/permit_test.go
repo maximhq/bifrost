@@ -388,28 +388,37 @@ func TestAllowsTool(t *testing.T) {
 	})
 }
 
-// A refusal is read by whoever made the request, so no kind this package declares may render as a
-// machine identifier. The switch translates the ones whose value does not read as prose; the rest
-// fall through to their own value, which is fine only while that value is a word.
+// A refusal names the permit kind in words, and each kind's wording is registered by whoever
+// resolves that kind: this module seeds its own, and a build that resolves more - the enterprise one,
+// for the access profile a user holds and the profiles entities hold - registers theirs at startup.
 //
-// The assertion that carries this is the underscore one: it is what fails if a kind is declared
-// with an underscored value and nobody adds it to the switch, which is the way this actually goes
-// wrong.
-func TestPermitTypePrettyStringNeverRendersAnIdentifier(t *testing.T) {
+// The assertion that carries this is the underscore one: it is what fails if a kind this module
+// resolves is declared with an underscored value and nobody gives it a label.
+func TestPermitTypePrettyStringNamesTheKindsThisModuleResolves(t *testing.T) {
 	for _, tc := range []struct {
 		kind PermitType
 		want string
 	}{
 		{PermitVirtualKey, "virtual key"},
-		{PermitAccessProfile, "access profile"},
-		// Served by the default, because "project" is already the word a refusal should say.
+		// Unlabelled on purpose: "project" is already the word a refusal should say.
 		{PermitProject, "project"},
 	} {
 		assert.Equal(t, tc.want, tc.kind.PrettyString())
 		assert.NotContains(t, tc.kind.PrettyString(), "_", "a refusal must not read as an identifier")
 	}
 
-	// A kind nobody declared still renders, because a refusal that loses its subject cannot be
-	// acted on at all.
+	// A kind nobody registered still renders, because a refusal that loses its subject cannot be
+	// acted on at all. The kinds only the enterprise build resolves are registered there, and never
+	// reach a refusal here.
 	assert.Equal(t, "something_else", PermitType("something_else").PrettyString())
+	assert.Equal(t, "team_access_profile", PermitTeamAccessProfile.PrettyString())
+
+	// Registering one is what gives it words.
+	RegisterPermitLabel(PermitTeamAccessProfile, "team access profile")
+	t.Cleanup(func() {
+		permitLabelsMu.Lock()
+		delete(permitLabels, PermitTeamAccessProfile)
+		permitLabelsMu.Unlock()
+	})
+	assert.Equal(t, "team access profile", PermitTeamAccessProfile.PrettyString())
 }

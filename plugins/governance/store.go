@@ -4859,31 +4859,25 @@ func modelConfigScopesFor(permit schemas.Permit) []limitScope {
 //
 // A permit type and a model-config scope are different vocabularies: the scope is a persisted
 // column, the type names what resolved the permit, and for virtual keys the two spell it
-// differently. The translation is explicit because casting one to the other silently finds
-// nothing: the lookup is keyed by scope name, so a near-miss reads as "this holder configured no
-// model limits" rather than as an error.
+// differently. The translation is a registry rather than a cast, because casting one to the other
+// silently finds nothing: the lookup is keyed by scope name, so a near-miss reads as "this holder
+// configured no model limits" rather than as an error. See permitscopes.go.
 func modelConfigScopeFor(permitType string) string {
-	switch permitType {
-	case string(grant.PermitVirtualKey):
-		return configstoreTables.ModelConfigScopeVirtualKey
-	case string(grant.PermitProject):
-		return configstoreTables.ModelConfigScopeProject
-	default:
-		return permitType
+	if entry, ok := lookupPermitModelConfigScope(permitType); ok {
+		return entry.scope
 	}
+	return permitType
 }
 
 // scopedModelConfigKind is the kind a permit holder's own per-model limits are attributed to, so a
-// refusal can say whose model limit ran out.
+// refusal can say whose model limit ran out. An unregistered permit type is attributed to the
+// generic model-config holder rather than to a particular one: naming another holder's kind would
+// put one holder's name on a refusal that came from somewhere else.
 func scopedModelConfigKind(permitType string) grant.LimitHolderKind {
-	switch permitType {
-	case string(grant.PermitVirtualKey):
-		return grant.LimitHolderVirtualKeyModelConfig
-	case string(grant.PermitProject):
-		return grant.LimitHolderProjectModelConfig
-	default:
-		return grant.LimitHolderUserAccessProfileModelConfig
+	if entry, ok := lookupPermitModelConfigScope(permitType); ok {
+		return entry.kind
 	}
+	return grant.LimitHolderModelConfig
 }
 
 // modelConfigDisplayName is what a refusal calls a model config's limit.
