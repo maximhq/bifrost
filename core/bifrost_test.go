@@ -1542,6 +1542,60 @@ func TestSelectKeyFromProviderForModel_VLLMAliasResolution(t *testing.T) {
 	})
 }
 
+func TestSelectKeyFromProviderForModel_VLLMModelNameWithAliases(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.VLLM, 5, 1000)
+
+	ctx := context.Background()
+	bifrost, err := Init(ctx, schemas.BifrostConfig{
+		Account: account,
+		Logger:  NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	vllmKey := func(id, modelName string, aliases schemas.KeyAliases) schemas.Key {
+		return schemas.Key{
+			ID: id, Name: id, Weight: 1, Models: []string{"*"}, Aliases: aliases,
+			VLLMKeyConfig: &schemas.VLLMKeyConfig{URL: *schemas.NewSecretVar("http://" + id + ":8000"), ModelName: modelName},
+		}
+	}
+	account.SetKeysForProvider(schemas.VLLM, []schemas.Key{
+		vllmKey("k20b", "gpt-oss-20b", schemas.KeyAliases{"gpt-oss-20b-1": {ModelID: "gpt-oss-20b"}, "bad-alias": {ModelID: "gpt-oss-120b"}}),
+		vllmKey("k120b", "gpt-oss-120b", schemas.KeyAliases{"gpt-oss-120b-1": {ModelID: "gpt-oss-120b"}}),
+	})
+
+	tests := []struct {
+		model   string
+		wantKey string
+	}{
+		{"gpt-oss-20b", "k20b"},
+		{"gpt-oss-20b-1", "k20b"},
+		{"gpt-oss-120b", "k120b"},
+		{"gpt-oss-120b-1", "k120b"},
+		{"bad-alias", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			pool, _, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.VLLM, tt.model, schemas.VLLM)
+			if tt.wantKey == "" {
+				if err == nil {
+					t.Fatalf("expected no key, got %v", pool)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(pool) != 1 || pool[0].ID != tt.wantKey {
+				t.Fatalf("expected pool=[%s], got %v", tt.wantKey, pool)
+			}
+		})
+	}
+}
+
 // Test key rotation in executeRequestWithRetries on rate-limit errors
 func TestExecuteRequestWithRetries_KeyRotation(t *testing.T) {
 	config := createTestConfig(3, 0, 0)
