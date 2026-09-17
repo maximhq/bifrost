@@ -3275,3 +3275,55 @@ func TestRealiasNamespacedFunctionCalls_RequiresExactNamespaceOwner(t *testing.T
 		t.Errorf("the exact owner a:b must still be rewritten to its alias, got name=%q namespace=%v", *owner.Name, owner.Namespace)
 	}
 }
+
+// TestHandleProviderAPIErrorRootMessage covers AWS's flat error shape, which every Bedrock
+// surface answers with. The shared Anthropic and OpenAI handlers serve those surfaces and
+// their own parsers only read a nested error object, so without this seeding the failure
+// reason is dropped and the log shows an error with no message.
+func TestHandleProviderAPIErrorRootMessage(t *testing.T) {
+	tests := []struct {
+		name            string
+		body            string
+		expectedMessage string
+	}{
+		{
+			name:            "AWS flat error shape",
+			body:            `{"message":"data retention mode 'default' is not available for this model"}`,
+			expectedMessage: "data retention mode 'default' is not available for this model",
+		},
+		{
+			name:            "AWS flat error shape with exception type",
+			body:            `{"message":"rate exceeded","__type":"ThrottlingException"}`,
+			expectedMessage: "rate exceeded",
+		},
+		{
+			name:            "nested error envelope is left to the caller's parser",
+			body:            `{"type":"error","error":{"type":"invalid_request_error","message":"bad request"}}`,
+			expectedMessage: "",
+		},
+		{
+			name:            "blank root message is ignored",
+			body:            `{"message":"   "}`,
+			expectedMessage: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := &fasthttp.Response{}
+			resp.SetStatusCode(400)
+			resp.Header.Set("Content-Type", "application/json")
+			resp.SetBodyString(tt.body)
+
+			var errorResp map[string]interface{}
+			bifrostErr := HandleProviderAPIError(resp, &errorResp)
+
+			if bifrostErr == nil || bifrostErr.Error == nil {
+				t.Fatal("expected a non-nil error with an error field")
+			}
+			if bifrostErr.Error.Message != tt.expectedMessage {
+				t.Errorf("expected message %q, got %q", tt.expectedMessage, bifrostErr.Error.Message)
+			}
+		})
+	}
+}

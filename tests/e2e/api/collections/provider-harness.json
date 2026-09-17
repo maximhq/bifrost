@@ -150845,6 +150845,154 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "93. Provider error messages survive the borrowed Bedrock handlers (bedrock-error-message)",
+      "description": "bedrock-runtime reports failures on its native APIs (Converse and InvokeModel) in AWS's own flat shape, {\"message\":\"...\",\"__type\":\"...\"}, not in the error envelope the Anthropic and OpenAI wire formats use. That matters on the InvokeModel path, taken when a tool carries defer_loading, or for tool_search / context_management on Anthropic-family models (see folder 71): the request and response bodies are served by anthropic.HandleAnthropicResponsesStream, whose ParseAnthropicError reads only the nested {\"type\":\"error\",\"error\":{...}} envelope, so error.message came back empty and the logs UI rendered no error at all while the reason survived only in the raw response. HandleProviderAPIError now seeds the message from a root-level \"message\" before the caller's own parser runs, and these cases pin that the reason the provider gave is the reason the caller is told. Bedrock's OpenAI-compatible surfaces (bedrock_openai_ep and Bedrock Mantle) are deliberately not covered here: they answer in the OpenAI envelope, which ParseOpenAIError already reads, so a case there cannot demonstrate the regression. The trigger is an out-of-range temperature, which AWS rejects with a ValidationException; each row is tagged [EXPECT-4XX] so the collection-level status test asserts the upstream rejection instead of requiring a 200, and if that temperature ever stops being rejected, that tag is what fails. The assertions compare against extra_fields.raw_response rather than AWS wording, so they survive a change in the text.",
+      "item": [
+        {
+          "name": "[EXPECT-4XX] bedrock/global.anthropic.claude-sonnet-4-6 /v1/responses InvokeModel 4xx reports the AWS message - bedrock-error-message",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-6\",\"max_output_tokens\":32,\"temperature\":5,\"input\":\"Say OK\",\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]},\"defer_loading\":true}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "if ([401, 403, 429].indexOf(code) !== -1) { return; }",
+                  "if (code === 503 && /ServiceUnavailable|Throttl|ModelNotReady/i.test(pm.response.text() || '')) { return; }",
+                  "if (code === 529 && /overloaded/i.test(pm.response.text() || '')) { return; }",
+                  "if (code === 500 || code === 502 || code === 504) { return; }",
+                  "if (pm.response.code < 400) { return; }",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var errField = body.error || {};",
+                  "var message = typeof errField.message === 'string' ? errField.message : '';",
+                  "pm.test('bedrock invoke /v1/responses: error.message is not empty', function () {",
+                  "  pm.expect(message.length, 'error.message is empty: the provider body did not reach the caller. AWS reports every Bedrock failure as a flat {\"message\":...} which the Anthropic and OpenAI error parsers do not read, so the reason is dropped unless HandleProviderAPIError seeds it. body=' + pm.response.text()).to.be.above(0);",
+                  "});",
+                  "pm.test('bedrock invoke /v1/responses: error.message is the provider text, not a placeholder', function () {",
+                  "  pm.expect(/^provider API error/i.test(message), 'error.message is a generic placeholder, not the reason the provider gave: ' + message).to.be.false;",
+                  "});",
+                  "var extra = body.extra_fields || {};",
+                  "var raw = extra.raw_response;",
+                  "if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
+                  "var providerMessage = raw && typeof raw === 'object' && typeof raw.message === 'string' ? raw.message : '';",
+                  "pm.test('bedrock invoke /v1/responses: the provider body reached the caller to assert against', function () {",
+                  "  pm.expect(providerMessage.length, 'extra_fields.raw_response.message is empty, so the comparison below would pass vacuously. The harness enables allow_per_request_raw_override (the run aborts if it cannot) and this request sends x-bf-send-back-raw-response, so the AWS body should be here. body=' + pm.response.text()).to.be.above(0);",
+                  "});",
+                  "pm.test('bedrock invoke /v1/responses: error.message carries what the provider actually said', function () {",
+                  "  pm.expect(message.indexOf(providerMessage) !== -1, 'error.message does not contain the provider text from extra_fields.raw_response.message. reported=' + message + ' provider=' + providerMessage).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-4XX] bedrock/global.anthropic.claude-sonnet-4-6 /v1/responses streaming InvokeModel 4xx reports the AWS message - bedrock-error-message",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-6\",\"max_output_tokens\":32,\"temperature\":5,\"stream\":true,\"input\":\"Say OK\",\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]},\"defer_loading\":true}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "if ([401, 403, 429].indexOf(code) !== -1) { return; }",
+                  "if (code === 503 && /ServiceUnavailable|Throttl|ModelNotReady/i.test(pm.response.text() || '')) { return; }",
+                  "if (code === 529 && /overloaded/i.test(pm.response.text() || '')) { return; }",
+                  "if (code === 500 || code === 502 || code === 504) { return; }",
+                  "if (pm.response.code < 400) { return; }",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var errField = body.error || {};",
+                  "var message = typeof errField.message === 'string' ? errField.message : '';",
+                  "pm.test('bedrock invoke /v1/responses stream: error.message is not empty', function () {",
+                  "  pm.expect(message.length, 'error.message is empty: the provider body did not reach the caller. AWS reports every Bedrock failure as a flat {\"message\":...} which the Anthropic and OpenAI error parsers do not read, so the reason is dropped unless HandleProviderAPIError seeds it. body=' + pm.response.text()).to.be.above(0);",
+                  "});",
+                  "pm.test('bedrock invoke /v1/responses stream: error.message is the provider text, not a placeholder', function () {",
+                  "  pm.expect(/^provider API error/i.test(message), 'error.message is a generic placeholder, not the reason the provider gave: ' + message).to.be.false;",
+                  "});",
+                  "var extra = body.extra_fields || {};",
+                  "var raw = extra.raw_response;",
+                  "if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
+                  "var providerMessage = raw && typeof raw === 'object' && typeof raw.message === 'string' ? raw.message : '';",
+                  "pm.test('bedrock invoke /v1/responses stream: the provider body reached the caller to assert against', function () {",
+                  "  pm.expect(providerMessage.length, 'extra_fields.raw_response.message is empty, so the comparison below would pass vacuously. The harness enables allow_per_request_raw_override (the run aborts if it cannot) and this request sends x-bf-send-back-raw-response, so the AWS body should be here. body=' + pm.response.text()).to.be.above(0);",
+                  "});",
+                  "pm.test('bedrock invoke /v1/responses stream: error.message carries what the provider actually said', function () {",
+                  "  pm.expect(message.indexOf(providerMessage) !== -1, 'error.message does not contain the provider text from extra_fields.raw_response.message. reported=' + message + ' provider=' + providerMessage).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
