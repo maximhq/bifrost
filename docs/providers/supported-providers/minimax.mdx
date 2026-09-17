@@ -1,19 +1,37 @@
 ---
 title: "MiniMax"
-description: "MiniMax T2A v2 text-to-speech provider, including streaming audio and compatible x-key gateways"
+description: "MiniMax text generation and T2A provider with OpenAI-compatible Chat Completions and Responses APIs"
 icon: "m"
 ---
 
 ## Overview
 
-Bifrost supports MiniMax's native T2A v2 API for non-streaming and streaming text-to-speech. The provider uses the official `/v1/t2a_v2` request and response format, decodes the returned hex audio, and exposes it through Bifrost's OpenAI-compatible `/v1/audio/speech` endpoint.
+Bifrost supports MiniMax's OpenAI-compatible language-model APIs and its native T2A v2 API.
 
 | Operation | Supported | Upstream endpoint |
 |---|---|---|
 | List Models | ✅ Static catalog | - |
+| Chat Completions | ✅ | `/v1/chat/completions` |
+| Streaming Chat Completions | ✅ | `/v1/chat/completions` |
+| Responses | ✅ | `/v1/responses` |
+| Streaming Responses | ✅ | `/v1/responses` |
+| Function Calling / Agent loops | ✅ | Chat Completions and Responses |
 | Speech | ✅ | `/v1/t2a_v2` |
 | Streaming Speech | ✅ | `/v1/t2a_v2` |
 | Other operations | ❌ | - |
+
+The default base URL is `https://api.minimax.io`. Users of the China endpoint can set `network_config.base_url` to `https://api.minimax.cn`.
+
+## Supported language models
+
+- `MiniMax-M3`
+- `MiniMax-M2.7`
+- `MiniMax-M2.7-highspeed`
+- `MiniMax-M2.5`
+- `MiniMax-M2.5-highspeed`
+- `MiniMax-M2.1`
+- `MiniMax-M2.1-highspeed`
+- `MiniMax-M2`
 
 ## Configuration
 
@@ -37,7 +55,7 @@ Bifrost supports MiniMax's native T2A v2 API for non-streaming and streaming tex
 }
 ```
 
-The default base URL is `https://api.minimax.io`. Bearer authentication is the default.
+Bearer authentication is the default.
 
 ### MiniMax-compatible x-key gateway
 
@@ -63,6 +81,42 @@ The default base URL is `https://api.minimax.io`. Bearer authentication is the d
 ```
 
 The API key remains in the normal provider key configuration. Bifrost sends it in the `x-key` header when `auth_type` is `x-key`.
+
+## Chat Completions
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "minimax/MiniMax-M3",
+    "messages": [{"role": "user", "content": "Hello"}],
+    "stream": false
+  }'
+```
+
+MiniMax function tools use the OpenAI-compatible `tools` and `tool_calls` shapes. When tools are present, Bifrost enables MiniMax's `reasoning_split` output unless the caller explicitly provides a value. This lets the agent loop preserve and replay `reasoning_details` between tool rounds, as required for MiniMax interleaved thinking.
+
+Bifrost maps neutral reasoning effort onto MiniMax Chat thinking control:
+
+- `reasoning_effort: "none"` becomes `thinking: {"type": "disabled"}`.
+- Any non-`none` reasoning effort becomes `thinking: {"type": "adaptive"}`.
+- An explicitly supplied MiniMax `thinking` parameter takes precedence.
+
+MiniMax currently supports only `n=1` for Chat Completions. Large-payload passthrough is rejected for MiniMax Chat and Responses requests because that raw forwarding path cannot safely apply MiniMax reasoning and stream normalization.
+
+## Responses API
+
+```bash
+curl -X POST http://localhost:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "minimax/MiniMax-M3",
+    "input": "Hello",
+    "stream": false
+  }'
+```
+
+Bifrost sends Responses requests to MiniMax's native `/v1/responses` endpoint rather than converting them to Chat Completions. Function tools and full reasoning-item replay are supported. MiniMax currently documents `none` and `auto` as the supported `tool_choice` values; forced or named tool choices are rejected by Bifrost before dispatch.
 
 ## Speech request
 
