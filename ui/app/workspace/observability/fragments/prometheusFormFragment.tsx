@@ -20,6 +20,7 @@ interface PrometheusFormFragmentProps {
 	currentConfig?: {
 		metrics_enabled?: boolean;
 		overhead_breakdown_enabled?: boolean;
+		user_labels_enabled?: boolean;
 		push_gateway_enabled?: boolean;
 		push_gateway_url?: string | SecretVar;
 		job_name?: string;
@@ -43,6 +44,7 @@ const hasAuth = (v?: string | SecretVar): boolean =>
 const buildDefaults = (initialConfig?: PrometheusFormFragmentProps["currentConfig"]): PrometheusFormSchema => ({
 	metrics_enabled: initialConfig?.metrics_enabled ?? true,
 	overhead_breakdown_enabled: initialConfig?.overhead_breakdown_enabled ?? false,
+	user_labels_enabled: initialConfig?.user_labels_enabled ?? false,
 	push_gateway_enabled: initialConfig?.push_gateway_enabled ?? false,
 	prometheus_config: {
 		push_gateway_url: toSecretVarFormValue(initialConfig?.push_gateway_url),
@@ -56,7 +58,7 @@ const buildDefaults = (initialConfig?: PrometheusFormFragmentProps["currentConfi
 
 // Field paths considered "owned" by each tab — used for per-tab Reset and to
 // gate the per-tab Save button on whether *this* tab has unsaved changes.
-const PULL_FIELDS = ["metrics_enabled", "overhead_breakdown_enabled"] as const;
+const PULL_FIELDS = ["metrics_enabled", "overhead_breakdown_enabled", "user_labels_enabled"] as const;
 const PUSH_FIELDS = [
 	"push_gateway_enabled",
 	"prometheus_config.push_gateway_url",
@@ -131,6 +133,10 @@ export function PrometheusFormFragment({
 			shouldValidate: true,
 		});
 		form.setValue("overhead_breakdown_enabled", defaults.overhead_breakdown_enabled, {
+			shouldDirty: true,
+			shouldValidate: true,
+		});
+		form.setValue("user_labels_enabled", defaults.user_labels_enabled, {
 			shouldDirty: true,
 			shouldValidate: true,
 		});
@@ -327,6 +333,30 @@ export function PrometheusFormFragment({
 												onCheckedChange={field.onChange}
 												disabled={!hasPrometheusAccess}
 												data-testid="prometheus-overhead-breakdown-toggle"
+											/>
+										</FormControl>
+									</FormItem>
+								)}
+							/>
+						</div>
+
+						<div className="flex items-center justify-between gap-4">
+							<div className="flex flex-col gap-1">
+								<h3 className="text-sm font-medium">User labels</h3>
+								<p className="text-muted-foreground text-xs">Add user data labels to metrics</p>
+							</div>
+							<FormField
+								control={form.control}
+								name="user_labels_enabled"
+								render={({ field }) => (
+									<FormItem className="flex items-center gap-2">
+										<FormLabel className="text-muted-foreground text-sm font-medium">Enabled</FormLabel>
+										<FormControl>
+											<Switch
+												checked={field.value}
+												onCheckedChange={field.onChange}
+												disabled={!hasPrometheusAccess}
+												data-testid="prometheus-user-labels-toggle"
 											/>
 										</FormControl>
 									</FormItem>
