@@ -103,10 +103,20 @@ func (a *sessionAffinity) ResolveRoute(ctx *schemas.BifrostContext, requested sc
 			a.logger.Warn("error dropping session route binding to %s: %s", boundRoute.Provider, err.Error())
 		}
 		ctx.AppendRoutingEngineLog(schemas.RoutingEngineSessionAffinity, schemas.LogLevelInfo, fmt.Sprintf("Session was last served by %s for %s, which this request cannot use, so the routing decision stands and the session rebinds on its next served request", boundRoute.Provider, requested.Model))
+		// Refusing a stale binding, and dropping it, is as much a decision as following one: the
+		// engine is listed so a trail entry is never attributed to an engine the request does not
+		// record. The paths that write no entry, an unreadable binding and no binding at all, stay
+		// silent at both levels.
+		schemas.AppendToContextList(ctx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineSessionAffinity)
 		return chain
 	}
 	a.remember(ctx, func(r *sessionResolution) { r.route = RouteStateValue(chain[at]) })
+	schemas.AppendToContextList(ctx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineSessionAffinity)
 	if at == 0 {
+		// The session and routing agree, so the chain is left as it is. Say so anyway: a trail that
+		// falls silent here cannot be told apart from one where the session was never consulted,
+		// and the key level below reports every reuse whether or not it changed anything.
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineSessionAffinity, schemas.LogLevelInfo, fmt.Sprintf("Session stays on %s for %s, which routing also proposed", chain[0].Provider, requested.Model))
 		return chain
 	}
 	resolved := make([]schemas.Route, 0, len(chain))
@@ -114,7 +124,6 @@ func (a *sessionAffinity) ResolveRoute(ctx *schemas.BifrostContext, requested sc
 	resolved = append(resolved, chain[:at]...)
 	resolved = append(resolved, chain[at+1:]...)
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineSessionAffinity, schemas.LogLevelInfo, fmt.Sprintf("Session stays on %s for %s; routing proposed %s", chain[at].Provider, requested.Model, chain[0].Provider))
-	schemas.AppendToContextList(ctx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineSessionAffinity)
 	return resolved
 }
 
@@ -239,6 +248,12 @@ func ParseRouteState(value string) (schemas.Route, bool) {
 // fallbacks. A request no hook could route is left for validation to refuse.
 func (bifrost *Bifrost) resolveSessionRoute(ctx *schemas.BifrostContext, requested schemas.Route, req *schemas.BifrostRequest) {
 	if !schemas.IsSessionAffinityActive(ctx) {
+		// A request that carries a session but switched affinity off is routed as if it had none.
+		// Say so: the session id is on the log record either way, so a trail that stayed silent
+		// here reads as though affinity was consulted and had nothing to add.
+		if sessionIDFromContext(ctx) != "" {
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineSessionAffinity, schemas.LogLevelInfo, fmt.Sprintf("Request carries a session but asked not to follow it, so the routing decision stands for %s", requested.Model))
+		}
 		return
 	}
 	provider, model, fallbacks := req.GetRequestFields()

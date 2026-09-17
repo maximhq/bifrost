@@ -60,10 +60,13 @@ Bindings are written only when a request is served. A failed request writes noth
 | Served request that followed the binding               | TTL refreshed                                                          | TTL refreshed                                                        |
 | Served by a fallback provider                          | Moved to the fallback provider                                         | Moved to the key the fallback used                                   |
 | Request failed on every attempt                        | Untouched                                                              | Untouched                                                            |
+| Request refused by governance before routing           | Untouched                                                              | Untouched                                                            |
 | Bound provider not in the chain routing built          | Deleted, the routing decision stands, the next served request rebinds  | Unchanged                                                            |
 | Bound key not in the eligible pool                     | Unchanged                                                              | Deleted, a key is picked normally, the next served request rebinds   |
 | TTL expires with no served request                     | Gone                                                                   | Gone                                                                 |
 | Request sent with `x-bf-session-affinity: off`         | Neither read nor written                                               | Neither read nor written                                             |
+
+A request refused by governance outright, because its credential is inactive or expired, or because the provider or model it asked for is not allowed, is refused before any routing engine builds a chain. Affinity never sees it, so the session keeps whatever binding it had. Revoking a session's access to the provider it is bound to therefore leaves that binding in the trail until it expires, even though no request can follow it. Narrowing access instead, so routing still offers some other provider, deletes the binding on the next request and rebinds the session to whatever serves it.
 
 The TTL defaults to one hour and can be set per request with `x-bf-session-ttl` (a duration string such as `30m`, or a number of seconds). Every served request that follows a binding refreshes it, so an active session does not expire mid-conversation.
 
@@ -134,18 +137,22 @@ ctx = context.WithValue(ctx, schemas.BifrostContextKeySessionTTL, 30*time.Minute
 
 ## Seeing what the session did
 
-Every decision affinity makes is written to the request's routing trail under the `session-affinity` engine, which also appears among the routing engines used for the request. In the logs explorer, filter by session ID to see one session's requests together, and by routing engine to find requests where affinity changed the outcome.
+Every decision affinity makes is written to the request's routing trail under the `session-affinity` engine, and every decision also lists that engine among the routing engines used for the request, whether the session followed a binding or refused a stale one. A request that took no part, because it carries no session or asked not to follow one, lists no engine. In the logs explorer, filter by session ID to see one session's requests together, and by routing engine to find requests a session had a say in. The UI labels this engine **Session**; `session-affinity` is the identifier used in the API and in exported logs.
 
 | Trail entry                                                                                                                          | Meaning                                                                                              |
 | ------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
 | `Session stays on azure for gpt-4o; routing proposed openai`                                                                         | The bound provider was moved ahead of the one routing put first.                                     |
+| `Session stays on azure for gpt-4o, which routing also proposed`                                                                     | The bound provider was already first, so the chain was left as it is.                                |
 | `Session reused key prod-eu-2 for azure/gpt-4o`                                                                                      | The bound key was used instead of running key selection.                                             |
 | `Session was last served by azure for gpt-4o, which this request cannot use, so the routing decision stands and the session rebinds on its next served request` | Routing no longer offers the bound provider, so the binding was deleted.        |
 | `The key this session last used for azure/gpt-4o is no longer eligible, so one is being picked`                                      | The bound key left the pool, so the binding was deleted.                                             |
-| `Session was last served by azure for gpt-4o, which is failing on this node, so the routing decision stands`                         | Enterprise: the load balancer marks the provider as failed here, so the binding was dropped.         |
-| `The key this session last used for azure/gpt-4o is held back by the circuit breaker on this node, so one is being picked`           | Enterprise: the circuit breaker removed the bound key from the pool, so the binding was dropped.     |
+| `Request carries a session but asked not to follow it, so the routing decision stands for gpt-4o`                                    | The request sent `x-bf-session-affinity: off`, so no binding was read or written.                    |
+| `Session was last served by azure for gpt-4o, which is failing on this node, so the routing decision stands`                         | Enterprise only: the load balancer marks the provider as failed here, so the binding was dropped.    |
+| `The key this session last used for azure/gpt-4o is held back by the circuit breaker on this node, so one is being picked`           | Enterprise only: the circuit breaker removed the bound key from the pool, so the binding was dropped. |
 
-When routing already proposes the bound provider, the provider level writes nothing, because it changed nothing. The key level records every reused key.
+The last two entries are emitted only by Bifrost Enterprise; an open-source deployment never writes them, because it follows a binding until the request itself fails.
+
+Both levels record every binding they follow, whether or not it changed the outcome, so a session that agrees with routing is distinguishable in the trail from one that was never consulted.
 
 In OpenTelemetry, the trace's root span carries the session ID as the `session.id` attribute, and the `group_traces_by_session` setting puts a whole session into one trace. See [OpenTelemetry](/features/observability/otel#grouping-traces-by-session).
 

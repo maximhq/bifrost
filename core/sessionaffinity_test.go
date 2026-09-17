@@ -405,15 +405,17 @@ func TestSessionAffinityResolveRoute(t *testing.T) {
 		}
 	})
 
-	t.Run("bound provider already first is left alone and not counted as a decision", func(t *testing.T) {
+	t.Run("bound provider already first is left alone but still reported", func(t *testing.T) {
 		kv := newMockKVStore()
 		ctx := sessionCtx("session-1")
 		bind(kv, ctx, "groq/openai/gpt-4o")
 		if got := testAffinity(kv).ResolveRoute(ctx, requested, chain); !slices.Equal(got, chain) {
 			t.Fatalf("got %v, want the chain unchanged", got)
 		}
-		if slices.Contains(enginesUsed(ctx), schemas.RoutingEngineSessionAffinity) {
-			t.Fatal("an unchanged chain was counted as a session decision")
+		// Agreeing with routing is a decision the session made, and a trail that omitted it could
+		// not be told apart from one where the session was never consulted.
+		if !slices.Contains(enginesUsed(ctx), schemas.RoutingEngineSessionAffinity) || !trailMentions(ctx, "which routing also proposed") {
+			t.Fatalf("agreement not recorded: engines=%v", enginesUsed(ctx))
 		}
 		if res, _ := ctx.Value(sessionAffinityResolvedKey).(sessionResolution); res.route != "groq/openai/gpt-4o" {
 			t.Fatalf("followed route not recorded: %+v", res)
@@ -430,6 +432,11 @@ func TestSessionAffinityResolveRoute(t *testing.T) {
 		}
 		if !trailMentions(ctx, "cannot use") {
 			t.Fatal("stale binding was not explained in the trail")
+		}
+		// Refusing a stale binding is a decision, so it is listed among the engines used: a trail
+		// entry attributed to an engine the request does not record cannot be filtered for.
+		if !slices.Contains(enginesUsed(ctx), schemas.RoutingEngineSessionAffinity) {
+			t.Fatalf("refusing a stale binding was not counted as a session decision: engines=%v", enginesUsed(ctx))
 		}
 		if _, recorded := ctx.Value(sessionAffinityResolvedKey).(sessionResolution); recorded {
 			t.Fatal("a binding outside the chain was recorded as followed")
@@ -460,6 +467,11 @@ func TestSessionAffinityResolveRoute(t *testing.T) {
 				}
 				if _, recorded := ctx.Value(sessionAffinityResolvedKey).(sessionResolution); recorded {
 					t.Fatal("a binding that names no route was recorded as followed")
+				}
+				// Nothing was decided and nothing is said, at either level: a binding that names no
+				// route is dropped as corrupt, not refused on the request's behalf.
+				if len(ctx.GetRoutingEngineLogs()) != 0 || slices.Contains(enginesUsed(ctx), schemas.RoutingEngineSessionAffinity) {
+					t.Fatalf("an unreadable binding was reported as a decision: engines=%v trail=%v", enginesUsed(ctx), ctx.GetRoutingEngineLogs())
 				}
 				routeKey := SessionStateKey(ctx, SessionStateKindRoute, "", "gpt-4o")
 				if _, present := kv.data[routeKey]; present {
@@ -706,7 +718,8 @@ func TestResolveSessionRouteAppliesTheAnswer(t *testing.T) {
 		client, fake := setup(t, reverse)
 		off := sessionCtx("s")
 		off.SetValue(schemas.BifrostContextKeySessionAffinity, false)
-		for _, ctx := range []*schemas.BifrostContext{sessionCtx(""), off} {
+		noSession := sessionCtx("")
+		for _, ctx := range []*schemas.BifrostContext{noSession, off} {
 			req := newRequest(schemas.OpenAI)
 			client.resolveSessionRoute(ctx, routeOf("", "gpt-4o"), req)
 			if provider, _, _ := req.GetRequestFields(); provider != schemas.OpenAI {
@@ -715,6 +728,15 @@ func TestResolveSessionRouteAppliesTheAnswer(t *testing.T) {
 		}
 		if fake.routeCalls != 0 {
 			t.Fatal("ResolveRoute was asked about a request that takes no part")
+		}
+		// A request that carries a session and switched affinity off says so, because its session
+		// id is on the log record and silence would read as affinity having had nothing to add.
+		if !trailMentions(off, "asked not to follow") {
+			t.Fatal("a request that switched affinity off did not say so in the trail")
+		}
+		// One with no session at all has nothing to explain.
+		if len(noSession.GetRoutingEngineLogs()) != 0 {
+			t.Fatalf("a request with no session wrote a trail: %v", noSession.GetRoutingEngineLogs())
 		}
 	})
 }
