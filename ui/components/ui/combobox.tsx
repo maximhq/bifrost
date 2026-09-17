@@ -1,5 +1,5 @@
 import { Command as CommandPrimitive } from "cmdk";
-import { CheckIcon, ChevronDownIcon, XIcon } from "lucide-react";
+import { CheckIcon, ChevronDownIcon, Loader2Icon, SearchIcon, XIcon } from "lucide-react";
 import * as React from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -38,6 +38,8 @@ interface ComboboxRootProps {
 	itemToStringLabel?: (value: string | null) => string;
 	open?: boolean;
 	defaultOpen?: boolean;
+	/** Controls the search text, so a consumer can reset it (e.g. on close). */
+	inputValue?: string;
 }
 
 function Combobox({
@@ -51,11 +53,13 @@ function Combobox({
 	itemToStringLabel,
 	open: controlledOpen,
 	defaultOpen = false,
+	inputValue: controlledInputValue,
 }: ComboboxRootProps) {
 	const [internalOpen, setInternalOpen] = React.useState(defaultOpen);
-	const [inputValue, setInputValueState] = React.useState("");
+	const [internalInputValue, setInputValueState] = React.useState("");
 
 	const open = controlledOpen !== undefined ? controlledOpen : internalOpen;
+	const inputValue = controlledInputValue !== undefined ? controlledInputValue : internalInputValue;
 
 	const setOpen = React.useCallback(
 		(v: boolean) => {
@@ -172,12 +176,23 @@ function ComboboxContent({
 	className,
 	children,
 	noPortalForContent,
+	shouldFilter,
+	highlightedValue,
+	onHighlightedValueChange,
 	...props
 }: {
 	className?: string;
 	children?: React.ReactNode;
 	anchor?: React.RefObject<HTMLElement | null>;
 	noPortalForContent?: boolean;
+	/**
+	 * False leaves the list exactly as rendered: cmdk neither drops rows nor reorders them.
+	 * For a list whose membership and order already came from the server.
+	 */
+	shouldFilter?: boolean;
+	/** Takes over the keyboard highlight. Needed when the rows themselves come and go. */
+	highlightedValue?: string;
+	onHighlightedValueChange?: (value: string) => void;
 	[key: string]: any;
 }) {
 	const { filter } = useComboboxContext();
@@ -188,10 +203,23 @@ function ComboboxContent({
 			align="start"
 			sideOffset={4}
 			noPortal={noPortalForContent}
-			onOpenAutoFocus={(e) => e.preventDefault()}
+			/*
+			 * Focus is taken here rather than through the input's own autoFocus. Inside a Sheet,
+			 * autoFocus fires during commit, before this scope has registered itself and paused
+			 * the sheet's focus trap, so the trap sees focus land outside its container and pulls
+			 * it straight back to the trigger. By the time radix dispatches this event the scope
+			 * is on the stack and the trap is paused, so the focus sticks.
+			 */
+			onOpenAutoFocus={(e) => {
+				e.preventDefault();
+				(e.currentTarget as HTMLElement | null)?.querySelector<HTMLInputElement>("[cmdk-input]")?.focus();
+			}}
 			{...props}
 		>
 			<CommandPrimitive
+				shouldFilter={shouldFilter}
+				value={highlightedValue}
+				onValueChange={onHighlightedValueChange}
 				filter={
 					filter === null
 						? () => 1 // disable internal filtering — consumer controls it
@@ -204,18 +232,39 @@ function ComboboxContent({
 	);
 }
 
-function ComboboxList({ className, ...props }: React.ComponentProps<typeof CommandPrimitive.List>) {
+function ComboboxList({
+	className,
+	searchPlaceholder = "Search...",
+	showSearchIcon = false,
+	isSearching = false,
+	onInputKeyDown,
+	...props
+}: React.ComponentProps<typeof CommandPrimitive.List> & {
+	searchPlaceholder?: string;
+	/** Renders a magnifier ahead of the input so the list reads as searchable at a glance. */
+	showSearchIcon?: boolean;
+	/** Swaps the magnifier for a spinner while a search is in flight. */
+	isSearching?: boolean;
+	/** Runs before cmdk's own key handling on the search field, e.g. backspace over chips. */
+	onInputKeyDown?: React.KeyboardEventHandler<HTMLInputElement>;
+}) {
 	const { inputValue, setInputValue } = useComboboxContext();
 
 	return (
 		<>
-			<div className="flex items-center border-b px-3">
+			<div className="flex items-center gap-2 border-b px-3">
+				{showSearchIcon &&
+					(isSearching ? (
+						<Loader2Icon className="text-muted-foreground size-3.5 shrink-0 animate-spin" />
+					) : (
+						<SearchIcon className="text-muted-foreground size-3.5 shrink-0" />
+					))}
 				<CommandPrimitive.Input
-					placeholder="Search..."
+					placeholder={searchPlaceholder}
 					className="placeholder:text-muted-foreground flex h-8 w-full bg-transparent py-3 text-sm outline-none disabled:cursor-not-allowed disabled:opacity-50"
 					value={inputValue}
-					autoFocus
 					onValueChange={setInputValue}
+					onKeyDown={onInputKeyDown}
 				/>
 			</div>
 			<CommandPrimitive.List data-slot="combobox-list" className={cn("max-h-[300px] overflow-y-auto p-1", className)} {...props} />
