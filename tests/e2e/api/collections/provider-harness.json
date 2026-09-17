@@ -151116,7 +151116,7 @@
     },
     {
       "name": "95. Bedrock diagnostics stripping (bedrock-diagnostics-stripping)",
-      "description": "Claude Code sends diagnostics.previous_message_id on Anthropic Messages requests. Amazon Bedrock does not support this Anthropic-only field and returns HTTP 400 with \"diagnostics: Extra inputs are not permitted\" if it reaches the provider. These cases verify the shared typed sanitizer removes diagnostics from the provider request both without a harness user agent and with the Claude Code user agent from the reported incident. The raw provider request is inspected so a coincidental successful response cannot pass.",
+      "description": "Claude Code sends diagnostics.previous_message_id on Anthropic Messages requests. Amazon Bedrock does not support this Anthropic-only field and returns HTTP 400 with \"diagnostics: Extra inputs are not permitted\" if it reaches the provider. The first two cases verify the shared typed sanitizer removes diagnostics from the provider request both without a harness user agent and with the Claude Code user agent from the reported incident. The raw provider request is inspected so a coincidental successful response cannot pass. The third case forces an unrelated Bedrock ValidationException on the same streaming Claude Code path and verifies the Anthropic error envelope carries a non-empty provider message instead of {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"\"}}.",
       "item": [
         {
           "name": "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 /anthropic/v1/messages strips diagnostics - bedrock-diagnostics-stripping",
@@ -151246,6 +151246,75 @@
                   "  pm.expect(raw, 'extra_fields.raw_request missing - is send_back_raw_request honoured? body=' + text).to.be.an('object');",
                   "  pm.expect(raw.messages, 'provider request lost messages: ' + JSON.stringify(raw)).to.be.an('array').that.is.not.empty;",
                   "  pm.expect(raw, 'diagnostics survived into Bedrock request: ' + JSON.stringify(raw)).to.not.have.property('diagnostics');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-4XX] bedrock/global.anthropic.claude-sonnet-4-6 Claude Code streaming error preserves Bedrock message - bedrock-diagnostics-stripping",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.267 (external, cli)"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-6\",\"max_tokens\":32,\"stream\":true,\"temperature\":5,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly: OK\"}],\"diagnostics\":{\"previous_message_id\":null}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "var text = pm.response.text() || '';",
+                  "if ([401, 403, 429].indexOf(code) !== -1) { return; }",
+                  "if (code === 503 && /ServiceUnavailable|Throttl|ModelNotReady/i.test(text)) { return; }",
+                  "if (code === 529 && /overloaded/i.test(text)) { return; }",
+                  "if (code === 500 || code === 502 || code === 504) { return; }",
+                  "if (code < 400) { return; }",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var errField = body.error || {};",
+                  "var message = typeof errField.message === 'string' ? errField.message : '';",
+                  "pm.test('Claude Code streaming path returns an Anthropic error envelope', function () {",
+                  "  pm.expect(body.type, 'unexpected error body: ' + text).to.equal('error');",
+                  "  pm.expect(errField, 'missing error object: ' + text).to.be.an('object');",
+                  "});",
+                  "pm.test('Claude Code streaming path preserves the Bedrock error message', function () {",
+                  "  pm.expect(message.length, 'Bedrock error was converted to an empty Anthropic message: ' + text).to.be.above(0);",
+                  "  pm.expect(message.toLowerCase(), 'expected the forced temperature validation reason: ' + message).to.include('temperature');",
                   "});"
                 ]
               }

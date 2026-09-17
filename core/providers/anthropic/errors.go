@@ -16,12 +16,11 @@ func ToAnthropicChatCompletionError(bifrostErr *schemas.BifrostError) *Anthropic
 
 	// Safely extract type and message from nested error
 	errorType := "api_error"
-	message := ""
+	message := bifrostErr.GetErrorString()
 	if bifrostErr.Error != nil {
 		if bifrostErr.Error.Type != nil && *bifrostErr.Error.Type != "" {
 			errorType = *bifrostErr.Error.Type
 		}
-		message = bifrostErr.Error.Message
 	}
 
 	// Handle nested error fields with nil checks
