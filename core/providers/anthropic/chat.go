@@ -1142,6 +1142,19 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 				}
 			}
 
+			// Anthropic requires non-empty user content. A user turn whose blocks
+			// all converted away is kept with the existing non-whitespace
+			// placeholder rather than dropped: dropping it can leave the
+			// conversation ending on an assistant turn, an unsupported prefill
+			// for some models. An empty final assistant turn is legal, so
+			// assistant messages are left as converted.
+			if len(content) == 0 && anthropicMsg.Role == AnthropicMessageRoleUser {
+				content = []AnthropicContentBlock{{
+					Type: AnthropicContentBlockTypeText,
+					Text: schemas.Ptr(documentPlaceholderText),
+				}}
+			}
+
 			// Set content
 			if len(content) == 1 && content[0].Type == AnthropicContentBlockTypeText {
 				// Always use ContentBlocks for consistent array serialization
