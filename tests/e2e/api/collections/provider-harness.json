@@ -152478,6 +152478,260 @@
           }
         }
       ]
+    },
+    {
+      "name": "100. Flash-Lite minimal thinking (flash-lite-minimal, #7287)",
+      "description": "The text gemini-3.1-flash-lite model supports minimal/low/medium/high, but its missing capability-table entry promoted minimal to low on normalized Gemini and Vertex requests. These cases check the captured outbound request, so success or a low observed thinking-token count cannot hide the conversion. Covers both providers through unary Responses and streaming Chat Completions; Go tests cover native GenAI ingress, provider switches, retries and explicit budgets. The image variant retains its separate minimal/high restriction.",
+      "item": [
+        {
+          "name": "gemini gemini-3.1-flash-lite minimal responses - #7287",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.1-flash-lite\",\n  \"input\": \"Say OK.\",\n  \"reasoning\": {\n    \"effort\": \"minimal\"\n  },\n  \"max_output_tokens\": 128\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var text = pm.response.text();",
+                  "pm.test('Flash-Lite request succeeds', function () { pm.expect(pm.response.code, text).to.be.below(400); });",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json();",
+                  "pm.test('response has output', function () { pm.expect(body.output, text).to.be.an('array'); });",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('outbound request was captured', function () { pm.expect(rr, text).to.be.an('object'); });",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var thinking = (rr.generationConfig || {}).thinkingConfig || {};",
+                  "pm.test('Flash-Lite preserves minimal instead of promoting to low', function () {",
+                  "  pm.expect(thinking.thinkingLevel, JSON.stringify(thinking)).to.eql('minimal');",
+                  "});",
+                  "pm.test('level-only request does not acquire a budget', function () {",
+                  "  pm.expect(thinking.thinkingBudget === undefined || thinking.thinkingBudget === null, JSON.stringify(thinking)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini gemini-3.1-flash-lite minimal chat stream - #7287",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.1-flash-lite\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say OK.\"\n    }\n  ],\n  \"reasoning_effort\": \"minimal\",\n  \"max_completion_tokens\": 128,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var text = pm.response.text();",
+                  "pm.test('Flash-Lite request succeeds', function () { pm.expect(pm.response.code, text).to.be.below(400); });",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var frames = [];",
+                  "text.split(/\\r?\\n/).forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var data = line.slice(5).trim();",
+                  "  if (!data || data === '[DONE]') { return; }",
+                  "  try { frames.push(JSON.parse(data)); } catch (e) {}",
+                  "});",
+                  "pm.test('stream contains completion chunks', function () {",
+                  "  pm.expect(frames.some(function (frame) { return Array.isArray(frame.choices); }), text).to.be.true;",
+                  "});",
+                  "var rr;",
+                  "frames.forEach(function (frame) { if (frame.extra_fields && frame.extra_fields.raw_request) { rr = frame.extra_fields.raw_request; } });",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('outbound request was captured', function () { pm.expect(rr, text).to.be.an('object'); });",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var thinking = (rr.generationConfig || {}).thinkingConfig || {};",
+                  "pm.test('Flash-Lite preserves minimal instead of promoting to low', function () {",
+                  "  pm.expect(thinking.thinkingLevel, JSON.stringify(thinking)).to.eql('minimal');",
+                  "});",
+                  "pm.test('level-only request does not acquire a budget', function () {",
+                  "  pm.expect(thinking.thinkingBudget === undefined || thinking.thinkingBudget === null, JSON.stringify(thinking)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex gemini-3.1-flash-lite minimal responses - #7287",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-3.1-flash-lite\",\n  \"input\": \"Say OK.\",\n  \"reasoning\": {\n    \"effort\": \"minimal\"\n  },\n  \"max_output_tokens\": 128\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var text = pm.response.text();",
+                  "pm.test('Flash-Lite request succeeds', function () { pm.expect(pm.response.code, text).to.be.below(400); });",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json();",
+                  "pm.test('response has output', function () { pm.expect(body.output, text).to.be.an('array'); });",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('outbound request was captured', function () { pm.expect(rr, text).to.be.an('object'); });",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var thinking = (rr.generationConfig || {}).thinkingConfig || {};",
+                  "pm.test('Flash-Lite preserves minimal instead of promoting to low', function () {",
+                  "  pm.expect(thinking.thinkingLevel, JSON.stringify(thinking)).to.eql('minimal');",
+                  "});",
+                  "pm.test('level-only request does not acquire a budget', function () {",
+                  "  pm.expect(thinking.thinkingBudget === undefined || thinking.thinkingBudget === null, JSON.stringify(thinking)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex gemini-3.1-flash-lite minimal chat stream - #7287",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-3.1-flash-lite\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say OK.\"\n    }\n  ],\n  \"reasoning_effort\": \"minimal\",\n  \"max_completion_tokens\": 128,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var text = pm.response.text();",
+                  "pm.test('Flash-Lite request succeeds', function () { pm.expect(pm.response.code, text).to.be.below(400); });",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var frames = [];",
+                  "text.split(/\\r?\\n/).forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var data = line.slice(5).trim();",
+                  "  if (!data || data === '[DONE]') { return; }",
+                  "  try { frames.push(JSON.parse(data)); } catch (e) {}",
+                  "});",
+                  "pm.test('stream contains completion chunks', function () {",
+                  "  pm.expect(frames.some(function (frame) { return Array.isArray(frame.choices); }), text).to.be.true;",
+                  "});",
+                  "var rr;",
+                  "frames.forEach(function (frame) { if (frame.extra_fields && frame.extra_fields.raw_request) { rr = frame.extra_fields.raw_request; } });",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('outbound request was captured', function () { pm.expect(rr, text).to.be.an('object'); });",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var thinking = (rr.generationConfig || {}).thinkingConfig || {};",
+                  "pm.test('Flash-Lite preserves minimal instead of promoting to low', function () {",
+                  "  pm.expect(thinking.thinkingLevel, JSON.stringify(thinking)).to.eql('minimal');",
+                  "});",
+                  "pm.test('level-only request does not acquire a budget', function () {",
+                  "  pm.expect(thinking.thinkingBudget === undefined || thinking.thinkingBudget === null, JSON.stringify(thinking)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

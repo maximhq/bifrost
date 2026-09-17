@@ -1,3 +1,5 @@
+- [test]: cover Flash-Lite thinking on GenAI unary and streaming routes [@Javtor](https://github.com/Javtor)
+
 ## ✨ Features
 
 - **Claude Desktop and Cowork Marketplace** - Skills stored in Bifrost can now be registered as a marketplace in Claude Desktop and Cowork, which reject the direct JSON URL and require a cloneable Git repository URL. A new `/api/skills/serve/claude-code.git` endpoint implements the two Git smart-HTTP requests used during a clone and serves a repository containing `.claude-plugin/marketplace.json`; the existing Claude Code flow is unchanged (#7152)
