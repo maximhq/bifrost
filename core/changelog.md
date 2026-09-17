@@ -1,2 +1,3 @@
 - [fix]: preserve opted-in Anthropic extra params through Responses conversion [@wangrat](https://github.com/wangrat)
+- [fix]: Responses API - generic OpenAI-compatible tool filter no longer drops non-OpenAI tool types/fields for providers that support them, fixing Perplexity Agent API tools [@hnoguchigr](https://github.com/hnoguchigr)
 - [fix]: Responses API - the undocumented `skill_loaded` item Perplexity's Agent API emits alongside `finance_search` results is now preserved verbatim instead of being silently reduced to `{"type":"skill_loaded"}` [@hnoguchigr](https://github.com/hnoguchigr)

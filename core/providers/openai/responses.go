@@ -928,6 +928,13 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools(webSearchContentTypes
 	if resp.Provider == schemas.XAI {
 		supportedTypes[schemas.ResponsesToolTypeXSearch] = true
 	}
+	// Perplexity Agent API server-side tools (docs.perplexity.ai/docs/agent-api/tools).
+	if resp.Provider == schemas.Perplexity {
+		supportedTypes[schemas.ResponsesToolTypeSandbox] = true
+		supportedTypes[schemas.ResponsesToolTypeFetchURL] = true
+		supportedTypes[schemas.ResponsesToolTypeFinanceSearch] = true
+		supportedTypes[schemas.ResponsesToolTypePeopleSearch] = true
+	}
 
 	// Filter tools to only include supported types
 	filteredTools := make([]schemas.ResponsesTool, 0, len(resp.Tools))
@@ -951,6 +958,13 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools(webSearchContentTypes
 				}
 				newTool.ResponsesToolComputerUsePreview = newComputerUse
 				filteredTools = append(filteredTools, newTool)
+			} else if tool.Type == schemas.ResponsesToolTypeWebSearch && tool.ResponsesToolWebSearch != nil && resp.Provider == schemas.Perplexity {
+				// Perplexity's Agent API web_search tool accepts its own superset of
+				// fields (search_domain_filter, search_recency_filter, date filters,
+				// max_results, max_tokens, max_tokens_per_page — see
+				// docs.perplexity.ai/docs/agent-api/tools/web-search), so none of the
+				// OpenAI-specific stripping below applies; forward the tool as-is.
+				filteredTools = append(filteredTools, tool)
 			} else if tool.Type == schemas.ResponsesToolTypeWebSearch && tool.ResponsesToolWebSearch != nil {
 				// Create a proper deep copy with new nested pointers to avoid mutating the original
 				newTool := tool
