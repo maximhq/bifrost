@@ -770,10 +770,11 @@ func TestOpenAIResponsesRequestInput_MarshalJSON_FunctionCallOutputPreservesNonT
 }
 
 // TestOpenAIResponsesRequest_MarshalJSON_StripsAnthropicToolFlags ensures the
-// Responses serializer drops the four Anthropic-native tool flags
-// (defer_loading, allowed_callers, input_examples, eager_input_streaming)
-// along with CacheControl before forwarding to OpenAI — mirroring the Chat
-// path's behavior so Anthropic-flavored tools cannot 400 OpenAI via Responses.
+// Responses serializer drops the Anthropic-native tool flags (defer_loading,
+// input_examples, eager_input_streaming) along with CacheControl before
+// forwarding to OpenAI. allowed_callers is the exception: OpenAI accepts it on
+// function, custom, shell and namespace tools, so it survives there and is
+// stripped only on the types that have no such field.
 func TestOpenAIResponsesRequest_MarshalJSON_StripsAnthropicToolFlags(t *testing.T) {
 	req := &OpenAIResponsesRequest{
 		Model: "gpt-4o",
@@ -808,6 +809,11 @@ func TestOpenAIResponsesRequest_MarshalJSON_StripsAnthropicToolFlags(t *testing.
 						Version: schemas.Ptr("code_execution_20260120"),
 					},
 				},
+				{
+					Type:                   schemas.ResponsesToolTypeWebSearch,
+					AllowedCallers:         []string{"direct"},
+					ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{},
+				},
 			},
 		},
 	}
@@ -819,7 +825,7 @@ func TestOpenAIResponsesRequest_MarshalJSON_StripsAnthropicToolFlags(t *testing.
 	raw := string(jsonBytes)
 
 	// None of the Anthropic-only tool keys must survive on the wire.
-	for _, key := range []string{`"cache_control"`, `"defer_loading"`, `"allowed_callers"`, `"input_examples"`, `"eager_input_streaming"`, `"code_execution_version"`} {
+	for _, key := range []string{`"cache_control"`, `"defer_loading"`, `"input_examples"`, `"eager_input_streaming"`, `"code_execution_version"`} {
 		if strings.Contains(raw, key) {
 			t.Errorf("OpenAI Responses serializer must strip %s; raw=%s", key, raw)
 		}
@@ -827,6 +833,30 @@ func TestOpenAIResponsesRequest_MarshalJSON_StripsAnthropicToolFlags(t *testing.
 	// Function tool identity should be preserved.
 	if !strings.Contains(raw, `"name":"lookup"`) {
 		t.Errorf("tool identity lost after strip; raw=%s", raw)
+	}
+
+	// allowed_callers is OpenAI's own field on function tools, and is not one on
+	// web_search: it must survive on the former and be stripped on the latter.
+	var wire struct {
+		Tools []struct {
+			Type           string   `json:"type"`
+			AllowedCallers []string `json:"allowed_callers"`
+		} `json:"tools"`
+	}
+	if err := sonic.Unmarshal(jsonBytes, &wire); err != nil {
+		t.Fatalf("failed to unmarshal wire tools: %v\nraw=%s", err, raw)
+	}
+	for _, tool := range wire.Tools {
+		switch tool.Type {
+		case "function":
+			if len(tool.AllowedCallers) == 0 {
+				t.Errorf("allowed_callers must survive on function tools; raw=%s", raw)
+			}
+		case "web_search":
+			if len(tool.AllowedCallers) != 0 {
+				t.Errorf("allowed_callers must be stripped on web_search tools; raw=%s", raw)
+			}
+		}
 	}
 }
 
