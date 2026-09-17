@@ -75,7 +75,14 @@ export function summarizeResponsesToolCall(msg: ResponsesMessage, mapping?: Reco
 		const detail =
 			summarizeQueries(action.queries, mapping) ??
 			firstDetail(
-				[action.query, action.url, action.pattern, Array.isArray(action.command) ? action.command.join(" ") : undefined, action.name],
+				[
+					action.query,
+					action.url,
+					action.pattern,
+					Array.isArray(action.command) ? action.command.join(" ") : undefined,
+					Array.isArray(action.commands) ? action.commands.join(" && ") : undefined,
+					action.name,
+				],
 				mapping,
 			);
 		const actionType = typeof action.type === "string" ? action.type : undefined;

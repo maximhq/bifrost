@@ -1647,6 +1647,7 @@ func extractResponsesOutputMessages(resp *schemas.BifrostResponsesResponse) []Re
 		case schemas.ResponsesMessageTypeFileSearchCall,
 			schemas.ResponsesMessageTypeCodeInterpreterCall,
 			schemas.ResponsesMessageTypeLocalShellCall,
+			schemas.ResponsesMessageTypeShellCall,
 			schemas.ResponsesMessageTypeCustomToolCall,
 			schemas.ResponsesMessageTypeImageGenerationCall:
 			name := ""
@@ -1799,6 +1800,7 @@ func extractResponsesInputMessages(messages []schemas.ResponsesMessage) []Respon
 		case schemas.ResponsesMessageTypeFileSearchCall,
 			schemas.ResponsesMessageTypeCodeInterpreterCall,
 			schemas.ResponsesMessageTypeLocalShellCall,
+			schemas.ResponsesMessageTypeShellCall,
 			schemas.ResponsesMessageTypeCustomToolCall,
 			schemas.ResponsesMessageTypeImageGenerationCall:
 			name := ""
@@ -1815,6 +1817,7 @@ func extractResponsesInputMessages(messages []schemas.ResponsesMessage) []Respon
 			})
 
 		case schemas.ResponsesMessageTypeLocalShellCallOutput,
+			schemas.ResponsesMessageTypeShellCallOutput,
 			schemas.ResponsesMessageTypeCustomToolCallOutput:
 			content := ""
 			if msg.ResponsesToolMessage != nil {
@@ -1862,6 +1865,9 @@ func extractResponsesToolOutputContent(output *schemas.ResponsesToolMessageOutpu
 	}
 	if output.ResponsesToolCallOutputStr != nil {
 		return *output.ResponsesToolCallOutputStr
+	}
+	if len(output.ResponsesShellCallOutput) > 0 {
+		return schemas.ShellCallOutputText(output.ResponsesShellCallOutput)
 	}
 	var sb strings.Builder
 	for _, block := range output.ResponsesFunctionToolCallOutputBlocks {
