@@ -1098,6 +1098,8 @@ export type ResponsesMessageType =
 	| "code_interpreter_call"
 	| "local_shell_call"
 	| "local_shell_call_output"
+	| "shell_call"
+	| "shell_call_output"
 	| "mcp_call"
 	| "custom_tool_call"
 	| "custom_tool_call_output"

@@ -111,6 +111,10 @@ describe("summarizeResponsesToolCall", () => {
 		);
 	});
 
+	it("joins the commands of a shell_call, which carries no action type", () => {
+		expect(summarizeResponsesToolCall(item({ type: "shell_call", action: { commands: ["pwd", "ls -la"] } }))).toBe("pwd && ls -la");
+	});
+
 	it("uses the action type alone when it carries no detail", () => {
 		expect(summarizeResponsesToolCall(item({ type: "computer_call", action: { type: "screenshot" } }))).toBe("screenshot");
 	});
