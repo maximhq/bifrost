@@ -1947,168 +1947,166 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 	}
 
 	if len(delta.ToolCalls) > 0 {
-		// Tool call delta - handle function call arguments
-		toolCall := delta.ToolCalls[0] // Take first tool call
-		contentIndex := 1              // Tool calls use content_index:1
+		// Tool call delta - handle each parallel function call in the chunk.
+		for _, toolCall := range delta.ToolCalls {
+			contentIndex := 1 // Tool calls use content_index:1
 
-		// Determine tool call ID: use ID if present, otherwise look up by index
-		var toolCallID string
-		if toolCall.ID != nil && *toolCall.ID != "" {
-			toolCallID = *toolCall.ID
-		} else {
-			// Look up ID by index for subsequent chunks that don't include the ID
-			if id, exists := state.ToolCallIndexToID[toolCall.Index]; exists {
-				toolCallID = id
+			// Determine tool call ID: use ID if present, otherwise look up by index
+			var toolCallID string
+			if toolCall.ID != nil && *toolCall.ID != "" {
+				toolCallID = *toolCall.ID
 			} else {
-				// No ID and no mapping found - skip this chunk
-				// This can happen if the stream is malformed or out of order
-				return responses
+				// Look up ID by index for subsequent chunks that don't include the ID
+				if id, exists := state.ToolCallIndexToID[toolCall.Index]; exists {
+					toolCallID = id
+				} else {
+					// No ID and no mapping found - skip this tool call
+					// This can happen if the stream is malformed or out of order
+					continue
+				}
 			}
-		}
 
-		// Check if this is a new tool call (only when ID is present)
-		if toolCall.ID != nil && *toolCall.ID != "" {
-			if _, exists := state.ToolCallOutputIndices[toolCallID]; !exists {
-				// Close reasoning item so its thinking block is bracketed before the tool block.
-				closeReasoningItem()
-				// Close text item if still open and has content
-				if state.TextItemAdded && !state.TextItemClosed && state.TextItemHasContent {
-					outputIndex := state.TextOutputIndex
-					itemID := state.ItemIDs["text"]
+			// Check if this is a new tool call (only when ID is present)
+			if toolCall.ID != nil && *toolCall.ID != "" {
+				if _, exists := state.ToolCallOutputIndices[toolCallID]; !exists {
+					// Close reasoning item so its thinking block is bracketed before the tool block.
+					closeReasoningItem()
+					// Close text item if still open and has content
+					if state.TextItemAdded && !state.TextItemClosed && state.TextItemHasContent {
+						outputIndex := state.TextOutputIndex
+						itemID := state.ItemIDs["text"]
 
-					finalText := state.TextBuffer.String()
-					responses = append(responses, &BifrostResponsesStreamResponse{
-						Type:           ResponsesStreamResponseTypeOutputTextDone,
-						SequenceNumber: state.SequenceNumber,
-						OutputIndex:    Ptr(outputIndex),
-						ContentIndex:   Ptr(0),
-						ItemID:         &itemID,
-						Text:           &finalText,
-						LogProbs:       []ResponsesOutputMessageContentTextLogProb{},
-						ExtraFields:    cr.ExtraFields,
-					})
-					state.SequenceNumber++
+						finalText := state.TextBuffer.String()
+						responses = append(responses, &BifrostResponsesStreamResponse{
+							Type:           ResponsesStreamResponseTypeOutputTextDone,
+							SequenceNumber: state.SequenceNumber,
+							OutputIndex:    Ptr(outputIndex),
+							ContentIndex:   Ptr(0),
+							ItemID:         &itemID,
+							Text:           &finalText,
+							LogProbs:       []ResponsesOutputMessageContentTextLogProb{},
+							ExtraFields:    cr.ExtraFields,
+						})
+						state.SequenceNumber++
 
-					// Emit content_part.done
-					part := &ResponsesMessageContentBlock{
-						Type: ResponsesOutputMessageContentTypeText,
-						Text: &finalText,
-						ResponsesOutputMessageContentText: &ResponsesOutputMessageContentText{
-							LogProbs:    []ResponsesOutputMessageContentTextLogProb{},
-							Annotations: []ResponsesOutputMessageContentTextAnnotation{},
-						},
-					}
-					responses = append(responses, &BifrostResponsesStreamResponse{
-						Type:           ResponsesStreamResponseTypeContentPartDone,
-						SequenceNumber: state.SequenceNumber,
-						OutputIndex:    Ptr(outputIndex),
-						ContentIndex:   Ptr(0),
-						ItemID:         &itemID,
-						Part:           part,
-						ExtraFields:    cr.ExtraFields,
-					})
-					state.SequenceNumber++
+						// Emit content_part.done
+						part := &ResponsesMessageContentBlock{
+							Type: ResponsesOutputMessageContentTypeText,
+							Text: &finalText,
+							ResponsesOutputMessageContentText: &ResponsesOutputMessageContentText{
+								LogProbs:    []ResponsesOutputMessageContentTextLogProb{},
+								Annotations: []ResponsesOutputMessageContentTextAnnotation{},
+							},
+						}
+						responses = append(responses, &BifrostResponsesStreamResponse{
+							Type:           ResponsesStreamResponseTypeContentPartDone,
+							SequenceNumber: state.SequenceNumber,
+							OutputIndex:    Ptr(outputIndex),
+							ContentIndex:   Ptr(0),
+							ItemID:         &itemID,
+							Part:           part,
+							ExtraFields:    cr.ExtraFields,
+						})
+						state.SequenceNumber++
 
-					// Emit output_item.done
-					statusCompleted := "completed"
-					messageType := ResponsesMessageTypeMessage
-					role := ResponsesInputMessageRoleAssistant
-					textType := ResponsesOutputMessageContentTypeText
-					doneItem := &ResponsesMessage{
-						Type:   &messageType,
-						Role:   &role,
-						Status: &statusCompleted,
-						Content: &ResponsesMessageContent{
-							ContentBlocks: []ResponsesMessageContentBlock{
-								{
-									Type: textType,
-									Text: &finalText,
-									ResponsesOutputMessageContentText: &ResponsesOutputMessageContentText{
-										LogProbs:    []ResponsesOutputMessageContentTextLogProb{},
-										Annotations: []ResponsesOutputMessageContentTextAnnotation{},
+						// Emit output_item.done
+						statusCompleted := "completed"
+						messageType := ResponsesMessageTypeMessage
+						role := ResponsesInputMessageRoleAssistant
+						textType := ResponsesOutputMessageContentTypeText
+						doneItem := &ResponsesMessage{
+							Type:   &messageType,
+							Role:   &role,
+							Status: &statusCompleted,
+							Content: &ResponsesMessageContent{
+								ContentBlocks: []ResponsesMessageContentBlock{
+									{
+										Type: textType,
+										Text: &finalText,
+										ResponsesOutputMessageContentText: &ResponsesOutputMessageContentText{
+											LogProbs:    []ResponsesOutputMessageContentTextLogProb{},
+											Annotations: []ResponsesOutputMessageContentTextAnnotation{},
+										},
 									},
 								},
 							},
+						}
+						if itemID != "" {
+							doneItem.ID = &itemID
+						}
+						responses = append(responses, &BifrostResponsesStreamResponse{
+							Type:           ResponsesStreamResponseTypeOutputItemDone,
+							SequenceNumber: state.SequenceNumber,
+							OutputIndex:    Ptr(outputIndex),
+							ContentIndex:   Ptr(0),
+							Item:           doneItem,
+							ExtraFields:    cr.ExtraFields,
+						})
+						state.SequenceNumber++
+						state.TextItemClosed = true
+					}
+
+					// Assign new output index for tool call.
+					outputIndex := state.CurrentOutputIndex
+					state.CurrentOutputIndex = outputIndex + 1
+					state.ToolCallOutputIndices[toolCallID] = outputIndex
+
+					// Store tool call info and index mapping
+					state.ItemIDs[toolCallID] = toolCallID
+					state.ToolCallIndexToID[toolCall.Index] = toolCallID
+					if toolCall.Function.Name != nil {
+						state.ToolCallNames[toolCallID] = *toolCall.Function.Name
+					}
+
+					// Initialize argument buffer
+					state.ToolArgumentBuffers[toolCallID] = ""
+
+					// Emit output_item.added for function call
+					statusInProgress := "in_progress"
+					item := &ResponsesMessage{
+						ID:     &toolCallID,
+						Type:   Ptr(ResponsesMessageTypeFunctionCall),
+						Status: &statusInProgress,
+						ResponsesToolMessage: &ResponsesToolMessage{
+							CallID:    &toolCallID,
+							Name:      toolCall.Function.Name,
+							Arguments: Ptr(""), // Arguments will be filled by deltas
 						},
 					}
-					if itemID != "" {
-						doneItem.ID = &itemID
-					}
+
 					responses = append(responses, &BifrostResponsesStreamResponse{
-						Type:           ResponsesStreamResponseTypeOutputItemDone,
+						Type:           ResponsesStreamResponseTypeOutputItemAdded,
 						SequenceNumber: state.SequenceNumber,
 						OutputIndex:    Ptr(outputIndex),
-						ContentIndex:   Ptr(0),
-						Item:           doneItem,
+						ContentIndex:   Ptr(contentIndex),
+						Item:           item,
 						ExtraFields:    cr.ExtraFields,
 					})
 					state.SequenceNumber++
-					state.TextItemClosed = true
 				}
+			}
 
-				// Assign new output index for tool call
-				outputIndex := state.CurrentOutputIndex
-				if outputIndex == 0 {
-					outputIndex = 1 // Skip 0 if text is using it
-				}
-				state.CurrentOutputIndex = outputIndex + 1
-				state.ToolCallOutputIndices[toolCallID] = outputIndex
+			// Accumulate and emit function call arguments delta
+			// This works for both chunks with ID and chunks without ID (using looked-up ID)
+			if toolCall.Function.Arguments != "" {
+				outputIndex := state.ToolCallOutputIndices[toolCallID]
+				state.ToolArgumentBuffers[toolCallID] += toolCall.Function.Arguments
 
-				// Store tool call info and index mapping
-				state.ItemIDs[toolCallID] = toolCallID
-				state.ToolCallIndexToID[toolCall.Index] = toolCallID
-				if toolCall.Function.Name != nil {
-					state.ToolCallNames[toolCallID] = *toolCall.Function.Name
-				}
-
-				// Initialize argument buffer
-				state.ToolArgumentBuffers[toolCallID] = ""
-
-				// Emit output_item.added for function call
-				statusInProgress := "in_progress"
-				item := &ResponsesMessage{
-					ID:     &toolCallID,
-					Type:   Ptr(ResponsesMessageTypeFunctionCall),
-					Status: &statusInProgress,
-					ResponsesToolMessage: &ResponsesToolMessage{
-						CallID:    &toolCallID,
-						Name:      toolCall.Function.Name,
-						Arguments: Ptr(""), // Arguments will be filled by deltas
-					},
-				}
-
-				responses = append(responses, &BifrostResponsesStreamResponse{
-					Type:           ResponsesStreamResponseTypeOutputItemAdded,
+				itemID := state.ItemIDs[toolCallID]
+				response := &BifrostResponsesStreamResponse{
+					Type:           ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
 					SequenceNumber: state.SequenceNumber,
 					OutputIndex:    Ptr(outputIndex),
 					ContentIndex:   Ptr(contentIndex),
-					Item:           item,
+					Delta:          &toolCall.Function.Arguments,
 					ExtraFields:    cr.ExtraFields,
-				})
+				}
+				if itemID != "" {
+					response.ItemID = &itemID
+				}
+				responses = append(responses, response)
 				state.SequenceNumber++
 			}
-		}
-
-		// Accumulate and emit function call arguments delta
-		// This works for both chunks with ID and chunks without ID (using looked-up ID)
-		if toolCall.Function.Arguments != "" {
-			outputIndex := state.ToolCallOutputIndices[toolCallID]
-			state.ToolArgumentBuffers[toolCallID] += toolCall.Function.Arguments
-
-			itemID := state.ItemIDs[toolCallID]
-			response := &BifrostResponsesStreamResponse{
-				Type:           ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
-				SequenceNumber: state.SequenceNumber,
-				OutputIndex:    Ptr(outputIndex),
-				ContentIndex:   Ptr(contentIndex),
-				Delta:          &toolCall.Function.Arguments,
-				ExtraFields:    cr.ExtraFields,
-			}
-			if itemID != "" {
-				response.ItemID = &itemID
-			}
-			responses = append(responses, response)
-			state.SequenceNumber++
 		}
 	}
 
@@ -2208,59 +2206,73 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			state.TextItemClosed = true
 		}
 
-		// Close any open tool call items and emit function_call_arguments.done
-		for toolCallID, args := range state.ToolArgumentBuffers {
-			if args != "" {
-				outputIndex := state.ToolCallOutputIndices[toolCallID]
-				itemID := state.ItemIDs[toolCallID]
-				contentIndex := 1 // Tool calls use content_index:1
-				argsCopy := args
-				// Emit function_call_arguments.done with full arguments (no item field, just item_id and arguments)
-				response := &BifrostResponsesStreamResponse{
-					Type:           ResponsesStreamResponseTypeFunctionCallArgumentsDone,
-					SequenceNumber: state.SequenceNumber,
-					OutputIndex:    Ptr(outputIndex),
-					ContentIndex:   Ptr(contentIndex),
-					Arguments:      &argsCopy,
-					ExtraFields:    cr.ExtraFields,
-				}
-				if itemID != "" {
-					response.ItemID = &itemID
-				}
-				responses = append(responses, response)
-				state.SequenceNumber++
+		// Collect tool call IDs sorted by output index so terminal events and the
+		// completed output use the same deterministic order.
+		type toolCallEntry struct {
+			toolCallID  string
+			outputIndex int
+		}
+		toolCallEntries := make([]toolCallEntry, 0, len(state.ToolCallOutputIndices))
+		for toolCallID, outputIndex := range state.ToolCallOutputIndices {
+			toolCallEntries = append(toolCallEntries, toolCallEntry{toolCallID: toolCallID, outputIndex: outputIndex})
+		}
+		sort.Slice(toolCallEntries, func(i, j int) bool {
+			return toolCallEntries[i].outputIndex < toolCallEntries[j].outputIndex
+		})
 
-				// Emit output_item.done for function call
-				statusFinal := terminalStatus
-				messageType := ResponsesMessageTypeFunctionCall
-				callName, hasName := state.ToolCallNames[toolCallID]
-				var callNamePtr *string
-				if hasName && callName != "" {
-					callNamePtr = &callName
-				}
-				argsValue := args
-				outputItemDone := &ResponsesMessage{
-					Type:   &messageType,
-					Status: &statusFinal,
-					ResponsesToolMessage: &ResponsesToolMessage{
-						CallID:    &toolCallID,
-						Name:      callNamePtr,
-						Arguments: &argsValue,
-					},
-				}
-				if itemID != "" {
-					outputItemDone.ID = &itemID
-				}
-				responses = append(responses, &BifrostResponsesStreamResponse{
-					Type:           ResponsesStreamResponseTypeOutputItemDone,
-					SequenceNumber: state.SequenceNumber,
-					OutputIndex:    Ptr(outputIndex),
-					ContentIndex:   Ptr(contentIndex),
-					Item:           outputItemDone,
-					ExtraFields:    cr.ExtraFields,
-				})
-				state.SequenceNumber++
+		// Close every open tool call item, including calls with empty arguments.
+		for _, entry := range toolCallEntries {
+			toolCallID := entry.toolCallID
+			args := state.ToolArgumentBuffers[toolCallID]
+			outputIndex := entry.outputIndex
+			itemID := state.ItemIDs[toolCallID]
+			contentIndex := 1 // Tool calls use content_index:1
+			argsCopy := args
+			// Emit function_call_arguments.done with full arguments (no item field, just item_id and arguments)
+			response := &BifrostResponsesStreamResponse{
+				Type:           ResponsesStreamResponseTypeFunctionCallArgumentsDone,
+				SequenceNumber: state.SequenceNumber,
+				OutputIndex:    Ptr(outputIndex),
+				ContentIndex:   Ptr(contentIndex),
+				Arguments:      &argsCopy,
+				ExtraFields:    cr.ExtraFields,
 			}
+			if itemID != "" {
+				response.ItemID = &itemID
+			}
+			responses = append(responses, response)
+			state.SequenceNumber++
+
+			// Emit output_item.done for function call
+			statusFinal := terminalStatus
+			messageType := ResponsesMessageTypeFunctionCall
+			callName, hasName := state.ToolCallNames[toolCallID]
+			var callNamePtr *string
+			if hasName && callName != "" {
+				callNamePtr = &callName
+			}
+			argsValue := args
+			outputItemDone := &ResponsesMessage{
+				Type:   &messageType,
+				Status: &statusFinal,
+				ResponsesToolMessage: &ResponsesToolMessage{
+					CallID:    &toolCallID,
+					Name:      callNamePtr,
+					Arguments: &argsValue,
+				},
+			}
+			if itemID != "" {
+				outputItemDone.ID = &itemID
+			}
+			responses = append(responses, &BifrostResponsesStreamResponse{
+				Type:           ResponsesStreamResponseTypeOutputItemDone,
+				SequenceNumber: state.SequenceNumber,
+				OutputIndex:    Ptr(outputIndex),
+				ContentIndex:   Ptr(contentIndex),
+				Item:           outputItemDone,
+				ExtraFields:    cr.ExtraFields,
+			})
+			state.SequenceNumber++
 		}
 
 		// Emit terminal response event.
@@ -2336,19 +2348,6 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			}
 			allOutput = append(allOutput, msg)
 		}
-
-		// Collect tool call IDs sorted by outputIndex for deterministic order
-		type toolCallEntry struct {
-			toolCallID  string
-			outputIndex int
-		}
-		var toolCallEntries []toolCallEntry
-		for toolCallID, outputIndex := range state.ToolCallOutputIndices {
-			toolCallEntries = append(toolCallEntries, toolCallEntry{toolCallID: toolCallID, outputIndex: outputIndex})
-		}
-		sort.Slice(toolCallEntries, func(i, j int) bool {
-			return toolCallEntries[i].outputIndex < toolCallEntries[j].outputIndex
-		})
 
 		for _, entry := range toolCallEntries {
 			toolCallID := entry.toolCallID
