@@ -130416,7 +130416,7 @@
               ]
             },
             {
-              "name": "53.C2 gemini/gemini-embedding-001 - array of 3 returns 3 vectors",
+              "name": "53.C2 gemini/gemini-embedding-2 - array of 3 returns 3 vectors with usage",
               "request": {
                 "method": "POST",
                 "header": [
@@ -130427,7 +130427,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"gemini/gemini-embedding-001\",\n  \"input\": [\n    \"alpha kestrel harbor\",\n    \"beta lantern quarry\",\n    \"gamma meridian trellis\"\n  ]\n}"
+                  "raw": "{\n  \"model\": \"gemini/gemini-embedding-2\",\n  \"input\": [\n    \"alpha kestrel harbor\",\n    \"beta lantern quarry\",\n    \"gamma meridian trellis\"\n  ]\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/embeddings",
@@ -130464,6 +130464,11 @@
                       "  for (var i = 0; i < data.length; i++) {",
                       "    pm.expect(data[i].index, 'data[' + i + '].index is out of order').to.eql(i);",
                       "  }",
+                      "});",
+                      "pm.test('reports prompt token usage', function () {",
+                      "  pm.expect(j.usage, 'usage is missing; body: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                      "  pm.expect(j.usage.prompt_tokens, 'prompt_tokens is missing or zero').to.be.above(0);",
+                      "  pm.expect(j.usage.total_tokens, 'embedding total_tokens should equal prompt_tokens').to.eql(j.usage.prompt_tokens);",
                       "});"
                     ]
                   }
