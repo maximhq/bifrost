@@ -35,6 +35,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/githubcopilot"
 	"github.com/maximhq/bifrost/core/providers/groq"
 	"github.com/maximhq/bifrost/core/providers/huggingface"
+	"github.com/maximhq/bifrost/core/providers/minimax"
 	"github.com/maximhq/bifrost/core/providers/mistral"
 	"github.com/maximhq/bifrost/core/providers/nebius"
 	"github.com/maximhq/bifrost/core/providers/ollama"
@@ -4533,6 +4534,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return vertex.NewVertexProvider(config, bifrost.logger)
 	case schemas.Mistral:
 		return mistral.NewMistralProvider(config, bifrost.logger), nil
+	case schemas.MiniMax:
+		return minimax.NewMiniMaxProvider(config, bifrost.logger)
 	case schemas.Ollama:
 		return ollama.NewOllamaProvider(config, bifrost.logger)
 	case schemas.Groq:

@@ -1420,6 +1420,10 @@ func speechAttachmentFilename(responseFormat string) string {
 	return "speech." + ext
 }
 
+func shouldReturnSpeechJSON(provider schemas.ModelProvider, hasTimestamps bool, response *schemas.BifrostSpeechResponse) bool {
+	return (provider == schemas.Elevenlabs && hasTimestamps) || (response != nil && response.SubtitleFile != nil)
+}
+
 // speech handles POST /v1/audio/speech - Process speech completion requests.
 // ElevenLabs sound-effect models (e.g. "eleven_text_to_sound_v2") also flow
 // through here; the provider routes them to /v1/sound-generation by model id,
@@ -1472,7 +1476,7 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 	// When with_timestamps is true, Elevenlabs returns base64 encoded audio
 	hasTimestamps := req.WithTimestamps != nil && *req.WithTimestamps
 
-	if bifrostSpeechReq.Provider == schemas.Elevenlabs && hasTimestamps {
+	if shouldReturnSpeechJSON(bifrostSpeechReq.Provider, hasTimestamps, resp) {
 		ctx.Response.Header.Set("Content-Type", "application/json")
 		SendJSON(ctx, resp)
 		return
