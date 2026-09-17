@@ -4108,3 +4108,51 @@ func TestMigrationWidenOAuth2ClientControlledColumns(t *testing.T) {
 		})
 	}
 }
+
+// TestMigrationAddVirtualKeyBusinessUnitColumn covers the upgrade path for business-unit key
+// ownership: an installation whose governance_virtual_keys predates the column gets it and its
+// index, and a re-run over an already-migrated table is a no-op rather than an error.
+func TestMigrationAddVirtualKeyBusinessUnitColumn(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	mg := db.Migrator()
+
+	require.False(t, mg.HasColumn(&tables.TableVirtualKey{}, "business_unit_id"),
+		"business_unit_id must not exist before the migration")
+
+	require.NoError(t, migrationAddVirtualKeyBusinessUnitColumn(ctx, db, testMigrationLogger))
+
+	assert.True(t, mg.HasColumn(&tables.TableVirtualKey{}, "business_unit_id"),
+		"business_unit_id column should exist after migration")
+	assert.True(t, mg.HasIndex(&tables.TableVirtualKey{}, "idx_governance_virtual_keys_business_unit_id"),
+		"business_unit_id must be indexed: it is walked per request to find the key's owner")
+
+	// Idempotent: the column and index already being there is the normal case on every pod that
+	// is not the one that ran the migration first.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id IN (?, ?)",
+		"add_virtual_key_business_unit_column", "add_virtual_key_business_unit_column_index").Error)
+	require.NoError(t, migrationAddVirtualKeyBusinessUnitColumn(ctx, db, testMigrationLogger))
+
+	// A key owned by a business unit hashes that owner, and config synchronization compares the hash
+	// it stores against the one it computes. Seeded here so the two cannot drift apart and report a
+	// business-unit-owned key as changed on every sync.
+	// This fixture's table is the pre-migration skeleton; fill in the rest of the columns the
+	// struct declares so a row can be written through it.
+	require.NoError(t, db.AutoMigrate(&tables.TableVirtualKey{}))
+	buID := "bu-1"
+	vk := tables.TableVirtualKey{
+		ID: "vk-bu-hash", Name: "vk-bu-hash", Value: *schemas.NewSecretVar("sk-bf-vk-bu-hash"), BusinessUnitID: &buID,
+	}
+	hash, err := GenerateVirtualKeyHash(vk)
+	require.NoError(t, err)
+	vk.ConfigHash = hash
+	require.NoError(t, db.Create(&vk).Error)
+
+	var stored tables.TableVirtualKey
+	require.NoError(t, db.First(&stored, "id = ?", vk.ID).Error)
+	require.NotNil(t, stored.BusinessUnitID)
+	assert.Equal(t, buID, *stored.BusinessUnitID)
+	recomputed, err := GenerateVirtualKeyHash(stored)
+	require.NoError(t, err)
+	assert.Equal(t, stored.ConfigHash, recomputed, "the stored hash must match what synchronization recomputes")
+}

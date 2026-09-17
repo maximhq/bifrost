@@ -496,6 +496,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_time_of_day_pricing_columns"}, run: migrationAddTimeOfDayPricingColumns},
 	{IDs: []string{"migrate_vk_standalone_limits_to_model_configs"}, run: migrationMigrateVKStandaloneLimitsToModelConfigs},
 	{IDs: []string{"widen_oauth2_client_controlled_columns"}, run: migrationWidenOAuth2ClientControlledColumns},
+	{IDs: []string{"add_virtual_key_business_unit_column"}, run: migrationAddVirtualKeyBusinessUnitColumn},
 }
 
 // videoResolutionPricingColumns are the resolution-banded video output rate columns.
@@ -13821,6 +13822,45 @@ func migrationMigrateVKStandaloneLimitsToModelConfigs(ctx context.Context, db *g
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+
+// migrationAddVirtualKeyBusinessUnitColumn adds business_unit_id to governance_virtual_keys, the
+// third owner a key can have alongside a team and a customer. A business unit is an enterprise
+// table this module does not model, so the column is a bare indexed varchar with no foreign key:
+// what it points at is resolved by whoever owns business units, and a deployment without them
+// simply never writes it.
+func migrationAddVirtualKeyBusinessUnitColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_virtual_key_business_unit_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if err := addColumnIfNotExists(tx, logger, &tables.TableVirtualKey{}, "business_unit_id"); err != nil {
+				return fmt.Errorf("failed to add business_unit_id column: %w", err)
+			}
+			// Every request made with a key owned by a business unit walks this column, and AddColumn
+			// does not create indexes from struct tags.
+			if !mg.HasIndex(&tables.TableVirtualKey{}, "idx_governance_virtual_keys_business_unit_id") {
+				if err := mg.CreateIndex(&tables.TableVirtualKey{}, "BusinessUnitID"); err != nil {
+					return fmt.Errorf("failed to create index on governance_virtual_keys.business_unit_id: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// The index belongs to the column and goes with it.
+			return dropColumnIfExists(tx, logger, &tables.TableVirtualKey{}, "business_unit_id")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
 	}
 	return nil
 }
