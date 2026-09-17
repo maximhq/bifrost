@@ -150993,6 +150993,266 @@
           ]
         }
       ]
+    },
+    {
+      "name": "94. Bedrock web_search search_content_types stripping (bedrock-web-search-content-types)",
+      "description": "Bedrock Mantle's OpenAI-compatible Responses surface rejects search_content_types on web_search tools with HTTP 400 (\"The 'search_content_types' field is not supported for web search tools.\"). Bifrost now removes only that nested field while preserving the web_search tool and all other supported options. These cases pin the non-streaming and streaming Bedrock Mantle paths used by Codex. The non-streaming case inspects extra_fields.raw_request so a response that merely succeeds after dropping the entire tool cannot pass.",
+      "item": [
+        {
+          "name": "bedrock_mantle/openai.gpt-5.6-luna /v1/responses strips web_search search_content_types but keeps the tool - bedrock-web-search-content-types",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_mantle/openai.gpt-5.6-luna\",\"input\":\"Reply with exactly: OK\",\"max_output_tokens\":32,\"tools\":[{\"type\":\"web_search\",\"search_content_types\":[\"text\",\"image\"]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('bedrock_mantle web_search does not fail on search_content_types', function () {",
+                  "  pm.expect(text, 'unsupported nested field reached Mantle: ' + text).to.not.include(\"The 'search_content_types' field is not supported for web search tools.\");",
+                  "  pm.expect(pm.response.code, 'request failed: ' + text).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
+                  "var tools = raw && raw.tools instanceof Array ? raw.tools : [];",
+                  "var web = null;",
+                  "for (var i = 0; i < tools.length; i++) { if (tools[i].type === 'web_search') { web = tools[i]; break; } }",
+                  "pm.test('bedrock_mantle keeps web_search while stripping only search_content_types', function () {",
+                  "  pm.expect(raw, 'extra_fields.raw_request missing - is send_back_raw_request honoured? body=' + text).to.be.an('object');",
+                  "  pm.expect(web, 'web_search tool was dropped: ' + JSON.stringify(raw)).to.be.an('object');",
+                  "  pm.expect(web, 'search_content_types reached Mantle: ' + JSON.stringify(web)).to.not.have.property('search_content_types');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock_mantle/openai.gpt-5.6-luna /v1/responses streaming strips web_search search_content_types - bedrock-web-search-content-types",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_mantle/openai.gpt-5.6-luna\",\"stream\":true,\"input\":\"Reply with exactly: OK\",\"max_output_tokens\":32,\"tools\":[{\"type\":\"web_search\",\"search_content_types\":[\"text\",\"image\"]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('bedrock_mantle streaming web_search does not fail on search_content_types', function () {",
+                  "  pm.expect(text, 'unsupported nested field reached Mantle: ' + text).to.not.include(\"The 'search_content_types' field is not supported for web search tools.\");",
+                  "  pm.expect(pm.response.code, 'request failed: ' + text).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('bedrock_mantle streaming web_search produces SSE events', function () {",
+                  "  pm.expect(text, 'no SSE events: ' + text).to.include('data:');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "95. Bedrock diagnostics stripping (bedrock-diagnostics-stripping)",
+      "description": "Claude Code sends diagnostics.previous_message_id on Anthropic Messages requests. Amazon Bedrock does not support this Anthropic-only field and returns HTTP 400 with \"diagnostics: Extra inputs are not permitted\" if it reaches the provider. These cases verify the shared typed sanitizer removes diagnostics from the provider request both without a harness user agent and with the Claude Code user agent from the reported incident. The raw provider request is inspected so a coincidental successful response cannot pass.",
+      "item": [
+        {
+          "name": "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 /anthropic/v1/messages strips diagnostics - bedrock-diagnostics-stripping",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\"max_tokens\":32,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly: OK\"}],\"diagnostics\":{\"previous_message_id\":null}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Bedrock does not reject diagnostics', function () {",
+                  "  pm.expect(text, 'diagnostics reached Bedrock: ' + text).to.not.include('diagnostics: Extra inputs are not permitted');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + text).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
+                  "pm.test('Bedrock provider request strips diagnostics', function () {",
+                  "  pm.expect(raw, 'extra_fields.raw_request missing - is send_back_raw_request honoured? body=' + text).to.be.an('object');",
+                  "  pm.expect(raw.messages, 'provider request lost messages: ' + JSON.stringify(raw)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(raw, 'diagnostics survived into Bedrock request: ' + JSON.stringify(raw)).to.not.have.property('diagnostics');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 Claude Code UA strips diagnostics - bedrock-diagnostics-stripping",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.267 (external, cli)"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\"max_tokens\":32,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly: OK\"}],\"diagnostics\":{\"previous_message_id\":null}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Claude Code request is not rejected for diagnostics', function () {",
+                  "  pm.expect(text, 'diagnostics reached Bedrock: ' + text).to.not.include('diagnostics: Extra inputs are not permitted');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + text).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }",
+                  "pm.test('Claude Code path strips diagnostics from the Bedrock provider request', function () {",
+                  "  pm.expect(raw, 'extra_fields.raw_request missing - is send_back_raw_request honoured? body=' + text).to.be.an('object');",
+                  "  pm.expect(raw.messages, 'provider request lost messages: ' + JSON.stringify(raw)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(raw, 'diagnostics survived into Bedrock request: ' + JSON.stringify(raw)).to.not.have.property('diagnostics');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
