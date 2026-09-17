@@ -14,12 +14,13 @@ import (
 
 // operation is the catalog representation emitted into Go source.
 type operation struct {
-	ID         string
-	Method     string
-	Path       string
-	Summary    string
-	Tags       []string
-	Deprecated bool
+	ID          string
+	Method      string
+	Path        string
+	Summary     string
+	Tags        []string
+	Deprecated  bool
+	Destructive bool
 }
 
 type openAPIOperation struct {
@@ -40,6 +41,26 @@ type openAPIDocument struct {
 var exposedSDKBridgeMounts = map[string]struct{}{
 	"langchain":  {},
 	"pydanticai": {},
+}
+
+// destructiveOperationIDs lists state-changing non-DELETE operations that
+// should require explicit confirmation in the CLI. DELETE operations are
+// classified automatically. Keeping the exceptional operation IDs here makes
+// the policy reviewable instead of relying on names or HTTP verbs at runtime.
+var destructiveOperationIDs = map[string]struct{}{
+	"anthropicCancelBatch":                {},
+	"bedrockCancelBatchJob":               {},
+	"bulkRotateVirtualKeys":               {},
+	"cancelBatch":                         {},
+	"cancelRecalculateCost":               {},
+	"cancelResponse":                      {},
+	"geminiCancelBatch":                   {},
+	"openaiCancelBatch":                   {},
+	"openaiCancelResponse":                {},
+	"resetComplexityAnalyzerConfig":       {},
+	"resetComplexityAnalyzerConfigLegacy": {},
+	"rotateVirtualKey":                    {},
+	"rotateWebhookEndpointSecret":         {},
 }
 
 // main parses the source document and writes deterministic generated Go code.
@@ -92,9 +113,11 @@ func collectOperations(document openAPIDocument) ([]operation, error) {
 				return nil, fmt.Errorf("duplicate operationId %q", source.OperationID)
 			}
 			seen[source.OperationID] = struct{}{}
+			_, explicitlyDestructive := destructiveOperationIDs[source.OperationID]
 			operations = append(operations, operation{
 				ID: source.OperationID, Method: strings.ToUpper(method), Path: path,
 				Summary: source.Summary, Tags: source.Tags, Deprecated: source.Deprecated,
+				Destructive: method == "delete" || explicitlyDestructive,
 			})
 		}
 	}
@@ -126,8 +149,12 @@ func render(operations []operation) ([]byte, error) {
 	buffer.WriteString("// Catalog contains every operation in the bundled Bifrost OpenAPI document.\n")
 	buffer.WriteString("var Catalog = []Operation{\n")
 	for _, operation := range operations {
-		fmt.Fprintf(&buffer, "{ID: %q, Method: %q, Path: %q, Summary: %q, Tags: %#v, Deprecated: %t},\n",
+		fmt.Fprintf(&buffer, "{ID: %q, Method: %q, Path: %q, Summary: %q, Tags: %#v, Deprecated: %t",
 			operation.ID, operation.Method, operation.Path, operation.Summary, operation.Tags, operation.Deprecated)
+		if operation.Destructive {
+			buffer.WriteString(", Destructive: true")
+		}
+		buffer.WriteString("},\n")
 	}
 	buffer.WriteString("}\n")
 	return format.Source(buffer.Bytes())

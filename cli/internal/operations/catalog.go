@@ -7,12 +7,13 @@ import "strings"
 
 // Operation identifies one public operation from the bundled Bifrost OpenAPI document.
 type Operation struct {
-	ID         string   `json:"id"`
-	Method     string   `json:"method"`
-	Path       string   `json:"path"`
-	Summary    string   `json:"summary,omitempty"`
-	Tags       []string `json:"tags,omitempty"`
-	Deprecated bool     `json:"deprecated,omitempty"`
+	ID          string   `json:"id"`
+	Method      string   `json:"method"`
+	Path        string   `json:"path"`
+	Summary     string   `json:"summary,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
+	Deprecated  bool     `json:"deprecated,omitempty"`
+	Destructive bool     `json:"destructive,omitempty"`
 }
 
 // Find returns an operation by its stable operation ID.
