@@ -29,7 +29,72 @@ func passthroughStreamCostPostHook(_ *schemas.BifrostContext, result *schemas.Bi
 	return result, bifrostErr
 }
 
-func TestChatCompletionStreamPreservesProviderReportedCost(t *testing.T) {
+func TestChatCompletionNormalizesUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{
+			"id":"chatcmpl-xai",
+			"object":"chat.completion",
+			"created":1,
+			"model":"grok-4.5",
+			"choices":[{"index":0,"message":{"role":"assistant","content":"visible answer"},"finish_reason":"stop"}],
+			"usage":{
+				"prompt_tokens":220,
+				"completion_tokens":5,
+				"total_tokens":276,
+				"completion_tokens_details":{"reasoning_tokens":51}
+			}
+		}`)
+	}))
+	defer server.Close()
+
+	provider := &XAIProvider{
+		client: &fasthttp.Client{ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second},
+		networkConfig: schemas.NetworkConfig{
+			BaseURL: server.URL,
+		},
+		logger: streamCostTestLogger{},
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	request := &schemas.BifrostChatRequest{
+		Provider: schemas.XAI,
+		Model:    "grok-4.5",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")},
+		}},
+	}
+
+	response, bifrostErr := provider.ChatCompletion(ctx, schemas.Key{
+		Value: schemas.SecretVar{Val: "test-key"},
+	}, request)
+	if bifrostErr != nil {
+		t.Fatalf("chat completion failed: %v", bifrostErr)
+	}
+	if response == nil || response.Usage == nil {
+		t.Fatal("chat completion did not return usage")
+	}
+	if got, want := response.Usage.PromptTokens, 220; got != want {
+		t.Fatalf("prompt tokens = %d, want %d", got, want)
+	}
+	if got, want := response.Usage.CompletionTokens, 56; got != want {
+		t.Fatalf("completion tokens = %d, want visible + reasoning = %d", got, want)
+	}
+	if got, want := response.Usage.TotalTokens, 276; got != want {
+		t.Fatalf("total tokens = %d, want %d", got, want)
+	}
+	if response.Usage.CompletionTokensDetails == nil {
+		t.Fatal("chat completion did not return completion token details")
+	}
+	if got, want := response.Usage.CompletionTokensDetails.ReasoningTokens, 51; got != want {
+		t.Fatalf("reasoning tokens = %d, want %d", got, want)
+	}
+	if got, want := response.Usage.TotalTokens, response.Usage.PromptTokens+response.Usage.CompletionTokens; got != want {
+		t.Fatalf("total tokens = %d, want prompt + normalized completion = %d", got, want)
+	}
+}
+
+func TestChatCompletionStreamNormalizesUsageAndPreservesProviderReportedCost(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = fmt.Fprint(w,
@@ -86,6 +151,30 @@ func TestChatCompletionStreamPreservesProviderReportedCost(t *testing.T) {
 	}
 	if got, want := final.Usage.CompletionTokensDetails.ReasoningTokens, 51; got != want {
 		t.Fatalf("reasoning tokens = %d, want %d", got, want)
+	}
+	if got, want := final.Usage.CompletionTokens, 56; got != want {
+		t.Fatalf("completion tokens = %d, want %d", got, want)
+	}
+	if got, want := final.Usage.TotalTokens, final.Usage.PromptTokens+final.Usage.CompletionTokens; got != want {
+		t.Fatalf("total tokens = %d, want prompt + completion = %d", got, want)
+	}
+}
+
+func TestNormalizeXAIChatUsageIsIdempotent(t *testing.T) {
+	response := &schemas.BifrostChatResponse{Usage: &schemas.BifrostLLMUsage{
+		PromptTokens:     220,
+		CompletionTokens: 5,
+		TotalTokens:      276,
+		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
+			ReasoningTokens: 51,
+		},
+	}}
+
+	normalizeXAIChatUsage(response)
+	normalizeXAIChatUsage(response)
+
+	if got, want := response.Usage.CompletionTokens, 56; got != want {
+		t.Fatalf("completion tokens after repeated normalization = %d, want %d", got, want)
 	}
 }
 
