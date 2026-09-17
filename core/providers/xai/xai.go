@@ -146,7 +146,7 @@ func (provider *XAIProvider) ChatCompletion(ctx *schemas.BifrostContext, key sch
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	response.Usage.NormalizeProviderCost()
+	normalizeXAIChatUsage(response)
 	return response, nil
 }
 
@@ -171,23 +171,41 @@ func (provider *XAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext, p
 		nil,
 		ParseXAIError,
 		nil,
-		normalizeXAIChatProviderCost,
+		normalizeXAIChatResponse,
 		nil,
 		provider.logger,
 		postHookSpanFinalizer,
 	)
 }
 
-// normalizeXAIChatProviderCost converts xAI's authoritative cost_in_usd_ticks
-// before the shared OpenAI-compatible stream accumulator folds the usage frame.
-// The accumulator carries Usage.Cost to the synthesized terminal chunk; without
-// this conversion it falls back to catalog pricing and misses xAI reasoning
-// tokens, which are reported separately from completion_tokens.
-func normalizeXAIChatProviderCost(response *schemas.BifrostChatResponse) *schemas.BifrostChatResponse {
-	if response != nil {
-		response.Usage.NormalizeProviderCost()
-	}
+// normalizeXAIChatResponse normalizes xAI's chat usage before the shared
+// OpenAI-compatible stream accumulator folds the terminal usage frame.
+func normalizeXAIChatResponse(response *schemas.BifrostChatResponse) *schemas.BifrostChatResponse {
+	normalizeXAIChatUsage(response)
 	return response
+}
+
+// normalizeXAIChatUsage converts xAI Chat Completions usage to OpenAI semantics.
+// xAI reports visible completion tokens separately from reasoning tokens, while
+// Bifrost's completion_tokens contract includes reasoning tokens. The total-token
+// identity makes the conversion idempotent and avoids double-counting payloads
+// that a provider or proxy has already normalized.
+//
+// The authoritative provider cost is normalized independently so it continues
+// to override catalog estimation when cost_in_usd_ticks is present.
+func normalizeXAIChatUsage(response *schemas.BifrostChatResponse) {
+	if response == nil || response.Usage == nil {
+		return
+	}
+
+	usage := response.Usage
+	if usage.CompletionTokensDetails != nil {
+		reasoningTokens := usage.CompletionTokensDetails.ReasoningTokens
+		if reasoningTokens > 0 && usage.TotalTokens == usage.PromptTokens+usage.CompletionTokens+reasoningTokens {
+			usage.CompletionTokens += reasoningTokens
+		}
+	}
+	usage.NormalizeProviderCost()
 }
 
 // Responses performs a responses request to the xAI API.
