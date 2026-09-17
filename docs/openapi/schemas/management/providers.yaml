@@ -319,6 +319,16 @@ CustomProviderConfig:
       additionalProperties:
         type: string
 
+MiniMaxConfig:
+  type: object
+  description: MiniMax-specific provider settings
+  properties:
+    auth_type:
+      type: string
+      enum: [bearer, x-key]
+      default: bearer
+      description: MiniMax official uses Bearer authentication; compatible gateways may use x-key.
+
 ProviderResponse:
   type: object
   description: Provider configuration response
@@ -339,6 +349,8 @@ ProviderResponse:
       type: boolean
     custom_provider_config:
       $ref: '#/CustomProviderConfig'
+    minimax_config:
+      $ref: '#/MiniMaxConfig'
     prompt_cache:
       $ref: '#/PromptCacheConfig'
     provider_status:
@@ -386,6 +398,8 @@ AddProviderRequest:
       type: boolean
     custom_provider_config:
       $ref: '#/CustomProviderConfig'
+    minimax_config:
+      $ref: '#/MiniMaxConfig'
     prompt_cache:
       $ref: '#/PromptCacheConfig'
 
@@ -440,6 +454,8 @@ UpdateProviderRequest:
       type: boolean
     custom_provider_config:
       $ref: '#/CustomProviderConfig'
+    minimax_config:
+      $ref: '#/MiniMaxConfig'
     prompt_cache:
       $ref: '#/PromptCacheConfig'
 

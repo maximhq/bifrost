@@ -22,6 +22,7 @@ type TableProvider struct {
 	ProxyConfigJSON          string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.ProxyConfig
 	CustomProviderConfigJSON string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.CustomProviderConfig
 	OpenAIConfigJSON         string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.OpenAIConfig
+	MiniMaxConfigJSON        string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.MiniMaxConfig
 	PromptCacheJSON          string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.PromptCacheConfig
 	SendBackRawRequest       bool      `json:"send_back_raw_request"`
 	SendBackRawResponse      bool      `json:"send_back_raw_response"`
@@ -40,6 +41,7 @@ type TableProvider struct {
 	// Custom provider fields
 	CustomProviderConfig *schemas.CustomProviderConfig `gorm:"-" json:"custom_provider_config,omitempty"`
 	OpenAIConfig         *schemas.OpenAIConfig         `gorm:"-" json:"openai_config,omitempty"`
+	MiniMaxConfig        *schemas.MiniMaxConfig        `gorm:"-" json:"minimax_config,omitempty"`
 	PromptCache          *schemas.PromptCacheConfig    `gorm:"-" json:"prompt_cache,omitempty"`
 
 	// Foreign keys
@@ -110,6 +112,15 @@ func (p *TableProvider) BeforeSave(tx *gorm.DB) error {
 		p.OpenAIConfigJSON = string(data)
 	} else {
 		p.OpenAIConfigJSON = ""
+	}
+	if p.MiniMaxConfig != nil {
+		data, err := json.Marshal(p.MiniMaxConfig)
+		if err != nil {
+			return err
+		}
+		p.MiniMaxConfigJSON = string(data)
+	} else {
+		p.MiniMaxConfigJSON = ""
 	}
 	if p.PromptCache != nil {
 		data, err := json.Marshal(p.PromptCache)
@@ -189,6 +200,14 @@ func (p *TableProvider) AfterFind(tx *gorm.DB) error {
 			return err
 		}
 		p.OpenAIConfig = &openaiConfig
+	}
+
+	if p.MiniMaxConfigJSON != "" {
+		var minimaxConfig schemas.MiniMaxConfig
+		if err := json.Unmarshal([]byte(p.MiniMaxConfigJSON), &minimaxConfig); err != nil {
+			return err
+		}
+		p.MiniMaxConfig = &minimaxConfig
 	}
 
 	if p.PromptCacheJSON != "" {
