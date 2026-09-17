@@ -121,6 +121,7 @@ const (
 	FieldVerbosity            = "verbosity"
 	FieldStore                = "store"
 	FieldWebSearchOptions     = "web_search_options"
+	FieldSearchContentTypes   = "search_content_types"
 )
 
 // Logical field names used as FieldNames keys, where the value is the wire name
