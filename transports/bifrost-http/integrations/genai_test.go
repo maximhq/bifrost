@@ -579,3 +579,42 @@ func TestConvertGeminiModelMetadataResponse_EmptyReturnsMinimalModel(t *testing.
 	require.True(t, ok, "expected gemini.GeminiModel")
 	assert.Equal(t, "models/gemini-3-pro-preview", model.Name)
 }
+
+// Both generation endpoints normalize the same native thinking config before
+// governance can switch Gemini and Vertex. Exercise that conversion explicitly;
+// native Vertex project/location URLs use the separate passthrough router.
+func TestGenAIFlashLiteMinimalThinkingAfterRouting(t *testing.T) {
+	route := findGenAIRouteForTest(t, CreateGenAIRouteConfigs("/genai"), "/genai/v1beta/models/{model:*}", "POST")
+	for _, source := range []schemas.ModelProvider{schemas.Gemini, schemas.Vertex} {
+		for _, target := range []schemas.ModelProvider{schemas.Gemini, schemas.Vertex} {
+			for _, method := range []string{"generateContent", "streamGenerateContent"} {
+				t.Run(string(source)+" to "+string(target)+"/"+method, func(t *testing.T) {
+					body := []byte(`{"contents":[{"role":"user","parts":[{"text":"Say OK."}]}],"generationConfig":{"thinkingConfig":{"thinkingLevel":"MINIMAL"}}}`)
+					requestCtx := &fasthttp.RequestCtx{}
+					requestCtx.SetUserValue("model", string(source)+"/gemini-3.1-flash-lite:"+method)
+					requestCtx.Request.Header.SetMethod("POST")
+					requestCtx.Request.SetBody(body)
+					ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+					native := &gemini.GeminiGenerationRequest{}
+					require.NoError(t, sonic.Unmarshal(body, native))
+					require.NoError(t, route.PreCallback(requestCtx, ctx, native))
+					assert.Equal(t, method == "streamGenerateContent", native.Stream)
+					converted, err := route.RequestConverter(ctx, native)
+					require.NoError(t, err)
+					require.NotNil(t, converted.ResponsesRequest)
+					normalized := converted.ResponsesRequest
+					require.Equal(t, source, normalized.Provider)
+					normalized.Provider = target
+					// Inspect the normalized path even when explicit Gemini selection
+					// also retained raw bytes; rerouting must not depend on that shortcut.
+					out, err := gemini.ToGeminiResponsesRequest(ctx, normalized)
+					require.NoError(t, err)
+					require.NotNil(t, out.GenerationConfig.ThinkingConfig)
+					require.NotNil(t, out.GenerationConfig.ThinkingConfig.ThinkingLevel)
+					assert.Equal(t, "minimal", *out.GenerationConfig.ThinkingConfig.ThinkingLevel)
+					assert.Nil(t, out.GenerationConfig.ThinkingConfig.ThinkingBudget)
+				})
+			}
+		}
+	}
+}
