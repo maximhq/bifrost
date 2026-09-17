@@ -1466,6 +1466,21 @@ const (
 	ResponsesMessageTypeCompaction           ResponsesMessageType = "compaction"
 	ResponsesMessageTypeAdditionalTools      ResponsesMessageType = "additional_tools"
 	ResponsesMessageTypeAdvisorCall          ResponsesMessageType = "advisor_call" // Anthropic advisor server tool (server_tool_use + advisor_tool_result)
+
+	// Perplexity Agent API output items. Each is a flat data item (not a call/output
+	// pair) appended straight to the `output` array; none fits an existing typed item,
+	// so all six are carried verbatim via the raw-preserved path (isRawPreservedItem).
+	// Live-verified against api.perplexity.ai on 2026-09-17.
+	ResponsesMessageTypeSearchResults       ResponsesMessageType = "search_results"
+	ResponsesMessageTypeFetchURLResults     ResponsesMessageType = "fetch_url_results"
+	ResponsesMessageTypeSandboxResults      ResponsesMessageType = "sandbox_results"
+	ResponsesMessageTypeFinanceResults      ResponsesMessageType = "finance_results"
+	ResponsesMessageTypePeopleSearchResults ResponsesMessageType = "people_search_results"
+	// ResponsesMessageTypeSkillLoaded is an undocumented item Perplexity emits
+	// alongside a "skill"-backed tool's results (observed with finance_search:
+	// {"type":"skill_loaded","name":"finance"}), not mentioned in the public
+	// tool docs at the time this was added.
+	ResponsesMessageTypeSkillLoaded ResponsesMessageType = "skill_loaded"
 )
 
 // ResponsesMessage is a union type that can contain different types of input items
@@ -1534,7 +1549,13 @@ type ResponsesMessage struct {
 func isRawPreservedItem(t string) bool {
 	return t == string(ResponsesMessageTypeToolSearchCall) ||
 		t == string(ResponsesMessageTypeToolSearchOutput) ||
-		t == string(ResponsesMessageTypeAdditionalTools)
+		t == string(ResponsesMessageTypeAdditionalTools) ||
+		t == string(ResponsesMessageTypeSearchResults) ||
+		t == string(ResponsesMessageTypeFetchURLResults) ||
+		t == string(ResponsesMessageTypeSandboxResults) ||
+		t == string(ResponsesMessageTypeFinanceResults) ||
+		t == string(ResponsesMessageTypePeopleSearchResults) ||
+		t == string(ResponsesMessageTypeSkillLoaded)
 }
 
 // UnmarshalJSON preserves codex tool_search/additional_tools items verbatim
@@ -2782,6 +2803,12 @@ const (
 	ResponsesToolTypeNamespace          ResponsesToolType = "namespace"
 	ResponsesToolTypeXSearch            ResponsesToolType = "x_search"
 	ResponsesToolTypeAdvisor            ResponsesToolType = "advisor"
+
+	// Perplexity Agent API server-side tools (see docs.perplexity.ai/docs/agent-api).
+	ResponsesToolTypeSandbox       ResponsesToolType = "sandbox"
+	ResponsesToolTypeFetchURL      ResponsesToolType = "fetch_url"
+	ResponsesToolTypeFinanceSearch ResponsesToolType = "finance_search"
+	ResponsesToolTypePeopleSearch  ResponsesToolType = "people_search"
 )
 
 // ResponsesToolTypeOpenRouterPrefix is the namespace prefix for OpenRouter server
@@ -2908,6 +2935,10 @@ type ResponsesTool struct {
 	*ResponsesToolNamespace
 	*ResponsesToolXSearch
 	*ResponsesToolAdvisor
+	*ResponsesToolSandbox
+	*ResponsesToolFetchURL
+	*ResponsesToolFinanceSearch
+	*ResponsesToolPeopleSearch
 }
 
 // mergeJSONFields merges all top-level fields from src into dst using sjson,
@@ -3049,6 +3080,22 @@ func (t ResponsesTool) MarshalJSON() ([]byte, error) {
 	case ResponsesToolTypeAdvisor: // Anthropic advisor server tool
 		if t.ResponsesToolAdvisor != nil {
 			typeBytes, err = MarshalSorted(t.ResponsesToolAdvisor)
+		}
+	case ResponsesToolTypeSandbox: // Perplexity Agent API sandbox tool
+		if t.ResponsesToolSandbox != nil {
+			typeBytes, err = MarshalSorted(t.ResponsesToolSandbox)
+		}
+	case ResponsesToolTypeFetchURL: // Perplexity Agent API fetch_url tool
+		if t.ResponsesToolFetchURL != nil {
+			typeBytes, err = MarshalSorted(t.ResponsesToolFetchURL)
+		}
+	case ResponsesToolTypeFinanceSearch: // Perplexity Agent API finance_search tool
+		if t.ResponsesToolFinanceSearch != nil {
+			typeBytes, err = MarshalSorted(t.ResponsesToolFinanceSearch)
+		}
+	case ResponsesToolTypePeopleSearch: // Perplexity Agent API people_search tool
+		if t.ResponsesToolPeopleSearch != nil {
+			typeBytes, err = MarshalSorted(t.ResponsesToolPeopleSearch)
 		}
 	}
 	if err != nil {
@@ -3288,6 +3335,34 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		t.ResponsesToolAdvisor = &advisorTool
+
+	case ResponsesToolTypeSandbox: // Perplexity Agent API sandbox tool
+		var sandboxTool ResponsesToolSandbox
+		if err := Unmarshal(data, &sandboxTool); err != nil {
+			return err
+		}
+		t.ResponsesToolSandbox = &sandboxTool
+
+	case ResponsesToolTypeFetchURL: // Perplexity Agent API fetch_url tool
+		var fetchURLTool ResponsesToolFetchURL
+		if err := Unmarshal(data, &fetchURLTool); err != nil {
+			return err
+		}
+		t.ResponsesToolFetchURL = &fetchURLTool
+
+	case ResponsesToolTypeFinanceSearch: // Perplexity Agent API finance_search tool
+		var financeSearchTool ResponsesToolFinanceSearch
+		if err := Unmarshal(data, &financeSearchTool); err != nil {
+			return err
+		}
+		t.ResponsesToolFinanceSearch = &financeSearchTool
+
+	case ResponsesToolTypePeopleSearch: // Perplexity Agent API people_search tool
+		var peopleSearchTool ResponsesToolPeopleSearch
+		if err := Unmarshal(data, &peopleSearchTool); err != nil {
+			return err
+		}
+		t.ResponsesToolPeopleSearch = &peopleSearchTool
 	}
 
 	return nil
@@ -3466,6 +3541,11 @@ type ResponsesToolWebSearch struct {
 
 	// Anthropic only
 	MaxUses *int `json:"max_uses,omitempty"` // Maximum number of uses for the search
+
+	// Perplexity Agent API only: override the token budget search_context_size implies.
+	MaxResults       *int `json:"max_results,omitempty"`         // Max search results to consider (1-50)
+	MaxTokens        *int `json:"max_tokens,omitempty"`          // Overrides search_context_size
+	MaxTokensPerPage *int `json:"max_tokens_per_page,omitempty"` // Overrides search_context_size
 }
 
 // ResponsesToolWebSearchFilters represents filters for web search
@@ -3477,6 +3557,14 @@ type ResponsesToolWebSearchFilters struct {
 	// Filter search results to a specific time range.
 	// If users set a start time, they must set an end time (and vice versa).
 	TimeRangeFilter *Interval `json:"time_range_filter,omitempty"`
+
+	// Perplexity Agent API only (docs.perplexity.ai/docs/agent-api/tools/web-search)
+	SearchDomainFilter      []string `json:"search_domain_filter,omitempty"`       // Up to 20 domains/URLs; prefix with "-" to exclude
+	SearchRecencyFilter     *string  `json:"search_recency_filter,omitempty"`      // "hour" | "day" | "week" | "month" | "year"
+	SearchAfterDateFilter   *string  `json:"search_after_date_filter,omitempty"`   // "MM/DD/YYYY"
+	SearchBeforeDateFilter  *string  `json:"search_before_date_filter,omitempty"`  // "MM/DD/YYYY"
+	LastUpdatedAfterFilter  *string  `json:"last_updated_after_filter,omitempty"`  // "MM/DD/YYYY"
+	LastUpdatedBeforeFilter *string  `json:"last_updated_before_filter,omitempty"` // "MM/DD/YYYY"
 }
 
 // Interval represents a time interval, encoded as a start time (inclusive) and an end time (exclusive).
@@ -3769,6 +3857,27 @@ type ResponsesToolXSearch struct {
 	EnableImageUnderstanding *bool `json:"enable_image_understanding,omitempty"`
 	// EnableVideoUnderstanding controls whether videos in tweets are analyzed.
 	EnableVideoUnderstanding *bool `json:"enable_video_understanding,omitempty"`
+}
+
+// ResponsesToolSandbox represents the Perplexity Agent API "sandbox" tool (secure code
+// execution). It carries no configurable fields; behavior is driven entirely by the
+// model's prompt and the request's top-level `instructions`.
+type ResponsesToolSandbox struct{}
+
+// ResponsesToolFetchURL represents the Perplexity Agent API "fetch_url" tool, which
+// retrieves and extracts content from specific URLs the model already has in hand.
+type ResponsesToolFetchURL struct {
+	MaxURLs *int `json:"max_urls,omitempty"` // Maximum URLs fetched per call (1-10)
+}
+
+// ResponsesToolFinanceSearch represents the Perplexity Agent API "finance_search" tool
+// (public equities and ETF market data). It carries no configurable fields.
+type ResponsesToolFinanceSearch struct{}
+
+// ResponsesToolPeopleSearch represents the Perplexity Agent API "people_search" tool.
+type ResponsesToolPeopleSearch struct {
+	MaxTokens        *int `json:"max_tokens,omitempty"`          // Maximum total tokens for people-search context
+	MaxTokensPerPage *int `json:"max_tokens_per_page,omitempty"` // Maximum tokens extracted per result page
 }
 
 // ======================================================= Streaming Structs =======================================================
