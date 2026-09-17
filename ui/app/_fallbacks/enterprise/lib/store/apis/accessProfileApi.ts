@@ -1,4 +1,9 @@
-import { GetUserAccessProfilesResponse, VKCreationPolicyResponse } from "@enterprise/lib/types/accessProfile";
+import {
+	AccessProfileEntityKind,
+	GetEntityAccessProfileResponse,
+	GetUserAccessProfilesResponse,
+	VKCreationPolicyResponse,
+} from "@enterprise/lib/types/accessProfile";
 
 // OSS build has no access-profile backend — return undefined data so consumers
 // (e.g. useVirtualKeyUsage) fall back to VK-owned budget/rate-limit values.
@@ -24,6 +29,23 @@ export const useGetMyVKCreationPolicyQuery = (
 	_opts?: { skip?: boolean; refetchOnMountOrArgChange?: boolean },
 ): {
 	data: VKCreationPolicyResponse | undefined;
+	isLoading: boolean;
+	isError: boolean;
+	error: null;
+} => ({
+	data: undefined,
+	isLoading: false,
+	isError: false,
+	error: null,
+});
+// OSS build has no access-profile backend, so no entity can hold one: the budget editors that ask
+// this in order to lock themselves stay unlocked, which is correct here because the entity's own
+// budget is the only thing enforcing anything.
+export const useGetEntityAccessProfileQuery = (
+	_arg: { entityType: AccessProfileEntityKind; entityId: string },
+	_opts?: { skip?: boolean },
+): {
+	data: GetEntityAccessProfileResponse | undefined;
 	isLoading: boolean;
 	isError: boolean;
 	error: null;

@@ -21,14 +21,21 @@ export function hasProfileRateLimit(apRL: ProfileRateLimit): apRL is Partial<Rat
  */
 export function resolveDisplayRateLimit({
 	isManagedByProfile,
+	isEntityGoverned = false,
 	profileRateLimit,
 	vkRateLimit,
 }: {
 	isManagedByProfile: boolean;
+	/**
+	 * The key is owned by a team, business unit or customer and assigned to no user, so the profile
+	 * governing it is the owning entity's. No user profile resolves for it, and the server already
+	 * returns that entity profile's rate limit as `vk.rate_limit` on the admin read paths.
+	 */
+	isEntityGoverned?: boolean;
 	profileRateLimit: ProfileRateLimit;
 	vkRateLimit: RateLimit | undefined;
 }): RateLimit | undefined {
-	if (!isManagedByProfile) return vkRateLimit;
+	if (!isManagedByProfile || isEntityGoverned) return vkRateLimit;
 	if (!hasProfileRateLimit(profileRateLimit)) return undefined;
 	return {
 		id: "",
