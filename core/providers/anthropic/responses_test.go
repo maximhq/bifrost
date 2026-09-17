@@ -1535,3 +1535,235 @@ func TestConvertBifrostMessages_UnsupportedToolCallWithoutShellAction(t *testing
 		t.Fatalf("unexpected fallback text: %s", text)
 	}
 }
+
+// TestConvertBifrostToolsToAnthropicDropsMCPAllowedCallers pins the drop. Anthropic
+// answers "tools.0.mcp_toolset.allowed_callers: Extra inputs are not permitted", so the
+// restriction is not expressible on a toolset and must not fail the request either.
+func TestConvertBifrostToolsToAnthropicDropsMCPAllowedCallers(t *testing.T) {
+	caps := schemas.ModelCaps{}
+	mcpTool := func(callers []string) schemas.ResponsesTool {
+		return schemas.ResponsesTool{
+			Type:           schemas.ResponsesToolTypeMCP,
+			AllowedCallers: callers,
+			ResponsesToolMCP: &schemas.ResponsesToolMCP{
+				ServerLabel: "docs",
+				ServerURL:   schemas.Ptr("https://mcp.example.com"),
+			},
+		}
+	}
+
+	for _, tc := range []struct {
+		name    string
+		callers []string
+	}{
+		{"no callers", nil},
+		{"direct", []string{"direct"}},
+		{"programmatic", []string{"programmatic"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tools, servers, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{mcpTool(tc.callers)}, schemas.Anthropic)
+			if err != nil {
+				t.Fatalf("convert failed: %v", err)
+			}
+			if len(servers) != 1 || len(tools) != 1 || tools[0].MCPToolset == nil {
+				t.Fatalf("expected one mcp server and one toolset, got %d servers and %+v", len(servers), tools)
+			}
+			data, err := sonic.Marshal(tools[0])
+			if err != nil {
+				t.Fatalf("marshal failed: %v", err)
+			}
+			if strings.Contains(string(data), "allowed_callers") {
+				t.Fatalf("mcp_toolset must not carry allowed_callers: %s", data)
+			}
+		})
+	}
+
+	// The callers are dropped, so they must not reach the shared code-execution
+	// resolution either: no version raise, and no failure on a legacy version.
+	t.Run("does not raise the code execution version", func(t *testing.T) {
+		tools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{
+			{Type: schemas.ResponsesToolTypeCodeInterpreter, ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{}},
+			mcpTool([]string{"programmatic"}),
+		}, schemas.Anthropic)
+		if err != nil {
+			t.Fatalf("convert failed: %v", err)
+		}
+		assertCodeExecutionVersion(t, tools, "code_execution_20250825")
+	})
+
+	t.Run("does not trip the legacy version guard", func(t *testing.T) {
+		_, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{
+			{
+				Type:                         schemas.ResponsesToolTypeCodeInterpreter,
+				ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{Version: schemas.Ptr("code_execution_20250522")},
+			},
+			mcpTool([]string{"programmatic"}),
+		}, schemas.Anthropic)
+		if err != nil {
+			t.Fatalf("an mcp caller must not fail the request: %v", err)
+		}
+	})
+
+	// A real programmatic caller alongside an mcp tool is still translated.
+	t.Run("a function tool beside it still gets its caller", func(t *testing.T) {
+		tools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{
+			mcpTool([]string{"programmatic"}),
+			{
+				Type:                  schemas.ResponsesToolTypeFunction,
+				Name:                  schemas.Ptr("query_database"),
+				AllowedCallers:        []string{"programmatic"},
+				ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+			},
+		}, schemas.Anthropic)
+		if err != nil {
+			t.Fatalf("convert failed: %v", err)
+		}
+		assertToolCallers(t, tools, "query_database", []string{"code_execution_20260120"})
+	})
+}
+
+// TestConvertBifrostToolsToAnthropicTranslatesProgrammaticCaller runs the rewrite
+// through the request converter, including the code_interpreter version it has to
+// raise so programmatic tool calling exists at all.
+func TestConvertBifrostToolsToAnthropicTranslatesProgrammaticCaller(t *testing.T) {
+	caps := schemas.ModelCaps{}
+	queryTool := schemas.ResponsesTool{
+		Type:                  schemas.ResponsesToolTypeFunction,
+		Name:                  schemas.Ptr("query_database"),
+		AllowedCallers:        []string{"programmatic"},
+		ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+	}
+
+	t.Run("version-less code_interpreter is raised to 20260120", func(t *testing.T) {
+		tools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{
+			{Type: schemas.ResponsesToolTypeCodeInterpreter, ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{}},
+			queryTool,
+		}, schemas.Anthropic)
+		if err != nil {
+			t.Fatalf("convert failed: %v", err)
+		}
+		assertToolCallers(t, tools, "query_database", []string{"code_execution_20260120"})
+		assertCodeExecutionVersion(t, tools, "code_execution_20260120")
+	})
+
+	t.Run("explicit version is matched, not raised", func(t *testing.T) {
+		tools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{
+			{
+				Type:                         schemas.ResponsesToolTypeCodeInterpreter,
+				ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{Version: schemas.Ptr("code_execution_20250825")},
+			},
+			queryTool,
+		}, schemas.Anthropic)
+		if err != nil {
+			t.Fatalf("convert failed: %v", err)
+		}
+		assertToolCallers(t, tools, "query_database", []string{"code_execution_20250825"})
+		assertCodeExecutionVersion(t, tools, "code_execution_20250825")
+	})
+
+	t.Run("no code execution tool falls back to the auto-injected version", func(t *testing.T) {
+		tools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{queryTool}, schemas.Anthropic)
+		if err != nil {
+			t.Fatalf("convert failed: %v", err)
+		}
+		assertToolCallers(t, tools, "query_database", []string{"code_execution_20260120"})
+	})
+
+	// Legacy 20250522 has no allowed_callers value at all. Dropping the caller would
+	// hand the model a tool the request said was sandbox-only, so this fails instead.
+	t.Run("legacy 20250522 is rejected rather than silently widened", func(t *testing.T) {
+		_, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{
+			{
+				Type:                         schemas.ResponsesToolTypeCodeInterpreter,
+				ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{Version: schemas.Ptr("code_execution_20250522")},
+			},
+			queryTool,
+		}, schemas.Anthropic)
+		if err == nil {
+			t.Fatal("expected a conversion error for a programmatic caller on code_execution_20250522")
+		}
+		if !strings.Contains(err.Error(), "code_execution_20250522") {
+			t.Fatalf("error must name the offending version: %v", err)
+		}
+	})
+
+	// Beside web search the interpreter is never sent (Anthropic injects its own code
+	// execution), so its legacy version must not block the request.
+	legacyInterpreter := func(callers ...string) schemas.ResponsesTool {
+		return schemas.ResponsesTool{
+			Type:                         schemas.ResponsesToolTypeCodeInterpreter,
+			AllowedCallers:               callers,
+			ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{Version: schemas.Ptr("code_execution_20250522")},
+		}
+	}
+	webSearch := schemas.ResponsesTool{Type: schemas.ResponsesToolTypeWebSearch}
+
+	t.Run("a dropped legacy interpreter with a programmatic caller does not block the request", func(t *testing.T) {
+		tools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{webSearch, legacyInterpreter("programmatic")}, schemas.Anthropic)
+		if err != nil {
+			t.Fatalf("convert failed: %v", err)
+		}
+		if len(tools) != 1 || tools[0].Type == nil || !strings.HasPrefix(string(*tools[0].Type), "web_search") {
+			t.Fatalf("want only the web_search tool, got %+v", tools)
+		}
+	})
+
+	t.Run("a dropped legacy interpreter does not decide another tool's caller", func(t *testing.T) {
+		tools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{webSearch, legacyInterpreter(), queryTool}, schemas.Anthropic)
+		if err != nil {
+			t.Fatalf("convert failed: %v", err)
+		}
+		assertToolCallers(t, tools, "query_database", []string{"code_execution_20260120"})
+	})
+
+	t.Run("a request without programmatic callers is untouched", func(t *testing.T) {
+		tools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{
+			{Type: schemas.ResponsesToolTypeCodeInterpreter, ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{}},
+			{
+				Type:                  schemas.ResponsesToolTypeFunction,
+				Name:                  schemas.Ptr("query_database"),
+				AllowedCallers:        []string{"direct"},
+				ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+			},
+		}, schemas.Anthropic)
+		if err != nil {
+			t.Fatalf("convert failed: %v", err)
+		}
+		assertToolCallers(t, tools, "query_database", []string{"direct"})
+		// The default version stands when nothing asks for programmatic tool calling.
+		assertCodeExecutionVersion(t, tools, "code_execution_20250825")
+	})
+}
+
+func assertToolCallers(t *testing.T, tools []AnthropicTool, name string, want []string) {
+	t.Helper()
+	for _, tool := range tools {
+		if tool.Name != name {
+			continue
+		}
+		if len(tool.AllowedCallers) != len(want) {
+			t.Fatalf("%s allowed_callers = %v, want %v", name, tool.AllowedCallers, want)
+		}
+		for i := range want {
+			if tool.AllowedCallers[i] != want[i] {
+				t.Fatalf("%s allowed_callers = %v, want %v", name, tool.AllowedCallers, want)
+			}
+		}
+		return
+	}
+	t.Fatalf("tool %s missing from %+v", name, tools)
+}
+
+func assertCodeExecutionVersion(t *testing.T, tools []AnthropicTool, want string) {
+	t.Helper()
+	for _, tool := range tools {
+		if tool.Name != string(AnthropicToolNameCodeExecution) {
+			continue
+		}
+		if tool.Type == nil || string(*tool.Type) != want {
+			t.Fatalf("code_execution type = %v, want %s", tool.Type, want)
+		}
+		return
+	}
+	t.Fatalf("code_execution tool missing from %+v", tools)
+}
