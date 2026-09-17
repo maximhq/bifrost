@@ -169,9 +169,13 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 	defaults := AnthropicProviderRequestDefaultsMap[cfg.Provider]
 
 	newErr := func(msg string, err error, reqBody []byte) *schemas.BifrostError {
+		bifrostErr := providerUtils.NewBifrostOperationError(msg, err)
+		if badRequest, ok := providerUtils.AsBifrostBadRequestError(err); ok {
+			bifrostErr = badRequest
+		}
 		return providerUtils.EnrichError(
 			ctx,
-			providerUtils.NewBifrostOperationError(msg, err),
+			bifrostErr,
 			reqBody,
 			nil,
 			cfg.ShouldSendBackRawRequest,
@@ -496,9 +500,13 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 	defaults := AnthropicProviderRequestDefaultsMap[cfg.Provider]
 
 	newErr := func(msg string, err error, reqBody []byte) *schemas.BifrostError {
+		bifrostErr := providerUtils.NewBifrostOperationError(msg, err)
+		if badRequest, ok := providerUtils.AsBifrostBadRequestError(err); ok {
+			bifrostErr = badRequest
+		}
 		return providerUtils.EnrichError(
 			ctx,
-			providerUtils.NewBifrostOperationError(msg, err),
+			bifrostErr,
 			reqBody,
 			nil,
 			cfg.ShouldSendBackRawRequest,
