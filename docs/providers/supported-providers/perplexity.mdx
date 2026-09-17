@@ -12,13 +12,18 @@ Perplexity is an OpenAI-compatible API with built-in web search capabilities and
 - **Reasoning effort mapping** - `reasoning.effort` mapped to Perplexity's `reasoning_effort` with special handling for "minimal"
 - **Search results inclusion** - Citations, search results, and videos included in response
 - **Special usage tracking** - Citation tokens, search queries, and reasoning tokens tracked separately
+- **Agent API** - The Responses operation doubles as Perplexity's [Agent API](#3-agent-api-perplexitys-sonar-replacement) (presets, `sandbox`/`fetch_url`/`mcp`/`finance_search`/`people_search` tools, multi-turn via `previous_response_id`)
+
+<Note>
+Perplexity is retiring the Sonar API (Chat Completions) on **September 27, 2026** in favor of the Agent API. See [Perplexity's migration guide](https://docs.perplexity.ai/docs/agent-api/migrate-from-sonar/overview). Bifrost's Responses operation already speaks the Agent API wire format — see the [Agent API section](#3-agent-api-perplexitys-sonar-replacement) below.
+</Note>
 
 ### Supported Operations
 
 | Operation | Non-Streaming | Streaming | Endpoint |
 |-----------|---------------|-----------|----------|
 | Chat Completions | ✅ | ✅ | `/chat/completions` |
-| Responses API | ✅ | ✅ | `/chat/completions` |
+| Responses API / Agent API | ✅ | ✅ | `/v1/responses` (Agent API alias); falls back to `/chat/completions` for `sonar-*` models |
 | Text Completions | ❌ | ❌ | - |
 | Embeddings | ❌ | ❌ | - |
 | Image Generation | ❌ | ❌ | - |
@@ -395,3 +400,95 @@ Same as Chat Completions with search results, citations, and extended usage trac
 ## Streaming
 
 Responses streaming uses the same OpenAI-compatible streaming as Chat Completions, with results adapted to Responses format.
+
+---
+
+# 3. Agent API (Perplexity's Sonar replacement)
+
+Perplexity's [Agent API](https://docs.perplexity.ai/docs/agent-api/quickstart) is the successor to Sonar, reachable through the same `/v1/responses` endpoint Bifrost already uses for the Responses operation (documented by Perplexity as the OpenAI-SDK-compatible alias for its native `/v1/agent` endpoint). Sending a Bifrost `responses.create` call to Perplexity with a model that isn't `sonar-*`-suffixed (see the routing caveat below) reaches the Agent API directly — no separate operation or endpoint is needed.
+
+<Note>
+Sonar (`sonar`, `sonar-pro`, `sonar-reasoning[-pro]`, `sonar-deep-research`) remains available and unaffected through Chat Completions until Perplexity's September 27, 2026 deprecation date.
+</Note>
+
+## Presets and Agent-only Parameters
+
+The Agent API replaces `model` selection with `preset` values (`fast`, `low`, `medium`, `high`, `xhigh`, `wide-research`), and adds `max_steps` to bound the agent's tool-call loop. Neither has a dedicated field in Bifrost's neutral request schema — forward them via `extra_params` (SDK) or directly in the request body (Gateway), the same way Perplexity-specific Sonar search parameters are already passed:
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "openai/gpt-5.6-sol",
+    "input": "What is NVIDIA trading at right now?",
+    "preset": "high",
+    "max_steps": 5,
+    "tools": [{"type": "web_search"}, {"type": "finance_search"}]
+  }'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+resp, err := client.ResponsesRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostResponsesRequest{
+    Provider: schemas.Perplexity,
+    Model:    "openai/gpt-5.6-sol",
+    Input:    messages,
+    Params: &schemas.ResponsesParameters{
+        ExtraParams: map[string]interface{}{
+            "preset":    "high",
+            "max_steps": 5,
+        },
+        Tools: []schemas.ResponsesTool{
+            {Type: schemas.ResponsesToolTypeWebSearch},
+            {Type: schemas.ResponsesToolTypeFinanceSearch},
+        },
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
+Bifrost's Perplexity provider always forwards `extra_params` for this operation — unlike most other providers, no `x-bf-passthrough-extra-params` header or context flag is needed.
+
+## Tools
+
+| Tool `type` | Support | Notes |
+|-------------|---------|-------|
+| `web_search` | ✅ Extended | `filters.search_domain_filter`, `filters.search_recency_filter`, `filters.search_after_date_filter`, `filters.search_before_date_filter`, `filters.last_updated_after_filter`, `filters.last_updated_before_filter`, plus top-level `max_results`, `max_tokens`, `max_tokens_per_page` on `schemas.ResponsesToolWebSearch` / `ResponsesToolWebSearchFilters` |
+| `fetch_url` | ✅ | `schemas.ResponsesToolTypeFetchURL` / `ResponsesToolFetchURL{MaxURLs}` |
+| `sandbox` | ✅ | `schemas.ResponsesToolTypeSandbox` (no configurable fields; code execution is driven by the prompt) |
+| `mcp` | ✅ | Already covered by Bifrost's generic `schemas.ResponsesToolMCP` (server_label, server_url, authorization, allowed_tools, defer_loading all match Perplexity's wire fields) |
+| `finance_search` | ✅ | `schemas.ResponsesToolTypeFinanceSearch` (no configurable fields) |
+| `people_search` | ✅ | `schemas.ResponsesToolTypePeopleSearch` / `ResponsesToolPeopleSearch{MaxTokens, MaxTokensPerPage}` |
+| `function` | ✅ | Already covered by Bifrost's generic `schemas.ResponsesToolFunction` |
+
+## Multi-turn Conversations
+
+Use `previous_response_id` (already a first-class field on `schemas.ResponsesParameters`) to continue a conversation without resending history — set `store: true` on the initial request so it can be referenced later.
+
+## Response Output Items
+
+The Agent API appends tool results as flat items in the `output` array rather than call/output pairs. Bifrost preserves these Perplexity-only item types verbatim so nothing is dropped, but does not yet expose typed Go accessors for their fields — parse the item's raw JSON if you need structured access (`queries`/`results` etc.):
+
+| Output item `type` | Produced by |
+|---------------------|-------------|
+| `search_results` | `web_search` |
+| `fetch_url_results` | `fetch_url` |
+| `sandbox_results` | `sandbox` |
+| `finance_results` | `finance_search` |
+| `people_search_results` | `people_search` |
+| `skill_loaded` | Observed alongside `finance_search` results (`{"name":"finance"}`); undocumented by Perplexity at the time this was added |
+
+## Routing Caveat
+
+Models whose name has a `sonar-` prefix (`sonar-pro`, `sonar-reasoning`, `sonar-reasoning-pro`, `sonar-deep-research`) are routed to `/chat/completions` even through the Responses operation, so Agent-only features (`preset`, `max_steps`, the tools above) aren't reachable with those model names — live-verified: `/v1/responses` rejects both `sonar-pro` and `perplexity/sonar-pro` with `model "..." is not supported`. Use the bare `sonar` model or a third-party model Perplexity's Agent API hosts (e.g. `openai/gpt-5.6-sol`) to reach the Agent API directly.
+
+<Note>
+Perplexity's own bare `sonar` model requires the `perplexity/` vendor-namespace prefix on `/v1/responses` specifically (`{"model":"sonar",...}` 400s; `{"model":"perplexity/sonar",...}` succeeds) — third-party Agent API models like `openai/gpt-5.6-sol` don't need this. Bifrost rewrites this automatically on the wire, so requesting the `sonar` model just works.
+</Note>
