@@ -2417,7 +2417,7 @@ func HandleOpenAIEmbeddingRequest(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToOpenAIEmbeddingRequest(request), nil
+			return ToOpenAIEmbeddingRequest(request)
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
