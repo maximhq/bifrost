@@ -150886,7 +150886,6 @@
                   "script": {
                     "type": "text/javascript",
                     "exec": [
-                      "var INFRA = [401, 403, 429, 500, 502, 503, 504]; if (INFRA.indexOf(pm.response.code) !== -1) { return; }",
                       "pm.test('tencent: chat completion succeeds', function () {",
                       "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                       "});",
@@ -150932,7 +150931,6 @@
                   "script": {
                     "type": "text/javascript",
                     "exec": [
-                      "var INFRA = [401, 403, 429, 500, 502, 503, 504]; if (INFRA.indexOf(pm.response.code) !== -1) { return; }",
                       "pm.test('tencent: chat stream terminates with [DONE]', function () {",
                       "  var t = pm.response.text();",
                       "  pm.expect(pm.response.code, 'failed: ' + t).to.be.below(400);",
@@ -150956,7 +150954,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"tencent/deepseek-v4-pro\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Paris? Use the tool.\"\n    }\n  ],\n  \"max_tokens\": 256,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get current weather for a city\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\",\n              \"description\": \"City name\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+                  "raw": "{\n  \"model\": \"tencent/deepseek-v4-pro\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Paris? Use the tool.\"\n    }\n  ],\n  \"max_tokens\": 256,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get current weather for a city\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\",\n              \"description\": \"City name\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"function\": {\n      \"name\": \"get_weather\"\n    }\n  }\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/chat/completions",
@@ -150976,7 +150974,6 @@
                   "script": {
                     "type": "text/javascript",
                     "exec": [
-                      "var INFRA = [401, 403, 429, 500, 502, 503, 504]; if (INFRA.indexOf(pm.response.code) !== -1) { return; }",
                       "pm.test('tencent: tool-calling request succeeds', function () {",
                       "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                       "});",
@@ -151027,7 +151024,6 @@
                   "script": {
                     "type": "text/javascript",
                     "exec": [
-                      "var INFRA = [401, 403, 429, 500, 502, 503, 504]; if (INFRA.indexOf(pm.response.code) !== -1) { return; }",
                       "pm.test('tencent: responses succeeds', function () {",
                       "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                       "});",
@@ -151071,7 +151067,6 @@
                   "script": {
                     "type": "text/javascript",
                     "exec": [
-                      "var INFRA = [401, 403, 429, 500, 502, 503, 504]; if (INFRA.indexOf(pm.response.code) !== -1) { return; }",
                       "pm.test('tencent: responses stream is SSE', function () {",
                       "  var t = pm.response.text();",
                       "  pm.expect(pm.response.code, 'failed: ' + t).to.be.below(400);",
@@ -151122,7 +151117,6 @@
                   "script": {
                     "type": "text/javascript",
                     "exec": [
-                      "var INFRA = [401, 403, 429, 500, 502, 503, 504]; if (INFRA.indexOf(pm.response.code) !== -1) { return; }",
                       "pm.test('tencent: count tokens succeeds', function () {",
                       "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                       "});",
