@@ -50,6 +50,23 @@ func (mc *ModelCatalog) IsRequestTypeSupported(model string, provider schemas.Mo
 	return mc.datasheet.IsRequestTypeSupported(model, requestType)
 }
 
+// GetSupportedRequestTypesForModel returns the normalized request types
+// declared for a runtime (provider, model) pair. Alias lookups follow the same
+// canonical model name, wire model ID, then alias-key order as pricing.
+func (mc *ModelCatalog) GetSupportedRequestTypesForModel(model string, provider schemas.ModelProvider) []schemas.RequestType {
+	if alias, ok := mc.keyconf.ResolveAlias(provider, model); ok {
+		if alias.Config.ModelName != nil && *alias.Config.ModelName != "" {
+			if requestTypes := mc.datasheet.GetSupportedRequestTypes(provider, *alias.Config.ModelName); len(requestTypes) > 0 {
+				return requestTypes
+			}
+		}
+		if requestTypes := mc.datasheet.GetSupportedRequestTypes(provider, alias.Config.ModelID); len(requestTypes) > 0 {
+			return requestTypes
+		}
+	}
+	return mc.datasheet.GetSupportedRequestTypes(provider, model)
+}
+
 func (mc *ModelCatalog) GetSupportedParameters(model string) []string {
 	return mc.datasheet.GetSupportedParameters(model)
 }
