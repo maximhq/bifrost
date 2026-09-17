@@ -1,8 +1,10 @@
 package anthropic
 
 import (
+	"strings"
 	"testing"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -124,5 +126,35 @@ func TestToAnthropicChatCompletionErrorNeverEmitsEmptyMessage(t *testing.T) {
 				t.Fatalf("expected message %q, got %q", tt.expected, result.Error.Message)
 			}
 		})
+	}
+}
+
+func TestAnthropicMessageErrorDetailsMarshal(t *testing.T) {
+	withDetails := &AnthropicMessageError{
+		Type: "error",
+		Error: AnthropicMessageErrorStruct{
+			Type:    "invalid_request_error",
+			Message: "no thread state",
+			Details: &AnthropicMessageErrorDetails{ErrorCode: "thread_unsupported_request"},
+		},
+	}
+	data, err := providerUtils.MarshalSorted(withDetails)
+	if err != nil {
+		t.Fatalf("unexpected marshal error: %v", err)
+	}
+	if !strings.Contains(string(data), `"error_code":"thread_unsupported_request"`) {
+		t.Errorf("expected details.error_code in output, got %s", data)
+	}
+
+	withoutDetails := &AnthropicMessageError{
+		Type:  "error",
+		Error: AnthropicMessageErrorStruct{Type: "api_error", Message: "boom"},
+	}
+	data, err = providerUtils.MarshalSorted(withoutDetails)
+	if err != nil {
+		t.Fatalf("unexpected marshal error: %v", err)
+	}
+	if strings.Contains(string(data), "details") {
+		t.Errorf("details must be omitted when nil so existing errors stay byte-identical, got %s", data)
 	}
 }
