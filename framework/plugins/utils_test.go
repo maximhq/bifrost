@@ -169,3 +169,14 @@ func TestDownloadPlugin_AllowlistDoesNotPermitDifferentPrivateHost(t *testing.T)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "non-public address")
 }
+
+func TestHashFile(t *testing.T) {
+	path := t.TempDir() + "/plugin.so"
+	require.NoError(t, os.WriteFile(path, []byte("abc"), 0o600))
+	sha, err := hashFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", sha)
+
+	_, err = hashFile(path + ".missing")
+	assert.Error(t, err)
+}
