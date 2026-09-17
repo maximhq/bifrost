@@ -465,7 +465,7 @@ type Span struct {
 	Status     SpanStatus      // Status of the operation
 	StatusMsg  string          // Optional status message (for errors)
 	Attributes map[string]any  // Additional attributes for the span
-	LLM        *LLMSpanData    // Typed payload; set on LLM-call spans only
+	LLM        *LLMSpanData    `json:"-"`
 	Enrichment *SpanEnrichment // Governance/identity dimensions read off the request context
 	Events     []SpanEvent     // Events that occurred during the span
 	mu         sync.Mutex      // Mutex for thread-safe attribute operations
