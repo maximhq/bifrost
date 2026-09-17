@@ -4,10 +4,13 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.42
+**Latest Version:** 2.1.43
 
 ## Changelog
 
+### Upcoming
+
+- Added `business_unit_id` to `bifrost.governance.virtualKeys[]`, rendered as the key's `business_unit_id` in config.json. It names the business unit that owns the key, mutually exclusive with `team_id` and `customer_id`, and is enterprise only.
 
 ### 2.1.41
 
