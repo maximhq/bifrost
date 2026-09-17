@@ -623,12 +623,13 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 		span.SetAttribute(schemas.AttrBifrostComplexityScore, score)
 	}
 
-	// Populate cost attribute using pricing manager. BilledUsage wins when it is
+	// Populate cost using the pricing manager. BilledUsage wins when it is
 	// present: it is what the provider actually charged for a failed or cancelled
 	// turn. A cancelled stream still yields a non-nil accumulated response (see
 	// providers/utils, which passes both accumulatedResp and err), but that
 	// response is missing the final usage chunk, so pricing it would report 0.
-	if t.pricingManager != nil && err != nil && err.ExtraFields.BilledUsage != nil {
+	priceable := t.pricingManager != nil && t.Demand().Any
+	if priceable && err != nil && err.ExtraFields.BilledUsage != nil {
 		// Core calls BifrostError.PopulateExtraFields around RunPostLLMHooks, so
 		// Provider / RequestType / the model fields are always set here.
 		ef := err.ExtraFields
@@ -656,9 +657,14 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 		if cost > 0 {
 			span.SetAttribute(schemas.AttrUsageCost, cost)
 		}
-	} else if t.pricingManager != nil && resp != nil {
-		cost := t.pricingManager.CalculateCost(resp, modelcatalog.PricingLookupScopesFromContext(ctx, string(resp.GetExtraFields().Provider)))
-		span.SetAttribute(schemas.AttrUsageCost, cost)
+	} else if priceable && resp != nil {
+		scopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(resp.GetExtraFields().Provider))
+		if breakdown := t.pricingManager.CalculateCostBreakdown(resp, scopes); breakdown != nil {
+			span.LLM.Cost = breakdown
+			span.SetAttributes(schemas.CostAttributes(breakdown))
+		} else {
+			span.SetAttribute(schemas.AttrUsageCost, 0.0)
+		}
 	}
 
 	// Propagate output messages, response model, and finish reasons to root span so observability backends (e.g. Langfuse)

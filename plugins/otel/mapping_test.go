@@ -562,3 +562,37 @@ func TestExportWithholdsOverheadSpans(t *testing.T) {
 		t.Error(problem)
 	}
 }
+
+// TestExportCarriesCostBreakdown pins the connector-visible outcome: the pricing
+// engine computes the input/output/sidecar split on the same call as the total,
+// and it now reaches the wire instead of being flattened to one float.
+func TestExportCarriesCostBreakdown(t *testing.T) {
+	span := &schemas.Span{
+		SpanID: "span-llm", Name: "chat gpt-4o", Kind: schemas.SpanKindLLMCall,
+		Attributes: map[string]any{},
+	}
+	span.SetAttributes(schemas.CostAttributes(&schemas.BifrostCost{
+		InputCost: 0.30, OutputCost: 0.50, AdditionalCost: 0.20, TotalCost: 1.00,
+		OutputCostDetails:     &schemas.OutputCostDetails{ReasoningCost: 0.40, TextCost: 0.10},
+		AdditionalCostDetails: &schemas.AdditionalCostDetails{GuardrailCost: 0.20},
+	}))
+	trace := &schemas.Trace{TraceID: "t1", RootSpan: span, Spans: []*schemas.Span{span}}
+
+	p := &OtelPlugin{}
+	payload, err := sonic.Marshal(p.convertTraceToResourceSpan("svc", trace, nil, false, false, false))
+	if err != nil {
+		t.Fatalf("marshal ResourceSpan: %v", err)
+	}
+	for _, key := range []string{
+		schemas.AttrUsageCost,
+		schemas.AttrBifrostCostInput,
+		schemas.AttrBifrostCostOutput,
+		schemas.AttrBifrostCostAdditional,
+		schemas.AttrBifrostCostOutputReasoning,
+		schemas.AttrBifrostCostGuardrail,
+	} {
+		if !strings.Contains(string(payload), key) {
+			t.Errorf("cost attribute %q did not reach the exported payload", key)
+		}
+	}
+}
