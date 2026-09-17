@@ -651,6 +651,26 @@ export const ProviderIcons = {
 	nebius: ({ className = "" }: IconProps) => {
 		return <img src="/images/nebius.webp" alt="nebius" width={14} height={14} loading="lazy" decoding="async" className={className} />;
 	},
+	llmgateway: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				viewBox="0 0 24 24"
+				fill="none"
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<title>LLM Gateway</title>
+				<rect x="2" y="9" width="20" height="6" rx="3" fill="#4F46E5" />
+				<circle cx="6.5" cy="12" r="1.75" fill="#fff" />
+				<circle cx="12" cy="12" r="1.75" fill="#fff" />
+				<circle cx="17.5" cy="12" r="1.75" fill="#fff" />
+			</svg>
+		);
+	},
 	xai: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 
