@@ -1018,6 +1018,18 @@ func (h *CompletionHandler) textCompletion(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, resp)
 }
 
+func isMiniMaxRequestProvider(config *lib.Config, provider schemas.ModelProvider) bool {
+	if provider == schemas.MiniMax {
+		return true
+	}
+	if config == nil || provider == "" {
+		return false
+	}
+	providerConfig, err := config.GetProviderConfigRaw(provider)
+	return err == nil && providerConfig.CustomProviderConfig != nil &&
+		providerConfig.CustomProviderConfig.BaseProviderType == schemas.MiniMax
+}
+
 // prepareChatCompletionRequest prepares a BifrostChatRequest from a ChatRequest
 func prepareChatCompletionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*ChatRequest, *schemas.BifrostChatRequest, error) {
 	req, base, err := prepareRequest[ChatRequest](ctx, config, chatParamsKnownFields)
@@ -1046,12 +1058,31 @@ func prepareChatCompletionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) 
 		}
 	}
 	req.ChatParameters.ExtraParams = base.ExtraParams
+
+	var miniMaxParameters *schemas.MiniMaxChatParameters
+	var miniMaxFields struct {
+		Thinking       interface{} `json:"thinking"`
+		ReasoningSplit *bool       `json:"reasoning_split"`
+	}
+	if err := sonic.Unmarshal(ctx.PostBody(), &miniMaxFields); err == nil &&
+		(miniMaxFields.Thinking != nil || miniMaxFields.ReasoningSplit != nil) {
+		miniMaxParameters = &schemas.MiniMaxChatParameters{
+			Thinking:       miniMaxFields.Thinking,
+			ReasoningSplit: miniMaxFields.ReasoningSplit,
+		}
+		if isMiniMaxRequestProvider(config, base.Provider) {
+			delete(req.ChatParameters.ExtraParams, "thinking")
+			delete(req.ChatParameters.ExtraParams, "reasoning_split")
+		}
+	}
+
 	return req, &schemas.BifrostChatRequest{
-		Provider:  base.Provider,
-		Model:     base.ModelName,
-		Input:     req.Messages,
-		Params:    req.ChatParameters,
-		Fallbacks: base.Fallbacks,
+		Provider:          base.Provider,
+		Model:             base.ModelName,
+		Input:             req.Messages,
+		Params:            req.ChatParameters,
+		Fallbacks:         base.Fallbacks,
+		MiniMaxParameters: miniMaxParameters,
 	}, nil
 }
 

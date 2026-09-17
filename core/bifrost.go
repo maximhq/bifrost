@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -5113,6 +5114,15 @@ func (bifrost *Bifrost) shouldTryFallbacks(req *schemas.BifrostRequest, primaryE
 	return true
 }
 
+func (bifrost *Bifrost) providerUsesBaseType(providerKey, baseType schemas.ModelProvider) bool {
+	if providerKey == baseType {
+		return true
+	}
+	config, err := bifrost.account.GetConfigForProvider(providerKey)
+	return err == nil && config != nil && config.CustomProviderConfig != nil &&
+		config.CustomProviderConfig.BaseProviderType == baseType
+}
+
 // prepareFallbackRequest creates a fallback request and validates the provider config
 // Returns the fallback request or nil if this fallback should be skipped
 func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fallback schemas.Fallback) *schemas.BifrostRequest {
@@ -5135,8 +5145,20 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 
 	if req.ChatRequest != nil {
 		tmp := *req.ChatRequest
+		primaryIsMiniMax := bifrost.providerUsesBaseType(req.ChatRequest.Provider, schemas.MiniMax)
+		fallbackIsMiniMax := bifrost.providerUsesBaseType(fallback.Provider, schemas.MiniMax)
 		tmp.Provider = fallback.Provider
 		tmp.Model = fallback.Model
+		if !fallbackIsMiniMax {
+			tmp.MiniMaxParameters = nil
+			if primaryIsMiniMax && tmp.Params != nil && len(tmp.Params.ExtraParams) > 0 {
+				paramsCopy := *tmp.Params
+				paramsCopy.ExtraParams = maps.Clone(tmp.Params.ExtraParams)
+				delete(paramsCopy.ExtraParams, "thinking")
+				delete(paramsCopy.ExtraParams, "reasoning_split")
+				tmp.Params = &paramsCopy
+			}
+		}
 		fallbackReq.ChatRequest = &tmp
 	}
 

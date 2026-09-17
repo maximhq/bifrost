@@ -18,6 +18,15 @@ type BifrostChatRequest struct {
 	Params         *ChatParameters `json:"params,omitempty"`
 	Fallbacks      []Fallback      `json:"fallbacks,omitempty"`
 	RawRequestBody []byte          `json:"-"` // set bifrost-use-raw-request-body to true in ctx to use the raw request body. Bifrost will directly send this to the downstream provider.
+
+	// MiniMaxParameters carries MiniMax-only Chat fields without placing them in
+	// shared ExtraParams, so cross-provider fallbacks cannot forward them.
+	MiniMaxParameters *MiniMaxChatParameters `json:"-"`
+}
+
+type MiniMaxChatParameters struct {
+	Thinking       interface{}
+	ReasoningSplit *bool
 }
 
 // GetRawRequestBody returns the raw request body

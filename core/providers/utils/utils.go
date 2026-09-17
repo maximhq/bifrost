@@ -3848,7 +3848,7 @@ func WaitForStreamUsage(ctx *schemas.BifrostContext) bool {
 
 func ProviderIsResponsesAPINative(providerName schemas.ModelProvider) bool {
 	switch providerName {
-	case schemas.OpenAI, schemas.OpenRouter, schemas.Azure:
+	case schemas.OpenAI, schemas.OpenRouter, schemas.Azure, schemas.MiniMax:
 		return true
 	default:
 		return false
