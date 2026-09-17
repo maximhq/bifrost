@@ -128,14 +128,65 @@ func (provider *RunwareProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 		}
 	}
 
-	return ToBifrostListModelsResponse(
+	// The catalog sweep carries no price or context limits; those live on the OpenAI-compatible
+	// /v1/models endpoint, which covers the text side of the same catalog. A failure there degrades
+	// the listing rather than failing it, since the catalog is still complete without the extras.
+	offers := provider.fetchModelOffers(ctx, key)
+
+	return ToBifrostListModelsResponseWithOffers(
 		models,
+		offers,
 		provider.GetProviderKey(),
 		key.Models,
 		key.BlacklistedModels,
 		key.Aliases,
 		request.Unfiltered,
 	), nil
+}
+
+// fetchModelOffers reads /v1/models and indexes its entries by slug, for the price and context
+// limits the modelSearch catalog does not carry. Returns nil when the endpoint is unavailable, so
+// callers can treat "no offers" as "no extra metadata" without a second error path.
+func (provider *RunwareProvider) fetchModelOffers(ctx *schemas.BifrostContext, key schemas.Key) map[string]RunwareModelEnvelope {
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/models"))
+	req.Header.SetMethod(http.MethodGet)
+	req.Header.SetContentType("application/json")
+	for name, value := range openai.BearerAuthHeader(key) {
+		req.Header.Set(name, value)
+	}
+
+	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	wait()
+	if bifrostErr != nil {
+		provider.logger.Warn("runware: /v1/models unavailable, listing without pricing: %v", bifrostErr)
+		return nil
+	}
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		provider.logger.Warn("runware: /v1/models returned %d, listing without pricing", resp.StatusCode())
+		return nil
+	}
+
+	var envelope RunwareModelsResponse
+	if err := sonic.Unmarshal(resp.Body(), &envelope); err != nil {
+		provider.logger.Warn("runware: could not parse /v1/models, listing without pricing: %v", err)
+		return nil
+	}
+
+	offers := make(map[string]RunwareModelEnvelope, len(envelope.Data))
+	for _, entry := range envelope.Data {
+		if entry.ID == "" {
+			continue
+		}
+		offers[entry.ID] = entry
+	}
+	return offers
 }
 
 // TextCompletion is not supported by the Runware provider.
