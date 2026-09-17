@@ -927,8 +927,9 @@ bifrost:
       #   expires_at: "2026-12-31T23:59:59Z"  # Optional RFC3339 expiry; requests rejected once passed. Omit for no expiry
       #   calendar_aligned: false  # Snap all budget resets for this key to calendar boundaries
       #   allow_all_providers: false  # Grant access to every provider (incl. ones added later); provider_configs still apply per-provider limits
-      #   team_id: "team-1"        # Mutually exclusive with customer_id
-      #   customer_id: ""          # Mutually exclusive with team_id
+      #   team_id: "team-1"        # Mutually exclusive with customer_id and business_unit_id
+      #   customer_id: ""          # Mutually exclusive with team_id and business_unit_id
+      #   business_unit_id: ""     # Enterprise only. Mutually exclusive with team_id and customer_id
       #   rate_limit_id: "rate-limit-1"
       #   # Provider-specific configurations (empty means no providers allowed unless allow_all_providers is true)
       #   provider_configs:

@@ -1948,10 +1948,16 @@
                     "description": "Optional expiry timestamp (RFC3339). Once passed, requests using this virtual key are rejected. Omit for a key that never expires."
                   },
                   "team_id": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Associated team ID (mutually exclusive with customer_id and business_unit_id)"
                   },
                   "customer_id": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Associated customer ID (mutually exclusive with team_id and business_unit_id)"
+                  },
+                  "business_unit_id": {
+                    "type": "string",
+                    "description": "Associated business unit ID (mutually exclusive with team_id and customer_id). Enterprise only."
                   },
                   "access_profile_id": {
                     "type": "integer",
