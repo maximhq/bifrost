@@ -1,4 +1,4 @@
-import { Command as CommandPrimitive } from "cmdk";
+import { Command as CommandPrimitive, defaultFilter } from "cmdk";
 import { Loader2, Plus, SearchIcon } from "lucide-react";
 import * as React from "react";
 
@@ -66,6 +66,11 @@ function DefaultEntryView({ option }: { option: SearchSelectOption }) {
 			<Plus className="ml-auto h-3.5 w-3.5" />
 		</>
 	);
+}
+
+// Item values are ids, so sync filtering has to score the label and description.
+function filterByText(_value: string, search: string, keywords?: string[]) {
+	return (keywords ?? []).reduce((best, keyword) => Math.max(best, defaultFilter(keyword, search)), 0);
 }
 
 function SearchSelect<T extends SearchSelectOption = SearchSelectOption>(props: SearchSelectProps<T>) {
@@ -179,7 +184,7 @@ function SearchSelect<T extends SearchSelectOption = SearchSelectOption>(props: 
 				noPortal={noPortal}
 				onOpenAutoFocus={(e) => e.preventDefault()}
 			>
-				<CommandPrimitive filter={isAsync ? () => 1 : undefined}>
+				<CommandPrimitive filter={isAsync ? () => 1 : filterByText}>
 					<div data-slot="search-select-input" className="flex items-center gap-2 border-b px-3">
 						{isSearching ? (
 							<Loader2 className="size-4 shrink-0 animate-spin opacity-50" />
@@ -219,7 +224,9 @@ function SearchSelect<T extends SearchSelectOption = SearchSelectOption>(props: 
 								{options.map((option) => (
 									<CommandPrimitive.Item
 										key={option.value}
-										value={option.label}
+										// Keyed by value: cmdk treats equal item values as one row, so options sharing a label would highlight together.
+										value={option.value}
+										keywords={option.description ? [option.label, option.description] : [option.label]}
 										disabled={option.disabled}
 										onSelect={() => onValueSelect(option)}
 										className="data-[selected=true]:bg-accent data-[selected=true]:text-accent-foreground relative flex w-full cursor-default items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-hidden select-none data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-50"
