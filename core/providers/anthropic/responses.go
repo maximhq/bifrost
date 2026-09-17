@@ -5859,6 +5859,7 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 		// Handle other tool call types that are not natively supported by Anthropic
 		case schemas.ResponsesMessageTypeFileSearchCall,
 			schemas.ResponsesMessageTypeLocalShellCall,
+			schemas.ResponsesMessageTypeShellCall,
 			schemas.ResponsesMessageTypeCustomToolCall,
 			schemas.ResponsesMessageTypeImageGenerationCall:
 			// Flush any pending tool results before processing unsupported tool calls
@@ -5881,6 +5882,7 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 			}
 
 		case schemas.ResponsesMessageTypeLocalShellCallOutput,
+			schemas.ResponsesMessageTypeShellCallOutput,
 			schemas.ResponsesMessageTypeCustomToolCallOutput:
 			// Handle tool outputs as user messages
 			toolOutputMsg := convertBifrostToolOutputToAnthropicMessage(&msg)
@@ -8261,6 +8263,13 @@ func convertBifrostUnsupportedToolCallToAnthropicMessage(msg *schemas.ResponsesM
 			}
 		} else {
 			description = fmt.Sprintf("Tool call of type: %s", msgType)
+			// shell_call and local_shell_call put their commands in "action", not in
+			// name or arguments, so replay loses them unless the action is rendered too.
+			if msg.ResponsesToolMessage.Action != nil {
+				if action, err := schemas.Marshal(msg.ResponsesToolMessage.Action); err == nil {
+					description += fmt.Sprintf(" with action: %s", action)
+				}
+			}
 		}
 
 		return &AnthropicMessage{
@@ -8298,13 +8307,49 @@ func convertBifrostComputerCallOutputToAnthropicMessage(msg *schemas.ResponsesMe
 	return nil
 }
 
+// shellCallOutputReplayText renders shell output for replay: the streams plus each command's
+// outcome, which ShellCallOutputText leaves out.
+func shellCallOutputReplayText(output []schemas.ResponsesShellCallOutputContent) string {
+	var sb strings.Builder
+	write := func(text string) {
+		if text == "" {
+			return
+		}
+		if sb.Len() > 0 {
+			sb.WriteString("\n")
+		}
+		sb.WriteString(text)
+	}
+	for _, content := range output {
+		write(content.Stdout)
+		write(content.Stderr)
+		switch content.Outcome.Type {
+		case "timeout":
+			write("[command timed out]")
+		case "exit":
+			if content.Outcome.ExitCode != nil {
+				write(fmt.Sprintf("[exit code %d]", *content.Outcome.ExitCode))
+			}
+		}
+	}
+	return sb.String()
+}
+
 // convertBifrostToolOutputToAnthropicMessage converts tool outputs to user messages
 func convertBifrostToolOutputToAnthropicMessage(msg *schemas.ResponsesMessage) *AnthropicMessage {
 	if msg.ResponsesToolMessage != nil {
 		var outputText string
 		// Try to extract output text based on tool type
-		if msg.ResponsesToolMessage.Output != nil && msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil {
-			outputText = *msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr
+		if output := msg.ResponsesToolMessage.Output; output != nil {
+			if output.ResponsesToolCallOutputStr != nil {
+				outputText = *output.ResponsesToolCallOutputStr
+			} else if len(output.ResponsesShellCallOutput) > 0 {
+				// a silent command still has to show up, or the turn loses that it ran.
+				outputText = shellCallOutputReplayText(output.ResponsesShellCallOutput)
+				if outputText == "" {
+					outputText = "[no output]"
+				}
+			}
 		}
 
 		if outputText != "" {
@@ -8568,6 +8613,14 @@ func convertToolOutputToAnthropicContent(output *schemas.ResponsesToolMessageOut
 		return &AnthropicContent{
 			ContentStr: output.ResponsesToolCallOutputStr,
 		}
+	}
+
+	if len(output.ResponsesShellCallOutput) > 0 {
+		text := schemas.ShellCallOutputText(output.ResponsesShellCallOutput)
+		if text == "" {
+			text = "[no output]"
+		}
+		return &AnthropicContent{ContentStr: &text}
 	}
 
 	if output.ResponsesFunctionToolCallOutputBlocks != nil {

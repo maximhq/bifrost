@@ -1453,6 +1453,8 @@ const (
 	ResponsesMessageTypeCodeInterpreterCall  ResponsesMessageType = "code_interpreter_call"
 	ResponsesMessageTypeLocalShellCall       ResponsesMessageType = "local_shell_call"
 	ResponsesMessageTypeLocalShellCallOutput ResponsesMessageType = "local_shell_call_output"
+	ResponsesMessageTypeShellCall            ResponsesMessageType = "shell_call"
+	ResponsesMessageTypeShellCallOutput      ResponsesMessageType = "shell_call_output"
 	ResponsesMessageTypeMCPCall              ResponsesMessageType = "mcp_call"
 	ResponsesMessageTypeCustomToolCall       ResponsesMessageType = "custom_tool_call"
 	ResponsesMessageTypeCustomToolCallOutput ResponsesMessageType = "custom_tool_call_output"
@@ -1945,6 +1947,10 @@ type ResponsesToolMessage struct {
 	// computer_toolset_20260801). Anthropic requires it on both halves of a
 	// call/result pair or neither, so it rides the call and the output alike.
 	ToolsetName *string `json:"toolset_name,omitempty"`
+	// ItemCaller and CreatedBy are shared by the shell and apply_patch items; they sit
+	// here because duplicate json keys across embedded structs are silently dropped.
+	ItemCaller *ResponsesShellCaller `json:"caller,omitempty"`
+	CreatedBy  *string               `json:"created_by,omitempty"`
 
 	// Tool calls and outputs
 	*ResponsesFileSearchToolCall
@@ -1958,6 +1964,9 @@ type ResponsesToolMessage struct {
 	// MCP-specific
 	*ResponsesMCPListTools
 	*ResponsesMCPApprovalResponse
+
+	// Shell-specific (shell_call / shell_call_output): environment and limits
+	*ResponsesShellCall
 
 	// Anthropic advisor-specific (advisor_call): carries the advisor_tool_result payload
 	*ResponsesAdvisorCall
@@ -2019,6 +2028,16 @@ type ResponsesWebFetchSource struct {
 	URL       *string `json:"url,omitempty"`
 	FileID    *string `json:"file_id,omitempty"`
 }
+
+// allowed_callers vocabulary. Anthropic names the sandbox caller by code execution
+// tool version (code_execution_20250825 | _20260120 | _20260521, and it must match the
+// version the request declares); OpenAI calls the same context "programmatic". Both
+// accept "direct". The provider serializers translate between the two.
+const (
+	ResponsesToolCallerDirect              = "direct"
+	ResponsesToolCallerProgrammatic        = "programmatic"
+	ResponsesToolCallerCodeExecutionPrefix = "code_execution_"
+)
 
 // ResponsesToolCaller is the neutral form of Anthropic's "caller" union on
 // server_tool_use / *_tool_result blocks. It links a tool call to the agentic
@@ -2094,6 +2113,7 @@ type ResponsesToolMessageActionStruct struct {
 	ResponsesWebSearchToolCallAction  *ResponsesWebSearchToolCallAction
 	ResponsesWebFetchToolCallAction   *ResponsesWebFetchToolCallAction
 	ResponsesLocalShellToolCallAction *ResponsesLocalShellToolCallAction
+	ResponsesShellToolCallAction      *ResponsesShellToolCallAction
 	ResponsesMCPApprovalRequestAction *ResponsesMCPApprovalRequestAction
 }
 
@@ -2113,6 +2133,9 @@ func (action ResponsesToolMessageActionStruct) MarshalJSON() ([]byte, error) {
 	if action.ResponsesLocalShellToolCallAction != nil {
 		return MarshalSorted(action.ResponsesLocalShellToolCallAction)
 	}
+	if action.ResponsesShellToolCallAction != nil {
+		return MarshalSorted(action.ResponsesShellToolCallAction)
+	}
 	if action.ResponsesMCPApprovalRequestAction != nil {
 		return MarshalSorted(action.ResponsesMCPApprovalRequestAction)
 	}
@@ -2124,6 +2147,17 @@ func (action *ResponsesToolMessageActionStruct) UnmarshalJSON(data []byte) error
 	var str string
 	if err := Unmarshal(data, &str); err == nil {
 		action.ResponsesToolCallActionStr = &str
+		return nil
+	}
+
+	// A shell_call action has no "type", only commands[] — probe for it before the
+	// type switch, whose default lands on the computer action.
+	if !gjson.GetBytes(data, "type").Exists() && gjson.GetBytes(data, "commands").IsArray() {
+		var shellToolCallAction ResponsesShellToolCallAction
+		if err := Unmarshal(data, &shellToolCallAction); err != nil {
+			return fmt.Errorf("failed to unmarshal shell tool call action: %w", err)
+		}
+		action.ResponsesShellToolCallAction = &shellToolCallAction
 		return nil
 	}
 
@@ -2192,11 +2226,15 @@ type ResponsesToolMessageOutputStruct struct {
 	ResponsesToolCallOutputStr            *string // Common output string for tool calls and outputs (used by function, custom and local shell tool calls)
 	ResponsesFunctionToolCallOutputBlocks []ResponsesMessageContentBlock
 	ResponsesComputerToolCallOutput       *ResponsesComputerToolCallOutputData
+	ResponsesShellCallOutput              []ResponsesShellCallOutputContent
 }
 
 func (output ResponsesToolMessageOutputStruct) MarshalJSON() ([]byte, error) {
 	if output.ResponsesToolCallOutputStr != nil {
 		return MarshalSorted(*output.ResponsesToolCallOutputStr)
+	}
+	if output.ResponsesShellCallOutput != nil {
+		return MarshalSorted(output.ResponsesShellCallOutput)
 	}
 	if output.ResponsesFunctionToolCallOutputBlocks != nil {
 		return MarshalSorted(output.ResponsesFunctionToolCallOutputBlocks)
@@ -2216,6 +2254,13 @@ func (output *ResponsesToolMessageOutputStruct) UnmarshalJSON(data []byte) error
 	if err := Unmarshal(data, &str); err == nil {
 		output.ResponsesToolCallOutputStr = &str
 		return nil
+	}
+	if isShellCallOutputArray(data) {
+		var shellOutput []ResponsesShellCallOutputContent
+		if err := Unmarshal(data, &shellOutput); err == nil {
+			output.ResponsesShellCallOutput = shellOutput
+			return nil
+		}
 	}
 	var array []ResponsesMessageContentBlock
 	if err := Unmarshal(data, &array); err == nil {
@@ -2636,6 +2681,90 @@ type ResponsesLocalShellToolCallAction struct {
 }
 
 // -----------------------------------------------------------------------------
+// Shell Tool
+// -----------------------------------------------------------------------------
+
+// ResponsesShellToolCallAction is a shell_call's action. Unlike every other action
+// it carries no "type" discriminator, only the commands and their limits.
+type ResponsesShellToolCallAction struct {
+	Commands        []string `json:"commands"`
+	TimeoutMS       *int     `json:"timeout_ms,omitempty"`
+	MaxOutputLength *int     `json:"max_output_length,omitempty"`
+}
+
+// ResponsesShellCallOutputContent is one captured chunk of a shell_call_output.
+type ResponsesShellCallOutputContent struct {
+	Stdout    string                    `json:"stdout"`
+	Stderr    string                    `json:"stderr"`
+	Outcome   ResponsesShellCallOutcome `json:"outcome"`
+	CreatedBy *string                   `json:"created_by,omitempty"`
+}
+
+// ResponsesShellCallOutcome is how a shell command ended.
+type ResponsesShellCallOutcome struct {
+	Type     string `json:"type"`                // "exit" | "timeout"
+	ExitCode *int   `json:"exit_code,omitempty"` // exit only
+}
+
+// ResponsesShellCall carries the shell_call / shell_call_output fields that the
+// neutral tool-message shape has no home for.
+type ResponsesShellCall struct {
+	Environment     *ResponsesShellCallEnvironment `json:"environment,omitempty"`       // shell_call
+	MaxOutputLength *int                           `json:"max_output_length,omitempty"` // shell_call_output
+}
+
+// ResponsesShellCallEnvironment is where a shell_call ran.
+type ResponsesShellCallEnvironment struct {
+	Type        string  `json:"type"` // "local" | "container_reference"
+	ContainerID *string `json:"container_id,omitempty"`
+}
+
+// ResponsesShellCaller is the execution context that produced a shell call.
+type ResponsesShellCaller struct {
+	Type     string  `json:"type"`                // "direct" | "program"
+	CallerID *string `json:"caller_id,omitempty"` // program only
+}
+
+// ShellCallOutputText renders a shell_call_output's chunks as plain text.
+func ShellCallOutputText(output []ResponsesShellCallOutputContent) string {
+	var sb strings.Builder
+	for _, content := range output {
+		for _, stream := range []string{content.Stdout, content.Stderr} {
+			if stream == "" {
+				continue
+			}
+			if sb.Len() > 0 {
+				sb.WriteString("\n")
+			}
+			sb.WriteString(stream)
+		}
+	}
+	return sb.String()
+}
+
+// isShellCallOutputArray reports whether data is a shell_call_output "output" array,
+// which would otherwise decode as content blocks.
+func isShellCallOutputArray(data []byte) bool {
+	parsed := gjson.ParseBytes(data)
+	if !parsed.IsArray() {
+		return false
+	}
+	items := parsed.Array()
+	if len(items) == 0 {
+		return false
+	}
+	for _, item := range items {
+		if !item.IsObject() || !item.Get("outcome").IsObject() {
+			return false
+		}
+		if !item.Get("stdout").Exists() && !item.Get("stderr").Exists() {
+			return false
+		}
+	}
+	return true
+}
+
+// -----------------------------------------------------------------------------
 // MCP (Model Context Protocol) Tools
 // -----------------------------------------------------------------------------
 
@@ -2856,6 +2985,7 @@ const (
 	ResponsesToolTypeCodeInterpreter    ResponsesToolType = "code_interpreter"
 	ResponsesToolTypeImageGeneration    ResponsesToolType = "image_generation"
 	ResponsesToolTypeLocalShell         ResponsesToolType = "local_shell"
+	ResponsesToolTypeShell              ResponsesToolType = "shell"
 	ResponsesToolTypeCustom             ResponsesToolType = "custom"
 	ResponsesToolTypeWebSearchPreview   ResponsesToolType = "web_search_preview"
 	ResponsesToolTypeMemory             ResponsesToolType = "memory"
@@ -2971,7 +3101,7 @@ type ResponsesTool struct {
 	// ignored by providers that don't support them. Gated per ProviderFeatures
 	// in core/providers/anthropic/types.go.
 	DeferLoading        *bool                  `json:"defer_loading,omitempty"`         // Anthropic advanced-tool-use: defer loading of tool definition
-	AllowedCallers      []string               `json:"allowed_callers,omitempty"`       // Anthropic advanced-tool-use: which callers can invoke this tool
+	AllowedCallers      []string               `json:"allowed_callers,omitempty"`       // Which callers can invoke this tool; see ResponsesToolCaller* for the two vendor vocabularies
 	InputExamples       []ChatToolInputExample `json:"input_examples,omitempty"`        // Anthropic tool-examples-2025-10-29: example inputs for the tool
 	EagerInputStreaming *bool                  `json:"eager_input_streaming,omitempty"` // Anthropic fine-grained-tool-streaming-2025-05-14
 
@@ -2984,6 +3114,7 @@ type ResponsesTool struct {
 	*ResponsesToolCodeInterpreter
 	*ResponsesToolImageGeneration
 	*ResponsesToolLocalShell
+	*ResponsesToolShell
 	*ResponsesToolCustom
 	*ResponsesToolWebSearchPreview
 	*ResponsesToolToolSearch
@@ -3112,6 +3243,10 @@ func (t ResponsesTool) MarshalJSON() ([]byte, error) {
 	case ResponsesToolTypeLocalShell:
 		if t.ResponsesToolLocalShell != nil {
 			typeBytes, err = MarshalSorted(t.ResponsesToolLocalShell)
+		}
+	case ResponsesToolTypeShell:
+		if t.ResponsesToolShell != nil {
+			typeBytes, err = MarshalSorted(t.ResponsesToolShell)
 		}
 	case ResponsesToolTypeCustom:
 		if t.ResponsesToolCustom != nil {
@@ -3337,6 +3472,13 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		t.ResponsesToolLocalShell = &localShellTool
+
+	case ResponsesToolTypeShell:
+		var shellTool ResponsesToolShell
+		if err := Unmarshal(data, &shellTool); err != nil {
+			return err
+		}
+		t.ResponsesToolShell = &shellTool
 
 	case ResponsesToolTypeCustom:
 		var customTool ResponsesToolCustom
@@ -3806,6 +3948,60 @@ type ResponsesToolLocalShell struct {
 	// No unique fields needed since Type is now in the top-level struct
 }
 
+// ResponsesToolShell represents OpenAI's shell tool, the successor to local_shell.
+type ResponsesToolShell struct {
+	Environment *ResponsesToolShellEnvironment `json:"environment,omitempty"`
+}
+
+// ResponsesToolShellEnvironment says where the commands run.
+type ResponsesToolShellEnvironment struct {
+	Type string `json:"type"` // "local" | "container_auto" | "container_reference"
+
+	// container_auto
+	FileIDs       []string                         `json:"file_ids,omitempty"`
+	MemoryLimit   *string                          `json:"memory_limit,omitempty"` // "1g" | "4g" | "16g" | "64g"
+	NetworkPolicy *ResponsesToolShellNetworkPolicy `json:"network_policy,omitempty"`
+
+	// Skills are carried by both local and container_auto, in different shapes
+	Skills []ResponsesToolShellSkill `json:"skills,omitempty"`
+
+	// container_reference
+	ContainerID *string `json:"container_id,omitempty"`
+}
+
+// ResponsesToolShellNetworkPolicy is the outbound network policy of a container_auto environment.
+type ResponsesToolShellNetworkPolicy struct {
+	Type           string                           `json:"type"` // "disabled" | "allowlist"
+	AllowedDomains []string                         `json:"allowed_domains,omitempty"`
+	DomainSecrets  []ResponsesToolShellDomainSecret `json:"domain_secrets,omitempty"`
+}
+
+// ResponsesToolShellDomainSecret is a secret injected for an allowlisted domain.
+type ResponsesToolShellDomainSecret struct {
+	Domain string `json:"domain"`
+	Name   string `json:"name"`
+	Value  string `json:"value"`
+}
+
+// ResponsesToolShellSkill is a local skill (name/description/path), a skill_reference
+// or an inline skill bundle.
+type ResponsesToolShellSkill struct {
+	Type        *string                        `json:"type,omitempty"` // "skill_reference" | "inline"; absent on local skills
+	Name        *string                        `json:"name,omitempty"`
+	Description *string                        `json:"description,omitempty"`
+	Path        *string                        `json:"path,omitempty"`     // local
+	SkillID     *string                        `json:"skill_id,omitempty"` // skill_reference
+	Version     *string                        `json:"version,omitempty"`  // skill_reference
+	Source      *ResponsesToolShellSkillSource `json:"source,omitempty"`   // inline
+}
+
+// ResponsesToolShellSkillSource is the payload of an inline skill.
+type ResponsesToolShellSkillSource struct {
+	Type      string `json:"type"`       // always "base64"
+	MediaType string `json:"media_type"` // always "application/zip"
+	Data      string `json:"data"`       // base64-encoded zip bundle
+}
+
 // ResponsesToolCustom represents a custom tool
 type ResponsesToolCustom struct {
 	Format *ResponsesToolCustomFormat `json:"format,omitempty"` // The input format
@@ -3972,6 +4168,12 @@ const (
 	ResponsesStreamResponseTypeCustomToolCallInputDelta ResponsesStreamResponseType = "response.custom_tool_call_input.delta"
 	ResponsesStreamResponseTypeCustomToolCallInputDone  ResponsesStreamResponseType = "response.custom_tool_call_input.done"
 
+	ResponsesStreamResponseTypeShellCallCommandAdded       ResponsesStreamResponseType = "response.shell_call_command.added"
+	ResponsesStreamResponseTypeShellCallCommandDelta       ResponsesStreamResponseType = "response.shell_call_command.delta"
+	ResponsesStreamResponseTypeShellCallCommandDone        ResponsesStreamResponseType = "response.shell_call_command.done"
+	ResponsesStreamResponseTypeShellCallOutputContentDelta ResponsesStreamResponseType = "response.shell_call_output_content.delta"
+	ResponsesStreamResponseTypeShellCallOutputContentDone  ResponsesStreamResponseType = "response.shell_call_output_content.done"
+
 	ResponsesStreamResponseTypeError ResponsesStreamResponseType = "error"
 )
 
@@ -4012,6 +4214,13 @@ type BifrostResponsesStreamResponse struct {
 	// Input carries the full custom-tool payload on custom_tool_call_input.done.
 	Input *string `json:"input,omitempty"`
 
+	// Shell tool events. ShellOutputDelta holds the object-shaped `delta` of
+	// shell_call_output_content.delta, the only event whose delta is not a string.
+	Command          *string                           `json:"command,omitempty"`
+	CommandIndex     *int                              `json:"command_index,omitempty"`
+	Output           []ResponsesShellCallOutputContent `json:"output,omitempty"`
+	ShellOutputDelta *ResponsesShellCallOutputDelta    `json:"-"`
+
 	PartialImageB64   *string `json:"partial_image_b64,omitempty"`
 	PartialImageIndex *int    `json:"partial_image_index,omitempty"`
 
@@ -4038,6 +4247,13 @@ type BifrostResponsesStreamResponse struct {
 	Citations     []string       `json:"citations,omitempty"`
 }
 
+// ResponsesShellCallOutputDelta is the object-shaped `delta` of
+// response.shell_call_output_content.delta.
+type ResponsesShellCallOutputDelta struct {
+	Stdout *string `json:"stdout,omitempty"`
+	Stderr *string `json:"stderr,omitempty"`
+}
+
 // MarshalJSON omits event-scoped fields that are nil so strict Responses
 // clients do not see explicit nulls on unrelated event types. Some event types
 // still intentionally emit empty arrays after WithDefaults populates them.
@@ -4048,9 +4264,42 @@ func (resp BifrostResponsesStreamResponse) MarshalJSON() ([]byte, error) {
 		return nil, err
 	}
 	if resp.LogProbs == nil && gjson.GetBytes(encoded, "logprobs").Exists() {
-		return sjson.DeleteBytes(encoded, "logprobs")
+		if encoded, err = sjson.DeleteBytes(encoded, "logprobs"); err != nil {
+			return nil, err
+		}
+	}
+	if resp.ShellOutputDelta != nil {
+		deltaBytes, deltaErr := MarshalSorted(resp.ShellOutputDelta)
+		if deltaErr != nil {
+			return nil, deltaErr
+		}
+		return sjson.SetRawBytes(encoded, "delta", deltaBytes)
 	}
 	return encoded, nil
+}
+
+// UnmarshalResponsesStreamObjectDelta decodes an event whose `delta` is an object
+// rather than a string — shell_call_output_content.delta's {stdout, stderr}, which
+// the string Delta field cannot hold. Callers use it as a fallback after a failed
+// decode, so the common path keeps the generated (faster) decoder.
+func UnmarshalResponsesStreamObjectDelta(data []byte, resp *BifrostResponsesStreamResponse) error {
+	delta := gjson.GetBytes(data, "delta")
+	if !delta.IsObject() {
+		return fmt.Errorf("stream event delta is not an object")
+	}
+	stripped, err := sjson.DeleteBytes(append([]byte(nil), data...), "delta")
+	if err != nil {
+		return err
+	}
+	if err := Unmarshal(stripped, resp); err != nil {
+		return err
+	}
+	var shellDelta ResponsesShellCallOutputDelta
+	if err := Unmarshal([]byte(delta.Raw), &shellDelta); err != nil {
+		return err
+	}
+	resp.ShellOutputDelta = &shellDelta
+	return nil
 }
 
 func (resp *BifrostResponsesStreamResponse) WithDefaults() *BifrostResponsesStreamResponse {
@@ -4102,6 +4351,10 @@ func (resp *BifrostResponsesStreamResponse) WithDefaults() *BifrostResponsesStre
 	result.Refusal = resp.Refusal
 	result.Arguments = resp.Arguments
 	result.Input = resp.Input
+	result.Command = resp.Command
+	result.CommandIndex = resp.CommandIndex
+	result.Output = resp.Output
+	result.ShellOutputDelta = resp.ShellOutputDelta
 	result.PartialImageB64 = resp.PartialImageB64
 	result.PartialImageIndex = resp.PartialImageIndex
 	result.Annotation = resp.Annotation

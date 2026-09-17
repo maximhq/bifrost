@@ -2389,6 +2389,7 @@ func countLogicalChoicesInResponsesAPI(messages []schemas.ResponsesMessage) int 
 				schemas.ResponsesMessageTypeWebFetchCall,
 				schemas.ResponsesMessageTypeCodeInterpreterCall,
 				schemas.ResponsesMessageTypeLocalShellCall,
+				schemas.ResponsesMessageTypeShellCall,
 				schemas.ResponsesMessageTypeMCPCall,
 				schemas.ResponsesMessageTypeCustomToolCall,
 				schemas.ResponsesMessageTypeImageGenerationCall,

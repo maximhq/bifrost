@@ -827,6 +827,126 @@ func TestAnthropicResponsesTruncatedOutputItemIncomplete(t *testing.T) {
 	}
 }
 
+// TestConvertBifrostMessages_ShellCallKeepsCommands verifies that a shell_call
+// replayed to Anthropic keeps its commands instead of collapsing to a bare type name.
+func TestConvertBifrostMessages_ShellCallKeepsCommands(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	caps := schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929")
+
+	callID := "shell_call_1"
+	timeout := 5000
+	shellCall := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeShellCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: &callID,
+			Action: &schemas.ResponsesToolMessageActionStruct{
+				ResponsesShellToolCallAction: &schemas.ResponsesShellToolCallAction{
+					Commands:  []string{"ls -la", "cat go.mod"},
+					TimeoutMS: &timeout,
+				},
+			},
+			ResponsesShellCall: &schemas.ResponsesShellCall{
+				Environment: &schemas.ResponsesShellCallEnvironment{Type: "local"},
+			},
+		},
+	}
+
+	msgs, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, []schemas.ResponsesMessage{shellCall}, true, caps)
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d: %+v", len(msgs), msgs)
+	}
+	if len(msgs[0].Content.ContentBlocks) != 1 || msgs[0].Content.ContentBlocks[0].Text == nil {
+		t.Fatalf("expected a single text block, got %+v", msgs[0].Content.ContentBlocks)
+	}
+
+	text := *msgs[0].Content.ContentBlocks[0].Text
+	for _, want := range []string{"ls -la", "cat go.mod", `"timeout_ms":5000`} {
+		if !strings.Contains(text, want) {
+			t.Errorf("shell call text missing %q, got:\n%s", want, text)
+		}
+	}
+}
+
+// TestConvertBifrostMessages_ShellCallOutputKeepsOutcome pins the replayed output:
+// without the outcome a failed command reads like a successful one, and a silent
+// command used to produce no message at all.
+func TestConvertBifrostMessages_ShellCallOutputKeepsOutcome(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	caps := schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929")
+
+	callID := "shell_call_1"
+	exit127 := 127
+	exit0 := 0
+
+	tests := []struct {
+		name    string
+		output  []schemas.ResponsesShellCallOutputContent
+		want    []string
+		notWant []string
+	}{
+		{
+			name:   "failure keeps stderr and the exit code",
+			output: []schemas.ResponsesShellCallOutputContent{{Stderr: "bash: nope: command not found", Outcome: schemas.ResponsesShellCallOutcome{Type: "exit", ExitCode: &exit127}}},
+			want:   []string{"command not found", "[exit code 127]"},
+		},
+		{
+			name:   "silent success still reaches the model",
+			output: []schemas.ResponsesShellCallOutputContent{{Outcome: schemas.ResponsesShellCallOutcome{Type: "exit", ExitCode: &exit0}}},
+			want:   []string{"[exit code 0]"},
+		},
+		{
+			name:   "timeout is named",
+			output: []schemas.ResponsesShellCallOutputContent{{Stdout: "partial", Outcome: schemas.ResponsesShellCallOutcome{Type: "timeout"}}},
+			want:   []string{"partial", "[command timed out]"},
+		},
+		{
+			name:   "no text and no outcome still emits a message",
+			output: []schemas.ResponsesShellCallOutputContent{{}},
+			want:   []string{"[no output]"},
+		},
+		{
+			name:    "success with output does not gain noise",
+			output:  []schemas.ResponsesShellCallOutputContent{{Stdout: "go.mod", Outcome: schemas.ResponsesShellCallOutcome{Type: "exit", ExitCode: &exit0}}},
+			want:    []string{"go.mod", "[exit code 0]"},
+			notWant: []string{"[no output]"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeShellCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: &callID,
+					Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesShellCallOutput: tt.output},
+				},
+			}
+
+			msgs, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, []schemas.ResponsesMessage{msg}, true, caps)
+			if len(msgs) != 1 {
+				t.Fatalf("expected 1 message, got %d: %+v", len(msgs), msgs)
+			}
+			if len(msgs[0].Content.ContentBlocks) != 1 || msgs[0].Content.ContentBlocks[0].Text == nil {
+				t.Fatalf("expected a single text block, got %+v", msgs[0].Content.ContentBlocks)
+			}
+
+			text := *msgs[0].Content.ContentBlocks[0].Text
+			for _, want := range tt.want {
+				if !strings.Contains(text, want) {
+					t.Errorf("replayed output missing %q, got:\n%s", want, text)
+				}
+			}
+			for _, notWant := range tt.notWant {
+				if strings.Contains(text, notWant) {
+					t.Errorf("replayed output must not contain %q, got:\n%s", notWant, text)
+				}
+			}
+		})
+	}
+}
+
 func assertAnthropicLastOutputItemStatus(t *testing.T, label string, output []schemas.ResponsesMessage, want string) {
 	t.Helper()
 	if len(output) == 0 {
@@ -843,4 +963,29 @@ func derefStatus(s *string) string {
 		return "<nil>"
 	}
 	return *s
+}
+
+// TestConvertBifrostMessages_UnsupportedToolCallWithoutShellAction verifies the
+// generic fallback still applies to non-shell unsupported tool calls.
+func TestConvertBifrostMessages_UnsupportedToolCallWithoutShellAction(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	caps := schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929")
+
+	callID := "fs_1"
+	fileSearch := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeFileSearchCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: &callID,
+			Name:   schemas.Ptr("file_search"),
+		},
+	}
+
+	msgs, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, []schemas.ResponsesMessage{fileSearch}, true, caps)
+	if len(msgs) != 1 || len(msgs[0].Content.ContentBlocks) != 1 || msgs[0].Content.ContentBlocks[0].Text == nil {
+		t.Fatalf("expected a single text block, got %+v", msgs)
+	}
+	if text := *msgs[0].Content.ContentBlocks[0].Text; !strings.Contains(text, "Tool call: file_search") {
+		t.Fatalf("unexpected fallback text: %s", text)
+	}
 }

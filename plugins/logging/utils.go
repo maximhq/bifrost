@@ -753,6 +753,7 @@ func extractRealtimeInputHistory(input []schemas.ResponsesMessage) []schemas.Cha
 		case schemas.ResponsesMessageTypeFunctionCallOutput,
 			schemas.ResponsesMessageTypeCustomToolCallOutput,
 			schemas.ResponsesMessageTypeLocalShellCallOutput,
+			schemas.ResponsesMessageTypeShellCallOutput,
 			schemas.ResponsesMessageTypeComputerCallOutput:
 			content := extractRealtimeToolOutputContent(item.ResponsesToolMessage)
 			if content == "" {
@@ -811,6 +812,8 @@ func extractRealtimeToolOutputContent(toolMessage *schemas.ResponsesToolMessage)
 	switch {
 	case toolMessage.Output.ResponsesToolCallOutputStr != nil:
 		return strings.TrimSpace(*toolMessage.Output.ResponsesToolCallOutputStr)
+	case len(toolMessage.Output.ResponsesShellCallOutput) > 0:
+		return strings.TrimSpace(schemas.ShellCallOutputText(toolMessage.Output.ResponsesShellCallOutput))
 	case len(toolMessage.Output.ResponsesFunctionToolCallOutputBlocks) > 0:
 		content := &schemas.ResponsesMessageContent{ContentBlocks: toolMessage.Output.ResponsesFunctionToolCallOutputBlocks}
 		return extractRealtimeResponsesContent(content)

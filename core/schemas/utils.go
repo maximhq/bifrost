@@ -1446,6 +1446,10 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 				}
 			}
 
+			if original.ResponsesToolMessage.Output.ResponsesShellCallOutput != nil {
+				copy.ResponsesToolMessage.Output.ResponsesShellCallOutput = deepCopyShellCallOutput(original.ResponsesToolMessage.Output.ResponsesShellCallOutput)
+			}
+
 			if original.ResponsesToolMessage.Output.ResponsesComputerToolCallOutput != nil {
 				copyOutput := *original.ResponsesToolMessage.Output.ResponsesComputerToolCallOutput
 				copy.ResponsesToolMessage.Output.ResponsesComputerToolCallOutput = &copyOutput
@@ -1495,6 +1499,20 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 				copy.ResponsesToolMessage.Action.ResponsesLocalShellToolCallAction = &copyAction
 			}
 
+			if original.ResponsesToolMessage.Action.ResponsesShellToolCallAction != nil {
+				copyAction := *original.ResponsesToolMessage.Action.ResponsesShellToolCallAction
+				copyAction.Commands = append([]string(nil), copyAction.Commands...)
+				if copyAction.TimeoutMS != nil {
+					timeoutMS := *copyAction.TimeoutMS
+					copyAction.TimeoutMS = &timeoutMS
+				}
+				if copyAction.MaxOutputLength != nil {
+					maxOutputLength := *copyAction.MaxOutputLength
+					copyAction.MaxOutputLength = &maxOutputLength
+				}
+				copy.ResponsesToolMessage.Action.ResponsesShellToolCallAction = &copyAction
+			}
+
 			if original.ResponsesToolMessage.Action.ResponsesMCPApprovalRequestAction != nil {
 				copyAction := *original.ResponsesToolMessage.Action.ResponsesMCPApprovalRequestAction
 				copy.ResponsesToolMessage.Action.ResponsesMCPApprovalRequestAction = &copyAction
@@ -1508,6 +1526,24 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 				copyCaller.ToolID = &copyToolID
 			}
 			copy.ResponsesToolMessage.Caller = &copyCaller
+		}
+
+		if original.ResponsesToolMessage.ItemCaller != nil {
+			itemCaller := *original.ResponsesToolMessage.ItemCaller
+			if original.ResponsesToolMessage.ItemCaller.CallerID != nil {
+				callerID := *original.ResponsesToolMessage.ItemCaller.CallerID
+				itemCaller.CallerID = &callerID
+			}
+			copy.ResponsesToolMessage.ItemCaller = &itemCaller
+		}
+
+		if original.ResponsesToolMessage.CreatedBy != nil {
+			createdBy := *original.ResponsesToolMessage.CreatedBy
+			copy.ResponsesToolMessage.CreatedBy = &createdBy
+		}
+
+		if original.ResponsesToolMessage.ResponsesShellCall != nil {
+			copy.ResponsesToolMessage.ResponsesShellCall = deepCopyShellCall(original.ResponsesToolMessage.ResponsesShellCall)
 		}
 
 		// Deep copy embedded tool call structs (simplified version - add more as needed)
@@ -1791,6 +1827,41 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 	}
 
 	return copy
+}
+
+// deepCopyShellCallOutput copies a shell_call_output "output" array, pointers included.
+func deepCopyShellCallOutput(original []ResponsesShellCallOutputContent) []ResponsesShellCallOutputContent {
+	copied := make([]ResponsesShellCallOutputContent, len(original))
+	for i, content := range original {
+		copied[i] = content
+		if content.Outcome.ExitCode != nil {
+			exitCode := *content.Outcome.ExitCode
+			copied[i].Outcome.ExitCode = &exitCode
+		}
+		if content.CreatedBy != nil {
+			createdBy := *content.CreatedBy
+			copied[i].CreatedBy = &createdBy
+		}
+	}
+	return copied
+}
+
+// deepCopyShellCall copies the shell_call / shell_call_output fields.
+func deepCopyShellCall(original *ResponsesShellCall) *ResponsesShellCall {
+	copied := *original
+	if original.Environment != nil {
+		environment := *original.Environment
+		if original.Environment.ContainerID != nil {
+			containerID := *original.Environment.ContainerID
+			environment.ContainerID = &containerID
+		}
+		copied.Environment = &environment
+	}
+	if original.MaxOutputLength != nil {
+		maxOutputLength := *original.MaxOutputLength
+		copied.MaxOutputLength = &maxOutputLength
+	}
+	return &copied
 }
 
 // deepCopyResponsesMessageContentBlock creates a deep copy of a ResponsesMessageContentBlock
