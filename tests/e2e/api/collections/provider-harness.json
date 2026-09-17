@@ -151322,6 +151322,151 @@
           ]
         }
       ]
+    },
+    {
+      "name": "96. GenAI Speech Streaming (speech-stream)",
+      "description": "Regression coverage for speech responses on the Google GenAI streaming surface. The normal case pins Gemini TTS PCM chunks and their exact L16 MIME metadata. The criss-cross case sends the same GenAI speechConfig shape to OpenAI gpt-4o-mini-tts and pins the converted MP3 chunks. Both cases require valid SSE JSON, non-empty decodable inlineData audio, and a terminal STOP reason; this catches a missing speech stream converter, incorrect MIME metadata, and dropped camelCase voice configuration.",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+              "var responseText = pm.response.text() || '';",
+              "var parsedEvents = [];",
+              "var invalidEvents = [];",
+              "responseText.split('\\n').forEach(function (line) {",
+              "  if (line.indexOf('data: ') !== 0) { return; }",
+              "  var payload = line.slice(6).trim();",
+              "  if (!payload || payload === '[DONE]') { return; }",
+              "  try { parsedEvents.push(JSON.parse(payload)); } catch (e) { invalidEvents.push(payload); }",
+              "});",
+              "var audioParts = [];",
+              "var mimeTypes = [];",
+              "var finishReasons = [];",
+              "var streamErrors = [];",
+              "parsedEvents.forEach(function (event) {",
+              "  if (event.error) { streamErrors.push(event.error); }",
+              "  (event.candidates || []).forEach(function (candidate) {",
+              "    if (candidate.finishReason) { finishReasons.push(candidate.finishReason); }",
+              "    var parts = candidate.content && candidate.content.parts || [];",
+              "    parts.forEach(function (part) {",
+              "      if (part.inlineData && part.inlineData.data) {",
+              "        audioParts.push(part.inlineData.data);",
+              "        mimeTypes.push(part.inlineData.mimeType);",
+              "      }",
+              "    });",
+              "  });",
+              "});",
+              "var isOpenAI = pm.request.url.toString().indexOf('openai/gpt-4o-mini-tts') !== -1;",
+              "var expectedMime = isOpenAI ? 'audio/mp3' : 'audio/L16;codec=pcm;rate=24000';",
+              "var decodedBytes = 0;",
+              "audioParts.forEach(function (data) {",
+              "  try { decodedBytes += Buffer.from(data, 'base64').length; } catch (e) {}",
+              "});",
+              "pm.test('speech-stream request succeeded', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + responseText).to.be.below(400);",
+              "});",
+              "pm.test('speech-stream response is SSE', function () {",
+              "  pm.expect((pm.response.headers.get('Content-Type') || '').toLowerCase()).to.include('text/event-stream');",
+              "});",
+              "pm.test('speech-stream contains only valid JSON events and no stream error', function () {",
+              "  pm.expect(invalidEvents, 'invalid SSE data: ' + invalidEvents.join(' | ')).to.be.empty;",
+              "  pm.expect(streamErrors, 'stream errors: ' + JSON.stringify(streamErrors)).to.be.empty;",
+              "});",
+              "pm.test('speech-stream returns non-empty decodable inlineData audio', function () {",
+              "  pm.expect(audioParts.length, 'body: ' + responseText.slice(0, 1000)).to.be.above(0);",
+              "  pm.expect(decodedBytes, 'audio chunks did not decode').to.be.above(0);",
+              "});",
+              "pm.test('speech-stream preserves the provider audio MIME type', function () {",
+              "  pm.expect(mimeTypes.length, 'no MIME metadata found').to.eql(audioParts.length);",
+              "  mimeTypes.forEach(function (mime) { pm.expect(mime).to.eql(expectedMime); });",
+              "});",
+              "pm.test('speech-stream terminates with STOP', function () {",
+              "  pm.expect(finishReasons, 'finish reasons: ' + JSON.stringify(finishReasons)).to.include('STOP');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "gemini/gemini-2.5-flash-preview-tts /genai normal speech stream returns PCM inlineData - speech-stream",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [{ \"text\": \"Say exactly: Bifrost speech test.\" }]\n    }\n  ],\n  \"generationConfig\": {\n    \"responseModalities\": [\"AUDIO\"],\n    \"speechConfig\": {\n      \"voiceConfig\": {\n        \"prebuiltVoiceConfig\": { \"voiceName\": \"Kore\" }\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-flash-preview-tts:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini-2.5-flash-preview-tts:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "openai/gpt-4o-mini-tts /genai criss-cross speech stream returns MP3 inlineData - speech-stream",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [{ \"text\": \"Say exactly: Bifrost speech test.\" }]\n    }\n  ],\n  \"generationConfig\": {\n    \"responseModalities\": [\"AUDIO\"],\n    \"speechConfig\": {\n      \"voiceConfig\": {\n        \"prebuiltVoiceConfig\": { \"voiceName\": \"alloy\" }\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/openai/gpt-4o-mini-tts:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "openai",
+                "gpt-4o-mini-tts:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

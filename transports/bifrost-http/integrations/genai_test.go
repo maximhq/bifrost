@@ -2,6 +2,7 @@ package integrations
 
 import (
 	"context"
+	"encoding/base64"
 	"strings"
 	"testing"
 
@@ -132,6 +133,79 @@ func findGenAIRouteForTest(t *testing.T, routes []RouteConfig, path, method stri
 	}
 	t.Fatalf("route %s %s not found", method, path)
 	return RouteConfig{}
+}
+
+func TestGenAISpeechStreamResponseConverter(t *testing.T) {
+	route := findGenAIRouteForTest(t, CreateGenAIRouteConfigs("/genai"), "/genai/v1beta/models/{model:*}", "POST")
+	require.NotNil(t, route.StreamConfig)
+	require.NotNil(t, route.StreamConfig.SpeechStreamResponseConverter)
+
+	audio := []byte{0x01, 0x02, 0x03, 0x04}
+	_, converted, err := route.StreamConfig.SpeechStreamResponseConverter(nil, &schemas.BifrostSpeechStreamResponse{
+		Type:  schemas.SpeechStreamResponseTypeDelta,
+		Audio: audio,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RoutingInfo: schemas.RoutingInfo{Provider: schemas.Gemini},
+		},
+	})
+	require.NoError(t, err)
+
+	response, ok := converted.(*gemini.GenerateContentResponse)
+	require.True(t, ok)
+	require.Len(t, response.Candidates, 1)
+	require.NotNil(t, response.Candidates[0].Content)
+	require.Len(t, response.Candidates[0].Content.Parts, 1)
+	require.NotNil(t, response.Candidates[0].Content.Parts[0].InlineData)
+	assert.Equal(t, base64.StdEncoding.EncodeToString(audio), response.Candidates[0].Content.Parts[0].InlineData.Data)
+	assert.Equal(t, "audio/L16;codec=pcm;rate=24000", response.Candidates[0].Content.Parts[0].InlineData.MIMEType)
+}
+
+func TestGenAISpeechStreamDoneResponseIncludesUsageAndFinishReason(t *testing.T) {
+	route := findGenAIRouteForTest(t, CreateGenAIRouteConfigs("/genai"), "/genai/v1beta/models/{model:*}", "POST")
+	_, converted, err := route.StreamConfig.SpeechStreamResponseConverter(nil, &schemas.BifrostSpeechStreamResponse{
+		Type: schemas.SpeechStreamResponseTypeDone,
+		Usage: &schemas.SpeechUsage{
+			InputTokens:  3,
+			OutputTokens: 5,
+			TotalTokens:  8,
+		},
+	})
+	require.NoError(t, err)
+
+	response := converted.(*gemini.GenerateContentResponse)
+	require.Len(t, response.Candidates, 1)
+	assert.Equal(t, gemini.FinishReasonStop, response.Candidates[0].FinishReason)
+	require.NotNil(t, response.UsageMetadata)
+	assert.Equal(t, int32(3), response.UsageMetadata.PromptTokenCount)
+	assert.Equal(t, int32(5), response.UsageMetadata.CandidatesTokenCount)
+	assert.Equal(t, int32(8), response.UsageMetadata.TotalTokenCount)
+}
+
+func TestGenAICamelCaseSpeechVoiceSurvivesConversion(t *testing.T) {
+	rawBody := []byte(`{
+		"contents":[{"role":"user","parts":[{"text":"hello"}]}],
+		"generationConfig":{
+			"responseModalities":["AUDIO"],
+			"speechConfig":{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":"alloy"}}}
+		}
+	}`)
+	requestCtx := &fasthttp.RequestCtx{}
+	requestCtx.SetUserValue("model", "gpt-4o-mini-tts:streamGenerateContent")
+	requestCtx.Request.Header.Set("x-model-provider", "openai")
+	requestCtx.Request.SetBody(rawBody)
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	geminiReq := &gemini.GeminiGenerationRequest{}
+	require.NoError(t, sonic.Unmarshal(rawBody, geminiReq))
+	require.NoError(t, extractAndSetModelAndRequestType(requestCtx, bifrostCtx, geminiReq))
+
+	route := findGenAIRouteForTest(t, CreateGenAIRouteConfigs("/genai"), "/genai/v1beta/models/{model:*}", "POST")
+	converted, err := route.RequestConverter(bifrostCtx, geminiReq)
+	require.NoError(t, err)
+	require.NotNil(t, converted.SpeechRequest)
+	require.NotNil(t, converted.SpeechRequest.Params)
+	require.NotNil(t, converted.SpeechRequest.Params.VoiceConfig)
+	require.NotNil(t, converted.SpeechRequest.Params.VoiceConfig.Voice)
+	assert.Equal(t, "alloy", *converted.SpeechRequest.Params.VoiceConfig.Voice)
 }
 
 func TestExtractAndSetModelAndRequestTypePreservesRawBodyForGenerateContent(t *testing.T) {
