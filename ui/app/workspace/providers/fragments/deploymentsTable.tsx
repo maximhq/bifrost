@@ -2,7 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Input } from "@/components/ui/input";
-import { ModelMultiselect } from "@/components/ui/modelMultiselect";
+import { ModelSelector } from "@/components/ui/modelSelector";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
@@ -557,7 +557,7 @@ export function DeploymentsTable({ value, onChange, providerName, disabled = fal
 
 	return (
 		<div className="overflow-hidden rounded-md border">
-			<div className="bg-muted/50 text-foreground grid h-10 grid-cols-[28px_1fr_1fr_28px] items-center gap-2 border-b px-4 text-sm font-medium">
+			<div className="bg-muted/50 text-foreground grid h-10 grid-cols-[28px_minmax(0,1fr)_minmax(0,1fr)_28px] items-center gap-2 border-b px-4 text-sm font-medium">
 				<div />
 				<div>Deployment name</div>
 				<div>Model ID</div>
@@ -570,7 +570,7 @@ export function DeploymentsTable({ value, onChange, providerName, disabled = fal
 					return (
 						<Collapsible key={row.rowId} open={isOpen} onOpenChange={() => toggleExpanded(row.rowId)}>
 							<div className={cn(isOpen && "bg-muted/20")}>
-								<div className="grid grid-cols-[28px_1fr_1fr_28px] items-center gap-2 px-2 py-1.5">
+								<div className="grid grid-cols-[28px_minmax(0,1fr)_minmax(0,1fr)_28px] items-center gap-2 px-2 py-1.5">
 									<CollapsibleTrigger asChild>
 										<Button
 											variant="ghost"
@@ -596,14 +596,14 @@ export function DeploymentsTable({ value, onChange, providerName, disabled = fal
 											</p>
 										)}
 									</div>
-									<ModelMultiselect
-										isSingleSelect
+									<ModelSelector
 										provider={providerName}
 										value={row.config.model_id}
-										onChange={(v) => patchConfig(row.name, { model_id: typeof v === "string" ? v : "" })}
+										onChange={(v) => patchConfig(row.name, { model_id: v })}
 										placeholder="Deployment / profile / resource ID"
 										disabled={disabled}
-										unfiltered={true}
+										unfiltered
+										allowCustomModel
 										data-testid={`deployment-model-${row.name}`}
 									/>
 									<Button
@@ -632,7 +632,7 @@ export function DeploymentsTable({ value, onChange, providerName, disabled = fal
 				})}
 				<Collapsible open={draftExpanded} onOpenChange={setDraftExpanded}>
 					<div className={cn(draftExpanded && "bg-muted/20")}>
-						<div className="grid grid-cols-[28px_1fr_1fr_28px] items-center gap-2 px-2 py-1.5">
+						<div className="grid grid-cols-[28px_minmax(0,1fr)_minmax(0,1fr)_28px] items-center gap-2 px-2 py-1.5">
 							<CollapsibleTrigger asChild>
 								<Button variant="ghost" size="icon" className="h-7 w-7" disabled={disabled} data-testid="draft-deployment-expand">
 									{draftExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
@@ -652,19 +652,18 @@ export function DeploymentsTable({ value, onChange, providerName, disabled = fal
 								disabled={disabled}
 								data-testid="draft-deployment-name"
 							/>
-							<ModelMultiselect
-								isSingleSelect
+							<ModelSelector
 								provider={providerName}
 								value={draftRow.config.model_id}
-								onChange={(v) => {
-									const modelId = typeof v === "string" ? v : "";
+								onChange={(modelId) => {
 									const nextDraft = { ...draftRow, config: { ...draftRow.config, model_id: modelId } };
 									setDraftRow(nextDraft);
 									commitDraftIfReady(nextDraft);
 								}}
 								placeholder="Deployment / profile / resource ID"
 								disabled={disabled}
-								unfiltered={true}
+								unfiltered
+								allowCustomModel
 								data-testid="draft-deployment-model"
 							/>
 							<div />

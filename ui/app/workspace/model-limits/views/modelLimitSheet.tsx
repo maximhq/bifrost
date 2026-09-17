@@ -2,7 +2,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Label } from "@/components/ui/label";
-import { ModelMultiselect } from "@/components/ui/modelMultiselect";
+import { ALL_MODELS_OPTION, ModelSelector } from "@/components/ui/modelSelector";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
 import BudgetUsageResetDialog from "@/components/ui/budgetUsageResetDialog";
 import { useBudgetUsageResetPrompt } from "@/hooks/useBudgetUsageResetPrompt";
@@ -501,14 +501,14 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 												</Select>
 											) : (
 												<div data-testid="model-limit-model-select">
-													<ModelMultiselect
+													<ModelSelector
 														provider={form.watch("provider") || undefined}
 														value={field.value}
 														onChange={field.onChange}
 														placeholder="Search for a model..."
-														isSingleSelect
-														loadModelsOnEmptyProvider="base_models"
-														allowAllOption
+														baseModelsWithoutProvider
+														extraOptions={ALL_MODELS_OPTION}
+														allowCustomModel
 													/>
 												</div>
 											)}

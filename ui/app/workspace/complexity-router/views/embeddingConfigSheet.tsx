@@ -1,7 +1,7 @@
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ModelMultiselect } from "@/components/ui/modelMultiselect";
+import { ModelSelector } from "@/components/ui/modelSelector";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
@@ -42,7 +42,7 @@ interface Props {
 	llm: LLMFormValues | undefined;
 	canUpdate: boolean;
 	providers: ModelProvider[];
-	// Ids of the selected provider's enabled keys. Handed to ModelMultiselect so
+	// Ids of the selected provider's enabled keys. Handed to ModelSelector so
 	// the model list is narrowed to what those keys are allowed to serve.
 	providerKeyIds: string[];
 	// Chat-capable providers/keys for the inline llm fallback fields — a
@@ -217,16 +217,16 @@ export default function EmbeddingConfigSheet({
 									control={control}
 									name="semantic.embedding_model"
 									render={({ field }) => (
-										<ModelMultiselect
+										<ModelSelector
 											inputId="semantic-embedding-model"
 											data-testid="complexity-router-semantic-model-select"
-											isSingleSelect
 											provider={semantic?.provider || undefined}
 											keys={providerKeyIds}
 											value={field.value ?? ""}
 											onChange={(model) => {
 												field.onChange(model);
 											}}
+											allowCustomModel
 											placeholder={semantic?.provider ? "Search or type an embedding model…" : "Select a provider first"}
 											disabled={!canUpdate || !semantic?.provider}
 										/>
@@ -529,16 +529,16 @@ export default function EmbeddingConfigSheet({
 											control={control}
 											name="llm.model"
 											render={({ field }) => (
-												<ModelMultiselect
+												<ModelSelector
 													inputId="llm-model"
 													data-testid="complexity-router-llm-model-select"
-													isSingleSelect
 													provider={llm?.provider || undefined}
 													keys={llmProviderKeyIds}
 													value={field.value ?? ""}
 													onChange={(model) => {
 														field.onChange(model);
 													}}
+													allowCustomModel
 													placeholder={llm?.provider ? "Search or type a chat model…" : "Select a provider first"}
 													disabled={!canUpdate || !llm?.provider}
 												/>
