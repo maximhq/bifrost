@@ -912,10 +912,21 @@ func TestToBifrostResponsesStreamResponse_ToolCallsOnlyInCompletedOutput(t *test
 	}).ToBifrostResponsesStreamResponse(state)...)
 
 	var completed *BifrostResponsesStreamResponse
+	var addedOutputIndex *int
 	for _, evt := range all {
-		if evt != nil && evt.Type == ResponsesStreamResponseTypeCompleted {
+		if evt == nil {
+			continue
+		}
+		if evt.Type == ResponsesStreamResponseTypeOutputItemAdded && evt.Item != nil && evt.Item.CallID != nil {
+			addedOutputIndex = evt.OutputIndex
+		}
+		if evt.Type == ResponsesStreamResponseTypeCompleted {
 			completed = evt
 		}
+	}
+
+	if addedOutputIndex == nil || *addedOutputIndex != 0 {
+		t.Fatalf("tool-only output_item.added output_index = %v, want 0", addedOutputIndex)
 	}
 
 	if completed == nil || completed.Response == nil {
@@ -939,6 +950,179 @@ func TestToBifrostResponsesStreamResponse_ToolCallsOnlyInCompletedOutput(t *test
 	}
 	if item.Arguments == nil || *item.Arguments != `{"q":"test"}` {
 		t.Fatalf("expected arguments %q, got %v", `{"q":"test"}`, item.Arguments)
+	}
+}
+
+func TestToBifrostResponsesStreamResponse_HandlesParallelToolCallsInOneChunk(t *testing.T) {
+	state := AcquireChatToResponsesStreamState()
+	defer ReleaseChatToResponsesStreamState(state)
+
+	firstID, secondID := "call_weather", "call_time"
+	firstName, secondName := "get_weather", "get_time"
+	finishReason := string(BifrostFinishReasonToolCalls)
+
+	chunks := []*BifrostChatResponse{
+		streamChunk("chatcmpl-parallel", &ChatStreamResponseChoiceDelta{
+			Role: Ptr(string(ChatMessageRoleAssistant)),
+			ToolCalls: []ChatAssistantMessageToolCall{
+				{Index: 0, ID: &firstID, Function: ChatAssistantMessageToolCallFunction{Name: &firstName, Arguments: `{"city":`}},
+				{Index: 1, ID: &secondID, Function: ChatAssistantMessageToolCallFunction{Name: &secondName, Arguments: `{"zone":`}},
+			},
+		}, nil),
+		streamChunk("chatcmpl-parallel", &ChatStreamResponseChoiceDelta{
+			ToolCalls: []ChatAssistantMessageToolCall{
+				{Index: 0, Function: ChatAssistantMessageToolCallFunction{Arguments: `"Paris"}`}},
+				{Index: 1, Function: ChatAssistantMessageToolCallFunction{Arguments: `"UTC"}`}},
+			},
+		}, nil),
+		streamChunk("chatcmpl-parallel", &ChatStreamResponseChoiceDelta{}, &finishReason),
+	}
+
+	var events []*BifrostResponsesStreamResponse
+	for _, chunk := range chunks {
+		events = append(events, chunk.ToBifrostResponsesStreamResponse(state)...)
+	}
+
+	expectedTypes := []ResponsesStreamResponseType{
+		ResponsesStreamResponseTypeCreated,
+		ResponsesStreamResponseTypeInProgress,
+		ResponsesStreamResponseTypeOutputItemAdded,
+		ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+		ResponsesStreamResponseTypeOutputItemAdded,
+		ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+		ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+		ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+		ResponsesStreamResponseTypeFunctionCallArgumentsDone,
+		ResponsesStreamResponseTypeOutputItemDone,
+		ResponsesStreamResponseTypeFunctionCallArgumentsDone,
+		ResponsesStreamResponseTypeOutputItemDone,
+		ResponsesStreamResponseTypeCompleted,
+	}
+	if len(events) != len(expectedTypes) {
+		t.Fatalf("event count = %d, want %d", len(events), len(expectedTypes))
+	}
+	for i, expectedType := range expectedTypes {
+		if events[i].Type != expectedType || events[i].SequenceNumber != i {
+			t.Fatalf("event[%d] = type %q sequence %d, want type %q sequence %d", i, events[i].Type, events[i].SequenceNumber, expectedType, i)
+		}
+	}
+	for i, expectedIndex := range []int{0, 0, 1, 1} {
+		event := events[8+i]
+		if event.OutputIndex == nil || *event.OutputIndex != expectedIndex {
+			t.Fatalf("terminal event[%d] output_index = %v, want %d", i, event.OutputIndex, expectedIndex)
+		}
+	}
+
+	addedIndices := make(map[string]int)
+	deltaCounts := make(map[string]int)
+	doneIndices := make(map[string]int)
+	var completed *BifrostResponsesStreamResponse
+	for _, event := range events {
+		switch event.Type {
+		case ResponsesStreamResponseTypeOutputItemAdded:
+			if event.Item != nil && event.Item.CallID != nil && event.OutputIndex != nil {
+				addedIndices[*event.Item.CallID] = *event.OutputIndex
+			}
+		case ResponsesStreamResponseTypeFunctionCallArgumentsDelta:
+			if event.ItemID != nil {
+				deltaCounts[*event.ItemID]++
+			}
+		case ResponsesStreamResponseTypeOutputItemDone:
+			if event.Item != nil && event.Item.CallID != nil && event.OutputIndex != nil {
+				doneIndices[*event.Item.CallID] = *event.OutputIndex
+			}
+		case ResponsesStreamResponseTypeCompleted:
+			completed = event
+		}
+	}
+
+	if len(addedIndices) != 2 {
+		t.Fatalf("expected output_item.added for both tool calls, got %v", addedIndices)
+	}
+	if addedIndices[firstID] == addedIndices[secondID] {
+		t.Fatalf("parallel tool calls must have distinct output indexes, got %v", addedIndices)
+	}
+	for _, id := range []string{firstID, secondID} {
+		if deltaCounts[id] != 2 {
+			t.Errorf("expected two argument deltas for %s, got %d", id, deltaCounts[id])
+		}
+		if doneIndices[id] != addedIndices[id] {
+			t.Errorf("output_item.done index for %s = %d, want %d", id, doneIndices[id], addedIndices[id])
+		}
+	}
+
+	if completed == nil || completed.Response == nil {
+		t.Fatal("expected response.completed")
+	}
+	if len(completed.Response.Output) != 2 {
+		t.Fatalf("expected both tool calls in completed output, got %d", len(completed.Response.Output))
+	}
+	for i, expected := range []struct {
+		id   string
+		name string
+		args string
+	}{
+		{firstID, firstName, `{"city":"Paris"}`},
+		{secondID, secondName, `{"zone":"UTC"}`},
+	} {
+		item := completed.Response.Output[i]
+		if item.CallID == nil || *item.CallID != expected.id || item.Name == nil || *item.Name != expected.name || item.Arguments == nil || *item.Arguments != expected.args {
+			t.Errorf("completed output[%d] = %+v, want id=%q name=%q args=%q", i, item.ResponsesToolMessage, expected.id, expected.name, expected.args)
+		}
+	}
+}
+
+func TestToBifrostResponsesStreamResponse_ClosesToolCallWithEmptyArguments(t *testing.T) {
+	state := AcquireChatToResponsesStreamState()
+	defer ReleaseChatToResponsesStreamState(state)
+
+	callID, name := "call_empty", "no_arguments"
+	finishReason := string(BifrostFinishReasonToolCalls)
+	chunks := []*BifrostChatResponse{
+		streamChunk("chatcmpl-empty", &ChatStreamResponseChoiceDelta{
+			Role: Ptr(string(ChatMessageRoleAssistant)),
+			ToolCalls: []ChatAssistantMessageToolCall{
+				{Index: 0, ID: &callID, Function: ChatAssistantMessageToolCallFunction{Name: &name}},
+			},
+		}, nil),
+		streamChunk("chatcmpl-empty", &ChatStreamResponseChoiceDelta{}, &finishReason),
+	}
+
+	var events []*BifrostResponsesStreamResponse
+	for _, chunk := range chunks {
+		events = append(events, chunk.ToBifrostResponsesStreamResponse(state)...)
+	}
+
+	expectedTypes := []ResponsesStreamResponseType{
+		ResponsesStreamResponseTypeCreated,
+		ResponsesStreamResponseTypeInProgress,
+		ResponsesStreamResponseTypeOutputItemAdded,
+		ResponsesStreamResponseTypeFunctionCallArgumentsDone,
+		ResponsesStreamResponseTypeOutputItemDone,
+		ResponsesStreamResponseTypeCompleted,
+	}
+	if len(events) != len(expectedTypes) {
+		t.Fatalf("event count = %d, want %d", len(events), len(expectedTypes))
+	}
+	for i, expectedType := range expectedTypes {
+		if events[i].Type != expectedType || events[i].SequenceNumber != i {
+			t.Fatalf("event[%d] = type %q sequence %d, want type %q sequence %d", i, events[i].Type, events[i].SequenceNumber, expectedType, i)
+		}
+	}
+	for _, event := range events[2:5] {
+		if event.OutputIndex == nil || *event.OutputIndex != 0 {
+			t.Fatalf("%s output_index = %v, want 0", event.Type, event.OutputIndex)
+		}
+	}
+	if events[3].Arguments == nil || *events[3].Arguments != "" {
+		t.Fatalf("function_call_arguments.done arguments = %v, want empty string", events[3].Arguments)
+	}
+	if events[4].Item == nil || events[4].Item.Arguments == nil || *events[4].Item.Arguments != "" {
+		t.Fatalf("output_item.done arguments = %v, want empty string", events[4].Item)
+	}
+	completed := events[5]
+	if completed.Response == nil || len(completed.Response.Output) != 1 || completed.Response.Output[0].Arguments == nil || *completed.Response.Output[0].Arguments != "" {
+		t.Fatalf("completed output = %+v, want one tool call with empty arguments", completed.Response)
 	}
 }
 
