@@ -240,6 +240,25 @@ func TestToBifrostEmbeddingResponseUsesUsageMetadata(t *testing.T) {
 	require.NotNil(t, resp.Usage)
 	assert.Equal(t, 5, resp.Usage.PromptTokens)
 	assert.Equal(t, 5, resp.Usage.TotalTokens)
+	require.NotNil(t, resp.Usage.PromptTokensDetails)
+	assert.Equal(t, 5, resp.Usage.PromptTokensDetails.TextTokens)
+}
+
+func TestToBifrostEmbeddingResponseFallsBackFromEmptyUsageMetadata(t *testing.T) {
+	resp := gemini.ToBifrostEmbeddingResponse(&gemini.GeminiEmbeddingResponse{
+		Embeddings: []gemini.GeminiEmbedding{
+			{
+				Values:     []float64{0.1, 0.2},
+				Statistics: &gemini.ContentEmbeddingStatistics{TokenCount: 7},
+			},
+		},
+		UsageMetadata: &gemini.EmbedContentResponseUsageMetadata{},
+	}, "gemini-embedding-001")
+
+	require.NotNil(t, resp)
+	require.NotNil(t, resp.Usage)
+	assert.Equal(t, 7, resp.Usage.PromptTokens)
+	assert.Equal(t, 7, resp.Usage.TotalTokens)
 }
 
 // TestThoughtSignatureInToolCalls tests that thought signatures are properly embedded in tool call IDs
