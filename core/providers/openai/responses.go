@@ -180,10 +180,13 @@ const maxResponsesCacheBreakpoints = 4
 //
 // Everything else either accepts cache_control directly or caches implicitly, and for
 // those the serializer's existing strip is the correct behaviour.
+//
+// This is the name-based fallback for ModelCaps.SupportsPromptCacheBreakpoints, used
+// when the datasheet row says nothing.
 func responsesUsesPromptCacheBreakpoints(provider schemas.ModelProvider, model string) bool {
 	switch provider {
 	case schemas.OpenRouter:
-		return true
+		return schemas.IsAnthropicModel(model) || schemas.IsGPT56Model(model)
 	case schemas.OpenAI, schemas.Azure, schemas.BedrockMantle, schemas.Bedrock:
 		return schemas.IsGPT56Model(model)
 	default:
@@ -561,7 +564,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	// core/bifrost.go, and providers/utils does too; this call site was the odd one out.
 	cachePromptProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
 	needsExplicitPromptCacheMode := false
-	if responsesUsesPromptCacheBreakpoints(cachePromptProvider, capModel) {
+	if caps.SupportsPromptCacheBreakpoints(responsesUsesPromptCacheBreakpoints(cachePromptProvider, capModel)) {
 		applyResponsesCacheBreakpoints(messages)
 		needsExplicitPromptCacheMode = responsesUsesPromptCacheOptions(cachePromptProvider, capModel) &&
 			responsesHasPromptCacheBreakpoint(messages)

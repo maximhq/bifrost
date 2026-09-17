@@ -316,6 +316,15 @@ func (c ModelCaps) SupportsForcedToolChoice(fallback bool) bool {
 	return fallback
 }
 
+// SupportsPromptCacheBreakpoints reports whether the Responses wire accepts
+// prompt_cache_breakpoint on input_text blocks in place of cache_control.
+func (c ModelCaps) SupportsPromptCacheBreakpoints(fallback bool) bool {
+	if c.record != nil && c.record.SupportsPromptCacheBreakpoints != nil {
+		return *c.record.SupportsPromptCacheBreakpoints
+	}
+	return fallback
+}
+
 // SyntheticSOToolChoiceOmitted reports whether the synthetic structured-output
 // tool must be left unpinned, letting the model reach it under "auto" instead.
 func (c ModelCaps) SyntheticSOToolChoiceOmitted(fallback bool) bool {
