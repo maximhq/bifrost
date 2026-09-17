@@ -20659,12 +20659,12 @@
                   },
                   {
                     "key": "anthropic-beta",
-                    "value": "skills-2025-10-29"
+                    "value": "skills-2025-10-02"
                   }
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"max_tokens\": 1024,\n  \"container\": {\"skills\":[{\"skill_id\":\"data-analysis\",\"type\":\"anthropic\"}]},\n  \"messages\": [{\"role\":\"user\",\"content\":\"Analyze\"}]\n}"
+                  "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"max_tokens\": 1024,\n  \"container\": {\"skills\":[{\"skill_id\":\"xlsx\",\"type\":\"anthropic\",\"version\":\"latest\"}]},\n  \"tools\": [{\"type\":\"code_execution_20250825\",\"name\":\"code_execution\"}],\n  \"messages\": [{\"role\":\"user\",\"content\":\"Use the xlsx skill to create a spreadsheet with a small sample sales dataset.\"}]\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/anthropic/v1/messages",
@@ -41985,7 +41985,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in exactly one word.\"\n    }\n  ],\n  \"max_tokens\": 50\n}"
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in exactly one word.\"\n    }\n  ],\n  \"max_tokens\": 1000\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -42139,7 +42139,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"input\": \"Say hello in exactly one word.\",\n  \"max_output_tokens\": 50\n}"
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"input\": \"Say hello in exactly one word.\",\n  \"max_output_tokens\": 1000\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",
@@ -44220,7 +44220,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-5.6-sol\",\n  \"input\": [\n    {\n      \"type\": \"additional_tools\",\n      \"role\": \"developer\",\n      \"tools\": [\n        {\n          \"type\": \"custom\",\n          \"name\": \"exec\",\n          \"description\": \"Run JavaScript code to orchestrate/compose tool calls.\",\n          \"format\": {\n            \"type\": \"grammar\",\n            \"syntax\": \"lark\",\n            \"definition\": \"start: SOURCE\\nSOURCE: /[\\\\s\\\\S]+/\\n\"\n          }\n        },\n        {\n          \"type\": \"function\",\n          \"name\": \"get_weather\",\n          \"description\": \"Get the current weather for a city.\",\n          \"strict\": false,\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"city\": {\n                \"type\": \"string\",\n                \"description\": \"City name.\"\n              }\n            },\n            \"required\": [\n              \"city\"\n            ],\n            \"additionalProperties\": false\n          }\n        },\n        {\n          \"type\": \"namespace\",\n          \"name\": \"collaboration\",\n          \"description\": \"Tools for spawning and managing sub-agents.\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"spawn_agent\",\n              \"description\": \"Spawn a sub-agent for a bounded subtask.\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"task_name\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"task_name\"\n                ],\n                \"additionalProperties\": false\n              }\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with exactly: OK\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 64\n}"
+              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-5.6-sol\",\n  \"input\": [\n    {\n      \"type\": \"additional_tools\",\n      \"role\": \"developer\",\n      \"tools\": [\n        {\n          \"type\": \"custom\",\n          \"name\": \"exec\",\n          \"description\": \"Run JavaScript code to orchestrate/compose tool calls.\",\n          \"format\": {\n            \"type\": \"grammar\",\n            \"syntax\": \"lark\",\n            \"definition\": \"start: SOURCE\\nSOURCE: /[\\\\s\\\\S]+/\\n\"\n          }\n        },\n        {\n          \"type\": \"function\",\n          \"name\": \"get_weather\",\n          \"description\": \"Get the current weather for a city.\",\n          \"strict\": false,\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"city\": {\n                \"type\": \"string\",\n                \"description\": \"City name.\"\n              }\n            },\n            \"required\": [\n              \"city\"\n            ],\n            \"additionalProperties\": false\n          }\n        },\n        {\n          \"type\": \"namespace\",\n          \"name\": \"teamwork\",\n          \"description\": \"Tools for spawning and managing sub-agents.\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"spawn_agent\",\n              \"description\": \"Spawn a sub-agent for a bounded subtask.\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"task_name\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"task_name\"\n                ],\n                \"additionalProperties\": false\n              }\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with exactly: OK\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 64\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",
@@ -44264,7 +44264,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-5.6-sol\",\n  \"stream\": true,\n  \"input\": [\n    {\n      \"type\": \"additional_tools\",\n      \"role\": \"developer\",\n      \"tools\": [\n        {\n          \"type\": \"custom\",\n          \"name\": \"exec\",\n          \"description\": \"Run JavaScript code to orchestrate/compose tool calls.\",\n          \"format\": {\n            \"type\": \"grammar\",\n            \"syntax\": \"lark\",\n            \"definition\": \"start: SOURCE\\nSOURCE: /[\\\\s\\\\S]+/\\n\"\n          }\n        },\n        {\n          \"type\": \"function\",\n          \"name\": \"get_weather\",\n          \"description\": \"Get the current weather for a city.\",\n          \"strict\": false,\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"city\": {\n                \"type\": \"string\",\n                \"description\": \"City name.\"\n              }\n            },\n            \"required\": [\n              \"city\"\n            ],\n            \"additionalProperties\": false\n          }\n        },\n        {\n          \"type\": \"namespace\",\n          \"name\": \"collaboration\",\n          \"description\": \"Tools for spawning and managing sub-agents.\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"spawn_agent\",\n              \"description\": \"Spawn a sub-agent for a bounded subtask.\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"task_name\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"task_name\"\n                ],\n                \"additionalProperties\": false\n              }\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with exactly: OK\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 64\n}"
+              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-5.6-sol\",\n  \"stream\": true,\n  \"input\": [\n    {\n      \"type\": \"additional_tools\",\n      \"role\": \"developer\",\n      \"tools\": [\n        {\n          \"type\": \"custom\",\n          \"name\": \"exec\",\n          \"description\": \"Run JavaScript code to orchestrate/compose tool calls.\",\n          \"format\": {\n            \"type\": \"grammar\",\n            \"syntax\": \"lark\",\n            \"definition\": \"start: SOURCE\\nSOURCE: /[\\\\s\\\\S]+/\\n\"\n          }\n        },\n        {\n          \"type\": \"function\",\n          \"name\": \"get_weather\",\n          \"description\": \"Get the current weather for a city.\",\n          \"strict\": false,\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"city\": {\n                \"type\": \"string\",\n                \"description\": \"City name.\"\n              }\n            },\n            \"required\": [\n              \"city\"\n            ],\n            \"additionalProperties\": false\n          }\n        },\n        {\n          \"type\": \"namespace\",\n          \"name\": \"teamwork\",\n          \"description\": \"Tools for spawning and managing sub-agents.\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"spawn_agent\",\n              \"description\": \"Spawn a sub-agent for a bounded subtask.\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"task_name\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"task_name\"\n                ],\n                \"additionalProperties\": false\n              }\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with exactly: OK\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 64\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",
@@ -137559,9 +137559,16 @@
                   "  pm.expect(body, 'no SSE frames: ' + body.slice(0, 400)).to.include('data:');",
                   "});",
                   "if (pm.response.code >= 400) { return; }",
+                  "var ssePayloads = body.split(/\\r?\\n/).filter(function (line) { return line.indexOf('data:') === 0; }).map(function (line) {",
+                  "  var data = line.slice(5).trim();",
+                  "  if (!data || data === '[DONE]') { return null; }",
+                  "  try { return JSON.parse(data); } catch (e) { return null; }",
+                  "}).filter(function (payload) { return payload !== null; });",
                   "pm.test('mantle gpt-oss-safeguard-20b streaming: frames are Responses events, never chat.completion.chunk - responses-chat-routing', function () {",
-                  "  pm.expect(body, 'raw chat chunks were emitted on a Responses route - the fallback flag was not honored').to.not.include('chat.completion.chunk');",
-                  "  pm.expect(body, 'no response.* events on the wire: ' + body.slice(0, 400)).to.include('response.');",
+                  "  var rawChatChunks = ssePayloads.filter(function (payload) { return payload.object === 'chat.completion.chunk'; });",
+                  "  var responseEvents = ssePayloads.filter(function (payload) { return typeof payload.type === 'string' && payload.type.indexOf('response.') === 0; });",
+                  "  pm.expect(rawChatChunks, 'top-level chat chunks were emitted on a Responses route - the fallback flag was not honored').to.be.empty;",
+                  "  pm.expect(responseEvents, 'no top-level response.* events on the wire: ' + body.slice(0, 400)).to.not.be.empty;",
                   "});",
                   "pm.test('mantle gpt-oss-safeguard-20b streaming: stream reached a terminal response.completed - responses-chat-routing', function () {",
                   "  pm.expect(body, 'stream never terminated with response.completed (Mantle sends no [DONE]; it must break on finish_reason + usage): ' + body.slice(-400)).to.include('response.completed');",
@@ -137688,9 +137695,16 @@
                   "  pm.expect(body, 'no SSE frames: ' + body.slice(0, 400)).to.include('data:');",
                   "});",
                   "if (pm.response.code >= 400) { return; }",
+                  "var ssePayloads = body.split(/\\r?\\n/).filter(function (line) { return line.indexOf('data:') === 0; }).map(function (line) {",
+                  "  var data = line.slice(5).trim();",
+                  "  if (!data || data === '[DONE]') { return null; }",
+                  "  try { return JSON.parse(data); } catch (e) { return null; }",
+                  "}).filter(function (payload) { return payload !== null; });",
                   "pm.test('mantle nemotron-nano-3-30b streaming: frames are Responses events, never chat.completion.chunk - responses-chat-routing', function () {",
-                  "  pm.expect(body, 'raw chat chunks were emitted on a Responses route - the fallback flag was not honored').to.not.include('chat.completion.chunk');",
-                  "  pm.expect(body, 'no response.* events on the wire: ' + body.slice(0, 400)).to.include('response.');",
+                  "  var rawChatChunks = ssePayloads.filter(function (payload) { return payload.object === 'chat.completion.chunk'; });",
+                  "  var responseEvents = ssePayloads.filter(function (payload) { return typeof payload.type === 'string' && payload.type.indexOf('response.') === 0; });",
+                  "  pm.expect(rawChatChunks, 'top-level chat chunks were emitted on a Responses route - the fallback flag was not honored').to.be.empty;",
+                  "  pm.expect(responseEvents, 'no top-level response.* events on the wire: ' + body.slice(0, 400)).to.not.be.empty;",
                   "});",
                   "pm.test('mantle nemotron-nano-3-30b streaming: stream reached a terminal response.completed - responses-chat-routing', function () {",
                   "  pm.expect(body, 'stream never terminated with response.completed (Mantle sends no [DONE]; it must break on finish_reason + usage): ' + body.slice(-400)).to.include('response.completed');",
