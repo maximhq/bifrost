@@ -2,7 +2,7 @@ import PageTitle from "@/components/pageTitle";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ModelMultiselect } from "@/components/ui/modelMultiselect";
+import { ModelSelector } from "@/components/ui/modelSelector";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -420,13 +420,13 @@ export default function CachingView() {
 												</div>
 												<div className="space-y-2">
 													<Label htmlFor="embedding_model">Embedding Model*</Label>
-													<ModelMultiselect
+													<ModelSelector
 														inputId="embedding_model"
 														data-testid="caching-embedding-model-select"
-														isSingleSelect
 														provider={cacheConfig.provider || undefined}
 														value={cacheConfig.embedding_model ?? ""}
 														onChange={(model) => updateLocal({ embedding_model: model })}
+														allowCustomModel
 														placeholder={cacheConfig.provider ? "Search or type an embedding model..." : "Select a provider first"}
 														disabled={!cacheConfig.provider}
 													/>
