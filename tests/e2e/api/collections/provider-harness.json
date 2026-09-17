@@ -151467,6 +151467,381 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "97. OpenRouter non-Claude models reject prompt_cache_breakpoint (PR #6692 regression)",
+      "description": "Regression coverage for the PR #6692 follow-up (https://github.com/maximhq/bifrost/pull/6692#issuecomment-5711483907): Claude Code + OpenRouter + GPT models broke in v2.1.0.\n\nProduction path: /anthropic/v1/messages -> Bifrost Responses request -> OpenRouterProvider.Responses -> ToOpenAIResponsesRequest -> POST {OpenRouter}/v1/responses.\n\nresponsesUsesPromptCacheBreakpoints returned true for every OpenRouter model, so every cache_control marker became prompt_cache_breakpoint. OpenRouter converts that back into an Anthropic breakpoint for Claude (folder 69), but forwards it verbatim to OpenAI/Azure for GPT models, and pre-5.6 GPT upstreams reject it: 400 \"prompt_cache_breakpoint is not supported on this model\". Claude Code sends cache_control on nearly every request, so the route was unusable.\n\nThe gate is now the datasheet flag supports_prompt_cache_breakpoints, falling back to Claude or gpt-5.6 on OpenRouter when the row is silent.\n\nWhat each case pins:\n  97.1 the Claude Code route (/anthropic/v1/messages) with gpt-5.4: 2xx and no breakpoint on the wire.\n  97.2 the native /v1/responses route with gpt-5.4: same invariant, independent of the Anthropic integration.\n  97.3 the streaming handler with gpt-5.4: no upstream rejection in the SSE stream.\n  97.4 control: gpt-5.6 on OpenRouter still receives breakpoints (the field is supported there), so the gate is not over-dropping.\n  97.5/97.6 gpt-6-astra on /v1/responses and the Claude Code route. The name-based fallback does not match gpt-6, so the breakpoint only appears if the datasheet row sets supports_prompt_cache_breakpoints: true; a missing row degrades to a silent 2xx cache miss, which these cases catch.\n\nFolder 13 covers OpenRouter cache_control on Chat Completions only, which never hits this translation.",
+      "item": [
+        {
+          "name": "OpenRouter OpenAI gpt-5.4 anthropic messages: cache_control yields no prompt_cache_breakpoint - #6692",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('97.1 2xx - a 400 \"prompt_cache_breakpoint is not supported on this model\" is the regression', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('97.1 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var inp = JSON.stringify(rr.input || []);",
+                  "pm.test('97.1 no prompt_cache_breakpoint synthesized for a non-Claude, pre-5.6 OpenRouter model', function () {",
+                  "  pm.expect(inp.indexOf('prompt_cache_breakpoint'), 'upstream rejects the field: ' + inp.slice(0, 500)).to.equal(-1);",
+                  "});",
+                  "pm.test('97.1 cache_control is stripped, not forwarded', function () {",
+                  "  pm.expect(inp.indexOf('cache_control'), inp.slice(0, 500)).to.equal(-1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/openai/gpt-5.4\",\n  \"max_tokens\": 16,\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"You are a meticulous assistant. Answer tersely.\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with OK.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenRouter OpenAI gpt-5.4 responses: cache_control yields no prompt_cache_breakpoint - #6692",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('97.2 2xx - a 400 \"prompt_cache_breakpoint is not supported on this model\" is the regression', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('97.2 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var inp = JSON.stringify(rr.input || []);",
+                  "pm.test('97.2 no prompt_cache_breakpoint synthesized for a non-Claude, pre-5.6 OpenRouter model', function () {",
+                  "  pm.expect(inp.indexOf('prompt_cache_breakpoint'), 'upstream rejects the field: ' + inp.slice(0, 500)).to.equal(-1);",
+                  "});",
+                  "pm.test('97.2 cache_control is stripped, not forwarded', function () {",
+                  "  pm.expect(inp.indexOf('cache_control'), inp.slice(0, 500)).to.equal(-1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/openai/gpt-5.4\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"You are a meticulous assistant. Answer tersely.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with OK.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenRouter OpenAI gpt-5.4 responses streaming: cache_control is not rejected upstream - #6692",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var txt = pm.response.text();",
+                  "pm.test('97.3 streaming 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt).to.be.below(400);",
+                  "});",
+                  "pm.test('97.3 stream carries no prompt_cache_breakpoint rejection', function () {",
+                  "  pm.expect(txt.indexOf('prompt_cache_breakpoint'), txt.slice(0, 800)).to.equal(-1);",
+                  "});",
+                  "pm.test('97.3 stream completed', function () {",
+                  "  pm.expect(txt.indexOf('response.completed'), txt.slice(-800)).to.be.above(-1);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "// The terminal response.completed event carries extra_fields.raw_request when x-bf-send-back-raw-request is set.",
+                  "var rr = null;",
+                  "txt.split('\\n').forEach(function (l) {",
+                  "  if (l.indexOf('data:') !== 0) { return; }",
+                  "  var ev; try { ev = JSON.parse(l.slice(5)); } catch (e) { return; }",
+                  "  if (ev && ev.type === 'response.completed' && ev.extra_fields && ev.extra_fields.raw_request) { rr = ev.extra_fields.raw_request; }",
+                  "});",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('97.3 raw_request captured on response.completed', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored on the stream').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var inp = JSON.stringify(rr.input || []);",
+                  "pm.test('97.3 no prompt_cache_breakpoint synthesized on the streaming wire', function () {",
+                  "  pm.expect(inp.indexOf('prompt_cache_breakpoint'), inp.slice(0, 500)).to.equal(-1);",
+                  "});",
+                  "pm.test('97.3 cache_control is stripped, not forwarded, on the streaming wire', function () {",
+                  "  pm.expect(inp.indexOf('cache_control'), inp.slice(0, 500)).to.equal(-1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/openai/gpt-5.4\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"You are a meticulous assistant. Answer tersely.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with OK.\"\n        }\n      ]\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenRouter OpenAI gpt-5.6 responses: control - breakpoint still sent where supported - #6692",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('97.4 2xx - a 400 \"prompt_cache_breakpoint is not supported on this model\" is the regression', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('97.4 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var inp = JSON.stringify(rr.input || []);",
+                  "var blk = ((((rr.input || [])[0] || {}).content || [])[0]) || {};",
+                  "pm.test('97.4 marked input_text carries prompt_cache_breakpoint mode=explicit', function () {",
+                  "  pm.expect(blk.prompt_cache_breakpoint, 'input[0].content[0]: ' + JSON.stringify(blk).slice(0, 400)).to.be.an('object');",
+                  "  pm.expect((blk.prompt_cache_breakpoint || {}).mode).to.eql('explicit');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/openai/gpt-5.6\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"You are a meticulous assistant. Answer tersely.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with OK.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenRouter OpenAI gpt-6-astra responses: datasheet enables prompt_cache_breakpoint - #6692",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('97.5 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('97.5 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var inp = JSON.stringify(rr.input || []);",
+                  "// gpt-6-astra is not matched by the name-based fallback (Claude or gpt-5.6), so a breakpoint here can only come from the datasheet row.",
+                  "pm.test('97.5 prompt_cache_breakpoint sent - fails if the datasheet row lacks supports_prompt_cache_breakpoints: true', function () {",
+                  "  pm.expect(inp.indexOf('\"prompt_cache_breakpoint\":{\"mode\":\"explicit\"}'), 'no breakpoint on the wire, cache_control was silently stripped: ' + inp.slice(0, 500)).to.be.above(-1);",
+                  "});",
+                  "pm.test('97.5 cache_control is translated, not forwarded', function () {",
+                  "  pm.expect(inp.indexOf('cache_control'), inp.slice(0, 500)).to.equal(-1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/openai/gpt-6-astra\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"You are a meticulous assistant. Answer tersely.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with OK.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenRouter OpenAI gpt-6-astra anthropic messages: datasheet enables prompt_cache_breakpoint - #6692",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('97.6 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('97.6 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var inp = JSON.stringify(rr.input || []);",
+                  "// gpt-6-astra is not matched by the name-based fallback (Claude or gpt-5.6), so a breakpoint here can only come from the datasheet row.",
+                  "pm.test('97.6 prompt_cache_breakpoint sent - fails if the datasheet row lacks supports_prompt_cache_breakpoints: true', function () {",
+                  "  pm.expect(inp.indexOf('\"prompt_cache_breakpoint\":{\"mode\":\"explicit\"}'), 'no breakpoint on the wire, cache_control was silently stripped: ' + inp.slice(0, 500)).to.be.above(-1);",
+                  "});",
+                  "pm.test('97.6 cache_control is translated, not forwarded', function () {",
+                  "  pm.expect(inp.indexOf('cache_control'), inp.slice(0, 500)).to.equal(-1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/openai/gpt-6-astra\",\n  \"max_tokens\": 16,\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"You are a meticulous assistant. Answer tersely.\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with OK.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
