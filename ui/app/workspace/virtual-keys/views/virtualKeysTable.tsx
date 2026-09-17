@@ -155,6 +155,11 @@ function VKAssignedToCell({ vk }: { vk: VirtualKey }) {
 		label = `Team: ${vk.team.name}`;
 	} else if (vk.customer) {
 		label = `Customer: ${vk.customer.name}`;
+	} else if (vk.business_unit_id) {
+		// Named only as its kind: the key carries its business unit as an id, and the VK payload
+		// has no business-unit relation to read a name from. Better than the blank this used to
+		// show for a business-unit-owned key.
+		label = "Business unit";
 	} else if (assignedUser) {
 		label = `User: ${assignedUser.name || assignedUser.email}`;
 	}
