@@ -1054,6 +1054,7 @@
                                       "input_image",
                                       "input_file",
                                       "input_audio",
+                                      "input_video",
                                       "output_text",
                                       "refusal",
                                       "reasoning_text"
@@ -1101,6 +1102,20 @@
                                         ]
                                       },
                                       "data": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "input_video": {
+                                    "type": "object",
+                                    "properties": {
+                                      "data": {
+                                        "type": "string"
+                                      },
+                                      "url": {
+                                        "type": "string"
+                                      },
+                                      "format": {
                                         "type": "string"
                                       }
                                     }
@@ -1230,6 +1245,7 @@
                                       "input_image",
                                       "input_file",
                                       "input_audio",
+                                      "input_video",
                                       "output_text",
                                       "refusal",
                                       "reasoning_text"
@@ -1277,6 +1293,20 @@
                                         ]
                                       },
                                       "data": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "input_video": {
+                                    "type": "object",
+                                    "properties": {
+                                      "data": {
+                                        "type": "string"
+                                      },
+                                      "url": {
+                                        "type": "string"
+                                      },
+                                      "format": {
                                         "type": "string"
                                       }
                                     }
@@ -1457,6 +1487,7 @@
                             "input_image",
                             "input_file",
                             "input_audio",
+                            "input_video",
                             "output_text",
                             "refusal",
                             "reasoning_text"
@@ -1504,6 +1535,20 @@
                               ]
                             },
                             "data": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "input_video": {
+                          "type": "object",
+                          "properties": {
+                            "data": {
+                              "type": "string"
+                            },
+                            "url": {
+                              "type": "string"
+                            },
+                            "format": {
                               "type": "string"
                             }
                           }
@@ -5244,6 +5289,7 @@
                                           "input_image",
                                           "input_file",
                                           "input_audio",
+                                          "input_video",
                                           "output_text",
                                           "refusal",
                                           "reasoning_text"
@@ -5291,6 +5337,20 @@
                                             ]
                                           },
                                           "data": {
+                                            "type": "string"
+                                          }
+                                        }
+                                      },
+                                      "input_video": {
+                                        "type": "object",
+                                        "properties": {
+                                          "data": {
+                                            "type": "string"
+                                          },
+                                          "url": {
+                                            "type": "string"
+                                          },
+                                          "format": {
                                             "type": "string"
                                           }
                                         }
@@ -5420,6 +5480,7 @@
                                           "input_image",
                                           "input_file",
                                           "input_audio",
+                                          "input_video",
                                           "output_text",
                                           "refusal",
                                           "reasoning_text"
@@ -5467,6 +5528,20 @@
                                             ]
                                           },
                                           "data": {
+                                            "type": "string"
+                                          }
+                                        }
+                                      },
+                                      "input_video": {
+                                        "type": "object",
+                                        "properties": {
+                                          "data": {
+                                            "type": "string"
+                                          },
+                                          "url": {
+                                            "type": "string"
+                                          },
+                                          "format": {
                                             "type": "string"
                                           }
                                         }
@@ -5756,6 +5831,7 @@
                                         "input_image",
                                         "input_file",
                                         "input_audio",
+                                        "input_video",
                                         "output_text",
                                         "refusal",
                                         "reasoning_text"
@@ -5803,6 +5879,20 @@
                                           ]
                                         },
                                         "data": {
+                                          "type": "string"
+                                        }
+                                      }
+                                    },
+                                    "input_video": {
+                                      "type": "object",
+                                      "properties": {
+                                        "data": {
+                                          "type": "string"
+                                        },
+                                        "url": {
+                                          "type": "string"
+                                        },
+                                        "format": {
                                           "type": "string"
                                         }
                                       }
@@ -5932,6 +6022,7 @@
                                         "input_image",
                                         "input_file",
                                         "input_audio",
+                                        "input_video",
                                         "output_text",
                                         "refusal",
                                         "reasoning_text"
@@ -5979,6 +6070,20 @@
                                           ]
                                         },
                                         "data": {
+                                          "type": "string"
+                                        }
+                                      }
+                                    },
+                                    "input_video": {
+                                      "type": "object",
+                                      "properties": {
+                                        "data": {
+                                          "type": "string"
+                                        },
+                                        "url": {
+                                          "type": "string"
+                                        },
+                                        "format": {
                                           "type": "string"
                                         }
                                       }
@@ -6465,6 +6570,7 @@
                                       "input_image",
                                       "input_file",
                                       "input_audio",
+                                      "input_video",
                                       "output_text",
                                       "refusal",
                                       "reasoning_text"
@@ -6512,6 +6618,20 @@
                                         ]
                                       },
                                       "data": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "input_video": {
+                                    "type": "object",
+                                    "properties": {
+                                      "data": {
+                                        "type": "string"
+                                      },
+                                      "url": {
+                                        "type": "string"
+                                      },
+                                      "format": {
                                         "type": "string"
                                       }
                                     }
@@ -6641,6 +6761,7 @@
                                       "input_image",
                                       "input_file",
                                       "input_audio",
+                                      "input_video",
                                       "output_text",
                                       "refusal",
                                       "reasoning_text"
@@ -6688,6 +6809,20 @@
                                         ]
                                       },
                                       "data": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "input_video": {
+                                    "type": "object",
+                                    "properties": {
+                                      "data": {
+                                        "type": "string"
+                                      },
+                                      "url": {
+                                        "type": "string"
+                                      },
+                                      "format": {
                                         "type": "string"
                                       }
                                     }
@@ -6868,6 +7003,7 @@
                             "input_image",
                             "input_file",
                             "input_audio",
+                            "input_video",
                             "output_text",
                             "refusal",
                             "reasoning_text"
@@ -6915,6 +7051,20 @@
                               ]
                             },
                             "data": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "input_video": {
+                          "type": "object",
+                          "properties": {
+                            "data": {
+                              "type": "string"
+                            },
+                            "url": {
+                              "type": "string"
+                            },
+                            "format": {
                               "type": "string"
                             }
                           }
@@ -13358,6 +13508,7 @@
                                       "input_image",
                                       "input_file",
                                       "input_audio",
+                                      "input_video",
                                       "output_text",
                                       "refusal",
                                       "reasoning_text"
@@ -13405,6 +13556,20 @@
                                         ]
                                       },
                                       "data": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "input_video": {
+                                    "type": "object",
+                                    "properties": {
+                                      "data": {
+                                        "type": "string"
+                                      },
+                                      "url": {
+                                        "type": "string"
+                                      },
+                                      "format": {
                                         "type": "string"
                                       }
                                     }
@@ -13534,6 +13699,7 @@
                                       "input_image",
                                       "input_file",
                                       "input_audio",
+                                      "input_video",
                                       "output_text",
                                       "refusal",
                                       "reasoning_text"
@@ -13581,6 +13747,20 @@
                                         ]
                                       },
                                       "data": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "input_video": {
+                                    "type": "object",
+                                    "properties": {
+                                      "data": {
+                                        "type": "string"
+                                      },
+                                      "url": {
+                                        "type": "string"
+                                      },
+                                      "format": {
                                         "type": "string"
                                       }
                                     }
@@ -13761,6 +13941,7 @@
                             "input_image",
                             "input_file",
                             "input_audio",
+                            "input_video",
                             "output_text",
                             "refusal",
                             "reasoning_text"
@@ -13808,6 +13989,20 @@
                               ]
                             },
                             "data": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "input_video": {
+                          "type": "object",
+                          "properties": {
+                            "data": {
+                              "type": "string"
+                            },
+                            "url": {
+                              "type": "string"
+                            },
+                            "format": {
                               "type": "string"
                             }
                           }
@@ -14302,6 +14497,7 @@
                                       "input_image",
                                       "input_file",
                                       "input_audio",
+                                      "input_video",
                                       "output_text",
                                       "refusal",
                                       "reasoning_text"
@@ -14349,6 +14545,20 @@
                                         ]
                                       },
                                       "data": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "input_video": {
+                                    "type": "object",
+                                    "properties": {
+                                      "data": {
+                                        "type": "string"
+                                      },
+                                      "url": {
+                                        "type": "string"
+                                      },
+                                      "format": {
                                         "type": "string"
                                       }
                                     }
@@ -14478,6 +14688,7 @@
                                       "input_image",
                                       "input_file",
                                       "input_audio",
+                                      "input_video",
                                       "output_text",
                                       "refusal",
                                       "reasoning_text"
@@ -14525,6 +14736,20 @@
                                         ]
                                       },
                                       "data": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "input_video": {
+                                    "type": "object",
+                                    "properties": {
+                                      "data": {
+                                        "type": "string"
+                                      },
+                                      "url": {
+                                        "type": "string"
+                                      },
+                                      "format": {
                                         "type": "string"
                                       }
                                     }
@@ -14705,6 +14930,7 @@
                             "input_image",
                             "input_file",
                             "input_audio",
+                            "input_video",
                             "output_text",
                             "refusal",
                             "reasoning_text"
@@ -14752,6 +14978,20 @@
                               ]
                             },
                             "data": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "input_video": {
+                          "type": "object",
+                          "properties": {
+                            "data": {
+                              "type": "string"
+                            },
+                            "url": {
+                              "type": "string"
+                            },
+                            "format": {
                               "type": "string"
                             }
                           }
@@ -15283,6 +15523,7 @@
                                       "input_image",
                                       "input_file",
                                       "input_audio",
+                                      "input_video",
                                       "output_text",
                                       "refusal",
                                       "reasoning_text"
@@ -15330,6 +15571,20 @@
                                         ]
                                       },
                                       "data": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "input_video": {
+                                    "type": "object",
+                                    "properties": {
+                                      "data": {
+                                        "type": "string"
+                                      },
+                                      "url": {
+                                        "type": "string"
+                                      },
+                                      "format": {
                                         "type": "string"
                                       }
                                     }
@@ -15459,6 +15714,7 @@
                                       "input_image",
                                       "input_file",
                                       "input_audio",
+                                      "input_video",
                                       "output_text",
                                       "refusal",
                                       "reasoning_text"
@@ -15506,6 +15762,20 @@
                                         ]
                                       },
                                       "data": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "input_video": {
+                                    "type": "object",
+                                    "properties": {
+                                      "data": {
+                                        "type": "string"
+                                      },
+                                      "url": {
+                                        "type": "string"
+                                      },
+                                      "format": {
                                         "type": "string"
                                       }
                                     }
@@ -15686,6 +15956,7 @@
                             "input_image",
                             "input_file",
                             "input_audio",
+                            "input_video",
                             "output_text",
                             "refusal",
                             "reasoning_text"
@@ -15733,6 +16004,20 @@
                               ]
                             },
                             "data": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "input_video": {
+                          "type": "object",
+                          "properties": {
+                            "data": {
+                              "type": "string"
+                            },
+                            "url": {
+                              "type": "string"
+                            },
+                            "format": {
                               "type": "string"
                             }
                           }
@@ -16379,6 +16664,7 @@
                                           "input_image",
                                           "input_file",
                                           "input_audio",
+                                          "input_video",
                                           "output_text",
                                           "refusal",
                                           "reasoning_text"
@@ -16426,6 +16712,20 @@
                                             ]
                                           },
                                           "data": {
+                                            "type": "string"
+                                          }
+                                        }
+                                      },
+                                      "input_video": {
+                                        "type": "object",
+                                        "properties": {
+                                          "data": {
+                                            "type": "string"
+                                          },
+                                          "url": {
+                                            "type": "string"
+                                          },
+                                          "format": {
                                             "type": "string"
                                           }
                                         }
@@ -16555,6 +16855,7 @@
                                           "input_image",
                                           "input_file",
                                           "input_audio",
+                                          "input_video",
                                           "output_text",
                                           "refusal",
                                           "reasoning_text"
@@ -16602,6 +16903,20 @@
                                             ]
                                           },
                                           "data": {
+                                            "type": "string"
+                                          }
+                                        }
+                                      },
+                                      "input_video": {
+                                        "type": "object",
+                                        "properties": {
+                                          "data": {
+                                            "type": "string"
+                                          },
+                                          "url": {
+                                            "type": "string"
+                                          },
+                                          "format": {
                                             "type": "string"
                                           }
                                         }
@@ -16891,6 +17206,7 @@
                                         "input_image",
                                         "input_file",
                                         "input_audio",
+                                        "input_video",
                                         "output_text",
                                         "refusal",
                                         "reasoning_text"
@@ -16938,6 +17254,20 @@
                                           ]
                                         },
                                         "data": {
+                                          "type": "string"
+                                        }
+                                      }
+                                    },
+                                    "input_video": {
+                                      "type": "object",
+                                      "properties": {
+                                        "data": {
+                                          "type": "string"
+                                        },
+                                        "url": {
+                                          "type": "string"
+                                        },
+                                        "format": {
                                           "type": "string"
                                         }
                                       }
@@ -17067,6 +17397,7 @@
                                         "input_image",
                                         "input_file",
                                         "input_audio",
+                                        "input_video",
                                         "output_text",
                                         "refusal",
                                         "reasoning_text"
@@ -17114,6 +17445,20 @@
                                           ]
                                         },
                                         "data": {
+                                          "type": "string"
+                                        }
+                                      }
+                                    },
+                                    "input_video": {
+                                      "type": "object",
+                                      "properties": {
+                                        "data": {
+                                          "type": "string"
+                                        },
+                                        "url": {
+                                          "type": "string"
+                                        },
+                                        "format": {
                                           "type": "string"
                                         }
                                       }
@@ -30060,6 +30405,7 @@
                                       "input_image",
                                       "input_file",
                                       "input_audio",
+                                      "input_video",
                                       "output_text",
                                       "refusal",
                                       "reasoning_text"
@@ -30107,6 +30453,20 @@
                                         ]
                                       },
                                       "data": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "input_video": {
+                                    "type": "object",
+                                    "properties": {
+                                      "data": {
+                                        "type": "string"
+                                      },
+                                      "url": {
+                                        "type": "string"
+                                      },
+                                      "format": {
                                         "type": "string"
                                       }
                                     }
@@ -30236,6 +30596,7 @@
                                       "input_image",
                                       "input_file",
                                       "input_audio",
+                                      "input_video",
                                       "output_text",
                                       "refusal",
                                       "reasoning_text"
@@ -30283,6 +30644,20 @@
                                         ]
                                       },
                                       "data": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "input_video": {
+                                    "type": "object",
+                                    "properties": {
+                                      "data": {
+                                        "type": "string"
+                                      },
+                                      "url": {
+                                        "type": "string"
+                                      },
+                                      "format": {
                                         "type": "string"
                                       }
                                     }
@@ -30463,6 +30838,7 @@
                             "input_image",
                             "input_file",
                             "input_audio",
+                            "input_video",
                             "output_text",
                             "refusal",
                             "reasoning_text"
@@ -30510,6 +30886,20 @@
                               ]
                             },
                             "data": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "input_video": {
+                          "type": "object",
+                          "properties": {
+                            "data": {
+                              "type": "string"
+                            },
+                            "url": {
+                              "type": "string"
+                            },
+                            "format": {
                               "type": "string"
                             }
                           }
@@ -33148,6 +33538,7 @@
                                       "input_image",
                                       "input_file",
                                       "input_audio",
+                                      "input_video",
                                       "output_text",
                                       "refusal",
                                       "reasoning_text"
@@ -33195,6 +33586,20 @@
                                         ]
                                       },
                                       "data": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "input_video": {
+                                    "type": "object",
+                                    "properties": {
+                                      "data": {
+                                        "type": "string"
+                                      },
+                                      "url": {
+                                        "type": "string"
+                                      },
+                                      "format": {
                                         "type": "string"
                                       }
                                     }
@@ -33324,6 +33729,7 @@
                                       "input_image",
                                       "input_file",
                                       "input_audio",
+                                      "input_video",
                                       "output_text",
                                       "refusal",
                                       "reasoning_text"
@@ -33371,6 +33777,20 @@
                                         ]
                                       },
                                       "data": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "input_video": {
+                                    "type": "object",
+                                    "properties": {
+                                      "data": {
+                                        "type": "string"
+                                      },
+                                      "url": {
+                                        "type": "string"
+                                      },
+                                      "format": {
                                         "type": "string"
                                       }
                                     }
@@ -33551,6 +33971,7 @@
                             "input_image",
                             "input_file",
                             "input_audio",
+                            "input_video",
                             "output_text",
                             "refusal",
                             "reasoning_text"
@@ -33598,6 +34019,20 @@
                               ]
                             },
                             "data": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "input_video": {
+                          "type": "object",
+                          "properties": {
+                            "data": {
+                              "type": "string"
+                            },
+                            "url": {
+                              "type": "string"
+                            },
+                            "format": {
                               "type": "string"
                             }
                           }
@@ -36347,6 +36782,7 @@
                                       "input_image",
                                       "input_file",
                                       "input_audio",
+                                      "input_video",
                                       "output_text",
                                       "refusal",
                                       "reasoning_text"
@@ -36394,6 +36830,20 @@
                                         ]
                                       },
                                       "data": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "input_video": {
+                                    "type": "object",
+                                    "properties": {
+                                      "data": {
+                                        "type": "string"
+                                      },
+                                      "url": {
+                                        "type": "string"
+                                      },
+                                      "format": {
                                         "type": "string"
                                       }
                                     }
@@ -36523,6 +36973,7 @@
                                       "input_image",
                                       "input_file",
                                       "input_audio",
+                                      "input_video",
                                       "output_text",
                                       "refusal",
                                       "reasoning_text"
@@ -36570,6 +37021,20 @@
                                         ]
                                       },
                                       "data": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "input_video": {
+                                    "type": "object",
+                                    "properties": {
+                                      "data": {
+                                        "type": "string"
+                                      },
+                                      "url": {
+                                        "type": "string"
+                                      },
+                                      "format": {
                                         "type": "string"
                                       }
                                     }
@@ -36750,6 +37215,7 @@
                             "input_image",
                             "input_file",
                             "input_audio",
+                            "input_video",
                             "output_text",
                             "refusal",
                             "reasoning_text"
@@ -36797,6 +37263,20 @@
                               ]
                             },
                             "data": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "input_video": {
+                          "type": "object",
+                          "properties": {
+                            "data": {
+                              "type": "string"
+                            },
+                            "url": {
+                              "type": "string"
+                            },
+                            "format": {
                               "type": "string"
                             }
                           }
@@ -43551,6 +44031,7 @@
                                       "input_image",
                                       "input_file",
                                       "input_audio",
+                                      "input_video",
                                       "output_text",
                                       "refusal",
                                       "reasoning_text"
@@ -43598,6 +44079,20 @@
                                         ]
                                       },
                                       "data": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "input_video": {
+                                    "type": "object",
+                                    "properties": {
+                                      "data": {
+                                        "type": "string"
+                                      },
+                                      "url": {
+                                        "type": "string"
+                                      },
+                                      "format": {
                                         "type": "string"
                                       }
                                     }
@@ -43727,6 +44222,7 @@
                                       "input_image",
                                       "input_file",
                                       "input_audio",
+                                      "input_video",
                                       "output_text",
                                       "refusal",
                                       "reasoning_text"
@@ -43774,6 +44270,20 @@
                                         ]
                                       },
                                       "data": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "input_video": {
+                                    "type": "object",
+                                    "properties": {
+                                      "data": {
+                                        "type": "string"
+                                      },
+                                      "url": {
+                                        "type": "string"
+                                      },
+                                      "format": {
                                         "type": "string"
                                       }
                                     }
@@ -97996,6 +98506,7 @@
                         "text",
                         "image_url",
                         "input_audio",
+                        "input_video",
                         "file",
                         "refusal"
                       ]
@@ -98032,6 +98543,20 @@
                       ],
                       "properties": {
                         "data": {
+                          "type": "string"
+                        },
+                        "format": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "input_video": {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "string"
+                        },
+                        "url": {
                           "type": "string"
                         },
                         "format": {
@@ -98684,6 +99209,7 @@
                                   "input_image",
                                   "input_file",
                                   "input_audio",
+                                  "input_video",
                                   "output_text",
                                   "refusal",
                                   "reasoning_text"
@@ -98731,6 +99257,20 @@
                                     ]
                                   },
                                   "data": {
+                                    "type": "string"
+                                  }
+                                }
+                              },
+                              "input_video": {
+                                "type": "object",
+                                "properties": {
+                                  "data": {
+                                    "type": "string"
+                                  },
+                                  "url": {
+                                    "type": "string"
+                                  },
+                                  "format": {
                                     "type": "string"
                                   }
                                 }
@@ -98860,6 +99400,7 @@
                                   "input_image",
                                   "input_file",
                                   "input_audio",
+                                  "input_video",
                                   "output_text",
                                   "refusal",
                                   "reasoning_text"
@@ -98907,6 +99448,20 @@
                                     ]
                                   },
                                   "data": {
+                                    "type": "string"
+                                  }
+                                }
+                              },
+                              "input_video": {
+                                "type": "object",
+                                "properties": {
+                                  "data": {
+                                    "type": "string"
+                                  },
+                                  "url": {
+                                    "type": "string"
+                                  },
+                                  "format": {
                                     "type": "string"
                                   }
                                 }
@@ -99589,6 +100144,7 @@
                               "input_image",
                               "input_file",
                               "input_audio",
+                              "input_video",
                               "output_text",
                               "refusal",
                               "reasoning_text"
@@ -99636,6 +100192,20 @@
                                 ]
                               },
                               "data": {
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "input_video": {
+                            "type": "object",
+                            "properties": {
+                              "data": {
+                                "type": "string"
+                              },
+                              "url": {
+                                "type": "string"
+                              },
+                              "format": {
                                 "type": "string"
                               }
                             }
@@ -99765,6 +100335,7 @@
                               "input_image",
                               "input_file",
                               "input_audio",
+                              "input_video",
                               "output_text",
                               "refusal",
                               "reasoning_text"
@@ -99812,6 +100383,20 @@
                                 ]
                               },
                               "data": {
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "input_video": {
+                            "type": "object",
+                            "properties": {
+                              "data": {
+                                "type": "string"
+                              },
+                              "url": {
+                                "type": "string"
+                              },
+                              "format": {
                                 "type": "string"
                               }
                             }
@@ -100512,6 +101097,7 @@
                               "input_image",
                               "input_file",
                               "input_audio",
+                              "input_video",
                               "output_text",
                               "refusal",
                               "reasoning_text"
@@ -100559,6 +101145,20 @@
                                 ]
                               },
                               "data": {
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "input_video": {
+                            "type": "object",
+                            "properties": {
+                              "data": {
+                                "type": "string"
+                              },
+                              "url": {
+                                "type": "string"
+                              },
+                              "format": {
                                 "type": "string"
                               }
                             }
@@ -100688,6 +101288,7 @@
                               "input_image",
                               "input_file",
                               "input_audio",
+                              "input_video",
                               "output_text",
                               "refusal",
                               "reasoning_text"
@@ -100735,6 +101336,20 @@
                                 ]
                               },
                               "data": {
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "input_video": {
+                            "type": "object",
+                            "properties": {
+                              "data": {
+                                "type": "string"
+                              },
+                              "url": {
+                                "type": "string"
+                              },
+                              "format": {
                                 "type": "string"
                               }
                             }
@@ -101592,6 +102207,7 @@
                               "input_image",
                               "input_file",
                               "input_audio",
+                              "input_video",
                               "output_text",
                               "refusal",
                               "reasoning_text"
@@ -101639,6 +102255,20 @@
                                 ]
                               },
                               "data": {
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "input_video": {
+                            "type": "object",
+                            "properties": {
+                              "data": {
+                                "type": "string"
+                              },
+                              "url": {
+                                "type": "string"
+                              },
+                              "format": {
                                 "type": "string"
                               }
                             }
@@ -101768,6 +102398,7 @@
                               "input_image",
                               "input_file",
                               "input_audio",
+                              "input_video",
                               "output_text",
                               "refusal",
                               "reasoning_text"
@@ -101815,6 +102446,20 @@
                                 ]
                               },
                               "data": {
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "input_video": {
+                            "type": "object",
+                            "properties": {
+                              "data": {
+                                "type": "string"
+                              },
+                              "url": {
+                                "type": "string"
+                              },
+                              "format": {
                                 "type": "string"
                               }
                             }
@@ -103481,6 +104126,7 @@
                         "text",
                         "image_url",
                         "input_audio",
+                        "input_video",
                         "file",
                         "refusal"
                       ]
@@ -103517,6 +104163,20 @@
                       ],
                       "properties": {
                         "data": {
+                          "type": "string"
+                        },
+                        "format": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "input_video": {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "string"
+                        },
+                        "url": {
                           "type": "string"
                         },
                         "format": {
@@ -103816,6 +104476,7 @@
                                   "input_image",
                                   "input_file",
                                   "input_audio",
+                                  "input_video",
                                   "output_text",
                                   "refusal",
                                   "reasoning_text"
@@ -103863,6 +104524,20 @@
                                     ]
                                   },
                                   "data": {
+                                    "type": "string"
+                                  }
+                                }
+                              },
+                              "input_video": {
+                                "type": "object",
+                                "properties": {
+                                  "data": {
+                                    "type": "string"
+                                  },
+                                  "url": {
+                                    "type": "string"
+                                  },
+                                  "format": {
                                     "type": "string"
                                   }
                                 }
@@ -103992,6 +104667,7 @@
                                   "input_image",
                                   "input_file",
                                   "input_audio",
+                                  "input_video",
                                   "output_text",
                                   "refusal",
                                   "reasoning_text"
@@ -104039,6 +104715,20 @@
                                     ]
                                   },
                                   "data": {
+                                    "type": "string"
+                                  }
+                                }
+                              },
+                              "input_video": {
+                                "type": "object",
+                                "properties": {
+                                  "data": {
+                                    "type": "string"
+                                  },
+                                  "url": {
+                                    "type": "string"
+                                  },
+                                  "format": {
                                     "type": "string"
                                   }
                                 }
@@ -115562,6 +116252,7 @@
                               "input_image",
                               "input_file",
                               "input_audio",
+                              "input_video",
                               "output_text",
                               "refusal",
                               "reasoning_text"
@@ -115609,6 +116300,20 @@
                                 ]
                               },
                               "data": {
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "input_video": {
+                            "type": "object",
+                            "properties": {
+                              "data": {
+                                "type": "string"
+                              },
+                              "url": {
+                                "type": "string"
+                              },
+                              "format": {
                                 "type": "string"
                               }
                             }
@@ -115738,6 +116443,7 @@
                               "input_image",
                               "input_file",
                               "input_audio",
+                              "input_video",
                               "output_text",
                               "refusal",
                               "reasoning_text"
@@ -115785,6 +116491,20 @@
                                 ]
                               },
                               "data": {
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "input_video": {
+                            "type": "object",
+                            "properties": {
+                              "data": {
+                                "type": "string"
+                              },
+                              "url": {
+                                "type": "string"
+                              },
+                              "format": {
                                 "type": "string"
                               }
                             }
@@ -116023,6 +116743,7 @@
                               "input_image",
                               "input_file",
                               "input_audio",
+                              "input_video",
                               "output_text",
                               "refusal",
                               "reasoning_text"
@@ -116070,6 +116791,20 @@
                                 ]
                               },
                               "data": {
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "input_video": {
+                            "type": "object",
+                            "properties": {
+                              "data": {
+                                "type": "string"
+                              },
+                              "url": {
+                                "type": "string"
+                              },
+                              "format": {
                                 "type": "string"
                               }
                             }
@@ -116199,6 +116934,7 @@
                               "input_image",
                               "input_file",
                               "input_audio",
+                              "input_video",
                               "output_text",
                               "refusal",
                               "reasoning_text"
@@ -116246,6 +116982,20 @@
                                 ]
                               },
                               "data": {
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "input_video": {
+                            "type": "object",
+                            "properties": {
+                              "data": {
+                                "type": "string"
+                              },
+                              "url": {
+                                "type": "string"
+                              },
+                              "format": {
                                 "type": "string"
                               }
                             }

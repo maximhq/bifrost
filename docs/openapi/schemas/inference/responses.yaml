@@ -212,6 +212,7 @@ ResponsesMessageContentBlock:
           input_image,
           input_file,
           input_audio,
+          input_video,
           output_text,
           refusal,
           reasoning_text,
@@ -236,6 +237,8 @@ ResponsesMessageContentBlock:
       type: string
     input_audio:
       $ref: "#/ResponsesInputMessageContentBlockAudio"
+    input_video:
+      $ref: "#/ResponsesInputMessageContentBlockVideo"
     annotations:
       type: array
       items:
@@ -259,6 +262,16 @@ ResponsesInputMessageContentBlockAudio:
       type: string
       enum: [mp3, wav]
     data:
+      type: string
+
+ResponsesInputMessageContentBlockVideo:
+  type: object
+  properties:
+    data:
+      type: string
+    url:
+      type: string
+    format:
       type: string
 
 ResponsesOutputMessageContentTextAnnotation:

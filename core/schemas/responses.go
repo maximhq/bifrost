@@ -1759,6 +1759,7 @@ const (
 	ResponsesInputMessageContentBlockTypeImage     ResponsesMessageContentBlockType = "input_image"
 	ResponsesInputMessageContentBlockTypeFile      ResponsesMessageContentBlockType = "input_file"
 	ResponsesInputMessageContentBlockTypeAudio     ResponsesMessageContentBlockType = "input_audio"
+	ResponsesInputMessageContentBlockTypeVideo     ResponsesMessageContentBlockType = "input_video"
 	ResponsesInputMessageContentBlockTypeContainer ResponsesMessageContentBlockType = "input_container" // Anthropic-only: file staged into the code-execution container input dir
 
 	ResponsesOutputMessageContentTypeText      ResponsesMessageContentBlockType = "output_text"
@@ -1793,6 +1794,7 @@ type ResponsesMessageContentBlock struct {
 	*ResponsesInputMessageContentBlockImage
 	*ResponsesInputMessageContentBlockFile
 	Audio *ResponsesInputMessageContentBlockAudio `json:"input_audio,omitempty"`
+	Video *ResponsesInputMessageContentBlockVideo `json:"input_video,omitempty"`
 
 	*ResponsesOutputMessageContentText            // Normal text output from the model
 	*ResponsesOutputMessageContentRefusal         // Model refusal to answer
@@ -1859,6 +1861,12 @@ type ResponsesInputMessageContentBlockFile struct {
 type ResponsesInputMessageContentBlockAudio struct {
 	Format string `json:"format"` // "mp3" or "wav"
 	Data   string `json:"data"`   // base64 encoded audio data
+}
+
+type ResponsesInputMessageContentBlockVideo struct {
+	Data   *string `json:"data,omitempty"`   // base64 encoded video data
+	URL    *string `json:"url,omitempty"`    // remote video URL
+	Format *string `json:"format,omitempty"` // e.g., "mp4"
 }
 
 // =============================================================================
