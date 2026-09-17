@@ -2,11 +2,11 @@
   "description": "Provider capability matrix for integration tests. Each provider has explicit booleans per operation (derived from core/providers/* provider.go NewUnsupportedOperationError). Used to skip requests when running with all provider envs.",
   "providers": {
     "minimax": {
-      "chat_completions": false,
-      "chat_completions_with_tools": false,
+      "chat_completions": true,
+      "chat_completions_with_tools": true,
       "text_completion": false,
-      "responses": false,
-      "responses_with_tools": false,
+      "responses": true,
+      "responses_with_tools": true,
       "count_tokens": false,
       "embedding": false,
       "speech": true,

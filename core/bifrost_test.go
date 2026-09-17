@@ -3798,3 +3798,72 @@ func TestPrepareFallbackRequestRetargetsEveryFallbackCapableType(t *testing.T) {
 		t.Fatal("no fallback-capable sub-request types found on BifrostRequest; the reflection walk is broken")
 	}
 }
+
+func TestPrepareFallbackRequestScopesMiniMaxChatParameters(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.MiniMax, 1, 1)
+	account.AddProvider(schemas.SGL, 1, 1)
+	customMiniMax := schemas.ModelProvider("custom-minimax")
+	customSGL := schemas.ModelProvider("custom-sgl")
+	account.AddProvider(customMiniMax, 1, 1)
+	account.SetCustomProviderConfig(customMiniMax, &schemas.CustomProviderConfig{BaseProviderType: schemas.MiniMax})
+	account.AddProvider(customSGL, 1, 1)
+	account.SetCustomProviderConfig(customSGL, &schemas.CustomProviderConfig{BaseProviderType: schemas.SGL})
+	bifrost := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError)}
+	original := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.MiniMax,
+			Model:    "MiniMax-M3",
+			Params: &schemas.ChatParameters{ExtraParams: map[string]interface{}{
+				"thinking":        map[string]interface{}{"type": "disabled"},
+				"reasoning_split": false,
+				"keep":            "value",
+			}},
+			MiniMaxParameters: &schemas.MiniMaxChatParameters{
+				Thinking:       map[string]interface{}{"type": "disabled"},
+				ReasoningSplit: schemas.Ptr(false),
+			},
+		},
+	}
+
+	nonMiniMax := bifrost.prepareFallbackRequest(original, schemas.Fallback{Provider: schemas.SGL, Model: "fallback-model"})
+	if nonMiniMax == nil || nonMiniMax.ChatRequest == nil {
+		t.Fatal("prepareFallbackRequest returned nil for SGL")
+	}
+	if nonMiniMax.ChatRequest.MiniMaxParameters != nil {
+		t.Fatalf("MiniMax-scoped parameters leaked to SGL fallback: %#v", nonMiniMax.ChatRequest.MiniMaxParameters)
+	}
+	if _, ok := nonMiniMax.ChatRequest.Params.ExtraParams["thinking"]; ok {
+		t.Fatal("thinking leaked to non-MiniMax fallback ExtraParams")
+	}
+	if _, ok := nonMiniMax.ChatRequest.Params.ExtraParams["reasoning_split"]; ok {
+		t.Fatal("reasoning_split leaked to non-MiniMax fallback ExtraParams")
+	}
+	if nonMiniMax.ChatRequest.Params.ExtraParams["keep"] != "value" {
+		t.Fatal("unrelated ExtraParams were removed")
+	}
+
+	customOriginal := *original
+	customChat := *original.ChatRequest
+	customChat.Provider = customMiniMax
+	customOriginal.ChatRequest = &customChat
+	customFallback := bifrost.prepareFallbackRequest(&customOriginal, schemas.Fallback{Provider: customSGL, Model: "fallback-model"})
+	if customFallback == nil || customFallback.ChatRequest == nil {
+		t.Fatal("prepareFallbackRequest returned nil for custom SGL")
+	}
+	if customFallback.ChatRequest.MiniMaxParameters != nil {
+		t.Fatal("custom MiniMax scoped parameters leaked to custom SGL fallback")
+	}
+	if _, ok := customFallback.ChatRequest.Params.ExtraParams["thinking"]; ok {
+		t.Fatal("custom MiniMax thinking leaked to custom SGL ExtraParams")
+	}
+
+	miniMax := bifrost.prepareFallbackRequest(original, schemas.Fallback{Provider: schemas.MiniMax, Model: "MiniMax-M2.7"})
+	if miniMax == nil || miniMax.ChatRequest == nil || miniMax.ChatRequest.MiniMaxParameters == nil {
+		t.Fatal("MiniMax fallback lost MiniMax-scoped parameters")
+	}
+	if original.ChatRequest.MiniMaxParameters == nil {
+		t.Fatal("original request was mutated")
+	}
+}

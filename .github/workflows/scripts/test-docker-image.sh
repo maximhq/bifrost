@@ -141,6 +141,10 @@ cat > "$CONFIG_FILE" << 'CONFIGEOF'
       "keys": [{ "name": "Mistral API Key", "value": "env.MISTRAL_API_KEY", "weight": 1 }],
       "network_config": { "default_request_timeout_in_seconds": 300 }
     },
+    "minimax": {
+      "keys": [{ "name": "MiniMax API Key", "value": "env.MINIMAX_API_KEY", "weight": 1 }],
+      "network_config": { "default_request_timeout_in_seconds": 300 }
+    },
     "cohere": {
       "keys": [{ "name": "Cohere API Key", "value": "env.COHERE_API_KEY", "weight": 1 }],
       "network_config": { "default_request_timeout_in_seconds": 300 }
@@ -245,6 +249,7 @@ docker run -d \
   -e VERTEX_CREDENTIALS="${VERTEX_CREDENTIALS:-}" \
   -e GOOGLE_LOCATION="${GOOGLE_LOCATION:-us-central1}" \
   -e MISTRAL_API_KEY="${MISTRAL_API_KEY:-}" \
+  -e MINIMAX_API_KEY="${MINIMAX_API_KEY:-}" \
   -e COHERE_API_KEY="${COHERE_API_KEY:-}" \
   -e GROQ_API_KEY="${GROQ_API_KEY:-}" \
   -e PERPLEXITY_API_KEY="${PERPLEXITY_API_KEY:-}" \

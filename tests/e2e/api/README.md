@@ -130,7 +130,7 @@ The full provider harness runs ~1900 requests after augmentation. For a
 pre-release or pre-merge check, run the curated smoke set instead:
 
 ```bash
-make smoke-provider-harness-test                       # ~100 requests, all 8 providers
+make smoke-provider-harness-test                       # ~100 requests, all harness providers
 make run-provider-harness-test SMOKE=1                 # identical
 make run-provider-harness-test SMOKE=1 PROVIDER=bedrock  # smoke set, one fork
 make run-provider-harness-test SMOKE=path/to/other.json  # a different manifest

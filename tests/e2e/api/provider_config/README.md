@@ -53,6 +53,7 @@ All Bifrost providers are included except **sgl** and **ollama** (excluded in `r
 - `bifrost-v1-groq.postman_environment.json`
 - `bifrost-v1-huggingface.postman_environment.json`
 - `bifrost-v1-mistral.postman_environment.json`
+- `bifrost-v1-minimax.postman_environment.json`
 - `bifrost-v1-nebius.postman_environment.json`
 - `bifrost-v1-openrouter.postman_environment.json`
 - `bifrost-v1-parasail.postman_environment.json`
