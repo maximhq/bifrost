@@ -97,6 +97,32 @@ describe("ProviderFormSchema github-copilot credentials", () => {
 			expect(parse({ github_copilot_key_config: appConfig({ private_key: literal(body) }) }).success).toBe(false);
 		});
 
+		it("does not format-check values the API returned masked", () => {
+			// Editing a stored key round-trips the server's mask for every field the operator
+			// did not retype; the server then keeps the original. Short secrets mask to all
+			// asterisks, longer ones to a 4 + 24 asterisks + 4 pattern.
+			const parsed = parse({
+				github_copilot_key_config: {
+					app_id: literal("******"),
+					installation_id: literal("********"),
+					repository_id: literal("9990" + "*".repeat(24) + "0111"),
+					private_key: literal("----" + "*".repeat(24) + "----"),
+				},
+			});
+			expect(parsed.success, parsed.success ? "" : JSON.stringify(parsed.error.issues)).toBe(true);
+		});
+
+		it("still format-checks a retyped field next to masked ones", () => {
+			const parsed = parse({
+				github_copilot_key_config: appConfig({
+					app_id: literal("******"),
+					installation_id: literal("my-install"),
+					private_key: literal("----" + "*".repeat(24) + "----"),
+				}),
+			});
+			expect(parsed.success).toBe(false);
+		});
+
 		it("does not format-check environment references", () => {
 			// Their values resolve on the server, so judging their shape here would reject
 			// every legitimate headless configuration.
