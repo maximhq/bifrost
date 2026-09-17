@@ -1527,6 +1527,7 @@ func extractResponsesOutputMessages(resp *schemas.BifrostResponsesResponse) []Re
 
 		case schemas.ResponsesMessageTypeCustomToolCall,
 			schemas.ResponsesMessageTypeLocalShellCall,
+			schemas.ResponsesMessageTypeShellCall,
 			schemas.ResponsesMessageTypeCodeInterpreterCall:
 			result = append(result, ResponsesMessageSummary{
 				Role:      "assistant",
@@ -1677,6 +1678,7 @@ func extractResponsesInputMessages(messages []schemas.ResponsesMessage) []Respon
 
 		case schemas.ResponsesMessageTypeCustomToolCall,
 			schemas.ResponsesMessageTypeLocalShellCall,
+			schemas.ResponsesMessageTypeShellCall,
 			schemas.ResponsesMessageTypeCodeInterpreterCall:
 			result = append(result, ResponsesMessageSummary{
 				Role:      "assistant",
@@ -1691,6 +1693,7 @@ func extractResponsesInputMessages(messages []schemas.ResponsesMessage) []Respon
 			})
 
 		case schemas.ResponsesMessageTypeLocalShellCallOutput,
+			schemas.ResponsesMessageTypeShellCallOutput,
 			schemas.ResponsesMessageTypeCustomToolCallOutput:
 			content := ""
 			if msg.ResponsesToolMessage != nil {
@@ -1741,12 +1744,18 @@ func responsesItemToolCall(msg *schemas.ResponsesMessage, msgType schemas.Respon
 				tc.Args = args
 			}
 		}
+	case schemas.ResponsesMessageTypeShellCall:
+		if tm.Action != nil && tm.Action.ResponsesShellToolCallAction != nil {
+			if args, err := schemas.MarshalString(tm.Action.ResponsesShellToolCallAction); err == nil {
+				tc.Args = args
+			}
+		}
 	case schemas.ResponsesMessageTypeCodeInterpreterCall:
 		if tm.ResponsesCodeInterpreterToolCall != nil && tm.ResponsesCodeInterpreterToolCall.Code != nil {
 			tc.Args = *tm.ResponsesCodeInterpreterToolCall.Code
 		}
 	}
-	// local_shell_call and code_interpreter_call have no name of their own.
+	// local_shell_call, shell_call and code_interpreter_call have no name of their own.
 	if tc.Name == "" {
 		tc.Name = tc.Type
 	}
@@ -1760,6 +1769,8 @@ func responsesItemToolType(msgType schemas.ResponsesMessageType) string {
 		return "custom"
 	case schemas.ResponsesMessageTypeLocalShellCall:
 		return "local_shell"
+	case schemas.ResponsesMessageTypeShellCall:
+		return "shell"
 	case schemas.ResponsesMessageTypeCodeInterpreterCall:
 		return "code_interpreter"
 	default:
@@ -1803,6 +1814,9 @@ func extractResponsesToolOutputContent(output *schemas.ResponsesToolMessageOutpu
 	}
 	if output.ResponsesToolCallOutputStr != nil {
 		return *output.ResponsesToolCallOutputStr
+	}
+	if len(output.ResponsesShellCallOutput) > 0 {
+		return schemas.ShellCallOutputText(output.ResponsesShellCallOutput)
 	}
 	var sb strings.Builder
 	for _, block := range output.ResponsesFunctionToolCallOutputBlocks {
