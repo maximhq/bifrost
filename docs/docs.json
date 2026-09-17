@@ -147,6 +147,7 @@
                   "providers/supported-providers/databricks",
                   "providers/supported-providers/deepseek",
                   "providers/supported-providers/elevenlabs",
+                  "providers/supported-providers/minimax",
                   "providers/supported-providers/fireworks",
                   "providers/supported-providers/gemini",
                   "providers/supported-providers/github-copilot",
