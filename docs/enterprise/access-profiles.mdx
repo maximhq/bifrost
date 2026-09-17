@@ -6,7 +6,7 @@ icon: "id-card"
 
 ## Overview
 
-An **Access Profile** is a reusable policy template that describes what a user,team or business unit is allowed to do once they are granted access. When you assign a profile to an entity (directly or by attaching it to a role they hold), Bifrost Enterprise creates a per-user copy of the policy and automatically issues a virtual key for them. Every request made with that key is governed by the profile's provider list, model whitelist, budgets, rate limits, and MCP tool access. Because the profile is consulted on each request, editing it takes effect straight away - there is no need to reissue anyone's key. Users never need to be handed raw keys, and operators never need to write keys by hand.
+An **Access Profile** is a reusable policy template that describes what a user, team, business unit, or customer is allowed to do once they are granted access. When you assign a profile to an entity (directly or by attaching it to a role they hold), Bifrost Enterprise creates a per-user copy of the policy and automatically issues a virtual key for them. Every request made with that key is governed by the profile's provider list, model whitelist, budgets, rate limits, and MCP tool access. Because the profile is consulted on each request, editing it takes effect straight away - there is no need to reissue anyone's key. Users never need to be handed raw keys, and operators never need to write keys by hand.
 
 A user can hold **several access profiles at once**. Together they decide what the user can reach, and one of them pays for each request - see [Multiple profiles per user](#multiple-profiles-per-user).
 
@@ -15,6 +15,7 @@ A user can hold **several access profiles at once**. Together they decide what t
 - **Reusable policy** - Define a profile once (for example, "Engineering") and apply it to every user in a role.
 - **Per-user enforcement** - Each user gets an independent copy with isolated budget and rate-limit counters.
 - **Layered access** - A user can hold several profiles at once. What they can reach adds up, and if one profile's budget runs out another can cover their requests.
+- **Entity-owned keys** - Attach a profile to a team, business unit, or customer to govern the virtual keys it owns, with provider, model, and MCP access and budgets that replace legacy team and customer limits. See [Profiles held by a team, business unit, or customer](#profiles-held-by-a-team-business-unit-or-customer).
 - **Role auto-assignment** - Attach profiles to a role and users gaining that role are provisioned automatically.
 - **Safe propagation** - Edit the template, then push selected fields (budgets only, MCP only, and so on) to every user copy in one call.
 - **Managed virtual keys** - Auto-issued keys are write-protected, so a user cannot weaken their own policy by editing the key directly.
@@ -25,8 +26,6 @@ A user can hold **several access profiles at once**. Together they decide what t
 	For the full API contract (every endpoint, request and response shape, error codes), see the **Access Profiles** section of the [API
 	Reference](/api-reference).
 </Info>
-
-<Note>We are also adding access-profile support for teams and business units in upcoming releases.</Note>
 
 ---
 
@@ -66,6 +65,133 @@ A user can hold more than one access profile at a time - one from their role, sa
   no matter which profile paid for it. Those are separate from profile budgets, not an alternative
   to them.
 </Note>
+
+### Profiles held by a team, business unit, or customer
+
+A profile can also be attached to a **team**, a **business unit**, or a **customer**. It applies to
+everyone and everything under that entity: its members' requests, and the virtual keys the entity
+owns - keys created with its `team_id`, `business_unit_id`, or `customer_id`.
+
+**One profile per entity.** A team, business unit, or customer holds at most one profile. Attaching
+another replaces it, and the replaced profile's budgets and usage counters are deleted.
+
+**Access adds up.** A member's requests can reach what any of their profiles allows - their own
+profiles, and the profiles of their teams, their business units, and the customers those reach. An
+entity profile widens what members reach and never narrows it, and it grants a member who holds no
+profile of their own. A key the entity owns reaches what the entity's profile allows, plus what the
+profiles of the customers above it allow.
+
+The same holds for keys that are not governed by a profile of their own. A standalone key assigned to
+a user reaches what the key itself allows plus what the profiles of that user's teams, business units
+and customers allow. A key owned by a team or business unit with no profile reaches what the key
+allows plus what the profiles of the customers above that team or business unit allow. Those profiles
+are charged for the key's requests, and the key's own budgets still cap it.
+
+**Entity budgets always apply.** An entity's budgets and rate limits are charged for every request
+made under it - by a member or with its keys - **whether or not the entity's own profile allowed the
+model**. So an exhausted team budget refuses a member's request even when their personal profile
+allowed it. The same goes for the entity's per-provider and per-model limits: they are charged for
+every request under the entity to that provider or for that model, whichever profile allowed it. A customer reached through both a team and a business unit is charged once; the
+same template attached to a team and a business unit is two attachments, charged separately.
+
+**Who pays.** One of the member's permits pays for each request, alongside the entity budgets above.
+A member's own profile is preferred when it allows the model and can pay; an entity's profile pays
+when none of the member's own can - including when the member's profile is exhausted.
+
+<Note>
+  Teams and customers still on legacy budgets keep charging exactly as before, and a customer that
+  has moved to a profile also charges the keys of legacy teams under it.
+</Note>
+
+#### Profiles replace legacy team and customer limits
+
+Budgets and rate limits set directly on a team or customer are the legacy governance system. An
+entity uses **either** an access profile **or** legacy limits, never both. While an entity holds a
+profile, setting budgets or a rate limit on it through `PUT /api/governance/teams/{id}` or
+`/customers/{id}` is refused with `409` - edit the profile instead. Business units carry no legacy
+limits, so attaching a profile to one never needs a migration.
+
+Attaching an existing profile to a team or customer that still has legacy limits is refused with
+`409 entity_has_legacy_limits`, listing those limits and a migration plan. There are three ways forward.
+
+**Migrate to a new access profile** (recommended). In the web UI, **Migrate to access profile** - on the
+**Access Profile** field under the entity's name, or on its **Usage** view - opens a setup wizard. It
+explains what changes, lets you name the new profile and choose the providers and models the
+entity's keys may reach, previews exactly what will move, then runs the migration:
+
+- A new access profile is created for this entity alone, from its current budgets and rate limit.
+- Its virtual keys can reach the providers you chose: **all providers**, **specific providers** (with the
+  models, and optionally the per-provider and per-model limits, you set for each, exactly as on an
+  access profile), or **no providers** - every request is refused until you add providers to the profile.
+- Every key the entity owns is adopted; budgets, rate limits and providers set on the keys are removed.
+- Usage is kept: the profile's budgets and rate limit use the legacy reset windows, so everything
+  already spent and used counts against them, on every node of a cluster. From then on the entity's
+  limits live on the profile.
+
+The wizard calls the migrate endpoint, first with `dry_run` to preview:
+
+```bash
+curl -X POST "$BIFROST/api/governance/teams/$TEAM_ID/access-profile/migrate" \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "Platform access", "provider_access": "selected", "provider_configs": [{"provider_name": "openai", "allowed_models": ["gpt-5"], "key_ids": ["*"]}], "dry_run": true}'
+```
+
+`provider_configs` takes provider configs as an access profile does. `providers` is a shorthand that
+grants each named provider with all of its models.
+
+**Remove the legacy limits, then attach** an existing profile - **Remove** on the **Usage** view.
+
+**Skip**: keep the legacy limits and attach no profile. The entity keeps working exactly as before, but
+cannot use an access profile.
+
+Attaching an existing profile with `{"profile_id": 42, "migrate": true}` is also accepted. It carries
+each legacy budget's spend onto the profile budget with the **same reset window** only; spend on a
+window the profile has no budget for is dropped, which the 409 plan marks `"carried": false`.
+
+<Note>
+  Nothing changes until you attach a profile to an entity. A deployment that attaches none keeps
+  using legacy team and customer limits exactly as before.
+</Note>
+
+#### Virtual keys
+
+Attaching a profile **adopts every key the entity owns**: each key's own budgets, rate limits, and
+provider configuration are stripped, and from then on it answers to the profile. The attach response
+lists them in `adopted_virtual_key_ids`.
+
+There is no separate endpoint for entity keys. Create them through the normal virtual key API with
+`team_id`, `customer_id`, or `business_unit_id` as the owner (the three are mutually exclusive).
+A key created under an entity that holds a profile is adopted the same way: any budgets, rate limits,
+or provider configs in the request are stripped, just as for keys created by a user who holds a
+profile. The entity's profile governs the key even when its creator holds a profile of their own.
+An existing key cannot be moved under an entity that holds a profile (`409`); create it under the
+entity instead.
+
+```bash
+curl -X POST "$BIFROST/api/governance/virtual-keys" \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "reporting-pipeline", "business_unit_id": "'"$BU_ID"'"}'
+```
+
+<Warning>
+  Detaching a profile deletes its budgets and usage, including spend carried over from legacy limits,
+  and does not restore legacy limits. You choose what happens to the entity's virtual keys: **delete**
+  them (the default), or **preserve** them with `?preserve_virtual_keys=true`. A preserved key stays
+  with the entity but has no providers, budgets or rate limit of its own, so every request it makes is
+  refused until you configure it or attach a profile again. Deleting a team, business unit, or
+  customer also deletes the profile attached to it.
+</Warning>
+
+#### Editing an entity's profile
+
+Template edits reach entity attachments through the same **Propagate** action that updates user
+copies, and each entity's spend is preserved across the update. A template that is still attached to
+any entity cannot be deleted.
+
+Individual budgets on an entity's profile - its own, a provider's, or a per-model one - accept the same
+additive **budget overrides** as a user's copy, from the entity's **Usage** view or through
+`PUT /api/governance/{teams|business-units|customers}/{id}/access-profile/budgets/{budget_id}/override`.
+Overrides survive template propagation. Legacy team and customer budgets do not take overrides.
 
 ### Role auto-assignment
 

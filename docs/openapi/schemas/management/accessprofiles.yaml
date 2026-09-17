@@ -555,6 +555,12 @@ PropagateResponse:
       type: array
       items:
         type: string
+    affected_entities:
+      type: integer
+      description: Team, business unit and customer attachments of the profile a live propagation updated.
+    failed_entities:
+      type: integer
+      description: Attachments a live propagation failed to update. Counted apart from the user counters.
 
 CloneProfileRequest:
   type: object
