@@ -494,6 +494,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_hidden_request_types_json_column"}, run: migrationAddHiddenRequestTypesJSONColumn},
 	{IDs: []string{"add_use_openai_endpoints_column"}, run: migrationAddUseOpenAIEndpointsColumn},
 	{IDs: []string{"add_time_of_day_pricing_columns"}, run: migrationAddTimeOfDayPricingColumns},
+	{IDs: []string{"add_virtual_key_business_unit_column", "add_virtual_key_business_unit_column_index"}, run: migrationAddVirtualKeyBusinessUnitColumn},
 }
 
 // videoResolutionPricingColumns are the resolution-banded video output rate columns.
@@ -13561,4 +13562,61 @@ func migrationAddTimeOfDayPricingColumns(ctx context.Context, db *gorm.DB, logge
 		return fmt.Errorf("error running %s migration: %w", migrationName, err)
 	}
 	return nil
+}
+
+// migrationAddVirtualKeyBusinessUnitColumn adds business_unit_id to governance_virtual_keys, the
+// third owner a key can have alongside a team and a customer. A business unit is an enterprise
+// table this module does not model, so the column is a bare indexed varchar with no foreign key:
+// what it points at is resolved by whoever owns business units, and a deployment without them
+// simply never writes it.
+func migrationAddVirtualKeyBusinessUnitColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_virtual_key_business_unit_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	const indexName = "idx_governance_virtual_keys_business_unit_id"
+
+	// Step 1 (transactional): the column.
+	if err := RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableVirtualKey{}, "business_unit_id")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := tx.Exec("DROP INDEX IF EXISTS " + indexName).Error; err != nil {
+				return fmt.Errorf("failed to drop business_unit_id index from governance_virtual_keys: %w", err)
+			}
+			return dropColumnIfExists(tx, logger, &tables.TableVirtualKey{}, "business_unit_id")
+		},
+	}); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+
+	// Step 2 (non-transactional): the index. Every request made with a key owned by a business unit
+	// walks this column, so it is indexed - but a plain CREATE INDEX takes a lock on PostgreSQL that
+	// blocks writes to governance_virtual_keys for the whole build, and this is the table every
+	// request's key lives in. CONCURRENTLY cannot run inside a transaction, hence the separate
+	// non-transactional step; IF NOT EXISTS makes it safe to re-run if the process dies after the
+	// index is built and before the migration is recorded. SQLite has no CONCURRENTLY.
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	return RunSingleMigration(ctx, &noTxOpts, db, logger, &migrator.Migration{
+		ID: migrationName + "_index",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			stmt := "CREATE INDEX CONCURRENTLY IF NOT EXISTS " + indexName + " ON governance_virtual_keys (business_unit_id)"
+			if tx.Dialector.Name() == "sqlite" {
+				stmt = "CREATE INDEX IF NOT EXISTS " + indexName + " ON governance_virtual_keys (business_unit_id)"
+			}
+			if err := tx.Exec(stmt).Error; err != nil {
+				return fmt.Errorf("failed to index business_unit_id on governance_virtual_keys: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return tx.Exec("DROP INDEX IF EXISTS " + indexName).Error
+		},
+	})
 }

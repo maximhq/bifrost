@@ -457,6 +457,31 @@ func TestApplyVirtualKeyOwnershipUpdateRejectsDualAssociation(t *testing.T) {
 	}
 }
 
+// A business unit is the third owner a key can have. Naming it clears a team or customer the key
+// held before, and naming it alongside either is refused like any other pair.
+func TestApplyVirtualKeyOwnershipUpdateBusinessUnit(t *testing.T) {
+	team := "team-1"
+	vk := &configstoreTables.TableVirtualKey{ID: "vk-1", TeamID: &team}
+	var req UpdateVirtualKeyRequest
+	if err := json.Unmarshal([]byte(`{"business_unit_id":"bu-1"}`), &req); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+	if err := applyVirtualKeyOwnershipUpdate(vk, &req); err != nil {
+		t.Fatalf("apply ownership update: %v", err)
+	}
+	bu := "bu-1"
+	assertStringPtrEqual(t, "business unit", vk.BusinessUnitID, &bu)
+	assertStringPtrEqual(t, "team", vk.TeamID, nil)
+
+	var dual UpdateVirtualKeyRequest
+	if err := json.Unmarshal([]byte(`{"business_unit_id":"bu-1","customer_id":"customer-1"}`), &dual); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+	if err := applyVirtualKeyOwnershipUpdate(vk, &dual); !errors.Is(err, errVirtualKeyDualAssociation) {
+		t.Fatalf("expected dual-association error, got %v", err)
+	}
+}
+
 func assertStringPtrEqual(t *testing.T, label string, got *string, want *string) {
 	t.Helper()
 	if got == nil || want == nil {
