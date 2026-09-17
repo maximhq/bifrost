@@ -152,6 +152,14 @@ func (t *Tracer) SetObservabilityPlugins(obsPlugins []schemas.ObservabilityPlugi
 		if c, ok := plugin.(interface{ ConsumesContent() bool }); !ok || c.ConsumesContent() {
 			demand.Content = true
 		}
+		// Plugin spans reach a connector either as exported spans or through the
+		// overhead breakdown. A connector that declares neither is assumed to
+		// export them.
+		if c, ok := plugin.(interface{ ConsumesPluginSpans() bool }); !ok || c.ConsumesPluginSpans() {
+			demand.PluginSpans = true
+		} else if c, ok := plugin.(schemas.OverheadSpanConsumer); ok && c.ConsumesOverheadSpans() {
+			demand.PluginSpans = true
+		}
 	}
 	t.cachedDemand.Store(&demand)
 }
@@ -160,6 +168,19 @@ func (t *Tracer) SetObservabilityPlugins(obsPlugins []schemas.ObservabilityPlugi
 // so message content is summarized and marshalled only when something reads it.
 func (t *Tracer) spanBuildOptions() SpanBuildOptions {
 	return SpanBuildOptions{WantContent: t.Demand().Content}
+}
+
+// wantsSpanKind reports whether any connector consumes spans of this kind. A
+// plugin hook span is ~12 of the 14 spans a request creates and exists only to
+// be exported, so it is not worth creating when nothing reads it.
+//
+// Callers already handle the ("", nil) return that an absent trace produces, so
+// skipping here needs no change at the call sites.
+func (t *Tracer) wantsSpanKind(kind schemas.SpanKind) bool {
+	if kind != schemas.SpanKindPlugin {
+		return true
+	}
+	return t.Demand().PluginSpans
 }
 
 // TraceDemand is the union of what the attached connectors read. It is computed
@@ -174,14 +195,17 @@ type TraceDemand struct {
 	Any bool
 	// Content is true when at least one connector reads message content.
 	Content bool
+	// PluginSpans is true when at least one connector exports plugin hook spans
+	// or decomposes them into an overhead breakdown.
+	PluginSpans bool
 }
 
 // Demand returns the connector demand union.
 //
 // Before SetObservabilityPlugins has run, demand is unknown rather than absent,
 // so full demand is returned: a request in flight during boot must not lose
-// attributes that a connector registered a moment later would have wanted.
-// Declaring an empty plugin set is what expresses "nothing is listening".
+// attributes or spans that a connector registered a moment later would have
+// wanted. Declaring an empty plugin set is what expresses "nothing is listening".
 func (t *Tracer) Demand() TraceDemand {
 	if t == nil {
 		return fullTraceDemand
@@ -193,7 +217,7 @@ func (t *Tracer) Demand() TraceDemand {
 }
 
 // fullTraceDemand is the fail-safe: produce everything when demand is unknown.
-var fullTraceDemand = TraceDemand{Any: true, Content: true}
+var fullTraceDemand = TraceDemand{Any: true, Content: true, PluginSpans: true}
 
 // ShouldCaptureRequestHeaders reports whether any observability plugin has opted into
 // request-header capture (by implementing RequestHeaderPatterns). Derived from the cached
@@ -312,6 +336,9 @@ func (t *Tracer) StartSpan(ctx context.Context, name string, kind schemas.SpanKi
 func (t *Tracer) StartSpanID(ctx context.Context, name string, kind schemas.SpanKind) (string, schemas.SpanHandle) {
 	traceID := GetTraceID(ctx)
 	if traceID == "" {
+		return "", nil
+	}
+	if !t.wantsSpanKind(kind) {
 		return "", nil
 	}
 

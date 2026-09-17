@@ -245,3 +245,21 @@ func benchChatRequest() (*schemas.BifrostRequest, *schemas.BifrostResponse) {
 	}
 	return req, resp
 }
+
+// benchMetricsOnlyPlugin declines plugin spans, standing in for a connector that
+// reads only LLM spans (Splunk derives metrics that way).
+type benchMetricsOnlyPlugin struct{ name string }
+
+func (p *benchMetricsOnlyPlugin) GetName() string                                  { return p.name }
+func (p *benchMetricsOnlyPlugin) Inject(_ context.Context, _ *schemas.Trace) error { return nil }
+func (p *benchMetricsOnlyPlugin) Cleanup() error                                   { return nil }
+func (p *benchMetricsOnlyPlugin) ConsumesPluginSpans() bool                        { return false }
+
+func BenchmarkTraceLifecycle_ConnectorWithoutPluginSpans(b *testing.B) {
+	store := NewTraceStore(5*time.Minute, nil)
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+	tracer.SetObservabilityPlugins(
+		[]schemas.ObservabilityPlugin{&benchMetricsOnlyPlugin{name: "bench-metrics"}}, nil)
+	benchLifecycle(b, tracer)
+}

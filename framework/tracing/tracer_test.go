@@ -800,6 +800,158 @@ func TestTracer_PopulateLLMResponseAttributesStampsErrorType(t *testing.T) {
 	})
 }
 
+// pluginSpanDemandStub declares its plugin-span and overhead demand explicitly.
+type pluginSpanDemandStub struct {
+	name           string
+	wantsPlugin    bool
+	statesPlugin   bool
+	wantsOverhead  bool
+	statesOverhead bool
+}
+
+func (p *pluginSpanDemandStub) GetName() string                                  { return p.name }
+func (p *pluginSpanDemandStub) Inject(_ context.Context, _ *schemas.Trace) error { return nil }
+func (p *pluginSpanDemandStub) Cleanup() error                                   { return nil }
+
+// ConsumesPluginSpans is only consulted when statesPlugin is set; a stub that
+// leaves it unset stands in for a connector predating the interface.
+func (p *pluginSpanDemandStub) ConsumesPluginSpans() bool {
+	if !p.statesPlugin {
+		return true
+	}
+	return p.wantsPlugin
+}
+
+func (p *pluginSpanDemandStub) ConsumesOverheadSpans() bool {
+	if !p.statesOverhead {
+		return false
+	}
+	return p.wantsOverhead
+}
+
+// TestPluginSpanDemandGate pins when plugin hook spans are created. Skipping is
+// irreversible, so the default in every ambiguous case must be to create them.
+func TestPluginSpanDemandGate(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		plugins []schemas.ObservabilityPlugin
+		want    bool
+	}{
+		{
+			name:    "no connector attached",
+			plugins: []schemas.ObservabilityPlugin{},
+			want:    false,
+		},
+		{
+			name:    "connector silent on plugin spans",
+			plugins: []schemas.ObservabilityPlugin{&pluginSpanDemandStub{name: "silent"}},
+			want:    true,
+		},
+		{
+			name: "connector declines plugin spans",
+			plugins: []schemas.ObservabilityPlugin{
+				&pluginSpanDemandStub{name: "declines", statesPlugin: true, wantsPlugin: false},
+			},
+			want: false,
+		},
+		{
+			name: "connector declines spans but consumes the overhead breakdown",
+			plugins: []schemas.ObservabilityPlugin{
+				&pluginSpanDemandStub{name: "overhead", statesPlugin: true, wantsPlugin: false,
+					statesOverhead: true, wantsOverhead: true},
+			},
+			want: true,
+		},
+		{
+			name: "one connector declines, another does not",
+			plugins: []schemas.ObservabilityPlugin{
+				&pluginSpanDemandStub{name: "declines", statesPlugin: true, wantsPlugin: false},
+				&pluginSpanDemandStub{name: "silent"},
+			},
+			want: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := NewTraceStore(5*time.Minute, nil)
+			tracer := NewTracer(store, nil, nil)
+			defer tracer.Stop()
+			tracer.SetObservabilityPlugins(tc.plugins, nil)
+
+			traceID := tracer.CreateTrace("")
+			ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+			ctx, root := tracer.StartSpan(ctx, "http-request", schemas.SpanKindHTTPRequest)
+			if root == nil {
+				t.Fatal("root span was skipped; only plugin spans are gated")
+			}
+
+			_, pluginHandle := tracer.StartSpanID(ctx, "plugin.governance.prehook", schemas.SpanKindPlugin)
+			if got := pluginHandle != nil; got != tc.want {
+				t.Errorf("plugin span created = %v, want %v", got, tc.want)
+			}
+
+			// An LLM span is never gated, whatever the demand.
+			if _, llm := tracer.StartSpanID(ctx, "chat gpt-4o", schemas.SpanKindLLMCall); llm == nil {
+				t.Error("LLM span was skipped; only plugin spans are gated")
+			}
+		})
+	}
+}
+
+// TestPluginSpanDemandUnknownCreatesSpans covers the boot window: a tracer whose
+// plugins have not been registered yet must create plugin spans, since unknown
+// demand is not the same as no demand.
+func TestPluginSpanDemandUnknownCreatesSpans(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	traceID := tracer.CreateTrace("")
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+	ctx, _ = tracer.StartSpan(ctx, "http-request", schemas.SpanKindHTTPRequest)
+
+	if _, handle := tracer.StartSpanID(ctx, "plugin.governance.prehook", schemas.SpanKindPlugin); handle == nil {
+		t.Error("plugin span skipped before SetObservabilityPlugins ran; unknown demand must not drop spans")
+	}
+}
+
+// TestPluginSpanDemandRecomputedOnReload covers adding a connector after boot:
+// the transport calls SetObservabilityPlugins again (server.reloadObservabilityPlugins),
+// which recomputes demand, so requests starting after that create plugin spans.
+// Requests already in flight keep whatever the demand was when their spans were
+// created, which is why an empty plugin set is only ever declared deliberately.
+func TestPluginSpanDemandRecomputedOnReload(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	startPluginSpan := func() bool {
+		traceID := tracer.CreateTrace("")
+		ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+		ctx, _ = tracer.StartSpan(ctx, "http-request", schemas.SpanKindHTTPRequest)
+		_, handle := tracer.StartSpanID(ctx, "plugin.governance.prehook", schemas.SpanKindPlugin)
+		return handle != nil
+	}
+
+	// Boot with no connectors: plugin spans are skipped.
+	tracer.SetObservabilityPlugins(nil, nil)
+	if startPluginSpan() {
+		t.Error("plugin span created with no connector attached")
+	}
+
+	// A connector is configured at runtime.
+	tracer.SetObservabilityPlugins(
+		[]schemas.ObservabilityPlugin{&pluginSpanDemandStub{name: "late"}}, nil)
+	if !startPluginSpan() {
+		t.Error("plugin span skipped after a connector was added; demand must be recomputed on reload")
+	}
+
+	// And removed again.
+	tracer.SetObservabilityPlugins(nil, nil)
+	if startPluginSpan() {
+		t.Error("plugin span created after the last connector was removed")
+	}
+}
+
 // A Responses API refusal must reach the llm.call span as both the spec'd
 // gen_ai.response.finish_reasons list and the legacy singular
 // gen_ai.response.finish_reason, exactly like a chat completion does. Before
