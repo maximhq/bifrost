@@ -19,6 +19,7 @@
 - **Pinnable Log Search Mode** - The logs search box gains a mode dropdown (Auto, Content, Request ID). Auto-detection treated UUID-shaped input as an ID lookup and everything else as a content scan, which breaks for request IDs that are not UUID-shaped and for UUID-shaped strings that should be searched as content. A pinned mode bypasses all sniffing and re-runs the current input immediately (#7149)
 - **MCP Usage Guide Auth Methods** - The MCP usage guide generates client configs for Virtual key, OAuth and Identity provider authentication instead of requiring a virtual key for every config. Credential resolution is centralized in `buildMCPHeaders()`, so OAuth emits no headers, identity provider emits a `Bearer` placeholder, and virtual key keeps `x-bf-vk` (#7111)
 - **Chart Color System** - Dashboard charts, status badges and components read a structured set of CSS custom properties instead of hard-coded hex values, so colors adapt correctly between light and dark themes. Tokens are grouped as semantic (hues 0 to 70 reserved so no category can look like an error), sequential, ordinal for percentile series, and categorical at matched chroma assigned by rank (#7113)
+- **Tencent TokenHub Provider** - `tencent` (Tencent TokenHub) is registered as a provider key and base provider type in `config.schema.json` and serves OpenAI-compatible chat, streaming, tool calls, Responses and token counting, with optional Anthropic-compatible `/v1/messages` routing (#7123)
 
 ## 🐞 Fixed
 
@@ -92,6 +93,7 @@
 - [#7099](https://github.com/maximhq/bifrost/issues/7099) - UsageTracker cleanup races the periodic rate-limit dump during shutdown
 - [#7108](https://github.com/maximhq/bifrost/issues/7108) - Custom-provider streaming never terminates when the upstream omits [DONE] (heartbeats mask stream_idle_timeout_in_seconds)
 - [#7120](https://github.com/maximhq/bifrost/issues/7120) - Provider response-header filter ignores IsSensitiveHeader, forwarding credential-named headers to inference callers
+- [#7123](https://github.com/maximhq/bifrost/issues/7123) - Add Tencent TokenHub (`tencent`) provider
 - [#7143](https://github.com/maximhq/bifrost/issues/7143) - does_not_send_done_marker drops trailing Chat Completions usage and records zero cost
 - [#7144](https://github.com/maximhq/bifrost/issues/7144) - Chat Completions streaming raw_response omits usage-only and finish-only SSE frames
 - [#7155](https://github.com/maximhq/bifrost/issues/7155) - Bedrock-native invoke ingress silently drops Anthropic tool search (`tool_search_tool_*` / `defer_loading`), served eagerly over Converse

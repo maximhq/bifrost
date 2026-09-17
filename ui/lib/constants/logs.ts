@@ -30,6 +30,7 @@ export const KnownProvidersNames = [
 	"fireworks",
 	"sarvam",
 	"wafer",
+	"tencent",
 	"databricks",
 	"github-copilot",
 ] as const;
@@ -169,6 +170,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	fireworks: "Fireworks AI",
 	sarvam: "Sarvam AI",
 	wafer: "Wafer",
+	tencent: "Tencent TokenHub",
 	databricks: "Databricks",
 	"github-copilot": "GitHub Copilot",
 } as const;

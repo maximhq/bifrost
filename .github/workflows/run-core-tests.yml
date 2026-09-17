@@ -60,6 +60,7 @@ jobs:
       CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
       SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+      TENCENT_API_KEY: ${{ secrets.TENCENT_API_KEY }}
       DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
       DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
       GITHUB_COPILOT_APP_ID: ${{ secrets.GITHUB_COPILOT_APP_ID }}
@@ -145,6 +146,7 @@ jobs:
             router.huggingface.co:443
             storage.googleapis.com:443
             sum.golang.org:443
+            tokenhub-intl.tencentcloudmaas.com:443
             us-central1-aiplatform.googleapis.com:443
             www.berkshirehathaway.com:443
             www.getbifrost.ai:443

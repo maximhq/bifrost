@@ -487,6 +487,9 @@
         "sarvam": {
           "$ref": "#/$defs/provider"
         },
+        "tencent": {
+          "$ref": "#/$defs/provider_with_tencent_config"
+        },
         "github-copilot": {
           "$ref": "#/$defs/provider_with_github_copilot_config"
         }
@@ -4987,6 +4990,24 @@
         }
       ]
     },
+    "tencent_key": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base_key"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "use_anthropic_endpoints": {
+              "type": "boolean",
+              "description": "Routes chat completions and responses requests through Tencent TokenHub's Anthropic-compatible /v1/messages endpoint.",
+              "default": false
+            }
+          },
+          "required": ["value", "models"]
+        }
+      ]
+    },
     "fireworks_key": {
       "allOf": [
         {
@@ -5586,6 +5607,63 @@
         },
         "network_config": {
           "$ref": "#/$defs/network_config"
+        },
+        "concurrency_and_buffer_size": {
+          "$ref": "#/$defs/concurrency_and_buffer_size"
+        },
+        "proxy_config": {
+          "$ref": "#/$defs/proxy_config"
+        },
+        "send_back_raw_request": {
+          "type": "boolean",
+          "description": "Include raw request in BifrostResponse (default: false)"
+        },
+        "send_back_raw_response": {
+          "type": "boolean",
+          "description": "Include raw response in BifrostResponse (default: false)"
+        },
+        "store_raw_request_response": {
+          "type": "boolean",
+          "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "custom_provider_config": {
+          "$ref": "#/$defs/custom_provider_config"
+        }
+      },
+      "required": ["keys"],
+      "additionalProperties": false
+    },
+    "tencent_network_config": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/network_config"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "base_url": {
+              "type": "string",
+              "format": "uri",
+              "pattern": "^https://",
+              "description": "Base URL for Tencent TokenHub. Tencent preserves a custom URL and sends credentials (Bearer or x-api-key) to it, so only https:// endpoints are accepted."
+            }
+          }
+        }
+      ]
+    },
+    "provider_with_tencent_config": {
+      "type": "object",
+      "properties": {
+        "keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/tencent_key"
+          },
+          "minItems": 1,
+          "description": "API keys for this provider"
+        },
+        "network_config": {
+          "$ref": "#/$defs/tencent_network_config"
         },
         "concurrency_and_buffer_size": {
           "$ref": "#/$defs/concurrency_and_buffer_size"
@@ -8742,7 +8820,8 @@
             "runware",
             "fireworks",
             "sarvam",
-            "wafer"
+            "wafer",
+            "tencent"
           ],
           "description": "Base provider type to extend"
         },
