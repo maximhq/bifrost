@@ -825,7 +825,7 @@ users-access-profile-virtual-keys:
         </Warning>
     summary: Add an extra virtual key under a user's access profile (deprecated)
     description: |
-      Issues an additional virtual key for the user. 
+      Issues an additional virtual key for the user.
 
       Virtual keys are scoped to the **user**, not to one access profile: what a request may do with
       the key is resolved at request time from whichever of the user's active profiles grant it. So
@@ -912,5 +912,1465 @@ users-access-profile-virtual-key-by-id:
               $ref: '../../schemas/management/accessprofiles.yaml#/MessageResponse'
       '404':
         description: Virtual key not found for this user
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+teams/{team_id}/access-profile:
+  get:
+    operationId: getTeamAccessProfile
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Get the access profile held by a team
+    description: >-
+      Returns the access profile attached to this team, along with the virtual keys the team
+      owns, which it governs. A team holds at most one profile; 404 means it holds none.
+    tags:
+      - Access Profiles
+    parameters:
+      - name: team_id
+        in: path
+        required: true
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: The attached profile and the virtual keys it governs.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                access_profile:
+                  type: object
+                virtual_keys:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      is_active:
+                        type: boolean
+      '404':
+        description: No access profile is attached to this team.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+  post:
+    operationId: attachTeamAccessProfile
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Attach an access profile to a team
+    description: >-
+      Attaches a profile template to this team. A team holds at most one profile: attaching
+      another replaces it, and the replaced profile's budgets and usage counters are deleted.
+
+
+      The profile governs the virtual keys the team owns (keys with this `team_id`), the
+      same way a user's profile governs the user's keys. Every such key is adopted on attach: its
+      own budgets, rate limits and provider configuration are stripped. Requests made with it are
+      resolved against this profile alone and charged to the profile's budgets and rate limits.
+      The profile does not change what members may do with their own identity or keys.
+      A team key is still charged against the legacy limits of the customers the team belongs to,
+      if those customers still use them.
+
+
+      Budgets and rate limits set on the team itself are the legacy governance system, and a
+      team uses either those or an access profile, never both. If the team still has legacy
+      budgets or a rate limit, the attach is refused with 409 `entity_has_legacy_limits` and a
+      migration plan. Resend with `migrate: true` to carry each legacy budget's current spend onto
+      the profile's top-level budget with the same reset window (spend on a window the profile has
+      no budget for is dropped - the plan marks it `carried: false`), carry rate-limit counters
+      when the profile's rate limit uses the same reset window, and delete the legacy limits.
+      Alternatively, clear the legacy limits from the team first and attach plainly, or keep
+      the legacy limits and do not attach a profile.
+    tags:
+      - Access Profiles
+    parameters:
+      - name: team_id
+        in: path
+        required: true
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+              - profile_id
+            properties:
+              profile_id:
+                type: integer
+                description: The access profile template to attach.
+              migrate:
+                type: boolean
+                default: false
+                description: >-
+                  Move the team's legacy budgets and rate limit onto the profile, carrying
+                  current spend where the reset windows match, then delete them. Only needed
+                  when the attach was refused with `entity_has_legacy_limits`.
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Profile attached.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  example: attached
+                access_profile:
+                  type: object
+                adopted_virtual_key_ids:
+                  type: array
+                  items:
+                    type: string
+                migration:
+                  type: object
+                  description: The migration plan that ran. Present only when `migrate` was true.
+      '400':
+        description: Invalid request body.
+      '404':
+        description: Access profile or team not found.
+      '409':
+        description: >-
+          `entity_has_legacy_limits`: the team still has legacy budgets or a rate limit.
+          The body carries `legacy_limits` (the `budgets` and `rate_limit` in question) and a
+          `migration` plan showing, per legacy budget, its `reset_duration`, `max_limit`,
+          `current_usage`, whether that spend would be `carried`, and the `profile_max_limit` it
+          lands on; and for the rate limit, whether `tokens_carried` and `requests_carried`.
+          Resend with `migrate: true`, or remove the legacy limits first.
+        content:
+          application/json:
+            schema:
+              type: object
+              description: >-
+                The standard error envelope, with the legacy limits and migration plan alongside.
+              properties:
+                is_bifrost_error:
+                  type: boolean
+                status_code:
+                  type: integer
+                  example: 409
+                error:
+                  type: object
+                  properties:
+                    code:
+                      type: string
+                      example: entity_has_legacy_limits
+                    message:
+                      type: string
+                extra_fields:
+                  type: object
+                legacy_limits:
+                  type: object
+                  properties:
+                    budgets:
+                      type: array
+                      items:
+                        type: object
+                    rate_limit:
+                      type: object
+                migration:
+                  type: object
+                  properties:
+                    budgets:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          legacy_budget_id:
+                            type: string
+                          reset_duration:
+                            type: string
+                          max_limit:
+                            type: number
+                          current_usage:
+                            type: number
+                          carried:
+                            type: boolean
+                            description: >-
+                              Whether this spend lands on a profile budget with the same reset
+                              window. `false` means it is dropped by the migration.
+                          profile_max_limit:
+                            type: number
+                            description: Limit of the profile budget the spend is carried onto, when `carried`.
+                    rate_limit:
+                      type: object
+                      properties:
+                        legacy_rate_limit_id:
+                          type: string
+                        tokens_carried:
+                          type: boolean
+                        requests_carried:
+                          type: boolean
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+  delete:
+    operationId: detachTeamAccessProfile
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Detach the access profile from a team
+    description: >-
+      Removes the profile this team holds. Its budgets, rate limits and usage are deleted, including
+      spend carried over from legacy limits, and legacy limits are not restored. The virtual keys the
+      team owns are deleted unless `preserve_virtual_keys=true`.
+    tags:
+      - Access Profiles
+    parameters:
+      - name: team_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: preserve_virtual_keys
+        in: query
+        required: false
+        description: >-
+          Keep the virtual keys the team owns instead of deleting them. A preserved key has no
+          providers, budgets or rate limit of its own, so its requests are refused until it is
+          configured again or a profile is attached.
+        schema:
+          type: boolean
+          default: false
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Profile detached.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  example: detached
+                deleted_virtual_key_ids:
+                  type: array
+                  items:
+                    type: string
+                preserved_virtual_key_ids:
+                  type: array
+                  items:
+                    type: string
+      '404':
+        description: No access profile is attached to this team.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+business-units/{business_unit_id}/access-profile:
+  get:
+    operationId: getBusinessUnitAccessProfile
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Get the access profile held by a business unit
+    description: >-
+      Returns the access profile attached to this business unit, along with the virtual keys the business unit
+      owns, which it governs. A business unit holds at most one profile; 404 means it holds none.
+    tags:
+      - Access Profiles
+    parameters:
+      - name: business_unit_id
+        in: path
+        required: true
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: The attached profile and the virtual keys it governs.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                access_profile:
+                  type: object
+                virtual_keys:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      is_active:
+                        type: boolean
+      '404':
+        description: No access profile is attached to this business unit.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+  post:
+    operationId: attachBusinessUnitAccessProfile
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Attach an access profile to a business unit
+    description: >-
+      Attaches a profile template to this business unit. A business unit holds at most one profile: attaching
+      another replaces it, and the replaced profile's budgets and usage counters are deleted.
+
+
+      The profile governs the virtual keys the business unit owns (keys with this `business_unit_id`), the
+      same way a user's profile governs the user's keys. Every such key is adopted on attach: its
+      own budgets, rate limits and provider configuration are stripped. Requests made with it are
+      resolved against this profile alone and charged to the profile's budgets and rate limits.
+      The profile does not change what members may do with their own identity or keys.
+
+
+      Business units carry no legacy budgets or rate limits, so attaching to one never needs a
+      migration.
+    tags:
+      - Access Profiles
+    parameters:
+      - name: business_unit_id
+        in: path
+        required: true
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+              - profile_id
+            properties:
+              profile_id:
+                type: integer
+                description: The access profile template to attach.
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Profile attached.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  example: attached
+                access_profile:
+                  type: object
+                adopted_virtual_key_ids:
+                  type: array
+                  items:
+                    type: string
+      '400':
+        description: Invalid request body.
+      '404':
+        description: Access profile or business unit not found.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+  delete:
+    operationId: detachBusinessUnitAccessProfile
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Detach the access profile from a business unit
+    description: >-
+      Removes the profile this business unit holds. Its budgets, rate limits and usage are deleted, including
+      spend carried over from legacy limits, and legacy limits are not restored. The virtual keys the
+      business unit owns are deleted unless `preserve_virtual_keys=true`.
+    tags:
+      - Access Profiles
+    parameters:
+      - name: business_unit_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: preserve_virtual_keys
+        in: query
+        required: false
+        description: >-
+          Keep the virtual keys the business unit owns instead of deleting them. A preserved key has no
+          providers, budgets or rate limit of its own, so its requests are refused until it is
+          configured again or a profile is attached.
+        schema:
+          type: boolean
+          default: false
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Profile detached.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  example: detached
+                deleted_virtual_key_ids:
+                  type: array
+                  items:
+                    type: string
+                preserved_virtual_key_ids:
+                  type: array
+                  items:
+                    type: string
+      '404':
+        description: No access profile is attached to this business unit.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+customers/{customer_id}/access-profile:
+  get:
+    operationId: getCustomerAccessProfile
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Get the access profile held by a customer
+    description: >-
+      Returns the access profile attached to this customer, along with the virtual keys the customer
+      owns, which it governs. A customer holds at most one profile; 404 means it holds none.
+    tags:
+      - Access Profiles
+    parameters:
+      - name: customer_id
+        in: path
+        required: true
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: The attached profile and the virtual keys it governs.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                access_profile:
+                  type: object
+                virtual_keys:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      is_active:
+                        type: boolean
+      '404':
+        description: No access profile is attached to this customer.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+  post:
+    operationId: attachCustomerAccessProfile
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Attach an access profile to a customer
+    description: >-
+      Attaches a profile template to this customer. A customer holds at most one profile: attaching
+      another replaces it, and the replaced profile's budgets and usage counters are deleted.
+
+
+      The profile governs the virtual keys the customer owns (keys with this `customer_id`), the
+      same way a user's profile governs the user's keys. Every such key is adopted on attach: its
+      own budgets, rate limits and provider configuration are stripped. Requests made with it are
+      resolved against this profile alone and charged to the profile's budgets and rate limits.
+      The profile does not change what members may do with their own identity or keys.
+      It does not govern keys owned by teams under the customer.
+
+
+      Budgets and rate limits set on the customer itself are the legacy governance system, and a
+      customer uses either those or an access profile, never both. If the customer still has legacy
+      budgets or a rate limit, the attach is refused with 409 `entity_has_legacy_limits` and a
+      migration plan. Resend with `migrate: true` to carry each legacy budget's current spend onto
+      the profile's top-level budget with the same reset window (spend on a window the profile has
+      no budget for is dropped - the plan marks it `carried: false`), carry rate-limit counters
+      when the profile's rate limit uses the same reset window, and delete the legacy limits.
+      Alternatively, clear the legacy limits from the customer first and attach plainly, or keep
+      the legacy limits and do not attach a profile.
+    tags:
+      - Access Profiles
+    parameters:
+      - name: customer_id
+        in: path
+        required: true
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+              - profile_id
+            properties:
+              profile_id:
+                type: integer
+                description: The access profile template to attach.
+              migrate:
+                type: boolean
+                default: false
+                description: >-
+                  Move the customer's legacy budgets and rate limit onto the profile, carrying
+                  current spend where the reset windows match, then delete them. Only needed
+                  when the attach was refused with `entity_has_legacy_limits`.
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Profile attached.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  example: attached
+                access_profile:
+                  type: object
+                adopted_virtual_key_ids:
+                  type: array
+                  items:
+                    type: string
+                migration:
+                  type: object
+                  description: The migration plan that ran. Present only when `migrate` was true.
+      '400':
+        description: Invalid request body.
+      '404':
+        description: Access profile or customer not found.
+      '409':
+        description: >-
+          `entity_has_legacy_limits`: the customer still has legacy budgets or a rate limit.
+          The body carries `legacy_limits` (the `budgets` and `rate_limit` in question) and a
+          `migration` plan showing, per legacy budget, its `reset_duration`, `max_limit`,
+          `current_usage`, whether that spend would be `carried`, and the `profile_max_limit` it
+          lands on; and for the rate limit, whether `tokens_carried` and `requests_carried`.
+          Resend with `migrate: true`, or remove the legacy limits first.
+        content:
+          application/json:
+            schema:
+              type: object
+              description: >-
+                The standard error envelope, with the legacy limits and migration plan alongside.
+              properties:
+                is_bifrost_error:
+                  type: boolean
+                status_code:
+                  type: integer
+                  example: 409
+                error:
+                  type: object
+                  properties:
+                    code:
+                      type: string
+                      example: entity_has_legacy_limits
+                    message:
+                      type: string
+                extra_fields:
+                  type: object
+                legacy_limits:
+                  type: object
+                  properties:
+                    budgets:
+                      type: array
+                      items:
+                        type: object
+                    rate_limit:
+                      type: object
+                migration:
+                  type: object
+                  properties:
+                    budgets:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          legacy_budget_id:
+                            type: string
+                          reset_duration:
+                            type: string
+                          max_limit:
+                            type: number
+                          current_usage:
+                            type: number
+                          carried:
+                            type: boolean
+                            description: >-
+                              Whether this spend lands on a profile budget with the same reset
+                              window. `false` means it is dropped by the migration.
+                          profile_max_limit:
+                            type: number
+                            description: Limit of the profile budget the spend is carried onto, when `carried`.
+                    rate_limit:
+                      type: object
+                      properties:
+                        legacy_rate_limit_id:
+                          type: string
+                        tokens_carried:
+                          type: boolean
+                        requests_carried:
+                          type: boolean
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+  delete:
+    operationId: detachCustomerAccessProfile
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Detach the access profile from a customer
+    description: >-
+      Removes the profile this customer holds. Its budgets, rate limits and usage are deleted, including
+      spend carried over from legacy limits, and legacy limits are not restored. The virtual keys the
+      customer owns are deleted unless `preserve_virtual_keys=true`.
+    tags:
+      - Access Profiles
+    parameters:
+      - name: customer_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: preserve_virtual_keys
+        in: query
+        required: false
+        description: >-
+          Keep the virtual keys the customer owns instead of deleting them. A preserved key has no
+          providers, budgets or rate limit of its own, so its requests are refused until it is
+          configured again or a profile is attached.
+        schema:
+          type: boolean
+          default: false
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Profile detached.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  example: detached
+                deleted_virtual_key_ids:
+                  type: array
+                  items:
+                    type: string
+                preserved_virtual_key_ids:
+                  type: array
+                  items:
+                    type: string
+      '404':
+        description: No access profile is attached to this customer.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+teams/{team_id}/access-profile/budgets/{budget_id}/override:
+  put:
+    operationId: updateTeamAccessProfileBudgetOverride
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Set a team's access-profile budget override
+    description: |
+      Sets or replaces the spending override on one budget of the access profile attached to this team.
+      The override is additive - while it is active the budget is enforced against
+      `max_limit + override_amount` - and it leaves the budget's base limit, current usage, and reset
+      schedule untouched. Only this team is affected; the template and every other holder keep their
+      limits. Use `mode: cycles` with a `cycles` count for a finite number of reset windows, or
+      `mode: forever` until it is deleted. The override survives template propagation.
+
+      Overrides apply to access-profile budgets only, not to legacy team budgets.
+    tags:
+      - Access Profiles
+    parameters:
+      - name: team_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: budget_id
+        in: path
+        required: true
+        description: ID of a budget on the team's access profile - its own, a provider's, or a per-model one
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/BudgetOverrideRequest'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Budget override applied successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/BudgetOverrideResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: No access profile is attached to this team, or the budget is not one of its budgets.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+  delete:
+    operationId: deleteTeamAccessProfileBudgetOverride
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Remove a team's access-profile budget override
+    description: |
+      Removes any active override from the budget, so it is enforced against its base `max_limit` again.
+      Current usage and the reset schedule are unchanged. Safe to call on a budget with no override.
+    tags:
+      - Access Profiles
+    parameters:
+      - name: team_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: budget_id
+        in: path
+        required: true
+        description: ID of a budget on the team's access profile - its own, a provider's, or a per-model one
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Budget override removed
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/BudgetOverrideResponse'
+      '404':
+        description: No access profile is attached to this team, or the budget is not one of its budgets.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+business-units/{business_unit_id}/access-profile/budgets/{budget_id}/override:
+  put:
+    operationId: updateBusinessUnitAccessProfileBudgetOverride
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Set a business unit's access-profile budget override
+    description: |
+      Sets or replaces the spending override on one budget of the access profile attached to this business unit.
+      The override is additive - while it is active the budget is enforced against
+      `max_limit + override_amount` - and it leaves the budget's base limit, current usage, and reset
+      schedule untouched. Only this business unit is affected; the template and every other holder keep their
+      limits. Use `mode: cycles` with a `cycles` count for a finite number of reset windows, or
+      `mode: forever` until it is deleted. The override survives template propagation.
+
+      Overrides apply to access-profile budgets only, not to legacy business unit budgets.
+    tags:
+      - Access Profiles
+    parameters:
+      - name: business_unit_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: budget_id
+        in: path
+        required: true
+        description: ID of a budget on the business unit's access profile - its own, a provider's, or a per-model one
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/BudgetOverrideRequest'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Budget override applied successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/BudgetOverrideResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: No access profile is attached to this business unit, or the budget is not one of its budgets.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+  delete:
+    operationId: deleteBusinessUnitAccessProfileBudgetOverride
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Remove a business unit's access-profile budget override
+    description: |
+      Removes any active override from the budget, so it is enforced against its base `max_limit` again.
+      Current usage and the reset schedule are unchanged. Safe to call on a budget with no override.
+    tags:
+      - Access Profiles
+    parameters:
+      - name: business_unit_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: budget_id
+        in: path
+        required: true
+        description: ID of a budget on the business unit's access profile - its own, a provider's, or a per-model one
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Budget override removed
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/BudgetOverrideResponse'
+      '404':
+        description: No access profile is attached to this business unit, or the budget is not one of its budgets.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+customers/{customer_id}/access-profile/budgets/{budget_id}/override:
+  put:
+    operationId: updateCustomerAccessProfileBudgetOverride
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Set a customer's access-profile budget override
+    description: |
+      Sets or replaces the spending override on one budget of the access profile attached to this customer.
+      The override is additive - while it is active the budget is enforced against
+      `max_limit + override_amount` - and it leaves the budget's base limit, current usage, and reset
+      schedule untouched. Only this customer is affected; the template and every other holder keep their
+      limits. Use `mode: cycles` with a `cycles` count for a finite number of reset windows, or
+      `mode: forever` until it is deleted. The override survives template propagation.
+
+      Overrides apply to access-profile budgets only, not to legacy customer budgets.
+    tags:
+      - Access Profiles
+    parameters:
+      - name: customer_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: budget_id
+        in: path
+        required: true
+        description: ID of a budget on the customer's access profile - its own, a provider's, or a per-model one
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/BudgetOverrideRequest'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Budget override applied successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/BudgetOverrideResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: No access profile is attached to this customer, or the budget is not one of its budgets.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+  delete:
+    operationId: deleteCustomerAccessProfileBudgetOverride
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Remove a customer's access-profile budget override
+    description: |
+      Removes any active override from the budget, so it is enforced against its base `max_limit` again.
+      Current usage and the reset schedule are unchanged. Safe to call on a budget with no override.
+    tags:
+      - Access Profiles
+    parameters:
+      - name: customer_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: budget_id
+        in: path
+        required: true
+        description: ID of a budget on the customer's access profile - its own, a provider's, or a per-model one
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Budget override removed
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/BudgetOverrideResponse'
+      '404':
+        description: No access profile is attached to this customer, or the budget is not one of its budgets.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+teams/{team_id}/access-profile/migrate:
+  post:
+    operationId: migrateTeamToAccessProfile
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Migrate a team to a new access profile
+    description: >-
+      Moves this team off its legacy budgets and rate limit onto a new access profile created for
+      it from those limits - same amounts and reset windows, so all spend carries over - granting the
+      chosen providers. Every virtual key the team owns is adopted, and the legacy limits are
+      deleted. With `dry_run: true` nothing changes and the response previews the profile, the
+      migration plan and the keys that would be adopted. If the attach fails the created profile is
+      deleted, so a failed migration changes nothing.
+    tags:
+      - Access Profiles
+    parameters:
+      - name: team_id
+        in: path
+        required: true
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [name, provider_access]
+            properties:
+              name:
+                type: string
+                description: Name of the new access profile.
+              provider_access:
+                type: string
+                enum: [all, selected, none]
+                description: >-
+                  `all` grants every configured provider; `selected` grants only the providers in
+                  `provider_configs` and `providers`; `none` grants nothing until the profile is edited.
+              provider_configs:
+                type: array
+                items:
+                  $ref: '../../schemas/management/accessprofiles.yaml#/ProviderConfig'
+                description: >-
+                  With `provider_access` `selected`, each provider granted as an access profile grants
+                  it: its allowed and blocked models, keys, and per-provider and per-model limits. A
+                  provider listed here and in `providers` takes this config.
+              providers:
+                type: array
+                items:
+                  type: string
+                description: >-
+                  With `provider_access` `selected`, providers granted with all of their models. One of
+                  `provider_configs` or `providers` is required when `provider_access` is `selected`.
+              dry_run:
+                type: boolean
+                description: Preview the migration without changing anything.
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: >-
+          The migration ran (`status: migrated`, with the new template, the attachment,
+          `adopted_virtual_key_ids` and the `migration` plan), or its preview for a dry run
+          (`access_profile`, `name_available`, `legacy_limits`, `migration`, `virtual_keys`).
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: The team does not exist.
+      '409':
+        description: The team already holds an access profile, or the profile name is taken.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+business-units/{business_unit_id}/access-profile/migrate:
+  post:
+    operationId: migrateBusinessUnitToAccessProfile
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Migrate a business unit to a new access profile
+    description: >-
+      Moves this business unit off its legacy budgets and rate limit onto a new access profile created for
+      it from those limits - same amounts and reset windows, so all spend carries over - granting the
+      chosen providers. Every virtual key the business unit owns is adopted, and the legacy limits are
+      deleted. With `dry_run: true` nothing changes and the response previews the profile, the
+      migration plan and the keys that would be adopted. If the attach fails the created profile is
+      deleted, so a failed migration changes nothing.
+    tags:
+      - Access Profiles
+    parameters:
+      - name: business_unit_id
+        in: path
+        required: true
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [name, provider_access]
+            properties:
+              name:
+                type: string
+                description: Name of the new access profile.
+              provider_access:
+                type: string
+                enum: [all, selected, none]
+                description: >-
+                  `all` grants every configured provider; `selected` grants only the providers in
+                  `provider_configs` and `providers`; `none` grants nothing until the profile is edited.
+              provider_configs:
+                type: array
+                items:
+                  $ref: '../../schemas/management/accessprofiles.yaml#/ProviderConfig'
+                description: >-
+                  With `provider_access` `selected`, each provider granted as an access profile grants
+                  it: its allowed and blocked models, keys, and per-provider and per-model limits. A
+                  provider listed here and in `providers` takes this config.
+              providers:
+                type: array
+                items:
+                  type: string
+                description: >-
+                  With `provider_access` `selected`, providers granted with all of their models. One of
+                  `provider_configs` or `providers` is required when `provider_access` is `selected`.
+              dry_run:
+                type: boolean
+                description: Preview the migration without changing anything.
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: >-
+          The migration ran (`status: migrated`, with the new template, the attachment,
+          `adopted_virtual_key_ids` and the `migration` plan), or its preview for a dry run
+          (`access_profile`, `name_available`, `legacy_limits`, `migration`, `virtual_keys`).
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: The business unit does not exist.
+      '409':
+        description: The business unit already holds an access profile, or the profile name is taken.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+customers/{customer_id}/access-profile/migrate:
+  post:
+    operationId: migrateCustomerToAccessProfile
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Migrate a customer to a new access profile
+    description: >-
+      Moves this customer off its legacy budgets and rate limit onto a new access profile created for
+      it from those limits - same amounts and reset windows, so all spend carries over - granting the
+      chosen providers. Every virtual key the customer owns is adopted, and the legacy limits are
+      deleted. With `dry_run: true` nothing changes and the response previews the profile, the
+      migration plan and the keys that would be adopted. If the attach fails the created profile is
+      deleted, so a failed migration changes nothing.
+    tags:
+      - Access Profiles
+    parameters:
+      - name: customer_id
+        in: path
+        required: true
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [name, provider_access]
+            properties:
+              name:
+                type: string
+                description: Name of the new access profile.
+              provider_access:
+                type: string
+                enum: [all, selected, none]
+                description: >-
+                  `all` grants every configured provider; `selected` grants only the providers in
+                  `provider_configs` and `providers`; `none` grants nothing until the profile is edited.
+              provider_configs:
+                type: array
+                items:
+                  $ref: '../../schemas/management/accessprofiles.yaml#/ProviderConfig'
+                description: >-
+                  With `provider_access` `selected`, each provider granted as an access profile grants
+                  it: its allowed and blocked models, keys, and per-provider and per-model limits. A
+                  provider listed here and in `providers` takes this config.
+              providers:
+                type: array
+                items:
+                  type: string
+                description: >-
+                  With `provider_access` `selected`, providers granted with all of their models. One of
+                  `provider_configs` or `providers` is required when `provider_access` is `selected`.
+              dry_run:
+                type: boolean
+                description: Preview the migration without changing anything.
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: >-
+          The migration ran (`status: migrated`, with the new template, the attachment,
+          `adopted_virtual_key_ids` and the `migration` plan), or its preview for a dry run
+          (`access_profile`, `name_available`, `legacy_limits`, `migration`, `virtual_keys`).
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: The customer does not exist.
+      '409':
+        description: The customer already holds an access profile, or the profile name is taken.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+teams/access-profiles:
+  get:
+    operationId: listTeamAccessProfileLimits
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: List the access profile limits of every team holding a profile
+    description: >-
+      Returns, keyed by team id, the budgets and rate limit of the access profile each team
+      holds, with the usage the database holds. An entity governed by a profile has no limits of its
+      own, so list views read its limits from here.
+    tags:
+      - Access Profiles
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: The profile limits, keyed by team id.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                access_profiles:
+                  type: object
+                  description: Keyed by entity id. An entity that holds no profile is absent.
+                  additionalProperties:
+                    type: object
+                    properties:
+                      id:
+                        type: integer
+                      name:
+                        type: string
+                      is_active:
+                        type: boolean
+                      calendar_aligned:
+                        type: boolean
+                      budgets:
+                        type: array
+                        items:
+                          type: object
+                      rate_limit:
+                        type: object
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+business-units/access-profiles:
+  get:
+    operationId: listBusinessUnitAccessProfileLimits
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: List the access profile limits of every business unit holding a profile
+    description: >-
+      Returns, keyed by business unit id, the budgets and rate limit of the access profile each business unit
+      holds, with the usage the database holds. An entity governed by a profile has no limits of its
+      own, so list views read its limits from here.
+    tags:
+      - Access Profiles
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: The profile limits, keyed by business unit id.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                access_profiles:
+                  type: object
+                  description: Keyed by entity id. An entity that holds no profile is absent.
+                  additionalProperties:
+                    type: object
+                    properties:
+                      id:
+                        type: integer
+                      name:
+                        type: string
+                      is_active:
+                        type: boolean
+                      calendar_aligned:
+                        type: boolean
+                      budgets:
+                        type: array
+                        items:
+                          type: object
+                      rate_limit:
+                        type: object
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+customers/access-profiles:
+  get:
+    operationId: listCustomerAccessProfileLimits
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: List the access profile limits of every customer holding a profile
+    description: >-
+      Returns, keyed by customer id, the budgets and rate limit of the access profile each customer
+      holds, with the usage the database holds. An entity governed by a profile has no limits of its
+      own, so list views read its limits from here.
+    tags:
+      - Access Profiles
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: The profile limits, keyed by customer id.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                access_profiles:
+                  type: object
+                  description: Keyed by entity id. An entity that holds no profile is absent.
+                  additionalProperties:
+                    type: object
+                    properties:
+                      id:
+                        type: integer
+                      name:
+                        type: string
+                      is_active:
+                        type: boolean
+                      calendar_aligned:
+                        type: boolean
+                      budgets:
+                        type: array
+                        items:
+                          type: object
+                      rate_limit:
+                        type: object
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+users-entity-access-profiles:
+  get:
+    operationId: getUserEntityAccessProfiles
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: List the entity access profiles a user answers to
+    description: >-
+      Returns the access profiles held by the user's teams, business units and the customers those
+      reach, with their per-model limits and the usage the database holds. Their budgets and rate
+      limits are charged
+      for every request the user makes, alongside the user's own access profiles.
+    tags:
+      - Access Profiles
+    parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: The entity access profiles charged for the user's requests.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                entity_access_profiles:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      entity_type:
+                        type: string
+                        enum: [team, business_unit, customer]
+                      entity_id:
+                        type: string
+                      entity_name:
+                        type: string
+                      access_profile:
+                        type: object
+                      model_configs:
+                        type: array
+                        items:
+                          type: object
+      '400':
+        description: Invalid user id.
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
