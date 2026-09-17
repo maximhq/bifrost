@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"maps"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/providers/utils"
@@ -14,13 +15,34 @@ func (req *OpenAIChatRequest) ToBifrostChatRequest(ctx *schemas.BifrostContext) 
 	if params.MaxCompletionTokens == nil && req.MaxTokens != nil {
 		params.MaxCompletionTokens = req.MaxTokens
 	}
+	var miniMaxParameters *schemas.MiniMaxChatParameters
+	if req.Thinking != nil || req.ReasoningSplit != nil {
+		if schemas.ResolveBaseProvider(ctx, provider) == schemas.MiniMax {
+			miniMaxParameters = &schemas.MiniMaxChatParameters{
+				Thinking:       req.Thinking,
+				ReasoningSplit: req.ReasoningSplit,
+			}
+		} else {
+			params.ExtraParams = maps.Clone(params.ExtraParams)
+			if params.ExtraParams == nil {
+				params.ExtraParams = make(map[string]interface{})
+			}
+			if req.Thinking != nil {
+				params.ExtraParams["thinking"] = req.Thinking
+			}
+			if req.ReasoningSplit != nil {
+				params.ExtraParams["reasoning_split"] = *req.ReasoningSplit
+			}
+		}
+	}
 
 	return &schemas.BifrostChatRequest{
-		Provider:  provider,
-		Model:     model,
-		Input:     ConvertOpenAIMessagesToBifrostMessages(req.Messages),
-		Params:    &params,
-		Fallbacks: schemas.ParseFallbacks(req.Fallbacks),
+		Provider:          provider,
+		Model:             model,
+		Input:             ConvertOpenAIMessagesToBifrostMessages(req.Messages),
+		Params:            &params,
+		Fallbacks:         schemas.ParseFallbacks(req.Fallbacks),
+		MiniMaxParameters: miniMaxParameters,
 	}
 }
 
@@ -38,12 +60,17 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 
 	// Canonical model for capability gating only; wire model (openaiReq.Model) is untouched.
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
-	caps := schemas.ResolveModelCaps(bifrostReq.Provider, capModel)
+	baseProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
+	capabilityProvider := bifrostReq.Provider
+	if baseProvider == schemas.MiniMax {
+		capabilityProvider = baseProvider
+	}
+	caps := schemas.ResolveModelCaps(capabilityProvider, capModel)
 
 	if bifrostReq.Params != nil {
 		openaiReq.ChatParameters = *bifrostReq.Params
 		openaiReq.ServiceTier = serviceTierForModel(caps, openaiReq.ServiceTier)
-		if openaiReq.ChatParameters.MaxCompletionTokens != nil && *openaiReq.ChatParameters.MaxCompletionTokens < MinMaxCompletionTokens {
+		if baseProvider != schemas.MiniMax && openaiReq.ChatParameters.MaxCompletionTokens != nil && *openaiReq.ChatParameters.MaxCompletionTokens < MinMaxCompletionTokens {
 			openaiReq.ChatParameters.MaxCompletionTokens = schemas.Ptr(MinMaxCompletionTokens)
 		}
 		// Drop user field if it exceeds OpenAI's 64 character limit
@@ -85,6 +112,12 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 			}
 			openaiReq.ChatParameters.Tools = normalizedTools
 		}
+	}
+
+	if baseProvider == schemas.MiniMax {
+		openaiReq.filterOpenAISpecificParameters(caps)
+		openaiReq.applyMiniMaxCompatibility(bifrostReq)
+		return openaiReq
 	}
 
 	switch bifrostReq.Provider {
@@ -179,6 +212,79 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		openaiReq.filterOpenAISpecificParameters(caps)
 		return openaiReq
 	}
+}
+
+// applyMiniMaxCompatibility maps Bifrost's neutral reasoning controls onto
+// MiniMax's OpenAI-compatible Chat extensions and preserves reasoning_details
+// when an assistant tool-call message is replayed by the agent loop.
+func (req *OpenAIChatRequest) applyMiniMaxCompatibility(original *schemas.BifrostChatRequest) {
+	if req == nil || original == nil {
+		return
+	}
+
+	extraParams := maps.Clone(req.ExtraParams)
+	if extraParams == nil {
+		extraParams = make(map[string]interface{})
+	}
+
+	// Explicit MiniMax-native parameters win over the neutral Bifrost mapping.
+	if original.MiniMaxParameters != nil && original.MiniMaxParameters.Thinking != nil {
+		req.Thinking = original.MiniMaxParameters.Thinking
+		delete(extraParams, "thinking")
+	} else if thinking, ok := extraParams["thinking"]; ok {
+		req.Thinking = thinking
+		delete(extraParams, "thinking")
+	} else if req.ChatParameters.Reasoning != nil {
+		thinkingType := "adaptive"
+		if (req.ChatParameters.Reasoning.Effort != nil && *req.ChatParameters.Reasoning.Effort == schemas.ReasoningEffortNone) ||
+			(req.ChatParameters.Reasoning.Enabled != nil && !*req.ChatParameters.Reasoning.Enabled) {
+			thinkingType = "disabled"
+		}
+		req.Thinking = map[string]string{"type": thinkingType}
+	}
+
+	if original.MiniMaxParameters != nil && original.MiniMaxParameters.ReasoningSplit != nil {
+		req.ReasoningSplit = schemas.Ptr(*original.MiniMaxParameters.ReasoningSplit)
+		delete(extraParams, "reasoning_split")
+	} else if split, ok := extraParams["reasoning_split"]; ok {
+		if value, valid := split.(bool); valid {
+			req.ReasoningSplit = schemas.Ptr(value)
+			delete(extraParams, "reasoning_split")
+		}
+	} else if len(req.ChatParameters.Tools) > 0 || req.Thinking != nil || hasMiniMaxReasoningDetails(original.Input) {
+		req.ReasoningSplit = schemas.Ptr(true)
+	}
+
+	// MiniMax Chat uses thinking.type rather than reasoning_effort. The API may
+	// return parallel tool calls, but it does not expose the OpenAI request-side
+	// parallel_tool_calls control.
+	req.ChatParameters.Reasoning = nil
+	req.ChatParameters.ParallelToolCalls = nil
+	req.ExtraParams = extraParams
+	req.ChatParameters.ExtraParams = extraParams
+
+	// The generic OpenAI converter intentionally omits reasoning_details because
+	// most compatible APIs reject it. MiniMax requires the full assistant response
+	// to be replayed for interleaved thinking, so restore it only on this wire.
+	for i := range req.Messages {
+		if i >= len(original.Input) || req.Messages[i].OpenAIChatAssistantMessage == nil || original.Input[i].ChatAssistantMessage == nil {
+			continue
+		}
+		details := original.Input[i].ChatAssistantMessage.ReasoningDetails
+		if len(details) == 0 {
+			continue
+		}
+		req.Messages[i].OpenAIChatAssistantMessage.ReasoningDetails = append([]schemas.ChatReasoningDetails(nil), details...)
+	}
+}
+
+func hasMiniMaxReasoningDetails(messages []schemas.ChatMessage) bool {
+	for i := range messages {
+		if messages[i].ChatAssistantMessage != nil && len(messages[i].ChatAssistantMessage.ReasoningDetails) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // providerRejectsServiceTier reports whether the provider's endpoint implements

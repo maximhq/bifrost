@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"maps"
 	"slices"
 	"strings"
 
@@ -52,7 +53,8 @@ type ResponsesFeatureSupport struct {
 // ProviderFeatures maps each OpenAI-compatible provider to its supported
 // Responses wire extensions. Only providers with a known deviation are listed.
 var ProviderFeatures = map[schemas.ModelProvider]ResponsesFeatureSupport{
-	schemas.OpenAI: {AdditionalToolsItem: true, ContextManagement: true},
+	schemas.OpenAI:  {AdditionalToolsItem: true, ContextManagement: true},
+	schemas.MiniMax: {AdditionalToolsItem: false, ContextManagement: false},
 	// Bedrock Mantle validates `input` against the standard union and rejects
 	// additional_tools with "Invalid 'input': value did not match any expected
 	// variant", but accepts the same tools at the top level. It also rejects
@@ -344,7 +346,14 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 	// Canonical model for capability gating only; wire model is untouched.
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
-	caps := schemas.ResolveModelCaps(bifrostReq.Provider, capModel)
+	baseProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
+	capabilityProvider := bifrostReq.Provider
+	featureProvider := bifrostReq.Provider
+	if baseProvider == schemas.MiniMax {
+		capabilityProvider = baseProvider
+		featureProvider = baseProvider
+	}
+	caps := schemas.ResolveModelCaps(capabilityProvider, capModel)
 
 	var messages []schemas.ResponsesMessage
 	// OpenAI models (except for gpt-oss) do not support reasoning content blocks, so we need to convert them to summaries, if there are any
@@ -353,7 +362,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	messages = make([]schemas.ResponsesMessage, 0, len(bifrostReq.Input))
 	// Tools lifted out of codex additional_tools items for providers that reject them.
 	var hoistedTools []schemas.ResponsesTool
-	keepAdditionalTools := supportsAdditionalToolsItem(bifrostReq.Provider)
+	keepAdditionalTools := supportsAdditionalToolsItem(featureProvider)
 	replayAssistantTextAsInput := isMantleGPTOSSResponses(ctx, bifrostReq.Provider, capModel)
 	for _, message := range bifrostReq.Input {
 		if !keepAdditionalTools && message.Type != nil &&
@@ -442,6 +451,14 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		}
 
 		if message.ResponsesReasoning != nil {
+			// MiniMax requires the complete reasoning output item to be replayed in
+			// multi-turn tool conversations. Its Responses wire already uses this
+			// shape, so bypass OpenAI model-family rewriting for this provider.
+			if baseProvider == schemas.MiniMax {
+				messages = append(messages, message)
+				continue
+			}
+
 			usesContentBlocks := caps.SupportsReasoningContentBlocks(defaultSupportsReasoningContentBlocks(capModel))
 			isReasoning := caps.SupportsReasoning(IsOpenAIReasoningModel(capModel))
 
@@ -581,7 +598,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	if params != nil {
 		req.ResponsesParameters = *params
 		req.ServiceTier = serviceTierForModel(caps, req.ServiceTier)
-		if req.ResponsesParameters.MaxOutputTokens != nil && *req.ResponsesParameters.MaxOutputTokens < MinMaxCompletionTokens {
+		if baseProvider != schemas.MiniMax && req.ResponsesParameters.MaxOutputTokens != nil && *req.ResponsesParameters.MaxOutputTokens < MinMaxCompletionTokens {
 			req.ResponsesParameters.MaxOutputTokens = schemas.Ptr(MinMaxCompletionTokens)
 		}
 		// Drop user field if it exceeds OpenAI's 64 character limit
@@ -612,10 +629,14 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			reasoningCopy := *req.ResponsesParameters.Reasoning
 			req.ResponsesParameters.Reasoning = &reasoningCopy
 			if req.ResponsesParameters.Reasoning.Effort != nil {
-				// Native field is provided, use it (and clear max_tokens)
+				// MiniMax accepts the OpenAI compatibility labels verbatim; applying
+				// OpenAI's model-name fallback would incorrectly coerce "minimal" to "low".
 				effort := *req.ResponsesParameters.Reasoning.Effort
-				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(caps.NormalizeReasoningEffort(effort, defaultEffortControl(capModel)))
-				// Clear max_tokens since OpenAI doesn't use it
+				if baseProvider != schemas.MiniMax {
+					effort = caps.NormalizeReasoningEffort(effort, defaultEffortControl(capModel))
+				}
+				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(effort)
+				// Clear max_tokens since OpenAI-compatible Responses APIs don't use it.
 				req.ResponsesParameters.Reasoning.MaxTokens = nil
 			} else if req.ResponsesParameters.Reasoning.MaxTokens != nil {
 				// Estimate effort from max_tokens
@@ -719,7 +740,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	// Match on the base provider: a custom provider built on bedrock reports its own
 	// key, which neither the datasheet nor the fallback map knows, so the reserved
 	// namespace would reach AWS.
-	toolProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
+	toolProvider := baseProvider
 	if reserved := resolveReservedToolNamespaces(toolProvider, capModel); len(reserved) > 0 && len(req.Tools) > 0 {
 		substitute := toolProvider == schemas.BedrockMantle && caps.SupportsWebSearch(true)
 		req.Tools = dropReservedNamespaceTools(req.Tools, reserved, substitute)
@@ -748,19 +769,76 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		req.Tools = normalizedTools
 	}
 
-	// Filter out tools that OpenAI doesn't support
+	// Filter out tools that the target OpenAI-compatible wire cannot serve.
 	req.filterUnsupportedTools()
 
 	if bifrostReq.Params != nil {
-		req.ExtraParams = bifrostReq.Params.ExtraParams
+		req.ExtraParams = maps.Clone(bifrostReq.Params.ExtraParams)
 	}
 
-	if features, ok := ProviderFeatures[bifrostReq.Provider]; ok && !features.ContextManagement {
+	if features, ok := ProviderFeatures[featureProvider]; ok && !features.ContextManagement {
 		req.ContextManagement = nil
 		delete(req.ExtraParams, "context_management")
 	}
 
+	if baseProvider == schemas.MiniMax {
+		req.applyMiniMaxResponsesCompatibility(ctx)
+	}
+
 	return req
+}
+
+// applyMiniMaxResponsesCompatibility restricts the shared OpenAI Responses
+// request to the subset documented by MiniMax. Namespace tools have already been
+// flattened by core, and additional_tools items have already been hoisted above.
+func (req *OpenAIResponsesRequest) applyMiniMaxResponsesCompatibility(ctx *schemas.BifrostContext) {
+	if req == nil {
+		return
+	}
+
+	// MiniMax documents only effort within the Responses reasoning object. Emit
+	// that compact shape through ExtraParams so fields with non-omitempty tags do
+	// not appear as null.
+	if req.ResponsesParameters.Reasoning != nil && req.ResponsesParameters.Reasoning.Effort != nil {
+		req.MiniMaxReasoning = map[string]string{"effort": *req.ResponsesParameters.Reasoning.Effort}
+	}
+	req.ResponsesParameters.Reasoning = nil
+
+	// These are OpenAI Responses features not present in MiniMax's create-response
+	// contract. Dropping them is preferable to an opaque upstream unknown-field 400.
+	req.Background = nil
+	req.Conversation = nil
+	req.Include = nil
+	req.MaxToolCalls = nil
+	req.ParallelToolCalls = nil
+	req.PreviousResponseID = nil
+	req.PromptCacheRetention = nil
+	req.PromptCacheOptions = nil
+	req.SafetyIdentifier = nil
+	req.StreamOptions = nil
+	req.Store = nil
+	req.TopLogProbs = nil
+	req.Truncation = nil
+	req.User = nil
+	req.IncludeServerSideToolInvocations = nil
+	req.ContextManagement = nil
+
+	if len(req.Tools) == 0 {
+		req.ToolChoice = nil
+		return
+	}
+	tools := make([]schemas.ResponsesTool, 0, len(req.Tools))
+	for _, tool := range req.Tools {
+		if tool.Type == schemas.ResponsesToolTypeFunction {
+			tools = append(tools, tool)
+			continue
+		}
+		schemas.AppendToContextList(ctx, schemas.BifrostContextKeyDroppedUnsupportedTools, string(tool.Type))
+	}
+	req.Tools = tools
+	if len(req.Tools) == 0 {
+		req.ToolChoice = nil
+	}
 }
 
 // topPUnsupported reports whether the model rejects top_p. The datasheet can mark

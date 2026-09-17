@@ -1,4 +1,4 @@
-// Package minimax implements MiniMax's native T2A v2 API.
+// Package minimax implements MiniMax's OpenAI-compatible text APIs and native T2A v2 API.
 package minimax
 
 import (
@@ -76,8 +76,8 @@ func (provider *MiniMaxProvider) GetProviderKey() schemas.ModelProvider {
 	return providerUtils.GetProviderName(schemas.MiniMax, provider.customProviderConfig)
 }
 
-func (provider *MiniMaxProvider) buildRequestURL(ctx *schemas.BifrostContext, requestType schemas.RequestType) string {
-	path, fullURL := providerUtils.GetRequestPath(ctx, defaultSpeechPath, provider.customProviderConfig, requestType)
+func (provider *MiniMaxProvider) buildRequestURL(ctx *schemas.BifrostContext, defaultPath string, requestType schemas.RequestType) string {
+	path, fullURL := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
 	if fullURL {
 		return path
 	}
@@ -94,6 +94,17 @@ func (provider *MiniMaxProvider) setAuth(req *fasthttp.Request, key schemas.Key)
 		return
 	}
 	req.Header.Set("Authorization", "Bearer "+value)
+}
+
+func (provider *MiniMaxProvider) authHeaders(key schemas.Key) map[string]string {
+	value := key.Value.GetValue()
+	if value == "" {
+		return map[string]string{}
+	}
+	if provider.authType == schemas.MiniMaxAuthTypeXKey {
+		return map[string]string{"x-key": value}
+	}
+	return map[string]string{"Authorization": "Bearer " + value}
 }
 
 func (provider *MiniMaxProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
@@ -141,7 +152,7 @@ func (provider *MiniMaxProvider) Speech(ctx *schemas.BifrostContext, key schemas
 	defer fasthttp.ReleaseResponse(resp)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.SetRequestURI(provider.buildRequestURL(ctx, schemas.SpeechRequest))
+	req.SetRequestURI(provider.buildRequestURL(ctx, defaultSpeechPath, schemas.SpeechRequest))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	provider.setAuth(req, key)
@@ -217,7 +228,7 @@ func (provider *MiniMaxProvider) SpeechStream(ctx *schemas.BifrostContext, postH
 	defer fasthttp.ReleaseRequest(req)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.SetRequestURI(provider.buildRequestURL(ctx, schemas.SpeechStreamRequest))
+	req.SetRequestURI(provider.buildRequestURL(ctx, defaultSpeechPath, schemas.SpeechStreamRequest))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	req.Header.Set("Accept", "text/event-stream")

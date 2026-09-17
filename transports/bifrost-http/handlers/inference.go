@@ -1018,6 +1018,18 @@ func (h *CompletionHandler) textCompletion(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, resp)
 }
 
+func isMiniMaxRequestProvider(config *lib.Config, provider schemas.ModelProvider) bool {
+	if provider == schemas.MiniMax {
+		return true
+	}
+	if config == nil || provider == "" {
+		return false
+	}
+	providerConfig, err := config.GetProviderConfigRaw(provider)
+	return err == nil && providerConfig.CustomProviderConfig != nil &&
+		providerConfig.CustomProviderConfig.BaseProviderType == schemas.MiniMax
+}
+
 // prepareChatCompletionRequest prepares a BifrostChatRequest from a ChatRequest
 func prepareChatCompletionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*ChatRequest, *schemas.BifrostChatRequest, error) {
 	req, base, err := prepareRequest[ChatRequest](ctx, config, chatParamsKnownFields)
@@ -1046,12 +1058,31 @@ func prepareChatCompletionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) 
 		}
 	}
 	req.ChatParameters.ExtraParams = base.ExtraParams
+
+	var miniMaxParameters *schemas.MiniMaxChatParameters
+	var miniMaxFields struct {
+		Thinking       interface{} `json:"thinking"`
+		ReasoningSplit *bool       `json:"reasoning_split"`
+	}
+	if err := sonic.Unmarshal(ctx.PostBody(), &miniMaxFields); err == nil &&
+		(miniMaxFields.Thinking != nil || miniMaxFields.ReasoningSplit != nil) {
+		miniMaxParameters = &schemas.MiniMaxChatParameters{
+			Thinking:       miniMaxFields.Thinking,
+			ReasoningSplit: miniMaxFields.ReasoningSplit,
+		}
+		if isMiniMaxRequestProvider(config, base.Provider) {
+			delete(req.ChatParameters.ExtraParams, "thinking")
+			delete(req.ChatParameters.ExtraParams, "reasoning_split")
+		}
+	}
+
 	return req, &schemas.BifrostChatRequest{
-		Provider:  base.Provider,
-		Model:     base.ModelName,
-		Input:     req.Messages,
-		Params:    req.ChatParameters,
-		Fallbacks: base.Fallbacks,
+		Provider:          base.Provider,
+		Model:             base.ModelName,
+		Input:             req.Messages,
+		Params:            req.ChatParameters,
+		Fallbacks:         base.Fallbacks,
+		MiniMaxParameters: miniMaxParameters,
 	}, nil
 }
 
@@ -1424,6 +1455,24 @@ func shouldReturnSpeechJSON(provider schemas.ModelProvider, hasTimestamps bool, 
 	return (provider == schemas.Elevenlabs && hasTimestamps) || (response != nil && response.SubtitleFile != nil)
 }
 
+func speechContentType(responseFormat string) string {
+	format := strings.ToLower(responseFormat)
+	switch {
+	case strings.HasPrefix(format, "pcmu_wav"), strings.HasPrefix(format, "wav"):
+		return "audio/wav"
+	case strings.HasPrefix(format, "pcmu_raw"), strings.HasPrefix(format, "pcm"):
+		return "application/octet-stream"
+	case strings.HasPrefix(format, "flac"):
+		return "audio/flac"
+	case strings.HasPrefix(format, "opus"):
+		return "audio/ogg"
+	case strings.HasPrefix(format, "aac"):
+		return "audio/aac"
+	default:
+		return "audio/mpeg"
+	}
+}
+
 // speech handles POST /v1/audio/speech - Process speech completion requests.
 // ElevenLabs sound-effect models (e.g. "eleven_text_to_sound_v2") also flow
 // through here; the provider routes them to /v1/sound-generation by model id,
@@ -1458,9 +1507,14 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Preserve the attachment header through the large-response shortcut; the
-	// normal binary path sets this explicitly after the stream check.
-	if !(bifrostSpeechReq.Provider == schemas.Elevenlabs && req.WithTimestamps != nil && *req.WithTimestamps) {
+	// When with_timestamps is true, ElevenLabs returns base64 encoded audio.
+	// MiniMax subtitle responses are also JSON so the metadata URL is not lost.
+	hasTimestamps := req.WithTimestamps != nil && *req.WithTimestamps
+	returnJSON := shouldReturnSpeechJSON(bifrostSpeechReq.Provider, hasTimestamps, resp)
+
+	// Preserve the attachment header through the large-response shortcut only for
+	// binary audio. JSON responses must not be downloaded as speech.<format>.
+	if !returnJSON {
 		bifrostCtx.SetValue(schemas.BifrostContextKeyLargeResponseContentDisposition, "attachment; filename="+attachmentFilename)
 	}
 
@@ -1472,11 +1526,8 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Send successful response
-	// When with_timestamps is true, Elevenlabs returns base64 encoded audio
-	hasTimestamps := req.WithTimestamps != nil && *req.WithTimestamps
-
-	if shouldReturnSpeechJSON(bifrostSpeechReq.Provider, hasTimestamps, resp) {
+	// Send successful response.
+	if returnJSON {
 		ctx.Response.Header.Set("Content-Type", "application/json")
 		SendJSON(ctx, resp)
 		return
@@ -1487,7 +1538,7 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	ctx.Response.Header.Set("Content-Type", "audio/mpeg")
+	ctx.Response.Header.Set("Content-Type", speechContentType(req.ResponseFormat))
 	ctx.Response.Header.Set("Content-Disposition", "attachment; filename="+attachmentFilename)
 	ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(resp.Audio)))
 	ctx.Response.SetBody(resp.Audio)

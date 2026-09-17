@@ -128,6 +128,11 @@ type OpenAIChatRequest struct {
 	// PromptCacheIsolationKey is the Fireworks chat-completions field for cache isolation.
 	PromptCacheIsolationKey *string `json:"prompt_cache_isolation_key,omitempty"`
 
+	// Thinking and ReasoningSplit are MiniMax's OpenAI-compatible Chat extensions.
+	// They remain nil for every other provider and are therefore omitted from the wire.
+	Thinking       interface{} `json:"thinking,omitempty"`
+	ReasoningSplit *bool       `json:"reasoning_split,omitempty"`
+
 	// NOTE: MaxCompletionTokens is a new replacement for max_tokens but some providers still use max_tokens.
 	// This Field is populated only for such providers and is NOT to be used externally.
 	MaxTokens *int `json:"max_tokens,omitempty"`
@@ -172,10 +177,9 @@ type OpenAIChatAssistantMessage struct {
 	// ReasoningAlias and ReasoningDetails capture the other two spellings callers use to
 	// replay assistant reasoning: OpenRouter-style "reasoning" and "reasoning_details".
 	//
-	// These are inbound-only. ConvertBifrostMessagesToOpenAIMessages is the sole
-	// construction site on the outbound path and never populates them, so they stay nil
-	// there and omitempty keeps them off the wire for every provider. Read them via
-	// ConvertOpenAIMessagesToBifrostMessages, which folds them into the Bifrost schema.
+	// ReasoningAlias remains inbound-only. ReasoningDetails is also normally inbound-only,
+	// but the MiniMax compatibility path restores it on outbound assistant messages because
+	// MiniMax requires the complete reasoning_details payload for interleaved tool use.
 	ReasoningAlias   *string                        `json:"reasoning,omitempty"`
 	ReasoningDetails []schemas.ChatReasoningDetails `json:"reasoning_details,omitempty"`
 
@@ -383,6 +387,8 @@ func (req *OpenAIChatRequest) UnmarshalJSON(data []byte) error {
 		Stream                  *bool           `json:"stream,omitempty"`
 		MaxTokens               *int            `json:"max_tokens,omitempty"`
 		PromptCacheIsolationKey *string         `json:"prompt_cache_isolation_key,omitempty"`
+		Thinking                interface{}     `json:"thinking,omitempty"`
+		ReasoningSplit          *bool           `json:"reasoning_split,omitempty"`
 		Fallbacks               []string        `json:"fallbacks,omitempty"`
 	}
 	var base baseFields
@@ -394,6 +400,8 @@ func (req *OpenAIChatRequest) UnmarshalJSON(data []byte) error {
 	req.Stream = base.Stream
 	req.MaxTokens = base.MaxTokens
 	req.PromptCacheIsolationKey = base.PromptCacheIsolationKey
+	req.Thinking = base.Thinking
+	req.ReasoningSplit = base.ReasoningSplit
 	req.Fallbacks = base.Fallbacks
 
 	// Unmarshal ChatParameters (which has its own custom unmarshaller)
@@ -868,6 +876,10 @@ type OpenAIResponsesRequest struct {
 	Provider    schemas.ModelProvider  `json:"-"` // originating provider, used for provider-specific filtering
 	Fallbacks   []string               `json:"fallbacks,omitempty"`
 	ExtraParams map[string]interface{} `json:"-"` // Optional: Extra parameters
+
+	// MiniMaxReasoning is the compact reasoning wire shape accepted by MiniMax.
+	// It is set only by the MiniMax compatibility path.
+	MiniMaxReasoning map[string]string `json:"-"`
 }
 
 // MarshalJSON implements custom JSON marshalling for OpenAIResponsesRequest.
@@ -942,8 +954,9 @@ func (resp *OpenAIResponsesRequest) MarshalJSON() ([]byte, error) {
 		*Alias
 		// Shadow the embedded "input" field to use custom marshaling
 		Input json.RawMessage `json:"input"`
-		// Shadow the embedded "reasoning" field to modify it
-		Reasoning *schemas.ResponsesParametersReasoning `json:"reasoning,omitempty"`
+		// Shadow the embedded "reasoning" field to modify it or replace it with a
+		// provider-specific compatible shape.
+		Reasoning interface{} `json:"reasoning,omitempty"`
 		// Shadow the embedded "tools" field to use processed tools
 		Tools []schemas.ResponsesTool `json:"tools,omitempty"`
 	}{
@@ -952,8 +965,11 @@ func (resp *OpenAIResponsesRequest) MarshalJSON() ([]byte, error) {
 		Tools: processedTools,
 	}
 
-	// Copy reasoning but set MaxTokens to nil
-	if resp.Reasoning != nil {
+	// Copy reasoning but set MaxTokens to nil. MiniMax uses a narrower
+	// effort-only object so unsupported nullable fields are not emitted.
+	if resp.MiniMaxReasoning != nil {
+		aux.Reasoning = resp.MiniMaxReasoning
+	} else if resp.Reasoning != nil {
 		aux.Reasoning = &schemas.ResponsesParametersReasoning{
 			Effort:          resp.Reasoning.Effort,
 			GenerateSummary: resp.Reasoning.GenerateSummary,
