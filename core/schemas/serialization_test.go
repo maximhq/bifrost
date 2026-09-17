@@ -1150,6 +1150,63 @@ func TestNetworkConfig_StreamIdleTimeoutRoundTrip(t *testing.T) {
 	assert.Contains(t, string(data), `"stream_idle_timeout_in_seconds":120`)
 }
 
+func TestNetworkConfig_StreamThroughputGuardRoundTrip(t *testing.T) {
+	nc := NetworkConfig{
+		DefaultRequestTimeoutInSeconds: 300,
+		StreamThroughputGuard: &StreamThroughputGuardConfig{
+			MinimumOutputCharactersPerSecond: 20,
+			ProbeWindowInSeconds:             5,
+		},
+	}
+
+	data, err := json.Marshal(nc)
+	require.NoError(t, err)
+
+	var decoded NetworkConfig
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	require.NotNil(t, decoded.StreamThroughputGuard)
+	assert.Equal(t, 20, decoded.StreamThroughputGuard.MinimumOutputCharactersPerSecond)
+	assert.Equal(t, 5, decoded.StreamThroughputGuard.ProbeWindowInSeconds)
+	assert.Contains(t, string(data), `"stream_throughput_guard"`)
+}
+
+func TestProviderConfig_StreamThroughputGuardDefaults(t *testing.T) {
+	disabled := &ProviderConfig{}
+	disabled.CheckAndSetDefaults()
+	assert.Nil(t, disabled.NetworkConfig.StreamThroughputGuard)
+
+	enabled := &ProviderConfig{NetworkConfig: NetworkConfig{StreamThroughputGuard: &StreamThroughputGuardConfig{
+		MinimumOutputCharactersPerSecond: StreamThroughputCharactersPerSecondUpperBound + 1,
+		ProbeWindowInSeconds:             StreamThroughputProbeWindowUpperBoundSeconds + 1,
+	}}}
+	enabled.CheckAndSetDefaults()
+	require.NotNil(t, enabled.NetworkConfig.StreamThroughputGuard)
+	assert.Equal(t, StreamThroughputCharactersPerSecondUpperBound, enabled.NetworkConfig.StreamThroughputGuard.MinimumOutputCharactersPerSecond)
+	assert.Equal(t, StreamThroughputProbeWindowUpperBoundSeconds, enabled.NetworkConfig.StreamThroughputGuard.ProbeWindowInSeconds)
+
+	for _, test := range []struct {
+		name string
+		rate int
+	}{
+		{name: "zero", rate: 0},
+		{name: "negative", rate: -1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := &ProviderConfig{NetworkConfig: NetworkConfig{StreamThroughputGuard: &StreamThroughputGuardConfig{
+				MinimumOutputCharactersPerSecond: test.rate,
+			}}}
+			config.CheckAndSetDefaults()
+			assert.Equal(t, StreamThroughputCharactersPerSecondLowerBound, config.NetworkConfig.StreamThroughputGuard.MinimumOutputCharactersPerSecond)
+		})
+	}
+
+	defaultWindow := &ProviderConfig{NetworkConfig: NetworkConfig{StreamThroughputGuard: &StreamThroughputGuardConfig{
+		MinimumOutputCharactersPerSecond: 20,
+	}}}
+	defaultWindow.CheckAndSetDefaults()
+	assert.Equal(t, DefaultStreamThroughputProbeWindowInSeconds, defaultWindow.NetworkConfig.StreamThroughputGuard.ProbeWindowInSeconds)
+}
+
 func TestNetworkConfig_HTTP2PingInterval(t *testing.T) {
 	nc := NetworkConfig{EnforceHTTP2: true, HTTP2PingIntervalInSeconds: 45}
 	data, err := json.Marshal(nc)

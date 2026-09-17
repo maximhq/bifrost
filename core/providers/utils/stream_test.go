@@ -583,6 +583,133 @@ func TestCheckFirstStreamChunk_CodeOnlyError(t *testing.T) {
 	}
 }
 
+func TestStreamThroughputGuard_HealthyStreamPreservesChunkOrder(t *testing.T) {
+	stream := make(chan *schemas.BifrostStreamChunk, 3)
+	stream <- chatStreamChunk("first-" + strings.Repeat("a", 122))
+	stream <- chatStreamChunk("second-" + strings.Repeat("b", 121))
+	stream <- chatStreamChunk("tail")
+	close(stream)
+
+	wrapped, _, bifrostErr := CheckFirstStreamChunkForError(context.Background(), stream, &schemas.StreamThroughputGuardConfig{
+		MinimumOutputCharactersPerSecond: 1000,
+		ProbeWindowInSeconds:             1,
+	})
+	if bifrostErr != nil {
+		t.Fatalf("healthy stream rejected: %v", bifrostErr)
+	}
+	var content strings.Builder
+	for chunk := range wrapped {
+		content.WriteString(*chunk.BifrostChatResponse.Choices[0].Delta.Content)
+	}
+	want := "first-" + strings.Repeat("a", 122) + "second-" + strings.Repeat("b", 121) + "tail"
+	if got := content.String(); got != want {
+		t.Fatalf("stream content = %q, want %q", got, want)
+	}
+}
+
+func TestStreamThroughputGuard_RejectsSlowStreamBeforeOutput(t *testing.T) {
+	stream := make(chan *schemas.BifrostStreamChunk, 1)
+	stream <- &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{
+		Choices: []schemas.BifrostResponseChoice{{ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+			Delta: &schemas.ChatStreamResponseChoiceDelta{Role: schemas.Ptr("assistant")},
+		}}},
+	}}
+
+	wrapped, drainDone, bifrostErr := CheckFirstStreamChunkForError(context.Background(), stream, &schemas.StreamThroughputGuardConfig{
+		MinimumOutputCharactersPerSecond: 100000,
+		ProbeWindowInSeconds:             1,
+	})
+	if wrapped != nil {
+		t.Fatal("slow primary output was exposed")
+	}
+	if bifrostErr == nil || bifrostErr.Error == nil || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != schemas.ErrCodeStreamThroughputBelowMinimum {
+		t.Fatalf("unexpected guard error: %+v", bifrostErr)
+	}
+	close(stream)
+	select {
+	case <-drainDone:
+	case <-time.After(time.Second):
+		t.Fatal("slow stream did not drain")
+	}
+}
+
+func TestStreamThroughputGuard_DetectsErrorAfterLifecycleChunk(t *testing.T) {
+	stream := make(chan *schemas.BifrostStreamChunk, 2)
+	stream <- &schemas.BifrostStreamChunk{BifrostResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeCreated,
+	}}
+	stream <- &schemas.BifrostStreamChunk{BifrostError: &schemas.BifrostError{Error: &schemas.ErrorField{Message: "upstream failed"}}}
+	close(stream)
+
+	wrapped, drainDone, bifrostErr := CheckFirstStreamChunkForError(context.Background(), stream, &schemas.StreamThroughputGuardConfig{
+		MinimumOutputCharactersPerSecond: 10,
+		ProbeWindowInSeconds:             1,
+	})
+	if wrapped != nil {
+		t.Fatal("lifecycle chunk was exposed before the upstream error")
+	}
+	if bifrostErr == nil || bifrostErr.Error == nil || bifrostErr.Error.Message != "upstream failed" {
+		t.Fatalf("unexpected stream error: %+v", bifrostErr)
+	}
+	<-drainDone
+}
+
+func TestStreamThroughputGuard_ShortCompletedStreamIsAllowed(t *testing.T) {
+	stream := make(chan *schemas.BifrostStreamChunk, 1)
+	stream <- chatStreamChunk("ok")
+	close(stream)
+
+	wrapped, _, bifrostErr := CheckFirstStreamChunkForError(context.Background(), stream, &schemas.StreamThroughputGuardConfig{
+		MinimumOutputCharactersPerSecond: 100000,
+		ProbeWindowInSeconds:             1,
+	})
+	if bifrostErr != nil {
+		t.Fatalf("short completed stream rejected: %+v", bifrostErr)
+	}
+	chunk, ok := <-wrapped
+	if !ok || chunk == nil || *chunk.BifrostChatResponse.Choices[0].Delta.Content != "ok" {
+		t.Fatalf("short stream chunk = %+v, want ok", chunk)
+	}
+	if _, ok := <-wrapped; ok {
+		t.Fatal("short stream wrapper remained open")
+	}
+}
+
+func TestStreamThroughputGuard_ProbeBufferIsBounded(t *testing.T) {
+	stream := make(chan *schemas.BifrostStreamChunk, maxStreamProbeChunks)
+	for i := 0; i < maxStreamProbeChunks; i++ {
+		stream <- &schemas.BifrostStreamChunk{BifrostResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeInProgress,
+			SequenceNumber: i,
+		}}
+	}
+	close(stream)
+
+	wrapped, drainDone, bifrostErr := CheckFirstStreamChunkForError(context.Background(), stream, &schemas.StreamThroughputGuardConfig{
+		MinimumOutputCharactersPerSecond: 1,
+		ProbeWindowInSeconds:             60,
+	})
+	if wrapped != nil {
+		t.Fatal("buffer-limited probe exposed unverified output")
+	}
+	if bifrostErr == nil || bifrostErr.Error == nil || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != schemas.ErrCodeStreamThroughputProbeBufferExceeded {
+		t.Fatalf("unexpected buffer guard error: %+v", bifrostErr)
+	}
+	select {
+	case <-drainDone:
+	case <-time.After(time.Second):
+		t.Fatal("probe stream did not drain")
+	}
+}
+
+func chatStreamChunk(content string) *schemas.BifrostStreamChunk {
+	return &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{
+		Choices: []schemas.BifrostResponseChoice{{ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+			Delta: &schemas.ChatStreamResponseChoiceDelta{Content: &content},
+		}}},
+	}}
+}
+
 // Regression tests for maximhq/bifrost#6974: the first-chunk peek must observe
 // the request context so a cancelled or expired request releases its worker
 // slot instead of waiting out the provider's stream idle timeout.
@@ -712,5 +839,70 @@ func TestCheckFirstStreamChunk_BufferedChunkWinsOverCancelledCtx(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("closed source failed to drain")
+	}
+}
+
+func TestStreamThroughputGuard_ClosedStreamWinsOverCancelledContext(t *testing.T) {
+	// Both the closed source and ctx.Done are ready when the probe selects;
+	// the delivered stream state must win so a completed short stream is not
+	// reported as cancelled (or, symmetrically, rejected as too slow).
+	for i := 0; i < 32; i++ {
+		stream := make(chan *schemas.BifrostStreamChunk, 2)
+		stream <- &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{
+			Choices: []schemas.BifrostResponseChoice{{ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+				Delta: &schemas.ChatStreamResponseChoiceDelta{Role: schemas.Ptr("assistant")},
+			}}},
+		}}
+		stream <- chatStreamChunk("ok")
+		close(stream)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		wrapped, drainDone, bifrostErr := CheckFirstStreamChunkForError(ctx, stream, &schemas.StreamThroughputGuardConfig{
+			MinimumOutputCharactersPerSecond: 100000,
+			ProbeWindowInSeconds:             1,
+		})
+		if bifrostErr != nil {
+			t.Fatalf("iteration %d: completed stream rejected: %+v", i, bifrostErr)
+		}
+		var got []string
+		for chunk := range wrapped {
+			if content := chunk.BifrostChatResponse.Choices[0].Delta.Content; content != nil {
+				got = append(got, *content)
+			}
+		}
+		if len(got) != 1 || got[0] != "ok" {
+			t.Fatalf("iteration %d: stream content = %v, want [ok]", i, got)
+		}
+		<-drainDone
+	}
+}
+
+func TestStreamThroughputGuard_CancelledContextBeatsTimeoutAfterReadyChunks(t *testing.T) {
+	// ctx is already done and the source still holds an undersized chunk when
+	// the probe selects: the chunk is folded in first, then the verdict must be
+	// the cancellation (fallbacks off), never a fallback-eligible 503.
+	for i := 0; i < 32; i++ {
+		stream := make(chan *schemas.BifrostStreamChunk, 2)
+		stream <- chatStreamChunk("a")
+		stream <- chatStreamChunk("b")
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		wrapped, drainDone, bifrostErr := CheckFirstStreamChunkForError(ctx, stream, &schemas.StreamThroughputGuardConfig{
+			MinimumOutputCharactersPerSecond: 100000,
+			ProbeWindowInSeconds:             1,
+		})
+		if wrapped != nil {
+			t.Fatalf("iteration %d: undersized output was exposed", i)
+		}
+		if bifrostErr == nil || bifrostErr.Error == nil || bifrostErr.Error.Type == nil || *bifrostErr.Error.Type != schemas.RequestCancelled {
+			t.Fatalf("iteration %d: expected cancellation, got %+v", i, bifrostErr)
+		}
+		if bifrostErr.AllowFallbacks == nil || *bifrostErr.AllowFallbacks {
+			t.Fatalf("iteration %d: cancelled probe must not allow fallbacks", i)
+		}
+		close(stream)
+		<-drainDone
 	}
 }

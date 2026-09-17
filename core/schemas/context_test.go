@@ -2,10 +2,64 @@ package schemas
 
 import (
 	"context"
+	"errors"
 	"runtime"
 	"testing"
 	"time"
 )
+
+func TestBifrostContextWithSharedValuesHasIndependentCancellation(t *testing.T) {
+	type sharedValueKey struct{}
+	key := sharedValueKey{}
+
+	root := NewBifrostContext(context.Background(), NoDeadline)
+	root.SetValue(key, "before")
+
+	attempt, cancelAttempt := NewBifrostContextWithSharedValues(root)
+	if got := attempt.Value(key); got != "before" {
+		t.Fatalf("attempt inherited value = %v, want before", got)
+	}
+	attempt.SetValue(key, "after")
+	if got := root.Value(key); got != "after" {
+		t.Fatalf("root shared value = %v, want after", got)
+	}
+
+	attempt.BlockRestrictedWrites()
+	attempt.SetValue(BifrostContextKeyRequestID, "blocked")
+	attempt.UnblockRestrictedWrites()
+	if got := root.Value(BifrostContextKeyRequestID); got != nil {
+		t.Fatalf("restricted write reached root: %v", got)
+	}
+
+	cancelAttempt()
+	select {
+	case <-attempt.Done():
+	case <-time.After(time.Second):
+		t.Fatal("attempt context was not cancelled")
+	}
+	if !errors.Is(attempt.Err(), context.Canceled) {
+		t.Fatalf("attempt error = %v, want context.Canceled", attempt.Err())
+	}
+	if root.Err() != nil {
+		t.Fatalf("attempt cancellation propagated to root: %v", root.Err())
+	}
+}
+
+func TestBifrostContextWithSharedValuesObservesParentCancellation(t *testing.T) {
+	root := NewBifrostContext(context.Background(), NoDeadline)
+	attempt, cancelAttempt := NewBifrostContextWithSharedValues(root)
+	defer cancelAttempt()
+
+	root.Cancel()
+	select {
+	case <-attempt.Done():
+	case <-time.After(time.Second):
+		t.Fatal("parent cancellation did not reach attempt context")
+	}
+	if !errors.Is(attempt.Err(), context.Canceled) {
+		t.Fatalf("attempt error = %v, want context.Canceled", attempt.Err())
+	}
+}
 
 type traceAttributeTestTracer struct {
 	NoOpTracer

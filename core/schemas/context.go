@@ -87,9 +87,10 @@ type BifrostContext struct {
 	grant                 atomic.Pointer[Grant] // what the request has been granted; installed by the transport, root contexts only
 
 	// Plugin scoping fields
-	pluginScope   *string                        // Non-nil when this is a scoped plugin context
-	pluginLogs    atomic.Pointer[pluginLogStore] // Shared log store; lazily initialized on root, shared by scoped contexts
-	valueDelegate *BifrostContext                // For scoped contexts: delegate Value/SetValue to this root context
+	pluginScope          *string                        // Non-nil when this is a scoped plugin context
+	pluginLogs           atomic.Pointer[pluginLogStore] // Shared log store; lazily initialized on root, shared by scoped contexts
+	valueDelegate        *BifrostContext                // For scoped contexts: delegate Value/SetValue to this root context
+	delegateCancellation bool                           // Plugin scopes share cancellation; attempt scopes only share values
 }
 
 // NewBifrostContext creates a new BifrostContext with the given parent context and deadline.
@@ -106,7 +107,7 @@ func NewBifrostContext(parent context.Context, deadline time.Time) *BifrostConte
 	// Pointing the derived parent at the long-lived root avoids that race.
 	for {
 		bc, ok := parent.(*BifrostContext)
-		if !ok || bc.valueDelegate == nil {
+		if !ok || bc.valueDelegate == nil || !bc.delegateCancellation {
 			break
 		}
 		parent = bc.valueDelegate
@@ -151,6 +152,23 @@ func NewBifrostContextWithTimeout(parent context.Context, timeout time.Duration)
 // Returns the context and a cancel function that should be called to release resources.
 func NewBifrostContextWithCancel(parent context.Context) (*BifrostContext, context.CancelFunc) {
 	ctx := NewBifrostContext(parent, NoDeadline)
+	return ctx, func() { ctx.Cancel() }
+}
+
+// NewBifrostContextWithSharedValues creates an independently cancellable scope whose values are shared with parent.
+func NewBifrostContextWithSharedValues(parent *BifrostContext) (*BifrostContext, context.CancelFunc) {
+	if parent == nil {
+		return NewBifrostContextWithCancel(context.Background())
+	}
+	ctx := &BifrostContext{
+		parent:        parent,
+		done:          make(chan struct{}),
+		valueDelegate: parent,
+	}
+	if root := parent.Root(); root != nil {
+		ctx.pluginLogs.Store(root.pluginLogs.Load())
+	}
+	go ctx.watchCancellation()
 	return ctx, func() { ctx.Cancel() }
 }
 
@@ -271,11 +289,19 @@ func (bc *BifrostContext) inheritedGrant() Grant {
 
 // BlockRestrictedWrites returns true if restricted writes are blocked.
 func (bc *BifrostContext) BlockRestrictedWrites() {
+	if bc.valueDelegate != nil {
+		bc.valueDelegate.BlockRestrictedWrites()
+		return
+	}
 	bc.blockRestrictedWrites.Store(true)
 }
 
 // UnblockRestrictedWrites unblocks restricted writes.
 func (bc *BifrostContext) UnblockRestrictedWrites() {
+	if bc.valueDelegate != nil {
+		bc.valueDelegate.UnblockRestrictedWrites()
+		return
+	}
 	bc.blockRestrictedWrites.Store(false)
 }
 
@@ -339,7 +365,7 @@ func (bc *BifrostContext) cancel(err error) {
 // For scoped contexts, delegates to the root context.
 // If both this context and the parent have deadlines, the earlier one is returned.
 func (bc *BifrostContext) Deadline() (time.Time, bool) {
-	if bc.valueDelegate != nil {
+	if bc.valueDelegate != nil && bc.delegateCancellation {
 		return bc.valueDelegate.Deadline()
 	}
 	parentDeadline, parentHasDeadline := bc.parent.Deadline()
@@ -372,7 +398,7 @@ func (bc *BifrostContext) Done() <-chan struct{} {
 // For scoped contexts, delegates to the root context.
 // Returns nil if the context has not been cancelled.
 func (bc *BifrostContext) Err() error {
-	if bc.valueDelegate != nil {
+	if bc.valueDelegate != nil && bc.delegateCancellation {
 		return bc.valueDelegate.Err()
 	}
 	bc.errMu.RLock()
@@ -860,22 +886,24 @@ func AppendToContextList[T comparable](ctx *BifrostContext, key BifrostContextKe
 // idiomatic Go context handling (the stdlib context types are not pooled
 // either) and keeps the lifecycle race-free without atomics.
 func (bc *BifrostContext) WithPluginScope(name *string) *BifrostContext {
+	root := bc.Root()
 	// Lazily initialize the plugin log store on the root context (CAS to avoid race)
-	if bc.pluginLogs.Load() == nil {
+	if root.pluginLogs.Load() == nil {
 		newStore := pluginLogStorePool.Get().(*pluginLogStore)
-		if !bc.pluginLogs.CompareAndSwap(nil, newStore) {
+		if !root.pluginLogs.CompareAndSwap(nil, newStore) {
 			// Another goroutine initialized first — return unused store to pool
 			pluginLogStorePool.Put(newStore)
 		}
 	}
 
 	scoped := &BifrostContext{
-		parent:        bc.parent,
-		done:          bc.done,
-		pluginScope:   name,
-		valueDelegate: bc,
+		parent:               bc.parent,
+		done:                 bc.done,
+		pluginScope:          name,
+		valueDelegate:        bc,
+		delegateCancellation: true,
 	}
-	scoped.pluginLogs.Store(bc.pluginLogs.Load())
+	scoped.pluginLogs.Store(root.pluginLogs.Load())
 	return scoped
 }
 
@@ -891,7 +919,7 @@ func (bc *BifrostContext) WithPluginScope(name *string) *BifrostContext {
 // We still release the plugin log store reference so it can be drained or
 // reclaimed independently of the scope's lifetime.
 func (bc *BifrostContext) ReleasePluginScope() {
-	if bc.valueDelegate == nil {
+	if bc.pluginScope == nil {
 		return // not a scoped context
 	}
 	bc.pluginLogs.Store(nil)

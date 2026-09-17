@@ -85,6 +85,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				ca_cert_pem: toSecretVarFormValue(provider.network_config?.ca_cert_pem as SecretVar | string | undefined),
 				stream_idle_timeout_in_seconds:
 					provider.network_config?.stream_idle_timeout_in_seconds ?? DefaultNetworkConfig.stream_idle_timeout_in_seconds,
+				stream_throughput_guard: provider.network_config?.stream_throughput_guard,
 				keep_alive_timeout_in_seconds:
 					provider.network_config?.keep_alive_timeout_in_seconds ?? DefaultNetworkConfig.keep_alive_timeout_in_seconds,
 				max_conns_per_host: provider.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
@@ -125,6 +126,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				ca_cert_pem: toOptionalSecretVarPayload(data.network_config?.ca_cert_pem),
 				stream_idle_timeout_in_seconds:
 					data.network_config?.stream_idle_timeout_in_seconds ?? DefaultNetworkConfig.stream_idle_timeout_in_seconds,
+				stream_throughput_guard: data.network_config?.stream_throughput_guard,
 				keep_alive_timeout_in_seconds:
 					data.network_config?.keep_alive_timeout_in_seconds ?? DefaultNetworkConfig.keep_alive_timeout_in_seconds,
 				max_conns_per_host: data.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
@@ -162,6 +164,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				ca_cert_pem: toSecretVarFormValue(provider.network_config?.ca_cert_pem as SecretVar | string | undefined),
 				stream_idle_timeout_in_seconds:
 					provider.network_config?.stream_idle_timeout_in_seconds ?? DefaultNetworkConfig.stream_idle_timeout_in_seconds,
+				stream_throughput_guard: provider.network_config?.stream_throughput_guard,
 				keep_alive_timeout_in_seconds:
 					provider.network_config?.keep_alive_timeout_in_seconds ?? DefaultNetworkConfig.keep_alive_timeout_in_seconds,
 				max_conns_per_host: provider.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
@@ -175,6 +178,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 
 	// HTTP/2 PING keepalives only apply when HTTP/2 is enforced
 	const enforceHTTP2 = form.watch("network_config.enforce_http2");
+	const streamThroughputGuardEnabled = form.watch("network_config.stream_throughput_guard") !== undefined;
 
 	const baseURLRequired = isCustomProvider;
 	const hideBaseURL = provider.name === "vllm" || provider.name === "ollama" || provider.name === "sgl";
@@ -303,6 +307,76 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 								)}
 							/>
 						</div>
+						<FormField
+							control={form.control}
+							name="network_config.stream_throughput_guard"
+							render={({ field }) => (
+								<FormItem className="flex flex-row items-center justify-between">
+									<div className="space-y-0.5">
+										<FormLabel>Stream Throughput Guard</FormLabel>
+										<FormDescription>
+											Buffer initial text output and retry or fall back before consumer-visible output when a provider streams too slowly.
+										</FormDescription>
+									</div>
+									<FormControl>
+										<Switch
+											checked={field.value !== undefined}
+											onCheckedChange={(checked) =>
+												field.onChange(checked ? { minimum_output_characters_per_second: 20, probe_window_in_seconds: 5 } : undefined)
+											}
+											disabled={!hasUpdateProviderAccess}
+											data-testid="network-config-stream-throughput-guard"
+										/>
+									</FormControl>
+								</FormItem>
+							)}
+						/>
+						{streamThroughputGuardEnabled && (
+							<div className="flex w-full flex-row items-start gap-4">
+								<FormField
+									control={form.control}
+									name="network_config.stream_throughput_guard.minimum_output_characters_per_second"
+									render={({ field }) => (
+										<FormItem className="flex-1">
+											<FormLabel>Minimum Output Characters / Second</FormLabel>
+											<FormControl>
+												<Input
+													{...field}
+													value={field.value === undefined || Number.isNaN(field.value) ? "" : field.value}
+													disabled={!hasUpdateProviderAccess}
+													onChange={(event) => field.onChange(event.target.value === "" ? undefined : Number(event.target.value))}
+													data-testid="network-config-stream-throughput-minimum-input"
+												/>
+											</FormControl>
+											<FormDescription>
+												This is an exact character rate, not token throughput. Choose a threshold from observed output for this provider.
+											</FormDescription>
+											<FormMessage />
+										</FormItem>
+									)}
+								/>
+								<FormField
+									control={form.control}
+									name="network_config.stream_throughput_guard.probe_window_in_seconds"
+									render={({ field }) => (
+										<FormItem className="flex-1">
+											<FormLabel>Probe Window (seconds)</FormLabel>
+											<FormControl>
+												<Input
+													{...field}
+													value={field.value === undefined || Number.isNaN(field.value) ? "" : field.value}
+													disabled={!hasUpdateProviderAccess}
+													onChange={(event) => field.onChange(event.target.value === "" ? undefined : Number(event.target.value))}
+													data-testid="network-config-stream-throughput-window-input"
+												/>
+											</FormControl>
+											<FormDescription>Healthy streams commit early; slow streams are rejected at the end of this window.</FormDescription>
+											<FormMessage />
+										</FormItem>
+									)}
+								/>
+							</div>
+						)}
 						<div className="flex w-full flex-row items-start gap-4">
 							<FormField
 								control={form.control}
