@@ -317,6 +317,10 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 	if req.ServiceTier != nil && !features.ServiceTier {
 		req.ServiceTier = nil
 	}
+	// Cache diagnostics is Claude API only; elsewhere it 400s as an unknown field.
+	if req.Diagnostics != nil && !features.Diagnostics {
+		req.Diagnostics = nil
+	}
 	// cache_control.scope — strip on providers without PromptCachingScope
 	// support at every slot scope can live: top-level request, tools, system
 	// blocks, and message content blocks. Vertex additionally uses the

@@ -1775,6 +1775,38 @@ func TestStripUnsupportedFieldsFromRawBody(t *testing.T) {
 	})
 }
 
+// TestStripUnsupportedAnthropicFields_DiagnosticsGating mirrors the raw-path
+// diagnostics test on the typed path. Claude Code sends
+// diagnostics.previous_message_id on every request; the /anthropic integration
+// force-disables raw-body passthrough for non-native providers, so a Bedrock or
+// Vertex request reaches the typed sanitizer and 400s with
+// "diagnostics: Extra inputs are not permitted" if the field survives.
+func TestStripUnsupportedAnthropicFields_DiagnosticsGating(t *testing.T) {
+	t.Run("anthropic_keeps_diagnostics", func(t *testing.T) {
+		req := &AnthropicMessageRequest{
+			Model:       "claude-opus-4-7",
+			Diagnostics: &AnthropicDiagnostics{PreviousMessageID: nil},
+		}
+		stripUnsupportedAnthropicFields(req, schemas.Anthropic, "claude-opus-4-7")
+		if req.Diagnostics == nil {
+			t.Error("expected diagnostics preserved for Anthropic")
+		}
+	})
+
+	t.Run("non_native_providers_strip_diagnostics", func(t *testing.T) {
+		for _, provider := range []schemas.ModelProvider{schemas.Azure, schemas.Bedrock, schemas.Vertex} {
+			req := &AnthropicMessageRequest{
+				Model:       "claude-opus-4-7",
+				Diagnostics: &AnthropicDiagnostics{PreviousMessageID: nil},
+			}
+			stripUnsupportedAnthropicFields(req, provider, "claude-opus-4-7")
+			if req.Diagnostics != nil {
+				t.Errorf("expected diagnostics stripped for %s", provider)
+			}
+		}
+	})
+}
+
 // TestStripUnsupportedAnthropicFields_ContainerSkillsGating mirrors the raw-path
 // tests above on the typed path — ensures the typed sanitizer treats explicit
 // empty skills arrays as a stripable (not drop-triggering) signal.
