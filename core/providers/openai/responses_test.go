@@ -2247,6 +2247,108 @@ func TestToOpenAIResponsesRequest_PreservesNamespaceAndWebSearchFields(t *testin
 	}
 }
 
+func TestToOpenAIResponsesRequest_WebSearchContentTypesProviderGating(t *testing.T) {
+	tests := []struct {
+		name         string
+		provider     schemas.ModelProvider
+		baseProvider schemas.ModelProvider
+		unsupported  *bool
+		want         []string
+	}{
+		{
+			name:     "openai preserves search content types",
+			provider: schemas.OpenAI,
+			want:     []string{"text", "image"},
+		},
+		{
+			name:        "openai datasheet can strip search content types",
+			provider:    schemas.OpenAI,
+			unsupported: schemas.Ptr(true),
+		},
+		{
+			name:     "bedrock runtime fallback strips search content types",
+			provider: schemas.Bedrock,
+		},
+		{
+			name:     "bedrock mantle fallback strips search content types",
+			provider: schemas.BedrockMantle,
+		},
+		{
+			name:        "bedrock mantle datasheet can preserve search content types",
+			provider:    schemas.BedrockMantle,
+			unsupported: schemas.Ptr(false),
+			want:        []string{"text", "image"},
+		},
+		{
+			name:         "custom mantle provider uses base provider fallback",
+			provider:     schemas.ModelProvider("my-mantle"),
+			baseProvider: schemas.BedrockMantle,
+		},
+		{
+			name:         "custom mantle provider reads base provider datasheet",
+			provider:     schemas.ModelProvider("my-mantle"),
+			baseProvider: schemas.BedrockMantle,
+			unsupported:  schemas.Ptr(false),
+			want:         []string{"text", "image"},
+		},
+		{
+			name:     "unlisted provider preserves search content types",
+			provider: schemas.ModelProvider("openai-compatible"),
+			want:     []string{"text", "image"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.unsupported != nil {
+				capabilityProvider := tc.provider
+				if tc.baseProvider != "" {
+					capabilityProvider = tc.baseProvider
+				}
+				schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+					if provider != capabilityProvider || model != "openai.gpt-5.6-luna" {
+						return nil
+					}
+					return &schemas.ModelCapabilities{UnsupportedFields: map[string]bool{
+						schemas.FieldSearchContentTypes: *tc.unsupported,
+					}}
+				})
+				t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+			}
+
+			searchContentTypes := []string{"text", "image"}
+			request := &schemas.BifrostResponsesRequest{
+				Provider: tc.provider,
+				Model:    "openai.gpt-5.6-luna",
+				Input: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+				}},
+				Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+					Type: schemas.ResponsesToolTypeWebSearch,
+					ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{
+						SearchContentTypes: searchContentTypes,
+					},
+				}}},
+			}
+
+			var ctx *schemas.BifrostContext
+			if tc.baseProvider != "" {
+				ctx = schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline,
+					schemas.BifrostContextKeyBaseProviderType, tc.baseProvider)
+			}
+
+			result := ToOpenAIResponsesRequest(ctx, request)
+			require.NotNil(t, result)
+			require.Len(t, result.Tools, 1)
+			require.NotNil(t, result.Tools[0].ResponsesToolWebSearch)
+			require.Equal(t, tc.want, result.Tools[0].ResponsesToolWebSearch.SearchContentTypes)
+			require.Equal(t, searchContentTypes, request.Params.Tools[0].ResponsesToolWebSearch.SearchContentTypes,
+				"conversion must not mutate the caller's tool")
+		})
+	}
+}
+
 // =============================================================================
 // Helper Functions
 // =============================================================================
