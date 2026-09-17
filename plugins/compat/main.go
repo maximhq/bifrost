@@ -132,6 +132,14 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		modifiedReq = cloneBifrostReq(req)
 	}
 
+	// The model's compat allowlist is read once here: the chat → responses
+	// conversion below consults it, and the param drop further down filters by it.
+	var supportedParams []string
+	_, model, _ := modifiedReq.GetRequestFields()
+	if p.modelCatalog != nil && model != "" {
+		supportedParams = p.modelCatalog.GetSupportedParameters(model)
+	}
+
 	// Text completion → chat conversion
 	if (convertTextToChatOverrideEnabled && convertTextToChatOverride) || p.config.ConvertTextToChat {
 		if (modifiedReq.RequestType == schemas.TextCompletionRequest || modifiedReq.RequestType == schemas.TextCompletionStreamRequest) && modifiedReq.TextCompletionRequest != nil {
@@ -143,6 +151,16 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	if (convertChatToResponsesOverrideEnabled && convertChatToResponsesOverride) || p.config.ConvertChatToResponses {
 		if (modifiedReq.RequestType == schemas.ChatCompletionRequest || modifiedReq.RequestType == schemas.ChatCompletionStreamRequest) && modifiedReq.ChatRequest != nil {
 			p.markForConversion(ctx, modifiedReq.ChatRequest.Provider, modifiedReq.ChatRequest.Model, schemas.ChatCompletionRequest, schemas.ResponsesRequest)
+			// A model can support both endpoints yet reject reasoning + function
+			// tools on chat completions (Azure gpt-6-astra, gpt-5.6-*). Serving the
+			// request through /responses keeps the caller's reasoning instead of
+			// disabling it, which those deployments reject anyway (#7275). This
+			// must run before the param drop below, which reads the decision.
+			if p.modelCatalog != nil && !isConvertedToResponses(ctx) &&
+				shouldConvertChatWithToolsToResponses(modifiedReq, supportedParams, p.modelCatalog.IsRequestTypeSupported(model, modifiedReq.ChatRequest.Provider, schemas.ResponsesRequest)) {
+				ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ResponsesRequest)
+				ctx.Log(schemas.LogLevelInfo, fmt.Sprintf("model %s does not support reasoning with function tools on chat completions, converting request to %s", model, schemas.ResponsesRequest))
+			}
 		}
 	}
 
@@ -156,9 +174,7 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 
 	// Compute unsupported parameters to drop based on model catalog allowlist
 	if ((shouldDropParamsOverrideEnabled && shouldDropParamsOverride) || p.config.ShouldDropParams) && p.modelCatalog != nil {
-		_, model, _ := modifiedReq.GetRequestFields()
 		if model != "" {
-			supportedParams := p.modelCatalog.GetSupportedParameters(model)
 			if supportedParams == nil {
 				ctx.Log(schemas.LogLevelDebug, fmt.Sprintf("model catalog has no supported-parameter list for model %s, no params dropped", model))
 			} else {

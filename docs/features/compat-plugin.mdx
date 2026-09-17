@@ -69,6 +69,8 @@ Some AI models (like OpenAI o1-pro) only support the responses API and don't sup
 
 <Note>
 **Smart Conversion**: The conversion only happens when the model doesn't support chat completions natively. If a model has native chat completion support (like OpenAI's gpt-4 models), Bifrost uses the chat completion endpoint directly without any conversion.
+
+The one exception is a chat completion request that carries **function tools** to a reasoning model whose datasheet row says it does not accept reasoning together with tools on chat completions (`supports_reasoning_with_tool_calls: false`) but does list `/v1/responses` — for example Azure Foundry's `gpt-6-astra` and `gpt-5.6-*` deployments, which reject that combination on `/v1/chat/completions` and also reject `reasoning_effort: "none"`. Such a request is served through the Responses API with the caller's reasoning effort intact and the result mapped back to a chat completion (streaming included), instead of having its reasoning disabled.
 </Note>
 
 This allows you to use a unified chat completion interface across all providers, even those that only support responses API.
