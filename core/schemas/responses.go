@@ -2975,24 +2975,25 @@ type ResponsesToolChoiceAllowedToolDef struct {
 type ResponsesToolType string
 
 const (
-	ResponsesToolTypeFunction           ResponsesToolType = "function"
-	ResponsesToolTypeFileSearch         ResponsesToolType = "file_search"
-	ResponsesToolTypeComputerUsePreview ResponsesToolType = "computer_use_preview"
-	ResponsesToolTypeComputer           ResponsesToolType = "computer" // OpenAI computer tool for GPT-6 Astra / GPT-5.6 (no display or environment fields)
-	ResponsesToolTypeWebSearch          ResponsesToolType = "web_search"
-	ResponsesToolTypeWebFetch           ResponsesToolType = "web_fetch"
-	ResponsesToolTypeMCP                ResponsesToolType = "mcp"
-	ResponsesToolTypeCodeInterpreter    ResponsesToolType = "code_interpreter"
-	ResponsesToolTypeImageGeneration    ResponsesToolType = "image_generation"
-	ResponsesToolTypeLocalShell         ResponsesToolType = "local_shell"
-	ResponsesToolTypeShell              ResponsesToolType = "shell"
-	ResponsesToolTypeCustom             ResponsesToolType = "custom"
-	ResponsesToolTypeWebSearchPreview   ResponsesToolType = "web_search_preview"
-	ResponsesToolTypeMemory             ResponsesToolType = "memory"
-	ResponsesToolTypeToolSearch         ResponsesToolType = "tool_search"
-	ResponsesToolTypeNamespace          ResponsesToolType = "namespace"
-	ResponsesToolTypeXSearch            ResponsesToolType = "x_search"
-	ResponsesToolTypeAdvisor            ResponsesToolType = "advisor"
+	ResponsesToolTypeFunction                ResponsesToolType = "function"
+	ResponsesToolTypeFileSearch              ResponsesToolType = "file_search"
+	ResponsesToolTypeComputerUsePreview      ResponsesToolType = "computer_use_preview"
+	ResponsesToolTypeComputer                ResponsesToolType = "computer" // OpenAI computer tool for GPT-6 Astra / GPT-5.6 (no display or environment fields)
+	ResponsesToolTypeWebSearch               ResponsesToolType = "web_search"
+	ResponsesToolTypeWebFetch                ResponsesToolType = "web_fetch"
+	ResponsesToolTypeMCP                     ResponsesToolType = "mcp"
+	ResponsesToolTypeCodeInterpreter         ResponsesToolType = "code_interpreter"
+	ResponsesToolTypeImageGeneration         ResponsesToolType = "image_generation"
+	ResponsesToolTypeLocalShell              ResponsesToolType = "local_shell"
+	ResponsesToolTypeShell                   ResponsesToolType = "shell"
+	ResponsesToolTypeProgrammaticToolCalling ResponsesToolType = "programmatic_tool_calling"
+	ResponsesToolTypeCustom                  ResponsesToolType = "custom"
+	ResponsesToolTypeWebSearchPreview        ResponsesToolType = "web_search_preview"
+	ResponsesToolTypeMemory                  ResponsesToolType = "memory"
+	ResponsesToolTypeToolSearch              ResponsesToolType = "tool_search"
+	ResponsesToolTypeNamespace               ResponsesToolType = "namespace"
+	ResponsesToolTypeXSearch                 ResponsesToolType = "x_search"
+	ResponsesToolTypeAdvisor                 ResponsesToolType = "advisor"
 )
 
 // ResponsesToolTypeOpenRouterPrefix is the namespace prefix for OpenRouter server

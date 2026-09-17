@@ -700,22 +700,79 @@ func hasAnthropicOnlyToolFlags(t schemas.ChatTool) bool {
 // hasAnthropicOnlyToolFlags. The four flags were promoted onto ResponsesTool
 // in core/schemas/responses.go for the Anthropic-via-Responses path; the
 // OpenAI Responses serializer must strip them so they don't leak to OpenAI
-// and trigger a 400 on unknown fields. defer_loading is the exception when
-// keepDeferLoading is set: OpenAI's own tool search reads it on functions and
-// MCP tools, so it is not Anthropic-only for models that support tool search.
+// and trigger a 400 on unknown fields. Two exceptions: defer_loading when
+// keepDeferLoading is set (OpenAI's own tool search reads it on functions and
+// MCP tools), and allowed_callers, which OpenAI also has on some tool types.
 func hasAnthropicOnlyResponsesToolFlags(t schemas.ResponsesTool, keepDeferLoading bool) bool {
 	return (t.DeferLoading != nil && !keepDeferLoading) ||
-		len(t.AllowedCallers) > 0 ||
+		responsesToolCallersNeedRewrite(t) ||
 		len(t.InputExamples) > 0 ||
 		t.EagerInputStreaming != nil ||
 		(t.ResponsesToolCodeInterpreter != nil && t.ResponsesToolCodeInterpreter.Version != nil)
+}
+
+// responsesToolCallersNeedRewrite reports whether allowed_callers has to change
+// before the tool goes to OpenAI — either stripped or translated.
+func responsesToolCallersNeedRewrite(t schemas.ResponsesTool) bool {
+	if len(t.AllowedCallers) == 0 {
+		return false
+	}
+	if !responsesToolSupportsAllowedCallers(t.Type) {
+		return true
+	}
+	mapped := openAIAllowedCallers(t.AllowedCallers)
+	if len(mapped) != len(t.AllowedCallers) {
+		return true
+	}
+	for i := range mapped {
+		if mapped[i] != t.AllowedCallers[i] {
+			return true
+		}
+	}
+	return false
+}
+
+// openAIAllowedCallers translates caller values into OpenAI's vocabulary. Anthropic
+// names the sandbox caller by code execution tool version (code_execution_20260120
+// and friends); OpenAI calls the same context "programmatic". Values it does not
+// recognize pass through so OpenAI still rejects typos.
+func openAIAllowedCallers(callers []string) []string {
+	mapped := make([]string, 0, len(callers))
+	seen := make(map[string]bool, len(callers))
+	for _, caller := range callers {
+		if strings.HasPrefix(caller, schemas.ResponsesToolCallerCodeExecutionPrefix) {
+			caller = schemas.ResponsesToolCallerProgrammatic
+		}
+		if seen[caller] {
+			continue
+		}
+		seen[caller] = true
+		mapped = append(mapped, caller)
+	}
+	return mapped
+}
+
+// responsesToolSupportsAllowedCallers reports whether OpenAI's Responses API accepts
+// allowed_callers on this tool type; OpenAI validates the values itself.
+func responsesToolSupportsAllowedCallers(t schemas.ResponsesToolType) bool {
+	switch t {
+	case schemas.ResponsesToolTypeFunction,
+		schemas.ResponsesToolTypeCustom,
+		schemas.ResponsesToolTypeShell,
+		schemas.ResponsesToolTypeNamespace,
+		schemas.ResponsesToolTypeMCP,
+		schemas.ResponsesToolTypeCodeInterpreter:
+		return true
+	default:
+		return false
+	}
 }
 
 // isAnthropicOnlyResponsesToolType reports whether the tool type exists only
 // in Anthropic's taxonomy and is not part of OpenAI's Responses API Tool union
 // (per OpenAI's OpenAPI spec component.schemas.Tool, which enumerates function,
 // file_search, computer[_use_preview], web_search[_preview], mcp,
-// code_interpreter, image_generation, local_shell, custom, tool_search, and
+// code_interpreter, image_generation, local_shell, shell, custom, tool_search, and
 // related shell/namespace/apply_patch variants). Forwarding web_fetch or
 // memory to OpenAI guarantees a 400 on schema discriminator validation, so
 // these get dropped in the Responses→OpenAI serializer — mirroring the Chat
@@ -961,7 +1018,11 @@ func (resp *OpenAIResponsesRequest) MarshalJSON() ([]byte, error) {
 				if !resp.keepDeferLoading {
 					toolCopy.DeferLoading = nil
 				}
-				toolCopy.AllowedCallers = nil
+				if !responsesToolSupportsAllowedCallers(toolCopy.Type) {
+					toolCopy.AllowedCallers = nil
+				} else if len(toolCopy.AllowedCallers) > 0 {
+					toolCopy.AllowedCallers = openAIAllowedCallers(toolCopy.AllowedCallers)
+				}
 				toolCopy.InputExamples = nil
 				toolCopy.EagerInputStreaming = nil
 				if toolCopy.ResponsesToolCodeInterpreter != nil && toolCopy.ResponsesToolCodeInterpreter.Version != nil {

@@ -658,6 +658,17 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			// policy per user direction. See Bedrock's convertToolConfig for
 			// the direct-Bedrock-path equivalent.
 			filtered, _ := ValidateChatToolsForProvider(bifrostReq.Params.Tools, caps)
+			// Chat has no OpenAI counterpart for allowed_callers, but the neutral
+			// ChatTool carries it, so a "programmatic" caller still has to be renamed
+			// to the request's code execution version (see the Responses path).
+			programmaticCaller := ""
+			for _, tool := range filtered {
+				if hasProgrammaticCaller(tool.AllowedCallers) {
+					declaredVersion, hasCodeExecution := declaredChatCodeExecutionVersion(filtered)
+					programmaticCaller, _ = resolveAnthropicProgrammaticCaller(declaredVersion, hasCodeExecution)
+					break
+				}
+			}
 			tools := make([]AnthropicTool, 0, len(filtered))
 			for _, tool := range filtered {
 				if tool.Function != nil {
@@ -665,11 +676,13 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					if err != nil {
 						return nil, err
 					}
+					converted.AllowedCallers = anthropicAllowedCallers(converted.AllowedCallers, programmaticCaller)
 					tools = append(tools, converted)
 					continue
 				}
 				// Non-function tool: attempt server-tool reconstruction.
 				if converted, ok := convertServerToolToAnthropic(tool, caps, bifrostReq.Provider); ok {
+					converted.AllowedCallers = anthropicAllowedCallers(converted.AllowedCallers, programmaticCaller)
 					tools = append(tools, converted)
 				}
 			}
