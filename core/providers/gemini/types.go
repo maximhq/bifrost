@@ -1401,17 +1401,21 @@ type PrebuiltVoiceConfig struct {
 	VoiceName string `json:"voice_name,omitempty"`
 }
 
-// UnmarshalJSON implements custom JSON unmarshaling for PrebuiltVoiceConfig.
-// This handles the voice_name field which comes as snake_case from the Gemini SDK.
+// UnmarshalJSON accepts both protobuf JSON spellings, preferring camelCase when
+// both are present.
 func (p *PrebuiltVoiceConfig) UnmarshalJSON(data []byte) error {
 	type Alias struct {
-		VoiceName string `json:"voice_name,omitempty"`
+		VoiceNameCamel string `json:"voiceName,omitempty"`
+		VoiceNameSnake string `json:"voice_name,omitempty"`
 	}
 	var aux Alias
 	if err := sonic.Unmarshal(data, &aux); err != nil {
 		return err
 	}
-	p.VoiceName = aux.VoiceName
+	p.VoiceName = aux.VoiceNameCamel
+	if !hasJSONKey(data, "voiceName") {
+		p.VoiceName = aux.VoiceNameSnake
+	}
 	return nil
 }
 
@@ -1430,17 +1434,21 @@ type VoiceConfig struct {
 	PrebuiltVoiceConfig *PrebuiltVoiceConfig `json:"prebuilt_voice_config,omitempty"`
 }
 
-// UnmarshalJSON implements custom JSON unmarshaling for VoiceConfig.
-// This handles the prebuilt_voice_config field which comes as snake_case from the Gemini SDK.
+// UnmarshalJSON accepts both protobuf JSON spellings, preferring camelCase when
+// both are present.
 func (v *VoiceConfig) UnmarshalJSON(data []byte) error {
 	type Alias struct {
-		PrebuiltVoiceConfig *PrebuiltVoiceConfig `json:"prebuilt_voice_config,omitempty"`
+		PrebuiltVoiceConfigCamel *PrebuiltVoiceConfig `json:"prebuiltVoiceConfig,omitempty"`
+		PrebuiltVoiceConfigSnake *PrebuiltVoiceConfig `json:"prebuilt_voice_config,omitempty"`
 	}
 	var aux Alias
 	if err := sonic.Unmarshal(data, &aux); err != nil {
 		return err
 	}
-	v.PrebuiltVoiceConfig = aux.PrebuiltVoiceConfig
+	v.PrebuiltVoiceConfig = aux.PrebuiltVoiceConfigCamel
+	if !hasJSONKey(data, "prebuiltVoiceConfig") {
+		v.PrebuiltVoiceConfig = aux.PrebuiltVoiceConfigSnake
+	}
 	return nil
 }
 
@@ -1477,6 +1485,37 @@ type SpeechConfig struct {
 	// Optional. Language code (ISO 639, e.g., en-US) for speech synthesis.
 	// Only available for Live API.
 	LanguageCode string `json:"languageCode,omitempty"`
+}
+
+// UnmarshalJSON accepts both lowerCamelCase protobuf JSON and the snake_case
+// spelling emitted by Google SDKs. Camel case wins when both are supplied.
+func (s *SpeechConfig) UnmarshalJSON(data []byte) error {
+	type Alias struct {
+		VoiceConfigCamel             *VoiceConfig             `json:"voiceConfig,omitempty"`
+		VoiceConfigSnake             *VoiceConfig             `json:"voice_config,omitempty"`
+		MultiSpeakerVoiceConfigCamel *MultiSpeakerVoiceConfig `json:"multiSpeakerVoiceConfig,omitempty"`
+		MultiSpeakerVoiceConfigSnake *MultiSpeakerVoiceConfig `json:"multi_speaker_voice_config,omitempty"`
+		LanguageCodeCamel            string                   `json:"languageCode,omitempty"`
+		LanguageCodeSnake            string                   `json:"language_code,omitempty"`
+	}
+
+	var aux Alias
+	if err := sonic.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	s.VoiceConfig = aux.VoiceConfigCamel
+	if !hasJSONKey(data, "voiceConfig") {
+		s.VoiceConfig = aux.VoiceConfigSnake
+	}
+	s.MultiSpeakerVoiceConfig = aux.MultiSpeakerVoiceConfigCamel
+	if !hasJSONKey(data, "multiSpeakerVoiceConfig") {
+		s.MultiSpeakerVoiceConfig = aux.MultiSpeakerVoiceConfigSnake
+	}
+	s.LanguageCode = aux.LanguageCodeCamel
+	if !hasJSONKey(data, "languageCode") {
+		s.LanguageCode = aux.LanguageCodeSnake
+	}
+	return nil
 }
 
 // GenerationConfigThinkingConfig represents configuration for thinking features.
