@@ -28,3 +28,23 @@ func TestShouldReturnSpeechJSON(t *testing.T) {
 		})
 	}
 }
+
+func TestSpeechContentType(t *testing.T) {
+	tests := map[string]string{
+		"mp3":          "audio/mpeg",
+		"pcm":          "application/octet-stream",
+		"flac":         "audio/flac",
+		"wav":          "audio/wav",
+		"pcmu_raw":     "application/octet-stream",
+		"pcmu_wav":     "audio/wav",
+		"opus":         "audio/ogg",
+		"aac":          "audio/aac",
+		"mp3_22050_32": "audio/mpeg",
+		"pcm_16000":    "application/octet-stream",
+	}
+	for format, want := range tests {
+		if got := speechContentType(format); got != want {
+			t.Errorf("speechContentType(%q) = %q, want %q", format, got, want)
+		}
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/bytedance/sonic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
 )
@@ -3231,4 +3232,110 @@ func TestToOpenAIResponsesRequest_MantleGPTOSSReplaysAssistantTextAsInput(t *tes
 				"the caller's input must not be mutated")
 		})
 	}
+}
+
+func TestToOpenAIResponsesRequest_MiniMaxCompatibility(t *testing.T) {
+	reasoningID := "resp_1_rs"
+	reasoningText := "inspect the result"
+	request := &schemas.BifrostResponsesRequest{
+		Provider: schemas.MiniMax,
+		Model:    "MiniMax-M3",
+		Input: []schemas.ResponsesMessage{{
+			ID:   &reasoningID,
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+			ResponsesReasoning: &schemas.ResponsesReasoning{
+				Summary: []schemas.ResponsesReasoningSummary{},
+			},
+			Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+					Type: schemas.ResponsesOutputMessageContentTypeReasoning,
+					Text: &reasoningText,
+				}},
+			},
+		}},
+		Params: &schemas.ResponsesParameters{
+			Background:         schemas.Ptr(true),
+			PreviousResponseID: schemas.Ptr("previous"),
+			Store:              schemas.Ptr(true),
+			Reasoning: &schemas.ResponsesParametersReasoning{
+				Effort:  schemas.Ptr(schemas.ReasoningEffortHigh),
+				Summary: schemas.Ptr("detailed"),
+			},
+			Tools: []schemas.ResponsesTool{
+				{
+					Type: schemas.ResponsesToolTypeFunction,
+					Name: schemas.Ptr("get_weather"),
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{
+						Parameters: &schemas.ToolFunctionParameters{Type: "object", Properties: schemas.NewOrderedMap()},
+					},
+				},
+				{Type: schemas.ResponsesToolTypeCodeInterpreter},
+			},
+		},
+	}
+
+	converted := ToOpenAIResponsesRequest(nil, request)
+	require.NotNil(t, converted)
+	require.Len(t, converted.Input.OpenAIResponsesRequestInputArray, 1)
+	require.NotNil(t, converted.Input.OpenAIResponsesRequestInputArray[0].ResponsesReasoning)
+	require.Len(t, converted.Input.OpenAIResponsesRequestInputArray[0].Content.ContentBlocks, 1)
+	require.Nil(t, converted.Background)
+	require.Nil(t, converted.PreviousResponseID)
+	require.Nil(t, converted.Store)
+	require.Nil(t, converted.Reasoning)
+	require.Equal(t, map[string]string{"effort": schemas.ReasoningEffortHigh}, converted.MiniMaxReasoning)
+	require.Len(t, converted.Tools, 1)
+	require.Equal(t, schemas.ResponsesToolTypeFunction, converted.Tools[0].Type)
+
+	wire, err := providerUtils.MarshalProviderRequest(converted)
+	require.NoError(t, err)
+	require.Contains(t, string(wire), `"reasoning":{"effort":"high"}`)
+	require.NotContains(t, string(wire), `"previous_response_id"`)
+	require.NotContains(t, string(wire), `"code_interpreter"`)
+
+	// Conversion must leave the request intact for retries and fallbacks.
+	require.NotNil(t, request.Params.Reasoning)
+	require.Len(t, request.Params.Tools, 2)
+	require.NotNil(t, request.Params.Background)
+}
+
+func TestToOpenAIResponsesRequest_MiniMaxKeepsNativeLimitsAndEffort(t *testing.T) {
+	request := &schemas.BifrostResponsesRequest{
+		Provider: schemas.MiniMax,
+		Model:    "MiniMax-M3",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+		Params: &schemas.ResponsesParameters{
+			MaxOutputTokens: schemas.Ptr(1),
+			Reasoning: &schemas.ResponsesParametersReasoning{
+				Effort: schemas.Ptr(schemas.ReasoningEffortMinimal),
+			},
+		},
+	}
+
+	converted := ToOpenAIResponsesRequest(nil, request)
+	require.NotNil(t, converted.MaxOutputTokens)
+	require.Equal(t, 1, *converted.MaxOutputTokens)
+	require.Equal(t, map[string]string{"effort": schemas.ReasoningEffortMinimal}, converted.MiniMaxReasoning)
+}
+
+func TestToOpenAIResponsesRequest_MiniMaxDropsToolChoiceWhenAllToolsAreUnsupported(t *testing.T) {
+	request := &schemas.BifrostResponsesRequest{
+		Provider: schemas.MiniMax,
+		Model:    "MiniMax-M3",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+		Params: &schemas.ResponsesParameters{
+			ToolChoice: &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr(string(schemas.ResponsesToolChoiceTypeAuto))},
+			Tools:      []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeCodeInterpreter}},
+		},
+	}
+
+	converted := ToOpenAIResponsesRequest(nil, request)
+	require.Empty(t, converted.Tools)
+	require.Nil(t, converted.ToolChoice)
 }

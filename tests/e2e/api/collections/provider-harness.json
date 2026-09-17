@@ -144,6 +144,9 @@
           "    } else if (Array.isArray(j.images)) {",
           "        shape = 'bedrock-images';",
           "        hasContent = j.images.length > 0;",
+          "    } else if (typeof j.audio === 'string' && (j.subtitle_file || j.alignment || j.normalized_alignment)) {",
+          "        shape = 'speech-json';",
+          "        hasContent = j.audio.length > 0;",
           "    } else if (typeof j.text === 'string' && !j.choices && !j.candidates && !j.output) {",
           "        shape = 'audio-transcription';",
           "        hasContent = j.text.length > 0;",
@@ -150991,6 +150994,314 @@
               }
             }
           ]
+        }
+      ]
+    },
+    {
+      "name": "93. MiniMax native Chat, Responses, and Speech (minimax-native)",
+      "description": "Live MiniMax coverage for the native Bifrost routes. Pins Chat and Responses unary/streaming dispatch, MiniMax-only thinking fields, cross-provider fallback isolation, binary FLAC response headers, and subtitle JSON responses.",
+      "item": [
+        {
+          "name": "93.1 minimax/MiniMax-M3 chat thinking fields are scoped away from deepseek fallback (minimax-native)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/not-a-real-minimax-model\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word hello.\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"disabled\"\n  },\n  \"reasoning_split\": false,\n  \"fallbacks\": [\n    \"deepseek/deepseek-v4-flash\"\n  ],\n  \"max_completion_tokens\": 32\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('MiniMax scoped fallback: request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('request was served by fallback', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback')).to.equal('true');",
+                  "});",
+                  "pm.test('MiniMax-only fields do not reach fallback wire', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(rr).to.not.have.property('reasoning_split');",
+                  "  pm.expect(rr).to.not.have.property('thinking');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "93.2 minimax/MiniMax-M3 chat stream emits valid SSE (minimax-native)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/MiniMax-M3\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word hello.\"\n    }\n  ],\n  \"reasoning_effort\": \"none\",\n  \"stream\": true,\n  \"max_completion_tokens\": 32\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('MiniMax chat stream: request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('MiniMax chat stream is SSE with content', function () {",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(ct).to.include('text/event-stream');",
+                  "  pm.expect(pm.response.text()).to.include('data:');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "93.3 minimax/MiniMax-M3 native Responses request succeeds (minimax-native)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/MiniMax-M3\",\n  \"input\": \"Reply with the single word hello.\",\n  \"max_output_tokens\": 32\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('MiniMax Responses: request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "pm.test('MiniMax Responses returns output', function () {",
+                  "  pm.expect(body.output || body.output_text, 'missing output: ' + pm.response.text()).to.be.ok;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "93.4 minimax/MiniMax-M3 native Responses stream emits completion events (minimax-native)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/MiniMax-M3\",\n  \"input\": \"Reply with the single word hello.\",\n  \"stream\": true,\n  \"max_output_tokens\": 32\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('MiniMax Responses stream: request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('MiniMax Responses stream is SSE and completes', function () {",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(ct).to.include('text/event-stream');",
+                  "  pm.expect(text).to.include('response.completed');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "93.5 minimax/speech-2.8-turbo FLAC uses audio/flac (minimax-native)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/speech-2.8-turbo\",\n  \"input\": \"Hello from the Bifrost MiniMax speech test.\",\n  \"voice\": \"English_expressive_narrator\",\n  \"response_format\": \"flac\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('MiniMax FLAC speech: request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('MiniMax FLAC response headers match the bytes', function () {",
+                  "  pm.expect(pm.response.headers.get('content-type')).to.include('audio/flac');",
+                  "  pm.expect(pm.response.headers.get('content-disposition') || '').to.include('speech.flac');",
+                  "  pm.expect((pm.response.text() || \"\").length).to.be.above(100);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "93.6 minimax/speech-2.8-turbo subtitle response stays JSON without attachment header (minimax-native)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/speech-2.8-turbo\",\n  \"input\": \"Hello from the Bifrost MiniMax subtitle test.\",\n  \"voice\": \"English_expressive_narrator\",\n  \"response_format\": \"mp3\",\n  \"subtitle_enable\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('MiniMax subtitle speech: request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "pm.test('MiniMax subtitle response is JSON metadata, not an audio attachment', function () {",
+                  "  pm.expect(pm.response.headers.get('content-type') || '').to.include('application/json');",
+                  "  pm.expect(pm.response.headers.has('content-disposition')).to.equal(false);",
+                  "  pm.expect(body.audio, 'missing base64 audio').to.be.a('string').and.not.empty;",
+                  "  pm.expect(body.subtitle_file, 'missing subtitle_file').to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
         }
       ]
     }

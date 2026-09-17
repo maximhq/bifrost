@@ -177,6 +177,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Vertex,
 		schemas.Ollama,
 		schemas.Mistral,
+		schemas.MiniMax,
 		schemas.Groq,
 		schemas.SGL,
 		schemas.Parasail,
@@ -421,6 +422,15 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewSecretVar("env.MISTRAL_API_KEY"),
+				Models:         []string{"*"},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.MiniMax:
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewSecretVar("env.MINIMAX_API_KEY"),
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -814,6 +824,25 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				Concurrency: Concurrency,
 				BufferSize:  10,
 			},
+		}, nil
+	case schemas.MiniMax:
+		authType := schemas.MiniMaxAuthTypeBearer
+		if configured := strings.TrimSpace(os.Getenv("MINIMAX_AUTH_TYPE")); configured != "" {
+			authType = schemas.MiniMaxAuthType(configured)
+		}
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				BaseURL:                        strings.TrimRight(os.Getenv("MINIMAX_BASE_URL"), "/"),
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            time.Second,
+				RetryBackoffMax:                12 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+			MiniMaxConfig: &schemas.MiniMaxConfig{AuthType: authType},
 		}, nil
 	case schemas.Groq:
 		return &schemas.ProviderConfig{

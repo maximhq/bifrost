@@ -152,6 +152,7 @@ const PROVIDER_KEYWORDS = {
   xai: ["xai", "grok"],
   replicate: ["replicate", "/replicate", "flux", "black-forest-labs"],
   runware: ["runware", "runware/"],
+  minimax: ["minimax"],
 };
 
 // Haystack = item JSON + ancestor folder names. Folder names encode the harness
@@ -289,7 +290,7 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   // Route them exclusively to vertex.
   const isVertex = PROVIDER_KEYWORDS.vertex.some((k) => haystack.includes(k));
   if (provider === "vertex") return isVertex;
-  if (isVertex && (provider === "gemini" || provider === "anthropic")) return false;
+  if (isVertex && (provider === "gemini" || provider === "anthropic" || provider === "minimax")) return false;
   // Runware rows name the upstream vendor inside the AIR model id ("runware/anthropic:claude@...",
   // "runware/google:gemini@...", "runware/minimax:..."), so they'd otherwise be claimed by those
   // partitions too - same collision class as openrouter/bedrock_mantle/vertex above. Route them
