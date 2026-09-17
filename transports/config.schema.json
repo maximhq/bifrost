@@ -5633,6 +5633,24 @@
       "required": ["keys"],
       "additionalProperties": false
     },
+    "tencent_network_config": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/network_config"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "base_url": {
+              "type": "string",
+              "format": "uri",
+              "pattern": "^https://",
+              "description": "Base URL for Tencent TokenHub. Tencent preserves a custom URL and sends credentials (Bearer or x-api-key) to it, so only https:// endpoints are accepted."
+            }
+          }
+        }
+      ]
+    },
     "provider_with_tencent_config": {
       "type": "object",
       "properties": {
@@ -5645,7 +5663,7 @@
           "description": "API keys for this provider"
         },
         "network_config": {
-          "$ref": "#/$defs/network_config"
+          "$ref": "#/$defs/tencent_network_config"
         },
         "concurrency_and_buffer_size": {
           "$ref": "#/$defs/concurrency_and_buffer_size"

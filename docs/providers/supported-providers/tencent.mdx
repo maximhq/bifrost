@@ -89,7 +89,7 @@ case schemas.Tencent:
 
 ### Custom Base URL
 
-The default base URL is `https://tokenhub-intl.tencentcloudmaas.com`. Override it in the provider's `network_config.base_url` when using a regional or self-hosted endpoint. Bifrost appends `/v1/chat/completions`, `/v1/messages`, and `/v1/models` to the configured base.
+The default base URL is `https://tokenhub-intl.tencentcloudmaas.com`. Override it in the provider's `network_config.base_url` when using a regional or self-hosted endpoint. The override must be an `https://` URL: Tencent preserves the configured base and sends Bearer or `x-api-key` credentials to it, so cleartext `http://` endpoints are rejected. Bifrost appends `/v1/chat/completions`, `/v1/messages`, and `/v1/models` to the configured base.
 
 ---
 

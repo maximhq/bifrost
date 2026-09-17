@@ -2022,3 +2022,80 @@ func TestSchemaVirtualMCPByName(t *testing.T) {
 		})
 	}
 }
+
+// tencentProviderConfig builds a tencent provider config with the given provider body.
+func tencentProviderConfig(body string) string {
+	return fmt.Sprintf(`{
+		"providers": {
+			"tencent": {
+				%s
+			}
+		}
+	}`, body)
+}
+
+// TestSchemaTencentProviderAuthAndTransport pins the two Tencent-specific provider
+// constraints. A key must carry value and models: core/schemas.Key decodes both, and
+// Tencent authentication only sends x-api-key when Value is non-empty, so the generic
+// base_key (which requires neither) would let a key that can never authenticate pass
+// validation. network_config.base_url must be https because Tencent preserves a custom
+// URL and sends Bearer or x-api-key credentials to it.
+func TestSchemaTencentProviderAuthAndTransport(t *testing.T) {
+	compiled := compileSchema(t)
+
+	const keyWithValueAndModels = `"keys": [{"name": "k", "value": "env.TENCENT_API_KEY", "models": ["*"], "weight": 1}]`
+
+	valid := []struct {
+		name   string
+		config string
+	}{
+		{
+			name:   "key with value and models",
+			config: tencentProviderConfig(keyWithValueAndModels),
+		},
+		{
+			name:   "key-level use_anthropic_endpoints is accepted",
+			config: tencentProviderConfig(`"keys": [{"name": "k", "value": "sk-test", "models": ["*"], "weight": 1, "use_anthropic_endpoints": true}]`),
+		},
+		{
+			name:   "alias-level use_anthropic_endpoints is accepted",
+			config: tencentProviderConfig(`"keys": [{"name": "k", "value": "sk-test", "models": ["*"], "weight": 1, "aliases": {"deepseek-v4-pro": {"model_id": "deepseek-v4-pro", "use_anthropic_endpoints": true}}}]`),
+		},
+		{
+			name:   "https base_url is accepted",
+			config: tencentProviderConfig(keyWithValueAndModels + `, "network_config": {"base_url": "https://tokenhub-intl.tencentcloudmaas.com"}`),
+		},
+	}
+	for _, tt := range valid {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := validateConfig(t, compiled, tt.config); err != nil {
+				t.Fatalf("config should be valid: %v", err)
+			}
+		})
+	}
+
+	invalid := []struct {
+		name   string
+		config string
+	}{
+		{
+			name:   "key missing models",
+			config: tencentProviderConfig(`"keys": [{"name": "k", "value": "sk-test", "weight": 1}]`),
+		},
+		{
+			name:   "key missing value",
+			config: tencentProviderConfig(`"keys": [{"name": "k", "models": ["*"], "weight": 1}]`),
+		},
+		{
+			name:   "cleartext http base_url",
+			config: tencentProviderConfig(keyWithValueAndModels + `, "network_config": {"base_url": "http://tokenhub-intl.tencentcloudmaas.com"}`),
+		},
+	}
+	for _, tt := range invalid {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := validateConfig(t, compiled, tt.config); err == nil {
+				t.Fatal("config should be invalid")
+			}
+		})
+	}
+}
