@@ -94,3 +94,35 @@ func TestToAnthropicChatCompletionError(t *testing.T) {
 		})
 	}
 }
+
+func TestToAnthropicChatCompletionErrorNeverEmitsEmptyMessage(t *testing.T) {
+	statusBadRequest := 400
+	tests := []struct {
+		name     string
+		input    *schemas.BifrostError
+		expected string
+	}{
+		{
+			name:     "missing error field",
+			input:    &schemas.BifrostError{},
+			expected: "unknown error",
+		},
+		{
+			name: "empty provider message falls back to status",
+			input: &schemas.BifrostError{
+				StatusCode: &statusBadRequest,
+				Error:      &schemas.ErrorField{},
+			},
+			expected: "HTTP 400 error",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ToAnthropicChatCompletionError(tt.input)
+			if result.Error.Message != tt.expected {
+				t.Fatalf("expected message %q, got %q", tt.expected, result.Error.Message)
+			}
+		})
+	}
+}
