@@ -63,6 +63,7 @@
 - **Helm Plural Access Profiles** - Governance roles accept `access_profiles` as an array in the Helm and config schemas. Bifrost supports multiple access profiles but the schemas accepted only the deprecated singular `access_profile`. The singular form keeps rendering unchanged, the plural wins when both are present, and an explicitly empty plural list clears existing grants (#7044) (thanks [@CarlosLanderas](https://github.com/CarlosLanderas)!)
 - **Sidebar Title Overflow** - Long sidebar item titles are truncated instead of overflowing (#7069)
 - **MCP Logs App Icon** - App icons in the MCP logs table render at 20x20 and no longer shrink when the column is narrow (#7167)
+- **Claude Code Thread Continuations Failed Behind Key Rotation** - Claude Code's server-side conversation threads are bound to the upstream account that creates them, and Bifrost's per-request key selection, retries, and fallbacks cannot keep a continuation on that account, so `thread: {"type": "continue"}` requests failed with `thread_not_found` (about half the time on a two-key config). The Anthropic integration now declares itself stateless: continuations are refused before the provider call with a 400 whose `details.error_code` is `thread_unsupported_request`, which makes the client resend the turn in full and stop sending the thread field for the rest of the session, and the provider raw-body path strips `thread` from create requests so no orphaned thread state accumulates upstream. Token counting is never refused
 
 ## 🗄️ Database Migrations
 

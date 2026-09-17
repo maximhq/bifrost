@@ -798,3 +798,148 @@ func TestAnthropicMessagesRawResponseCarriesExtraFields(t *testing.T) {
 		}
 	})
 }
+
+// TestAnthropicRefuseThreadContinue_EdgeCases exercises the short-circuit
+// directly: only a parsed messages request whose thread.type is "continue"
+// is refused; everything else falls through untouched so the provider's
+// raw-body strip handles the field.
+func TestAnthropicRefuseThreadContinue_EdgeCases(t *testing.T) {
+	parse := func(t *testing.T, body string) *anthropic.AnthropicMessageRequest {
+		t.Helper()
+		req := &anthropic.AnthropicMessageRequest{}
+		if err := sonic.Unmarshal([]byte(body), req); err != nil {
+			t.Fatalf("failed to parse request body: %v", err)
+		}
+		return req
+	}
+
+	cases := []struct {
+		name     string
+		path     string
+		req      interface{}
+		ctxSetup func(*schemas.BifrostContext)
+		refused  bool
+	}{
+		{
+			name:    "continue_is_refused",
+			path:    "/anthropic/v1/messages",
+			req:     parse(t, `{"model":"claude-opus-4-8","max_tokens":1,"messages":[],"thread":{"type":"continue","previous_message_id":"msg_1"}}`),
+			refused: true,
+		},
+		{
+			name:    "create_falls_through",
+			path:    "/anthropic/v1/messages",
+			req:     parse(t, `{"model":"claude-opus-4-8","max_tokens":1,"messages":[],"thread":{"type":"create"}}`),
+			refused: false,
+		},
+		{
+			name:    "no_thread_falls_through",
+			path:    "/anthropic/v1/messages",
+			req:     parse(t, `{"model":"claude-opus-4-8","max_tokens":1,"messages":[]}`),
+			refused: false,
+		},
+		{
+			name:    "malformed_thread_falls_through",
+			path:    "/anthropic/v1/messages",
+			req:     parse(t, `{"model":"claude-opus-4-8","max_tokens":1,"messages":[],"thread":"continue"}`),
+			refused: false,
+		},
+		{
+			name: "nil_extra_params_falls_through",
+			path: "/anthropic/v1/messages",
+			// Large-payload mode skips body parsing, leaving an almost-empty request.
+			req:     &anthropic.AnthropicMessageRequest{Model: "claude-opus-4-8"},
+			refused: false,
+		},
+		{
+			// Large-payload mode never parses the body, so the enterprise
+			// extractor surfaces the thread type through the routing metadata.
+			name: "large_payload_continue_refused_from_metadata",
+			path: "/anthropic/v1/messages",
+			req:  &anthropic.AnthropicMessageRequest{Model: "claude-opus-4-8"},
+			ctxSetup: func(ctx *schemas.BifrostContext) {
+				ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+				ctx.SetValue(schemas.BifrostContextKeyLargePayloadMetadata, &schemas.LargePayloadMetadata{ThreadType: "continue"})
+			},
+			refused: true,
+		},
+		{
+			name: "large_payload_create_falls_through",
+			path: "/anthropic/v1/messages",
+			req:  &anthropic.AnthropicMessageRequest{Model: "claude-opus-4-8"},
+			ctxSetup: func(ctx *schemas.BifrostContext) {
+				ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+				ctx.SetValue(schemas.BifrostContextKeyLargePayloadMetadata, &schemas.LargePayloadMetadata{ThreadType: "create"})
+			},
+			refused: false,
+		},
+		{
+			// An extractor that has not been taught about threads leaves the
+			// field empty; behavior must stay unchanged rather than refuse.
+			name: "large_payload_without_thread_metadata_falls_through",
+			path: "/anthropic/v1/messages",
+			req:  &anthropic.AnthropicMessageRequest{Model: "claude-opus-4-8"},
+			ctxSetup: func(ctx *schemas.BifrostContext) {
+				ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+				ctx.SetValue(schemas.BifrostContextKeyLargePayloadMetadata, &schemas.LargePayloadMetadata{Model: "claude-opus-4-8"})
+			},
+			refused: false,
+		},
+		{
+			// The parsed thread field wins over stale metadata: a normally
+			// parsed request must never consult large-payload metadata.
+			name: "parsed_thread_wins_over_metadata",
+			path: "/anthropic/v1/messages",
+			req:  parse(t, `{"model":"claude-opus-4-8","max_tokens":1,"messages":[],"thread":{"type":"create"}}`),
+			ctxSetup: func(ctx *schemas.BifrostContext) {
+				ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+				ctx.SetValue(schemas.BifrostContextKeyLargePayloadMetadata, &schemas.LargePayloadMetadata{ThreadType: "continue"})
+			},
+			refused: false,
+		},
+		{
+			name:    "wrong_request_type_falls_through",
+			path:    "/anthropic/v1/messages",
+			req:     &anthropic.AnthropicTextRequest{Model: "claude-haiku-4-5"},
+			refused: false,
+		},
+		{
+			// The count_tokens endpoint has its own static route without this
+			// short-circuit; the path guard keeps the wildcard /v1/messages/{path:*}
+			// route from ever refusing token counting if registration changes.
+			name:    "count_tokens_path_never_refused",
+			path:    "/anthropic/v1/messages/count_tokens",
+			req:     parse(t, `{"model":"claude-opus-4-8","max_tokens":1,"messages":[],"thread":{"type":"continue","previous_message_id":"msg_1"}}`),
+			refused: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reqCtx := &fasthttp.RequestCtx{}
+			reqCtx.Request.Header.SetMethod(fasthttp.MethodPost)
+			reqCtx.Request.SetRequestURI(tc.path)
+			bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			if tc.ctxSetup != nil {
+				tc.ctxSetup(bifrostCtx)
+			}
+
+			handled, err := anthropicRefuseThreadContinue(reqCtx, bifrostCtx, tc.req)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if handled != tc.refused {
+				t.Fatalf("expected refused=%v, got handled=%v", tc.refused, handled)
+			}
+			if tc.refused {
+				if got := reqCtx.Response.StatusCode(); got != fasthttp.StatusBadRequest {
+					t.Errorf("expected 400, got %d", got)
+				}
+				if body := string(reqCtx.Response.Body()); !strings.Contains(body, "thread_unsupported_request") {
+					t.Errorf("expected thread_unsupported_request in body, got %s", body)
+				}
+			}
+		})
+	}
+}
