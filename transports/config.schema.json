@@ -974,16 +974,20 @@
               },
               "team_id": {
                 "type": "string",
-                "description": "Associated team ID (mutually exclusive with customer_id)"
+                "description": "Associated team ID (mutually exclusive with customer_id and business_unit_id)"
               },
               "customer_id": {
                 "type": "string",
-                "description": "Associated customer ID (mutually exclusive with team_id)"
+                "description": "Associated customer ID (mutually exclusive with team_id and business_unit_id)"
+              },
+              "business_unit_id": {
+                "type": "string",
+                "description": "Associated business unit ID (mutually exclusive with team_id and customer_id). Enterprise only: a business unit is an enterprise entity, so a key naming one on an OSS deployment resolves to no owner."
               },
               "access_profile_id": {
                 "type": "integer",
                 "minimum": 1,
-                "description": "Associated access profile ID for direct access profile assignment (mutually exclusive with team_id and customer_id)"
+                "description": "Associated access profile ID for direct access profile assignment (mutually exclusive with team_id, customer_id and business_unit_id)"
               },
               "is_access_profile_managed": {
                 "type": "boolean",
