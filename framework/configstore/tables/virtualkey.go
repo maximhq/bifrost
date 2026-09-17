@@ -3,6 +3,7 @@ package tables
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -250,10 +251,16 @@ type TableVirtualKey struct {
 	ProviderConfigs []TableVirtualKeyProviderConfig `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"provider_configs"` // Empty means no providers allowed (deny-by-default)
 	MCPConfigs      []TableVirtualKeyMCPConfig      `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"mcp_configs"`
 
-	// Foreign key relationships (mutually exclusive: either TeamID or CustomerID, not both)
-	TeamID      *string `gorm:"type:varchar(255);index" json:"team_id,omitempty"`
-	CustomerID  *string `gorm:"type:varchar(255);index" json:"customer_id,omitempty"`
-	RateLimitID *string `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
+	// Foreign key relationships. TeamID, CustomerID and BusinessUnitID are mutually exclusive: a
+	// key belongs to at most one owner, which is what decides whose money it spends and whose
+	// access profile it answers to.
+	TeamID     *string `gorm:"type:varchar(255);index" json:"team_id,omitempty"`
+	CustomerID *string `gorm:"type:varchar(255);index" json:"customer_id,omitempty"`
+	// BusinessUnitID is a bare indexed column rather than a GORM association: business units are
+	// an enterprise table this package does not know, so the column records the owner without this
+	// side being able to preload it. Whoever owns the business unit resolves the name.
+	BusinessUnitID *string `gorm:"type:varchar(255);index" json:"business_unit_id,omitempty"`
+	RateLimitID    *string `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
 
 	CalendarAligned bool `gorm:"default:false" json:"calendar_aligned"`
 
@@ -401,13 +408,44 @@ func (vk *TableVirtualKey) IsExpiredAt(now time.Time) bool {
 	return !now.UTC().Before(vk.ExpiresAt.UTC())
 }
 
-// BeforeSave is a GORM hook that enforces mutual exclusion (team vs customer), computes
-// a SHA-256 hash of the plaintext value for indexed lookups, and encrypts the virtual key
+// NormalizeVirtualKeyOwnerID is normalizeVirtualKeyOwnerID for callers outside this package: an
+// owner id that is blank, or only whitespace, means no owner.
+func NormalizeVirtualKeyOwnerID(id *string) *string { return normalizeVirtualKeyOwnerID(id) }
+
+func normalizeVirtualKeyOwnerID(id *string) *string {
+	if id != nil && strings.TrimSpace(*id) == "" {
+		return nil
+	}
+	return id
+}
+
+// BeforeSave is a GORM hook that enforces mutual exclusion (team vs customer vs business unit),
+// computes a SHA-256 hash of the plaintext value for indexed lookups, and encrypts the virtual key
 // value before writing to the database.
 func (vk *TableVirtualKey) BeforeSave(tx *gorm.DB) error {
-	// Enforce mutual exclusion: VK can belong to either Team OR Customer, not both
-	if vk.TeamID != nil && vk.CustomerID != nil {
-		return fmt.Errorf("virtual key cannot belong to both team and customer")
+	// A blank owner id is no owner. JSON decoding turns "team_id": "" into a non-nil pointer to an
+	// empty string, and a caller that builds the row itself can do the same, so normalize before
+	// counting: otherwise a blank id both persists as an owner nothing resolves and makes a request
+	// naming one real owner alongside a blank one look like two.
+	vk.TeamID = normalizeVirtualKeyOwnerID(vk.TeamID)
+	vk.CustomerID = normalizeVirtualKeyOwnerID(vk.CustomerID)
+	vk.BusinessUnitID = normalizeVirtualKeyOwnerID(vk.BusinessUnitID)
+
+	// Enforce mutual exclusion: a VK belongs to at most one of Team, Customer or Business Unit.
+	// Checked as a count rather than pairwise so adding a fourth owner cannot silently leave a
+	// pair unguarded.
+	owners := 0
+	if vk.TeamID != nil {
+		owners++
+	}
+	if vk.CustomerID != nil {
+		owners++
+	}
+	if vk.BusinessUnitID != nil {
+		owners++
+	}
+	if owners > 1 {
+		return fmt.Errorf("virtual key cannot belong to more than one of team, customer or business unit")
 	}
 
 	// Hash must be computed before encryption (from plaintext value).

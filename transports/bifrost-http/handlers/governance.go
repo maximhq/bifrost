@@ -304,9 +304,12 @@ type CreateVirtualKeyRequest struct {
 		MCPClientName  string            `json:"mcp_client_name" validate:"required"`
 		ToolsToExecute schemas.WhiteList `json:"tools_to_execute,omitempty"`
 	} `json:"mcp_configs,omitempty"` // Empty means no MCP clients allowed (deny-by-default)
-	TeamID            *string                 `json:"team_id,omitempty"`     // Mutually exclusive with CustomerID
-	CustomerID        *string                 `json:"customer_id,omitempty"` // Mutually exclusive with TeamID
-	Budgets           []CreateBudgetRequest   `json:"budgets,omitempty"`     // Multi-budget: each must have a unique reset_duration
+	TeamID     *string `json:"team_id,omitempty"`     // Mutually exclusive with CustomerID and BusinessUnitID
+	CustomerID *string `json:"customer_id,omitempty"` // Mutually exclusive with TeamID and BusinessUnitID
+	// BusinessUnitID is the third owner a key can have. Business units are an enterprise table this
+	// handler does not model, so the id is stored as given; whoever owns business units validates it.
+	BusinessUnitID    *string                 `json:"business_unit_id,omitempty"`
+	Budgets           []CreateBudgetRequest   `json:"budgets,omitempty"` // Multi-budget: each must have a unique reset_duration
 	RateLimit         *CreateRateLimitRequest `json:"rate_limit,omitempty"`
 	IsActive          *bool                   `json:"is_active,omitempty"`
 	CalendarAligned   bool                    `json:"calendar_aligned,omitempty"`    // When true, all budgets reset at clean calendar boundaries
@@ -352,6 +355,7 @@ type UpdateVirtualKeyRequest struct {
 	} `json:"mcp_configs,omitempty"`
 	TeamID            schemas.OptionalJSON[string] `json:"team_id,omitempty"`
 	CustomerID        schemas.OptionalJSON[string] `json:"customer_id,omitempty"`
+	BusinessUnitID    schemas.OptionalJSON[string] `json:"business_unit_id,omitempty"`
 	Budgets           []CreateBudgetRequest        `json:"budgets,omitempty"` // Multi-budget: replaces all VK-level budgets
 	RateLimit         *UpdateRateLimitRequest      `json:"rate_limit,omitempty"`
 	IsActive          *bool                        `json:"is_active,omitempty"`
@@ -361,31 +365,54 @@ type UpdateVirtualKeyRequest struct {
 	ExpiresAt         *string                      `json:"expires_at,omitempty"` // RFC3339 timestamp sets a new expiry, "" clears it, omitted leaves it unchanged
 }
 
-var errVirtualKeyDualAssociation = errors.New("VirtualKey cannot be attached to both Team and Customer")
+var errVirtualKeyDualAssociation = errors.New("VirtualKey cannot be attached to more than one of Team, Customer or Business Unit")
 
-// optionalJSONStringHasValue reports whether a presence-aware string contains a non-empty value.
+// optionalJSONStringHasValue reports whether a presence-aware string names something. Blank is not
+// a name, and neither is whitespace: an update saying `"team_id": " "` means the same thing as one
+// saying `"team_id": ""` - clear the owner - which is also what create makes of it, and what
+// BeforeSave persists. Counting it as a named owner would refuse an update that named one real
+// owner beside a blank one, while the identical create succeeded.
 func optionalJSONStringHasValue(value schemas.OptionalJSON[string]) bool {
-	return value.Set && !value.Null && value.Value != ""
+	return value.Set && !value.Null && strings.TrimSpace(value.Value) != ""
 }
 
-// applyVirtualKeyOwnershipUpdate applies presence-aware team/customer ownership changes.
+// virtualKeyOwnerCount counts the owners a create request names. A key belongs to at most one.
+func virtualKeyOwnerCount(owners ...*string) int {
+	count := 0
+	for _, owner := range owners {
+		if owner != nil {
+			count++
+		}
+	}
+	return count
+}
+
+// namedVirtualKeyOwners counts the owners an update request sets to a value.
+func namedVirtualKeyOwners(req *UpdateVirtualKeyRequest) int {
+	named := 0
+	for _, owner := range []schemas.OptionalJSON[string]{req.TeamID, req.CustomerID, req.BusinessUnitID} {
+		if optionalJSONStringHasValue(owner) {
+			named++
+		}
+	}
+	return named
+}
+
+// applyVirtualKeyOwnershipUpdate applies presence-aware team/customer/business-unit ownership
+// changes. Naming one owner clears the other two, because a key belongs to at most one.
 func applyVirtualKeyOwnershipUpdate(vk *configstoreTables.TableVirtualKey, req *UpdateVirtualKeyRequest) error {
-	if optionalJSONStringHasValue(req.TeamID) && optionalJSONStringHasValue(req.CustomerID) {
+	if namedVirtualKeyOwners(req) > 1 {
 		return errVirtualKeyDualAssociation
 	}
-	if optionalJSONStringHasValue(req.TeamID) {
-		vk.TeamID = new(req.TeamID.Value)
-		vk.CustomerID = nil
-		return nil
-	}
-	if optionalJSONStringHasValue(req.CustomerID) {
-		vk.CustomerID = new(req.CustomerID.Value)
-		vk.TeamID = nil
-		return nil
-	}
-	if req.TeamID.Set || req.CustomerID.Set {
-		vk.TeamID = nil
-		vk.CustomerID = nil
+	switch {
+	case optionalJSONStringHasValue(req.TeamID):
+		vk.TeamID, vk.CustomerID, vk.BusinessUnitID = new(req.TeamID.Value), nil, nil
+	case optionalJSONStringHasValue(req.CustomerID):
+		vk.TeamID, vk.CustomerID, vk.BusinessUnitID = nil, new(req.CustomerID.Value), nil
+	case optionalJSONStringHasValue(req.BusinessUnitID):
+		vk.TeamID, vk.CustomerID, vk.BusinessUnitID = nil, nil, new(req.BusinessUnitID.Value)
+	case req.TeamID.Set || req.CustomerID.Set || req.BusinessUnitID.Set:
+		vk.TeamID, vk.CustomerID, vk.BusinessUnitID = nil, nil, nil
 	}
 	return nil
 }
@@ -1664,6 +1691,7 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 	search := string(ctx.QueryArgs().Peek("search"))
 	customerID := string(ctx.QueryArgs().Peek("customer_id"))
 	teamID := string(ctx.QueryArgs().Peek("team_id"))
+	businessUnitID := string(ctx.QueryArgs().Peek("business_unit_id"))
 	userID := string(ctx.QueryArgs().Peek("user_id"))
 	sortBy := string(ctx.QueryArgs().Peek("sort_by"))
 	order := string(ctx.QueryArgs().Peek("order"))
@@ -1672,12 +1700,13 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 	excludeAssignedVirtualKeys := string(ctx.QueryArgs().Peek("exclude_assigned_virtual_keys")) == "true"
 	forUserAssignment := string(ctx.QueryArgs().Peek("for_user_assignment")) == "true"
 
-	if limitStr != "" || offsetStr != "" || search != "" || customerID != "" || teamID != "" || userID != "" || sortBy != "" || isExport || excludeAccessProfileManagedVirtual || excludeAssignedVirtualKeys || forUserAssignment {
+	if limitStr != "" || offsetStr != "" || search != "" || customerID != "" || teamID != "" || businessUnitID != "" || userID != "" || sortBy != "" || isExport || excludeAccessProfileManagedVirtual || excludeAssignedVirtualKeys || forUserAssignment {
 		// Paginated/filtered path
 		params := configstore.VirtualKeyQueryParams{
 			Search:                             search,
 			CustomerID:                         customerID,
 			TeamID:                             teamID,
+			BusinessUnitID:                     businessUnitID,
 			UserID:                             userID,
 			SortBy:                             sortBy,
 			Order:                              order,
@@ -1771,9 +1800,15 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Virtual key name is required")
 		return
 	}
-	// Validate mutually exclusive TeamID and CustomerID
-	if req.TeamID != nil && req.CustomerID != nil {
-		SendError(ctx, 400, "VirtualKey cannot be attached to both Team and Customer")
+	// A blank owner id is no owner, and is normalized away before it can be counted as one - an
+	// update says the same thing by treating "" as a clear. Without this, a create body carrying
+	// "team_id": "" would either store an owner nothing resolves, or be refused for naming two.
+	req.TeamID = configstoreTables.NormalizeVirtualKeyOwnerID(req.TeamID)
+	req.CustomerID = configstoreTables.NormalizeVirtualKeyOwnerID(req.CustomerID)
+	req.BusinessUnitID = configstoreTables.NormalizeVirtualKeyOwnerID(req.BusinessUnitID)
+	// A key belongs to at most one of a team, a customer or a business unit.
+	if virtualKeyOwnerCount(req.TeamID, req.CustomerID, req.BusinessUnitID) > 1 {
+		SendError(ctx, 400, errVirtualKeyDualAssociation.Error())
 		return
 	}
 	// Validate budgets if provided
@@ -1827,6 +1862,7 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 			Description:       req.Description,
 			TeamID:            req.TeamID,
 			CustomerID:        req.CustomerID,
+			BusinessUnitID:    req.BusinessUnitID,
 			IsActive:          isActive,
 			CalendarAligned:   req.CalendarAligned,
 			AllowAllProviders: req.AllowAllProviders,
@@ -2137,9 +2173,10 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Invalid JSON")
 		return
 	}
-	// Validate mutually exclusive TeamID and CustomerID
-	if optionalJSONStringHasValue(req.TeamID) && optionalJSONStringHasValue(req.CustomerID) {
-		SendError(ctx, 400, "VirtualKey cannot be attached to both Team and Customer")
+	// A key belongs to at most one of a team, a customer or a business unit. Checked before anything
+	// is read or written; applyVirtualKeyOwnershipUpdate enforces the same rule where it applies it.
+	if namedVirtualKeyOwners(&req) > 1 {
+		SendError(ctx, 400, errVirtualKeyDualAssociation.Error())
 		return
 	}
 	// The operator's explicit "reset usage" choice, surfaced by the UI's
