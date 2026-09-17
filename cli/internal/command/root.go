@@ -556,7 +556,7 @@ func isLegacyLauncherInvocation(args []string) bool {
 		name = before
 	}
 	switch name {
-	case "-config", "--config", "-no-resume", "--no-resume", "-worktree", "--worktree":
+	case "-config", "--config", "-no-resume", "--no-resume", "-tabs", "--tabs", "-worktree", "--worktree":
 		return true
 	default:
 		return false
@@ -793,9 +793,11 @@ func (r *Runner) runLauncher(ctx context.Context, args []string) error {
 	fs.SetOutput(r.ErrOut)
 	var configPath string
 	var noResume bool
+	var tabs bool
 	var worktree string
 	fs.StringVar(&configPath, "config", "", "path to config.json")
 	fs.BoolVar(&noResume, "no-resume", false, "skip resume flow and open setup")
+	fs.BoolVar(&tabs, "tabs", false, "run harnesses in the Bifrost terminal multiplexer")
 	fs.StringVar(&worktree, "worktree", "", "create a git worktree for the session")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -807,7 +809,7 @@ func (r *Runner) runLauncher(ctx context.Context, args []string) error {
 		return fmt.Errorf("unexpected launcher arguments: %s", strings.Join(fs.Args(), " "))
 	}
 	application := app.New(r.In, r.Out, r.ErrOut, app.Options{
-		Version: r.Build.Version, Commit: r.Build.Commit, NoResume: noResume, Config: configPath, Worktree: worktree,
+		Version: r.Build.Version, Commit: r.Build.Commit, NoResume: noResume, Tabs: tabs, Config: configPath, Worktree: worktree,
 	})
 	return application.Run(ctx)
 }

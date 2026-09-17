@@ -24,11 +24,43 @@ import (
 )
 
 const (
-	clientID         = "bifrost-agent"
-	callbackPath     = "/callback"
-	defaultLoginWait = 5 * time.Minute
-	maxResponseBytes = 1 << 20
+	clientID               = "bifrost-agent"
+	callbackPath           = "/callback"
+	defaultLoginWait       = 5 * time.Minute
+	defaultExchangeTimeout = 30 * time.Second
+	defaultShutdownTimeout = 2 * time.Second
+	maxResponseBytes       = 1 << 20
 )
+
+const signInCompletePage = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bifrost CLI sign-in complete</title>
+<style>
+:root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; background: #f6f7f8; color: #111827; }
+main { width: min(576px, 100%); padding: 32px; text-align: center; background: #fff; border: 1px solid #dfe3e8; border-radius: 4px; }
+.icon { width: 48px; height: 48px; margin: 0 auto 20px; display: grid; place-items: center; border-radius: 50%; background: #e7f4ef; color: #087f5b; }
+.icon svg { width: 24px; height: 24px; }
+h1 { margin: 0; font-size: 20px; line-height: 28px; font-weight: 600; letter-spacing: -.025em; }
+p { margin: 8px 0 0; color: #6b7280; font-size: 14px; line-height: 20px; }
+@media (max-width: 639px) {
+  body { padding: 12px; }
+  main { padding: 16px; }
+}
+@media (prefers-color-scheme: dark) {
+  body { background: #151719; color: #f9fafb; }
+  main { background: #1f2225; border-color: #34383d; box-shadow: none; }
+  .icon { background: #123b31; color: #55d6a9; }
+  p { color: #a9afb8; }
+}
+</style>
+</head>
+<body><main><div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="m9 11 3 3L22 4"/></svg></div><h1>Bifrost CLI sign-in complete</h1><p>You can close this window</p></main></body>
+</html>`
 
 // User is the Enterprise identity returned after browser authentication.
 type User struct {
@@ -56,22 +88,24 @@ type Status struct {
 
 // Client performs the native browser authentication flow against one gateway.
 type Client struct {
-	BaseURL       string
-	HTTPClient    *http.Client
-	UserAgent     string
-	Version       string
-	DeviceName    string
-	HardwareID    string
-	CallbackWait  time.Duration
-	OpenBrowser   func(string) error
-	Authorization func(string)
-	Warning       func(error)
+	BaseURL         string
+	HTTPClient      *http.Client
+	UserAgent       string
+	Version         string
+	DeviceName      string
+	HardwareID      string
+	CallbackWait    time.Duration
+	exchangeTimeout time.Duration
+	shutdownTimeout time.Duration
+	OpenBrowser     func(string) error
+	Authorization   func(string)
+	Warning         func(error)
 }
 
 // callbackResult carries one validated callback response back to SignIn.
 type callbackResult struct {
-	code string
-	err  error
+	response TokenResponse
+	err      error
 }
 
 // CheckStatus discovers whether the gateway supports Enterprise browser SSO.
@@ -111,12 +145,46 @@ func (c *Client) SignIn(ctx context.Context, noBrowser bool) (TokenResponse, err
 	}
 	defer listener.Close()
 	redirectURI := "http://" + listener.Addr().String() + callbackPath
+	deviceName := strings.TrimSpace(c.DeviceName)
+	if deviceName == "" {
+		deviceName = "Bifrost CLI"
+	}
 	resultChannel := make(chan callbackResult, 1)
-	server := callbackServer(state, resultChannel)
+	server := callbackServer(state, resultChannel, func(code string) (TokenResponse, error) {
+		payload := map[string]string{
+			"code": code, "code_verifier": verifier, "redirect_uri": redirectURI,
+			"platform": runtime.GOOS, "agent_version": c.Version, "device_name": deviceName,
+			"hardware_id": strings.TrimSpace(c.HardwareID),
+		}
+		var exchanged TokenResponse
+		exchangeTimeout := c.exchangeTimeout
+		if exchangeTimeout <= 0 {
+			exchangeTimeout = defaultExchangeTimeout
+		}
+		exchangeCtx, cancelExchange := context.WithTimeout(ctx, exchangeTimeout)
+		defer cancelExchange()
+		if exchangeErr := c.doJSON(exchangeCtx, http.MethodPost, "/api/agent/auth/token", payload, &exchanged); exchangeErr != nil {
+			return TokenResponse{}, fmt.Errorf("exchange browser authorization code: %w", exchangeErr)
+		}
+		if strings.TrimSpace(exchanged.AccessToken) == "" || strings.TrimSpace(exchanged.RefreshToken) == "" {
+			return TokenResponse{}, errors.New("gateway returned an incomplete CLI session")
+		}
+		return exchanged, nil
+	})
 	go func() {
 		_ = server.Serve(listener)
 	}()
-	defer server.Shutdown(context.Background())
+	defer func() {
+		shutdownTimeout := c.shutdownTimeout
+		if shutdownTimeout <= 0 {
+			shutdownTimeout = defaultShutdownTimeout
+		}
+		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancelShutdown()
+		if shutdownErr := server.Shutdown(shutdownCtx); shutdownErr != nil {
+			_ = server.Close()
+		}
+	}()
 
 	authorizeURL, err := c.authorizationURL(redirectURI, state, challenge)
 	if err != nil {
@@ -154,22 +222,7 @@ func (c *Client) SignIn(ctx context.Context, noBrowser bool) (TokenResponse, err
 	if callback.err != nil {
 		return response, callback.err
 	}
-	deviceName := strings.TrimSpace(c.DeviceName)
-	if deviceName == "" {
-		deviceName = "Bifrost CLI"
-	}
-	payload := map[string]string{
-		"code": callback.code, "code_verifier": verifier, "redirect_uri": redirectURI,
-		"platform": runtime.GOOS, "agent_version": c.Version, "device_name": deviceName,
-		"hardware_id": strings.TrimSpace(c.HardwareID),
-	}
-	if err := c.doJSON(ctx, http.MethodPost, "/api/agent/auth/token", payload, &response); err != nil {
-		return response, fmt.Errorf("exchange browser authorization code: %w", err)
-	}
-	if strings.TrimSpace(response.AccessToken) == "" || strings.TrimSpace(response.RefreshToken) == "" {
-		return response, errors.New("gateway returned an incomplete CLI session")
-	}
-	return response, nil
+	return callback.response, nil
 }
 
 // Refresh rotates an Enterprise agent session using its refresh token.
@@ -200,12 +253,15 @@ func (c *Client) authorizationURL(redirectURI, state, challenge string) (string,
 	})
 }
 
-// callbackServer validates state before accepting a browser authorization code.
-func callbackServer(expectedState string, results chan<- callbackResult) *http.Server {
+// callbackServer validates state, exchanges the one-time authorization code,
+// and shows a CLI-specific completion page only after the exchange succeeds.
+func callbackServer(expectedState string, results chan<- callbackResult, exchange func(string) (TokenResponse, error)) *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc(callbackPath, func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Cache-Control", "no-store")
 		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+		writer.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+		writer.Header().Set("X-Content-Type-Options", "nosniff")
 		if request.Method != http.MethodGet {
 			http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -227,8 +283,14 @@ func callbackServer(expectedState string, results chan<- callbackResult) *http.S
 			sendCallbackResult(results, callbackResult{err: errors.New("browser callback did not contain an authorization code")})
 			return
 		}
-		_, _ = io.WriteString(writer, "<!doctype html><title>Bifrost CLI</title><h1>Signed in</h1><p>You can close this window and return to the terminal.</p>")
-		sendCallbackResult(results, callbackResult{code: code})
+		response, err := exchange(code)
+		if err != nil {
+			http.Error(writer, "Sign-in could not be completed. Return to the terminal and try again.", http.StatusBadGateway)
+			sendCallbackResult(results, callbackResult{err: err})
+			return
+		}
+		_, _ = io.WriteString(writer, signInCompletePage)
+		sendCallbackResult(results, callbackResult{response: response})
 	})
 	return &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 }

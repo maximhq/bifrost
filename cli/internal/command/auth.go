@@ -3,8 +3,6 @@ package command
 import (
 	"bufio"
 	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -15,10 +13,9 @@ import (
 	"github.com/maximhq/bifrost/cli/internal/client"
 	"github.com/maximhq/bifrost/cli/internal/output"
 	"github.com/maximhq/bifrost/cli/internal/secrets"
+	"github.com/maximhq/bifrost/cli/internal/sessionauth"
 	"golang.org/x/term"
 )
-
-const agentDeviceProfileID = "installation"
 
 // runAuth manages credentials for the selected gateway context.
 func (r *Runner) runAuth(ctx context.Context, env *environment, args []string) error {
@@ -184,43 +181,17 @@ func (r *Runner) authBrowserLogin(ctx context.Context, env *environment, noBrows
 		fmt.Fprintln(r.ErrOut, "Waiting for authentication...")
 	}
 	env.BrowserAuth.Warning = func(err error) { fmt.Fprintf(r.ErrOut, "Warning: %v\n", err) }
-	deviceID, err := r.ensureAgentDeviceID()
+	authenticator := sessionauth.Authenticator{
+		Store: r.Secrets, ProfileID: env.ProfileID, Client: env.BrowserAuth,
+	}
+	response, err := authenticator.SignIn(ctx, noBrowser)
 	if err != nil {
-		return err
-	}
-	env.BrowserAuth.HardwareID = deviceID
-	response, err := env.BrowserAuth.SignIn(ctx, noBrowser)
-	if err != nil {
-		return err
-	}
-	// Store the rotated refresh token first. If the second keyring write fails,
-	// the next invocation can still recover instead of retaining a consumed token.
-	if err := r.Secrets.Set(env.ProfileID, secrets.AgentRefreshToken, response.RefreshToken); err != nil {
-		return err
-	}
-	if err := r.Secrets.Set(env.ProfileID, secrets.AgentToken, response.AccessToken); err != nil {
-		return err
-	}
-	userJSON, err := json.Marshal(response.User)
-	if err != nil {
-		return err
-	}
-	if err := r.Secrets.Set(env.ProfileID, secrets.AgentUser, string(userJSON)); err != nil {
-		return err
-	}
-	if err := r.Secrets.Delete(env.ProfileID, secrets.AgentVirtualKeyID); err != nil {
 		return err
 	}
 	env.Client.SetAgentToken(response.AccessToken)
 	env.Client.SetAgentVirtualKeyID("")
 	if !env.Quiet {
-		identity := strings.TrimSpace(response.User.Email)
-		if identity == "" {
-			identity = strings.TrimSpace(response.User.Name)
-		}
-		if identity == "" {
-			identity = response.User.ID
-		}
+		identity := sessionauth.UserLabel(response.User)
 		if _, err := fmt.Fprintf(r.Out, "Signed in to %s as %s using context %q.\n", env.Client.BaseURL, identity, env.ProfileID); err != nil {
 			return err
 		}
@@ -257,22 +228,7 @@ func (r *Runner) authBrowserLogin(ctx context.Context, env *environment, noBrows
 
 // ensureAgentDeviceID returns a stable opaque installation ID without reading a machine identifier.
 func (r *Runner) ensureAgentDeviceID() (string, error) {
-	value, err := r.Secrets.Get(agentDeviceProfileID, secrets.AgentDeviceID)
-	if err != nil {
-		return "", err
-	}
-	if value = strings.TrimSpace(value); value != "" {
-		return value, nil
-	}
-	random := make([]byte, 32)
-	if _, err := rand.Read(random); err != nil {
-		return "", fmt.Errorf("create opaque CLI device ID: %w", err)
-	}
-	value = "cli-" + base64.RawURLEncoding.EncodeToString(random)
-	if err := r.Secrets.Set(agentDeviceProfileID, secrets.AgentDeviceID, value); err != nil {
-		return "", err
-	}
-	return value, nil
+	return sessionauth.EnsureDeviceID(r.Secrets)
 }
 
 // assignedVirtualKeyLabel returns a readable name and ID without key material.
@@ -420,23 +376,28 @@ func (r *Runner) clearAgentVirtualKeySelection(env *environment) error {
 func (r *Runner) authLogout(ctx context.Context, env *environment) error {
 	var requestErr error
 	credentials := env.Client.CredentialsSnapshot()
-	agentToken := strings.TrimSpace(credentials.AgentToken)
-	if agentToken != "" && env.BrowserAuth != nil {
-		requestErr = env.BrowserAuth.Logout(ctx, agentToken)
+	if strings.TrimSpace(credentials.AgentToken) != "" {
+		authenticator := sessionauth.Authenticator{
+			Store: r.Secrets, ProfileID: env.ProfileID, Client: env.BrowserAuth,
+		}
+		requestErr = authenticator.Logout(ctx)
+	} else {
+		authenticator := sessionauth.Authenticator{Store: r.Secrets, ProfileID: env.ProfileID}
+		requestErr = authenticator.Clear()
 	}
 	if strings.TrimSpace(credentials.SessionToken) != "" {
 		_, sessionErr := env.Client.Do(ctx, client.Request{Method: http.MethodPost, Path: "/api/session/logout", Auth: client.AuthManagement})
 		if requestErr == nil {
-			requestErr = sessionErr
+			if sessionErr != nil {
+				requestErr = fmt.Errorf("local session removed; gateway logout failed: %w", sessionErr)
+			}
 		}
 	}
-	for _, kind := range []secrets.Kind{secrets.SessionToken, secrets.AgentToken, secrets.AgentRefreshToken, secrets.AgentUser, secrets.AgentVirtualKeyID} {
-		if deleteErr := r.Secrets.Delete(env.ProfileID, kind); deleteErr != nil {
-			return deleteErr
-		}
+	if deleteErr := r.Secrets.Delete(env.ProfileID, secrets.SessionToken); deleteErr != nil {
+		return deleteErr
 	}
 	if requestErr != nil {
-		return fmt.Errorf("local session removed; gateway logout failed: %w", requestErr)
+		return requestErr
 	}
 	if !env.Quiet {
 		if _, err := fmt.Fprintln(r.Out, "Logged out and removed the stored session credentials."); err != nil {
