@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -2129,4 +2130,169 @@ func TestOpenAICompatFiltersReadDatasheet(t *testing.T) {
 		require.NotNil(t, req.PresencePenalty, "an explicit false must beat the grok name check")
 		require.Nil(t, req.FrequencyPenalty, "fields the row omits keep the grok name-based default")
 	})
+}
+
+func TestToOpenAIChatRequest_MiniMaxCompatibility(t *testing.T) {
+	reasoning := "inspect the tool result"
+	detailID := "reasoning-text-1"
+	content := ""
+	toolCallID := "call_1"
+	toolName := "get_weather"
+	request := &schemas.BifrostChatRequest{
+		Provider: schemas.MiniMax,
+		Model:    "MiniMax-M3",
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleAssistant,
+				Content: &schemas.ChatMessageContent{ContentStr: &content},
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					Reasoning: &reasoning,
+					ReasoningDetails: []schemas.ChatReasoningDetails{{
+						ID:    &detailID,
+						Index: 0,
+						Type:  schemas.BifrostReasoningDetailsTypeText,
+						Text:  &reasoning,
+					}},
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+						Index: 0,
+						ID:    &toolCallID,
+						Type:  schemas.Ptr("function"),
+						Function: schemas.ChatAssistantMessageToolCallFunction{
+							Name:      &toolName,
+							Arguments: `{"location":"Shanghai"}`,
+						},
+					}},
+				},
+			},
+		},
+		Params: &schemas.ChatParameters{
+			Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr(schemas.ReasoningEffortHigh)},
+			Tools: []schemas.ChatTool{{
+				Type: "function",
+				Function: &schemas.ChatToolFunction{
+					Name: "get_weather",
+				},
+			}},
+		},
+	}
+
+	converted := ToOpenAIChatRequest(nil, request)
+	require.NotNil(t, converted)
+	require.Nil(t, converted.Reasoning)
+	require.Equal(t, map[string]string{"type": "adaptive"}, converted.Thinking)
+	require.NotNil(t, converted.ReasoningSplit)
+	require.True(t, *converted.ReasoningSplit)
+	require.Len(t, converted.Messages, 1)
+	require.Len(t, converted.Messages[0].ReasoningDetails, 1)
+	require.Equal(t, reasoning, *converted.Messages[0].ReasoningDetails[0].Text)
+
+	wire, err := providerUtils.MarshalProviderRequest(converted)
+	require.NoError(t, err)
+	require.Contains(t, string(wire), `"thinking":{"type":"adaptive"}`)
+	require.Contains(t, string(wire), `"reasoning_split":true`)
+	require.Contains(t, string(wire), `"reasoning_details"`)
+	require.NotContains(t, string(wire), `"reasoning_effort"`)
+
+	// Conversion must not mutate the request shared with retries/fallbacks.
+	require.NotNil(t, request.Params.Reasoning)
+	require.Len(t, request.Input[0].ReasoningDetails, 1)
+}
+
+func TestToOpenAIChatRequest_MiniMaxExplicitThinkingWins(t *testing.T) {
+	request := &schemas.BifrostChatRequest{
+		Provider: schemas.MiniMax,
+		Model:    "MiniMax-M3",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser}},
+		Params: &schemas.ChatParameters{
+			Reasoning: schemas.Ptr(schemas.ChatReasoning{Effort: schemas.Ptr(schemas.ReasoningEffortHigh)}),
+		},
+		MiniMaxParameters: &schemas.MiniMaxChatParameters{
+			Thinking:       map[string]interface{}{"type": "disabled"},
+			ReasoningSplit: schemas.Ptr(false),
+		},
+	}
+
+	converted := ToOpenAIChatRequest(nil, request)
+	require.Equal(t, map[string]interface{}{"type": "disabled"}, converted.Thinking)
+	require.NotNil(t, converted.ReasoningSplit)
+	require.False(t, *converted.ReasoningSplit)
+	require.NotContains(t, converted.ExtraParams, "thinking")
+	require.NotContains(t, converted.ExtraParams, "reasoning_split")
+}
+
+func TestToOpenAIChatRequest_MiniMaxNoneDisablesThinking(t *testing.T) {
+	request := &schemas.BifrostChatRequest{
+		Provider: schemas.MiniMax,
+		Model:    "MiniMax-M3",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser}},
+		Params: &schemas.ChatParameters{
+			Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr(schemas.ReasoningEffortNone)},
+		},
+	}
+
+	converted := ToOpenAIChatRequest(nil, request)
+	require.Equal(t, map[string]string{"type": "disabled"}, converted.Thinking)
+	require.Nil(t, converted.Reasoning)
+	require.NotNil(t, converted.ReasoningSplit)
+	require.True(t, *converted.ReasoningSplit, "reasoning requests should use the structured MiniMax response format")
+}
+
+func TestOpenAIChatRequestUnmarshalPreservesMiniMaxExtensions(t *testing.T) {
+	var request OpenAIChatRequest
+	err := sonic.Unmarshal([]byte(`{
+		"model":"minimax/MiniMax-M3",
+		"messages":[{"role":"user","content":"hello"}],
+		"thinking":{"type":"disabled"},
+		"reasoning_split":false
+	}`), &request)
+	require.NoError(t, err)
+
+	converted := request.ToBifrostChatRequest(nil)
+	require.NotNil(t, converted.Params)
+	require.NotNil(t, converted.MiniMaxParameters)
+	require.Equal(t, map[string]interface{}{"type": "disabled"}, converted.MiniMaxParameters.Thinking)
+	require.NotNil(t, converted.MiniMaxParameters.ReasoningSplit)
+	require.False(t, *converted.MiniMaxParameters.ReasoningSplit)
+	require.NotContains(t, converted.Params.ExtraParams, "thinking")
+	require.NotContains(t, converted.Params.ExtraParams, "reasoning_split")
+
+	fallbackRequest := *converted
+	fallbackRequest.Provider = schemas.SGL
+	fallbackRequest.Model = "fallback-model"
+	fallbackCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	fallbackWire, err := providerUtils.MarshalProviderRequest(ToOpenAIChatRequest(fallbackCtx, &fallbackRequest))
+	require.NoError(t, err)
+	require.NotContains(t, string(fallbackWire), `"thinking"`)
+	require.NotContains(t, string(fallbackWire), `"reasoning_split"`)
+}
+
+func TestOpenAIChatRequestUnmarshalKeepsExtensionsForNonMiniMaxProviders(t *testing.T) {
+	var request OpenAIChatRequest
+	err := sonic.Unmarshal([]byte(`{
+		"model":"deepseek/deepseek-chat",
+		"messages":[{"role":"user","content":"hello"}],
+		"thinking":{"type":"disabled"},
+		"reasoning_split":false
+	}`), &request)
+	require.NoError(t, err)
+
+	converted := request.ToBifrostChatRequest(nil)
+	require.Nil(t, converted.MiniMaxParameters)
+	require.Equal(t, map[string]interface{}{"type": "disabled"}, converted.Params.ExtraParams["thinking"])
+	require.Equal(t, false, converted.Params.ExtraParams["reasoning_split"])
+}
+
+func TestToOpenAIChatRequest_MiniMaxKeepsSmallCompletionLimit(t *testing.T) {
+	request := &schemas.BifrostChatRequest{
+		Provider: schemas.MiniMax,
+		Model:    "MiniMax-M3",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser}},
+		Params: &schemas.ChatParameters{
+			MaxCompletionTokens: schemas.Ptr(1),
+		},
+	}
+
+	converted := ToOpenAIChatRequest(nil, request)
+	require.NotNil(t, converted.MaxCompletionTokens)
+	require.Equal(t, 1, *converted.MaxCompletionTokens)
 }

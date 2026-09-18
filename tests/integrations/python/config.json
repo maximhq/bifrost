@@ -170,6 +170,19 @@
         "default_request_timeout_in_seconds": 300
       }
     },
+    "minimax": {
+      "keys": [
+        {
+          "name": "MiniMax API Key",
+          "value": "env.MINIMAX_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
     "cohere": {
       "keys": [
         {
@@ -813,6 +826,12 @@
           },
           {
             "provider": "mistral",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "minimax",
             "allowed_models": ["*"],
             "key_ids": ["*"],
             "weight": 1.0

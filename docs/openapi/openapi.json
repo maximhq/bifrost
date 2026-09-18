@@ -2052,6 +2052,10 @@
                         "input_tokens": {
                           "type": "integer"
                         },
+                        "input_chars": {
+                          "type": "integer",
+                          "description": "Billable input characters for character-priced speech models"
+                        },
                         "output_tokens": {
                           "type": "integer"
                         },
@@ -2059,6 +2063,11 @@
                           "type": "integer"
                         }
                       }
+                    },
+                    "subtitle_file": {
+                      "type": "string",
+                      "format": "uri",
+                      "description": "URL of generated subtitle metadata on the terminal event"
                     },
                     "extra_fields": {
                       "$ref": "#/components/schemas/BifrostResponseExtraFields"
@@ -17595,6 +17604,10 @@
                         "input_tokens": {
                           "type": "integer"
                         },
+                        "input_chars": {
+                          "type": "integer",
+                          "description": "Billable input characters for character-priced speech models"
+                        },
                         "output_tokens": {
                           "type": "integer"
                         },
@@ -17602,6 +17615,11 @@
                           "type": "integer"
                         }
                       }
+                    },
+                    "subtitle_file": {
+                      "type": "string",
+                      "format": "uri",
+                      "description": "URL of generated subtitle metadata on the terminal event"
                     },
                     "extra_fields": {
                       "$ref": "#/components/schemas/BifrostResponseExtraFields"
@@ -17730,6 +17748,10 @@
                         "input_tokens": {
                           "type": "integer"
                         },
+                        "input_chars": {
+                          "type": "integer",
+                          "description": "Billable input characters for character-priced speech models"
+                        },
                         "output_tokens": {
                           "type": "integer"
                         },
@@ -17737,6 +17759,11 @@
                           "type": "integer"
                         }
                       }
+                    },
+                    "subtitle_file": {
+                      "type": "string",
+                      "format": "uri",
+                      "description": "URL of generated subtitle metadata on the terminal event"
                     },
                     "extra_fields": {
                       "$ref": "#/components/schemas/BifrostResponseExtraFields"
@@ -30874,6 +30901,10 @@
                         "input_tokens": {
                           "type": "integer"
                         },
+                        "input_chars": {
+                          "type": "integer",
+                          "description": "Billable input characters for character-priced speech models"
+                        },
                         "output_tokens": {
                           "type": "integer"
                         },
@@ -30881,6 +30912,11 @@
                           "type": "integer"
                         }
                       }
+                    },
+                    "subtitle_file": {
+                      "type": "string",
+                      "format": "uri",
+                      "description": "URL of generated subtitle metadata on the terminal event"
                     },
                     "extra_fields": {
                       "$ref": "#/components/schemas/BifrostResponseExtraFields"
@@ -33962,6 +33998,10 @@
                         "input_tokens": {
                           "type": "integer"
                         },
+                        "input_chars": {
+                          "type": "integer",
+                          "description": "Billable input characters for character-priced speech models"
+                        },
                         "output_tokens": {
                           "type": "integer"
                         },
@@ -33969,6 +34009,11 @@
                           "type": "integer"
                         }
                       }
+                    },
+                    "subtitle_file": {
+                      "type": "string",
+                      "format": "uri",
+                      "description": "URL of generated subtitle metadata on the terminal event"
                     },
                     "extra_fields": {
                       "$ref": "#/components/schemas/BifrostResponseExtraFields"
@@ -37161,6 +37206,10 @@
                         "input_tokens": {
                           "type": "integer"
                         },
+                        "input_chars": {
+                          "type": "integer",
+                          "description": "Billable input characters for character-priced speech models"
+                        },
                         "output_tokens": {
                           "type": "integer"
                         },
@@ -37168,6 +37217,11 @@
                           "type": "integer"
                         }
                       }
+                    },
+                    "subtitle_file": {
+                      "type": "string",
+                      "format": "uri",
+                      "description": "URL of generated subtitle metadata on the terminal event"
                     },
                     "extra_fields": {
                       "$ref": "#/components/schemas/BifrostResponseExtraFields"
@@ -96733,6 +96787,7 @@
           "gemini",
           "groq",
           "mistral",
+          "minimax",
           "ollama",
           "opencode-go",
           "opencode-zen",
@@ -101267,6 +101322,10 @@
               "input_tokens": {
                 "type": "integer"
               },
+              "input_chars": {
+                "type": "integer",
+                "description": "Billable input characters for character-priced speech models"
+              },
               "output_tokens": {
                 "type": "integer"
               },
@@ -101323,6 +101382,11 @@
           },
           "audio_base64": {
             "type": "string"
+          },
+          "subtitle_file": {
+            "type": "string",
+            "format": "uri",
+            "description": "URL of generated subtitle metadata when requested"
           },
           "extra_fields": {
             "$ref": "#/components/schemas/BifrostResponseExtraFields"
@@ -109223,6 +109287,21 @@
               }
             }
           },
+          "minimax_config": {
+            "type": "object",
+            "description": "MiniMax-specific provider settings",
+            "properties": {
+              "auth_type": {
+                "type": "string",
+                "enum": [
+                  "bearer",
+                  "x-key"
+                ],
+                "default": "bearer",
+                "description": "MiniMax official uses Bearer authentication; compatible gateways may use x-key."
+              }
+            }
+          },
           "prompt_cache": {
             "type": "object",
             "description": "Synthesize prompt-cache breakpoints for requests that carry none. Off by default. Requests that already carry their own cache markers are never modified.",
@@ -109462,6 +109541,21 @@
               }
             }
           },
+          "minimax_config": {
+            "type": "object",
+            "description": "MiniMax-specific provider settings",
+            "properties": {
+              "auth_type": {
+                "type": "string",
+                "enum": [
+                  "bearer",
+                  "x-key"
+                ],
+                "default": "bearer",
+                "description": "MiniMax official uses Bearer authentication; compatible gateways may use x-key."
+              }
+            }
+          },
           "prompt_cache": {
             "type": "object",
             "description": "Synthesize prompt-cache breakpoints for requests that carry none. Off by default. Requests that already carry their own cache markers are never modified.",
@@ -109656,6 +109750,21 @@
                 "additionalProperties": {
                   "type": "string"
                 }
+              }
+            }
+          },
+          "minimax_config": {
+            "type": "object",
+            "description": "MiniMax-specific provider settings",
+            "properties": {
+              "auth_type": {
+                "type": "string",
+                "enum": [
+                  "bearer",
+                  "x-key"
+                ],
+                "default": "bearer",
+                "description": "MiniMax official uses Bearer authentication; compatible gateways may use x-key."
               }
             }
           },

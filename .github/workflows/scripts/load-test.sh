@@ -434,6 +434,11 @@ create_config() {
       "network_config": { "base_url": "http://127.0.0.1:8000", "default_request_timeout_in_seconds": 30 },
       "concurrency_and_buffer_size": { "concurrency": 1, "buffer_size": 1 }
     },
+    "minimax": {
+      "keys": [{ "name": "mocker-minimax-key", "value": "Bearer mocker-key", "weight": 1, "models": ["*"] }],
+      "network_config": { "base_url": "http://127.0.0.1:8000", "default_request_timeout_in_seconds": 30 },
+      "concurrency_and_buffer_size": { "concurrency": 1, "buffer_size": 1 }
+    },
     "nebius": {
       "keys": [{ "name": "mocker-nebius-key", "value": "Bearer mocker-key", "weight": 1, "models": ["*"] }],
       "network_config": { "base_url": "http://127.0.0.1:8000", "default_request_timeout_in_seconds": 30 },
