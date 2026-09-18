@@ -36609,7 +36609,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"model\": \"openrouter/anthropic/claude-sonnet-4\", \"max_tokens\": 64, \"messages\": [{\"role\": \"system\", \"content\": [{\"type\": \"text\", \"text\": \"You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant.\", \"cache_control\": {\"type\": \"ephemeral\"}}]}, {\"role\": \"user\", \"content\": \"Reply with one word.\"}]}"
+              "raw": "{\"model\": \"openrouter/anthropic/claude-sonnet-5\", \"max_tokens\": 64, \"messages\": [{\"role\": \"system\", \"content\": [{\"type\": \"text\", \"text\": \"You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant.\", \"cache_control\": {\"type\": \"ephemeral\"}}]}, {\"role\": \"user\", \"content\": \"Reply with one word.\"}]}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -36647,7 +36647,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"model\": \"openrouter/anthropic/claude-sonnet-4\", \"max_tokens\": 64, \"messages\": [{\"role\": \"system\", \"content\": [{\"type\": \"text\", \"text\": \"You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant.\", \"cache_control\": {\"type\": \"ephemeral\"}}]}, {\"role\": \"user\", \"content\": \"Reply with one word.\"}], \"tools\": [{\"type\": \"function\", \"function\": {\"name\": \"get_weather\", \"description\": \"Get weather for a city\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"]}}, \"cache_control\": {\"type\": \"ephemeral\"}}]}"
+              "raw": "{\"model\": \"openrouter/anthropic/claude-sonnet-5\", \"max_tokens\": 64, \"messages\": [{\"role\": \"system\", \"content\": [{\"type\": \"text\", \"text\": \"You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant.\", \"cache_control\": {\"type\": \"ephemeral\"}}]}, {\"role\": \"user\", \"content\": \"Reply with one word.\"}], \"tools\": [{\"type\": \"function\", \"function\": {\"name\": \"get_weather\", \"description\": \"Get weather for a city\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"]}}, \"cache_control\": {\"type\": \"ephemeral\"}}]}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -36685,7 +36685,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"model\": \"openrouter/anthropic/claude-sonnet-4\", \"max_tokens\": 64, \"messages\": [{\"role\": \"system\", \"content\": [{\"type\": \"text\", \"text\": \"You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant.\", \"cache_control\": {\"type\": \"ephemeral\", \"ttl\": \"1h\"}}]}, {\"role\": \"user\", \"content\": \"Reply with one word.\"}]}"
+              "raw": "{\"model\": \"openrouter/anthropic/claude-sonnet-5\", \"max_tokens\": 64, \"messages\": [{\"role\": \"system\", \"content\": [{\"type\": \"text\", \"text\": \"You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant. You are a meticulous assistant.\", \"cache_control\": {\"type\": \"ephemeral\", \"ttl\": \"1h\"}}]}, {\"role\": \"user\", \"content\": \"Reply with one word.\"}]}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -48742,10 +48742,24 @@
                   "pm.test('Azure automatic prompt caching read succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",
-                  "if (pm.response.code >= 400) { return; }",
+                  "if (pm.response.code >= 400) { pm.collectionVariables.unset('azureAutoCacheReadTries'); return; }",
                   "var body = pm.response.json();",
+                  "var details = (body.usage || {}).prompt_tokens_details || {};",
+                  "var tries = Number(pm.collectionVariables.get('azureAutoCacheReadTries') || 0);",
+                  "if (!(details.cached_tokens > 0) && tries < 5) {",
+                  "  // Azure automatic caching is best-effort: under load the front end can route",
+                  "  // this read to a different backend replica than the turn-1 write (visible as a",
+                  "  // different Azureml-Model-Session header), and the per-replica cache reads 0.",
+                  "  // Each attempt also primes the replica it lands on, so re-running converges.",
+                  "  // Docs: https://learn.microsoft.com/en-us/azure/ai-foundry/openai/how-to/prompt-caching",
+                  "  pm.collectionVariables.set('azureAutoCacheReadTries', tries + 1);",
+                  "  // The pending timer holds the sandbox open, which delays the next request.",
+                  "  setTimeout(function () {}, 2000);",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "  return;",
+                  "}",
+                  "pm.collectionVariables.unset('azureAutoCacheReadTries');",
                   "pm.test('Azure turn 2: identical prefix reads from cache (usage.prompt_tokens_details.cached_tokens > 0)', function () {",
-                  "  var details = (body.usage || {}).prompt_tokens_details || {};",
                   "  pm.expect(details.cached_tokens, 'usage=' + JSON.stringify(body.usage)).to.be.a('number').that.is.above(0);",
                   "});"
                 ],
@@ -137525,7 +137539,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-oss-safeguard-20b\",\n  \"input\": \"Count from 1 to 5.\",\n  \"max_output_tokens\": 128,\n  \"stream\": true\n}",
+              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-oss-safeguard-20b\",\n  \"input\": \"Count from 1 to 5.\",\n  \"max_output_tokens\": 512,\n  \"stream\": true\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -137570,8 +137584,9 @@
                   "  pm.expect(rawChatChunks, 'top-level chat chunks were emitted on a Responses route - the fallback flag was not honored').to.be.empty;",
                   "  pm.expect(responseEvents, 'no top-level response.* events on the wire: ' + body.slice(0, 400)).to.not.be.empty;",
                   "});",
-                  "pm.test('mantle gpt-oss-safeguard-20b streaming: stream reached a terminal response.completed - responses-chat-routing', function () {",
-                  "  pm.expect(body, 'stream never terminated with response.completed (Mantle sends no [DONE]; it must break on finish_reason + usage): ' + body.slice(-400)).to.include('response.completed');",
+                  "pm.test('mantle gpt-oss-safeguard-20b streaming: stream reached a terminal response event - responses-chat-routing', function () {",
+                  "  var terminated = body.indexOf('response.completed') !== -1 || body.indexOf('response.incomplete') !== -1;",
+                  "  pm.expect(terminated, 'stream never reached a terminal response.completed/response.incomplete (it must break on finish_reason + usage instead of waiting for [DONE]; response.incomplete is the correct terminal when the model exhausts max_output_tokens): ' + body.slice(-400)).to.be.true;",
                   "  pm.expect(body, 'an idle-timeout error was appended after the terminal event - the stream did not close on finish_reason + usage and stalled until the idle timeout: ' + body.slice(-400)).to.not.include('request_timed_out');",
                   "});"
                 ]
@@ -137661,7 +137676,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"bedrock_mantle/nvidia.nemotron-nano-3-30b\",\n  \"input\": \"Count from 1 to 5.\",\n  \"max_output_tokens\": 128,\n  \"stream\": true\n}",
+              "raw": "{\n  \"model\": \"bedrock_mantle/nvidia.nemotron-nano-3-30b\",\n  \"input\": \"Count from 1 to 5.\",\n  \"max_output_tokens\": 512,\n  \"stream\": true\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -137706,8 +137721,9 @@
                   "  pm.expect(rawChatChunks, 'top-level chat chunks were emitted on a Responses route - the fallback flag was not honored').to.be.empty;",
                   "  pm.expect(responseEvents, 'no top-level response.* events on the wire: ' + body.slice(0, 400)).to.not.be.empty;",
                   "});",
-                  "pm.test('mantle nemotron-nano-3-30b streaming: stream reached a terminal response.completed - responses-chat-routing', function () {",
-                  "  pm.expect(body, 'stream never terminated with response.completed (Mantle sends no [DONE]; it must break on finish_reason + usage): ' + body.slice(-400)).to.include('response.completed');",
+                  "pm.test('mantle nemotron-nano-3-30b streaming: stream reached a terminal response event - responses-chat-routing', function () {",
+                  "  var terminated = body.indexOf('response.completed') !== -1 || body.indexOf('response.incomplete') !== -1;",
+                  "  pm.expect(terminated, 'stream never reached a terminal response.completed/response.incomplete (it must break on finish_reason + usage instead of waiting for [DONE]; response.incomplete is the correct terminal when the model exhausts max_output_tokens): ' + body.slice(-400)).to.be.true;",
                   "  pm.expect(body, 'an idle-timeout error was appended after the terminal event - the stream did not close on finish_reason + usage and stalled until the idle timeout: ' + body.slice(-400)).to.not.include('request_timed_out');",
                   "});"
                 ]
@@ -137860,7 +137876,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"azure/DeepSeek-V4-Flash-0731\",\n  \"input\": \"Count from 1 to 5.\",\n  \"reasoning\": {\n    \"effort\": \"low\"\n  },\n  \"max_output_tokens\": 256,\n  \"stream\": true\n}",
+              "raw": "{\n  \"model\": \"azure/DeepSeek-V4-Flash-0731\",\n  \"input\": \"Count from 1 to 5.\",\n  \"reasoning\": {\n    \"effort\": \"low\"\n  },\n  \"max_output_tokens\": 512,\n  \"stream\": true\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -137899,8 +137915,9 @@
                   "  pm.expect(body, 'raw chat chunks were emitted on a Responses route - the fallback flag was not honored').to.not.include('chat.completion.chunk');",
                   "  pm.expect(body, 'no response.* events on the wire: ' + body.slice(0, 400)).to.include('response.');",
                   "});",
-                  "pm.test('azure DeepSeek codex-desktop streaming: stream reached a terminal response.completed - responses-chat-routing', function () {",
-                  "  pm.expect(body, 'stream never terminated with response.completed (Mantle sends no [DONE]; it must break on finish_reason + usage): ' + body.slice(-400)).to.include('response.completed');",
+                  "pm.test('azure DeepSeek codex-desktop streaming: stream reached a terminal response event - responses-chat-routing', function () {",
+                  "  var terminated = body.indexOf('response.completed') !== -1 || body.indexOf('response.incomplete') !== -1;",
+                  "  pm.expect(terminated, 'stream never reached a terminal response.completed/response.incomplete (it must break on finish_reason + usage instead of waiting for [DONE]; response.incomplete is the correct terminal when the model exhausts max_output_tokens): ' + body.slice(-400)).to.be.true;",
                   "  pm.expect(body, 'an idle-timeout error was appended after the terminal event - the stream did not close on finish_reason + usage and stalled until the idle timeout: ' + body.slice(-400)).to.not.include('request_timed_out');",
                   "});"
                 ]
@@ -139540,7 +139557,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"openrouter/anthropic/claude-sonnet-4\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"You are a meticulous assistant. Answer tersely.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with OK.\"\n        }\n      ]\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"openrouter/anthropic/claude-sonnet-5\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"You are a meticulous assistant. Answer tersely.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with OK.\"\n        }\n      ]\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",
@@ -139581,7 +139598,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"openrouter/anthropic/claude-sonnet-4\",\n  \"max_output_tokens\": 32,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [bf-6290 {{pcNonce}} nonstream]\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"openrouter/anthropic/claude-sonnet-5\",\n  \"max_output_tokens\": 32,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [bf-6290 {{pcNonce}} nonstream]\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",
@@ -139638,7 +139655,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"openrouter/anthropic/claude-sonnet-4\",\n  \"max_output_tokens\": 32,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [bf-6290 {{pcNonce}} nonstream]\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"openrouter/anthropic/claude-sonnet-5\",\n  \"max_output_tokens\": 32,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [bf-6290 {{pcNonce}} nonstream]\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses?_chain={{cacheChain_openrouter_claude_responses_prompt_caching_non_streaming}}",
@@ -139689,7 +139706,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"openrouter/anthropic/claude-sonnet-4\",\n  \"max_output_tokens\": 32,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [bf-6290 {{pcNonce}} stream]\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ],\n  \"stream\": true\n}"
+              "raw": "{\n  \"model\": \"openrouter/anthropic/claude-sonnet-5\",\n  \"max_output_tokens\": 32,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [bf-6290 {{pcNonce}} stream]\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ],\n  \"stream\": true\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",
@@ -139748,7 +139765,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"openrouter/anthropic/claude-sonnet-4\",\n  \"max_output_tokens\": 32,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [bf-6290 {{pcNonce}} stream]\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ],\n  \"stream\": true\n}"
+              "raw": "{\n  \"model\": \"openrouter/anthropic/claude-sonnet-5\",\n  \"max_output_tokens\": 32,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [bf-6290 {{pcNonce}} stream]\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ],\n  \"stream\": true\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses?_chain={{cacheChain_openrouter_claude_responses_prompt_caching_streaming}}",
@@ -139817,7 +139834,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"openrouter/anthropic/claude-sonnet-4\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [bf-6290 {{pcNonce}} clamp]\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Section two of the manual.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Section three of the manual.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Section four of the manual.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Section five of the manual.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with OK.\"\n        }\n      ]\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"openrouter/anthropic/claude-sonnet-5\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [bf-6290 {{pcNonce}} clamp]\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Section two of the manual.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Section three of the manual.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Section four of the manual.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Section five of the manual.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with OK.\"\n        }\n      ]\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",
@@ -140807,7 +140824,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"openrouter/anthropic/claude-sonnet-4\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"[bf-63 ttl-openrouter] You are a meticulous assistant working from a fixed manual.\"\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
+                  "raw": "{\n  \"model\": \"openrouter/anthropic/claude-sonnet-5\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"[bf-63 ttl-openrouter] You are a meticulous assistant working from a fixed manual.\"\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/responses",
