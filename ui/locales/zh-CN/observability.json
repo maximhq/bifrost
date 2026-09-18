@@ -58,7 +58,9 @@
 		"completionTokens": "输出 token 数",
 		"direct": "直接命中",
 		"semantic": "语义命中",
-		"costLegend": "费用"
+		"costLegend": "费用",
+		"source": "来源",
+		"device": "设备"
 	},
 	"dashboard": {
 		"tabs": {
@@ -433,7 +435,8 @@
 		"loading": "正在加载日志…",
 		"searchPlaceholders": {
 			"request_id": "按请求 ID 搜索",
-			"content": "搜索日志内容"
+			"content": "搜索日志内容",
+			"auto": "搜索日志或粘贴请求 ID"
 		},
 		"searchModes": {
 			"auto": "自动",
@@ -507,7 +510,30 @@
 			"llmRequestId": "LLM 请求 ID",
 			"metadata": "元数据",
 			"deleteFailed": "删除日志失败",
-			"invalidDate": "无效日期"
+			"invalidDate": "无效日期",
+			"preExecutionCheck": "执行前检查",
+			"tool": "工具",
+			"request": "请求",
+			"llmRequest": "LLM 请求",
+			"key": "密钥",
+			"moreDetails": "更多详情",
+			"localNative": "本地 · 原生",
+			"requestId": "请求 ID",
+			"decision": "决策",
+			"nativeTool": "原生工具",
+			"mcpTool": "MCP 工具",
+			"inspectionTime": "检查耗时",
+			"policyCheckTimestamp": "策略检查时间",
+			"observedTimestamp": "观测时间",
+			"users": "用户",
+			"teams": "团队",
+			"customers": "客户",
+			"businessUnits": "业务单元",
+			"projects": "项目",
+			"devices": "设备",
+			"filterBy": "按{{label}}筛选",
+			"summary": "时间、请求信息",
+			"summaryWithMetadata": "时间、请求信息、元数据"
 		},
 		"waitingForNew": "等待新 MCP 日志…",
 		"loadingDetails": "正在加载 MCP 日志详情",
@@ -540,7 +566,8 @@
 			"observedDescription": "已捕获工具活动，但执行结果未知。",
 			"executionDescription": "已记录的工具执行结果。"
 		},
-		"noResults": "未找到结果，请尝试调整筛选条件或时间范围。"
+		"noResults": "未找到结果，请尝试调整筛选条件或时间范围。",
+		"observedRoundTrip": "观测往返时延"
 	},
 	"connectors": {
 		"providers": "提供商",

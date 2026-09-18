@@ -461,7 +461,12 @@
 			"1w": "Weekly",
 			"1M": "Monthly",
 			"1Q": "Quarterly"
-		}
+		},
+		"searchHintWithUser": "name, user, team, or customer",
+		"searchHintWithoutUser": "name, team, or customer",
+		"searchByHint": "Search by {{hint}}...",
+		"searchAriaByHint": "Search virtual keys by {{hint}}",
+		"unknownNotResolved": "Unknown (not resolved)"
 	},
 	"modelLimits": {
 		"title": "Budgets & Limits",

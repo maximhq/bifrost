@@ -1,3 +1,5 @@
+import i18n from "@/lib/i18n";
+
 // Bulk rotation returns one previous_value_expires_at per key, each computed from
 // its own time.Now() on the server, so the deadlines in one response can differ.
 
@@ -36,10 +38,10 @@ export function assignedToLabel(vk: {
 	business_unit_id?: string;
 	assigned_user?: { name: string; email: string } | null;
 }): string | null {
-	if (vk.team) return `Team: ${vk.team.name}`;
-	if (vk.customer) return `Customer: ${vk.customer.name}`;
-	if (vk.business_unit_id) return "Business unit";
-	if (vk.assigned_user) return `User: ${vk.assigned_user.name || vk.assigned_user.email}`;
+	if (vk.team) return i18n.t("virtualKeys.teamNamed", { ns: "models", name: vk.team.name });
+	if (vk.customer) return i18n.t("virtualKeys.customerNamed", { ns: "models", name: vk.customer.name });
+	if (vk.business_unit_id) return i18n.t("virtualKeys.businessUnit", { ns: "models" });
+	if (vk.assigned_user) return i18n.t("virtualKeys.userNamed", { ns: "models", name: vk.assigned_user.name || vk.assigned_user.email });
 	return null;
 }
 
@@ -61,6 +63,7 @@ export function csvAssignedToCell(vk: {
 	const label = assignedToLabel(vk);
 	if (label) return label;
 	// Team, customer and business unit ride on the row itself, so they are never the unresolved case.
-	if (!vk.team && !vk.customer && !vk.business_unit_id && vk.assigned_user === undefined) return "Unknown (not resolved)";
+	if (!vk.team && !vk.customer && !vk.business_unit_id && vk.assigned_user === undefined)
+		return i18n.t("virtualKeys.unknownNotResolved", { ns: "models" });
 	return "";
 }

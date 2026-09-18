@@ -34,7 +34,7 @@ export const createMCPColumns = (
 		maxSize: 8,
 		cell: ({ row }) => {
 			const status = getValidatedStatus(row.original.status);
-			const presentation = getMCPLogPresentation(row.original);
+			const presentation = getMCPLogPresentation(row.original, t);
 			return (
 				<div
 					title={presentation.label}
@@ -73,7 +73,7 @@ export const createMCPColumns = (
 		size: 300,
 		cell: ({ row }) => {
 			const toolName = row.getValue("tool_name") as string;
-			const presentation = getMCPLogPresentation(row.original);
+			const presentation = getMCPLogPresentation(row.original, t);
 			const preview = getMCPArgumentPreview(row.original);
 			return (
 				<div className="min-w-0 space-y-1 py-1">
@@ -95,16 +95,16 @@ export const createMCPColumns = (
 	},
 	{
 		accessorKey: "source",
-		header: "Source",
+		header: t("labels.source"),
 		size: 90,
-		cell: ({ row }) => <Badge variant="secondary">{row.original.source === "native" ? "Native" : "MCP"}</Badge>,
+		cell: ({ row }) => <Badge variant="secondary">{row.original.source === "native" ? t("mcpLogs.native") : "MCP"}</Badge>,
 	},
 	{
 		accessorKey: "server_label",
 		header: t("labels.server"),
 		size: 150,
 		cell: ({ row }) => {
-			const serverLabel = row.original.source === "native" ? "Local" : (row.getValue("server_label") as string);
+			const serverLabel = row.original.source === "native" ? t("mcpLogs.local") : (row.getValue("server_label") as string);
 			return serverLabel ? (
 				<Badge variant="secondary" className="font-mono">
 					{serverLabel}
@@ -141,7 +141,7 @@ export const createMCPColumns = (
 		),
 		size: 120,
 		cell: ({ row }) => {
-			const presentation = getMCPLogPresentation(row.original);
+			const presentation = getMCPLogPresentation(row.original, t);
 			const latency = presentation.policy ? presentation.inspectionDuration : (row.original.latency ?? presentation.observedDuration);
 			return (
 				<div className="pl-4 text-sm" title={presentation.description}>
@@ -176,10 +176,10 @@ export const createMCPColumns = (
 			return <div className="max-w-[180px] truncate font-mono text-xs">{value || "-"}</div>;
 		},
 	},
-	{ id: "user", header: "User", size: 150, cell: ({ row }) => <AttributionCell name={row.original.user_name} id={row.original.user_id} /> },
+	{ id: "user", header: t("labels.user"), size: 150, cell: ({ row }) => <AttributionCell name={row.original.user_name} id={row.original.user_id} /> },
 	{
 		id: "team",
-		header: "Team",
+		header: t("labels.team"),
 		size: 150,
 		cell: ({ row }) => (
 			<AttributionCell
@@ -192,7 +192,7 @@ export const createMCPColumns = (
 	},
 	{
 		id: "customer",
-		header: "Customer",
+		header: t("labels.customer"),
 		size: 150,
 		cell: ({ row }) => (
 			<AttributionCell
@@ -205,7 +205,7 @@ export const createMCPColumns = (
 	},
 	{
 		id: "business_unit",
-		header: "Business Unit",
+		header: t("labels.businessUnit"),
 		size: 150,
 		cell: ({ row }) => (
 			<AttributionCell
@@ -218,11 +218,11 @@ export const createMCPColumns = (
 	},
 	{
 		id: "project",
-		header: "Project",
+		header: t("labels.project"),
 		size: 150,
 		cell: ({ row }) => <AttributionCell name={row.original.project_name} id={row.original.project_id} />,
 	},
-	{ id: "device", header: "Device", size: 150, cell: ({ row }) => <AttributionCell name={undefined} id={row.original.device_id} /> },
+	{ id: "device", header: t("labels.device"), size: 150, cell: ({ row }) => <AttributionCell name={undefined} id={row.original.device_id} /> },
 	...(hasDeleteAccess
 		? [
 				{
