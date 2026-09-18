@@ -176,6 +176,12 @@
           "    } else if (typeof j.name === 'string' && j.name.indexOf('batches/') === 0) {",
           "        shape = 'gemini-batch';",
           "        hasContent = true;",
+          "    } else if (typeof j.jobArn === 'string') {",
+          "        shape = 'bedrock-invocation-job';",
+          "        hasContent = !!j.jobArn;",
+          "    } else if (typeof j.name === 'string' && j.name.indexOf('files/') === 0) {",
+          "        shape = 'gemini-file';",
+          "        hasContent = true;",
           "    } else if (Array.isArray(j.operations)) {",
           "        shape = 'gemini-batch-list';",
           "        hasContent = true;",
@@ -152747,6 +152753,4320 @@
               }
             }
           ]
+        }
+      ]
+    },
+    {
+      "name": "101. Typed resource IDs stay on their upstream endpoint (PR #7307) (resource-id-path-escape)",
+      "description": "Pins the fix for the customer report 'Typed resource IDs can escape their intended upstream path' (PR #7307). Before the fix a caller-supplied file/batch/response/container/video id or cached-content name was concatenated into the provider URL; the fasthttp client percent-decodes and then collapses dot segments, so an id like %2e%2e%2fmodels%3f%23 on GET /v1/files/{id}/content reached GET /v1/models with the provider key attached, url.PathEscape-only call sites included, and a Vertex batch name could put a caller-chosen value in the hostname. Providers now validate every id as one opaque path segment (EscapeResourceID) with structured parsers for Gemini collection names, Vertex resource names and Bedrock job ARNs.\n\nThree groups, all free to run (nothing is created): (1) [EXPECT-400] attack ids on every route family must be rejected by Bifrost with 'invalid <field>: ...' and never dispatched, so a 403/404/500 here fails loudly; (2) list -> retrieve chains prove the ids Bifrost itself emits still round-trip when percent-encoded in the path: Gemini files/ and batches/ names, Vertex full resource names in project-number form, Bedrock job ARNs, and the dash/base64 forms on the /openai drop-in; an empty list leaves the variable unset and the chained-var guard skips the consumer; (3) [EXPECT-4XX] well-formed but missing ids must pass the gate and come back as a provider 403/404, which pins the slash-bearing Gemini/Vertex video operation names and the percent-encoded ':provider' video suffix.",
+      "item": [
+        {
+          "name": "[EXPECT-400] openai native file content: encoded ../models?# (report payload) - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/%2e%2e%2fmodels%3f%23/content?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "%2e%2e%2fmodels%3f%23",
+                "content"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai native file retrieve: double-encoded traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/..%252Fmodels?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "..%252Fmodels"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai native file delete: traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/..%2Fmodels?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "..%2Fmodels"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai native file retrieve: encoded query delimiter - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/x%3Flimit=1?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "x%3Flimit=1"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai native file retrieve: encoded fragment delimiter - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/x%23frag?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "x%23frag"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai native file retrieve: encoded backslash - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/..%5Cmodels?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "..%5Cmodels"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai native batch retrieve: traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/..%2Fmodels?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "..%2Fmodels"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai native batch cancel: traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/..%2Fmodels/cancel?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "..%2Fmodels",
+                "cancel"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai native batch results: traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/..%2Fmodels/results?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "..%2Fmodels",
+                "results"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai native responses retrieve: traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses/..%2Fmodels?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses",
+                "..%2Fmodels"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai native responses delete: traversal (PathEscape-only site) - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses/..%2Fmodels?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses",
+                "..%2Fmodels"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai native responses cancel: traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses/..%2Fmodels/cancel?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses",
+                "..%2Fmodels",
+                "cancel"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai native responses input_items: traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses/..%2Fmodels/input_items?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses",
+                "..%2Fmodels",
+                "input_items"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai native container retrieve: traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/containers/..%2Fmodels?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "containers",
+                "..%2Fmodels"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai native container delete: traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/containers/..%2Fmodels?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "containers",
+                "..%2Fmodels"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai native container file content: traversal in file_id - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/containers/cntr_x/files/..%2F..%2Fmodels/content?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "containers",
+                "cntr_x",
+                "files",
+                "..%2F..%2Fmodels",
+                "content"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai native video retrieve: traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/..%2Fmodels:openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "..%2Fmodels:openai"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai native video delete: traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/..%2Fmodels:openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "..%2Fmodels:openai"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] anthropic native file retrieve: traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/..%2Fmodels?provider=anthropic",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "..%2Fmodels"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "anthropic"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] anthropic native file content: encoded ../models?# - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/%2e%2e%2fmodels%3f%23/content?provider=anthropic",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "%2e%2e%2fmodels%3f%23",
+                "content"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "anthropic"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] anthropic native batch retrieve: traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/..%2Fmodels?provider=anthropic",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "..%2Fmodels"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "anthropic"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] anthropic native batch results: traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/..%2Fmodels/results?provider=anthropic",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "..%2Fmodels",
+                "results"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "anthropic"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] azure native file content: encoded ../models?# - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/%2e%2e%2fmodels%3f%23/content?provider=azure",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "%2e%2e%2fmodels%3f%23",
+                "content"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "azure"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] azure native batch retrieve: traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/..%2Fmodels?provider=azure",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "..%2Fmodels"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "azure"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] gemini native file retrieve: traversal behind the files/ prefix - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/files%2F..%2Fmodels?provider=gemini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "files%2F..%2Fmodels"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "gemini"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] gemini native batch retrieve: traversal behind the batches/ prefix - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/batches%2F..%2Ffiles%2Fx?provider=gemini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "batches%2F..%2Ffiles%2Fx"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "gemini"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] gemini native video retrieve: traversal inside the operation name - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/models%2Fveo%2Foperations%2F..%2F..%2Ffiles:gemini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "models%2Fveo%2Foperations%2F..%2F..%2Ffiles:gemini"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] vertex native batch retrieve: traversal in the job segment - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/projects%2Fp%2Flocations%2Fus-central1%2FbatchPredictionJobs%2F..%2Fendpoints?provider=vertex",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "projects%2Fp%2Flocations%2Fus-central1%2FbatchPredictionJobs%2F..%2Fendpoints"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "vertex"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] vertex native batch retrieve: wrong collection in the resource name - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/projects%2Fp%2Flocations%2Fus-central1%2Fendpoints%2F1?provider=vertex",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "projects%2Fp%2Flocations%2Fus-central1%2Fendpoints%2F1"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "vertex"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] vertex native batch retrieve: region segment cannot become the hostname - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/projects%2Fp%2Flocations%2Fattacker.example%23%2FbatchPredictionJobs%2F1?provider=vertex",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "projects%2Fp%2Flocations%2Fattacker.example%23%2FbatchPredictionJobs%2F1"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "vertex"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] vertex native video retrieve: traversal inside the operation name - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/projects%2Fp%2Flocations%2Fus-central1%2Fpublishers%2Fgoogle%2Fmodels%2F..%2F..%2Fendpoints%2Foperations%2Fx:vertex",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "projects%2Fp%2Flocations%2Fus-central1%2Fpublishers%2Fgoogle%2Fmodels%2F..%2F..%2Fendpoints%2Foperations%2Fx:vertex"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] vertex native video retrieve: region injection - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/projects%2Fp%2Flocations%2Fattacker.example%23%2Fpublishers%2Fgoogle%2Fmodels%2Fveo%2Foperations%2Fx:vertex",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "projects%2Fp%2Flocations%2Fattacker.example%23%2Fpublishers%2Fgoogle%2Fmodels%2Fveo%2Foperations%2Fx:vertex"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] bedrock native batch retrieve: non-ARN id - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/..%2Fmodels?provider=bedrock",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "..%2Fmodels"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "bedrock"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] bedrock native batch retrieve: ARN carrying a query delimiter - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/arn%3Aaws%3Abedrock%3Aus-east-1%3A123456789012%3Amodel-invocation-job%2Fx%3Fy?provider=bedrock",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "arn%3Aaws%3Abedrock%3Aus-east-1%3A123456789012%3Amodel-invocation-job%2Fx%3Fy"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "bedrock"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] runway native video retrieve: traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/..%2Fmodels:runway",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "..%2Fmodels:runway"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] runway native video delete: traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/..%2Fmodels:runway",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "..%2Fmodels:runway"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] replicate native video retrieve: traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/..%2Fmodels:replicate",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "..%2Fmodels:replicate"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] replicate native file retrieve: traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/..%2Fmodels?provider=replicate",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "..%2Fmodels"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "replicate"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /openai drop-in file retrieve: traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files/..%2Fmodels",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "..%2Fmodels"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /openai drop-in file delete: traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files/..%2Fmodels",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "..%2Fmodels"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /openai drop-in batch retrieve: traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/batches/..%2Fmodels",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches",
+                "..%2Fmodels"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /openai drop-in responses retrieve: traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses/..%2Fmodels",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses",
+                "..%2Fmodels"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /openai drop-in container retrieve: traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/containers/..%2Fmodels",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "containers",
+                "..%2Fmodels"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /openai drop-in video retrieve: traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/videos/..%2Fmodels:openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "videos",
+                "..%2Fmodels:openai"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /anthropic drop-in file retrieve: traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/files/..%2Fmodels",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "files",
+                "..%2Fmodels"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /anthropic drop-in file content: traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/files/..%2Fmodels/content",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "files",
+                "..%2Fmodels",
+                "content"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /anthropic drop-in messages batch retrieve: traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages/batches/..%2Fmodels",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages",
+                "batches",
+                "..%2Fmodels"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] gemini /genai file retrieve: traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/files/..%2Fmodels",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "files",
+                "..%2Fmodels"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] gemini /genai batch retrieve: traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/batches/..%2Ffiles",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "batches",
+                "..%2Ffiles"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] gemini /genai batch delete: traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/batches/..%2Ffiles",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "batches",
+                "..%2Ffiles"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] gemini /genai batch cancel: traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/batches/..%2Ffiles:cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "batches",
+                "..%2Ffiles:cancel"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] gemini /genai cachedContents retrieve: traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/cachedContents/..%2Ffiles",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "cachedContents",
+                "..%2Ffiles"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] gemini /genai cachedContents delete: traversal - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/cachedContents/..%2Ffiles",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "cachedContents",
+                "..%2Ffiles"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /bedrock model-invocation-job retrieve: non-ARN id - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model-invocation-job/..%2Fmodels",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model-invocation-job",
+                "..%2Fmodels"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /bedrock model-invocation-job stop: non-ARN id - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('path-shaping ID is rejected by Bifrost before provider dispatch', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'ID was not rejected, it may have reached the provider: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the resource ID gate message: ' + t.slice(0, 300)).to.match(/invalid [a-z_]+: /);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model-invocation-job/..%2Fmodels/stop",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model-invocation-job",
+                "..%2Fmodels",
+                "stop"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          }
+        },
+        {
+          "name": "gemini native file list (seeds the slash-bearing file id) - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('list succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "var id = (j.data && j.data[0] && j.data[0].id) || '';",
+                  "if (id) { pm.collectionVariables.set('ridGeminiFileId', encodeURIComponent(id)); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files?provider=gemini&limit=1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "gemini"
+                },
+                {
+                  "key": "limit",
+                  "value": "1"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini native file retrieve: files%2F<id> round-trips - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('ID emitted by Bifrost round-trips when percent-encoded in the path', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + t.slice(0, 300)).to.equal(200);",
+                  "  pm.expect(pm.response.json().id, 'returned a different object').to.eql(decodeURIComponent(pm.collectionVariables.get('ridGeminiFileId')));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/{{ridGeminiFileId}}?provider=gemini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "{{ridGeminiFileId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "gemini"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini native batch list (seeds the slash-bearing batch id) - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('list succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "var id = (j.data && j.data[0] && j.data[0].id) || '';",
+                  "if (id) { pm.collectionVariables.set('ridGeminiBatchId', encodeURIComponent(id)); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches?provider=gemini&limit=1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "gemini"
+                },
+                {
+                  "key": "limit",
+                  "value": "1"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini native batch retrieve: batches%2F<id> round-trips - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('ID emitted by Bifrost round-trips when percent-encoded in the path', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + t.slice(0, 300)).to.equal(200);",
+                  "  pm.expect(pm.response.json().id, 'returned a different object').to.eql(decodeURIComponent(pm.collectionVariables.get('ridGeminiBatchId')));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/{{ridGeminiBatchId}}?provider=gemini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "{{ridGeminiBatchId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "gemini"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex native batch list (seeds the full resource name) - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('list succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "var id = (j.data && j.data[0] && j.data[0].id) || '';",
+                  "if (id) { pm.collectionVariables.set('ridVertexBatchId', encodeURIComponent(id)); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches?provider=vertex&limit=1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "vertex"
+                },
+                {
+                  "key": "limit",
+                  "value": "1"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex native batch retrieve: full projects/<number>/locations/<region> name round-trips - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('ID emitted by Bifrost round-trips when percent-encoded in the path', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + t.slice(0, 300)).to.equal(200);",
+                  "  pm.expect(pm.response.json().id, 'returned a different object').to.eql(decodeURIComponent(pm.collectionVariables.get('ridVertexBatchId')));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/{{ridVertexBatchId}}?provider=vertex",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "{{ridVertexBatchId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "vertex"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock native batch list (seeds the job ARN) - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('list succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "var id = (j.data && j.data[0] && j.data[0].id) || '';",
+                  "if (id) { pm.collectionVariables.set('ridBedrockJobArn', encodeURIComponent(id)); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches?provider=bedrock&limit=1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "bedrock"
+                },
+                {
+                  "key": "limit",
+                  "value": "1"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock native batch retrieve: percent-encoded job ARN round-trips - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('ID emitted by Bifrost round-trips when percent-encoded in the path', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + t.slice(0, 300)).to.equal(200);",
+                  "  pm.expect(pm.response.json().id, 'returned a different object').to.eql(decodeURIComponent(pm.collectionVariables.get('ridBedrockJobArn')));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/{{ridBedrockJobArn}}?provider=bedrock",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "{{ridBedrockJobArn}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "bedrock"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "/bedrock model-invocation-job retrieve: percent-encoded job ARN round-trips - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('ID emitted by Bifrost round-trips when percent-encoded in the path', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + t.slice(0, 300)).to.equal(200);",
+                  "  pm.expect(pm.response.json().jobArn, 'returned a different object').to.eql(decodeURIComponent(pm.collectionVariables.get('ridBedrockJobArn')));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model-invocation-job/{{ridBedrockJobArn}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model-invocation-job",
+                "{{ridBedrockJobArn}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai native file list (seeds a plain file id) - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('list succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "var id = (j.data && j.data[0] && j.data[0].id) || '';",
+                  "if (id) { pm.collectionVariables.set('ridOpenAIFileId', encodeURIComponent(id)); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files?provider=openai&limit=1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                },
+                {
+                  "key": "limit",
+                  "value": "1"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai native file retrieve: plain id is unchanged by the gate - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('ID emitted by Bifrost round-trips when percent-encoded in the path', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + t.slice(0, 300)).to.equal(200);",
+                  "  pm.expect(pm.response.json().id, 'returned a different object').to.eql(decodeURIComponent(pm.collectionVariables.get('ridOpenAIFileId')));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/{{ridOpenAIFileId}}?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "{{ridOpenAIFileId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "/openai drop-in file retrieve: plain id is unchanged by the gate - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('ID emitted by Bifrost round-trips when percent-encoded in the path', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + t.slice(0, 300)).to.equal(200);",
+                  "  pm.expect(pm.response.json().id, 'returned a different object').to.eql(decodeURIComponent(pm.collectionVariables.get('ridOpenAIFileId')));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/files/{{ridOpenAIFileId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "{{ridOpenAIFileId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai native batch list (seeds a plain batch id) - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('list succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "var id = (j.data && j.data[0] && j.data[0].id) || '';",
+                  "if (id) { pm.collectionVariables.set('ridOpenAIBatchId', encodeURIComponent(id)); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches?provider=openai&limit=1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                },
+                {
+                  "key": "limit",
+                  "value": "1"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai native batch retrieve: plain id is unchanged by the gate - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('ID emitted by Bifrost round-trips when percent-encoded in the path', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + t.slice(0, 300)).to.equal(200);",
+                  "  pm.expect(pm.response.json().id, 'returned a different object').to.eql(decodeURIComponent(pm.collectionVariables.get('ridOpenAIBatchId')));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/{{ridOpenAIBatchId}}?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "{{ridOpenAIBatchId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic native batch list (seeds a plain batch id) - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('list succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "var id = (j.data && j.data[0] && j.data[0].id) || '';",
+                  "if (id) { pm.collectionVariables.set('ridAnthropicBatchId', encodeURIComponent(id)); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches?provider=anthropic&limit=1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "anthropic"
+                },
+                {
+                  "key": "limit",
+                  "value": "1"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic native batch retrieve: plain id is unchanged by the gate - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('ID emitted by Bifrost round-trips when percent-encoded in the path', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + t.slice(0, 300)).to.equal(200);",
+                  "  pm.expect(pm.response.json().id, 'returned a different object').to.eql(decodeURIComponent(pm.collectionVariables.get('ridAnthropicBatchId')));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/{{ridAnthropicBatchId}}?provider=anthropic",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "{{ridAnthropicBatchId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "anthropic"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "/anthropic drop-in messages batch retrieve: plain id is unchanged by the gate - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('ID emitted by Bifrost round-trips when percent-encoded in the path', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + t.slice(0, 300)).to.equal(200);",
+                  "  pm.expect(pm.response.json().id, 'returned a different object').to.eql(decodeURIComponent(pm.collectionVariables.get('ridAnthropicBatchId')));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages/batches/{{ridAnthropicBatchId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages",
+                "batches",
+                "{{ridAnthropicBatchId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "azure native file list (seeds a plain file id) - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('list succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "var id = (j.data && j.data[0] && j.data[0].id) || '';",
+                  "if (id) { pm.collectionVariables.set('ridAzureFileId', encodeURIComponent(id)); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files?provider=azure&limit=1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "azure"
+                },
+                {
+                  "key": "limit",
+                  "value": "1"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "azure native file retrieve: plain id is unchanged by the gate - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('ID emitted by Bifrost round-trips when percent-encoded in the path', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + t.slice(0, 300)).to.equal(200);",
+                  "  pm.expect(pm.response.json().id, 'returned a different object').to.eql(decodeURIComponent(pm.collectionVariables.get('ridAzureFileId')));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/{{ridAzureFileId}}?provider=azure",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "{{ridAzureFileId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "azure"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "/openai drop-in gemini batch list (seeds the dash-form id) - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('list succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "var id = (j.data && j.data[0] && j.data[0].id) || '';",
+                  "if (id) { pm.collectionVariables.set('ridOpenAIGeminiBatchId', encodeURIComponent(id)); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/batches?provider=gemini&limit=1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "gemini"
+                },
+                {
+                  "key": "limit",
+                  "value": "1"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "/openai drop-in gemini batch retrieve: dash-form id maps back to batches/<id> - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('ID emitted by Bifrost round-trips when percent-encoded in the path', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + t.slice(0, 300)).to.equal(200);",
+                  "  pm.expect(pm.response.json().id, 'returned a different object').to.eql(decodeURIComponent(pm.collectionVariables.get('ridOpenAIGeminiBatchId')));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/batches/{{ridOpenAIGeminiBatchId}}?provider=gemini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches",
+                "{{ridOpenAIGeminiBatchId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "gemini"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "/openai drop-in bedrock batch list (seeds the base64 ARN id) - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('list succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "var id = (j.data && j.data[0] && j.data[0].id) || '';",
+                  "if (id) { pm.collectionVariables.set('ridOpenAIBedrockBatchId', encodeURIComponent(id)); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/batches?provider=bedrock&limit=1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "bedrock"
+                },
+                {
+                  "key": "limit",
+                  "value": "1"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "/openai drop-in bedrock batch retrieve: base64 ARN id decodes and passes the ARN check - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('ID emitted by Bifrost round-trips when percent-encoded in the path', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + t.slice(0, 300)).to.equal(200);",
+                  "  pm.expect(pm.response.json().id, 'returned a different object').to.eql(decodeURIComponent(pm.collectionVariables.get('ridOpenAIBedrockBatchId')));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/batches/{{ridOpenAIBedrockBatchId}}?provider=bedrock",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches",
+                "{{ridOpenAIBedrockBatchId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "bedrock"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "/openai drop-in vertex batch list (seeds the base64 resource-name id) - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('list succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "var id = (j.data && j.data[0] && j.data[0].id) || '';",
+                  "if (id) { pm.collectionVariables.set('ridOpenAIVertexBatchId', encodeURIComponent(id)); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/batches?provider=vertex&limit=1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "vertex"
+                },
+                {
+                  "key": "limit",
+                  "value": "1"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "/openai drop-in vertex batch retrieve: base64 resource-name id decodes and passes the shape check - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('ID emitted by Bifrost round-trips when percent-encoded in the path', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + t.slice(0, 300)).to.equal(200);",
+                  "  pm.expect(pm.response.json().id, 'returned a different object').to.eql(decodeURIComponent(pm.collectionVariables.get('ridOpenAIVertexBatchId')));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/batches/{{ridOpenAIVertexBatchId}}?provider=vertex",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches",
+                "{{ridOpenAIVertexBatchId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "vertex"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini /genai file list (seeds the bare file id) - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('list succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "var id = (j.files && j.files[0] && j.files[0].name || '').replace(/^files\\//, '');",
+                  "if (id) { pm.collectionVariables.set('ridGenaiFileId', encodeURIComponent(id)); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/files?pageSize=1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "files"
+              ],
+              "query": [
+                {
+                  "key": "pageSize",
+                  "value": "1"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini /genai file retrieve: bare id gets the files/ prefix - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('bare Gemini file id round-trips', function () {",
+                  "  pm.expect(pm.response.code, 'retrieve failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  pm.expect(pm.response.json().name).to.eql('files/' + decodeURIComponent(pm.collectionVariables.get('ridGenaiFileId')));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/files/{{ridGenaiFileId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "files",
+                "{{ridGenaiFileId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-4XX] openai native video retrieve: well-formed missing id reaches the provider - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
+                  "  pm.expect([403, 404], 'expected a provider not-found or permission error, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/video_doesnotexist000:openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "video_doesnotexist000:openai"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-4XX] openai native video retrieve: percent-encoded :provider suffix still splits - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
+                  "  pm.expect([403, 404], 'expected a provider not-found or permission error, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/video_doesnotexist000%3Aopenai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "video_doesnotexist000%3Aopenai"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-4XX] /openai drop-in video retrieve: well-formed missing id reaches the provider - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
+                  "  pm.expect([403, 404], 'expected a provider not-found or permission error, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/videos/video_doesnotexist000:openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "videos",
+                "video_doesnotexist000:openai"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-4XX] gemini native video retrieve: models/<m>/operations/<op> name passes the parser - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
+                  "  pm.expect([403, 404], 'expected a provider not-found or permission error, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/models%2Fveo-3.1-lite-generate-preview%2Foperations%2Fdoesnotexist000:gemini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "models%2Fveo-3.1-lite-generate-preview%2Foperations%2Fdoesnotexist000:gemini"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-4XX] gemini native video retrieve: double-encoded operation name (client-quoted emitted id) - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
+                  "  pm.expect([403, 404], 'expected a provider not-found or permission error, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/models%252Fveo-3.1-lite-generate-preview%252Foperations%252Fdoesnotexist000%3Agemini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "models%252Fveo-3.1-lite-generate-preview%252Foperations%252Fdoesnotexist000%3Agemini"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-4XX] vertex native video retrieve: ten-segment operation name passes the parser - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
+                  "  pm.expect([403, 404], 'expected a provider not-found or permission error, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/projects%2Fproj%2Flocations%2Fus-central1%2Fpublishers%2Fgoogle%2Fmodels%2Fveo-3.1-fast-generate-001%2Foperations%2Fdoesnotexist000:vertex",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "projects%2Fproj%2Flocations%2Fus-central1%2Fpublishers%2Fgoogle%2Fmodels%2Fveo-3.1-fast-generate-001%2Foperations%2Fdoesnotexist000:vertex"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-4XX] runway native video retrieve: well-formed missing task reaches the provider - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
+                  "  pm.expect([403, 404], 'expected a provider not-found or permission error, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/00000000-0000-4000-8000-000000000000:runway",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "00000000-0000-4000-8000-000000000000:runway"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-4XX] replicate native video retrieve: well-formed missing prediction reaches the provider - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
+                  "  pm.expect([403, 404], 'expected a provider not-found or permission error, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/doesnotexist000:replicate",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "doesnotexist000:replicate"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-4XX] gemini /genai cachedContents retrieve: well-formed missing name reaches the provider - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
+                  "  pm.expect([403, 404], 'expected a provider not-found or permission error, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/cachedContents/doesnotexist000",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "cachedContents",
+                "doesnotexist000"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-4XX] gemini native file retrieve: files%2F<missing> passes the prefix handling - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
+                  "  pm.expect([403, 404], 'expected a provider not-found or permission error, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/files%2Fdoesnotexist000?provider=gemini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "files%2Fdoesnotexist000"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "gemini"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-4XX] openai native container retrieve: well-formed missing id reaches the provider - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
+                  "  pm.expect([403, 404], 'expected a provider not-found or permission error, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/containers/cntr_doesnotexist000?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "containers",
+                "cntr_doesnotexist000"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-4XX] openai native container file retrieve: well-formed missing ids reach the provider - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
+                  "  pm.expect([403, 404], 'expected a provider not-found or permission error, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/containers/cntr_doesnotexist000/files/cfile_doesnotexist000?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "containers",
+                "cntr_doesnotexist000",
+                "files",
+                "cfile_doesnotexist000"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-4XX] openai native responses retrieve: well-formed missing id reaches the provider - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
+                  "  pm.expect([403, 404], 'expected a provider not-found or permission error, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses/resp_doesnotexist000?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses",
+                "resp_doesnotexist000"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-4XX] openai native batch cancel: well-formed missing id reaches the provider - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
+                  "  pm.expect([403, 404], 'expected a provider not-found or permission error, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/batch_doesnotexist000/cancel?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "batch_doesnotexist000",
+                "cancel"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-4XX] anthropic native batch results: well-formed missing id reaches the provider - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
+                  "  pm.expect([403, 404], 'expected a provider not-found or permission error, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/msgbatch_doesnotexist000/results?provider=anthropic",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "msgbatch_doesnotexist000",
+                "results"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "anthropic"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-4XX] vertex native batch retrieve: bare numeric job id uses the key project and region - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
+                  "  pm.expect([403, 404], 'expected a provider not-found or permission error, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/1234567890?provider=vertex",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "1234567890"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "vertex"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-4XX] bedrock native batch retrieve: well-formed foreign ARN reaches AWS - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
+                  "  pm.expect([403, 404], 'expected a provider not-found or permission error, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/arn%3Aaws%3Abedrock%3Aus-east-1%3A123456789012%3Amodel-invocation-job%2Fdoesnotexist0?provider=bedrock",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "arn%3Aaws%3Abedrock%3Aus-east-1%3A123456789012%3Amodel-invocation-job%2Fdoesnotexist0"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "bedrock"
+                }
+              ]
+            }
+          }
         }
       ]
     }
