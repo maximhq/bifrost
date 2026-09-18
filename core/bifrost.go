@@ -7385,24 +7385,24 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				bifrost.logger.Debug("Client context cancelled before error handoff")
 				bifrost.billAbandonedTerminal(req, nil, bifrostError)
 				bifrost.releaseChannelMessage(req)
-			} else {
-				// Claimed (or streaming, whose teardown bills via the provider goroutine):
-				// the caller is committed to receiving. Send with context awareness to
-				// prevent deadlock.
+			} else if IsStreamRequestType(req.RequestType) {
+				// Streaming never claims; keep the ctx.Done escape so an abandoned
+				// stream caller cannot wedge the worker.
 				deliveryTimer.Reset(5 * time.Second)
 				select {
 				case req.Err <- *bifrostError:
-					// Error sent successfully
 				case <-req.Context.Done():
-					// Only reachable if the send could block, which a cap-1 channel drained
-					// on acquire never does. A claimed caller is receiving; nothing to bill.
 					bifrost.logger.Debug("Client context cancelled while sending error response")
 				case <-deliveryTimer.C:
-					// Unreachable while req.Err is a cap-1 channel drained on acquire;
-					// kept as the guard if that invariant ever changes.
 					bifrost.logger.Warn("Timeout while sending error response, client may have disconnected")
 				}
 				deliveryTimer.Stop()
+			} else {
+				// Claimed: the caller is committed to receiving and req.Err is a
+				// cap-1 channel drained on acquire, so this never blocks. Do not
+				// select on ctx.Done: both arms can be ready and select picks
+				// uniformly, which drops the value and hangs the caller (#7308).
+				req.Err <- *bifrostError
 			}
 		} else {
 			// Time the field population as "miscellaneous", then stamp sentAt just before
@@ -7439,22 +7439,11 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				bifrost.billAbandonedTerminal(req, result, nil)
 				bifrost.releaseChannelMessage(req)
 			} else {
-				// Claimed: the caller is committed to receiving. Send with context
-				// awareness to prevent deadlock.
-				deliveryTimer.Reset(5 * time.Second)
-				select {
-				case req.Response <- result:
-					// Response sent successfully
-				case <-req.Context.Done():
-					// Only reachable if the send could block, which a cap-1 channel drained
-					// on acquire never does. A claimed caller is receiving; nothing to bill.
-					bifrost.logger.Debug("Client context cancelled while sending response")
-				case <-deliveryTimer.C:
-					// Unreachable while req.Response is a cap-1 channel drained on
-					// acquire; kept as the guard if that invariant ever changes.
-					bifrost.logger.Warn("Timeout while sending response, client may have disconnected")
-				}
-				deliveryTimer.Stop()
+				// Claimed: the caller is committed to receiving and req.Response is a
+				// cap-1 channel drained on acquire, so this never blocks. Do not
+				// select on ctx.Done: both arms can be ready and select picks
+				// uniformly, which drops the value and hangs the caller (#7308).
+				req.Response <- result
 			}
 		}
 	}

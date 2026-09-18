@@ -312,6 +312,84 @@ func TestRequestWorkerDeliversWhenCallerClaimsLate(t *testing.T) {
 	}
 }
 
+// TestRequestWorkerDeliversClaimedValueAfterContextDone locks #7308: after a
+// successful claim the caller is committed to receiving, even if its context is
+// already done. A select that also waits on ctx.Done races a ready send against
+// a ready cancel and drops the value, hanging tryRequest's inner receive.
+func TestRequestWorkerDeliversClaimedValueAfterContextDone(t *testing.T) {
+	const n = 24
+	for i := 0; i < n; i++ {
+		counter := &terminalHookCounter{}
+		account := NewMockAccount()
+		account.AddProvider(schemas.OpenAI, 1, 1)
+		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{
+			ID: "k", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 100,
+		}})
+		client, err := Init(context.Background(), schemas.BifrostConfig{
+			Account: account, Logger: NewNoOpLogger(), LLMPlugins: []schemas.LLMPlugin{counter},
+		})
+		if err != nil {
+			t.Fatalf("iter %d: Init failed: %v", i, err)
+		}
+		cfg, _ := account.GetConfigForProvider(schemas.OpenAI)
+		cfg.NetworkConfig.MaxRetries = 0
+		upstream := &abandonedUpstreamProvider{
+			Provider: openai.NewOpenAIProvider(cfg, NewNoOpLogger()),
+			started:  make(chan struct{}), release: make(chan struct{}),
+		}
+		pq := &ProviderQueue{queue: make(chan *ChannelMessage, 1), done: make(chan struct{})}
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go client.requestWorker(upstream, cfg, pq, &wg)
+
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		ctx.SetValue(schemas.BifrostContextKeyTracer, client.getTracer())
+		msg := client.getChannelMessage(schemas.BifrostRequest{
+			RequestType: schemas.ChatCompletionRequest,
+			ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o-mini",
+				Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}}},
+		})
+		msg.Context = ctx
+		pq.queue <- msg
+		<-upstream.started
+		upstream.release <- struct{}{}
+
+		deadline := time.Now().Add(2 * time.Second)
+		for msg.handoff.Load() != handoffClaimed {
+			if time.Now().After(deadline) {
+				cancel()
+				client.Shutdown()
+				t.Fatalf("iter %d: worker never claimed delivery", i)
+			}
+			time.Sleep(time.Millisecond)
+		}
+		cancel()
+		if msg.abandonDelivery() {
+			client.Shutdown()
+			t.Fatalf("iter %d: caller abandoned after the worker had claimed", i)
+		}
+		select {
+		case got := <-msg.Response:
+			if got == nil {
+				client.Shutdown()
+				t.Fatalf("iter %d: worker delivered a nil result", i)
+			}
+		case e := <-msg.Err:
+			client.Shutdown()
+			t.Fatalf("iter %d: worker delivered an error: %+v", i, e.Error)
+		case <-time.After(3 * time.Second):
+			client.Shutdown()
+			t.Fatalf("iter %d: caller hung on a claimed send after ctx.Done (#7308)", i)
+		}
+		pq.signalClosing()
+		wg.Wait()
+		client.Shutdown()
+		if got := counter.results.Load() + counter.errors.Load(); got != 0 {
+			t.Fatalf("iter %d: worker billed a delivered result %d times", i, got)
+		}
+	}
+}
+
 // TestChannelMessageHandoffIsExclusive pins the claim/abandon state machine: exactly
 // one side wins, and a fresh message from the pool starts open again.
 func TestChannelMessageHandoffIsExclusive(t *testing.T) {
