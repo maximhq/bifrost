@@ -314,6 +314,19 @@ func TestPromptCacheChatRequest_PassesThroughWhenDisabled(t *testing.T) {
 	assert.Nil(t, promptCacheChatRequest(nil, promptCacheOn(), schemas.Anthropic, nil))
 }
 
+// TestPromptCacheChatRequest_CachePointOnlyReachesBedrock covers a Bedrock -> OpenAI fallback on the same shared request.
+func TestPromptCacheChatRequest_CachePointOnlyReachesBedrock(t *testing.T) {
+	req := chatReqWithText("stable prefix")
+	req.Input[0].Content.ContentBlocks = append(req.Input[0].Content.ContentBlocks, schemas.ChatContentBlock{CachePoint: &schemas.CachePoint{Type: "default"}})
+
+	assert.Same(t, req, promptCacheChatRequest(nil, nil, schemas.Bedrock, req))
+
+	out := promptCacheChatRequest(nil, nil, schemas.OpenAI, req)
+	require.NotSame(t, req, out)
+	assert.Len(t, out.Input[0].Content.ContentBlocks, 1)
+	assert.Len(t, req.Input[0].Content.ContentBlocks, 2, "the shared request lost its cachePoint; a Bedrock fallback would not see it")
+}
+
 // TestPromptCacheDispatch_CallerMarkerSurvivesUnchanged proves the two guarantees
 // compose: a caller that set its own marker gets the request through untouched, and
 // nothing extra is added on top of it.
