@@ -880,6 +880,10 @@ type OpenAIResponsesRequest struct {
 	// MiniMaxReasoning is the compact reasoning wire shape accepted by MiniMax.
 	// It is set only by the MiniMax compatibility path.
 	MiniMaxReasoning map[string]string `json:"-"`
+
+	// droppedUnsupportedTools is conversion metadata consumed by request orchestration.
+	// It is deliberately not written to BifrostContext by the pure converter.
+	droppedUnsupportedTools []string
 }
 
 // MarshalJSON implements custom JSON marshalling for OpenAIResponsesRequest.

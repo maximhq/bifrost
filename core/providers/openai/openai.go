@@ -1836,6 +1836,17 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 	)
 }
 
+// applyOpenAIResponsesRequestConversionMetadata publishes converter metadata
+// after request conversion has completed, keeping the converter itself side-effect free.
+func applyOpenAIResponsesRequestConversionMetadata(ctx *schemas.BifrostContext, request *OpenAIResponsesRequest) {
+	if request == nil {
+		return
+	}
+	for _, toolType := range request.droppedUnsupportedTools {
+		schemas.AppendToContextList(ctx, schemas.BifrostContextKeyDroppedUnsupportedTools, toolType)
+	}
+}
+
 // HandleOpenAIResponsesRequest handles a responses request to OpenAI's API.
 func HandleOpenAIResponsesRequest(
 	ctx *schemas.BifrostContext,
@@ -1895,16 +1906,20 @@ func HandleOpenAIResponsesRequest(
 		}, nil
 	}
 
-	// Use centralized converter
+	// Use centralized converter. Apply its non-wire metadata only after conversion
+	// succeeds so the converter remains a pure transformation.
+	var convertedRequest *OpenAIResponsesRequest
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToOpenAIResponsesRequest(ctx, request), nil
+			convertedRequest = ToOpenAIResponsesRequest(ctx, request)
+			return convertedRequest, nil
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
+	applyOpenAIResponsesRequestConversionMetadata(ctx, convertedRequest)
 
 	if signer != nil {
 		sigHeaders, bErr := signer(jsonData)
@@ -2065,11 +2080,13 @@ func HandleOpenAIResponsesStreaming(
 		maps.Copy(headers, authHeader)
 	}
 
+	var convertedRequest *OpenAIResponsesRequest
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
 			reqBody := ToOpenAIResponsesRequest(ctx, request)
+			convertedRequest = reqBody
 			if reqBody != nil {
 				reqBody.Stream = schemas.Ptr(true)
 				if postRequestConverter != nil {
@@ -2081,6 +2098,7 @@ func HandleOpenAIResponsesStreaming(
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
+	applyOpenAIResponsesRequestConversionMetadata(ctx, convertedRequest)
 
 	// Create HTTP request for streaming
 	req := fasthttp.AcquireRequest()
@@ -5108,15 +5126,18 @@ func HandleOpenAICountTokensRequest(
 		}, nil
 	}
 
+	var convertedRequest *OpenAIResponsesRequest
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToOpenAIResponsesRequest(ctx, request), nil
+			convertedRequest = ToOpenAIResponsesRequest(ctx, request)
+			return convertedRequest, nil
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
+	applyOpenAIResponsesRequestConversionMetadata(ctx, convertedRequest)
 
 	req.SetBody(jsonData)
 

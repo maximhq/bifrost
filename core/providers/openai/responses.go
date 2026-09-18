@@ -800,7 +800,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	}
 
 	if baseProvider == schemas.MiniMax {
-		req.applyMiniMaxResponsesCompatibility(ctx)
+		req.applyMiniMaxResponsesCompatibility()
 	}
 
 	return req
@@ -809,7 +809,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 // applyMiniMaxResponsesCompatibility restricts the shared OpenAI Responses
 // request to the subset documented by MiniMax. Namespace tools have already been
 // flattened by core, and additional_tools items have already been hoisted above.
-func (req *OpenAIResponsesRequest) applyMiniMaxResponsesCompatibility(ctx *schemas.BifrostContext) {
+func (req *OpenAIResponsesRequest) applyMiniMaxResponsesCompatibility() {
 	if req == nil {
 		return
 	}
@@ -841,6 +841,29 @@ func (req *OpenAIResponsesRequest) applyMiniMaxResponsesCompatibility(ctx *schem
 	req.IncludeServerSideToolInvocations = nil
 	req.ContextManagement = nil
 
+	// ExtraParams are merged after typed marshaling when passthrough is enabled,
+	// so remove aliases of every unsupported typed field as well.
+	for _, key := range [...]string{
+		"background",
+		"conversation",
+		"include",
+		"max_tool_calls",
+		"parallel_tool_calls",
+		"previous_response_id",
+		"prompt_cache_retention",
+		"prompt_cache_options",
+		"safety_identifier",
+		"stream_options",
+		"store",
+		"top_logprobs",
+		"truncation",
+		"user",
+		"include_server_side_tool_invocations",
+		"context_management",
+	} {
+		delete(req.ExtraParams, key)
+	}
+
 	if len(req.Tools) == 0 {
 		req.ToolChoice = nil
 		return
@@ -851,7 +874,10 @@ func (req *OpenAIResponsesRequest) applyMiniMaxResponsesCompatibility(ctx *schem
 			tools = append(tools, tool)
 			continue
 		}
-		schemas.AppendToContextList(ctx, schemas.BifrostContextKeyDroppedUnsupportedTools, string(tool.Type))
+		toolType := string(tool.Type)
+		if !slices.Contains(req.droppedUnsupportedTools, toolType) {
+			req.droppedUnsupportedTools = append(req.droppedUnsupportedTools, toolType)
+		}
 	}
 	req.Tools = tools
 	if len(req.Tools) == 0 {

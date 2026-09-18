@@ -3401,6 +3401,71 @@ func TestToOpenAIResponsesRequest_MiniMaxCompatibility(t *testing.T) {
 	require.NotNil(t, request.Params.Background)
 }
 
+func TestToOpenAIResponsesRequest_MiniMaxSanitizesExtraParamsAndReturnsMetadata(t *testing.T) {
+	unsupportedKeys := []string{
+		"background",
+		"conversation",
+		"include",
+		"max_tool_calls",
+		"parallel_tool_calls",
+		"previous_response_id",
+		"prompt_cache_retention",
+		"prompt_cache_options",
+		"safety_identifier",
+		"stream_options",
+		"store",
+		"top_logprobs",
+		"truncation",
+		"user",
+		"include_server_side_tool_invocations",
+		"context_management",
+	}
+	extraParams := map[string]interface{}{"custom_minimax_field": "kept"}
+	for _, key := range unsupportedKeys {
+		extraParams[key] = true
+	}
+
+	request := &schemas.BifrostResponsesRequest{
+		Provider: schemas.MiniMax,
+		Model:    "MiniMax-M3",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+		Params: &schemas.ResponsesParameters{
+			ExtraParams: extraParams,
+			Tools:       []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeCodeInterpreter}},
+		},
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+
+	converted := ToOpenAIResponsesRequest(ctx, request)
+	require.NotNil(t, converted)
+	require.Equal(t, []string{string(schemas.ResponsesToolTypeCodeInterpreter)}, converted.droppedUnsupportedTools)
+	_, contextWasMutated := ctx.Value(schemas.BifrostContextKeyDroppedUnsupportedTools).([]string)
+	require.False(t, contextWasMutated, "request conversion must not mutate context")
+
+	wire, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) { return converted, nil },
+	)
+	require.Nil(t, bifrostErr)
+	var wireObject map[string]interface{}
+	require.NoError(t, sonic.Unmarshal(wire, &wireObject))
+	for _, key := range unsupportedKeys {
+		require.NotContains(t, wireObject, key)
+		require.Contains(t, request.Params.ExtraParams, key, "conversion must not mutate the caller's ExtraParams")
+	}
+	require.Equal(t, "kept", wireObject["custom_minimax_field"])
+
+	applyOpenAIResponsesRequestConversionMetadata(ctx, converted)
+	dropped, ok := ctx.Value(schemas.BifrostContextKeyDroppedUnsupportedTools).([]string)
+	require.True(t, ok)
+	require.Equal(t, []string{string(schemas.ResponsesToolTypeCodeInterpreter)}, dropped)
+}
+
 func TestToOpenAIResponsesRequest_MiniMaxKeepsNativeLimitsAndEffort(t *testing.T) {
 	request := &schemas.BifrostResponsesRequest{
 		Provider: schemas.MiniMax,
