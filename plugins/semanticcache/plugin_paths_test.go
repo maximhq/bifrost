@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -796,5 +797,155 @@ func TestPostLLMHook_WritesWhenVectorRequiredAndEmbeddingPresent(t *testing.T) {
 	defer base.mu.Unlock()
 	if len(base.addIDs) != 1 {
 		t.Fatalf("expected one cache write when embedding is present, got %d", len(base.addIDs))
+	}
+}
+
+// -----------------------------------------------------------------------------
+// PostLLMHook response ownership (issue #7233)
+// -----------------------------------------------------------------------------
+
+// TestPostLLMHook_ResponseOwnershipAfterReturn reproduces issue #7233: the
+// async cache writer marshals the caller-owned *BifrostResponse after
+// PostLLMHook returns, racing with core's raw-field cleanup (core/bifrost.go
+// nils ExtraFields.RawRequest/RawResponse right after RunPostLLMHooks). The
+// cache write must snapshot the response before PostLLMHook returns; the
+// stored payload must contain the raw_response value that was present at
+// hook time.
+func TestPostLLMHook_ResponseOwnershipAfterReturn(t *testing.T) {
+	previous := runtime.GOMAXPROCS(1)
+	defer runtime.GOMAXPROCS(previous)
+
+	store := newObservableStore()
+	plugin := newTestPlugin(t, store)
+
+	ctx := CreateContextWithCacheKeyAndType(t, "ownership-unary", CacheTypeDirect)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: CreateBasicChatRequest("ownership check", 0.7, 50),
+	}
+	if _, sc, err := plugin.PreLLMHook(ctx, req); err != nil {
+		t.Fatalf("PreLLMHook failed: %v", err)
+	} else if sc != nil {
+		t.Fatalf("expected miss, got short-circuit %+v", sc)
+	}
+
+	content := "stable snapshot"
+	res := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Choices: []schemas.BifrostResponseChoice{
+				{
+					ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+						Message: &schemas.ChatMessage{
+							Role:    schemas.ChatMessageRoleAssistant,
+							Content: &schemas.ChatMessageContent{ContentStr: &content},
+						},
+					},
+				},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionRequest,
+				RawResponse: json.RawMessage(`{"synthetic":true}`),
+			},
+		},
+	}
+	if _, _, err := plugin.PostLLMHook(ctx, res, nil); err != nil {
+		t.Fatalf("PostLLMHook failed: %v", err)
+	}
+
+	// Core performs this cleanup after RunPostLLMHooks returns (core/bifrost.go
+	// onResult: extraField.RawResponse = nil when drop-raw is set). The async
+	// writer must not observe it.
+	res.ChatResponse.ExtraFields.RawResponse = nil
+
+	plugin.WaitForPendingOperations()
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.addIDs) != 1 {
+		t.Fatalf("expected one cache write, got %d", len(store.addIDs))
+	}
+	payload, _ := store.chunks[store.addIDs[0]].Properties["response"].(string)
+	if !strings.Contains(payload, `"raw_response":{"synthetic":true}`) {
+		t.Fatalf("async cache writer read the caller's response after raw-field cleanup; stored payload: %s", payload)
+	}
+}
+
+// TestPostLLMHook_StreamChunkOwnershipAfterReturn is the streaming variant of
+// issue #7233: the accumulator retains caller-owned chunk pointers across the
+// whole stream and marshals them on the final chunk, so core's post-hook
+// mutation of any earlier chunk corrupts (or races with) the cached entry.
+func TestPostLLMHook_StreamChunkOwnershipAfterReturn(t *testing.T) {
+	previous := runtime.GOMAXPROCS(1)
+	defer runtime.GOMAXPROCS(previous)
+
+	store := newObservableStore()
+	plugin := newTestPlugin(t, store)
+
+	ctx := CreateContextWithCacheKeyAndType(t, "ownership-stream", CacheTypeDirect)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionStreamRequest,
+		ChatRequest: CreateBasicChatRequest("ownership stream check", 0.7, 50),
+	}
+	if _, sc, err := plugin.PreLLMHook(ctx, req); err != nil {
+		t.Fatalf("PreLLMHook failed: %v", err)
+	} else if sc != nil {
+		t.Fatalf("expected miss, got short-circuit %+v", sc)
+	}
+
+	makeChunk := func(chunkIndex int, text string, raw json.RawMessage) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{
+			ChatResponse: &schemas.BifrostChatResponse{
+				Choices: []schemas.BifrostResponseChoice{
+					{
+						ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+							Delta: &schemas.ChatStreamResponseChoiceDelta{Content: &text},
+						},
+					},
+				},
+				ExtraFields: schemas.BifrostResponseExtraFields{
+					RequestType: schemas.ChatCompletionStreamRequest,
+					ChunkIndex:  chunkIndex,
+					RawResponse: raw,
+				},
+			},
+		}
+	}
+
+	first := makeChunk(0, "chunk zero", json.RawMessage(`{"chunk":0}`))
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, false)
+	if _, _, err := plugin.PostLLMHook(ctx, first, nil); err != nil {
+		t.Fatalf("PostLLMHook failed for chunk 0: %v", err)
+	}
+	plugin.WaitForPendingOperations()
+
+	// Core mutates the delivered chunk after the post-hook chain returns
+	// (raw-field strip / PopulateExtraFields). The accumulator still holds
+	// this pointer until the final chunk flushes.
+	first.ChatResponse.ExtraFields.RawResponse = nil
+
+	final := makeChunk(1, "chunk one", json.RawMessage(`{"chunk":1}`))
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	if _, _, err := plugin.PostLLMHook(ctx, final, nil); err != nil {
+		t.Fatalf("PostLLMHook failed for final chunk: %v", err)
+	}
+	// Same post-return cleanup on the final chunk, racing the async flush.
+	final.ChatResponse.ExtraFields.RawResponse = nil
+
+	plugin.WaitForPendingOperations()
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.addIDs) != 1 {
+		t.Fatalf("expected one cache write for the flushed stream, got %d", len(store.addIDs))
+	}
+	chunks, ok := store.chunks[store.addIDs[0]].Properties["stream_chunks"].([]string)
+	if !ok || len(chunks) != 2 {
+		t.Fatalf("expected 2 cached stream chunks, got %v", store.chunks[store.addIDs[0]].Properties["stream_chunks"])
+	}
+	if !strings.Contains(chunks[0], `"raw_response":{"chunk":0}`) {
+		t.Fatalf("cached chunk 0 lost raw_response after core's post-hook cleanup; cached: %s", chunks[0])
+	}
+	if !strings.Contains(chunks[1], `"raw_response":{"chunk":1}`) {
+		t.Fatalf("cached final chunk lost raw_response after core's post-hook cleanup; cached: %s", chunks[1])
 	}
 }

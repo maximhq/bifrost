@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/vectorstore"
@@ -88,12 +89,22 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 
 // StreamChunk is one chunk from a streaming response, retained until the
 // stream completes so it can be persisted as part of the cache entry.
+//
+// The chunk is stored pre-serialized: PostLLMHook marshals the response
+// synchronously, while it still owns a safe view of it. Core mutates the
+// delivered response right after the post-hook chain returns (raw-field
+// strip, PopulateExtraFields — see core/bifrost.go onResult), so retaining
+// the caller's *BifrostResponse here races with that cleanup (issue #7233).
 type StreamChunk struct {
-	// Timestamp records when this chunk arrived at PostLLMHook. Used by the
-	// reaper to drop accumulators stuck without a final chunk.
+	// Timestamp records when this chunk arrived at PostLLMHook.
 	Timestamp time.Time
-	// Response is the chunk payload as delivered by the provider.
-	Response *schemas.BifrostResponse
+	// Serialized is the chunk payload as JSON, captured at hook time.
+	Serialized string
+	// Index and ChunkIndex are the flush sort keys, captured at hook time
+	// (image-generation responses use both; other shapes use ChunkIndex
+	// with Index=0).
+	Index      int
+	ChunkIndex int
 }
 
 // StreamAccumulator collects the chunks of a single streaming response so
@@ -627,21 +638,62 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 		return res, nil, nil
 	}
 
+	// Serialize the response NOW, while this goroutine still owns a safe view
+	// of it. Core mutates the delivered response right after the post-hook
+	// chain returns (nils ExtraFields.RawRequest/RawResponse, restamps
+	// PopulateExtraFields — see core/bifrost.go onResult), so the async writer
+	// below must never dereference res: it gets only these owned bytes.
+	// Serialization failure is nonfatal — skip the write, keep the response
+	// flowing (issue #7233).
+	responseData, err := sonic.Marshal(res)
+	if err != nil {
+		if !isStream || isFinalChunk {
+			plugin.logger.Warn("Skipping cache write (namespace=%s, id=%s): failed to marshal response: %v", plugin.config.VectorStoreNamespace, storageID, err)
+		}
+		return res, nil, nil
+	}
+
+	unifiedMetadata := plugin.buildUnifiedMetadata(provider, model, paramsHash, cacheKey, cacheTTL)
+
+	if isStream {
+		// Append the owned serialized chunk synchronously — the accumulator
+		// must never hold the caller's response pointer. Sort keys are
+		// captured here too, for the same reason. Only the final flush's
+		// store write runs async.
+		index, chunkIndex := responseSortKey(res)
+		chunk := &StreamChunk{
+			Timestamp:  time.Now(),
+			Serialized: string(responseData),
+			Index:      index,
+			ChunkIndex: chunkIndex,
+		}
+		shouldFlush, err := plugin.addStreamingResponse(requestID, storageID, chunk, embeddingToStore, unifiedMetadata, cacheTTL, isFinalChunk)
+		if err != nil {
+			plugin.logger.Warn("Failed to cache streaming response (namespace=%s, id=%s): %v. The cache_id stamped on the response will not resolve on subsequent lookups.", plugin.config.VectorStoreNamespace, storageID, err)
+			return res, nil, nil
+		}
+		if !shouldFlush {
+			return res, nil, nil
+		}
+		plugin.writersWg.Add(1)
+		go func() {
+			defer plugin.writersWg.Done()
+			cacheCtx, cancel := context.WithTimeout(context.Background(), CacheSetTimeout)
+			defer cancel()
+			if err := plugin.processAccumulatedStream(cacheCtx, requestID); err != nil {
+				plugin.logger.Warn("Failed to cache streaming response (namespace=%s, id=%s): %v. The cache_id stamped on the response will not resolve on subsequent lookups.", plugin.config.VectorStoreNamespace, storageID, err)
+			}
+		}()
+		return res, nil, nil
+	}
+
 	plugin.writersWg.Add(1)
 	go func() {
 		defer plugin.writersWg.Done()
 		cacheCtx, cancel := context.WithTimeout(context.Background(), CacheSetTimeout)
 		defer cancel()
-
-		unifiedMetadata := plugin.buildUnifiedMetadata(provider, model, paramsHash, cacheKey, cacheTTL)
-		if isStream {
-			if err := plugin.addStreamingResponse(cacheCtx, requestID, storageID, res, embeddingToStore, unifiedMetadata, cacheTTL, isFinalChunk); err != nil {
-				plugin.logger.Warn("Failed to cache streaming response (namespace=%s, id=%s): %v. The cache_id stamped on the response will not resolve on subsequent lookups.", plugin.config.VectorStoreNamespace, storageID, err)
-			}
-		} else {
-			if err := plugin.addNonStreamingResponse(cacheCtx, storageID, res, embeddingToStore, unifiedMetadata, cacheTTL); err != nil {
-				plugin.logger.Warn("Failed to cache single response (namespace=%s, id=%s): %v. The cache_id stamped on the response will not resolve on subsequent lookups.", plugin.config.VectorStoreNamespace, storageID, err)
-			}
+		if err := plugin.addNonStreamingResponse(cacheCtx, storageID, responseData, embeddingToStore, unifiedMetadata, cacheTTL); err != nil {
+			plugin.logger.Warn("Failed to cache single response (namespace=%s, id=%s): %v. The cache_id stamped on the response will not resolve on subsequent lookups.", plugin.config.VectorStoreNamespace, storageID, err)
 		}
 	}()
 
