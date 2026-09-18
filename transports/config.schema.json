@@ -4112,7 +4112,6 @@
         "provider": {
           "type": "string",
           "minLength": 1,
-          "enum": ["openai", "azure", "anthropic", "bedrock", "bedrock_mantle", "cohere", "vertex", "mistral", "ollama", "groq", "opencode-go", "opencode-zen", "sgl", "parasail", "perplexity", "cerebras", "databricks", "deepseek", "gemini", "github-copilot", "openrouter", "elevenlabs", "huggingface", "nebius", "xai", "replicate", "vllm", "runway", "runware", "fireworks", "sarvam", "wafer"],
           "description": "Provider used to generate embeddings for complexity classification"
         },
         "embedding_model": {
@@ -4171,7 +4170,6 @@
         "provider": {
           "type": "string",
           "minLength": 1,
-          "enum": ["openai", "azure", "anthropic", "bedrock", "bedrock_mantle", "cohere", "vertex", "mistral", "ollama", "groq", "opencode-go", "opencode-zen", "sgl", "parasail", "perplexity", "cerebras", "databricks", "deepseek", "gemini", "github-copilot", "openrouter", "elevenlabs", "huggingface", "nebius", "xai", "replicate", "vllm", "runway", "runware", "fireworks", "sarvam", "wafer"],
           "description": "Provider used to run the classification chat completion"
         },
         "model": {
