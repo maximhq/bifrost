@@ -20,6 +20,12 @@ func (a *Accumulator) buildCompleteMessageFromAudioStreamChunks(chunks []*AudioS
 	for _, chunk := range chunks {
 		if chunk.Delta != nil {
 			completeMessage.Audio = append(completeMessage.Audio, chunk.Delta.Audio...)
+			if chunk.Delta.Usage != nil {
+				completeMessage.Usage = chunk.Delta.Usage
+			}
+			if chunk.Delta.SubtitleFile != nil {
+				completeMessage.SubtitleFile = chunk.Delta.SubtitleFile
+			}
 		}
 	}
 	return completeMessage
@@ -132,9 +138,10 @@ func (a *Accumulator) processAudioStreamingResponse(ctx *schemas.BifrostContext,
 	} else if result != nil && result.SpeechStreamResponse != nil {
 		// We create a deep copy of the delta to avoid pointing to stack memory
 		newDelta := &schemas.BifrostSpeechStreamResponse{
-			Type:  result.SpeechStreamResponse.Type,
-			Usage: result.SpeechStreamResponse.Usage,
-			Audio: result.SpeechStreamResponse.Audio,
+			Type:         result.SpeechStreamResponse.Type,
+			Usage:        result.SpeechStreamResponse.Usage,
+			Audio:        result.SpeechStreamResponse.Audio,
+			SubtitleFile: result.SpeechStreamResponse.SubtitleFile,
 		}
 		chunk.Delta = newDelta
 		if result.SpeechStreamResponse.ExtraFields.RawResponse != nil {

@@ -103,6 +103,7 @@ type ProviderResponse struct {
 	StoreRawRequestResponse  bool                             `json:"store_raw_request_response"`       // Capture raw request/response for internal logging only
 	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"` // Custom provider configuration
 	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"`          // OpenAI-specific configuration
+	MiniMaxConfig            *schemas.MiniMaxConfig           `json:"minimax_config,omitempty"`         // MiniMax-specific configuration
 	PromptCache              *schemas.PromptCacheConfig       `json:"prompt_cache,omitempty"`           // Prompt-cache breakpoint injection
 	ProviderStatus           ProviderStatus                   `json:"provider_status"`                  // Health/initialization status of the provider
 	Status                   string                           `json:"status,omitempty"`                 // Operational status (e.g., list_models_failed)
@@ -131,8 +132,9 @@ type providerCreatePayload struct {
 	SendBackRawResponse      *bool                             `json:"send_back_raw_response,omitempty"`
 	StoreRawRequestResponse  *bool                             `json:"store_raw_request_response,omitempty"`
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`
-	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"` // OpenAI-specific configuration
-	PromptCache              *schemas.PromptCacheConfig        `json:"prompt_cache,omitempty"`  // Prompt-cache breakpoint injection
+	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`  // OpenAI-specific configuration
+	MiniMaxConfig            *schemas.MiniMaxConfig            `json:"minimax_config,omitempty"` // MiniMax-specific configuration
+	PromptCache              *schemas.PromptCacheConfig        `json:"prompt_cache,omitempty"`   // Prompt-cache breakpoint injection
 }
 
 type providerUpdatePayload struct {
@@ -143,8 +145,9 @@ type providerUpdatePayload struct {
 	SendBackRawResponse      *bool                            `json:"send_back_raw_response,omitempty"`
 	StoreRawRequestResponse  *bool                            `json:"store_raw_request_response,omitempty"`
 	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"`
-	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"` // OpenAI-specific configuration
-	PromptCache              *schemas.PromptCacheConfig       `json:"prompt_cache,omitempty"`  // Prompt-cache breakpoint injection
+	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"`  // OpenAI-specific configuration
+	MiniMaxConfig            *schemas.MiniMaxConfig           `json:"minimax_config,omitempty"` // MiniMax-specific configuration
+	PromptCache              *schemas.PromptCacheConfig       `json:"prompt_cache,omitempty"`   // Prompt-cache breakpoint injection
 }
 
 // applyProviderConfigUpdates copies onto config only the nested config blocks the
@@ -178,6 +181,9 @@ func applyProviderConfigUpdates(config *configstore.ProviderConfig, payload *pro
 	}
 	if carried("openai_config") {
 		config.OpenAIConfig = payload.OpenAIConfig
+	}
+	if carried("minimax_config") {
+		config.MiniMaxConfig = payload.MiniMaxConfig
 	}
 	if carried("prompt_cache") {
 		config.PromptCache = payload.PromptCache
@@ -379,6 +385,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		StoreRawRequestResponse:  payload.StoreRawRequestResponse != nil && *payload.StoreRawRequestResponse,
 		CustomProviderConfig:     payload.CustomProviderConfig,
 		OpenAIConfig:             payload.OpenAIConfig,
+		MiniMaxConfig:            payload.MiniMaxConfig,
 		PromptCache:              payload.PromptCache,
 	}
 	// Validate custom provider configuration before persisting
@@ -430,6 +437,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 			StoreRawRequestResponse:  config.StoreRawRequestResponse,
 			CustomProviderConfig:     config.CustomProviderConfig,
 			OpenAIConfig:             config.OpenAIConfig,
+			MiniMaxConfig:            config.MiniMaxConfig,
 			PromptCache:              config.PromptCache,
 			Status:                   config.Status,
 			Description:              config.Description,
@@ -526,6 +534,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		ProxyConfig:              oldConfigRaw.ProxyConfig,
 		CustomProviderConfig:     oldConfigRaw.CustomProviderConfig,
 		OpenAIConfig:             oldConfigRaw.OpenAIConfig,
+		MiniMaxConfig:            oldConfigRaw.MiniMaxConfig,
 		PromptCache:              oldConfigRaw.PromptCache,
 		StoreRawRequestResponse:  oldConfigRaw.StoreRawRequestResponse,
 		Status:                   oldConfigRaw.Status,
@@ -666,6 +675,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 			StoreRawRequestResponse:  config.StoreRawRequestResponse,
 			CustomProviderConfig:     config.CustomProviderConfig,
 			OpenAIConfig:             config.OpenAIConfig,
+			MiniMaxConfig:            config.MiniMaxConfig,
 			PromptCache:              config.PromptCache,
 			Status:                   config.Status,
 			Description:              config.Description,
@@ -1468,6 +1478,7 @@ func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelPr
 		StoreRawRequestResponse:  config.StoreRawRequestResponse,
 		CustomProviderConfig:     config.CustomProviderConfig,
 		OpenAIConfig:             config.OpenAIConfig,
+		MiniMaxConfig:            config.MiniMaxConfig,
 		PromptCache:              config.PromptCache,
 		ProviderStatus:           status,
 		Status:                   config.Status,

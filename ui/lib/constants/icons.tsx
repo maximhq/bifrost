@@ -316,6 +316,22 @@ export const ProviderIcons = {
 		);
 	},
 
+	minimax: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+		return (
+			<div
+				className={cn(
+					"flex shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-fuchsia-500 to-indigo-600 font-bold text-white",
+					className,
+				)}
+				style={{ width: resolvedSize, height: resolvedSize, fontSize: Math.max(10, Math.round(resolvedSize * 0.45)) }}
+				aria-label="MiniMax"
+			>
+				M
+			</div>
+		);
+	},
+
 	mistral: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 

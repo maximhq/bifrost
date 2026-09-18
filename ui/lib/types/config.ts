@@ -7,7 +7,7 @@ import { SecretVar } from "./schemas";
 export type KnownProvider = (typeof KnownProvidersNames)[number];
 
 // Base provider names - all supported base providers
-export type BaseProvider = "openai" | "anthropic" | "cohere" | "gemini" | "bedrock" | "replicate" | "fireworks";
+export type BaseProvider = "openai" | "anthropic" | "cohere" | "gemini" | "bedrock" | "minimax" | "replicate" | "fireworks";
 
 // Branded type for custom provider names to prevent collision with known providers
 export type CustomProviderName = string & { readonly __brand: "CustomProviderName" };
@@ -453,6 +453,10 @@ export interface OpenAIConfig {
 	disable_store?: boolean;
 }
 
+export interface MiniMaxConfig {
+	auth_type?: "bearer" | "x-key";
+}
+
 // CacheControlInjectionPoint names one place to add a cache breakpoint.
 // A point must set role, index, or both; a point with neither matches nothing.
 export interface CacheControlInjectionPoint {
@@ -481,6 +485,7 @@ export interface ModelProviderConfig {
 	store_raw_request_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
+	minimax_config?: MiniMaxConfig;
 	prompt_cache?: PromptCacheConfig;
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;
@@ -510,6 +515,7 @@ export interface AddProviderRequest {
 	store_raw_request_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
+	minimax_config?: MiniMaxConfig;
 	prompt_cache?: PromptCacheConfig;
 }
 
@@ -523,6 +529,7 @@ export interface UpdateProviderRequest {
 	store_raw_request_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
+	minimax_config?: MiniMaxConfig;
 	prompt_cache?: PromptCacheConfig;
 }
 

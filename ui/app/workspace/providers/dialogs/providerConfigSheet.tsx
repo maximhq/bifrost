@@ -9,6 +9,7 @@ import {
 	BetaHeadersFormFragment,
 	GovernanceFormFragment,
 	OpenAIConfigFormFragment,
+	MiniMaxConfigFormFragment,
 	ProxyFormFragment,
 } from "../fragments";
 import { DebuggingFormFragment } from "../fragments/debuggingFormFragment";
@@ -24,7 +25,13 @@ interface Props {
 
 const ANTHROPIC_FAMILY_PROVIDERS = ["anthropic", "vertex", "bedrock", "bedrock_mantle", "azure"];
 
-const availableTabs = (hasCustomProviderConfig: boolean, hasGovernanceAccess: boolean, isOpenAI: boolean, isAnthropicFamily: boolean) => {
+const availableTabs = (
+	hasCustomProviderConfig: boolean,
+	hasGovernanceAccess: boolean,
+	isOpenAI: boolean,
+	isMiniMax: boolean,
+	isAnthropicFamily: boolean,
+) => {
 	const tabs = [];
 	if (hasCustomProviderConfig) {
 		tabs.push({
@@ -64,6 +71,9 @@ const availableTabs = (hasCustomProviderConfig: boolean, hasGovernanceAccess: bo
 		id: "debugging",
 		label: "Debugging",
 	});
+	if (isMiniMax) {
+		tabs.push({ id: "minimax-config", label: "MiniMax Config" });
+	}
 	if (isOpenAI) {
 		tabs.push({
 			id: "openai-config",
@@ -78,11 +88,12 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 	const hasCustomProviderConfig = !!provider.custom_provider_config;
 	const isOpenAI = provider.name === "openai";
+	const isMiniMax = provider.name === "minimax" || provider.custom_provider_config?.base_provider_type === "minimax";
 	const isAnthropicFamily = ANTHROPIC_FAMILY_PROVIDERS.includes(provider.name.toLowerCase());
 
 	const tabs = useMemo(() => {
-		return availableTabs(hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, isAnthropicFamily);
-	}, [hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, isAnthropicFamily]);
+		return availableTabs(hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, isMiniMax, isAnthropicFamily);
+	}, [hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, isMiniMax, isAnthropicFamily]);
 
 	useEffect(() => {
 		setSelectedTab((previousTab) => {
@@ -133,6 +144,9 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 							</div>
 							<TabsContent value="api-structure">
 								<ApiStructureFormFragment provider={provider} />
+							</TabsContent>
+							<TabsContent value="minimax-config">
+								<MiniMaxConfigFormFragment provider={provider} />
 							</TabsContent>
 							<TabsContent value="openai-config">
 								<OpenAIConfigFormFragment provider={provider} />

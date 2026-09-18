@@ -47,6 +47,7 @@ export const ModelPlaceholders = {
 	groq: "e.g. llama3-70b-8192, mixtral-8x7b-32768",
 	huggingface: "e.g. sambanova/meta-llama/Llama-3.1-8B-Instruct, nebius/Qwen/Qwen3-Embedding-8B",
 	mistral: "e.g. mistral-7b-instruct, mixtral-8x7b",
+	minimax: "e.g. speech-2.8-turbo, speech-2.6-turbo",
 	openrouter: "e.g. openai/gpt-4, anthropic/claude-3-haiku",
 	sgl: "e.g. sgl-2, sgl-vision",
 	parasail: "e.g. parasail-2, parasail-vision",
@@ -82,6 +83,7 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	groq: true,
 	huggingface: true,
 	mistral: true,
+	minimax: true,
 	openrouter: true,
 	sgl: false,
 	parasail: true,
@@ -237,6 +239,7 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 		"image_edit",
 		"image_variation",
 	],
+	minimax: ["list_models", "speech", "speech_stream"],
 	replicate: [
 		"list_models",
 		"text_completion",

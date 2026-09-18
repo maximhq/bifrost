@@ -196,6 +196,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 													<SelectItem value="openai">OpenAI</SelectItem>
 													<SelectItem value="anthropic">Anthropic</SelectItem>
 													<SelectItem value="gemini">Gemini</SelectItem>
+													<SelectItem value="minimax">MiniMax</SelectItem>
 													<SelectItem value="cohere">Cohere</SelectItem>
 													<SelectItem value="bedrock">AWS Bedrock</SelectItem>
 													<SelectItem value="replicate">Replicate</SelectItem>

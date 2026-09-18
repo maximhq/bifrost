@@ -5,6 +5,7 @@ export { ApiStructureFormFragment } from "./apiStructureFormFragment";
 export { DebuggingFormFragment } from "./debuggingFormFragment";
 export { GovernanceFormFragment } from "./governanceFormFragment";
 export { OpenAIConfigFormFragment } from "./openaiConfigFormFragment";
+export { MiniMaxConfigFormFragment } from "./minimaxConfigFormFragment";
 export { NetworkFormFragment } from "./networkFormFragment";
 export { PerformanceFormFragment } from "./performanceFormFragment";
 export { PromptCacheFormFragment } from "./promptCacheFormFragment";

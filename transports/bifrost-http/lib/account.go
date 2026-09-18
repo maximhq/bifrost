@@ -101,6 +101,9 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 	if config.OpenAIConfig != nil {
 		providerConfig.OpenAIConfig = config.OpenAIConfig
 	}
+	if config.MiniMaxConfig != nil {
+		providerConfig.MiniMaxConfig = config.MiniMaxConfig
+	}
 	if config.PromptCache != nil {
 		providerConfig.PromptCache = config.PromptCache
 	}

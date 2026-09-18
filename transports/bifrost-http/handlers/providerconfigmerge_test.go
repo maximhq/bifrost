@@ -30,6 +30,7 @@ func savedConfig() configstore.ProviderConfig {
 		ProxyConfig:          &schemas.ProxyConfig{Type: schemas.HTTPProxy},
 		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Anthropic},
 		OpenAIConfig:         &schemas.OpenAIConfig{DisableStore: true},
+		MiniMaxConfig:        &schemas.MiniMaxConfig{AuthType: schemas.MiniMaxAuthTypeXKey},
 		PromptCache:          &schemas.PromptCacheConfig{AutoInject: true, TTL: schemas.Ptr("1h")},
 	}
 }
@@ -44,6 +45,7 @@ func TestApplyProviderConfigUpdates_OmittedBlocksArePreserved(t *testing.T) {
 	assert.NotNil(t, config.ProxyConfig, "an omitted proxy_config must survive an unrelated update")
 	assert.NotNil(t, config.CustomProviderConfig, "an omitted custom_provider_config must survive")
 	assert.NotNil(t, config.OpenAIConfig, "an omitted openai_config must survive")
+	assert.NotNil(t, config.MiniMaxConfig, "an omitted minimax_config must survive")
 	require.NotNil(t, config.PromptCache, "an omitted prompt_cache must survive")
 	assert.True(t, config.PromptCache.AutoInject)
 	require.NotNil(t, config.PromptCache.TTL)
@@ -52,13 +54,14 @@ func TestApplyProviderConfigUpdates_OmittedBlocksArePreserved(t *testing.T) {
 
 func TestApplyProviderConfigUpdates_ExplicitNullClears(t *testing.T) {
 	config := savedConfig()
-	payload, fields := decodeUpdate(t, `{"proxy_config":null,"custom_provider_config":null,"openai_config":null,"prompt_cache":null}`)
+	payload, fields := decodeUpdate(t, `{"proxy_config":null,"custom_provider_config":null,"openai_config":null,"minimax_config":null,"prompt_cache":null}`)
 
 	applyProviderConfigUpdates(&config, payload, fields)
 
 	assert.Nil(t, config.ProxyConfig, "an explicit null is how a block is cleared")
 	assert.Nil(t, config.CustomProviderConfig)
 	assert.Nil(t, config.OpenAIConfig)
+	assert.Nil(t, config.MiniMaxConfig)
 	assert.Nil(t, config.PromptCache)
 }
 

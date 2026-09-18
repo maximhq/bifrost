@@ -24,6 +24,7 @@ type BifrostSpeechResponse struct {
 	Alignment           *SpeechAlignment           `json:"alignment,omitempty"`            // Character-level timing information
 	NormalizedAlignment *SpeechAlignment           `json:"normalized_alignment,omitempty"` // Character-level timing information for normalized text
 	AudioBase64         *string                    `json:"audio_base64,omitempty"`         // Base64-encoded audio (when timestamps are requested)
+	SubtitleFile        *string                    `json:"subtitle_file,omitempty"`        // URL of generated subtitle metadata, when requested
 	ExtraFields         BifrostResponseExtraFields `json:"extra_fields"`
 }
 
@@ -34,7 +35,9 @@ func (r *BifrostSpeechResponse) BackfillParams(request *BifrostSpeechRequest) {
 	if r.Usage == nil {
 		r.Usage = &SpeechUsage{}
 	}
-	r.Usage.InputChars = utf8.RuneCountInString(request.Input.Input)
+	if r.Usage.InputChars == 0 {
+		r.Usage.InputChars = utf8.RuneCountInString(request.Input.Input)
+	}
 }
 
 // SpeechAlignment represents character-level timing information for audio-text synchronization
@@ -140,10 +143,11 @@ const (
 )
 
 type BifrostSpeechStreamResponse struct {
-	Type        SpeechStreamResponseType   `json:"type"`
-	Audio       []byte                     `json:"audio"`
-	Usage       *SpeechUsage               `json:"usage"`
-	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+	Type         SpeechStreamResponseType   `json:"type"`
+	Audio        []byte                     `json:"audio"`
+	Usage        *SpeechUsage               `json:"usage"`
+	SubtitleFile *string                    `json:"subtitle_file,omitempty"`
+	ExtraFields  BifrostResponseExtraFields `json:"extra_fields"`
 }
 
 func (r *BifrostSpeechStreamResponse) BackfillParams(request *BifrostSpeechRequest) {
@@ -153,7 +157,9 @@ func (r *BifrostSpeechStreamResponse) BackfillParams(request *BifrostSpeechReque
 	if r.Usage == nil {
 		r.Usage = &SpeechUsage{}
 	}
-	r.Usage.InputChars = utf8.RuneCountInString(request.Input.Input)
+	if r.Usage.InputChars == 0 {
+		r.Usage.InputChars = utf8.RuneCountInString(request.Input.Input)
+	}
 }
 
 type SpeechUsageInputTokenDetails struct {

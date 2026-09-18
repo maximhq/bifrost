@@ -564,6 +564,7 @@ type ProviderConfig struct {
 	StoreRawRequestResponse bool                  `json:"store_raw_request_response"` // Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)
 	CustomProviderConfig    *CustomProviderConfig `json:"custom_provider_config,omitempty"`
 	OpenAIConfig            *OpenAIConfig         `json:"openai_config,omitempty"`
+	MiniMaxConfig           *MiniMaxConfig        `json:"minimax_config,omitempty"`
 	PromptCache             *PromptCacheConfig    `json:"prompt_cache,omitempty"`
 }
 
@@ -609,6 +610,20 @@ type CacheControlInjectionPoint struct {
 
 // CacheControlInjectionLocationMessage is the only Location value currently honoured.
 const CacheControlInjectionLocationMessage = "message"
+
+// MiniMaxAuthType controls how a MiniMax-compatible endpoint receives its API key.
+type MiniMaxAuthType string
+
+const (
+	MiniMaxAuthTypeBearer MiniMaxAuthType = "bearer"
+	MiniMaxAuthTypeXKey   MiniMaxAuthType = "x-key"
+)
+
+// MiniMaxConfig holds MiniMax-specific provider configuration.
+// The official API uses Bearer authentication; MiniMax-compatible gateways may use x-key.
+type MiniMaxConfig struct {
+	AuthType MiniMaxAuthType `json:"auth_type,omitempty"`
+}
 
 // OpenAIConfig holds OpenAI-specific provider configuration.
 type OpenAIConfig struct {

@@ -88,6 +88,10 @@ SpeechResponse:
       $ref: '#/SpeechAlignment'
     audio_base64:
       type: string
+    subtitle_file:
+      type: string
+      format: uri
+      description: URL of generated subtitle metadata when requested
     extra_fields:
       $ref: './common.yaml#/BifrostResponseExtraFields'
 
@@ -96,6 +100,9 @@ SpeechUsage:
   properties:
     input_tokens:
       type: integer
+    input_chars:
+      type: integer
+      description: Billable input characters for character-priced speech models
     output_tokens:
       type: integer
     total_tokens:
@@ -128,5 +135,9 @@ SpeechStreamResponse:
       format: byte
     usage:
       $ref: '#/SpeechUsage'
+    subtitle_file:
+      type: string
+      format: uri
+      description: URL of generated subtitle metadata on the terminal event
     extra_fields:
       $ref: './common.yaml#/BifrostResponseExtraFields'

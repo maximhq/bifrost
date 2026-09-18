@@ -51,6 +51,7 @@ const (
 	Cohere        ModelProvider = "cohere"
 	Vertex        ModelProvider = "vertex"
 	Mistral       ModelProvider = "mistral"
+	MiniMax       ModelProvider = "minimax"
 	Ollama        ModelProvider = "ollama"
 	OpencodeGo    ModelProvider = "opencode-go"
 	OpencodeZen   ModelProvider = "opencode-zen"
@@ -83,6 +84,7 @@ var SupportedBaseProviders = []ModelProvider{
 	Bedrock,
 	Cohere,
 	Gemini,
+	MiniMax,
 	OpenAI,
 	HuggingFace,
 	Replicate,
@@ -100,6 +102,7 @@ var StandardProviders = []ModelProvider{
 	Gemini,
 	Groq,
 	Mistral,
+	MiniMax,
 	Ollama,
 	OpencodeGo,
 	OpencodeZen,

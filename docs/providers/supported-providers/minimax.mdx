@@ -1,0 +1,86 @@
+---
+title: "MiniMax"
+description: "MiniMax T2A v2 text-to-speech provider, including streaming audio and compatible x-key gateways"
+icon: "m"
+---
+
+## Overview
+
+Bifrost supports MiniMax's native T2A v2 API for non-streaming and streaming text-to-speech. The provider uses the official `/v1/t2a_v2` request and response format, decodes the returned hex audio, and exposes it through Bifrost's OpenAI-compatible `/v1/audio/speech` endpoint.
+
+| Operation | Supported | Upstream endpoint |
+|---|---|---|
+| List Models | ✅ Static catalog | - |
+| Speech | ✅ | `/v1/t2a_v2` |
+| Streaming Speech | ✅ | `/v1/t2a_v2` |
+| Other operations | ❌ | - |
+
+## Configuration
+
+### MiniMax official API
+
+```json
+{
+  "providers": {
+    "minimax": {
+      "keys": [{
+        "name": "minimax-key",
+        "value": "env.MINIMAX_API_KEY",
+        "models": ["*"],
+        "weight": 1
+      }],
+      "minimax_config": {
+        "auth_type": "bearer"
+      }
+    }
+  }
+}
+```
+
+The default base URL is `https://api.minimax.io`. Bearer authentication is the default.
+
+### MiniMax-compatible x-key gateway
+
+```json
+{
+  "providers": {
+    "minimax": {
+      "keys": [{
+        "name": "gateway-key",
+        "value": "env.EXCHANGETOKEN_API_KEY",
+        "models": ["speech-2.8-turbo", "speech-2.6-turbo"],
+        "weight": 1
+      }],
+      "network_config": {
+        "base_url": "https://api.exchangetoken.ai"
+      },
+      "minimax_config": {
+        "auth_type": "x-key"
+      }
+    }
+  }
+}
+```
+
+The API key remains in the normal provider key configuration. Bifrost sends it in the `x-key` header when `auth_type` is `x-key`.
+
+## Speech request
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "minimax/speech-2.8-turbo",
+    "input": "Hello from MiniMax.",
+    "voice": "English_expressive_narrator",
+    "response_format": "mp3"
+  }'
+```
+
+Bifrost maps `input` to MiniMax `text`, `voice` to `voice_setting.voice_id`, and `response_format` to `audio_setting.format`. The upstream `output_format` is fixed to `hex` so Bifrost can return decoded audio bytes without making a second URL download.
+
+Provider-specific fields such as `voice_setting`, `audio_setting`, `pronunciation_dict`, `voice_modify`, subtitles, and language boost can be supplied as extra request parameters. Standard Bifrost fields take precedence when both forms set the same value.
+
+When MiniMax returns `subtitle_file`, the non-streaming HTTP endpoint returns the JSON `BifrostSpeechResponse` (audio is JSON base64) so the subtitle URL is available. Streaming responses expose `subtitle_file` on the terminal `speech.audio.done` event.
+
+For streaming requests, Bifrost requests `stream_options.exclude_aggregated_audio=true` to prevent the terminal event from repeating audio already emitted in earlier deltas.

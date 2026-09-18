@@ -760,6 +760,12 @@ export const openaiConfigFormSchema = z.object({
 
 export type OpenAIConfigFormSchema = z.infer<typeof openaiConfigFormSchema>;
 
+export const miniMaxConfigFormSchema = z.object({
+	auth_type: z.enum(["bearer", "x-key"]).default("bearer"),
+});
+
+export type MiniMaxConfigFormSchema = z.infer<typeof miniMaxConfigFormSchema>;
+
 // Prompt cache tab
 export const cacheControlInjectionPointSchema = z
 	.object({
@@ -873,6 +879,7 @@ export const modelProviderConfigSchema = z.object({
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
+	minimax_config: miniMaxConfigFormSchema.optional(),
 });
 
 // Model provider schema
@@ -890,6 +897,7 @@ export const formModelProviderConfigSchema = z.object({
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
 	custom_provider_config: formCustomProviderConfigSchema.optional(),
+	minimax_config: miniMaxConfigFormSchema.optional(),
 });
 
 // Flexible model provider schema for form data - allows any string for name
@@ -909,6 +917,7 @@ export const addProviderRequestSchema = z.object({
 	store_raw_request_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 	openai_config: openaiConfigFormSchema.optional(),
+	minimax_config: miniMaxConfigFormSchema.optional(),
 	prompt_cache: promptCacheFormSchema.optional(),
 });
 
@@ -923,6 +932,7 @@ export const updateProviderRequestSchema = z.object({
 	store_raw_request_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 	openai_config: openaiConfigFormSchema.optional(),
+	minimax_config: miniMaxConfigFormSchema.optional(),
 	prompt_cache: promptCacheFormSchema.optional(),
 });
 
