@@ -645,6 +645,19 @@ const (
 	MCPAuthTypeTokenExchange  MCPAuthType = "token_exchange"   // Delegated token exchange: the caller's identity-provider token is exchanged for a short-lived upstream token scoped to this server's audience; requires user-identity authentication to be available
 )
 
+// IsPerUser reports whether callers of a client with this auth type
+// authenticate individually, each with a credential of their own, as opposed
+// to every caller riding one shared credential the admin set up. These are
+// the auth types that can carry per-user discoveries (PerUserDiscovery), since
+// only they have a per-caller credential to discover with.
+func (t MCPAuthType) IsPerUser() bool {
+	switch t {
+	case MCPAuthTypePerUserOauth, MCPAuthTypePerUserHeaders, MCPAuthTypeTokenExchange:
+		return true
+	}
+	return false
+}
+
 // MCPTokenExchangeConfig configures delegated token exchange for one MCP
 // client (AuthType == token_exchange): which resource the exchanged token
 // must be scoped to, and the identity-provider application authorized to
@@ -962,6 +975,20 @@ type MCPClientConfig struct {
 	// The wire name used to be allow_on_all_virtual_keys. That key is still read (UnmarshalJSON) and
 	// still written (MarshalJSON), so configuration and clients written against it keep working.
 	AllowByDefault bool `json:"allow_by_default"`
+
+	// PerUserDiscovery makes each caller's discovery (its tools and the
+	// server's instructions, see MCPDiscovery) its own for a client whose
+	// callers authenticate individually (per_user_oauth, per_user_headers,
+	// token_exchange). Off (the default), every caller is served the
+	// discovery made with the retained admin credential, so a tool the
+	// upstream only grants some accounts is either visible to everyone or to
+	// no one. On, discovery runs with each caller's own credential and is
+	// kept per (auth mode, identity, client); the client stores no admin
+	// credential and does no admin discovery at all. Rejected for every other
+	// auth type, where there is no per-caller credential to discover with.
+	// nil means not declared and reads as off; a pointer so an update or a
+	// config.json entry that omits it can keep the stored value.
+	PerUserDiscovery *bool `json:"per_user_discovery,omitempty"`
 
 	// Discovered tools for per-user OAuth clients (persisted so they survive restart)
 	DiscoveredTools           map[string]ChatTool `json:"-"` // Discovered tool schemas keyed by prefixed name

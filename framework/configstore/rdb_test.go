@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
@@ -62,6 +63,7 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TableMCPOauthFlow{},
 		&tables.TableMCPPerUserHeaderCredential{},
 		&tables.TableMCPPerUserHeaderFlow{},
+		&tables.TableMCPPerUserDiscovery{},
 		&tables.TableOAuth2RefreshToken{},
 		&tables.TableWebhookEndpoint{},
 		&tables.TableWebhookJob{},
@@ -6124,4 +6126,213 @@ func TestDeleteAbandonedOauthConfigs_ConcurrentClientLinkSurvives(t *testing.T) 
 	var clients int64
 	require.NoError(t, db.Model(&tables.TableMCPClient{}).Where("client_id = ?", "racing-client").Count(&clients).Error)
 	assert.Equal(t, int64(1), clients, "the sweep must never cascade-delete a just-linked MCP client")
+}
+
+// samplePerUserDiscovery builds a row with bare tool names: rows store the
+// upstream names without the client prefix, which is added from the client's
+// current name when a discovery is read, so a rename rewrites no row.
+func samplePerUserDiscovery(mode schemas.MCPAuthMode, identity, clientID string, toolNames ...string) *tables.TableMCPPerUserDiscovery {
+	tools := make(map[string]schemas.ChatTool, len(toolNames))
+	for _, name := range toolNames {
+		tools[name] = schemas.ChatTool{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: name}}
+	}
+	discovery := &tables.TableMCPPerUserDiscovery{
+		MCPClientID:     clientID,
+		AuthMode:        string(mode),
+		Tools:           tools,
+		ToolNameMapping: map[string]string{"a": "a"},
+		Instructions:    "Rules for " + identity + ".",
+		DiscoveryHash:   "hash-" + identity,
+		DiscoveredAt:    time.Now().Add(-time.Minute),
+	}
+	switch mode {
+	case schemas.MCPAuthModeUser:
+		id := identity
+		discovery.UserID = &id
+	case schemas.MCPAuthModeVK:
+		id := identity
+		discovery.VirtualKeyID = &id
+	case schemas.MCPAuthModeSession:
+		discovery.SessionID = identity
+	}
+	return discovery
+}
+
+func TestPerUserDiscovery_UpsertGetDelete(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	discovery := samplePerUserDiscovery(schemas.MCPAuthModeUser, "alice", "notes", "list", "admin")
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, discovery))
+
+	got, err := store.GetMCPPerUserDiscoveryByMode(ctx, schemas.MCPAuthModeUser, "alice", "notes")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "alice", got.Identity())
+	assert.Equal(t, string(schemas.MCPAuthModeUser), got.AuthMode)
+	assert.Len(t, got.Tools, 2)
+	assert.Equal(t, "admin", got.Tools["admin"].Function.Name)
+	assert.Equal(t, "Rules for alice.", got.Instructions, "the instructions travel with the tools they were discovered with")
+	assert.Equal(t, "hash-alice", got.DiscoveryHash)
+
+	// Same identity string in another mode is a different binding.
+	other, err := store.GetMCPPerUserDiscoveryByMode(ctx, schemas.MCPAuthModeVK, "alice", "notes")
+	require.NoError(t, err)
+	assert.Nil(t, other)
+
+	// Re-upsert replaces wholesale and keeps one row.
+	rediscovered := samplePerUserDiscovery(schemas.MCPAuthModeUser, "alice", "notes", "list")
+	rediscovered.Instructions = ""
+	rediscovered.DiscoveryHash = "hash-2"
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, rediscovered))
+	got, err = store.GetMCPPerUserDiscoveryByMode(ctx, schemas.MCPAuthModeUser, "alice", "notes")
+	require.NoError(t, err)
+	assert.Len(t, got.Tools, 1)
+	assert.Empty(t, got.Instructions, "an upstream that stopped advertising instructions drops them, like a withdrawn tool")
+	assert.Equal(t, "hash-2", got.DiscoveryHash)
+	var count int64
+	require.NoError(t, store.DB().Model(&tables.TableMCPPerUserDiscovery{}).Count(&count).Error)
+	assert.EqualValues(t, 1, count)
+
+	// A discovery with no tools is a real discovery, not an absence.
+	empty := samplePerUserDiscovery(schemas.MCPAuthModeSession, "sess", "notes")
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, empty))
+	got, err = store.GetMCPPerUserDiscoveryByMode(ctx, schemas.MCPAuthModeSession, "sess", "notes")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Empty(t, got.Tools)
+
+	require.NoError(t, store.DeleteMCPPerUserDiscovery(ctx, schemas.MCPAuthModeUser, "alice", "notes"))
+	got, err = store.GetMCPPerUserDiscoveryByMode(ctx, schemas.MCPAuthModeUser, "alice", "notes")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+	// Deleting again is not an error.
+	require.NoError(t, store.DeleteMCPPerUserDiscovery(ctx, schemas.MCPAuthModeUser, "alice", "notes"))
+
+	// Modes without an identity column are refused: a per-user-discovery
+	// client stores no admin credential and does no admin discovery, so there
+	// is no admin row shape at all.
+	_, err = store.GetMCPPerUserDiscoveryByMode(ctx, schemas.MCPAuthModeAdmin, "x", "notes")
+	require.Error(t, err)
+	require.Error(t, store.UpsertMCPPerUserDiscovery(ctx, samplePerUserDiscovery(schemas.MCPAuthModeAdmin, "x", "notes")))
+}
+
+// A caller's discovery keeps everything its upstream answered with: the tools'
+// annotations, titles, icons and output schemas (which ChatTool's JSON leaves
+// out), and the server's resources, resource templates and prompts.
+func TestPerUserDiscovery_KeepsToolDetailsResourcesAndPrompts(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	discovery := samplePerUserDiscovery(schemas.MCPAuthModeVK, "vk-1", "notes", "search")
+	search := discovery.Tools["search"]
+	search.Annotations = &schemas.MCPToolAnnotations{Title: "Search", ReadOnlyHint: schemas.Ptr(true)}
+	search.MCP = &schemas.MCPToolMetadata{
+		Title:        "Search notes",
+		Icons:        []mcpgo.Icon{{Src: "https://example.com/search.png"}},
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+	}
+	discovery.Tools["search"] = search
+	discovery.Resources = []mcpgo.Resource{mcpgo.NewResource("file:///handbook.md", "handbook")}
+	discovery.ResourceTemplates = []mcpgo.ResourceTemplate{mcpgo.NewResourceTemplate("repo://{name}", "repo")}
+	discovery.Prompts = []mcpgo.Prompt{mcpgo.NewPrompt("review")}
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, discovery))
+
+	got, err := store.GetMCPPerUserDiscoveryByMode(ctx, schemas.MCPAuthModeVK, "vk-1", "notes")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, search.Annotations, got.Tools["search"].Annotations)
+	assert.Equal(t, search.MCP, got.Tools["search"].MCP)
+	require.Len(t, got.Resources, 1)
+	assert.Equal(t, "file:///handbook.md", got.Resources[0].URI)
+	require.Len(t, got.ResourceTemplates, 1)
+	assert.Equal(t, "repo://{name}", got.ResourceTemplates[0].URITemplate.Raw())
+	require.Len(t, got.Prompts, 1)
+	assert.Equal(t, "review", got.Prompts[0].Name)
+
+	// A server that offers none keeps none, rather than an empty list.
+	plain := samplePerUserDiscovery(schemas.MCPAuthModeVK, "vk-2", "notes", "search")
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, plain))
+	got, err = store.GetMCPPerUserDiscoveryByMode(ctx, schemas.MCPAuthModeVK, "vk-2", "notes")
+	require.NoError(t, err)
+	assert.Nil(t, got.Resources)
+	assert.Nil(t, got.ResourceTemplates)
+	assert.Nil(t, got.Prompts)
+	assert.Nil(t, got.Tools["search"].Annotations)
+}
+
+func TestPerUserDiscovery_DeleteByClient(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, samplePerUserDiscovery(schemas.MCPAuthModeUser, "alice", "notes", "a")))
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, samplePerUserDiscovery(schemas.MCPAuthModeVK, "vk-1", "notes", "b")))
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, samplePerUserDiscovery(schemas.MCPAuthModeUser, "alice", "wiki", "a")))
+
+	require.NoError(t, store.DeleteMCPPerUserDiscoveriesByClient(ctx, "notes"))
+	var count int64
+	require.NoError(t, store.DB().Model(&tables.TableMCPPerUserDiscovery{}).Count(&count).Error)
+	assert.EqualValues(t, 1, count)
+	got, err := store.GetMCPPerUserDiscoveryByMode(ctx, schemas.MCPAuthModeUser, "alice", "wiki")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+}
+
+func TestPerUserDiscovery_CascadesWithClientAndVirtualKey(t *testing.T) {
+	store := setupMCPSessionsTestStore(t)
+	require.NoError(t, store.DB().AutoMigrate(&tables.TableMCPPerUserDiscovery{}))
+	seedMCPSessionsFixture(t, store)
+	ctx := context.Background()
+
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, samplePerUserDiscovery(schemas.MCPAuthModeVK, "vk-alpha", "github-prod", "t")))
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, samplePerUserDiscovery(schemas.MCPAuthModeUser, "user-42", "github-prod", "t")))
+
+	// Deleting the virtual key removes the discoveries made with it and no other.
+	require.NoError(t, store.DeleteVirtualKey(ctx, "vk-alpha"))
+	got, err := store.GetMCPPerUserDiscoveryByMode(ctx, schemas.MCPAuthModeVK, "vk-alpha", "github-prod")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+	got, err = store.GetMCPPerUserDiscoveryByMode(ctx, schemas.MCPAuthModeUser, "user-42", "github-prod")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+
+	// Deleting the client removes the rest.
+	require.NoError(t, store.DeleteMCPClientConfig(ctx, "github-prod"))
+	got, err = store.GetMCPPerUserDiscoveryByMode(ctx, schemas.MCPAuthModeUser, "user-42", "github-prod")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+}
+
+// TestUpdateMCPClientConfig_KeepsPerUserDiscoveryWhenUnset: the update writes
+// per_user_discovery only when the row it is handed sets it, the same rule as
+// needs_session_stickiness, so a row that leaves it unset (a config.json
+// entry that omits it, a caller that does not carry it) keeps the stored value.
+func TestUpdateMCPClientConfig_KeepsPerUserDiscoveryWhenUnset(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID:                "pud-client",
+		Name:              "pud_client",
+		ConnectionType:    schemas.MCPConnectionTypeHTTP,
+		ConnectionString:  schemas.NewSecretVar("https://example.invalid/mcp"),
+		AuthType:          schemas.MCPAuthTypePerUserHeaders,
+		PerUserHeaderKeys: []string{"x-api-key"},
+		PerUserDiscovery:  schemas.Ptr(true),
+	}))
+	stored := func() *bool {
+		row, err := store.GetMCPClientByID(ctx, "pud-client")
+		require.NoError(t, err)
+		return row.PerUserDiscovery
+	}
+	require.Equal(t, schemas.Ptr(true), stored(), "fixture check: created with the flag on")
+
+	row, err := store.GetMCPClientByID(ctx, "pud-client")
+	require.NoError(t, err)
+	row.PerUserDiscovery = nil
+	require.NoError(t, store.UpdateMCPClientConfig(ctx, "pud-client", row))
+	assert.Equal(t, schemas.Ptr(true), stored(), "an update that leaves the flag unset keeps the stored value")
+
+	row.PerUserDiscovery = schemas.Ptr(false)
+	require.NoError(t, store.UpdateMCPClientConfig(ctx, "pud-client", row))
+	assert.Equal(t, schemas.Ptr(false), stored(), "an update can turn the flag off")
 }

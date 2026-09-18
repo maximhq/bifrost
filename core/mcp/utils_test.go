@@ -573,6 +573,67 @@ func TestValidateMCPClientConfig_OpenAPI(t *testing.T) {
 	}
 }
 
+// TestValidateMCPClientConfig_PerUserDiscovery pins the flag's two validation
+// gates: it is permanently invalid for auth types with no per-caller
+// credential, and temporarily rejected even for per-user auth types until the
+// per-user discovery lifecycle (direct-approve, per-caller discovery, manual
+// refresh) is wired up.
+func TestValidateMCPClientConfig_PerUserDiscovery(t *testing.T) {
+	base := func(authType schemas.MCPAuthType) *schemas.MCPClientConfig {
+		config := &schemas.MCPClientConfig{
+			ID:               "pudtest",
+			Name:             "pudtest",
+			ConnectionType:   schemas.MCPConnectionTypeHTTP,
+			ConnectionString: schemas.NewSecretVar("http://127.0.0.1:0/mcp"),
+			AuthType:         authType,
+			PerUserDiscovery: schemas.Ptr(true),
+		}
+		if authType == schemas.MCPAuthTypePerUserHeaders {
+			config.PerUserHeaderKeys = []string{"x-api-key"}
+		}
+		return config
+	}
+
+	t.Run("rejected_for_shared_auth_types", func(t *testing.T) {
+		for _, authType := range []schemas.MCPAuthType{
+			schemas.MCPAuthTypeNone,
+			schemas.MCPAuthTypeHeaders,
+			schemas.MCPAuthTypeOauth,
+		} {
+			err := validateMCPClientConfig(base(authType))
+			if err == nil {
+				t.Errorf("per_user_discovery with auth type %q must be rejected", authType)
+			}
+		}
+	})
+
+	// Lifted when the per-user discovery lifecycle lands; until then the flag
+	// must not be accepted anywhere, or it would persist while the runtime
+	// still serves the admin's discovery to everyone.
+	t.Run("rejected_as_unsupported_for_per_user_auth_types", func(t *testing.T) {
+		for _, authType := range []schemas.MCPAuthType{
+			schemas.MCPAuthTypePerUserOauth,
+			schemas.MCPAuthTypePerUserHeaders,
+			schemas.MCPAuthTypeTokenExchange,
+		} {
+			err := validateMCPClientConfig(base(authType))
+			if err == nil {
+				t.Errorf("per_user_discovery with auth type %q must be rejected until the lifecycle is implemented", authType)
+			}
+		}
+	})
+
+	t.Run("flag_off_stays_valid", func(t *testing.T) {
+		for _, off := range []*bool{nil, schemas.Ptr(false)} {
+			config := base(schemas.MCPAuthTypePerUserHeaders)
+			config.PerUserDiscovery = off
+			if err := validateMCPClientConfig(config); err != nil {
+				t.Errorf("per_user_discovery unset or false must not affect validation, got: %v", err)
+			}
+		}
+	})
+}
+
 // TestValidateMCPClientConfig_TokenExchangeIDJAG checks the id_jag profile needs
 // Bifrost's client at the upstream authorization server, at config load too,
 // and no exchange client of its own: it always exchanges as the SSO app, so the

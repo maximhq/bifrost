@@ -585,6 +585,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_relays_tables"}, run: migrationAddRelaysTables},
 	{IDs: []string{"add_video_token_pricing_column"}, run: migrationAddVideoTokenPricingColumn},
 	{IDs: []string{"add_voice_live_pricing_columns"}, run: migrationAddVoiceLivePricingColumns},
+	{IDs: []string{"add_mcp_per_user_discoveries"}, run: migrationAddMCPPerUserDiscoveries},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -16897,4 +16898,81 @@ func migrationAddVoiceLivePricingColumns(ctx context.Context, db *gorm.DB, logge
 // the columns hold operator-set rates.
 func rollbackVoiceLivePricingColumns(context.Context, *gorm.DB, schemas.Logger) error {
 	return fmt.Errorf("add_voice_live_pricing_columns is non-rollbackable: dropping the _voice_live columns would permanently delete every Voice Live rate an operator has set, and Voice Live turns would silently bill at the normal rates; the columns are additive and older binaries safely ignore them")
+}
+
+// migrationAddMCPPerUserDiscoveries adds config_mcp_clients.per_user_discovery
+// and creates the mcp_per_user_discoveries table, keyed by (auth_mode,
+// identity, mcp_client_id) with the same partial-unique-index pattern as
+// mcp_per_user_header_credentials so a caller's discovery and the credential
+// it was made with share one binding shape. Forward-only on data — no rows
+// exist yet.
+func migrationAddMCPPerUserDiscoveries(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_per_user_discoveries"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			mg := tx.Migrator()
+
+			if err := addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "PerUserDiscovery"); err != nil {
+				return fmt.Errorf("add per_user_discovery column to config_mcp_clients: %w", err)
+			}
+
+			if !mg.HasTable(&tables.TableMCPPerUserDiscovery{}) {
+				logger.Info("[configstore] %s: creating table TableMCPPerUserDiscovery", migrationName)
+				if err := mg.CreateTable(&tables.TableMCPPerUserDiscovery{}); err != nil {
+					return fmt.Errorf("create mcp_per_user_discoveries table: %w", err)
+				}
+			}
+
+			partialUniques := []string{
+				`CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_per_user_discoveries_user_mcp
+					ON mcp_per_user_discoveries (user_id, mcp_client_id)
+					WHERE auth_mode = 'user' AND user_id IS NOT NULL AND user_id != ''`,
+				`CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_per_user_discoveries_vk_mcp
+					ON mcp_per_user_discoveries (virtual_key_id, mcp_client_id)
+					WHERE auth_mode = 'vk' AND virtual_key_id IS NOT NULL AND virtual_key_id != ''`,
+				`CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_per_user_discoveries_session_mcp
+					ON mcp_per_user_discoveries (session_id, mcp_client_id)
+					WHERE auth_mode = 'session' AND session_id IS NOT NULL AND session_id != ''`,
+			}
+			for _, stmt := range partialUniques {
+				if err := tx.Exec(stmt).Error; err != nil {
+					return fmt.Errorf("create partial unique index on mcp_per_user_discoveries: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			for _, name := range []string{
+				"idx_mcp_per_user_discoveries_user_mcp",
+				"idx_mcp_per_user_discoveries_vk_mcp",
+				"idx_mcp_per_user_discoveries_session_mcp",
+			} {
+				if err := tx.Exec("DROP INDEX IF EXISTS " + name).Error; err != nil {
+					return fmt.Errorf("drop %s: %w", name, err)
+				}
+			}
+			if mg.HasTable(&tables.TableMCPPerUserDiscovery{}) {
+				if err := mg.DropTable(&tables.TableMCPPerUserDiscovery{}); err != nil {
+					return fmt.Errorf("drop mcp_per_user_discoveries: %w", err)
+				}
+			}
+			if err := dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "PerUserDiscovery"); err != nil {
+				return fmt.Errorf("drop per_user_discovery column from config_mcp_clients: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
 }

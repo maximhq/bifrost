@@ -2786,6 +2786,7 @@ func applyMCPClientPinnedStateToRow(row *configstoreTables.TableMCPClient, clien
 	row.MaxProtocolVersion = clientConfig.MaxProtocolVersion
 	row.PromptsToExpose = clientConfig.PromptsToExpose
 	row.ResourcesToExpose = clientConfig.ResourcesToExpose
+	row.PerUserDiscovery = clientConfig.PerUserDiscovery
 }
 
 // mergeMCPConfig merges MCP config from file with store
@@ -2839,6 +2840,11 @@ func mergeMCPConfig(ctx context.Context, config *Config, configData *ConfigData,
 					incompleteRotation := rotateMCPOauthConfigFromFile(ctx, config.ConfigStore, existingClientConfig.Name, newClientConfig.PendingOAuthConfig, authorizedOauth)
 					rotateMCPTokenExchangeConfigFromFile(ctx, config.ConfigStore, existingClientConfig.ID, existingClientConfig.Name, newClientConfig.TokenExchange, existingClientConfig.TokenExchange)
 					warnIgnoredImmutableMCPFields(existingClientConfig.Name, pinMCPClientImmutableFields(newClientConfig, existingClientConfig))
+					// The file only adds and edits here, so an entry that omits
+					// per_user_discovery keeps the stored value.
+					if newClientConfig.PerUserDiscovery == nil {
+						newClientConfig.PerUserDiscovery = existingClientConfig.PerUserDiscovery
+					}
 					applyMCPClientPinnedStateToRow(&fileClientRow, newClientConfig)
 					fileClientRow.ClientID = existingClientConfig.ID
 					if incompleteRotation {
@@ -3070,6 +3076,7 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 		IsPingAvailable:           clientConfig.IsPingAvailable,
 		NeedsSessionStickiness:    clientConfig.NeedsSessionStickiness,
 		RequirePublicTarget:       clientConfig.RequirePublicTarget,
+		PerUserDiscovery:          clientConfig.PerUserDiscovery,
 		ToolSyncInterval:          int(clientConfig.ToolSyncInterval / time.Second),
 		MaxProtocolVersion:        clientConfig.MaxProtocolVersion,
 		ToolExecutionTimeout:      int(math.Ceil(clientConfig.ToolExecutionTimeout.Seconds())),
@@ -3201,6 +3208,12 @@ func syncMCPConfigFromFile(ctx context.Context, config *Config, configData *Conf
 			changedImmutable := pinMCPClientImmutableFields(fileClient, existing)
 			if fileEdited {
 				warnIgnoredImmutableMCPFields(existing.Name, changedImmutable)
+			}
+			// The file is the whole configuration here, so an entry that omits
+			// per_user_discovery turns it off. Explicit, since the store keeps
+			// the stored value for an unset one.
+			if fileClient.PerUserDiscovery == nil {
+				fileClient.PerUserDiscovery = schemas.Ptr(false)
 			}
 			applyMCPClientPinnedStateToRow(&fileRow, fileClient)
 			fileRow.ClientID = existing.ID
@@ -9457,6 +9470,11 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 	c.MCPConfig.ClientConfigs[configIndex].ToolPricing = updatedConfig.ToolPricing
 	c.MCPConfig.ClientConfigs[configIndex].IsPingAvailable = updatedConfig.IsPingAvailable
 	c.MCPConfig.ClientConfigs[configIndex].NeedsSessionStickiness = updatedConfig.NeedsSessionStickiness
+	// An update that leaves per_user_discovery unset keeps the stored value,
+	// the same rule the store and the runtime apply.
+	if updatedConfig.PerUserDiscovery != nil {
+		c.MCPConfig.ClientConfigs[configIndex].PerUserDiscovery = updatedConfig.PerUserDiscovery
+	}
 	c.MCPConfig.ClientConfigs[configIndex].ToolSyncInterval = updatedConfig.ToolSyncInterval
 	c.MCPConfig.ClientConfigs[configIndex].MaxProtocolVersion = updatedConfig.MaxProtocolVersion
 	c.MCPConfig.ClientConfigs[configIndex].ToolExecutionTimeout = updatedConfig.ToolExecutionTimeout
