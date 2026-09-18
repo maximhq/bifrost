@@ -771,11 +771,24 @@ export interface LogEntry {
 	child_count?: number;
 	children_cost?: number;
 	children_tokens?: number;
+	// Aggregates over this log's session (rows sharing its session_id). Present
+	// only on the root of a collapsed session in a grouped list response. The
+	// count excludes this row; the totals include it.
+	session_child_count?: number;
+	session_total_cost?: number;
+	session_total_tokens?: number;
 }
 
-// A log row as rendered by the logs table. __chainChild marks rows injected
-// below an expanded parent in the grouped view; it never comes from the API.
-export type DisplayLogEntry = LogEntry & { __chainChild?: boolean };
+// A log row as rendered by the logs table. These markers are set when a row is
+// injected below an expanded parent in the grouped view; they never come from
+// the API. __chainChild covers any nested row so the table can indent it,
+// __rowKind says which expansion produced it, and __depth separates a session
+// member (1) from a fallback attempt under that member (2).
+export type DisplayLogEntry = LogEntry & {
+	__chainChild?: boolean;
+	__rowKind?: "chain-child" | "session-member";
+	__depth?: 1 | 2;
+};
 
 export interface LogFilters {
 	providers?: string[];
