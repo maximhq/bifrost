@@ -2575,6 +2575,15 @@ func (provider *VertexProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 	return bifrostResp, nil
 }
 
+// vertexVideoModelPath returns the escaped "projects/.../models/{model}" prefix of a video operation name.
+func vertexVideoModelPath(taskID string) (string, *schemas.BifrostError) {
+	parts, bifrostErr := parseVertexResourceName(taskID, "video_id", "projects", "", "locations", "", "publishers", "", "models", "", "operations", "")
+	if bifrostErr != nil {
+		return "", bifrostErr
+	}
+	return strings.Join(parts[:8], "/"), nil
+}
+
 // VideoRetrieve retrieves the status of a video generation operation.
 // Uses the fetchPredictOperation endpoint for Vertex AI.
 func (provider *VertexProvider) VideoRetrieve(ctx *schemas.BifrostContext, key schemas.Key, bifrostReq *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
@@ -2591,14 +2600,10 @@ func (provider *VertexProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 	// Construct the URL for fetching the operation status
 	// The operation name (bifrostReq.ID) already contains the full path:
 	// projects/PROJECT_ID/locations/REGION/publishers/google/models/MODEL_ID/operations/OPERATION_ID
-	// We need to extract the model path from it to construct the fetchPredictOperation endpoint
-	// Extract: projects/.../models/MODEL_ID from the operation name
 	taskID := providerUtils.StripVideoIDProviderSuffix(bifrostReq.ID, provider.GetProviderKey())
-	var modelPath string
-	if idx := strings.Index(taskID, "/operations/"); idx != -1 {
-		modelPath = taskID[:idx]
-	} else {
-		return nil, providerUtils.NewBifrostOperationError("invalid operation ID format", nil)
+	modelPath, idErr := vertexVideoModelPath(taskID)
+	if idErr != nil {
+		return nil, idErr
 	}
 
 	// Construct the URL: https://{vertex-api-host}/v1/{modelPath}:fetchPredictOperation
