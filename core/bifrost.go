@@ -4685,8 +4685,15 @@ func (bifrost *Bifrost) GetMCPClients() ([]schemas.MCPClient, error) {
 	clientsInConfig := make([]schemas.MCPClient, 0, len(clients))
 
 	for _, client := range clients {
-		tools := make([]schemas.MCPClientTool, 0, len(client.ToolMap))
-		for _, tool := range client.ToolMap {
+		// Client snapshots carry connection state only; the discovery comes from
+		// the manager's discovery store. Read with the manager's own context: this
+		// is the admin surface, which always shows the client-wide baseline.
+		discovery := bifrost.MCPManager.GetClientDiscovery(bifrost.ctx, client.ExecutionConfig.ID)
+		if discovery == nil {
+			discovery = &schemas.MCPDiscovery{}
+		}
+		tools := make([]schemas.MCPClientTool, 0, len(discovery.Tools))
+		for _, tool := range discovery.Tools {
 			if tool.Function != nil {
 				// A deep copy: the caller owns what it gets, annotations, icons and output schema included.
 				tool = schemas.DeepCopyChatTool(tool)
@@ -4705,13 +4712,15 @@ func (bifrost *Bifrost) GetMCPClients() ([]schemas.MCPClient, error) {
 		})
 
 		clientsInConfig = append(clientsInConfig, schemas.MCPClient{
-			Config:            client.ExecutionConfig,
-			Tools:             tools,
-			State:             client.State,
-			LastFailure:       client.LastFailure,
-			Resources:         client.Resources,
-			ResourceTemplates: client.ResourceTemplates,
-			Prompts:           client.Prompts,
+			Config:      client.ExecutionConfig,
+			Tools:       tools,
+			State:       client.State,
+			LastFailure: client.LastFailure,
+			// Copied so a caller that sorts or edits a list cannot change what is served; the
+			// entries' nested fields are shared, since discoveries are replaced, never edited.
+			Resources:         slices.Clone(discovery.Resources),
+			ResourceTemplates: slices.Clone(discovery.ResourceTemplates),
+			Prompts:           slices.Clone(discovery.Prompts),
 		})
 	}
 

@@ -26,7 +26,7 @@ import (
 // newSyncTestClientState builds a minimal MCPClientState + config pair for
 // the performCheck tests below, mirroring newAuthRetryClientState's shape
 // (auth_retry_test.go) but with a settable AuthType and Conn.
-func newSyncTestClientState(clientID, clientName string, authType schemas.MCPAuthType, tools map[string]schemas.ChatTool) (*schemas.MCPClientState, *schemas.MCPClientConfig) {
+func newSyncTestClientState(clientID, clientName string, authType schemas.MCPAuthType) (*schemas.MCPClientState, *schemas.MCPClientConfig) {
 	config := &schemas.MCPClientConfig{
 		ID:       clientID,
 		Name:     clientName,
@@ -36,9 +36,24 @@ func newSyncTestClientState(clientID, clientName string, authType schemas.MCPAut
 		Name:            clientName,
 		ExecutionConfig: config,
 		Conn:            nil, // every test here exercises the conn==nil branch
-		ToolMap:         tools,
 	}
 	return state, config
+}
+
+// installSyncTestClient registers state in the manager and seeds its
+// discovery in the store (live entries no longer carry tool maps).
+func installSyncTestClient(manager *MCPManager, state *schemas.MCPClientState, config *schemas.MCPClientConfig, tools map[string]schemas.ChatTool) {
+	manager.clientMap[config.ID] = state
+	if tools != nil {
+		manager.discoveryStore.SetDiscovery(context.Background(), config.ID, &schemas.MCPDiscovery{
+			Tools: tools,
+		})
+	}
+}
+
+// storedTools reads a client's tool map back from the manager's store.
+func storedTools(manager *MCPManager, clientID string) map[string]schemas.ChatTool {
+	return manager.discoveryStore.GetDiscovery(context.Background(), clientID).GetTools()
 }
 
 // TestPerformCheck_NilConn_PerUserOAuth_AttemptsAdminDiscovery confirms a
@@ -49,14 +64,15 @@ func newSyncTestClientState(clientID, clientName string, authType schemas.MCPAut
 func TestPerformCheck_NilConn_PerUserOAuth_AttemptsAdminDiscovery(t *testing.T) {
 	cred := &fakeAdminCredStore{err: errors.New("admin credential unavailable")}
 	manager := &MCPManager{
-		credStore: cred,
-		logger:    &MockLogger{},
-		clientMap: map[string]*schemas.MCPClientState{},
+		discoveryStore: NewDiscoveryStore(),
+		credStore:      cred,
+		logger:         &MockLogger{},
+		clientMap:      map[string]*schemas.MCPClientState{},
 	}
 
 	existingTools := map[string]schemas.ChatTool{"oauth-client-existing": {}}
-	state, config := newSyncTestClientState("client-1", "oauth-client", schemas.MCPAuthTypePerUserOauth, existingTools)
-	manager.clientMap[config.ID] = state
+	state, config := newSyncTestClientState("client-1", "oauth-client", schemas.MCPAuthTypePerUserOauth)
+	installSyncTestClient(manager, state, config, existingTools)
 
 	checker := NewClientConnectionChecker(manager, config.ID, time.Minute, false, &MockLogger{})
 	checker.performCheck()
@@ -68,7 +84,7 @@ func TestPerformCheck_NilConn_PerUserOAuth_AttemptsAdminDiscovery(t *testing.T) 
 	require.Equal(t, ProbeRetryConfig.MaxRetries+1, cred.callCount(), "performCheck should attempt admin tool discovery (calling credStore.AdminConnectionHeaders), retried like every other check, instead of silently skipping")
 	// Admin discovery failed, so existing tools must be kept intact (same
 	// "keep existing tools on error" contract as the live-conn path).
-	require.Equal(t, existingTools, manager.clientMap[config.ID].ToolMap)
+	require.Equal(t, existingTools, storedTools(manager, config.ID))
 	require.Equal(t, schemas.MCPConnectionStateUnstable, manager.clientMap[config.ID].State)
 }
 
@@ -77,20 +93,21 @@ func TestPerformCheck_NilConn_PerUserOAuth_AttemptsAdminDiscovery(t *testing.T) 
 func TestPerformCheck_NilConn_PerUserHeaders_AttemptsAdminDiscovery(t *testing.T) {
 	cred := &fakeAdminCredStore{err: errors.New("admin credential unavailable")}
 	manager := &MCPManager{
-		credStore: cred,
-		logger:    &MockLogger{},
-		clientMap: map[string]*schemas.MCPClientState{},
+		discoveryStore: NewDiscoveryStore(),
+		credStore:      cred,
+		logger:         &MockLogger{},
+		clientMap:      map[string]*schemas.MCPClientState{},
 	}
 
 	existingTools := map[string]schemas.ChatTool{"headers-client-existing": {}}
-	state, config := newSyncTestClientState("client-2", "headers-client", schemas.MCPAuthTypePerUserHeaders, existingTools)
-	manager.clientMap[config.ID] = state
+	state, config := newSyncTestClientState("client-2", "headers-client", schemas.MCPAuthTypePerUserHeaders)
+	installSyncTestClient(manager, state, config, existingTools)
 
 	checker := NewClientConnectionChecker(manager, config.ID, time.Minute, false, &MockLogger{})
 	checker.performCheck()
 
 	require.Equal(t, ProbeRetryConfig.MaxRetries+1, cred.callCount(), "performCheck should attempt admin tool discovery instead of silently skipping, retried like every other check")
-	require.Equal(t, existingTools, manager.clientMap[config.ID].ToolMap)
+	require.Equal(t, existingTools, storedTools(manager, config.ID))
 }
 
 // TestPerformCheck_NilConn_SharedAuthType_Sticky_NeverAttemptsAdminDiscovery
@@ -110,12 +127,12 @@ func TestPerformCheck_NilConn_SharedAuthType_Sticky_NeverAttemptsAdminDiscovery(
 			manager := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
 
 			existingTools := map[string]schemas.ChatTool{"shared-client-existing": {}}
-			state, config := newSyncTestClientState("client-3", "shared-client", authType, existingTools)
+			state, config := newSyncTestClientState("client-3", "shared-client", authType)
 			config.ConnectionType = schemas.MCPConnectionTypeHTTP
 			config.NeedsSessionStickiness = schemas.Ptr(true)
 			config.ConnectionString = schemas.NewSecretVar("http://127.0.0.1:0/mcp") // unreachable — the reconnect attempt fails fast, which is fine
 			manager.mu.Lock()
-			manager.clientMap[config.ID] = state
+			installSyncTestClient(manager, state, config, existingTools)
 			manager.mu.Unlock()
 
 			checker := NewClientConnectionChecker(manager, config.ID, time.Minute, false, &MockLogger{})
@@ -127,7 +144,7 @@ func TestPerformCheck_NilConn_SharedAuthType_Sticky_NeverAttemptsAdminDiscovery(
 			}, 2*time.Second, 10*time.Millisecond, "a sticky client with no live connection must trigger a direct reconnect attempt, not admin discovery")
 
 			manager.mu.RLock()
-			toolMap := manager.clientMap[config.ID].ToolMap
+			toolMap := storedTools(manager, config.ID)
 			manager.mu.RUnlock()
 			require.Equal(t, existingTools, toolMap, "must leave the existing tool map untouched — only a real reconnect's own tools/list replaces it")
 		})
@@ -148,21 +165,22 @@ func TestPerformCheck_NilConn_SharedAuthType_PerCall_SuccessUpdatesToolMap(t *te
 
 			cred := &fakeAdminCredStore{headers: http.Header{"Authorization": []string{"Bearer shared-token"}}}
 			manager := &MCPManager{
-				credStore: cred,
-				logger:    &MockLogger{},
-				clientMap: map[string]*schemas.MCPClientState{},
+				discoveryStore: NewDiscoveryStore(),
+				credStore:      cred,
+				logger:         &MockLogger{},
+				clientMap:      map[string]*schemas.MCPClientState{},
 			}
 
-			state, config := newSyncTestClientState("client-shared-percall", "shared-client", authType, map[string]schemas.ChatTool{})
+			state, config := newSyncTestClientState("client-shared-percall", "shared-client", authType)
 			config.ConnectionType = schemas.MCPConnectionTypeHTTP
 			config.ConnectionString = schemas.NewSecretVar(ts.URL)
-			manager.clientMap[config.ID] = state
+			installSyncTestClient(manager, state, config, map[string]schemas.ChatTool{})
 
 			checker := NewClientConnectionChecker(manager, config.ID, time.Minute, false, &MockLogger{})
 			checker.performCheck()
 
 			require.Equal(t, 1, cred.callCount())
-			updated := manager.clientMap[config.ID].ToolMap
+			updated := storedTools(manager, config.ID)
 			require.Contains(t, updated, "shared-client-echo", "a successful admin-discovery cycle should populate the client's tool map")
 			require.Equal(t, schemas.MCPConnectionStateHealthy, manager.clientMap[config.ID].State)
 		})
@@ -220,21 +238,22 @@ func TestPerformCheck_NilConn_PerUserOAuth_SuccessUpdatesToolMap(t *testing.T) {
 
 	cred := &fakeAdminCredStore{headers: http.Header{"Authorization": []string{"Bearer admin-token"}}}
 	manager := &MCPManager{
-		credStore: cred,
-		logger:    &MockLogger{},
-		clientMap: map[string]*schemas.MCPClientState{},
+		discoveryStore: NewDiscoveryStore(),
+		credStore:      cred,
+		logger:         &MockLogger{},
+		clientMap:      map[string]*schemas.MCPClientState{},
 	}
 
-	state, config := newSyncTestClientState("client-4", "oauth-client", schemas.MCPAuthTypePerUserOauth, map[string]schemas.ChatTool{})
+	state, config := newSyncTestClientState("client-4", "oauth-client", schemas.MCPAuthTypePerUserOauth)
 	config.ConnectionType = schemas.MCPConnectionTypeHTTP
 	config.ConnectionString = schemas.NewSecretVar(ts.URL)
-	manager.clientMap[config.ID] = state
+	installSyncTestClient(manager, state, config, map[string]schemas.ChatTool{})
 
 	checker := NewClientConnectionChecker(manager, config.ID, time.Minute, false, &MockLogger{})
 	checker.performCheck()
 
 	require.Equal(t, 1, cred.callCount())
-	updated := manager.clientMap[config.ID].ToolMap
+	updated := storedTools(manager, config.ID)
 	require.Contains(t, updated, "oauth-client-echo", "a successful admin-discovery cycle should populate the client's tool map")
 	require.Equal(t, schemas.MCPConnectionStateHealthy, manager.clientMap[config.ID].State)
 }
@@ -251,13 +270,14 @@ func TestPerformCheck_NilConn_PerUserOAuth_SuccessUpdatesToolMap(t *testing.T) {
 // client's current one, mirroring writeBackTools' own guard exactly.
 func TestSetState_StaleGeneration_DoesNotOverwriteState(t *testing.T) {
 	manager := &MCPManager{
-		logger:    &MockLogger{},
-		clientMap: map[string]*schemas.MCPClientState{},
+		discoveryStore: NewDiscoveryStore(),
+		logger:         &MockLogger{},
+		clientMap:      map[string]*schemas.MCPClientState{},
 	}
-	state, config := newSyncTestClientState("client-gen", "gen-client", schemas.MCPAuthTypeHeaders, nil)
+	state, config := newSyncTestClientState("client-gen", "gen-client", schemas.MCPAuthTypeHeaders)
 	state.State = schemas.MCPConnectionStateHealthy
 	state.ConnGeneration = 6 // already bumped past what the stale check captured
-	manager.clientMap[config.ID] = state
+	installSyncTestClient(manager, state, config, nil)
 
 	checker := NewClientConnectionChecker(manager, config.ID, time.Minute, false, &MockLogger{})
 
@@ -378,7 +398,6 @@ func TestClientConnectionCheckerStart_DoesNotDeadlockAgainstAStop(t *testing.T) 
 				Name:            config.Name,
 				ExecutionConfig: config,
 				State:           schemas.MCPConnectionStateHealthy,
-				ToolMap:         map[string]schemas.ChatTool{},
 				ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
 			}
 			m.mu.Unlock()

@@ -142,7 +142,7 @@ func (m *MCPManager) prepareToolExecution(ctx *schemas.BifrostContext, request *
 		return nil, nil, func() {}, nil
 	}
 
-	state := m.GetClientForTool(toolName)
+	state, _ := m.GetClientForTool(ctx, toolName)
 	if state == nil {
 		return nil, nil, nil, fmt.Errorf("tool '%s' is not available or not permitted", toolName)
 	}

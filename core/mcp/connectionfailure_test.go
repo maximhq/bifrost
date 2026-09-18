@@ -51,10 +51,11 @@ func TestNewConnectionFailure_PreservesSince(t *testing.T) {
 // it along with the flip to Healthy.
 func TestSetState_RecordsFailureAndClearsOnHealthy(t *testing.T) {
 	manager := &MCPManager{
-		logger:    &MockLogger{},
-		clientMap: map[string]*schemas.MCPClientState{},
+		discoveryStore: NewDiscoveryStore(),
+		logger:         &MockLogger{},
+		clientMap:      map[string]*schemas.MCPClientState{},
 	}
-	state, config := newSyncTestClientState("client-rec", "rec-client", schemas.MCPAuthTypeHeaders, nil)
+	state, config := newSyncTestClientState("client-rec", "rec-client", schemas.MCPAuthTypeHeaders)
 	state.State = schemas.MCPConnectionStateHealthy
 	manager.clientMap[config.ID] = state
 	checker := NewClientConnectionChecker(manager, config.ID, time.Minute, false, &MockLogger{})

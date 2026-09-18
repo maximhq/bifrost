@@ -229,9 +229,7 @@ func TestCloseAndMarkNeedsReauth_PerUserAuth_ReturnsNotApplicable(t *testing.T) 
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, schemas.ErrMCPReconnectNotApplicable))
 
-	m.mu.RLock()
-	state := *m.clientMap[config.ID]
-	m.mu.RUnlock()
+	state, _ := snapshotClientState(m, config.ID)
 	assert.Equal(t, schemas.MCPConnectionStateHealthy, state.State, "state must be untouched for a not-applicable auth type")
 }
 
@@ -290,9 +288,7 @@ func TestEnableClient_GuardLostLeavesDisabledUntouched(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "already in progress")
 
-	m.mu.RLock()
-	state := *m.clientMap[config.ID]
-	m.mu.RUnlock()
+	state, _ := snapshotClientState(m, config.ID)
 	assert.True(t, state.ExecutionConfig.Disabled, "a failed EnableClient (guard already held elsewhere) must not have flipped Disabled — otherwise a concurrent connectToMCPClient could dial the still-Disabled-State entry")
 	assert.Equal(t, schemas.MCPConnectionStateDisabled, state.State)
 }
@@ -328,16 +324,13 @@ func TestUpdateClientCredentials_PerCallShared_Healthy_RefreshesToolsSynchronous
 		Name:            config.Name,
 		ExecutionConfig: config,
 		State:           schemas.MCPConnectionStateHealthy,
-		ToolMap:         make(map[string]schemas.ChatTool),
 	}
 	m.mu.Unlock()
 
 	err := m.UpdateClientCredentials(config.ID, config)
 	require.NoError(t, err, "a per-call shared client's credential update must succeed by refreshing tools, not report not-applicable")
 
-	m.mu.RLock()
-	state := *m.clientMap[config.ID]
-	m.mu.RUnlock()
+	state, _ := snapshotClientState(m, config.ID)
 	assert.Contains(t, state.ToolMap, "shared-percall-client-refresh-echo", "tools must be refreshed synchronously, not deferred to the periodic checker")
 }
 
@@ -357,17 +350,15 @@ func TestSetClientDiscovery_ReplacesStaleTools(t *testing.T) {
 		Name:            config.Name,
 		ExecutionConfig: config,
 		State:           schemas.MCPConnectionStateHealthy,
-		ToolMap: map[string]schemas.ChatTool{
-			"replace-tools-client-removed": {},
-		},
 	}
+	m.discoveryStore.SetDiscovery(context.Background(), config.ID, &schemas.MCPDiscovery{
+		Tools: map[string]schemas.ChatTool{"replace-tools-client-removed": {}},
+	})
 	m.mu.Unlock()
 
 	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"replace-tools-client-kept": {}}})
 
-	m.mu.RLock()
-	state := *m.clientMap[config.ID]
-	m.mu.RUnlock()
+	state, _ := snapshotClientState(m, config.ID)
 	assert.Contains(t, state.ToolMap, "replace-tools-client-kept")
 	assert.NotContains(t, state.ToolMap, "replace-tools-client-removed", "a tool absent from the fresh discovery result must not survive in memory")
 }
@@ -456,9 +447,7 @@ func TestUpdateClientCredentials_PerCallShared_Disabled_SkipsRefresh(t *testing.
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, schemas.ErrMCPReconnectNotApplicable))
 
-	m.mu.RLock()
-	state := *m.clientMap[config.ID]
-	m.mu.RUnlock()
+	state, _ := snapshotClientState(m, config.ID)
 	assert.Equal(t, schemas.MCPConnectionStateDisabled, state.State, "a credential update must not resurrect a disabled client")
 }
 
@@ -488,7 +477,6 @@ func TestUpdateClientCredentials_PerCallSharedOAuth_PendingVerification_LeavesTh
 		Name:            config.Name,
 		ExecutionConfig: config,
 		State:           schemas.MCPConnectionStatePendingVerification,
-		ToolMap:         make(map[string]schemas.ChatTool),
 	}
 	m.mu.Unlock()
 
@@ -550,16 +538,13 @@ func TestUpdateClientCredentials_PerCallSharedType_PendingVerification_Discovers
 		Name:            config.Name,
 		ExecutionConfig: config,
 		State:           schemas.MCPConnectionStatePendingVerification,
-		ToolMap:         make(map[string]schemas.ChatTool),
 	}
 	m.mu.Unlock()
 
 	err := m.UpdateClientCredentials(config.ID, config)
 	require.NoError(t, err)
 
-	m.mu.RLock()
-	state := *m.clientMap[config.ID]
-	m.mu.RUnlock()
+	state, _ := snapshotClientState(m, config.ID)
 	assert.Equal(t, schemas.MCPConnectionStateHealthy, state.State)
 	assert.Contains(t, state.ToolMap, "pending-percall-client-sync-echo", "tools must be discovered synchronously, not deferred entirely to the periodic checker")
 }
@@ -590,7 +575,6 @@ func TestUpdateClientCredentials_PerCallSharedType_PendingVerification_FailedFir
 		Name:            config.Name,
 		ExecutionConfig: config,
 		State:           schemas.MCPConnectionStatePendingVerification,
-		ToolMap:         make(map[string]schemas.ChatTool),
 	}
 	m.mu.Unlock()
 
@@ -602,7 +586,8 @@ func TestUpdateClientCredentials_PerCallSharedType_PendingVerification_FailedFir
 	assert.Equal(t, schemas.MCPConnectionStateUnstable, state.State)
 	require.NotNil(t, state.LastFailure)
 	assert.Equal(t, schemas.MCPConnectionFailureStageToolDiscovery, state.LastFailure.Stage)
-	assert.Empty(t, state.ToolMap)
+	snapshot, _ := snapshotClientState(m, config.ID)
+	assert.Empty(t, snapshot.ToolMap)
 }
 
 // TestReconnectClient_PerCallSharedOAuth_ReturnsReconnectNotApplicable pins
@@ -1073,14 +1058,14 @@ func TestSetClientDiscoveryRecordsInstructionsForRestart(t *testing.T) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{ID: "per-call", Name: "per-call", ToolsToExecute: []string{"*"}}
 	m.mu.Lock()
-	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, ToolMap: map[string]schemas.ChatTool{}}
+	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config}
 	m.mu.Unlock()
 
 	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"t": {Type: "function"}}, Instructions: "Use me carefully."})
 
+	assert.Equal(t, "Use me carefully.", m.discoveryStore.GetDiscovery(context.Background(), config.ID).GetInstructions())
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	assert.Equal(t, "Use me carefully.", m.clientMap[config.ID].ServerInstructions)
 	assert.Equal(t, "Use me carefully.", m.clientMap[config.ID].ExecutionConfig.DiscoveredInstructions)
 }
 
@@ -1091,7 +1076,7 @@ func TestInstructionsOnlyChangeStillFiresToolsChangeCallback(t *testing.T) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{ID: "c", Name: "c"}
 	m.mu.Lock()
-	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, ToolMap: map[string]schemas.ChatTool{}}
+	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config}
 	m.mu.Unlock()
 
 	var seen []string
@@ -1113,17 +1098,67 @@ func TestWriteBackDiscoveredToolsKeepsInstructionsWhenNotRediscovered(t *testing
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{ID: "c", Name: "c"}
 	m.mu.Lock()
-	m.clientMap[config.ID] = &schemas.MCPClientState{
-		Name: config.Name, ExecutionConfig: config,
-		ToolMap: map[string]schemas.ChatTool{}, ServerInstructions: "keep me",
-	}
+	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config}
+	m.discoveryStore.SetDiscovery(context.Background(), config.ID, &schemas.MCPDiscovery{Instructions: "keep me"})
 	m.mu.Unlock()
 
 	require.True(t, m.writeBackDiscovery(config.ID, 0, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"a": {Type: "function"}}}, false))
 
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	assert.Equal(t, "keep me", m.clientMap[config.ID].ServerInstructions)
+	got := m.discoveryStore.GetDiscovery(context.Background(), config.ID)
+	assert.Equal(t, "keep me", got.GetInstructions())
+	assert.Contains(t, got.GetTools(), "a", "the rediscovered tools replace the old ones alongside the kept text")
+}
+
+// A per-call client restored from its persisted verification serves the instructions persisted
+// with its tools straight away, as it does the tools, instead of waiting for the checker's next
+// discovery to bring them back. Covers the disabled-at-boot restore that EnableClient resumes.
+func TestAddClient_DisabledPerCallRestore_ServesPersistedInstructionsOnEnable(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	defer m.checkerManager.StopAll()
+	lookup := schemas.ChatTool{Type: "function", Function: &schemas.ChatToolFunction{Name: "verifiedrestored-lookup"}}
+	config := newVerifiedClientConfig("restored", schemas.MCPAuthTypePerUserHeaders,
+		map[string]schemas.ChatTool{"verifiedrestored-lookup": lookup})
+	config.PerUserHeaderKeys = []string{"x-api-key"}
+	config.ToolsToExecute = []string{"*"}
+	config.DiscoveredInstructions = "Restored rule."
+	config.Disabled = true
+
+	require.NoError(t, m.AddClient(context.Background(), config))
+	assert.Equal(t, "Restored rule.", m.discoveryStore.GetDiscovery(context.Background(), config.ID).GetInstructions(),
+		"the restore must bring back the instructions persisted with the tools")
+
+	require.NoError(t, m.EnableClient(config.ID))
+	assert.Equal(t, []schemas.MCPServerInstructions{{ClientName: config.Name, Instructions: "Restored rule."}},
+		m.GetServerInstructions(context.Background()))
+}
+
+// The pending_verification restore in UpdateClientCredentials installs the persisted
+// instructions alongside the persisted tools, mirroring AddClient's own restore.
+func TestUpdateClientCredentials_PendingVerificationRestore_InstallsPersistedInstructions(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	defer m.checkerManager.StopAll()
+	config := &schemas.MCPClientConfig{
+		ID:                     "client-pending-restore",
+		Name:                   "pendingrestore",
+		AuthType:               schemas.MCPAuthTypeHeaders,
+		ConnectionType:         schemas.MCPConnectionTypeHTTP,
+		ConnectionString:       schemas.NewSecretVar("http://127.0.0.1:0/mcp"),
+		DiscoveredTools:        map[string]schemas.ChatTool{"pendingrestore-echo": {Type: "function"}},
+		DiscoveredInstructions: "Pending rule.",
+	}
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{
+		Name:            config.Name,
+		ExecutionConfig: config,
+		State:           schemas.MCPConnectionStatePendingVerification,
+	}
+	m.mu.Unlock()
+
+	require.NoError(t, m.UpdateClientCredentials(config.ID, config))
+
+	got := m.discoveryStore.GetDiscovery(context.Background(), config.ID)
+	assert.Contains(t, got.GetTools(), "pendingrestore-echo")
+	assert.Equal(t, "Pending rule.", got.GetInstructions())
 }
 
 // stubResolver answers every lookup with a fixed IP set or error.
@@ -1362,11 +1397,12 @@ func newOpenAPITestConfig(name, spec string) *schemas.MCPClientConfig {
 func openAPIToolNames(t *testing.T, m *MCPManager, id string) []string {
 	t.Helper()
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-	state, ok := m.clientMap[id]
+	_, ok := m.clientMap[id]
+	m.mu.RUnlock()
 	require.True(t, ok, "client %s not registered", id)
-	names := make([]string, 0, len(state.ToolMap))
-	for name := range state.ToolMap {
+	tools := storedTools(m, id)
+	names := make([]string, 0, len(tools))
+	for name := range tools {
 		names = append(names, name)
 	}
 	sort.Strings(names)

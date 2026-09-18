@@ -226,7 +226,7 @@ func waitForClientOp(t *testing.T, m *MCPManager, id string, before *inflightCli
 }
 
 // requireFailureStage asserts the client is unstable and its last failure happened at stage.
-func requireFailureStage(t *testing.T, m *MCPManager, id string, stage schemas.MCPConnectionFailureStage) schemas.MCPClientState {
+func requireFailureStage(t *testing.T, m *MCPManager, id string, stage schemas.MCPConnectionFailureStage) clientSnapshot {
 	t.Helper()
 	state, ok := snapshotClientState(m, id)
 	require.True(t, ok)
@@ -237,7 +237,7 @@ func requireFailureStage(t *testing.T, m *MCPManager, id string, stage schemas.M
 }
 
 // requireRecovered asserts the client is healthy again with its failure record cleared.
-func requireRecovered(t *testing.T, m *MCPManager, id string) schemas.MCPClientState {
+func requireRecovered(t *testing.T, m *MCPManager, id string) clientSnapshot {
 	t.Helper()
 	state, ok := snapshotClientState(m, id)
 	require.True(t, ok)
