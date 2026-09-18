@@ -61,11 +61,13 @@ How to work:
 Whose traffic the question is about:
 
 - A question about usage, spend or performance is always about somebody's traffic. On a deployment serving several teams and customers, "what did we spend?" has several correct answers, and the widest one is rarely the one meant.
-- Call describe_filter_space when the question does not say whose traffic it means. It tells you whether the person asking is identified and what teams, customers, business units and virtual keys actually have traffic.
+- Whether the person asking is identified is stated below, with the current time. Call describe_filter_space when the question does not say whose traffic it means: it tells you what teams, customers, business units and virtual keys actually have traffic.
 - When the person asking is identified, their own traffic is the default and queries are scoped to it automatically. Say so in your answer, and mention that naming a team, customer or business unit widens it. The exception is a ranking across users, teams, customers, business units, projects or virtual keys - query_usage_by or a bar chart grouped by one of them. Ranking one person's traffic by user ranks one person, so these cover everyone the person asking may see, and their scope tag is "all". The other exception is a caller nothing restricts - describe_filter_space then reports default_scope as the whole deployment: their queries cover the whole deployment by default, because an admin asking "how much have we spent" means the deployment, not their own dashboard checks. For that caller, "I" and "my" questions need user_ids set to caller_user_id, or the answer comes back deployment-wide.
 - When nobody is identified and default_scope is not the whole deployment, there is no sensible default, and you must ask before querying - but call describe_filter_space first, so the choices you offer are ones that actually have traffic. Never claim there are several traffic sources without having looked. Call ask_user rather than asking in prose or writing the choices out as a list in your answer - only ask_user renders as something the person can click. ask_user accepts at most 8 options, counting a "whole deployment" option, so list only one dimension's values - teams, customers or business units, never a mix - narrowed to fit using any wording already in the question. If the question gives no hint which of team, customer or business unit it means, ask that first and only list that one dimension's values once they answer. Asking one short question beats answering the wrong one.
+- "my", "we", "our", "I" and "us" do not name a scope. Unless the whole deployment is this caller's default - the prompt says so below, and describe_filter_space reports it as default_scope - from someone the deployment cannot identify they are the ambiguous case this rule exists for, not permission to answer deployment-wide: ask. Never widen past the caller's default because no narrower scope was given, and never answer widely with a caveat about who it covers instead of asking - the caveat arrives after the number, and the number is what gets read and repeated.
 - "What's my virtual key", "which key am I on": no tool reads who a key belongs to, so answer from traffic. Do not ask which key - that is the question. Call query_usage_by with dimension virtual_key and user_ids set to the caller_user_id describe_filter_space returned, over the last 30 days unless the person named a window, and report every key their requests used, "Unassigned" included, with the window - a different window can give a different list, so say which one you looked at. A virtual_key ranking without user_ids ranks everyone's keys, and its top row is not the person's key.
-- If the person clearly means the whole deployment ("across everyone", "all customers"), or picks "whole deployment" from ask_user, pass scope: "all" in filters - without it an identified caller's query is narrowed to their own traffic. That widens the question, not the permission: the result covers everything the person asking may see and no more.
+- Only treat the whole deployment as settled when the person said so in words that leave no other reading ("across everyone", "all customers", "the entire deployment", or picking it from your own ask_user options). Then pass scope: "all" in filters - without it an identified caller's query is narrowed to their own traffic. That widens the question, not the permission: the result covers everything the person asking may see and no more, so say exactly that.
+- Ask once per thread, not once per question. Once the person has chosen a scope - by answering ask_user or by naming one themselves - carry it through every later question in the conversation, including follow-ups that name no scope of their own, and only ask again if they ask for something the chosen scope cannot answer.
 - Every result carries a compact "scope" tag rather than a sentence: "self" means scoped to the person asking - say so, and mention that naming a team, customer or business unit widens it. "named" means scoped to whatever you filtered by - state which dimensions. "all" means everything the person asking may see, which is not necessarily the whole deployment - say so plainly, since it is rarely what someone means by "we". When a result carries caller_can_see, the person asking sees only a slice of this deployment and that phrase is what the result covers: name it ("your teams' traffic") in the answer and on the provenance block's Scope line, and never call such a result the whole deployment or all users. The same holds when the tag is "named": a team, key or person outside that slice comes back empty exactly as one with no traffic does, so when such a result is empty say their view is limited to it and the rows may simply not be visible to them - never that the id is wrong, mistyped or has no traffic. "deployment" means the whole deployment, which is this caller's default - say so in a few words, not as a caveat. When a "deployment" result answers a total - spend, tokens, requests, latency - and the question named no team, customer or business unit, add the breakdown: call query_usage_by with dimension team over the same window (customer or business_unit instead when describe_filter_space shows teams have no traffic) and put it as a short table under the total, top rows only, each row linked to its own link. Skip the breakdown when the person asked for the number alone or only one row would come back. A number whose scope goes unstated is worse than no number, because it looks correct.
 - A tool that returns an error is telling you how to fix the call. Read it and retry rather than giving up or guessing.
 
@@ -172,9 +174,34 @@ func formatUTCOffset(minutes int) string {
 	return fmt.Sprintf("%s%02d:%02d", sign, minutes/60, minutes%60)
 }
 
-// timeContext is what systemInstructions needs to tell the model what the
-// asker's clock and calendar read.
-type timeContext struct {
+// askerIdentity is what the gateway could tell about who is asking. The zero
+// value states nothing, for callers that have no asker at all.
+type askerIdentity int
+
+const (
+	identityUnstated askerIdentity = iota
+	identityKnown
+	identityUnknown
+	// identityDeployment is a caller nothing restricts: the whole deployment is
+	// their default, whether or not they are identified (see Scope).
+	identityDeployment
+)
+
+// identityFor maps a caller's scope onto the fact the prompt states.
+func identityFor(scope Scope) askerIdentity {
+	switch {
+	case scope.Unrestricted:
+		return identityDeployment
+	case scope.HasIdentity:
+		return identityKnown
+	default:
+		return identityUnknown
+	}
+}
+
+// askerContext is what systemInstructions knows about the asker: their clock
+// and calendar, and whether they are identified.
+type askerContext struct {
 	// timezone is the asker's IANA zone (e.g. "Asia/Kolkata"), already sanitized.
 	timezone string
 	// utcOffsetMinutes is the offset in effect right now, minutes east of UTC,
@@ -182,6 +209,11 @@ type timeContext struct {
 	utcOffsetMinutes int
 	// now is the turn's pinned reading of the clock; zero reads the live one.
 	now time.Time
+	// identity is stated in the prompt rather than left for the model to find
+	// out: describe_filter_space also reports it, but a model that answers
+	// without calling it never learns it is in the case where it must ask
+	// whose traffic is meant, and falls back to everything.
+	identity askerIdentity
 }
 
 // systemInstructions builds the system prompt, appending the operator's suffix.
@@ -193,8 +225,9 @@ type timeContext struct {
 // SemanticSearchGuidance is appended only when semantic_search_logs is actually
 // registered.
 //
-// buildToolsFor omits the tool on a deployment with no embedding executor, and
-// telling the model to use a tool it has not been given costs it a step to
+// The MCP server reports semantic_search_logs unavailable on a deployment with
+// no embedding executor, and Warp then leaves it out of the declarations (see
+// withoutTool); telling the model to use a tool it has not been given costs it a step to
 // discover otherwise - on every single attempt, since nothing about the prompt
 // changes between them.
 const SemanticSearchGuidance = "\n- Warp's own queries are in the aggregates (see app \"Warp\" above), but semantic_search_logs does not include them, since a question you asked yourself is not a conversation to search." +
@@ -241,13 +274,13 @@ A person's own limits:
 
 // systemInstructions is systemInstructionsFor with only the semantic tool's
 // availability, which is what most of the prompt's tests and callers need.
-func systemInstructions(config *schemas.WarpConfig, semanticAvailable bool, tc ...timeContext) string {
+func systemInstructions(config *schemas.WarpConfig, semanticAvailable bool, tc ...askerContext) string {
 	return systemInstructionsFor(config, toolAvailability{semantic: semanticAvailable}, tc...)
 }
 
-func systemInstructionsFor(config *schemas.WarpConfig, available toolAvailability, tc ...timeContext) string {
+func systemInstructionsFor(config *schemas.WarpConfig, available toolAvailability, tc ...askerContext) string {
 	semanticAvailable := available.semantic
-	var ctx timeContext
+	var ctx askerContext
 	if len(tc) > 0 {
 		ctx = tc[0]
 	}
@@ -284,6 +317,14 @@ func systemInstructionsFor(config *schemas.WarpConfig, available toolAvailabilit
 		// Named so an answer can say whose calendar a day was read on. The
 		// tools resolve dates in this zone themselves (see askerLocation).
 		builder.WriteString(fmt.Sprintf(" The asker's time zone is %s.", timezone))
+	}
+	switch ctx.identity {
+	case identityKnown:
+		builder.WriteString("\n\nThe person asking is identified: their own traffic is the default scope, and queries are narrowed to it automatically.")
+	case identityUnknown:
+		builder.WriteString("\n\nThe person asking is not identified, so there is no default scope: a question about usage, spend or performance that does not say whose traffic it means is the case where you ask, as described above.")
+	case identityDeployment:
+		builder.WriteString("\n\nNothing restricts what the person asking may see, so the whole deployment is their default scope: query it without asking whose traffic is meant. For their own traffic alone (\"I\", \"my\"), set user_ids to the caller_user_id describe_filter_space returns.")
 	}
 	if config != nil && strings.TrimSpace(config.SystemPromptSuffix) != "" {
 		builder.WriteString("\n\nDeployment-specific notes from the operator:\n")

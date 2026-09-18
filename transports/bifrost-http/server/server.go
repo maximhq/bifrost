@@ -26,6 +26,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/mcptools"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/openapimcp"
 	dynamicPlugins "github.com/maximhq/bifrost/framework/plugins"
@@ -253,6 +254,11 @@ type BifrostHTTPServer struct {
 
 	Server *fasthttp.Server
 	Router *router.Router
+	// adminRouter carries the admin handlers Bifrost's MCP write tools call,
+	// registered a second time behind no auth middleware. No listener serves
+	// it: handlers.AdminDispatcher is its only caller. RegisterAPIRoutes
+	// builds it.
+	adminRouter *router.Router
 
 	// ShellRewriter lets a build rewrite the pre-hydration HTML shell before it
 	// is served — the enterprise build uses it to swap in a custom logo.
@@ -419,6 +425,82 @@ func (s *GovernanceInMemoryStore) GetMCPClientBySlug(slug string) (string, strin
 
 func (s *GovernanceInMemoryStore) GetEnabledAgents() map[string]bool {
 	return s.Config.GetEnabledAgents()
+}
+
+// registerBifrostMCPServer hosts Warp's read-only log/metrics/governance query
+// tools (framework/mcptools) as an ordinary MCP client named
+// warp.BifrostMCPClientName, reachable at /mcp/bifrost by any virtual-key-
+// authenticated MCP client. Ordinary is the point: it is persisted like a
+// user-added client, so VK grants, the dashboard's client picker and the
+// pricing lookup all work without special-casing it.
+//
+// It runs after plugins load (the tools need the logging plugin's store) and
+// before ConnectConfiguredMCPClients. On a later boot the row already sits in
+// MCPConfig.ClientConfigs, loaded from the store, but with no server pointer -
+// that only exists in this process - so it is attached here and the boot dial
+// connects the client like any other. On the first boot the row is created and
+// the client registered directly. Without a config store nothing persists and
+// the in-memory registration is all there is.
+func (s *BifrostHTTPServer) registerBifrostMCPServer(ctx context.Context) error {
+	warpService := s.WarpHandler.Service()
+	// Resolved per tool call rather than captured here: AddPlugin/RemovePlugin
+	// rebind Warp's log reader and semantic searcher at runtime, and a Deps
+	// snapshotted at boot would keep reading through whatever existed then. A
+	// nil LogReader (logging disabled) still gets a server: every tool that
+	// needs it reports itself unavailable.
+	// Writes go through the admin handlers in this process. The router is read
+	// per call: RegisterAPIRoutes builds it before this runs, but nothing here
+	// should depend on that order.
+	dispatcher := handlers.NewAdminDispatcher(func() fasthttp.RequestHandler {
+		if s.adminRouter == nil {
+			return nil
+		}
+		return s.adminRouter.Handler
+	})
+	server := mcptools.NewServer(func() *mcptools.Deps {
+		deps := warpService.MCPDeps()
+		deps.Admin = dispatcher
+		return deps
+	})
+	if s.Config.MCPConfig != nil {
+		for _, existing := range s.Config.MCPConfig.ClientConfigs {
+			if existing != nil && existing.Name == warp.BifrostMCPClientName {
+				// The name is reserved (config.json declarations and API creates
+				// of it are refused), so a row carrying it that is not in-process
+				// predates the reservation. Attaching the server to it would turn
+				// someone's remote client into this one; refuse instead.
+				if existing.ConnectionType != schemas.MCPConnectionTypeInProcess {
+					return fmt.Errorf("MCP client name %q is reserved for Bifrost's built-in MCP server, but the stored client with that name is a %s client; rename or delete it", warp.BifrostMCPClientName, existing.ConnectionType)
+				}
+				// The manager's boot list shares these pointers, so the dial sees this.
+				existing.InProcessServer = server
+				return nil
+			}
+		}
+	}
+	clientConfig := &schemas.MCPClientConfig{
+		ID:              uuid.NewString(),
+		Name:            warp.BifrostMCPClientName,
+		ConnectionType:  schemas.MCPConnectionTypeInProcess,
+		InProcessServer: server,
+		EndpointSlug:    "bifrost",
+		ToolsToExecute:  schemas.WhiteList{"*"}, // narrowed per-VK by governance tool grants
+	}
+	// A failed persist stops here: registered in memory only, the client would
+	// get a fresh ID on the next boot and every VK grant made against this one
+	// would silently stop matching.
+	if s.Config.ConfigStore != nil {
+		if err := s.Config.ConfigStore.CreateMCPClientConfig(ctx, clientConfig); err != nil {
+			return fmt.Errorf("failed to persist %s MCP client: %w", warp.BifrostMCPClientName, err)
+		}
+	}
+	// Config.AddMCPClient, not s.AddMCPClient: the latter resyncs
+	// MCPServerHandler, which Bootstrap resyncs unconditionally after the boot
+	// dial anyway.
+	if err := s.Config.AddMCPClient(ctx, clientConfig); err != nil {
+		return fmt.Errorf("failed to register %s MCP client: %w", warp.BifrostMCPClientName, err)
+	}
+	return nil
 }
 
 // AddMCPClient adds a new MCP client to the in-memory store
@@ -3010,6 +3092,38 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if s.Config.ConfigStore != nil && s.SidekiqRunner != nil {
 		handlers.NewSidekiqHandler(s.Config.ConfigStore, s.SidekiqRunner).RegisterRoutes(s.Router, middlewares...)
 	}
+	// The same handler instances, on the router the MCP write tools dispatch
+	// to. No middlewares: nothing arrives here off the wire, and the dispatcher
+	// sets the request's posture itself. RegisterRoutes brings each handler's
+	// whole route family; which of those a tool can actually call is
+	// handlers.AdminDispatcher's allow-list, not this registration.
+	adminRouter := router.New()
+	providerHandler.RegisterRoutes(adminRouter)
+	mcpHandler.RegisterRoutes(adminRouter)
+	if virtualMCPHandler != nil {
+		virtualMCPHandler.RegisterRoutes(adminRouter)
+	}
+	if pluginsHandler != nil {
+		pluginsHandler.RegisterRoutes(adminRouter)
+	}
+	webhookHandler.RegisterRoutes(adminRouter)
+	if featureFlagsHandler != nil {
+		featureFlagsHandler.RegisterRoutes(adminRouter)
+	}
+	if governanceHandler != nil {
+		var overrides handlers.GovernanceRouteOverrides
+		if provider, ok := callbacks.(GovernanceRouteOverridesProvider); ok {
+			overrides = provider.GetGovernanceRouteOverrides(ctx)
+		}
+		governanceHandler.RegisterRoutesWithOverrides(adminRouter, overrides)
+	}
+	if routingHandler != nil {
+		routingHandler.RegisterRoutes(adminRouter)
+	}
+	if s.WarpHandler != nil {
+		s.WarpHandler.RegisterRoutes(adminRouter)
+	}
+	s.adminRouter = adminRouter
 	// Register dev pprof handler only in dev mode
 	if handlers.IsDevMode() {
 		logger.Info("dev mode enabled, registering pprof endpoints")
@@ -3545,8 +3659,8 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	inferenceMiddlewares = append(inferenceMiddlewares, handlers.TransportInterceptorMiddleware(s.Config))
 	inferenceMiddlewares = append(handlers.InferenceOuterMiddlewares(s.TracingMiddleware, s.CORSMiddleware), inferenceMiddlewares...)
 
-	err = s.RegisterInferenceRoutes(s.Ctx, inferenceMiddlewares...)
-	if err != nil {
+	// Stops the workers started above, for a boot step below that aborts.
+	stopBootWorkers := func() {
 		s.CloseAgentGateway()
 		if s.WSTicketStore != nil {
 			s.WSTicketStore.Stop()
@@ -3560,6 +3674,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 			s.OAuth2SweepWorker.stop()
 			s.OAuth2SweepWorker = nil
 		}
+	}
+	err = s.RegisterInferenceRoutes(s.Ctx, inferenceMiddlewares...)
+	if err != nil {
+		stopBootWorkers()
 		return fmt.Errorf("failed to initialize inference routes: %v", err)
 	}
 	// Registered before ConnectConfiguredMCPClients so even the very first
@@ -3568,6 +3686,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		go s.PersistMCPClientTools(s.Ctx, clientID, tools, toolNameMapping, instructions)
 		go s.SyncMCPServersAfterToolsChange(s.Ctx, clientID)
 	})
+	if err := s.registerBifrostMCPServer(s.Ctx); err != nil {
+		stopBootWorkers()
+		return err
+	}
 	// Dial configured MCP clients now that every plugin is registered in the core.
 	// Construction (bifrost.Init) no longer connects MCP, so connecting here ensures
 	// each client's PreMCPConnectionHook runs against the full plugin set rather than

@@ -97,6 +97,11 @@ const UserAgent = "bifrost-warp/1"
 // on its own to exceed a 200k-token context window on a single question. The
 // value names no real MCP client, so the per-client match in core/mcp excludes
 // every one of them; it narrows only Warp's calls.
+//
+// That includes Bifrost's own MCP server, where Warp's tools live. Warp
+// declares those itself (see declaredTools) and dispatches each call under
+// warpToolContext; injected here as well, every tool would reach the model a
+// second time under its prefixed name.
 const excludeMCPToolsValue = "warp-excludes-all-mcp-tools"
 
 // grantKey carries the dashboard request's grant settler into a turn's context.
@@ -172,17 +177,7 @@ func warpInferenceContext(ctx context.Context, config *schemas.WarpConfig, conve
 		timeout = time.Duration(config.EffectiveRequestTimeoutSeconds()) * time.Second
 	}
 	bifrostCtx, cancel := schemas.NewBifrostContextWithTimeout(ctx, timeout)
-	// See WithGrant: without it governance refuses the call outright.
-	if g := NewGrantFromContext(ctx); g != nil {
-		bifrostCtx.SetGrant(g)
-	}
-	// A signed-in user nothing grants model access to is still served. Reaching
-	// the chat route already proves their role allows Warp, and on a deployment
-	// without access profiles no user would ever hold a permit, so refusing them
-	// would make Warp admin-only there. Governance reads this as "treat such a
-	// user as a key-less request": one who does hold a profile is governed by it
-	// as before, and a virtual key the request presents still has to resolve.
-	bifrostCtx.SetValue(schemas.BifrostContextKeyAdmitUngrantedUser, true)
+	admitWarpCaller(ctx, bifrostCtx)
 	headers := map[string]string{"user-agent": UserAgent}
 	bifrostCtx.SetValue(schemas.MCPContextKeyIncludeClients, []string{excludeMCPToolsValue})
 	if conversationID != "" {
@@ -194,5 +189,39 @@ func warpInferenceContext(ctx context.Context, config *schemas.WarpConfig, conve
 	}
 	bifrostCtx.SetValue(schemas.BifrostContextKeyRequestHeaders, headers)
 	bifrostCtx.SetValue(schemas.BifrostContextKeyGuardrailHeaders, maps.Clone(headers))
+	return bifrostCtx, cancel
+}
+
+// admitWarpCaller gives one of Warp's calls the dashboard caller's grant, and
+// admits them when nothing grants them access. Every call a turn makes goes
+// through it - the model call, the tool listing and each tool call - so all
+// three see the caller the same way.
+//
+// The grant is settled per call; see WithGrant. Admission: a signed-in user
+// nothing grants model access to is still served. Reaching the chat route
+// already proves their role allows Warp, and on a deployment without access
+// profiles no user would ever hold a permit, so refusing them would make Warp
+// admin-only there. Governance reads this as "treat such a user as a key-less
+// request": one who does hold a profile - directly or through a team - is
+// governed by it as before, and a virtual key the request presents still has
+// to resolve. It admits nothing past governance: the MCP server's own write
+// tools check the caller's role themselves.
+func admitWarpCaller(ctx context.Context, bifrostCtx *schemas.BifrostContext) {
+	if g := NewGrantFromContext(ctx); g != nil {
+		bifrostCtx.SetGrant(g)
+	}
+	bifrostCtx.SetValue(schemas.BifrostContextKeyAdmitUngrantedUser, true)
+}
+
+// warpToolContext is the context Warp lists and calls its tools under: the
+// caller admitted as on a model call, and core/mcp narrowed to Bifrost's own
+// MCP server and Warp's allowed subset of it. The model call itself carries
+// excludeMCPToolsValue instead - Warp declares its tools itself - so this is
+// the only context that names the server.
+func warpToolContext(ctx context.Context) (*schemas.BifrostContext, context.CancelFunc) {
+	bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(ctx)
+	admitWarpCaller(ctx, bifrostCtx)
+	bifrostCtx.SetValue(schemas.MCPContextKeyIncludeClients, []string{BifrostMCPClientName})
+	bifrostCtx.SetValue(schemas.MCPContextKeyIncludeTools, allowedMCPToolNames())
 	return bifrostCtx, cancel
 }

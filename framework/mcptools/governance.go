@@ -1,4 +1,4 @@
-package warp
+package mcptools
 
 import (
 	"context"
@@ -19,7 +19,7 @@ import (
 //
 // It exists because describe_filter_space lists keys from logged traffic, and
 // a key that was just created, or has not been used in a month, is not there.
-// Asked for that key's budget, Warp concluded the key did not exist - a false
+// Asked for that key's budget, the model concluded the key did not exist - a false
 // statement about a key sitting in the dashboard. A name lookup that reads
 // configuration rather than traffic is what makes "the key X" answerable
 // whether or not X has ever been used.
@@ -37,8 +37,8 @@ type VirtualKeyFinder interface {
 // limit and providers live on the owner's profile, and the key's own rows are
 // stripped when it joins one. Read raw, such a key reports "no budget" while
 // the dashboard shows $450 with 85% used. The decorator is the same set of
-// overlays the dashboard's key read paths apply, handed to Warp by the HTTP
-// layer that owns them; the package itself never imports them.
+// overlays the dashboard's key read paths apply, handed to this package by
+// the HTTP layer that owns them; the package itself never imports them.
 //
 // It mutates vk in place (Budgets, RateLimit, IsAccessProfileManaged,
 // AssignedUser) and returns the names of whatever governs the key from outside
@@ -56,8 +56,8 @@ var ErrUserNotFound = errors.New("user not found")
 // UserGovernanceReader answers what governs one person's spend. It is optional:
 // an OSS deployment has no per-user governance and leaves it nil, and
 // describe_user_limits is then not offered at all. An enterprise deployment
-// implements it over access profiles and hands it to the service, so the
-// Warp package never imports enterprise code.
+// implements it over access profiles and hands it over on Deps, so this
+// package never imports enterprise code.
 //
 // Implementations apply the caller's own scope: a user the caller may not see
 // is ErrUserNotFound, never a profile. Usage counters should be the live ones
@@ -109,7 +109,7 @@ type UserGovernanceModelBudget struct {
 // GovernanceReader is the slice of the config store describe_virtual_key is
 // allowed to read.
 //
-// Like LogReader, this is deliberately one method: reviewing what Warp can see
+// Like LogReader, this is deliberately one method: reviewing what the server can see
 // about how the deployment is governed means reading this interface, not
 // auditing configstore.ConfigStore's whole surface. GetVirtualKey in
 // particular is scope-aware - a caller's ctx narrows which rows it can return,
@@ -121,15 +121,14 @@ type GovernanceReader interface {
 
 // describeVirtualKeyTool looks up one virtual key's budget, rate limit and
 // allowed providers - the natural follow-up to "how much has this key spent"
-// (query_usage_by) that Warp had no way to answer before: whether there is
-// room left, not just how much has gone by.
+// (query_usage_by) that has no way to answer before: whether there is room
+// left, not just how much has gone by.
 //
 // It never returns tables.TableVirtualKey (or any of its relations) directly.
 // That struct carries the key's own secret value and its rotation history -
-// exactly the kind of key material LogReader's own doc comment says a Warp
-// tool must never surface - so describeVirtualKey below hand-picks only the
-// budget/limit/provider fields onto a fresh map instead of ever serializing
-// the row itself.
+// exactly the kind of key material a tool must never surface - so
+// describeVirtualKey below hand-picks only the budget/limit/provider fields
+// onto a fresh map instead of ever serializing the row itself.
 func describeVirtualKeyTool() Tool {
 	return Tool{
 		name: "describe_virtual_key",
@@ -146,8 +145,8 @@ func describeVirtualKeyTool() Tool {
     "name": {"type": "string", "description": "The key's exact name, when the id is not known. Case-insensitive; must match the whole name."}
   }
 }`,
-		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
-			if deps.governance == nil {
+		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
+			if deps.Governance == nil {
 				return nil, fmt.Errorf("virtual key detail is not available on this deployment")
 			}
 			id, _ := args["virtual_key_id"].(string)
@@ -158,13 +157,13 @@ func describeVirtualKeyTool() Tool {
 				return nil, fmt.Errorf("virtual_key_id or name is required")
 			}
 			if id == "" {
-				resolved, err := resolveVirtualKeyByName(ctx, deps.governance, name)
+				resolved, err := resolveVirtualKeyByName(ctx, deps.Governance, name)
 				if err != nil {
 					return nil, err
 				}
 				id = resolved
 			}
-			vk, err := deps.governance.GetVirtualKey(ctx, id)
+			vk, err := deps.Governance.GetVirtualKey(ctx, id)
 			if err != nil {
 				if errors.Is(err, configstore.ErrNotFound) {
 					return nil, fmt.Errorf("no virtual key with id %q - describe_filter_space lists the real ones", id)
@@ -172,16 +171,16 @@ func describeVirtualKeyTool() Tool {
 				return nil, fmt.Errorf("virtual key lookup failed: %w", err)
 			}
 			var governedBy []string
-			if deps.vkDecorator != nil {
+			if deps.VKDecorator != nil {
 				// Failing loudly rather than projecting the bare row: the bare row
 				// of a managed key reads as "no budget", which is the wrong answer
 				// with a straight face.
-				if governedBy, err = deps.vkDecorator(ctx, vk); err != nil {
+				if governedBy, err = deps.VKDecorator(ctx, vk); err != nil {
 					return nil, fmt.Errorf("could not resolve what governs virtual key %q: %w", id, err)
 				}
 			}
 			out := describeVirtualKey(vk)
-			annotateVirtualKeyGovernance(out, vk, governedBy, deps.userGovernance != nil)
+			annotateVirtualKeyGovernance(out, vk, governedBy, deps.UserGovernance != nil)
 			return out, nil
 		},
 	}
@@ -419,8 +418,9 @@ func providerConfigSummary(config tables.TableVirtualKeyProviderConfig) map[stri
 // person rather than a key. On a deployment with access profiles the cap sits
 // on the user - $450 a month, 1K requests an hour - and every key the profile
 // hands them inherits it, so the key is the wrong thing to ask about. The tool
-// is only offered when the service was given a UserGovernanceReader; without
-// one the question has no answer here and the prompt does not mention it.
+// always declared, and reports itself unavailable when Deps carries no
+// UserGovernanceReader; a consumer that knows the deployment has none (Warp)
+// leaves it out of what it offers the model.
 func describeUserLimitsTool() Tool {
 	return Tool{
 		name: UserLimitsToolName,
@@ -435,8 +435,8 @@ func describeUserLimitsTool() Tool {
   },
   "required": ["user_id"]
 }`,
-		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
-			if deps.userGovernance == nil {
+		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
+			if deps.UserGovernance == nil {
 				return nil, fmt.Errorf("per-user limits are not available on this deployment")
 			}
 			id, _ := args["user_id"].(string)
@@ -444,7 +444,7 @@ func describeUserLimitsTool() Tool {
 			if id == "" {
 				return nil, fmt.Errorf("user_id is required")
 			}
-			gov, err := deps.userGovernance.DescribeUserGovernance(ctx, id)
+			gov, err := deps.UserGovernance.DescribeUserGovernance(ctx, id)
 			if err != nil {
 				if errors.Is(err, ErrUserNotFound) {
 					return nil, fmt.Errorf("no user with id %q that you can see - describe_filter_space gives the caller's id, and a user ranking gives everyone else's", id)

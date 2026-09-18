@@ -1,4 +1,4 @@
-package warp
+package mcptools
 
 import (
 	"context"
@@ -37,20 +37,20 @@ func (f *fakeGovernanceReader) GetVirtualKey(ctx context.Context, id string) (*t
 	return vk, nil
 }
 
-func TestWarpDescribeVirtualKeyReportsUnavailableWithoutAGovernanceReader(t *testing.T) {
-	_, err := runTool(t, "describe_virtual_key", &ToolDeps{}, map[string]any{"virtual_key_id": "vk-1"})
+func TestDescribeVirtualKeyReportsUnavailableWithoutAGovernanceReader(t *testing.T) {
+	_, err := runTool(t, "describe_virtual_key", &Deps{}, map[string]any{"virtual_key_id": "vk-1"})
 	require.ErrorContains(t, err, "not available")
 }
 
-func TestWarpDescribeVirtualKeyRequiresAnID(t *testing.T) {
-	deps := &ToolDeps{governance: &fakeGovernanceReader{}}
+func TestDescribeVirtualKeyRequiresAnID(t *testing.T) {
+	deps := &Deps{Governance: &fakeGovernanceReader{}}
 	_, err := runTool(t, "describe_virtual_key", deps, map[string]any{"virtual_key_id": "  "})
 	require.ErrorContains(t, err, "virtual_key_id")
 }
 
-func TestWarpDescribeVirtualKeyReportsUnknownID(t *testing.T) {
+func TestDescribeVirtualKeyReportsUnknownID(t *testing.T) {
 	fake := &fakeGovernanceReader{byID: map[string]*tables.TableVirtualKey{}}
-	deps := &ToolDeps{governance: fake}
+	deps := &Deps{Governance: fake}
 	_, err := runTool(t, "describe_virtual_key", deps, map[string]any{"virtual_key_id": "vk-missing"})
 	require.ErrorContains(t, err, "vk-missing")
 	require.ErrorContains(t, err, "describe_filter_space")
@@ -60,17 +60,14 @@ func TestWarpDescribeVirtualKeyReportsUnknownID(t *testing.T) {
 // store - GetVirtualKey narrows to rows the caller may see the same way every
 // LogReader method does. Losing it here would return any key to anyone who
 // asked, the same failure mode LogReader's own tools guard against.
-func TestWarpDescribeVirtualKeyPassesCallerContextToStore(t *testing.T) {
+func TestDescribeVirtualKeyPassesCallerContextToStore(t *testing.T) {
 	type scopeKey struct{}
 	fake := &fakeGovernanceReader{byID: map[string]*tables.TableVirtualKey{
 		"vk-1": {ID: "vk-1", Name: "prod"},
 	}}
-	deps := &ToolDeps{governance: fake}
-	tool, ok := toolByName(buildTools(), "describe_virtual_key")
-	require.True(t, ok)
-
+	deps := &Deps{Governance: fake}
 	ctx := context.WithValue(context.Background(), scopeKey{}, "caller-scope")
-	_, err := tool.execute(ctx, deps, map[string]any{"virtual_key_id": "vk-1"})
+	_, err := runToolCtx(t, ctx, "describe_virtual_key", deps, map[string]any{"virtual_key_id": "vk-1"})
 	require.NoError(t, err)
 	require.Equal(t, "caller-scope", fake.sawContext.Value(scopeKey{}))
 	require.Equal(t, "vk-1", fake.sawID)
@@ -81,7 +78,7 @@ func TestWarpDescribeVirtualKeyPassesCallerContextToStore(t *testing.T) {
 // provider shape describeVirtualKey hand-picks. This is the regression test
 // for that: a row deliberately carrying secret-shaped data in every field
 // describeVirtualKey does not touch, asserting none of it survives.
-func TestWarpDescribeVirtualKeyNeverLeaksSecretFields(t *testing.T) {
+func TestDescribeVirtualKeyNeverLeaksSecretFields(t *testing.T) {
 	teamID := "team-1"
 	expires := time.Now().Add(24 * time.Hour)
 	vk := &tables.TableVirtualKey{
@@ -107,7 +104,7 @@ func TestWarpDescribeVirtualKeyNeverLeaksSecretFields(t *testing.T) {
 		},
 	}
 	fake := &fakeGovernanceReader{byID: map[string]*tables.TableVirtualKey{"vk-1": vk}}
-	deps := &ToolDeps{governance: fake}
+	deps := &Deps{Governance: fake}
 
 	result, err := runTool(t, "describe_virtual_key", deps, map[string]any{"virtual_key_id": "vk-1"})
 	require.NoError(t, err)
@@ -149,7 +146,7 @@ func TestWarpDescribeVirtualKeyNeverLeaksSecretFields(t *testing.T) {
 // A budget under an active override must report the effective cap, not the
 // raw one the override has already changed - the same distinction the
 // dashboard itself makes (see TableBudget.EffectiveMaxLimit).
-func TestWarpDescribeVirtualKeyBudgetReportsEffectiveLimitUnderOverride(t *testing.T) {
+func TestDescribeVirtualKeyBudgetReportsEffectiveLimitUnderOverride(t *testing.T) {
 	vk := &tables.TableVirtualKey{
 		ID:   "vk-1",
 		Name: "prod",
@@ -161,7 +158,7 @@ func TestWarpDescribeVirtualKeyBudgetReportsEffectiveLimitUnderOverride(t *testi
 		},
 	}
 	fake := &fakeGovernanceReader{byID: map[string]*tables.TableVirtualKey{"vk-1": vk}}
-	deps := &ToolDeps{governance: fake}
+	deps := &Deps{Governance: fake}
 
 	result, err := runTool(t, "describe_virtual_key", deps, map[string]any{"virtual_key_id": "vk-1"})
 	require.NoError(t, err)
@@ -178,10 +175,10 @@ func int64Ptr(v int64) *int64 { return &v }
 // lookup ("Warp couldn't retrieve a configured budget"). Both are always
 // present now, empty or null, and the result says in words that nothing caps
 // the key itself and what may still apply.
-func TestWarpDescribeVirtualKeySaysWhenNothingCapsTheKey(t *testing.T) {
+func TestDescribeVirtualKeySaysWhenNothingCapsTheKey(t *testing.T) {
 	bu := "bu-1"
 	vk := &tables.TableVirtualKey{ID: "vk-bare", Name: "bare", BusinessUnitID: &bu}
-	deps := &ToolDeps{governance: &fakeGovernanceReader{byID: map[string]*tables.TableVirtualKey{"vk-bare": vk}}}
+	deps := &Deps{Governance: &fakeGovernanceReader{byID: map[string]*tables.TableVirtualKey{"vk-bare": vk}}}
 
 	out := directMap(t, mustRunTool(t, "describe_virtual_key", deps, map[string]any{"virtual_key_id": "vk-bare"}))
 	budgets, ok := out["budgets"].([]map[string]any)
@@ -209,7 +206,7 @@ func TestWarpDescribeVirtualKeySaysWhenNothingCapsTheKey(t *testing.T) {
 // overlay; what it puts on the row is what the tool reports, with where it
 // came from, who owns the key, and - when the deployment can answer it -
 // where the person's full limits are.
-func TestWarpDescribeVirtualKeyReportsWhatTheDecoratorOverlays(t *testing.T) {
+func TestDescribeVirtualKeyReportsWhatTheDecoratorOverlays(t *testing.T) {
 	vk := &tables.TableVirtualKey{ID: "vk-managed", Name: "vrinda-key"}
 	decorator := func(_ context.Context, vk *tables.TableVirtualKey) ([]string, error) {
 		vk.IsAccessProfileManaged = true
@@ -221,9 +218,9 @@ func TestWarpDescribeVirtualKeyReportsWhatTheDecoratorOverlays(t *testing.T) {
 	reader := &fakeGovernanceReader{byID: map[string]*tables.TableVirtualKey{"vk-managed": vk}}
 
 	for _, userLimits := range []bool{false, true} {
-		deps := &ToolDeps{governance: reader, vkDecorator: decorator}
+		deps := &Deps{Governance: reader, VKDecorator: decorator}
 		if userLimits {
-			deps.userGovernance = &fakeUserGovernanceReader{}
+			deps.UserGovernance = &fakeUserGovernanceReader{}
 		}
 		out := directMap(t, mustRunTool(t, "describe_virtual_key", deps, map[string]any{"virtual_key_id": "vk-managed"}))
 		require.Equal(t, true, out["access_profile_managed"])
@@ -245,14 +242,14 @@ func TestWarpDescribeVirtualKeyReportsWhatTheDecoratorOverlays(t *testing.T) {
 	failing := func(context.Context, *tables.TableVirtualKey) ([]string, error) {
 		return nil, errors.New("profile store down")
 	}
-	_, err := runTool(t, "describe_virtual_key", &ToolDeps{governance: reader, vkDecorator: failing}, map[string]any{"virtual_key_id": "vk-managed"})
+	_, err := runTool(t, "describe_virtual_key", &Deps{Governance: reader, VKDecorator: failing}, map[string]any{"virtual_key_id": "vk-managed"})
 	require.ErrorContains(t, err, "could not resolve what governs virtual key")
 }
 
 // remaining is what the question is actually about, and a model doing the
 // subtraction itself got it wrong often enough. It never goes below zero: an
 // overspent budget has nothing left, not a negative amount.
-func TestWarpBudgetSummaryReportsRemaining(t *testing.T) {
+func TestBudgetSummaryReportsRemaining(t *testing.T) {
 	require.InDelta(t, 30.0, budgetSummary(tables.TableBudget{MaxLimit: 100, CurrentUsage: 70})["remaining_usd"], 0.001)
 	require.InDelta(t, 0.0, budgetSummary(tables.TableBudget{MaxLimit: 100, CurrentUsage: 130})["remaining_usd"], 0.001)
 }
@@ -280,7 +277,7 @@ func (f *fakeUserGovernanceReader) DescribeUserGovernance(_ context.Context, id 
 // hold inherits it. describe_user_limits projects that per profile, with the
 // same budget and rate-limit summaries a key gets, and says so when nothing
 // governs the person at all.
-func TestWarpDescribeUserLimits(t *testing.T) {
+func TestDescribeUserLimits(t *testing.T) {
 	expires := time.Now().Add(48 * time.Hour)
 	reader := &fakeUserGovernanceReader{byID: map[string]*UserGovernance{
 		"u-vrinda": {
@@ -299,7 +296,7 @@ func TestWarpDescribeUserLimits(t *testing.T) {
 		},
 		"u-free": {UserID: "u-free", Name: "Nobody"},
 	}}
-	deps := &ToolDeps{userGovernance: reader}
+	deps := &Deps{UserGovernance: reader}
 
 	out := directMap(t, mustRunTool(t, UserLimitsToolName, deps, map[string]any{"user_id": " u-vrinda "}))
 	require.Equal(t, "u-vrinda", reader.sawID, "the id is trimmed before the lookup")
@@ -337,28 +334,17 @@ func TestWarpDescribeUserLimits(t *testing.T) {
 	require.ErrorContains(t, err, "user_id is required")
 }
 
-// Without a reader the tool is not in the set at all - offering it would tell
-// the model a capability exists and cost a step to discover otherwise, the
-// same reasoning semantic_search_logs follows.
-func TestWarpDescribeUserLimitsOnlyOfferedWithAReader(t *testing.T) {
-	_, without := toolByName(buildToolsFor(nil, false), UserLimitsToolName)
-	require.False(t, without)
-	_, with := toolByName(buildToolsFor(nil, true), UserLimitsToolName)
-	require.True(t, with)
+// describe_user_limits is always declared - the server's tool list is fixed,
+// so one /mcp client sees the same tools whatever the deployment - and a
+// deployment without per-user governance answers that it has none rather than
+// panicking on the missing reader or reading as a user with no limits.
+func TestDescribeUserLimitsReportsUnavailableWithoutAReader(t *testing.T) {
+	_, declared := toolByName(buildTools(), UserLimitsToolName)
+	require.True(t, declared)
+	require.Contains(t, logFreeTools, UserLimitsToolName, "it reads governance, not the log store")
 
-	agent := newTestAgent(&scriptedModel{}, &fakeLogReader{}, 3)
-	_, before := toolByName(agent.tools, UserLimitsToolName)
-	require.False(t, before)
-	agent.SetGovernanceExtras(nil, &fakeUserGovernanceReader{})
-	_, after := toolByName(agent.tools, UserLimitsToolName)
-	require.True(t, after, "handing the agent a reader adds the tool")
-
-	// The prompt names the tool exactly when the declarations carry it.
-	require.NotContains(t, systemInstructions(&schemas.WarpConfig{}, true), UserLimitsToolName)
-	withLimits := systemInstructionsFor(&schemas.WarpConfig{}, toolAvailability{userLimits: true})
-	require.Contains(t, withLimits, UserLimitsToolName)
-	require.Contains(t, withLimits, "managed by an access profile")
-	require.Contains(t, withLimits, "not a log window")
+	_, err := runTool(t, UserLimitsToolName, &Deps{}, map[string]any{"user_id": "u-1"})
+	require.ErrorContains(t, err, "not available on this deployment")
 }
 
 // directMap is the tool's own return value, untouched by serialization, so
@@ -370,7 +356,7 @@ func directMap(t *testing.T, result any) map[string]any {
 	return out
 }
 
-func mustRunTool(t *testing.T, name string, deps *ToolDeps, args map[string]any) any {
+func mustRunTool(t *testing.T, name string, deps *Deps, args map[string]any) any {
 	t.Helper()
 	out, err := runTool(t, name, deps, args)
 	require.NoError(t, err)
@@ -411,7 +397,7 @@ func (f *fakeVirtualKeyFinder) GetVirtualKeysPaginated(_ context.Context, params
 // holds, the exact key can sit beyond the page - and the resolver then said
 // the key did not exist, when it had simply not looked far enough. A truncated
 // search has to say so, or the model relays a non-existence it never checked.
-func TestWarpDescribeVirtualKeySaysWhenTheNameSearchWasTruncated(t *testing.T) {
+func TestDescribeVirtualKeySaysWhenTheNameSearchWasTruncated(t *testing.T) {
 	var keys []tables.TableVirtualKey
 	for i := 0; i < virtualKeyNameSearchLimit; i++ {
 		keys = append(keys, tables.TableVirtualKey{ID: fmt.Sprintf("vk-%d", i), Name: fmt.Sprintf("prod-%d", i)})
@@ -423,7 +409,7 @@ func TestWarpDescribeVirtualKeySaysWhenTheNameSearchWasTruncated(t *testing.T) {
 		byID[keys[i].ID] = &keys[i]
 	}
 	finder := &fakeVirtualKeyFinder{fakeGovernanceReader: fakeGovernanceReader{byID: byID}, keys: keys}
-	deps := &ToolDeps{governance: finder}
+	deps := &Deps{Governance: finder}
 
 	_, err := runTool(t, "describe_virtual_key", deps, map[string]any{"name": "prod"})
 	require.ErrorContains(t, err, fmt.Sprintf("first %d of %d", virtualKeyNameSearchLimit, virtualKeyNameSearchLimit+1))
@@ -441,7 +427,7 @@ func TestWarpDescribeVirtualKeySaysWhenTheNameSearchWasTruncated(t *testing.T) {
 // now takes the key's exact name and resolves it through the store's own
 // scoped search, so a key is found whether or not it has ever been used, and
 // the failure modes say what was found rather than "no such key".
-func TestWarpDescribeVirtualKeyFindsAKeyByExactName(t *testing.T) {
+func TestDescribeVirtualKeyFindsAKeyByExactName(t *testing.T) {
 	keys := []tables.TableVirtualKey{
 		{ID: "vk-1", Name: "warp-verify-budgeted", Budgets: []tables.TableBudget{{ID: "b-1", MaxLimit: 50}}},
 		{ID: "vk-2", Name: "warp-verify-budgeted-old"},
@@ -453,7 +439,7 @@ func TestWarpDescribeVirtualKeyFindsAKeyByExactName(t *testing.T) {
 		byID[keys[i].ID] = &keys[i]
 	}
 	finder := &fakeVirtualKeyFinder{fakeGovernanceReader: fakeGovernanceReader{byID: byID}, keys: keys}
-	deps := &ToolDeps{governance: finder}
+	deps := &Deps{Governance: finder}
 
 	// Exact name, any case, resolves to the one key and describes it in full.
 	out := directMap(t, mustRunTool(t, "describe_virtual_key", deps, map[string]any{"name": " Warp-Verify-Budgeted "}))
@@ -485,16 +471,8 @@ func TestWarpDescribeVirtualKeyFindsAKeyByExactName(t *testing.T) {
 	require.ErrorContains(t, err, "virtual_key_id or name is required")
 
 	// A reader that cannot search says so instead of failing on the id.
-	_, err = runTool(t, "describe_virtual_key", &ToolDeps{governance: &fakeGovernanceReader{byID: byID}}, map[string]any{"name": "twin"})
+	_, err = runTool(t, "describe_virtual_key", &Deps{Governance: &fakeGovernanceReader{byID: byID}}, map[string]any{"name": "twin"})
 	require.ErrorContains(t, err, "looks keys up by id only")
-}
-
-// The prompt has to stop the model concluding non-existence from an absence
-// in describe_filter_space, which is exactly what it did.
-func TestWarpPromptSendsExistenceChecksForKeysToDescribeVirtualKey(t *testing.T) {
-	content := systemInstructions(&schemas.WarpConfig{}, true)
-	require.Contains(t, content, "describe_virtual_key by exact name is the existence check")
-	require.Contains(t, content, "never say a key does not exist until describe_virtual_key has failed to find it by name")
 }
 
 // A budget amount has to say what it is an amount of. The summary used to
@@ -502,7 +480,7 @@ func TestWarpPromptSendsExistenceChecksForKeysToDescribeVirtualKey(t *testing.T)
 // in the tool text or the prompt said they were dollars - so a model reading
 // "max_limit": 5000 reported "5,000 units per month". The unit now rides on
 // the key, right beside the number, and the text around it says the same.
-func TestWarpBudgetAmountsNameTheirCurrency(t *testing.T) {
+func TestBudgetAmountsNameTheirCurrency(t *testing.T) {
 	summary := budgetSummary(tables.TableBudget{ID: "b-1", MaxLimit: 5000, CurrentUsage: 120.5, ResetDuration: "1M"})
 	require.InDelta(t, 5000.0, summary["max_limit_usd"], 0.001)
 	require.InDelta(t, 120.5, summary["current_usage_usd"], 0.001)
@@ -517,21 +495,19 @@ func TestWarpBudgetAmountsNameTheirCurrency(t *testing.T) {
 	require.Contains(t, virtualKey.description, "US dollars")
 	require.Contains(t, describeUserLimitsTool().description, "US dollars")
 
-	// And the model is told how to write them, where it is told how to report a budget.
-	require.Contains(t, UserLimitsGuidance, "US dollars")
-	require.Contains(t, UserLimitsGuidance, "$")
+	// And the result says it again, where the model reads the number.
 	governed := describeUserGovernance(&UserGovernance{UserID: "u-1", Profiles: []UserGovernanceProfile{{Name: "admin", Active: true}}})
 	require.Contains(t, governed["guidance"], "US dollars")
 }
 
 // Metadata is operator-set attribution (cost center, owner, ...) the model needs to answer
 // "whose key is this"; it is reported when present and left out when the key has none.
-func TestWarpDescribeVirtualKeyReportsMetadata(t *testing.T) {
+func TestDescribeVirtualKeyReportsMetadata(t *testing.T) {
 	fake := &fakeGovernanceReader{byID: map[string]*tables.TableVirtualKey{
 		"vk-1": {ID: "vk-1", Name: "prod", Metadata: map[string]string{"cost_center": "cc-42"}},
 		"vk-2": {ID: "vk-2", Name: "dev"},
 	}}
-	deps := &ToolDeps{governance: fake}
+	deps := &Deps{Governance: fake}
 
 	result, err := runTool(t, "describe_virtual_key", deps, map[string]any{"virtual_key_id": "vk-1"})
 	require.NoError(t, err)

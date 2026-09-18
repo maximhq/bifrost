@@ -143,6 +143,8 @@ func NewWarpHandler(store configstore.ConfigStore, loggerPlugin *logging.LoggerP
 	}
 	if client != nil {
 		opts = append(opts, warp.WithEmbeddingExecutor(client.EmbeddingRequest), warp.WithResponsesExecutor(client.ResponsesRequest))
+		opts = append(opts, warp.WithMCPExecutor(client.ExecuteChatMCPTool))
+		opts = append(opts, warp.WithMCPToolLister(client.GetAvailableMCPTools))
 	}
 	if loggerPlugin != nil {
 		opts = append(opts, warp.WithLogReader(warpLogReader{loggerPlugin.GetPluginLogManager()}))

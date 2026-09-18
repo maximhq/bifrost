@@ -1023,7 +1023,14 @@ func warpModelsHandler(calls *[]schemas.BifrostResponsesRequest) *WarpHandler {
 		// The turn ends on this error; the test only needs to see the address.
 		return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "scripted stop"}}
 	}
-	return &WarpHandler{service: warp.NewService(nil, warp.WithConfigStore(store), warp.WithLogReader(handlerBackfillReader{}), warp.WithChatFunc(chat))}
+	// Chat is served only with a way to list and call tools; the turn ends on
+	// the model error before either is used.
+	noTools := func(*schemas.BifrostContext) []schemas.ChatTool { return nil }
+	noCall := func(*schemas.BifrostContext, *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
+		return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "no tools in this test"}}
+	}
+	return &WarpHandler{service: warp.NewService(nil, warp.WithConfigStore(store), warp.WithLogReader(handlerBackfillReader{}), warp.WithChatFunc(chat),
+		warp.WithMCPExecutor(noCall), warp.WithMCPToolLister(noTools))}
 }
 
 // The models an operator exposes are part of the config wire shape in both

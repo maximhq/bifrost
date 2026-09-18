@@ -2,6 +2,7 @@ package warp
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -11,108 +12,6 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/stretchr/testify/require"
 )
-
-// Charts used to arrive as mermaid code the model wrote itself, numbers and
-// all. render_chart reads the data, so a line chart's points are the
-// histogram's buckets and the model supplies only what to plot.
-func TestWarpRenderChartLineReadsTheHistogram(t *testing.T) {
-	day := time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC)
-	fake := &fakeLogReader{histogramResult: &logstore.HistogramResult{Buckets: []logstore.HistogramBucket{
-		{Timestamp: day, Count: 40, Error: 5},
-		{Timestamp: day.Add(24 * time.Hour), Count: 55, Error: 30},
-	}}}
-	deps := &ToolDeps{logManager: fake, charts: newChartRegistry()}
-	out, err := runTool(t, RenderChartTool, deps, map[string]any{
-		"kind": "line", "title": "Errors per day", "metric": "errors", "interval": "day",
-		"filters": map[string]any{"start_time": "-7d"},
-	})
-	require.NoError(t, err)
-	require.Equal(t, int64(86400), fake.histogramBucket)
-
-	result := out.(map[string]any)
-	require.Equal(t, "chart-1", result["chart_id"])
-	require.Equal(t, "```warp-chart\nchart-1\n```", result["block"])
-
-	spec, ok := deps.charts.get("chart-1")
-	require.True(t, ok)
-	require.Equal(t, "line", spec.Kind)
-	require.Equal(t, "count", spec.Unit)
-	require.Equal(t, []ChartPoint{{X: "2026-09-22T00:00:00Z", Y: 5}, {X: "2026-09-23T00:00:00Z", Y: 30}}, spec.Points)
-}
-
-// A bar chart ranks, largest first, and stops at the limit.
-func TestWarpRenderChartBarRanksLargestFirst(t *testing.T) {
-	fake := &fakeLogReader{modelRankingResult: &logstore.ModelRankingResult{Rankings: []logstore.ModelRankingWithTrend{
-		{ModelRankingEntry: logstore.ModelRankingEntry{Model: "gpt-4o-mini", TotalCost: 0.02}},
-		{ModelRankingEntry: logstore.ModelRankingEntry{Model: "claude-3-opus", TotalCost: 2.1}},
-		{ModelRankingEntry: logstore.ModelRankingEntry{Model: "claude-3-5-sonnet", TotalCost: 0.4}},
-	}}}
-	deps := &ToolDeps{logManager: fake, charts: newChartRegistry()}
-	_, err := runTool(t, RenderChartTool, deps, map[string]any{
-		"kind": "bar", "title": "Spend by model", "metric": "cost", "group": "model", "limit": float64(2),
-		"filters": map[string]any{"start_time": "-7d"},
-	})
-	require.NoError(t, err)
-	spec, _ := deps.charts.get("chart-1")
-	require.Equal(t, []ChartPoint{{X: "claude-3-opus", Y: 2.1}, {X: "claude-3-5-sonnet", Y: 0.4}}, spec.Points)
-}
-
-// A cost chart ranked by the store's own order kept the busiest groups, not the
-// costliest: the limit applied before sorting by cost. Every group is fetched,
-// and the limit cuts the points only after they are sorted by the metric.
-func TestWarpRenderChartBarLimitsAfterSortingByMetric(t *testing.T) {
-	fake := &fakeLogReader{modelRankingResult: &logstore.ModelRankingResult{}}
-	deps := &ToolDeps{logManager: fake, charts: newChartRegistry()}
-	_, err := runTool(t, RenderChartTool, deps, map[string]any{
-		"kind": "bar", "title": "Spend by model", "metric": "cost", "group": "model", "limit": float64(2),
-		"filters": map[string]any{"start_time": "-7d"},
-	})
-	require.NoError(t, err)
-	require.NotNil(t, fake.rankingFilters.RankingLimit)
-	require.Zero(t, *fake.rankingFilters.RankingLimit, "the store ranks by requests, so a store-side limit drops the costliest groups")
-}
-
-// "Errors by team" counts failed requests per team exactly: the same ranking,
-// narrowed to status error, rather than a success rate applied to a total.
-func TestWarpRenderChartErrorBarsCountFailedRequests(t *testing.T) {
-	fake := &fakeLogReader{dimensionRankingResult: &logstore.DimensionRankingResult{Rankings: []logstore.DimensionRankingWithTrend{
-		{DimensionRankingEntry: logstore.DimensionRankingEntry{ID: "team-platform", Name: "Platform Engineering", TotalRequests: 15}},
-	}}}
-	deps := &ToolDeps{logManager: fake, charts: newChartRegistry()}
-	_, err := runTool(t, RenderChartTool, deps, map[string]any{
-		"kind": "bar", "title": "Errors by team", "metric": "errors", "group": "team",
-		"filters": map[string]any{"start_time": "-7d"},
-	})
-	require.NoError(t, err)
-	require.Equal(t, []string{"error"}, fake.rankingFilters.Status)
-	spec, _ := deps.charts.get("chart-1")
-	require.Equal(t, []ChartPoint{{X: "team-platform", Label: "Platform Engineering", Y: 15}}, spec.Points)
-}
-
-// Each wrong shape names the fix, so the model can correct itself in one step.
-func TestWarpRenderChartRejectsShapesItCannotDraw(t *testing.T) {
-	cases := map[string]struct {
-		args map[string]any
-		want string
-	}{
-		"line without interval":   {map[string]any{"kind": "line", "title": "t", "metric": "requests"}, `needs interval "hour", "day" or "week"`},
-		"line with a group":       {map[string]any{"kind": "line", "title": "t", "metric": "requests", "interval": "day", "group": "model"}, "group is for bar charts"},
-		"bar with neither":        {map[string]any{"kind": "bar", "title": "t", "metric": "cost"}, "a bar chart needs interval (bars over time) or group"},
-		"bar with both":           {map[string]any{"kind": "bar", "title": "t", "metric": "cost", "group": "model", "interval": "day"}, "not both"},
-		"latency by team":         {map[string]any{"kind": "bar", "title": "t", "metric": "latency", "group": "team"}, "latency can only be grouped by provider or model"},
-		"pie":                     {map[string]any{"kind": "pie", "title": "t", "metric": "cost"}, "not supported"},
-		"hourly over thirty days": {map[string]any{"kind": "line", "title": "t", "metric": "requests", "interval": "hour", "filters": map[string]any{"start_time": "-30d"}}, `use interval "day"`},
-	}
-	for name, c := range cases {
-		t.Run(name, func(t *testing.T) {
-			if _, ok := c.args["filters"]; !ok {
-				c.args["filters"] = map[string]any{"start_time": "-7d"}
-			}
-			_, err := runTool(t, RenderChartTool, &ToolDeps{logManager: &fakeLogReader{}, charts: newChartRegistry()}, c.args)
-			require.ErrorContains(t, err, c.want)
-		})
-	}
-}
 
 // Only an id render_chart issued this turn becomes a chart. A spec the model
 // wrote out itself - numbers it typed - and an id it made up are dropped.
@@ -148,7 +47,7 @@ func TestWarpAgentStreamsExpandedCharts(t *testing.T) {
 	fake := &fakeLogReader{histogramResult: &logstore.HistogramResult{Buckets: []logstore.HistogramBucket{
 		{Timestamp: day, Count: 40}, {Timestamp: day.Add(24 * time.Hour), Count: 80},
 	}}}
-	events := collectEvents(t, newTestAgent(model, fake, 8), context.Background())
+	events := collectEvents(t, newTestAgent(t, model, fake, 8), context.Background())
 
 	var streamed strings.Builder
 	for _, event := range events {
@@ -159,110 +58,6 @@ func TestWarpAgentStreamsExpandedCharts(t *testing.T) {
 	require.Contains(t, streamed.String(), `"title":"Requests per day"`)
 	require.Contains(t, streamed.String(), `{"x":"2026-09-23T00:00:00Z","y":80}`)
 	require.NotContains(t, streamed.String(), "```warp-chart\nchart-1\n```")
-}
-
-// "Make it a bar chart with per-week errors" had no render_chart shape: bars
-// only compared groups and there was no week interval, so the model counted
-// each week with count_logs and typed its own chart block - which expansion
-// rightly dropped, leaving no chart. Bars now run over time too, and a week is
-// a UTC ISO week built from daily buckets.
-func TestWarpRenderChartBarsPerWeek(t *testing.T) {
-	monday := time.Date(2026, 9, 14, 0, 0, 0, 0, time.UTC)
-	fake := &fakeLogReader{histogramResult: &logstore.HistogramResult{Buckets: []logstore.HistogramBucket{
-		{Timestamp: monday, Count: 100, Error: 10},
-		{Timestamp: monday.Add(3 * 24 * time.Hour), Count: 50, Error: 5},
-		{Timestamp: monday.Add(7 * 24 * time.Hour), Count: 40, Error: 30},
-	}}}
-	deps := &ToolDeps{logManager: fake, charts: newChartRegistry()}
-	_, err := runTool(t, RenderChartTool, deps, map[string]any{
-		"kind": "bar", "title": "Errors per week", "metric": "errors", "interval": "week",
-		"filters": map[string]any{"start_time": "-28d"},
-	})
-	require.NoError(t, err)
-	require.Equal(t, int64(86400), fake.histogramBucket, "weeks are summed from daily buckets")
-	spec, _ := deps.charts.get(spec1(t, deps))
-	require.Equal(t, "week", spec.Interval)
-	require.Equal(t, []ChartPoint{{X: "2026-09-14T00:00:00Z", Y: 15}, {X: "2026-09-21T00:00:00Z", Y: 30}}, spec.Points, "time bars keep time order")
-}
-
-// "Failure rates" came back as error counts: there was no rate to plot. A
-// week's rate is its errors over its requests, not an average of daily rates.
-func TestWarpRenderChartErrorRateOverTime(t *testing.T) {
-	monday := time.Date(2026, 9, 14, 0, 0, 0, 0, time.UTC)
-	fake := &fakeLogReader{histogramResult: &logstore.HistogramResult{Buckets: []logstore.HistogramBucket{
-		{Timestamp: monday, Count: 100, Error: 10},
-		{Timestamp: monday.Add(24 * time.Hour), Count: 0},
-		{Timestamp: monday.Add(3 * 24 * time.Hour), Count: 50, Error: 5},
-	}}}
-	deps := &ToolDeps{logManager: fake, charts: newChartRegistry()}
-	_, err := runTool(t, RenderChartTool, deps, map[string]any{
-		"kind": "line", "title": "Failure rate per day", "metric": "error_rate", "interval": "day",
-		"filters": map[string]any{"start_time": "-7d"},
-	})
-	require.NoError(t, err)
-	spec, _ := deps.charts.get(spec1(t, deps))
-	require.Equal(t, "percent", spec.Unit)
-	require.Equal(t, []ChartPoint{{X: "2026-09-14T00:00:00Z", Y: 10}, {X: "2026-09-17T00:00:00Z", Y: 10}}, spec.Points, "a bucket with no requests has no rate and is left out")
-
-	deps = &ToolDeps{logManager: fake, charts: newChartRegistry()}
-	_, err = runTool(t, RenderChartTool, deps, map[string]any{
-		"kind": "bar", "title": "Failure rate per week", "metric": "error_rate", "interval": "week",
-		"filters": map[string]any{"start_time": "-28d"},
-	})
-	require.NoError(t, err)
-	spec, _ = deps.charts.get(spec1(t, deps))
-	require.Equal(t, []ChartPoint{{X: "2026-09-14T00:00:00Z", Y: 10}}, spec.Points, "15 errors over 150 requests")
-}
-
-// An empty bucket has no latency: it used to plot as 0 ms, and a week's average
-// counted it as one request at 0 ms. Buckets are weighted by their requests.
-func TestWarpRenderChartLatencySkipsEmptyBuckets(t *testing.T) {
-	monday := time.Date(2026, 9, 14, 0, 0, 0, 0, time.UTC)
-	fake := &fakeLogReader{latencyHistogramResult: &logstore.LatencyHistogramResult{Buckets: []logstore.LatencyHistogramBucket{
-		{Timestamp: monday, AvgLatency: 200, TotalRequests: 100},
-		{Timestamp: monday.Add(24 * time.Hour)},
-		{Timestamp: monday.Add(2 * 24 * time.Hour), AvgLatency: 500, TotalRequests: 50},
-	}}}
-	deps := &ToolDeps{logManager: fake, charts: newChartRegistry()}
-	_, err := runTool(t, RenderChartTool, deps, map[string]any{
-		"kind": "line", "title": "Latency per day", "metric": "latency", "interval": "day",
-		"filters": map[string]any{"start_time": "-7d"},
-	})
-	require.NoError(t, err)
-	spec, _ := deps.charts.get(spec1(t, deps))
-	require.Equal(t, []ChartPoint{{X: "2026-09-14T00:00:00Z", Y: 200}, {X: "2026-09-16T00:00:00Z", Y: 500}}, spec.Points, "a bucket with no requests is left out, not drawn at 0 ms")
-
-	deps = &ToolDeps{logManager: fake, charts: newChartRegistry()}
-	_, err = runTool(t, RenderChartTool, deps, map[string]any{
-		"kind": "bar", "title": "Latency per week", "metric": "latency", "interval": "week",
-		"filters": map[string]any{"start_time": "-28d"},
-	})
-	require.NoError(t, err)
-	spec, _ = deps.charts.get(spec1(t, deps))
-	require.Equal(t, []ChartPoint{{X: "2026-09-14T00:00:00Z", Y: 300}}, spec.Points, "(100*200 + 50*500) / 150 requests")
-}
-
-// A group's failure rate is its failed requests over its requests, read from
-// the same ranking with and without status error.
-func TestWarpRenderChartErrorRateByModel(t *testing.T) {
-	fake := &fakeLogReader{modelRankingResult: &logstore.ModelRankingResult{Rankings: []logstore.ModelRankingWithTrend{
-		{ModelRankingEntry: logstore.ModelRankingEntry{Model: "claude-3-5-sonnet", TotalRequests: 100, SuccessRate: 70}},
-		{ModelRankingEntry: logstore.ModelRankingEntry{Model: "gpt-4o-mini", TotalRequests: 60, SuccessRate: 95}},
-	}}}
-	deps := &ToolDeps{logManager: fake, charts: newChartRegistry()}
-	_, err := runTool(t, RenderChartTool, deps, map[string]any{
-		"kind": "bar", "title": "Failure rate by model", "metric": "error_rate", "group": "model",
-		"filters": map[string]any{"start_time": "-7d"},
-	})
-	require.NoError(t, err)
-	spec, _ := deps.charts.get(spec1(t, deps))
-	require.Equal(t, []ChartPoint{{X: "claude-3-5-sonnet", Y: 30}, {X: "gpt-4o-mini", Y: 5}}, spec.Points)
-}
-
-func spec1(t *testing.T, deps *ToolDeps) string {
-	t.Helper()
-	require.NotEmpty(t, deps.charts.order, "render_chart registered no chart")
-	return deps.charts.order[0]
 }
 
 // expandChartBlocks reports how many blocks it dropped, so the agent can tell
@@ -298,7 +93,7 @@ func TestWarpAgentRedirectsAHandWrittenChart(t *testing.T) {
 			return TextTurn("```warp-chart\nchart-1\n```"), nil
 		}
 	}
-	agent := newTestAgent(&scriptedModel{}, &fakeLogReader{histogramResult: &logstore.HistogramResult{Buckets: []logstore.HistogramBucket{{Timestamp: day, Count: 9, Error: 3}}}}, 8)
+	agent := newTestAgent(t, &scriptedModel{}, &fakeLogReader{histogramResult: &logstore.HistogramResult{Buckets: []logstore.HistogramBucket{{Timestamp: day, Count: 9, Error: 3}}}}, 8)
 	agent.chat = chat
 	events := collectEvents(t, agent, context.Background())
 
@@ -325,7 +120,7 @@ func TestWarpAgentAnswersWhenOnlyADroppedChartIsLeft(t *testing.T) {
 				handWritten,
 				handWritten,
 			}}
-			events := collectEvents(t, newTestAgent(model, &fakeLogReader{}, maxIterations), context.Background())
+			events := collectEvents(t, newTestAgent(t, model, &fakeLogReader{}, maxIterations), context.Background())
 
 			var streamed strings.Builder
 			for _, event := range events {
@@ -341,20 +136,94 @@ func TestWarpAgentAnswersWhenOnlyADroppedChartIsLeft(t *testing.T) {
 	}
 }
 
-// A failures chart's "Open in Logs" opened every request in the window: the
-// link was built from the chart's filters, and the error restriction only ever
-// lived inside the query. For errors and error_rate it opens the failures.
-func TestWarpRenderChartFailureLinksOpenTheFailures(t *testing.T) {
-	for metric, wantErrors := range map[string]bool{"errors": true, "error_rate": true, "requests": false, "cost": false} {
-		t.Run(metric, func(t *testing.T) {
-			deps := &ToolDeps{logManager: &fakeLogReader{}, charts: newChartRegistry()}
-			_, err := runTool(t, RenderChartTool, deps, map[string]any{
-				"kind": "line", "title": "t", "metric": metric, "interval": "day",
-				"filters": map[string]any{"start_time": "-30d"},
-			})
-			require.NoError(t, err)
-			spec, _ := deps.charts.get(spec1(t, deps))
-			require.Equal(t, wantErrors, strings.Contains(spec.Link, "status=error"), spec.Link)
-		})
+// chartResultExecutor answers every tool call with result, the way the MCP
+// server answers render_chart: plain text, the spec under "chart".
+func chartResultExecutor(result string, calls *int) MCPExecutor {
+	return func(_ *schemas.BifrostContext, _ *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
+		*calls++
+		return &schemas.ChatMessage{
+			Role:    schemas.ChatMessageRoleTool,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr(result)},
+		}, nil
 	}
+}
+
+// render_chart runs on the MCP server, which returns the spec it read. Warp
+// keeps that spec in the turn's registry and hands the model only the id and
+// the block to paste, so the chart the answer carries is always the one the
+// tool read - the model never sees numbers it could retype.
+func TestWarpRenderChartOverMCPRegistersTheSpec(t *testing.T) {
+	const result = `{"chart":{"id":"server-side","kind":"line","title":"Requests per day","metric":"requests","unit":"count","interval":"day","points":[{"x":"2026-09-22T00:00:00Z","y":40}]},"points":[{"x":"2026-09-22T00:00:00Z","y":40}],"window":{"start":"a","end":"b"}}`
+	calls := 0
+	agent := newTestAgent(t, &scriptedModel{}, &fakeLogReader{}, 8)
+	agent.mcp = chartResultExecutor(result, &calls)
+
+	text, failed := agent.executeTool(context.Background(), RenderChartTool, `{"kind":"line"}`)
+	require.False(t, failed, text)
+	require.Equal(t, 1, calls)
+
+	var out map[string]any
+	require.NoError(t, sonic.UnmarshalString(text, &out))
+	require.NotContains(t, out, "chart", "the spec stays in the registry; the model gets only its id")
+	require.Equal(t, "chart-1", out["chart_id"], "the id is Warp's own, not whatever the server put on the spec")
+	require.Equal(t, "```"+ChartFence+"\nchart-1\n```", out["block"])
+	require.Equal(t, chartPasteNote, out["note"])
+	require.Contains(t, out, "points", "the points stay, so the model can describe the chart")
+	require.Contains(t, out, "window")
+
+	spec, ok := agent.charts.get("chart-1")
+	require.True(t, ok)
+	require.Equal(t, "Requests per day", spec.Title)
+	require.Equal(t, []ChartPoint{{X: "2026-09-22T00:00:00Z", Y: 40}}, spec.Points)
+
+	expanded := expandChartBlocks("Look:\n\n"+out["block"].(string), agent.charts)
+	require.Contains(t, expanded, `"title":"Requests per day"`, "the pasted block expands to the registered spec")
+	require.Contains(t, expanded, `{"x":"2026-09-22T00:00:00Z","y":40}`)
+}
+
+// An empty chart keeps the server's own note - "nothing matched, say so" - not
+// the paste instruction, which would tell the model to show an empty chart.
+func TestWarpRenderChartOverMCPKeepsTheServersNote(t *testing.T) {
+	calls := 0
+	agent := newTestAgent(t, &scriptedModel{}, &fakeLogReader{}, 8)
+	agent.mcp = chartResultExecutor(`{"chart":{"kind":"line","title":"t","points":[]},"points":[],"note":"Nothing matched these filters"}`, &calls)
+
+	text, failed := agent.executeTool(context.Background(), mcpToolPrefix+RenderChartTool, `{}`)
+	require.False(t, failed, text)
+	require.Contains(t, text, "Nothing matched these filters")
+	require.NotContains(t, text, chartPasteNote)
+}
+
+// A turn that has already drawn maxChartsPerTurn charts is refused the next
+// one: the model is told why, the call is marked failed, and nothing is
+// registered - so no block can name a chart that does not exist.
+func TestWarpRenderChartOverMCPRefusesPastTheRegistryCap(t *testing.T) {
+	calls := 0
+	agent := newTestAgent(t, &scriptedModel{}, &fakeLogReader{}, 8)
+	agent.mcp = chartResultExecutor(`{"chart":{"kind":"bar","title":"t","points":[{"x":"a","y":1}]}}`, &calls)
+	for i := range maxChartsPerTurn {
+		_, failed := agent.executeTool(context.Background(), RenderChartTool, `{}`)
+		require.False(t, failed, "chart %d fits", i+1)
+	}
+
+	text, failed := agent.executeTool(context.Background(), RenderChartTool, `{}`)
+	require.True(t, failed, "a refused chart is a failed call")
+	require.Contains(t, text, "no more than")
+	require.NotContains(t, text, "chart_id")
+	_, ok := agent.charts.get(fmt.Sprintf("chart-%d", maxChartsPerTurn+1))
+	require.False(t, ok)
+}
+
+// A failed render_chart is passed through untouched: there is no spec to
+// register, and the server's refusal is what the model needs to read.
+func TestWarpRenderChartOverMCPPassesRefusalsThrough(t *testing.T) {
+	agent := newTestAgent(t, &scriptedModel{}, &fakeLogReader{}, 8)
+	agent.mcp = func(*schemas.BifrostContext, *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
+		return errorChatMessage(`a bar chart needs interval (bars over time) or group`), nil
+	}
+	text, failed := agent.executeTool(context.Background(), RenderChartTool, `{"kind":"bar"}`)
+	require.True(t, failed)
+	require.Contains(t, text, "a bar chart needs interval")
+	_, ok := agent.charts.get("chart-1")
+	require.False(t, ok)
 }
