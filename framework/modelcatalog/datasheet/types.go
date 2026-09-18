@@ -382,6 +382,19 @@ type costInput struct {
 	tier                      serviceTier
 }
 
+// pricingPatternKind identifies the compiled model-name matcher used by a
+// pricing override. Wildcard syntax is intentionally limited to stars at the
+// pattern boundaries; arbitrary glob and regex matching are not supported.
+type pricingPatternKind uint8
+
+const (
+	pricingPatternExact pricingPatternKind = iota
+	pricingPatternPrefix
+	pricingPatternSuffix
+	pricingPatternContains
+	pricingPatternAll
+)
+
 // customPricingEntry is one flattened override ready for lookup.
 type customPricingEntry struct {
 	id            string
@@ -390,8 +403,8 @@ type customPricingEntry struct {
 	virtualKeyID  string
 	providerID    string
 	providerKeyID string
-	pattern       string // exact model name, or wildcard prefix (trailing * stripped)
-	wildcard      bool
+	pattern       string // exact model name, or wildcard literal with boundary stars stripped
+	patternKind   pricingPatternKind
 	requestModes  map[string]struct{} // always non-nil for valid overrides
 	options       Options
 }

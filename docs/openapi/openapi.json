@@ -114624,7 +114624,8 @@
           },
           "pattern": {
             "type": "string",
-            "description": "Model name or wildcard prefix (e.g. \"gpt-4o\" or \"claude-3*\")"
+            "description": "Model name or boundary wildcard pattern (e.g. \"gpt-4o\", \"claude-3*\", \"*-free\", or \"*sonnet*\")",
+            "pattern": "^(?:[^*]+|\\*|\\*[^*]+|[^*]+\\*|\\*[^*]+\\*)$"
           },
           "request_types": {
             "type": "array",
@@ -114657,7 +114658,47 @@
             "type": "string",
             "format": "date-time"
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "match_type": {
+                  "const": "exact"
+                }
+              },
+              "required": [
+                "match_type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "pattern": {
+                  "pattern": "^[^*]+$"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "match_type": {
+                  "const": "wildcard"
+                }
+              },
+              "required": [
+                "match_type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "pattern": {
+                  "pattern": "^(?:\\*|\\*[^*]+|[^*]+\\*|\\*[^*]+\\*)$"
+                }
+              }
+            }
+          }
+        ]
       },
       "CreatePricingOverrideRequest": {
         "type": "object",
@@ -114702,7 +114743,8 @@
           },
           "pattern": {
             "type": "string",
-            "description": "Model name or wildcard prefix ending with * (e.g. \"claude-3*\")"
+            "description": "Model name or wildcard pattern with * at the beginning, end, or both ends (e.g. \"claude-3*\", \"*-free\", or \"*sonnet*\")",
+            "pattern": "^(?:[^*]+|\\*|\\*[^*]+|[^*]+\\*|\\*[^*]+\\*)$"
           },
           "request_types": {
             "type": "array",
@@ -114715,7 +114757,47 @@
           "patch": {
             "$ref": "#/components/schemas/PricingPatch"
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "match_type": {
+                  "const": "exact"
+                }
+              },
+              "required": [
+                "match_type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "pattern": {
+                  "pattern": "^[^*]+$"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "match_type": {
+                  "const": "wildcard"
+                }
+              },
+              "required": [
+                "match_type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "pattern": {
+                  "pattern": "^(?:\\*|\\*[^*]+|[^*]+\\*|\\*[^*]+\\*)$"
+                }
+              }
+            }
+          }
+        ]
       },
       "UpdatePricingOverrideRequest": {
         "type": "object",
@@ -114753,7 +114835,8 @@
           },
           "pattern": {
             "type": "string",
-            "description": "Model name or wildcard prefix ending with * (e.g. \"claude-3*\")"
+            "description": "Model name or wildcard pattern with * at the beginning, end, or both ends (e.g. \"claude-3*\", \"*-free\", or \"*sonnet*\")",
+            "pattern": "^(?:[^*]+|\\*|\\*[^*]+|[^*]+\\*|\\*[^*]+\\*)$"
           },
           "request_types": {
             "type": "array",
@@ -114766,7 +114849,47 @@
           "patch": {
             "$ref": "#/components/schemas/PricingPatch"
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "match_type": {
+                  "const": "exact"
+                }
+              },
+              "required": [
+                "match_type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "pattern": {
+                  "pattern": "^[^*]+$"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "match_type": {
+                  "const": "wildcard"
+                }
+              },
+              "required": [
+                "match_type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "pattern": {
+                  "pattern": "^(?:\\*|\\*[^*]+|[^*]+\\*|\\*[^*]+\\*)$"
+                }
+              }
+            }
+          }
+        ]
       },
       "PricingOverrideResponse": {
         "type": "object",
