@@ -423,6 +423,8 @@ export interface CompletionTokensDetails {
 	audio_tokens?: number;
 	accepted_prediction_tokens?: number;
 	rejected_prediction_tokens?: number;
+	num_search_queries?: number;
+	num_web_fetch_requests?: number;
 }
 
 export interface LLMUsage {

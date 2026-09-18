@@ -1975,6 +1975,7 @@ func HandleOpenAIResponsesRequest(
 
 	response.ExtraFields.Latency = latency.Milliseconds()
 	response.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
+	ApplyOpenAIServerToolUsage(response)
 
 	// Set raw request if enabled
 	if sendBackRawRequest {
@@ -2302,6 +2303,7 @@ func HandleOpenAIResponsesStreaming(
 					providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
 				}
 				response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
+				ApplyOpenAIServerToolUsage(response.Response)
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, &response, nil, nil, nil), responseChan, postHookSpanFinalizer)
 				return

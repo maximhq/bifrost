@@ -664,23 +664,40 @@ func accumulateAnthropicResponsesUsage(usage *schemas.ResponsesResponseUsage, bi
 		}
 	}
 	usageToProcess = billableAnthropicUsage(usageToProcess)
-	// Web search request count → billed as search queries (server tool use). The
-	// terminal chunk overwrites Response.Usage with this accumulator, so the count
-	// must live here (not only on the per-event message_delta usage).
-	if usageToProcess.ServerToolUse != nil && usageToProcess.ServerToolUse.WebSearchRequests > 0 {
-		n := usageToProcess.ServerToolUse.WebSearchRequests
-		if usage.OutputTokensDetails == nil {
-			usage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
-		}
-		if usage.OutputTokensDetails.NumSearchQueries == nil || n > *usage.OutputTokensDetails.NumSearchQueries {
-			usage.OutputTokensDetails.NumSearchQueries = schemas.Ptr(n)
-		}
-		if billedUsage != nil {
-			if billedUsage.CompletionTokensDetails == nil {
-				billedUsage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+	// Server-tool use counts; web search is billed as search queries. The terminal
+	// chunk overwrites Response.Usage with this accumulator, so the counts must live
+	// here (not only on the per-event message_delta usage).
+	if usageToProcess.ServerToolUse != nil {
+		if n := usageToProcess.ServerToolUse.WebSearchRequests; n > 0 {
+			if usage.OutputTokensDetails == nil {
+				usage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
 			}
-			if billedUsage.CompletionTokensDetails.NumSearchQueries == nil || n > *billedUsage.CompletionTokensDetails.NumSearchQueries {
-				billedUsage.CompletionTokensDetails.NumSearchQueries = schemas.Ptr(n)
+			if usage.OutputTokensDetails.NumSearchQueries == nil || n > *usage.OutputTokensDetails.NumSearchQueries {
+				usage.OutputTokensDetails.NumSearchQueries = schemas.Ptr(n)
+			}
+			if billedUsage != nil {
+				if billedUsage.CompletionTokensDetails == nil {
+					billedUsage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+				}
+				if billedUsage.CompletionTokensDetails.NumSearchQueries == nil || n > *billedUsage.CompletionTokensDetails.NumSearchQueries {
+					billedUsage.CompletionTokensDetails.NumSearchQueries = schemas.Ptr(n)
+				}
+			}
+		}
+		if n := usageToProcess.ServerToolUse.WebFetchRequests; n > 0 {
+			if usage.OutputTokensDetails == nil {
+				usage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
+			}
+			if usage.OutputTokensDetails.NumWebFetchRequests == nil || n > *usage.OutputTokensDetails.NumWebFetchRequests {
+				usage.OutputTokensDetails.NumWebFetchRequests = schemas.Ptr(n)
+			}
+			if billedUsage != nil {
+				if billedUsage.CompletionTokensDetails == nil {
+					billedUsage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+				}
+				if billedUsage.CompletionTokensDetails.NumWebFetchRequests == nil || n > *billedUsage.CompletionTokensDetails.NumWebFetchRequests {
+					billedUsage.CompletionTokensDetails.NumWebFetchRequests = schemas.Ptr(n)
+				}
 			}
 		}
 	}
@@ -1048,13 +1065,23 @@ func HandleAnthropicChatCompletionStreaming(
 					usage.ServerSideFallbackModel = served
 				}
 				usageToProcess = billableAnthropicUsage(usageToProcess)
-				// Web search request count → billed as search queries (server tool use).
-				if usageToProcess.ServerToolUse != nil && usageToProcess.ServerToolUse.WebSearchRequests > 0 {
-					if usage.CompletionTokensDetails == nil {
-						usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+				// Server-tool use counts; web search is billed as search queries.
+				if usageToProcess.ServerToolUse != nil {
+					if n := usageToProcess.ServerToolUse.WebSearchRequests; n > 0 {
+						if usage.CompletionTokensDetails == nil {
+							usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+						}
+						if usage.CompletionTokensDetails.NumSearchQueries == nil || n > *usage.CompletionTokensDetails.NumSearchQueries {
+							usage.CompletionTokensDetails.NumSearchQueries = &n
+						}
 					}
-					if n := usageToProcess.ServerToolUse.WebSearchRequests; usage.CompletionTokensDetails.NumSearchQueries == nil || n > *usage.CompletionTokensDetails.NumSearchQueries {
-						usage.CompletionTokensDetails.NumSearchQueries = &n
+					if n := usageToProcess.ServerToolUse.WebFetchRequests; n > 0 {
+						if usage.CompletionTokensDetails == nil {
+							usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+						}
+						if usage.CompletionTokensDetails.NumWebFetchRequests == nil || n > *usage.CompletionTokensDetails.NumWebFetchRequests {
+							usage.CompletionTokensDetails.NumWebFetchRequests = &n
+						}
 					}
 				}
 				// Extended-thinking tokens. Max-merged like the other counters because usage

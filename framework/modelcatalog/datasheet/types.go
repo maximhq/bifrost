@@ -57,13 +57,15 @@ type Entry struct {
 	Options
 }
 
-// UnmarshalJSON handles the special case where search_context_cost_per_query
-// may arrive as either a plain float64 or a tiered object
-// {"search_context_size_low":…, "search_context_size_medium":…, "search_context_size_high":…}.
+// UnmarshalJSON resolves the per-web-search rate, which the datasheet carries in
+// either of two shapes: web_search_cost_per_request, a single value, or the tiered
+// search_context_cost_per_query object. Both land on SearchContextCostPerQuery, so
+// everything downstream sees one rate.
 func (p *Entry) UnmarshalJSON(data []byte) error {
 	type entryAlias Entry
 	var raw struct {
 		entryAlias
+		WebSearchCostPerRequest   *float64 `json:"web_search_cost_per_request"`
 		SearchContextCostPerQuery *struct {
 			Low    *float64 `json:"search_context_size_low"`
 			Medium *float64 `json:"search_context_size_medium"`
@@ -75,11 +77,13 @@ func (p *Entry) UnmarshalJSON(data []byte) error {
 	}
 	*p = Entry(raw.entryAlias)
 
-	// search_context_cost_per_query arrives as a tiered object — all three values are
-	// equal for non-Perplexity providers; we prefer medium, then low, then high.
-	// Perplexity always returns a pre-computed total_cost so the per-query rate is
-	// never consumed for that provider.
-	if q := raw.SearchContextCostPerQuery; q != nil {
+	// web_search_cost_per_request is the single-valued form and wins outright.
+	// Otherwise fall back to the tiered object: its three values are equal for every
+	// non-Perplexity provider, so prefer medium, then low, then high. Perplexity
+	// always returns a pre-computed total_cost, so its rate is never consumed.
+	if raw.WebSearchCostPerRequest != nil {
+		p.SearchContextCostPerQuery = raw.WebSearchCostPerRequest
+	} else if q := raw.SearchContextCostPerQuery; q != nil {
 		switch {
 		case q.Medium != nil:
 			p.SearchContextCostPerQuery = q.Medium
