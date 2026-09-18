@@ -322,6 +322,16 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 		}
 		bifrostCtx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
 	}
+	// The request-id above may be caller-supplied (x-request-id), so it cannot be
+	// trusted as a billing-idempotency identity: two unrelated requests sharing a
+	// chosen ID would collide on the billing key and the second would settle for
+	// free. The nonce is minted here, never read from any header, and mixed into
+	// the governance billing key so that key is unforgeable. Preserved when
+	// already present so both terminal paths of one physical call (success vs
+	// cancellation) read the same value and still dedupe against each other.
+	if existingNonce, ok := bifrostCtx.Value(schemas.BifrostContextKeyBillingNonce).(string); !ok || existingNonce == "" {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyBillingNonce, uuid.New().String())
+	}
 	// Populating all user values from the request context
 	ctx.VisitUserValuesAll(func(key, value any) {
 		bifrostCtx.SetValue(key, value)
