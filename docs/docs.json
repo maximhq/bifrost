@@ -2045,6 +2045,7 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v2.2.1",
               "changelogs/ent-v2.2.0",
               "changelogs/ent-v2.1.1",
               "changelogs/ent-v2.1.0",
@@ -2139,6 +2140,7 @@
             "item": "Edge",
             "icon": "grip",
             "pages": [
+              "changelogs/edge-v0.9.0",
               "changelogs/edge-v0.8.0",
               "changelogs/edge-v0.7.0",
               "changelogs/edge-v0.6.0",

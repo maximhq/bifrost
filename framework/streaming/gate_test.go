@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -2018,4 +2019,258 @@ func BenchmarkGatePauseHoldDrain(b *testing.B) {
 		a.Cleanup()
 		b.StartTimer()
 	}
+}
+
+// ssePassthroughChunk wraps one SSE event as a passthrough stream chunk — the
+// shape the native Anthropic path buffers under guardrails full-hold.
+func ssePassthroughChunk(event, data string) *schemas.BifrostStreamChunk {
+	return &schemas.BifrostStreamChunk{
+		BifrostPassthroughResponse: &schemas.BifrostPassthroughResponse{
+			StatusCode: 200,
+			Body:       []byte("event: " + event + "\ndata: " + data + "\n\n"),
+		},
+	}
+}
+
+// toolCarryingSSEStream builds a realistic tool-carrying Anthropic SSE stream
+// whose input_json_delta fragments carry a secret a guardrail would redact.
+func toolCarryingSSEStream() []*schemas.BifrostStreamChunk {
+	return []*schemas.BifrostStreamChunk{
+		ssePassthroughChunk("message_start", `{"type":"message_start","message":{"id":"msg_01","role":"assistant"}}`),
+		ssePassthroughChunk("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_01","name":"bash","input":{}}}`),
+		ssePassthroughChunk("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"curl -H "}}`),
+		ssePassthroughChunk("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"'Authorization: Bearer sk-ant-SECRET123'"}}`),
+		ssePassthroughChunk("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":" https://api.example.com\"}"}}`),
+		ssePassthroughChunk("content_block_stop", `{"type":"content_block_stop","index":0}`),
+		ssePassthroughChunk("message_delta", `{"type":"message_delta","delta":{"stop_reason":"tool_use"}}`),
+		ssePassthroughChunk("message_stop", `{"type":"message_stop"}`),
+	}
+}
+
+func passthroughBody(c *schemas.BifrostStreamChunk) []byte {
+	if c != nil && c.BifrostPassthroughResponse != nil {
+		return c.BifrostPassthroughResponse.Body
+	}
+	return nil
+}
+
+// TestGate_FullHoldRedactReplaySSE walks the guardrails full-hold seam with a
+// realistic claude-cli stream: pause before the first chunk, copy-on-write
+// redaction via TransformPausedStreamBuffer, then replay. Nothing may escape
+// while held, replay must preserve SSE order, the secret must be gone from the
+// wire, and the originally buffered chunks must be untouched.
+func TestGate_FullHoldRedactReplaySSE(t *testing.T) {
+	a := newTestAccumulator(t)
+	traceID := "trace-full-hold-redact"
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	r := newRecorder(32)
+	defer r.close()
+	chunks := toolCarryingSSEStream()
+
+	a.PauseStream(traceID)
+	for i, c := range chunks {
+		if !a.GateSend(traceID, c, i == len(chunks)-1, false, r.ch, ctx) {
+			t.Fatalf("paused GateSend returned false at %d", i)
+		}
+	}
+	if got, _ := r.snapshot(); len(got) != 0 {
+		t.Fatalf("%d chunks escaped while held", len(got))
+	}
+
+	err := a.TransformPausedStreamBuffer(traceID, func(buffered []*schemas.BifrostStreamChunk) (schemas.PausedStreamBufferTransformResult, error) {
+		out := append([]*schemas.BifrostStreamChunk(nil), buffered...)
+		for i, c := range buffered {
+			body := passthroughBody(c)
+			if !bytes.Contains(body, []byte("sk-ant-SECRET123")) {
+				continue
+			}
+			cp := *c
+			pt := *c.BifrostPassthroughResponse
+			pt.Body = bytes.ReplaceAll(body, []byte("sk-ant-SECRET123"), []byte("[REDACTED:api-key]"))
+			cp.BifrostPassthroughResponse = &pt
+			out[i] = &cp
+		}
+		return schemas.PausedStreamBufferTransformResult{Chunks: out, ReleaseCount: len(out)}, nil
+	})
+	if err != nil {
+		t.Fatalf("TransformPausedStreamBuffer() error = %v", err)
+	}
+
+	a.ResumeStream(traceID)
+	if !r.waitFor(len(chunks), time.Second) {
+		got, _ := r.snapshot()
+		t.Fatalf("replay delivered %d of %d chunks", len(got), len(chunks))
+	}
+	sa := mustGet(t, a, traceID)
+	sa.WaitForFlusher()
+
+	got, _ := r.snapshot()
+	var wire []byte
+	for i, c := range got {
+		wantEvent := bytes.SplitN(passthroughBody(chunks[i]), []byte("\n"), 2)[0]
+		if !bytes.HasPrefix(passthroughBody(c), wantEvent) {
+			t.Fatalf("replay order broken at %d", i)
+		}
+		wire = append(wire, passthroughBody(c)...)
+	}
+	if bytes.Contains(wire, []byte("sk-ant-SECRET123")) {
+		t.Fatal("secret leaked to the wire")
+	}
+	if !bytes.Contains(wire, []byte("[REDACTED:api-key]")) {
+		t.Fatal("redaction placeholder missing from the wire")
+	}
+	if !bytes.Contains(passthroughBody(chunks[3]), []byte("sk-ant-SECRET123")) {
+		t.Fatal("copy-on-write violated: original buffered chunk was mutated")
+	}
+	if !a.IsStreamEnded(traceID) {
+		t.Fatal("gate not ended after terminal replay")
+	}
+}
+
+// TestGate_BlockVerdictClearsBufferAndDeliversTerminal mirrors a guardrail
+// block: held content is dropped via ClearPausedStreamBuffer and the client
+// receives only the synthetic terminal error; later sends are rejected.
+func TestGate_BlockVerdictClearsBufferAndDeliversTerminal(t *testing.T) {
+	a := newTestAccumulator(t)
+	traceID := "trace-block-verdict"
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	r := newRecorder(32)
+	defer r.close()
+
+	a.PauseStream(traceID)
+	for _, c := range toolCarryingSSEStream() {
+		if !a.GateSend(traceID, c, false, false, r.ch, ctx) {
+			t.Fatal("paused GateSend returned false")
+		}
+	}
+	if err := a.ClearPausedStreamBuffer(traceID); err != nil {
+		t.Fatalf("ClearPausedStreamBuffer() error = %v", err)
+	}
+	a.EndStream(traceID, &schemas.BifrostError{
+		IsBifrostError: true,
+		Error:          &schemas.ErrorField{Message: "blocked by guardrail policy"},
+	})
+	sa := mustGet(t, a, traceID)
+	sa.WaitForFlusher()
+	if !r.waitFor(1, time.Second) {
+		t.Fatal("block terminal was not delivered")
+	}
+
+	got, _ := r.snapshot()
+	if len(got) != 1 || got[0].BifrostError == nil ||
+		!strings.Contains(got[0].BifrostError.Error.Message, "blocked by guardrail policy") {
+		t.Fatalf("want exactly the block terminal, got %d chunks", len(got))
+	}
+	if a.GateSend(traceID, ssePassthroughChunk("ping", `{}`), false, false, r.ch, ctx) {
+		t.Fatal("send accepted after block terminal")
+	}
+}
+
+// TestGate_OverflowCapWithSSEPayloads drives 5MB SSE events into a paused gate
+// and asserts the cap trips right at the 100MB boundary, the client is told via
+// paused_replay_buffer_overflow, and the gate is terminally closed.
+func TestGate_OverflowCapWithSSEPayloads(t *testing.T) {
+	a := newTestAccumulator(t)
+	traceID := "trace-overflow-sse"
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	r := newRecorder(64)
+	defer r.close()
+
+	a.PauseStream(traceID)
+	big := strings.Repeat("x", 5*1024*1024)
+	refusedAt := -1
+	for i := 0; i < 40; i++ {
+		if !a.GateSend(traceID, ssePassthroughChunk("content_block_delta", big), false, false, r.ch, ctx) {
+			refusedAt = i
+			break
+		}
+	}
+	// ~5MB payload + 512B floor per chunk: refusal expected at the 100MB line.
+	if refusedAt < 18 || refusedAt > 21 {
+		t.Fatalf("cap refused at chunk %d (~%dMB), want ~20 (100MB)", refusedAt, refusedAt*5)
+	}
+	sa := mustGet(t, a, traceID)
+	sa.WaitForFlusher()
+	// On overflow the flusher drains the already-buffered chunks first and
+	// delivers the synthetic terminal last, so poll until it lands rather than
+	// snapshotting after the first chunk (the recorder appends asynchronously).
+	sawOverflow := false
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && !sawOverflow {
+		got, _ := r.snapshot()
+		for _, c := range got {
+			if c.BifrostError != nil && c.BifrostError.Error != nil && c.BifrostError.Error.Type != nil &&
+				*c.BifrostError.Error.Type == "paused_replay_buffer_overflow" {
+				sawOverflow = true
+			}
+		}
+		if !sawOverflow {
+			time.Sleep(2 * time.Millisecond)
+		}
+	}
+	if !sawOverflow {
+		t.Fatal("client never received paused_replay_buffer_overflow")
+	}
+	if !a.IsStreamEnded(traceID) {
+		t.Fatal("gate not ended after overflow")
+	}
+	if a.GateSend(traceID, ssePassthroughChunk("ping", `{}`), false, false, r.ch, ctx) {
+		t.Fatal("send accepted after overflow")
+	}
+}
+
+// TestGate_TransformInPlaceMutationIsRepriced pins the accounting guarantee
+// for a transform flow that modifies held chunks IN PLACE (through the original
+// pointers) instead of copy-on-write: because sizes are recomputed from
+// result.Chunks after the callback returns, in-place growth inside the
+// callback is still re-priced before install and delivered mutated on replay.
+func TestGate_TransformInPlaceMutationIsRepriced(t *testing.T) {
+	a := newTestAccumulator(t)
+	traceID := "trace-inplace-reprice"
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	r := newRecorder(16)
+	defer r.close()
+
+	a.PauseStream(traceID)
+	chunk := ssePassthroughChunk("content_block_delta", `{"delta":{"partial_json":"{\"cmd\":\"ls\"}"}}`)
+	if !a.GateSend(traceID, chunk, false, false, r.ch, ctx) {
+		t.Fatal("paused GateSend returned false")
+	}
+	sa := mustGet(t, a, traceID)
+	sa.mu.Lock()
+	before := sa.gateReplayBufBytes
+	sa.mu.Unlock()
+
+	const grow = 64 * 1024
+	err := a.TransformPausedStreamBuffer(traceID, func(buffered []*schemas.BifrostStreamChunk) (schemas.PausedStreamBufferTransformResult, error) {
+		pt := buffered[0].BifrostPassthroughResponse
+		pt.Body = append(pt.Body, bytes.Repeat([]byte("z"), grow)...) // in-place, same pointer
+		return schemas.PausedStreamBufferTransformResult{Chunks: buffered, ReleaseCount: len(buffered)}, nil
+	})
+	if err != nil {
+		t.Fatalf("in-place transform rejected: %v", err)
+	}
+
+	sa.mu.Lock()
+	after := sa.gateReplayBufBytes
+	entrySize := sa.gateReplayBuf[0].size
+	entryEstimate := estimateChunkBytes(sa.gateReplayBuf[0].chunk)
+	sa.mu.Unlock()
+	if after < before+grow {
+		t.Fatalf("in-place growth not re-priced: before=%d after=%d grow=%d", before, after, grow)
+	}
+	if entrySize != entryEstimate {
+		t.Fatalf("cached size %d diverges from fresh estimate %d after in-place transform", entrySize, entryEstimate)
+	}
+
+	a.ResumeStream(traceID)
+	if !r.waitFor(1, time.Second) {
+		t.Fatal("mutated chunk was not replayed")
+	}
+	got, _ := r.snapshot()
+	if !bytes.Contains(passthroughBody(got[0]), bytes.Repeat([]byte("z"), 16)) {
+		t.Fatal("replayed chunk does not carry the in-place mutation")
+	}
+	a.EndStream(traceID, nil)
+	sa.WaitForFlusher()
 }
