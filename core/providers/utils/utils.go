@@ -1189,6 +1189,39 @@ func setPassthroughHeaders(ctx context.Context, req *fasthttp.Request, provider 
 	}
 }
 
+// StripCallerAuthForInsecureURL removes a forwarded caller Authorization header from
+// passthrough safe headers when the resolved upstream URL is neither HTTPS nor a
+// loopback address (RFC 6750 section 5.3; loopback is exempt per the RFC 8252
+// section 8.3 rationale - the bytes never leave the machine). The transport vets
+// which providers may receive caller auth, but the provider BaseURL is resolved in
+// core, so this is the last place that sees the final scheme. Stripping fails
+// closed: key selection was skipped for caller-auth requests, so an insecure
+// upstream sees an unauthenticated request instead of a cleartext token.
+func StripCallerAuthForInsecureURL(requestURL string, safeHeaders map[string]string) {
+	if len(safeHeaders) == 0 {
+		return
+	}
+	u, err := url.Parse(requestURL)
+	if err == nil && (strings.EqualFold(u.Scheme, "https") || isLoopbackHost(u.Hostname())) {
+		return
+	}
+	for k := range safeHeaders {
+		if strings.EqualFold(k, "authorization") {
+			delete(safeHeaders, k)
+		}
+	}
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
 // GetPathFromContext gets the path from the context, if it exists, otherwise returns the default path.
 func GetPathFromContext(ctx context.Context, defaultPath string) string {
 	if pathInContext, ok := ctx.Value(schemas.BifrostContextKeyURLPath).(string); ok {
