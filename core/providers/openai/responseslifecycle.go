@@ -147,8 +147,12 @@ func (provider *OpenAIProvider) ResponsesRetrieve(ctx *schemas.BifrostContext, k
 	if req == nil || req.ResponseID == "" {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, fmt.Errorf("response_id is required"))
 	}
+	escapedResponseID, idErr := providerUtils.EscapeResourceID(req.ResponseID, "response_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
-	path := "/v1/responses/" + url.PathEscape(req.ResponseID)
+	path := "/v1/responses/" + escapedResponseID
 	bodyBytes, latencyMs, headers, bifrostErr := provider.executeResponsesLifecycleUnary(
 		ctx, http.MethodGet, path, schemas.ResponsesRetrieveRequest, buildResponsesRetrieveQuery(req), key, nil)
 	if bifrostErr != nil {
@@ -182,6 +186,10 @@ func (provider *OpenAIProvider) ResponsesRetrieveStream(ctx *schemas.BifrostCont
 	if req == nil || req.ResponseID == "" {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, fmt.Errorf("response_id is required"))
 	}
+	escapedResponseID, idErr := providerUtils.EscapeResourceID(req.ResponseID, "response_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 	// This method is only reached for streamed retrieval; force the stream query param.
 	req.Stream = schemas.Ptr(true)
 
@@ -189,7 +197,7 @@ func (provider *OpenAIProvider) ResponsesRetrieveStream(ctx *schemas.BifrostCont
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
-	fullURL := provider.buildRequestURL(ctx, "/v1/responses/"+url.PathEscape(req.ResponseID), schemas.ResponsesRetrieveStreamRequest)
+	fullURL := provider.buildRequestURL(ctx, "/v1/responses/"+escapedResponseID, schemas.ResponsesRetrieveStreamRequest)
 	if rawQuery := buildResponsesRetrieveQuery(req); rawQuery != "" {
 		fullURL = fullURL + "?" + rawQuery
 	}
@@ -368,8 +376,12 @@ func (provider *OpenAIProvider) ResponsesDelete(ctx *schemas.BifrostContext, key
 	if req == nil || req.ResponseID == "" {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, fmt.Errorf("response_id is required"))
 	}
+	escapedResponseID, idErr := providerUtils.EscapeResourceID(req.ResponseID, "response_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
-	path := "/v1/responses/" + url.PathEscape(req.ResponseID)
+	path := "/v1/responses/" + escapedResponseID
 	bodyBytes, latencyMs, headers, bifrostErr := provider.executeResponsesLifecycleUnary(
 		ctx, http.MethodDelete, path, schemas.ResponsesDeleteRequest, "", key, nil)
 	if bifrostErr != nil {
@@ -400,8 +412,12 @@ func (provider *OpenAIProvider) ResponsesCancel(ctx *schemas.BifrostContext, key
 	if req == nil || req.ResponseID == "" {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, fmt.Errorf("response_id is required"))
 	}
+	escapedResponseID, idErr := providerUtils.EscapeResourceID(req.ResponseID, "response_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
-	path := "/v1/responses/" + url.PathEscape(req.ResponseID) + "/cancel"
+	path := "/v1/responses/" + escapedResponseID + "/cancel"
 	bodyBytes, latencyMs, headers, bifrostErr := provider.executeResponsesLifecycleUnary(
 		ctx, http.MethodPost, path, schemas.ResponsesCancelRequest, "", key, nil)
 	if bifrostErr != nil {
@@ -436,8 +452,12 @@ func (provider *OpenAIProvider) ResponsesInputItems(ctx *schemas.BifrostContext,
 	if req == nil || req.ResponseID == "" {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, fmt.Errorf("response_id is required"))
 	}
+	escapedResponseID, idErr := providerUtils.EscapeResourceID(req.ResponseID, "response_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
-	path := "/v1/responses/" + url.PathEscape(req.ResponseID) + "/input_items"
+	path := "/v1/responses/" + escapedResponseID + "/input_items"
 	bodyBytes, latencyMs, headers, bifrostErr := provider.executeResponsesLifecycleUnary(
 		ctx, http.MethodGet, path, schemas.ResponsesInputItemsRequest, buildResponsesInputItemsQuery(req), key, nil)
 	if bifrostErr != nil {

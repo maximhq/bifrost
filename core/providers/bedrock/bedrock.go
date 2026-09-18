@@ -3702,6 +3702,18 @@ func (provider *BedrockProvider) fetchBatchManifest(ctx *schemas.BifrostContext,
 	return &manifest
 }
 
+func escapeBedrockBatchARN(batchID string) (string, *schemas.BifrostError) {
+	if !strings.HasPrefix(batchID, "arn:") || !strings.Contains(batchID, ":bedrock:") {
+		return "", providerUtils.NewBifrostBadRequestError("invalid batch_id: a Bedrock job ARN is required")
+	}
+	for _, r := range batchID {
+		if r == '?' || r == '#' || r == '\\' || r == '%' || r < 0x20 || r == 0x7f {
+			return "", providerUtils.NewBifrostBadRequestError("invalid batch_id: URL delimiters and control characters are not allowed")
+		}
+	}
+	return url.PathEscape(batchID), nil
+}
+
 // BatchRetrieve retrieves a specific batch inference job from AWS Bedrock by trying each key until found.
 func (provider *BedrockProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchRetrieveRequest) (*schemas.BifrostBatchRetrieveResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.BatchRetrieveRequest); err != nil {
@@ -3711,6 +3723,10 @@ func (provider *BedrockProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys
 	if request.BatchID == "" {
 		return nil, providerUtils.NewBifrostOperationError("batch_id (job ARN) is required", nil)
 	}
+	encodedJobArn, idErr := escapeBedrockBatchARN(request.BatchID)
+	if idErr != nil {
+		return nil, idErr
+	}
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
@@ -3719,8 +3735,6 @@ func (provider *BedrockProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys
 			region = key.BedrockKeyConfig.Region.GetValue()
 		}
 
-		// URL encode the job ARN
-		encodedJobArn := url.PathEscape(request.BatchID)
 		reqURL := fmt.Sprintf("https://%s/model-invocation-job/%s", resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceControlPlane, region), encodedJobArn)
 
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
@@ -3857,6 +3871,10 @@ func (provider *BedrockProvider) BatchCancel(ctx *schemas.BifrostContext, keys [
 	if request.BatchID == "" {
 		return nil, providerUtils.NewBifrostOperationError("batch_id (job ARN) is required", nil)
 	}
+	encodedJobArn, idErr := escapeBedrockBatchARN(request.BatchID)
+	if idErr != nil {
+		return nil, idErr
+	}
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
@@ -3865,8 +3883,6 @@ func (provider *BedrockProvider) BatchCancel(ctx *schemas.BifrostContext, keys [
 			region = key.BedrockKeyConfig.Region.GetValue()
 		}
 
-		// URL encode the job ARN
-		encodedJobArn := url.PathEscape(request.BatchID)
 		reqURL := fmt.Sprintf("https://%s/model-invocation-job/%s/stop", resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceControlPlane, region), encodedJobArn)
 
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, nil)

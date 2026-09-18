@@ -67,18 +67,21 @@ func vertexBatchJobsBaseURL(key schemas.Key) (string, *schemas.BifrostError) {
 // to the job's REST URL.
 func vertexBatchJobURL(key schemas.Key, batchID string) (string, *schemas.BifrostError) {
 	if strings.HasPrefix(batchID, "projects/") {
-		// Full resource name: projects/{p}/locations/{r}/batchPredictionJobs/{id}
-		parts := strings.Split(batchID, "/")
-		if len(parts) >= 6 && parts[2] == "locations" {
-			return getVertexAPIBaseURL(parts[3], "v1") + "/" + batchID, nil
+		parts, bifrostErr := parseVertexResourceName(batchID, "batch_id", "projects", "", "locations", "", "batchPredictionJobs", "")
+		if bifrostErr != nil {
+			return "", bifrostErr
 		}
-		return "", providerUtils.NewBifrostOperationError(fmt.Sprintf("invalid Vertex batch ID %q", batchID), nil)
+		return getVertexAPIBaseURL(parts[3], "v1") + "/" + strings.Join(parts, "/"), nil
 	}
 	base, cfgErr := vertexBatchJobsBaseURL(key)
 	if cfgErr != nil {
 		return "", cfgErr
 	}
-	return base + "/batchPredictionJobs/" + batchID, nil
+	escapedJobID, bifrostErr := providerUtils.EscapeResourceID(batchID, "batch_id")
+	if bifrostErr != nil {
+		return "", bifrostErr
+	}
+	return base + "/batchPredictionJobs/" + escapedJobID, nil
 }
 
 // vertexBatchJobToBifrost maps a BatchPredictionJob resource to the Bifrost retrieve response.
