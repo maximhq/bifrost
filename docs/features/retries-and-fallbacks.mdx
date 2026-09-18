@@ -73,6 +73,26 @@ With the defaults of `retry_backoff_initial = 500ms` and `retry_backoff_max = 50
 | 4th retry | 4000 ms | 3.2–4.8 s |
 | 5th+ retry | 5000 ms (capped) | 4–5 s |
 
+### Provider `Retry-After` hints
+
+For retryable responses, Bifrost honors the standard `Retry-After` response header
+as either a non-negative integer number of seconds or an HTTP date. The next
+attempt waits for the longer of the existing exponential backoff and the remaining
+provider-specified delay. Missing, invalid, zero, or past hints do not shorten the
+local backoff. Provider-specific rate-limit reset headers and prose in error
+messages are not interpreted as `Retry-After`.
+
+If the provider's minimum wait exceeds `retry_backoff_max`, or reaches beyond the
+remaining request deadline, Bifrost stops retrying that provider and returns its
+last error to the existing fallback policy. It does not clamp the hint and retry
+early. For example, `Retry-After: 60` with a 5-second backoff cap stops retries;
+increase the cap to at least 60 seconds if waiting that long is acceptable.
+
+Hints are scoped to the response from the current attempt, including retries that
+rotate a rate-limited API key. They are not reused after a network failure with no
+response headers or when another provider is tried. Retry waits exit when the
+request context is cancelled or its deadline expires.
+
 ### What triggers a retry
 
 | Condition | Retried? | Key rotation? | Backoff before next attempt? |
