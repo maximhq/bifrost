@@ -1546,6 +1546,10 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 			copy.ResponsesToolMessage.ResponsesShellCall = deepCopyShellCall(original.ResponsesToolMessage.ResponsesShellCall)
 		}
 
+		if original.ResponsesToolMessage.ResponsesApplyPatchCall != nil {
+			copy.ResponsesToolMessage.ResponsesApplyPatchCall = deepCopyApplyPatchCall(original.ResponsesToolMessage.ResponsesApplyPatchCall)
+		}
+
 		// Deep copy embedded tool call structs (simplified version - add more as needed)
 		if original.ResponsesToolMessage.ResponsesFileSearchToolCall != nil {
 			copyToolCall := *original.ResponsesToolMessage.ResponsesFileSearchToolCall
@@ -1860,6 +1864,20 @@ func deepCopyShellCall(original *ResponsesShellCall) *ResponsesShellCall {
 	if original.MaxOutputLength != nil {
 		maxOutputLength := *original.MaxOutputLength
 		copied.MaxOutputLength = &maxOutputLength
+	}
+	return &copied
+}
+
+// deepCopyApplyPatchCall copies the apply_patch_call operation.
+func deepCopyApplyPatchCall(original *ResponsesApplyPatchCall) *ResponsesApplyPatchCall {
+	copied := *original
+	if original.Operation != nil {
+		operation := *original.Operation
+		if original.Operation.Diff != nil {
+			diff := *original.Operation.Diff
+			operation.Diff = &diff
+		}
+		copied.Operation = &operation
 	}
 	return &copied
 }
