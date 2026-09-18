@@ -183,7 +183,7 @@ const QuestionGuidance = `
 Asking before you answer:
 
 - Two things decide a metric answer: which time range, and whose traffic. If the question does not say, ask with ` + AskUserTool + ` rather than choosing for them. A number computed over the wrong window or the wrong scope is not a smaller answer, it is a different one.
-- Offer options they can pick. For a time range that is usually: Last 24 hours (-24h), Last 7 days (-7d), Last 30 days (-30d), and a custom range. For scope, use what describe_scope reported - the teams, customers or business units that actually have traffic.
+- Offer options they can pick. For a time range that is usually: Last 24 hours (-24h), Last 7 days (-7d), Last 30 days (-30d), and a custom range. For scope, use what describe_filter_space reported - the teams, customers or business units that actually have traffic.
 - Ask about one thing at a time. If both the window and the scope are missing, ask the window first, then the scope once they answer.
 - Do not ask when you already know. An identified caller's own traffic is the default scope, and a question that names a period ("yesterday", "this month") has already told you the window.
 - Never ask more than twice in a row. If it is still unclear, pick the most reasonable option, run the query, and say plainly which one you chose.
