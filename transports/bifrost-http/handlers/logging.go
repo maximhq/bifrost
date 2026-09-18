@@ -743,6 +743,11 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 			filters.RootsOnly = val
 		}
 	}
+	if groupSessions := string(ctx.QueryArgs().Peek("group_sessions")); groupSessions != "" {
+		if val, err := strconv.ParseBool(groupSessions); err == nil {
+			filters.GroupSessions = val
+		}
+	}
 	parseMetadataFilters(ctx, filters)
 
 	// Extract pagination parameters
