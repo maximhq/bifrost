@@ -174,6 +174,15 @@ var ignoreGoFieldNames = map[string]string{
 	"state":       "runtime-derived",
 }
 
+// ignoreEnumPaths are schema paths whose Go type is a named const string type
+// (e.g. schemas.ModelProvider) but whose schema node intentionally has no enum:
+// the field also accepts operator-defined custom provider names, which a closed
+// enum would reject.
+var ignoreEnumPaths = map[string]string{
+	"/properties/governance/properties/complexity_analyzer_config/properties/semantic/properties/provider": "accepts custom provider names; enum would reject them",
+	"/properties/governance/properties/complexity_analyzer_config/properties/llm/properties/provider":      "accepts custom provider names; enum would reject them",
+}
+
 // opaqueLeafTypes are named Go types that have custom JSON marshalling and
 // should be treated as leaves. The walker does NOT recurse into their fields,
 // and they are collected for downstream checks (e.g., SecretVar → helm secret).
@@ -949,6 +958,9 @@ func (c *checker) checkEnum(goVals []string, schemaNode map[string]any, schemaPa
 	node := c.resolveRef(schemaNode)
 	rawEnum, ok := node["enum"]
 	if !ok {
+		if _, ignored := ignoreEnumPaths[schemaPath]; ignored {
+			return
+		}
 		c.add(Finding{
 			Category: "enum-no-schema",
 			Severity: "WARN",
