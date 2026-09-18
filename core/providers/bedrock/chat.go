@@ -92,6 +92,14 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 	if response == nil {
 		return nil, fmt.Errorf("bedrock response is nil")
 	}
+	// A 200 whose body carries no `output` field (only stopReason/usage, which
+	// upstreams do emit) unmarshals cleanly and lands here with Output nil.
+	// Dereferencing it panicked on the request worker goroutine, where nothing
+	// recovers, so the process died instead of the failure surfacing as a
+	// BifrostError. ToBifrostResponsesResponse guards the same case.
+	if response.Output == nil {
+		return nil, fmt.Errorf("bedrock response is missing the output field")
+	}
 
 	// Convert content blocks and tool calls
 	var contentStr *string
