@@ -115,6 +115,7 @@ export const DefaultNetworkConfig = {
 	ca_cert_pem: { value: "", ref: "" },
 	stream_idle_timeout_in_seconds: 120,
 	keep_alive_timeout_in_seconds: 30,
+	stream_read_buffer_size_kb: 64,
 	max_conns_per_host: 5000,
 	enforce_http2: false,
 	http2_ping_interval_in_seconds: 0,
