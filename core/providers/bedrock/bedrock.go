@@ -2755,6 +2755,9 @@ func (provider *BedrockProvider) FileUpload(ctx *schemas.BifrostContext, key sch
 
 	// Parse bucket name and optional prefix from s3Bucket (could be "bucket-name" or "s3://bucket-name/prefix/")
 	bucketName, bucketPrefix := parseS3URI(s3Bucket)
+	if bucketErr := validateS3Bucket(bucketName); bucketErr != nil {
+		return nil, bucketErr
+	}
 	if bucketPrefix != "" {
 		s3Prefix = bucketPrefix + s3Prefix
 	}
@@ -2873,6 +2876,9 @@ func (provider *BedrockProvider) FileList(ctx *schemas.BifrostContext, keys []sc
 	}
 
 	bucketName, bucketPrefix := parseS3URI(s3Bucket)
+	if bucketErr := validateS3Bucket(bucketName); bucketErr != nil {
+		return nil, bucketErr
+	}
 	if bucketPrefix != "" {
 		s3Prefix = bucketPrefix + s3Prefix
 	}
@@ -3013,6 +3019,9 @@ func (provider *BedrockProvider) FileRetrieve(ctx *schemas.BifrostContext, keys 
 	if bucketName == "" || s3Key == "" {
 		return nil, providerUtils.NewBifrostOperationError("invalid S3 URI format, expected s3://bucket/key", nil)
 	}
+	if bucketErr := validateS3Bucket(bucketName); bucketErr != nil {
+		return nil, bucketErr
+	}
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
@@ -3111,6 +3120,9 @@ func (provider *BedrockProvider) FileDelete(ctx *schemas.BifrostContext, keys []
 	if bucketName == "" || s3Key == "" {
 		return nil, providerUtils.NewBifrostOperationError("invalid S3 URI format, expected s3://bucket/key", nil)
 	}
+	if bucketErr := validateS3Bucket(bucketName); bucketErr != nil {
+		return nil, bucketErr
+	}
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
@@ -3191,6 +3203,9 @@ func (provider *BedrockProvider) FileContent(ctx *schemas.BifrostContext, keys [
 	bucketName, s3Key := parseS3URI(request.FileID)
 	if bucketName == "" || s3Key == "" {
 		return nil, providerUtils.NewBifrostOperationError("invalid S3 URI format, expected s3://bucket/key", nil)
+	}
+	if bucketErr := validateS3Bucket(bucketName); bucketErr != nil {
+		return nil, bucketErr
 	}
 
 	var lastErr *schemas.BifrostError
@@ -3649,7 +3664,7 @@ func (provider *BedrockProvider) fetchBatchManifest(ctx *schemas.BifrostContext,
 
 	// Parse the output S3 URI and construct manifest path
 	bucketName, prefix := parseS3URI(outputS3Uri)
-	if bucketName == "" {
+	if validateS3Bucket(bucketName) != nil {
 		return nil
 	}
 

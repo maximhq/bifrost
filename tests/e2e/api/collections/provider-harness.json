@@ -157069,6 +157069,875 @@
           }
         }
       ]
+    },
+    {
+      "name": "102. Bedrock s3:// bucket cannot choose the request host (PR #7307 follow-up) (s3-bucket-host-injection)",
+      "description": "Bedrock builds S3 URLs as https://{bucket}.{s3host}/{key}, and the bucket came straight from a caller-supplied s3:// file ID (FileRetrieve/FileDelete/FileContent) or the s3_bucket extra param (FileUpload/FileList) with no validation. A '#' truncates the authority, so s3://127.0.0.1:PORT#/x made the gateway open a SigV4-signed TLS connection to a caller-chosen host - confirmed live with a local listener. validateS3Bucket now pins the bucket to the DNS-compatible S3 charset before it reaches a hostname. These cases pin: every rejected shape returns a Bifrost 400 carrying 'invalid s3 bucket name' on both caller entry points, and legitimate s3:// file IDs plus a valid-bucket/missing-object probe still reach AWS so the gate cannot over-block. The attack cases deliberately do not skip on 500 because the pre-fix failure surfaced as a 500.",
+      "item": [
+        {
+          "name": "[EXPECT-400] bedrock file retrieve: s3 bucket with host, port and a fragment (the verified SSRF payload) - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No 5xx is skipped: a vulnerable outbound request can surface as 500, 502, 503 or 504,",
+                  "// and skipping it would register no assertion, letting the attack case pass vacuously.",
+                  "if ([401, 429].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('caller-supplied s3 bucket cannot choose the request host', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'bucket host, port and a fragment (the verified SSRF payload) was not rejected; it may have chosen the upstream host: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the s3 bucket gate message: ' + t.slice(0, 300)).to.match(/invalid s3 bucket name/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/s3%3A%2F%2F127.0.0.1%3A1%23%2Fx?provider=bedrock",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "s3%3A%2F%2F127.0.0.1%3A1%23%2Fx"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "bedrock"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] bedrock file retrieve: s3 bucket with a fragment that truncates the authority - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No 5xx is skipped: a vulnerable outbound request can surface as 500, 502, 503 or 504,",
+                  "// and skipping it would register no assertion, letting the attack case pass vacuously.",
+                  "if ([401, 429].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('caller-supplied s3 bucket cannot choose the request host', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'bucket a fragment that truncates the authority was not rejected; it may have chosen the upstream host: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the s3 bucket gate message: ' + t.slice(0, 300)).to.match(/invalid s3 bucket name/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/s3%3A%2F%2Fevil.example%23%2Fx?provider=bedrock",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "s3%3A%2F%2Fevil.example%23%2Fx"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "bedrock"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] bedrock file retrieve: s3 bucket with an explicit port - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No 5xx is skipped: a vulnerable outbound request can surface as 500, 502, 503 or 504,",
+                  "// and skipping it would register no assertion, letting the attack case pass vacuously.",
+                  "if ([401, 429].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('caller-supplied s3 bucket cannot choose the request host', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'bucket an explicit port was not rejected; it may have chosen the upstream host: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the s3 bucket gate message: ' + t.slice(0, 300)).to.match(/invalid s3 bucket name/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/s3%3A%2F%2Fevil.example%3A443%2Fx?provider=bedrock",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "s3%3A%2F%2Fevil.example%3A443%2Fx"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "bedrock"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] bedrock file retrieve: s3 bucket with a query delimiter - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No 5xx is skipped: a vulnerable outbound request can surface as 500, 502, 503 or 504,",
+                  "// and skipping it would register no assertion, letting the attack case pass vacuously.",
+                  "if ([401, 429].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('caller-supplied s3 bucket cannot choose the request host', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'bucket a query delimiter was not rejected; it may have chosen the upstream host: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the s3 bucket gate message: ' + t.slice(0, 300)).to.match(/invalid s3 bucket name/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/s3%3A%2F%2Fevil.example%3Fx%2Fx?provider=bedrock",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "s3%3A%2F%2Fevil.example%3Fx%2Fx"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "bedrock"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] bedrock file retrieve: s3 bucket with userinfo credentials - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No 5xx is skipped: a vulnerable outbound request can surface as 500, 502, 503 or 504,",
+                  "// and skipping it would register no assertion, letting the attack case pass vacuously.",
+                  "if ([401, 429].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('caller-supplied s3 bucket cannot choose the request host', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'bucket userinfo credentials was not rejected; it may have chosen the upstream host: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the s3 bucket gate message: ' + t.slice(0, 300)).to.match(/invalid s3 bucket name/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/s3%3A%2F%2Fevil.example%40attacker%2Fx?provider=bedrock",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "s3%3A%2F%2Fevil.example%40attacker%2Fx"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "bedrock"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] bedrock file retrieve: s3 bucket with uppercase characters - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No 5xx is skipped: a vulnerable outbound request can surface as 500, 502, 503 or 504,",
+                  "// and skipping it would register no assertion, letting the attack case pass vacuously.",
+                  "if ([401, 429].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('caller-supplied s3 bucket cannot choose the request host', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'bucket uppercase characters was not rejected; it may have chosen the upstream host: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the s3 bucket gate message: ' + t.slice(0, 300)).to.match(/invalid s3 bucket name/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/s3%3A%2F%2FEvil-Example%2Fx?provider=bedrock",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "s3%3A%2F%2FEvil-Example%2Fx"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "bedrock"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] bedrock file retrieve: s3 bucket with a leading hyphen - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No 5xx is skipped: a vulnerable outbound request can surface as 500, 502, 503 or 504,",
+                  "// and skipping it would register no assertion, letting the attack case pass vacuously.",
+                  "if ([401, 429].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('caller-supplied s3 bucket cannot choose the request host', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'bucket a leading hyphen was not rejected; it may have chosen the upstream host: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the s3 bucket gate message: ' + t.slice(0, 300)).to.match(/invalid s3 bucket name/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/s3%3A%2F%2F-evil%2Fx?provider=bedrock",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "s3%3A%2F%2F-evil%2Fx"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "bedrock"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] bedrock file retrieve: s3 bucket with a trailing hyphen - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No 5xx is skipped: a vulnerable outbound request can surface as 500, 502, 503 or 504,",
+                  "// and skipping it would register no assertion, letting the attack case pass vacuously.",
+                  "if ([401, 429].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('caller-supplied s3 bucket cannot choose the request host', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'bucket a trailing hyphen was not rejected; it may have chosen the upstream host: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the s3 bucket gate message: ' + t.slice(0, 300)).to.match(/invalid s3 bucket name/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/s3%3A%2F%2Fevil-%2Fx?provider=bedrock",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "s3%3A%2F%2Fevil-%2Fx"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "bedrock"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] bedrock file retrieve: s3 bucket with fewer than 3 characters - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No 5xx is skipped: a vulnerable outbound request can surface as 500, 502, 503 or 504,",
+                  "// and skipping it would register no assertion, letting the attack case pass vacuously.",
+                  "if ([401, 429].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('caller-supplied s3 bucket cannot choose the request host', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'bucket fewer than 3 characters was not rejected; it may have chosen the upstream host: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the s3 bucket gate message: ' + t.slice(0, 300)).to.match(/invalid s3 bucket name/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/s3%3A%2F%2Fab%2Fx?provider=bedrock",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "s3%3A%2F%2Fab%2Fx"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "bedrock"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] bedrock file retrieve: s3 bucket with more than 63 characters - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No 5xx is skipped: a vulnerable outbound request can surface as 500, 502, 503 or 504,",
+                  "// and skipping it would register no assertion, letting the attack case pass vacuously.",
+                  "if ([401, 429].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('caller-supplied s3 bucket cannot choose the request host', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'bucket more than 63 characters was not rejected; it may have chosen the upstream host: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the s3 bucket gate message: ' + t.slice(0, 300)).to.match(/invalid s3 bucket name/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/s3%3A%2F%2Faaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa%2Fx?provider=bedrock",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "s3%3A%2F%2Faaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa%2Fx"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "bedrock"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] bedrock file retrieve: s3 bucket with a space - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No 5xx is skipped: a vulnerable outbound request can surface as 500, 502, 503 or 504,",
+                  "// and skipping it would register no assertion, letting the attack case pass vacuously.",
+                  "if ([401, 429].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('caller-supplied s3 bucket cannot choose the request host', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'bucket a space was not rejected; it may have chosen the upstream host: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the s3 bucket gate message: ' + t.slice(0, 300)).to.match(/invalid s3 bucket name/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/s3%3A%2F%2Fevil%20example%2Fx?provider=bedrock",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "s3%3A%2F%2Fevil%20example%2Fx"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "bedrock"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] bedrock file retrieve: s3 bucket with a backslash - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No 5xx is skipped: a vulnerable outbound request can surface as 500, 502, 503 or 504,",
+                  "// and skipping it would register no assertion, letting the attack case pass vacuously.",
+                  "if ([401, 429].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('caller-supplied s3 bucket cannot choose the request host', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'bucket a backslash was not rejected; it may have chosen the upstream host: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the s3 bucket gate message: ' + t.slice(0, 300)).to.match(/invalid s3 bucket name/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/s3%3A%2F%2Fevil%5Cexample%2Fx?provider=bedrock",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "s3%3A%2F%2Fevil%5Cexample%2Fx"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "bedrock"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] bedrock file list: s3_bucket param with a fragment that truncates the authority - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No 5xx is skipped: a vulnerable outbound request can surface as 500, 502, 503 or 504,",
+                  "// and skipping it would register no assertion, letting the attack case pass vacuously.",
+                  "if ([401, 429].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('caller-supplied s3 bucket cannot choose the request host', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'bucket a fragment that truncates the authority was not rejected; it may have chosen the upstream host: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the s3 bucket gate message: ' + t.slice(0, 300)).to.match(/invalid s3 bucket name/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files?provider=bedrock&s3_bucket=evil.example%23",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "bedrock"
+                },
+                {
+                  "key": "s3_bucket",
+                  "value": "evil.example%23"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] bedrock file list: s3_bucket param with userinfo credentials - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No 5xx is skipped: a vulnerable outbound request can surface as 500, 502, 503 or 504,",
+                  "// and skipping it would register no assertion, letting the attack case pass vacuously.",
+                  "if ([401, 429].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('caller-supplied s3 bucket cannot choose the request host', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'bucket userinfo credentials was not rejected; it may have chosen the upstream host: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the s3 bucket gate message: ' + t.slice(0, 300)).to.match(/invalid s3 bucket name/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files?provider=bedrock&s3_bucket=evil.example%40attacker",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "bedrock"
+                },
+                {
+                  "key": "s3_bucket",
+                  "value": "evil.example%40attacker"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] bedrock file list: s3_bucket param with uppercase characters - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No 5xx is skipped: a vulnerable outbound request can surface as 500, 502, 503 or 504,",
+                  "// and skipping it would register no assertion, letting the attack case pass vacuously.",
+                  "if ([401, 429].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('caller-supplied s3 bucket cannot choose the request host', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'bucket uppercase characters was not rejected; it may have chosen the upstream host: ' + t.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(t, 'expected the s3 bucket gate message: ' + t.slice(0, 300)).to.match(/invalid s3 bucket name/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files?provider=bedrock&s3_bucket=Evil-Example",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "bedrock"
+                },
+                {
+                  "key": "s3_bucket",
+                  "value": "Evil-Example"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock file list with the configured s3 bucket (seeds an s3:// file id) - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var bk = pm.variables.get('awsS3Bucket') || '';",
+                  "if (!bk || bk.indexOf('{{') === 0) { pm.test.skip('awsS3Bucket not configured', function () {}); return; }",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('bedrock file list succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.equal(200); });",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json();",
+                  "var id = (j.data && j.data[0] && j.data[0].id) || '';",
+                  "if (id) { pm.collectionVariables.set('s3hiBedrockFileId', encodeURIComponent(id)); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files?provider=bedrock&s3_bucket={{awsS3Bucket}}&limit=1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "bedrock"
+                },
+                {
+                  "key": "s3_bucket",
+                  "value": "{{awsS3Bucket}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "1"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock file retrieve: legitimate s3:// file id still round-trips - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var bk = pm.variables.get('awsS3Bucket') || '';",
+                  "if (!bk || bk.indexOf('{{') === 0) { pm.test.skip('awsS3Bucket not configured', function () {}); return; }",
+                  "if (!pm.collectionVariables.get('s3hiBedrockFileId')) { pm.test.skip('no seeded s3:// file id', function () {}); return; }",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('a valid bucket is not blocked by the s3 bucket gate', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(t, 'valid bucket was caught by the gate: ' + t.slice(0, 300)).to.not.match(/invalid s3 bucket name/);",
+                  "  pm.expect(pm.response.code, 'legitimate s3:// id failed: ' + t.slice(0, 300)).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/{{s3hiBedrockFileId}}?provider=bedrock",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "{{s3hiBedrockFileId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "bedrock"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-4XX] bedrock file retrieve: valid bucket, missing object reaches AWS - #7307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var bk = pm.variables.get('awsS3Bucket') || '';",
+                  "if (!bk || bk.indexOf('{{') === 0) { pm.test.skip('awsS3Bucket not configured', function () {}); return; }",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('valid bucket reaches AWS instead of the bucket gate', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(t, 'valid bucket was caught by the gate: ' + t.slice(0, 300)).to.not.match(/invalid s3 bucket name/);",
+                  "  pm.expect(pm.response.code, 'expected an upstream 4xx: ' + t.slice(0, 300)).to.be.within(400, 499);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/s3%3A%2F%2F{{awsS3Bucket}}%2Fbifrost-harness-no-such-object?provider=bedrock",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "s3%3A%2F%2F{{awsS3Bucket}}%2Fbifrost-harness-no-such-object"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "bedrock"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
