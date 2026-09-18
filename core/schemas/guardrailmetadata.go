@@ -62,6 +62,7 @@ func cloneChatCompletionTokensDetails(details *ChatCompletionTokensDetails) *Cha
 	clone := *details
 	clone.CitationTokens = cloneInt(details.CitationTokens)
 	clone.NumSearchQueries = cloneInt(details.NumSearchQueries)
+	clone.NumWebFetchRequests = cloneInt(details.NumWebFetchRequests)
 	clone.ImageTokens = cloneInt(details.ImageTokens)
 	return &clone
 }

@@ -70,10 +70,13 @@ func buildAnthropicPassthroughUsage(au *AnthropicUsage) *schemas.BifrostPassthro
 		usage.PromptTokensDetails = details
 	}
 
-	if au.ServerToolUse != nil && au.ServerToolUse.WebSearchRequests > 0 {
-		n := au.ServerToolUse.WebSearchRequests
-		usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
-			NumSearchQueries: &n,
+	if au.ServerToolUse != nil && (au.ServerToolUse.WebSearchRequests > 0 || au.ServerToolUse.WebFetchRequests > 0) {
+		usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+		if n := au.ServerToolUse.WebSearchRequests; n > 0 {
+			usage.CompletionTokensDetails.NumSearchQueries = &n
+		}
+		if n := au.ServerToolUse.WebFetchRequests; n > 0 {
+			usage.CompletionTokensDetails.NumWebFetchRequests = &n
 		}
 	}
 
@@ -156,6 +159,9 @@ func (a *AnthropicPassthroughStreamUsage) ObserveEvent(event []byte) *schemas.Bi
 		}
 		if u.ServerToolUse.WebSearchRequests > c.ServerToolUse.WebSearchRequests {
 			c.ServerToolUse.WebSearchRequests = u.ServerToolUse.WebSearchRequests
+		}
+		if u.ServerToolUse.WebFetchRequests > c.ServerToolUse.WebFetchRequests {
+			c.ServerToolUse.WebFetchRequests = u.ServerToolUse.WebFetchRequests
 		}
 	}
 	if u.OutputTokensDetails != nil {
