@@ -104,14 +104,16 @@ func TestConvertMCPToolToBifrostSchema_PropertyOrderIsDeterministic(t *testing.T
 }
 
 // TestConvertMCPToolToBifrostSchema_SortsPropertiesAndDefs pins the canonical
-// order: mcp-go does not keep the server's order, so keys are sorted.
+// order: mcp-go does not keep the server's order, so keys are rebuilt
+// deterministically - required properties first in the order the author listed
+// them, then the rest alphabetically.
 func TestConvertMCPToolToBifrostSchema_SortsPropertiesAndDefs(t *testing.T) {
 	mcpTool := decodeSchemaOrderTool(t, "search", schemaOrderInputSchema)
 	params := convertMCPToolToBifrostSchema(&mcpTool, defaultLogger).Function.Parameters
 
 	propKeys := params.Properties.Keys()
-	assert.True(t, slices.IsSorted(propKeys), "properties keys not sorted: %v", propKeys)
-	assert.Len(t, propKeys, 6)
+	assert.Equal(t, []string{"query", "filters", "numResults", "objective", "preferences", "urls"}, propKeys,
+		"required first in authored order, then the rest sorted")
 
 	require.NotNil(t, params.Defs)
 	defKeys := params.Defs.Keys()

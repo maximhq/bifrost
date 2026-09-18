@@ -10,6 +10,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/mcptools"
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/maximhq/bifrost/framework/vectorstore"
@@ -311,6 +312,59 @@ func TestWarpSnapshotCarriesQueryScope(t *testing.T) {
 	carried(nil)
 	require.True(t, applied, "the snapshot must carry the request's own scope, not a fresh one")
 	require.Equal(t, "u-1", snapshot.Value(schemas.BifrostContextKeyUserID))
+	// The dashboard is the one caller whose tools default to "my traffic";
+	// the opt-in has to ride along or the tools answer over the whole tenant.
+	require.Equal(t, "u-1", mcptools.DefaultUserScope(snapshot))
+}
+
+// The default-user opt-in is the dashboard's alone. An anonymous dashboard
+// session has no user to default to, and must not opt in with an empty id.
+func TestWarpSnapshotDoesNotOptInWithoutAUser(t *testing.T) {
+	snapshot, cancel, err := snapshotWarpContext(&fasthttp.RequestCtx{}, time.Second)
+	require.NoError(t, err)
+	defer cancel()
+	require.Empty(t, mcptools.DefaultUserScope(snapshot))
+}
+
+// Governance refuses any request whose identity was never settled, so a
+// snapshot has to carry a grant or every tool call fails before reaching the
+// MCP server. The agent derives a fresh request context per tool call the way
+// executeTool does, so the grant is asserted on that derived context, not on
+// the snapshot itself.
+func TestWarpSnapshotSettlesIdentityForToolCalls(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue(schemas.BifrostContextKeyUserID, "u-1")
+	ctx.SetUserValue(schemas.BifrostContextKeyUserEmail, "u1@example.com")
+
+	snapshot, cancel, err := snapshotWarpContext(ctx, time.Second)
+	require.NoError(t, err)
+	defer cancel()
+
+	toolCtx, cancelTool := schemas.NewBifrostContextWithCancel(snapshot)
+	defer cancelTool()
+	g := toolCtx.Grant()
+	require.NotNil(t, g, "a tool call derived from the snapshot must see a settled grant")
+	require.NotNil(t, g.Identity())
+	require.NotNil(t, g.Identity().User())
+	require.Equal(t, "u-1", g.Identity().User().ID)
+	require.Equal(t, "u1@example.com", g.Identity().User().Email)
+	// A dashboard session presents no virtual key; it must not be mistaken for one.
+	require.Empty(t, g.Identity().Credential().Kind)
+}
+
+// An anonymous dashboard session is still a settled identity - "nobody" - not
+// an unsettled one, or governance would refuse it as a wiring fault.
+func TestWarpSnapshotSettlesIdentityWithoutAUser(t *testing.T) {
+	snapshot, cancel, err := snapshotWarpContext(&fasthttp.RequestCtx{}, time.Second)
+	require.NoError(t, err)
+	defer cancel()
+
+	toolCtx, cancelTool := schemas.NewBifrostContextWithCancel(snapshot)
+	defer cancelTool()
+	g := toolCtx.Grant()
+	require.NotNil(t, g)
+	require.NotNil(t, g.Identity())
+	require.Nil(t, g.Identity().User())
 }
 
 // A scope that was set on the request but cannot be carried over is the

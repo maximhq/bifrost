@@ -1,4 +1,4 @@
-package warp
+package mcptools
 
 import (
 	"context"
@@ -11,38 +11,25 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 )
 
-// The named query flows Warp exposes, plus a drill-down and a discovery tool.
-// Each flow is one tool over the logstore read surface; they all take the same
-// filter object, which is what lets one parser and one scope path serve every
-// one of them.
+// The named query flows this server exposes, plus a drill-down and a
+// discovery tool. Each flow is one tool over the logstore read surface; they
+// all take the same filter object, which is what lets one parser and one
+// scope path serve every one of them. filterArg resolves the caller's default
+// scope fresh from ctx on every call: this server has no per-turn boundary,
+// so concurrent callers with different identities can be in flight at once.
 
 // formatWindow renders a window the way every tool result reports it: an
 // absolute UTC instant, regardless of whether the caller passed a relative
 // offset, an absolute date, or nothing.
 func formatWindow(start, end time.Time) map[string]string {
-	// RFC3339Nano rather than a whole-second layout: an unset end_time
-	// defaults to Now(), which carries real sub-second precision, and
-	// truncating it here would report a window up to 999ms wider than what
-	// StartTime/EndTime actually filtered on - exactly the kind of mismatch
-	// the "copy this instead of recomputing" contract above exists to avoid.
-	// A time with no fractional component still formats without one, so this
-	// changes nothing for the common case of a boundary that lands on a
-	// whole second.
 	return map[string]string{
 		"start": start.UTC().Format(time.RFC3339Nano),
 		"end":   end.UTC().Format(time.RFC3339Nano),
 	}
 }
 
-// resolvedWindow reports the absolute window filters actually resolved to.
-//
-// The system prompt requires every answer with numbers to end with an
-// absolute-time provenance block, but "-7d" only becomes an absolute instant
-// inside parseFilters - the model was never told that instant anywhere else,
-// which meant reconstructing it by hand from the current-time reference at
-// the bottom of the prompt, the exact kind of arithmetic that produces a
-// subtly wrong footer. Every flow that resolves a window reports it back
-// here so the model copies rather than recomputes it.
+// resolvedWindow reports the absolute window filters actually resolved to,
+// so the caller copies it rather than recomputing "-7d" by hand.
 func resolvedWindow(filters *logstore.SearchFilters) map[string]string {
 	return formatWindow(*filters.StartTime, *filters.EndTime)
 }
@@ -70,12 +57,12 @@ func semanticSearchLogsTool() Tool {
   },
   "required": ["query", "filters"]
 }`,
-		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
+		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
 			query, _ := args["query"].(string)
-			if deps.semantic == nil {
+			if deps.Semantic == nil {
 				return nil, fmt.Errorf("semantic log search is not configured")
 			}
-			filters, err := filterArg(args, Now(), deps.scope)
+			filters, scope, err := filterArg(ctx, args, Now())
 			if err != nil {
 				return nil, err
 			}
@@ -85,7 +72,7 @@ func semanticSearchLogsTool() Tool {
 			if err != nil {
 				return nil, err
 			}
-			result, err := deps.semantic.Search(ctx, query, filters, limit)
+			result, err := deps.Semantic.Search(ctx, query, filters, limit)
 			if err != nil {
 				return nil, err
 			}
@@ -93,7 +80,7 @@ func semanticSearchLogsTool() Tool {
 				"rows":      result.Rows,
 				"returned":  result.Returned,
 				"threshold": result.Threshold,
-				"scope":     scopeNote(filters, deps.scope),
+				"scope":     scopeNote(filters, scope),
 				"logs_link": logsViewLink(filters),
 				"window":    resolvedWindow(filters),
 			}
@@ -127,9 +114,8 @@ func queryLogsTool() Tool {
   },
   "required": ["filters"]
 }`,
-		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
-			now := Now()
-			filters, err := filterArg(args, now, deps.scope)
+		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
+			filters, scope, err := filterArg(ctx, args, Now())
 			if err != nil {
 				return nil, err
 			}
@@ -145,7 +131,7 @@ func queryLogsTool() Tool {
 			if err != nil {
 				return nil, err
 			}
-			result, err := deps.logManager.Search(ctx, filters, &logstore.PaginationOptions{
+			result, err := deps.LogManager.Search(ctx, filters, &logstore.PaginationOptions{
 				Limit: limit, Offset: 0, SortBy: sortBy, Order: order,
 			})
 			if err != nil {
@@ -155,9 +141,9 @@ func queryLogsTool() Tool {
 			if err != nil {
 				return nil, err
 			}
-			rows := make([]logRow, 0, len(result.Logs))
+			rows := make([]LogRow, 0, len(result.Logs))
 			for i := range result.Logs {
-				rows = append(rows, projectLog(&result.Logs[i], includeContent, LogContentChars))
+				rows = append(rows, ProjectLog(&result.Logs[i], includeContent, LogContentChars))
 			}
 			// total_matching is reported separately from the returned rows so the
 			// model can say "12,400 matched, here are the 10 slowest" instead of
@@ -170,7 +156,7 @@ func queryLogsTool() Tool {
 				// The prompt asks the model to caveat a partial answer, and a caveat
 				// it has to derive by comparing numbers is the one it forgets.
 				"sampled":   int64(len(rows)) < result.Pagination.TotalCount,
-				"scope":     scopeNote(filters, deps.scope),
+				"scope":     scopeNote(filters, scope),
 				"logs_link": logsViewLink(filters),
 				"window":    resolvedWindow(filters),
 			}, nil
@@ -190,19 +176,19 @@ func getLogDetailTool() Tool {
   },
   "required": ["log_id"]
 }`,
-		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
+		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
 			id, _ := args["log_id"].(string)
 			if id == "" {
 				return nil, fmt.Errorf("log_id is required")
 			}
-			entry, err := deps.logManager.GetLog(ctx, id)
+			entry, err := deps.LogManager.GetLog(ctx, id)
 			if err != nil {
 				return nil, fmt.Errorf("could not load log %s: %w", id, err)
 			}
 			if entry == nil {
 				return nil, fmt.Errorf("no log found with id %s", id)
 			}
-			return projectLog(entry, true, DetailContentChars), nil
+			return ProjectLog(entry, true, DetailContentChars), nil
 		},
 	}
 }
@@ -236,13 +222,12 @@ func countLogsTool() Tool {
   },
   "required": ["filters"]
 }`,
-		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
-			now := Now()
-			filters, err := filterArg(args, now, deps.scope)
+		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
+			filters, scope, err := filterArg(ctx, args, Now())
 			if err != nil {
 				return nil, err
 			}
-			stats, err := deps.logManager.GetStats(ctx, filters)
+			stats, err := deps.LogManager.GetStats(ctx, filters)
 			if err != nil {
 				return nil, fmt.Errorf("count failed: %w", err)
 			}
@@ -253,7 +238,7 @@ func countLogsTool() Tool {
 				"total_cost":         stats.TotalCost,
 				"success_rate":       stats.SuccessRate,
 				"average_latency_ms": stats.AverageLatency,
-				"scope":              scopeNote(filters, deps.scope),
+				"scope":              scopeNote(filters, scope),
 				"logs_link":          logsViewLink(filters),
 				"window":             resolvedWindow(filters),
 			}
@@ -290,6 +275,7 @@ func queryMetricsTool() Tool {
 	return Tool{
 		name: "query_metrics",
 		description: "Aggregate statistics and time series over requests: totals, cost, tokens, latency percentiles, throughput. " +
+			"This is also the only tool that splits usage by provider: group_by 'provider' answers 'spend per provider', 'which provider costs the most', 'cost on each provider'. Provider is not a dimension of query_usage_by. " +
 			"This is the cheapest way to answer 'how much', 'how many' and 'is it getting worse'. Without group_by, each series is reduced to one summary per field (total, mean, min, max, first, last) rather than bucket by bucket - total is omitted for a field summing cannot describe, like a percentile. " +
 			"group_by supports 'none' and 'provider' only. With 'provider', series stay as coarse buckets instead of a summary, since collapsing away the per-provider split would defeat the reason to group by it in the first place. 'requests' does not support group_by 'provider' - drop it from metrics or query without group_by. " +
 			"Set compare_to_previous with metrics including summary to answer 'is it up or down vs last period' in this one call, instead of calling this twice with a shifted window.",
@@ -309,9 +295,8 @@ func queryMetricsTool() Tool {
   },
   "required": ["filters", "metrics"]
 }`,
-		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
-			now := Now()
-			filters, err := filterArg(args, now, deps.scope)
+		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
+			filters, scope, err := filterArg(ctx, args, Now())
 			if err != nil {
 				return nil, err
 			}
@@ -358,14 +343,14 @@ func queryMetricsTool() Tool {
 			}
 
 			out := map[string]any{
-				"scope":     scopeNote(filters, deps.scope),
+				"scope":     scopeNote(filters, scope),
 				"logs_link": logsViewLink(filters),
 				"window":    resolvedWindow(filters),
 			}
 			for _, metric := range metrics {
 				switch metric {
 				case "summary":
-					stats, err := deps.logManager.GetStats(ctx, filters)
+					stats, err := deps.LogManager.GetStats(ctx, filters)
 					if err != nil {
 						return nil, fmt.Errorf("stats query failed: %w", err)
 					}
@@ -384,63 +369,63 @@ func queryMetricsTool() Tool {
 					if byProvider {
 						return nil, fmt.Errorf("group_by \"provider\" is not supported for the requests metric; ask for cost, tokens or latency by provider, or requests without grouping")
 					}
-					result, err := deps.logManager.GetHistogram(ctx, filters, bucket)
+					result, err := deps.LogManager.GetHistogram(ctx, filters, bucket)
 					if err != nil {
 						return nil, fmt.Errorf("request histogram failed: %w", err)
 					}
 					out["requests"] = summarizeRequestsHistogram(result)
 				case "tokens":
 					if byProvider {
-						result, err := deps.logManager.GetProviderTokenHistogram(ctx, filters, providerBucket)
+						result, err := deps.LogManager.GetProviderTokenHistogram(ctx, filters, providerBucket)
 						if err != nil {
 							return nil, fmt.Errorf("token histogram failed: %w", err)
 						}
 						out["tokens"] = result
 						continue
 					}
-					result, err := deps.logManager.GetTokenHistogram(ctx, filters, bucket)
+					result, err := deps.LogManager.GetTokenHistogram(ctx, filters, bucket)
 					if err != nil {
 						return nil, fmt.Errorf("token histogram failed: %w", err)
 					}
 					out["tokens"] = summarizeTokensHistogram(result)
 				case "cost":
 					if byProvider {
-						result, err := deps.logManager.GetProviderCostHistogram(ctx, filters, providerBucket)
+						result, err := deps.LogManager.GetProviderCostHistogram(ctx, filters, providerBucket)
 						if err != nil {
 							return nil, fmt.Errorf("cost histogram failed: %w", err)
 						}
 						out["cost"] = result
 						continue
 					}
-					result, err := deps.logManager.GetCostHistogram(ctx, filters, bucket)
+					result, err := deps.LogManager.GetCostHistogram(ctx, filters, bucket)
 					if err != nil {
 						return nil, fmt.Errorf("cost histogram failed: %w", err)
 					}
 					out["cost"] = summarizeCostHistogram(result)
 				case "latency":
 					if byProvider {
-						result, err := deps.logManager.GetProviderLatencyHistogram(ctx, filters, providerBucket)
+						result, err := deps.LogManager.GetProviderLatencyHistogram(ctx, filters, providerBucket)
 						if err != nil {
 							return nil, fmt.Errorf("latency histogram failed: %w", err)
 						}
 						out["latency"] = result
 						continue
 					}
-					result, err := deps.logManager.GetLatencyHistogram(ctx, filters, bucket)
+					result, err := deps.LogManager.GetLatencyHistogram(ctx, filters, bucket)
 					if err != nil {
 						return nil, fmt.Errorf("latency histogram failed: %w", err)
 					}
 					out["latency"] = summarizeLatencyHistogram(result)
 				case "throughput":
 					if byProvider {
-						result, err := deps.logManager.GetProviderThroughputHistogram(ctx, filters, providerBucket)
+						result, err := deps.LogManager.GetProviderThroughputHistogram(ctx, filters, providerBucket)
 						if err != nil {
 							return nil, fmt.Errorf("throughput histogram failed: %w", err)
 						}
 						out["throughput"] = result
 						continue
 					}
-					result, err := deps.logManager.GetThroughputHistogram(ctx, filters, bucket)
+					result, err := deps.LogManager.GetThroughputHistogram(ctx, filters, bucket)
 					if err != nil {
 						return nil, fmt.Errorf("throughput histogram failed: %w", err)
 					}
@@ -463,7 +448,7 @@ func queryMetricsTool() Tool {
 // that window. It costs one extra store query so query_metrics's caller never
 // has to spend a second tool call computing the same comparison rankings get
 // for free.
-func previousPeriodTrend(ctx context.Context, deps *ToolDeps, filters *logstore.SearchFilters, current *logstore.SearchStats) (map[string]any, error) {
+func previousPeriodTrend(ctx context.Context, deps *Deps, filters *logstore.SearchFilters, current *logstore.SearchStats) (map[string]any, error) {
 	span := filters.EndTime.Sub(*filters.StartTime)
 	prevEnd := *filters.StartTime
 	prevStart := prevEnd.Add(-span)
@@ -473,7 +458,7 @@ func previousPeriodTrend(ctx context.Context, deps *ToolDeps, filters *logstore.
 	prevFilters := *filters
 	prevFilters.StartTime, prevFilters.EndTime = &prevStart, &prevEnd
 
-	previous, err := deps.logManager.GetStats(ctx, &prevFilters)
+	previous, err := deps.LogManager.GetStats(ctx, &prevFilters)
 	if err != nil {
 		return nil, err
 	}
@@ -503,11 +488,7 @@ func pctChange(old, new float64) float64 {
 }
 
 // seriesSummary reduces a numeric series to its shape rather than its detail:
-// the same handful of numbers whether the window was an hour or a month,
-// which is what actually makes query_metrics cheap regardless of range - the
-// tool's own description has claimed this since it was written, but nothing
-// executed it; a full-resolution bucket array was returned instead, and nothing
-// stopped that array from being the thing that blew the result-size budget.
+// the same handful of numbers whether the window was an hour or a month.
 //
 // Total is a pointer, omitted from JSON when nil, because it is only a real
 // number for an additive field (a request count, a token count). Summing a
@@ -723,6 +704,7 @@ func queryUsageByTool() Tool {
 			"Answers 'who is spending the most', 'which team spends the most', 'which key is burning the budget', 'is X up or down'. " +
 			"Each ranking row already carries a trend block (has_previous_period, requests_trend, tokens_trend, cost_trend); read it rather than calling this twice to check direction. " +
 			"Dimensions: " + strings.Join(describedValues, "; ") + ". " +
+			"Provider is not one of them: for spend or requests split by provider, call query_metrics with group_by 'provider'. " +
 			"Note: a per-entity time series is not available for any dimension; to see one, filter by the relevant id(s) and call query_metrics, which returns one combined series.",
 		schemaJSON: `{
   "type": "object",
@@ -733,15 +715,14 @@ func queryUsageByTool() Tool {
   },
   "required": ["dimension", "filters"]
 }`,
-		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
+		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
 			raw, _ := args["dimension"].(string)
 			dimension, ok := validRankingDimension(raw)
 			if !ok {
-				return nil, fmt.Errorf("unknown dimension %q; supported: %s", raw, strings.Join(enumValues, ", "))
+				return nil, fmt.Errorf("unknown dimension %q; supported: %s. For a breakdown by provider, call query_metrics with group_by \"provider\"", raw, strings.Join(enumValues, ", "))
 			}
 
-			now := Now()
-			filters, err := filterArg(args, now, deps.scope)
+			filters, scope, err := filterArg(ctx, args, Now())
 			if err != nil {
 				return nil, err
 			}
@@ -750,13 +731,13 @@ func queryUsageByTool() Tool {
 				return nil, err
 			}
 			filters.RankingLimit = &limit
-			result, err := deps.logManager.GetDimensionRankings(ctx, filters, dimension)
+			result, err := deps.LogManager.GetDimensionRankings(ctx, filters, dimension)
 			if err != nil {
 				return nil, fmt.Errorf("%s rankings failed: %w", dimension, err)
 			}
 			return map[string]any{
 				"rankings":  result,
-				"scope":     scopeNote(filters, deps.scope),
+				"scope":     scopeNote(filters, scope),
 				"logs_link": logsViewLink(filters),
 				"window":    resolvedWindow(filters),
 			}, nil
@@ -804,9 +785,8 @@ func queryModelsTool() Tool {
   },
   "required": ["filters"]
 }`,
-		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
-			now := Now()
-			filters, err := filterArg(args, now, deps.scope)
+		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
+			filters, scope, err := filterArg(ctx, args, Now())
 			if err != nil {
 				return nil, err
 			}
@@ -816,13 +796,13 @@ func queryModelsTool() Tool {
 			}
 			filters.RankingLimit = &limit
 
-			rankings, err := deps.logManager.GetModelRankings(ctx, filters)
+			rankings, err := deps.LogManager.GetModelRankings(ctx, filters)
 			if err != nil {
 				return nil, fmt.Errorf("model rankings failed: %w", err)
 			}
 			out := map[string]any{
 				"models":    rankings,
-				"scope":     scopeNote(filters, deps.scope),
+				"scope":     scopeNote(filters, scope),
 				"logs_link": logsViewLink(filters),
 				"window":    resolvedWindow(filters),
 			}
@@ -834,18 +814,18 @@ func queryModelsTool() Tool {
 			if includePerformance {
 				// A coarse bucket on purpose. The dashboard's bucket size is chosen for
 				// a chart with hundreds of pixels; the same series as JSON, once per
-				// provider, was overflowing the tool-result budget and sending Warp
-				// round the retry loop. A dozen buckets carry the shape of a latency
-				// trend, which is all the answer needs.
+				// provider, was overflowing the tool-result budget and sending the
+				// caller round the retry loop. A dozen buckets carry the shape of a
+				// latency trend, which is all the answer needs.
 				bucket, err := coarseBucketSize(filters)
 				if err != nil {
 					return nil, err
 				}
-				latency, err := deps.logManager.GetProviderLatencyHistogram(ctx, filters, bucket)
+				latency, err := deps.LogManager.GetProviderLatencyHistogram(ctx, filters, bucket)
 				if err != nil {
 					return nil, fmt.Errorf("provider latency failed: %w", err)
 				}
-				throughput, err := deps.logManager.GetProviderThroughputHistogram(ctx, filters, bucket)
+				throughput, err := deps.LogManager.GetProviderThroughputHistogram(ctx, filters, bucket)
 				if err != nil {
 					return nil, fmt.Errorf("provider throughput failed: %w", err)
 				}
@@ -863,31 +843,20 @@ func queryModelsTool() Tool {
 // before it can be answered correctly: who is asking and what the default
 // scope is, which teams/customers/business units exist to narrow to, and
 // every value a filter field actually accepts.
-//
-// This used to be two tools - describe_scope and describe_filter_space -
-// that happened to both fetch virtual keys independently, for no reason
-// beyond having grown separately: whichever one the model reached for first
-// ran the same lookup the other would also have run. One tool, one call,
-// covering both questions ("who is this about" and "what values exist"),
-// closes that gap and is the highest-leverage call available for answer
-// quality - a guessed model or key name returns an empty result that reads
-// exactly like a real finding of zero, and a question with no stated scope
-// has no sensible default without this.
 func describeFilterSpaceTool() Tool {
 	return Tool{
 		name: "describe_filter_space",
 		description: "Report who is asking, what teams/customers/business units they could mean, and the real values that appear in this deployment's logs - models, apps, stop reasons, virtual keys - up to 50 of each, not necessarily every one that exists. " +
 			"Call this before filtering by a name you are not certain about: guessing a model or key name returns an empty result that looks like a real finding. " +
 			"If a deployment has more than 50 of something, this list is a sample, not the full set - pass search to narrow to the specific value you need rather than treating an absence here as proof it does not exist. " +
-			"Also call it whenever a question about usage, spend or performance does not say whose traffic it means - with a known user, their own traffic is the default; without one there is no default, so ask. " +
-			"ask_user accepts at most 8 options, well under what teams, customers and business units here can add up to together, so narrow before asking: use any wording already in the question to filter this tool's results down to a short list, or, if the question gives no hint which of team, customer or business unit it means, ask that first and only list one dimension's values (still narrowed to 8) once they answer. Never pass every team, customer and business unit into one ask_user call.",
+			"Also call it whenever a question about usage, spend or performance does not say whose traffic it means - with a known caller, their own traffic is the default; without one there is no default.",
 		schemaJSON: `{
   "type": "object",
   "properties": {
     "search": {"type": "string", "description": "Optional substring to narrow the returned values."}
   }
 }`,
-		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
+		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
 			// A discarded type assertion turned a malformed search into "", and the
 			// tool then ran four unfiltered discovery queries and returned every
 			// value in the deployment - a broader answer than the one asked for,
@@ -901,29 +870,30 @@ func describeFilterSpaceTool() Tool {
 				query = text
 			}
 			const limit = 50
+			scope := scopeFromContext(ctx)
 
 			out := map[string]any{
-				"caller_is_identified": deps.scope.HasIdentity,
+				"caller_is_identified": scope.HasIdentity,
 				"default_scope": func() string {
-					if deps.scope.HasIdentity {
+					if scope.HasIdentity {
 						return "the person asking"
 					}
-					return "none - ask which team, customer or business unit is meant"
+					return "none - ask which team, customer or business unit is meant, or name it explicitly"
 				}(),
 			}
-			if deps.scope.HasIdentity {
-				out["caller_user_id"] = deps.scope.UserID
+			if scope.HasIdentity {
+				out["caller_user_id"] = scope.UserID
 			}
 
-			models, err := deps.logManager.GetAvailableModels(ctx, limit, query)
+			models, err := deps.LogManager.GetAvailableModels(ctx, limit, query)
 			if err != nil {
 				return nil, fmt.Errorf("could not list models: %w", err)
 			}
-			apps, err := deps.logManager.GetAvailableApps(ctx, limit, query)
+			apps, err := deps.LogManager.GetAvailableApps(ctx, limit, query)
 			if err != nil {
 				return nil, fmt.Errorf("could not list apps: %w", err)
 			}
-			stopReasons, err := deps.logManager.GetAvailableStopReasons(ctx, limit, query)
+			stopReasons, err := deps.LogManager.GetAvailableStopReasons(ctx, limit, query)
 			if err != nil {
 				return nil, fmt.Errorf("could not list stop reasons: %w", err)
 			}
@@ -933,19 +903,15 @@ func describeFilterSpaceTool() Tool {
 
 			// virtual_keys, teams, customers and business_units are the distinct-value
 			// lookups the Logs filter bar uses - one indexed DISTINCT each, run
-			// concurrently. A ranking used to stand here for the org-hierarchy
-			// dimensions; it fanned every row out through JSON-array columns, tens of
-			// seconds on a large table before Warp could even ask its question, all
-			// to learn which names exist. A distinct lookup answers that in
-			// milliseconds - nothing downstream needs the rank, only the name.
+			// concurrently.
 			lookups := []struct {
 				key    string
 				lookup func(context.Context, int, string) ([]KeyPair, error)
 			}{
-				{"virtual_keys", deps.logManager.GetAvailableVirtualKeys},
-				{"teams", deps.logManager.GetAvailableTeams},
-				{"customers", deps.logManager.GetAvailableCustomers},
-				{"business_units", deps.logManager.GetAvailableBusinessUnits},
+				{"virtual_keys", deps.LogManager.GetAvailableVirtualKeys},
+				{"teams", deps.LogManager.GetAvailableTeams},
+				{"customers", deps.LogManager.GetAvailableCustomers},
+				{"business_units", deps.LogManager.GetAvailableBusinessUnits},
 			}
 			results := make([][]KeyPair, len(lookups))
 			errs := make([]error, len(lookups))

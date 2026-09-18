@@ -40,6 +40,7 @@ import (
 	"github.com/maximhq/bifrost/framework/objectstore"
 	plugins "github.com/maximhq/bifrost/framework/plugins"
 	"github.com/maximhq/bifrost/framework/vectorstore"
+	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/maximhq/bifrost/plugins/compat"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
@@ -2464,9 +2465,16 @@ func syncMCPConfigFromFile(ctx context.Context, config *Config, configData *Conf
 	// configuration of any existing client whose file declaration was
 	// rejected. A declaration the store refuses must never drive the runtime
 	// (a sub-second interval, for one, would spin the checker).
-	runtimeClients := make([]*schemas.MCPClientConfig, 0, len(fileMCPConfig.ClientConfigs))
+	runtimeClients := make([]*schemas.MCPClientConfig, 0, len(fileMCPConfig.ClientConfigs)+1)
 	updates := make([]configstoreTables.TableMCPClient, 0)
 	adds := make([]*schemas.MCPClientConfig, 0)
+	// Bifrost's own MCP server is registered by the server at boot, never
+	// declared in config.json, so the file's silence about it is not a request
+	// to remove it.
+	if builtin := existingByName[warp.BifrostMCPClientName]; builtin != nil {
+		keepIDs[builtin.ID] = true
+		runtimeClients = append(runtimeClients, builtin)
+	}
 	for _, fileClient := range fileMCPConfig.ClientConfigs {
 		if fileClient == nil {
 			continue

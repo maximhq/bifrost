@@ -25,11 +25,13 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/mcptools"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	dynamicPlugins "github.com/maximhq/bifrost/framework/plugins"
 	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/framework/tracing"
+	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/maximhq/bifrost/framework/webhooks"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
@@ -330,6 +332,59 @@ func (s *GovernanceInMemoryStore) GetMCPClientNames() map[string]string {
 
 func (s *GovernanceInMemoryStore) GetMCPClientBySlug(slug string) (string, string, bool) {
 	return s.Config.GetMCPClientBySlug(slug)
+}
+
+// registerBifrostMCPServer hosts Warp's read-only log/metrics/governance query
+// tools (framework/mcptools) as an ordinary MCP client named
+// warp.BifrostMCPClientName, reachable at /mcp/bifrost by any virtual-key-
+// authenticated MCP client. Ordinary is the point: it is persisted like a
+// user-added client, so VK grants, the dashboard's client picker and the
+// pricing lookup all work without special-casing it.
+//
+// It runs after plugins load (the tools need the logging plugin's store) and
+// before ConnectConfiguredMCPClients. On a later boot the row already sits in
+// MCPConfig.ClientConfigs, loaded from the store, but with no server pointer -
+// that only exists in this process - so it is attached here and the boot dial
+// connects the client like any other. On the first boot the row is created and
+// the client registered directly. Without a config store nothing persists and
+// the in-memory registration is all there is.
+func (s *BifrostHTTPServer) registerBifrostMCPServer(ctx context.Context) {
+	warpService := s.WarpHandler.Service()
+	// A nil LogReader (logging disabled) still gets a server: every tool reports
+	// itself unavailable rather than panicking on a nil dependency.
+	server := mcptools.NewServer(&mcptools.Deps{
+		LogManager: warpService.LogReader(),
+		Semantic:   warpService.SemanticSearcher(),
+		Governance: warpService.GovernanceReader(),
+	})
+	if s.Config.MCPConfig != nil {
+		for _, existing := range s.Config.MCPConfig.ClientConfigs {
+			if existing != nil && existing.Name == warp.BifrostMCPClientName {
+				// The manager's boot list shares these pointers, so the dial sees this.
+				existing.InProcessServer = server
+				return
+			}
+		}
+	}
+	clientConfig := &schemas.MCPClientConfig{
+		ID:              uuid.NewString(),
+		Name:            warp.BifrostMCPClientName,
+		ConnectionType:  schemas.MCPConnectionTypeInProcess,
+		InProcessServer: server,
+		EndpointSlug:    "bifrost",
+		ToolsToExecute:  schemas.WhiteList{"*"}, // narrowed per-VK by governance tool grants
+	}
+	if s.Config.ConfigStore != nil {
+		if err := s.Config.ConfigStore.CreateMCPClientConfig(ctx, clientConfig); err != nil {
+			logger.Error("failed to persist %s MCP client: %v", warp.BifrostMCPClientName, err)
+		}
+	}
+	// Config.AddMCPClient, not s.AddMCPClient: the latter resyncs
+	// MCPServerHandler, which Bootstrap resyncs unconditionally after the boot
+	// dial anyway.
+	if err := s.Config.AddMCPClient(ctx, clientConfig); err != nil {
+		logger.Error("failed to register %s MCP client: %v", warp.BifrostMCPClientName, err)
+	}
 }
 
 // AddMCPClient adds a new MCP client to the in-memory store
@@ -3035,6 +3090,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		go s.PersistMCPClientTools(s.Ctx, clientID, tools, toolNameMapping)
 		go s.SyncMCPServersAfterToolsChange(s.Ctx, clientID)
 	})
+	s.registerBifrostMCPServer(s.Ctx)
 	// Dial configured MCP clients now that every plugin is registered in the core.
 	// Construction (bifrost.Init) no longer connects MCP, so connecting here ensures
 	// each client's PreMCPConnectionHook runs against the full plugin set rather than

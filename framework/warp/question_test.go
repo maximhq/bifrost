@@ -110,7 +110,7 @@ func TestWarpAgentEndsTurnOnQuestion(t *testing.T) {
 			`{"question":"Which period?","kind":"time_range","options":[{"label":"Last 7 days","hint":"-7d"},{"label":"Last 30 days","hint":"-30d"}]}`),
 		TextTurn("should never be reached"),
 	}}
-	agent := newTestAgent(model, &fakeLogReader{}, 8)
+	agent := newTestAgent(t, model, &fakeLogReader{}, 8)
 
 	events := collectEvents(t, agent, context.Background())
 
@@ -135,7 +135,7 @@ func TestWarpAgentTreatsInvalidQuestionAsAToolError(t *testing.T) {
 		ToolTurn("ask-bad", AskUserTool, `{"question":"Which?","options":[]}`),
 		TextTurn("recovered"),
 	}}
-	agent := newTestAgent(model, &fakeLogReader{}, 8)
+	agent := newTestAgent(t, model, &fakeLogReader{}, 8)
 
 	events := collectEvents(t, agent, context.Background())
 
@@ -145,7 +145,7 @@ func TestWarpAgentTreatsInvalidQuestionAsAToolError(t *testing.T) {
 }
 
 func TestWarpPromptCarriesQuestionRules(t *testing.T) {
-	content := systemInstructions(&schemas.WarpConfig{}, true)
+	content := systemInstructions(&schemas.WarpConfig{})
 
 	require.Contains(t, content, AskUserTool)
 	require.Contains(t, content, "Ask about one thing at a time")
@@ -167,7 +167,7 @@ func TestWarpAgentRefusesToKeepAsking(t *testing.T) {
 
 	// Under the limit the question is still posed.
 	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{ask()}}
-	agent := newTestAgent(model, &fakeLogReader{}, 8)
+	agent := newTestAgent(t, model, &fakeLogReader{}, 8)
 	agent.questionsAsked = MaxConsecutiveQuestions - 1
 	events := collectEvents(t, agent, context.Background())
 	require.Contains(t, eventTypes(events), EventQuestion, "the model may still ask below the limit")
@@ -175,7 +175,7 @@ func TestWarpAgentRefusesToKeepAsking(t *testing.T) {
 	// At the limit it is refused, and the model gets a tool error back rather
 	// than the turn ending on another question.
 	model = &scriptedModel{turns: []*schemas.BifrostResponsesResponse{ask(), TextTurn("About $412.")}}
-	agent = newTestAgent(model, &fakeLogReader{}, 8)
+	agent = newTestAgent(t, model, &fakeLogReader{}, 8)
 	agent.questionsAsked = MaxConsecutiveQuestions
 	events = collectEvents(t, agent, context.Background())
 

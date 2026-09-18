@@ -8,6 +8,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/mcptools"
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -26,6 +27,15 @@ import (
 //
 // If you add anything to this function, add it here rather than reading ctx
 // inside the goroutine.
+//
+// The snapshot is a request context with a settled identity, not a plain
+// context.Context. Every tool call the agent makes derives its own request
+// context from this one and inherits that identity through it. Governance
+// refuses a request whose identity was never settled - it cannot tell "nobody"
+// from "not asked" - so a snapshot that carried the scope but no grant would
+// still fail every tool call. The dashboard user presents no virtual key, so
+// the settled identity resolves to no permits: unrestricted at the grant layer,
+// with the row-level QueryScope doing the actual narrowing.
 func snapshotWarpContext(ctx *fasthttp.RequestCtx, timeout time.Duration) (context.Context, context.CancelFunc, error) {
 	base := context.Background()
 
@@ -45,14 +55,28 @@ func snapshotWarpContext(ctx *fasthttp.RequestCtx, timeout time.Duration) (conte
 	for _, key := range []any{
 		schemas.IsLocalAdminContextKey,
 		schemas.BifrostContextKeyUserID,
+		schemas.BifrostContextKeyUserName,
+		schemas.BifrostContextKeyUserEmail,
 		schemas.BifrostContextKeyUserRoleID,
 	} {
 		if value := ctx.UserValue(key); value != nil {
 			base = context.WithValue(base, key, value)
 		}
 	}
-	snapshot, cancel := context.WithTimeout(base, timeout)
-	return snapshot, cancel, nil
+	// The dashboard is the one caller whose questions default to "my traffic":
+	// the tools on Bifrost's MCP server narrow to this user only when told to, and only
+	// this transport tells them. /mcp admission never sets it, so an external
+	// harness is scoped by tenant alone.
+	if userID, _ := ctx.UserValue(schemas.BifrostContextKeyUserID).(string); userID != "" {
+		base = mcptools.WithDefaultUserScope(base, userID)
+	}
+	timed, cancelTimeout := context.WithTimeout(base, timeout)
+	snapshot, cancelSnapshot := schemas.NewBifrostContextWithCancel(timed)
+	lib.SettleIdentity(snapshot)
+	return snapshot, func() {
+		cancelSnapshot()
+		cancelTimeout()
+	}, nil
 }
 
 // chat is the agent endpoint.

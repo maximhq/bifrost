@@ -8,6 +8,7 @@ import (
 
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/mcptools"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 )
 
@@ -27,16 +28,13 @@ type SemanticSearcher struct {
 	logs SemanticHydrator
 }
 
-type SemanticSearchRow struct {
-	Score float64 `json:"score"`
-	logRow
-}
-
-type SemanticSearchResult struct {
-	Rows      []SemanticSearchRow `json:"rows"`
-	Returned  int                 `json:"returned"`
-	Threshold float64             `json:"threshold"`
-}
+// SemanticSearchRow and SemanticSearchResult are mcptools' shapes: the
+// searcher satisfies mcptools.SemanticSearcher, and semantic_search_logs on
+// the server returns exactly what this produces.
+type (
+	SemanticSearchRow    = mcptools.SemanticSearchRow
+	SemanticSearchResult = mcptools.SemanticSearchResult
+)
 
 func NewSemanticSearcher(store configstore.WarpStore, vectors vectorstore.VectorStore, embed EmbeddingExecutor, logs SemanticHydrator) *SemanticSearcher {
 	return &SemanticSearcher{store: store, vectors: vectors, embed: embed, logs: logs}
@@ -129,7 +127,7 @@ func (s *SemanticSearcher) Search(ctx context.Context, query string, filters *lo
 			}
 			result.Rows = append(result.Rows, SemanticSearchRow{
 				Score:  scores[id],
-				logRow: projectLog(entry, true, LogContentChars),
+				LogRow: mcptools.ProjectLog(entry, true, mcptools.LogContentChars),
 			})
 			if len(result.Rows) == limit {
 				break
@@ -152,7 +150,7 @@ func (s *SemanticSearcher) Search(ctx context.Context, query string, filters *lo
 func warpMaxSemanticLimit() int {
 	// Keep the vector and model-context caps aligned even if the config ceiling
 	// grows independently later.
-	return min(warpSemanticCandidateLimit, MaxLogRows)
+	return min(warpSemanticCandidateLimit, mcptools.MaxLogRows)
 }
 
 func semanticCandidateID(candidate vectorstore.SearchResult) string {
