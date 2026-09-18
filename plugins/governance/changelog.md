@@ -1,3 +1,6 @@
+- fix: the billing-idempotency key mixes in the internally minted `BillingNonce`, so caller-forged `x-request-id` duplicates can no longer suppress charges (#7303)
+- fix: virtual key credentials are validated before realtime session admission (#7317)
+- chore: upgraded core to v1.9.1 and framework to v1.7.1
 - feat: MCP tool logs record governance entity names beside their IDs, so the plugin stamps `user_name`, `team_name`, `customer_name`, `business_unit_name` and the multi-valued team, customer and business-unit sets onto the log entry at ingestion instead of leaving the dashboard to render raw UUIDs (#7154)
 - feat: endpoint-attributed MCP inspections carry bounded identity (device, app key, server label, tool name, decision) from the gateway into the MCP authorization path, so an inspected tool call is attributed without trusting payload-supplied headers (#6959)
 - feat: governance errors are classified into the normalized `error_type` vocabulary, so a 429 raised by a governance rate limit is distinguishable from an upstream 429 on `bifrost_error_requests_total` (#7141)
