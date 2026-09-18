@@ -8496,6 +8496,17 @@ func convertBifrostToolsToAnthropic(caps schemas.ModelCaps, tools []schemas.Resp
 		}
 	}
 
+	// An OpenAI-origin "programmatic" caller has to be renamed to the code execution
+	// version this request runs on, and that version may have to be raised to reach it.
+	programmaticCaller, codeExecEmitVersion := "", ""
+	for _, tool := range tools {
+		if hasProgrammaticCaller(tool.AllowedCallers) {
+			declaredVersion, hasCodeExecution := declaredCodeExecutionVersion(tools)
+			programmaticCaller, codeExecEmitVersion = resolveAnthropicProgrammaticCaller(declaredVersion, hasCodeExecution)
+			break
+		}
+	}
+
 	anthropicTools := []AnthropicTool{}
 	mcpServers := []AnthropicMCPServerV2{}
 	for _, tool := range tools {
@@ -8506,18 +8517,28 @@ func convertBifrostToolsToAnthropic(caps schemas.ModelCaps, tools []schemas.Resp
 			}
 			if toolset != nil {
 				mcpTool := AnthropicTool{MCPToolset: toolset}
-				applyResponsesToolAnthropicFlags(&mcpTool, &tool)
+				applyResponsesToolAnthropicFlags(&mcpTool, &tool, programmaticCaller)
 				anthropicTools = append(anthropicTools, mcpTool)
 			}
 			continue
 		}
 		toolForConversion := &tool
+		if codeExecEmitVersion != "" && tool.Type == schemas.ResponsesToolTypeCodeInterpreter {
+			toolCopy := tool
+			codeInterpreterCopy := schemas.ResponsesToolCodeInterpreter{}
+			if tool.ResponsesToolCodeInterpreter != nil {
+				codeInterpreterCopy = *tool.ResponsesToolCodeInterpreter
+			}
+			codeInterpreterCopy.Version = schemas.Ptr(codeExecEmitVersion)
+			toolCopy.ResponsesToolCodeInterpreter = &codeInterpreterCopy
+			toolForConversion = &toolCopy
+		}
 		if tool.ResponsesToolFunction != nil && tool.ResponsesToolFunction.Parameters != nil {
 			normalized, err := normalizeAnthropicToolInputSchema(tool.ResponsesToolFunction.Parameters)
 			if err != nil {
 				return nil, nil, err
 			}
-			toolCopy := tool
+			toolCopy := *toolForConversion
 			functionCopy := *tool.ResponsesToolFunction
 			functionCopy.Parameters = normalized
 			toolCopy.ResponsesToolFunction = &functionCopy
@@ -8525,7 +8546,7 @@ func convertBifrostToolsToAnthropic(caps schemas.ModelCaps, tools []schemas.Resp
 		}
 		anthropicTool := convertBifrostToolToAnthropic(caps, toolForConversion, provider, hasWebSearchOrFetch)
 		if anthropicTool != nil {
-			applyResponsesToolAnthropicFlags(anthropicTool, &tool)
+			applyResponsesToolAnthropicFlags(anthropicTool, &tool, programmaticCaller)
 			anthropicTools = append(anthropicTools, *anthropicTool)
 		}
 	}
@@ -8567,7 +8588,7 @@ func applyAnthropicToolFlagsToResponsesTool(at *AnthropicTool, rt *schemas.Respo
 // neutral ResponsesTool onto the provider-native AnthropicTool. Called once
 // per converted tool so every branch in convertBifrostToolToAnthropic
 // benefits without duplicating the logic on each return path.
-func applyResponsesToolAnthropicFlags(at *AnthropicTool, rt *schemas.ResponsesTool) {
+func applyResponsesToolAnthropicFlags(at *AnthropicTool, rt *schemas.ResponsesTool, programmaticCaller string) {
 	if at == nil || rt == nil {
 		return
 	}
@@ -8575,7 +8596,7 @@ func applyResponsesToolAnthropicFlags(at *AnthropicTool, rt *schemas.ResponsesTo
 		at.DeferLoading = rt.DeferLoading
 	}
 	if len(rt.AllowedCallers) > 0 {
-		at.AllowedCallers = rt.AllowedCallers
+		at.AllowedCallers = anthropicAllowedCallers(rt.AllowedCallers, programmaticCaller)
 	}
 	if len(rt.InputExamples) > 0 {
 		at.InputExamples = make([]AnthropicToolInputExample, len(rt.InputExamples))
@@ -8589,6 +8610,22 @@ func applyResponsesToolAnthropicFlags(at *AnthropicTool, rt *schemas.ResponsesTo
 	if rt.EagerInputStreaming != nil {
 		at.EagerInputStreaming = rt.EagerInputStreaming
 	}
+}
+
+// declaredCodeExecutionVersion returns the code execution version the request declares
+// and whether it declares the tool at all. An OpenAI-origin code_interpreter carries no
+// version, which is the case resolveAnthropicProgrammaticCaller has to raise.
+func declaredCodeExecutionVersion(tools []schemas.ResponsesTool) (string, bool) {
+	for _, tool := range tools {
+		if tool.Type != schemas.ResponsesToolTypeCodeInterpreter {
+			continue
+		}
+		if tool.ResponsesToolCodeInterpreter != nil && tool.ResponsesToolCodeInterpreter.Version != nil {
+			return *tool.ResponsesToolCodeInterpreter.Version, true
+		}
+		return "", true
+	}
+	return "", false
 }
 
 // Helper function to convert Tool back to AnthropicTool
