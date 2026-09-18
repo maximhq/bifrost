@@ -580,7 +580,12 @@ func writeWSShortCircuitResponse(session *bfws.Session, resp *schemas.BifrostRes
 func parseUpstreamWSEvent(data []byte, provider schemas.ModelProvider, model string) *schemas.BifrostResponsesStreamResponse {
 	var streamResp schemas.BifrostResponsesStreamResponse
 	if err := sonic.Unmarshal(data, &streamResp); err != nil {
-		return nil
+		// shell_call_output_content.delta sends `delta` as an object, which the string
+		// field rejects; the event is relayed either way, this keeps it in the logs.
+		streamResp = schemas.BifrostResponsesStreamResponse{}
+		if err := schemas.UnmarshalResponsesStreamObjectDelta(data, &streamResp); err != nil {
+			return nil
+		}
 	}
 	if streamResp.Type == "" {
 		return nil
