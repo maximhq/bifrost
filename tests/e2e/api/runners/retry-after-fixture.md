@@ -35,9 +35,12 @@ receive `hello`. A fresh GUID in each request body separates repeated runs.
 3. Filter and run the four opt-in cases:
 
    ```sh
-   node tests/e2e/api/runners/augment-provider-harness.mjs --source tests/e2e/api/collections/provider-harness.json --out /tmp/retry-after-augmented.json
-   node tests/e2e/api/runners/filter-collection.mjs --source /tmp/retry-after-augmented.json --out /tmp/retry-after-filtered.json --provider openai --feature '#6971'
-   newman run /tmp/retry-after-filtered.json --env-var baseUrl=http://localhost:8080 --env-var retryAfterFixture=1
+   workdir="$(mktemp -d)"
+   trap 'rm -rf "$workdir"' EXIT
+
+   node tests/e2e/api/runners/augment-provider-harness.mjs --source tests/e2e/api/collections/provider-harness.json --out "$workdir/retry-after-augmented.json"
+   node tests/e2e/api/runners/filter-collection.mjs --source "$workdir/retry-after-augmented.json" --out "$workdir/retry-after-filtered.json" --provider openai --feature '#6971'
+   newman run "$workdir/retry-after-filtered.json" --env-var baseUrl=http://localhost:8080 --env-var retryAfterFixture=1
    ```
 
 The cases pin seconds, HTTP-date, streaming startup, and the configured backoff

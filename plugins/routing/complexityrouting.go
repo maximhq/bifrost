@@ -31,8 +31,8 @@ func (p *RoutingPlugin) computeComplexity(
 	sessionID, _ := ctx.Value(schemas.BifrostContextKeySessionID).(string)
 	sessionActive := p.sessionEnabled.Load() && sessionID != "" && p.sessionStore != nil
 
-	if disposition != complexity.InputClassifiable {
-		if sessionActive && disposition == complexity.InputContinuation {
+	if disposition == complexity.InputContinuation {
+		if sessionActive {
 			key := buildComplexitySessionKey(ctx, virtualKeyID, sessionID)
 			tier, found, err := p.sessionStore.load(key, true)
 			if err != nil {
@@ -48,6 +48,16 @@ func (p *RoutingPlugin) computeComplexity(
 				return result
 			}
 		}
+		if input.LastUserText == "" {
+			publishComplexityDecision(ctx, nil, complexity.MechanismSkipped, nil)
+			ctx.AppendRoutingEngineLog(
+				schemas.RoutingEngineRoutingRule,
+				schemas.LogLevelInfo,
+				noClassifiableComplexityInputLog,
+			)
+			return nil
+		}
+	} else if disposition != complexity.InputClassifiable {
 
 		publishComplexityDecision(ctx, nil, complexity.MechanismSkipped, nil)
 		ctx.AppendRoutingEngineLog(

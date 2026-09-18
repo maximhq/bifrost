@@ -71,6 +71,7 @@ func TestAnthropic(t *testing.T) {
 			StructuredOutputs:            true, // Structured outputs with nullable enum support
 			PassthroughAPI:               true,
 			Compaction:                   true,
+			ToolSearch:                   true,
 			InterleavedThinking:          true,
 			FastMode:                     false, // Enable when test API key has Opus 4.6 access
 			EagerInputStreaming:          true,  // fine-grained-tool-streaming-2025-05-14 (GA on Anthropic)

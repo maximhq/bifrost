@@ -133,6 +133,14 @@ func TestRetryAfterWaitIsCancellable(t *testing.T) {
 		if err == nil || err.Error == nil || err.Error.Type == nil || *err.Error.Type != schemas.RequestCancelled {
 			t.Fatalf("expected request cancellation, got %v", err)
 		}
+		logs := ctx.GetRoutingEngineLogs()
+		if len(logs) == 0 {
+			t.Fatal("expected a terminal cancellation audit entry")
+		}
+		terminal := logs[len(logs)-1]
+		if terminal.Engine != schemas.RoutingEngineCore || terminal.Level != schemas.LogLevelError || terminal.Message != "Request to openai/test-model cancelled after 1 attempt(s)" {
+			t.Fatalf("expected cancellation audit entry, got %+v", terminal)
+		}
 	})
 }
 

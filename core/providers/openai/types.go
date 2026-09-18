@@ -484,12 +484,13 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 						continue
 					}
 
-					needsBlockCopy := block.CacheControl != nil || block.Citations != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil) || (block.ResponsesOutputMessageContentText != nil && len(block.ResponsesOutputMessageContentText.Annotations) > 0)
+					needsBlockCopy := block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil) || (block.ResponsesOutputMessageContentText != nil && len(block.ResponsesOutputMessageContentText.Annotations) > 0)
 					if needsBlockCopy {
 						hasContentModification = true
 						blockCopy := block
 						blockCopy.CacheControl = nil
 						blockCopy.Citations = nil
+						blockCopy.MediaResolution = nil
 
 						// Filter out unsupported citation types from annotations
 						if blockCopy.ResponsesOutputMessageContentText != nil && len(blockCopy.ResponsesOutputMessageContentText.Annotations) > 0 {
@@ -577,7 +578,7 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 					// Strip CacheControl and FileType from tool message output blocks if needed
 					hasToolModification := false
 					for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
-						if block.CacheControl != nil || block.Citations != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil) {
+						if block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil) {
 							hasToolModification = true
 							break
 						}
@@ -587,11 +588,12 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 						outputCopy := *msg.ResponsesToolMessage.Output
 						outputCopy.ResponsesFunctionToolCallOutputBlocks = make([]schemas.ResponsesMessageContentBlock, len(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks))
 						for j, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
-							needsBlockCopy := block.CacheControl != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil)
+							needsBlockCopy := block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil)
 							if needsBlockCopy {
 								blockCopy := block
 								blockCopy.CacheControl = nil
 								blockCopy.Citations = nil
+								blockCopy.MediaResolution = nil
 								// Strip FileType from file block
 								if blockCopy.ResponsesInputMessageContentBlockFile != nil && blockCopy.ResponsesInputMessageContentBlockFile.FileType != nil {
 									fileCopy := *blockCopy.ResponsesInputMessageContentBlockFile
@@ -724,6 +726,10 @@ func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 			if block.Citations != nil {
 				return true
 			}
+			// Gemini's per-part media resolution; OpenAI 400s on the unknown parameter.
+			if block.MediaResolution != nil {
+				return true
+			}
 			if block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil {
 				return true
 			}
@@ -755,6 +761,15 @@ func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 			}
 			for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
 				if block.CacheControl != nil {
+					return true
+				}
+				// Citations and MediaResolution are stripped from these blocks further down,
+				// but this probe gates whether that stripping runs at all, so it has to look
+				// for everything the strip removes.
+				if block.Citations != nil {
+					return true
+				}
+				if block.MediaResolution != nil {
 					return true
 				}
 				if block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil {

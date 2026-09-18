@@ -243,6 +243,29 @@ type BedrockContentBlock struct {
 
 	// Citations from nova_grounding — co-located with a text block in the same content block
 	CitationsContent *BedrockCitationsContent `json:"citationsContent,omitempty"`
+
+	// Replayed Anthropic tool-search blocks. A client must echo the assistant's
+	// server_tool_use and tool_search_tool_result back unchanged on the next turn,
+	// but Converse has no wire slot for either — so they ride across the invoke
+	// ingress on these json:"-" carriers (#7155).
+	AnthropicToolSearchUse    *BedrockAnthropicToolSearchUse    `json:"-"`
+	AnthropicToolSearchResult *BedrockAnthropicToolSearchResult `json:"-"`
+}
+
+// BedrockAnthropicToolSearchUse is a replayed server_tool_use naming a tool-search
+// variant. Input is the query the model searched with; Anthropic requires the client to
+// echo this block back unchanged, so dropping it rewrites the block on the next turn.
+type BedrockAnthropicToolSearchUse struct {
+	ID    string
+	Name  string
+	Input json.RawMessage
+}
+
+// BedrockAnthropicToolSearchResult is a replayed tool_search_tool_result: the id of the
+// server_tool_use it answers, plus the names of the tools that search discovered.
+type BedrockAnthropicToolSearchResult struct {
+	ToolUseID      string
+	ToolReferences []string
 }
 
 type BedrockCachePointType string
@@ -283,7 +306,7 @@ type BedrockDocumentSource struct {
 // See: https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_DocumentSource.html
 type BedrockDocumentSourceData struct {
 	Bytes      *string            `json:"bytes,omitempty"`      // Base64-encoded document bytes
-	Text       *string            `json:"text,omitempty"`       // Plain text content
+	Text       *string            `json:"text,omitempty"`       // Plain text content; Converse rejects it unless the block enables citations
 	S3Location *BedrockS3Location `json:"s3Location,omitempty"` // Optional: S3 location (model-dependent support)
 }
 
@@ -401,6 +424,21 @@ type BedrockTool struct {
 	ToolSpec   *BedrockToolSpec   `json:"toolSpec,omitempty"`   // Tool specification
 	CachePoint *BedrockCachePoint `json:"cachePoint,omitempty"` // Cache point for the tool
 	SystemTool *BedrockSystemTool `json:"systemTool,omitempty"` // Nova system tool (nova_grounding, nova_code_interpreter)
+
+	// AnthropicToolSearch carries an inbound tool_search_tool_* server tool across
+	// the Converse-shaped intermediate the invoke ingress has to build. Converse has
+	// no wire slot for it — AWS serves server-side tool search only through
+	// InvokeModel — so this is json:"-" and never reaches a Converse request body.
+	// It exists purely so the egress predicate can see the signal (#7155).
+	AnthropicToolSearch *BedrockAnthropicToolSearch `json:"-"`
+}
+
+// BedrockAnthropicToolSearch is the inbound tool_search_tool_* entry, preserved
+// verbatim so both the dated type and the regex/bm25 variant survive the invoke
+// ingress conversion.
+type BedrockAnthropicToolSearch struct {
+	Type string // e.g. "tool_search_tool_regex_20251119"
+	Name string // e.g. "tool_search_tool_regex"; may be absent on the wire
 }
 
 type BedrockSystemToolType string
@@ -423,6 +461,10 @@ type BedrockToolSpec struct {
 	Name        string                 `json:"name"`                  // Required: Tool name
 	Description *string                `json:"description,omitempty"` // Optional: Tool description
 	InputSchema BedrockToolInputSchema `json:"inputSchema"`           // Required: JSON schema for tool input
+
+	// DeferLoading carries Anthropic's per-tool defer_loading across the invoke
+	// ingress. Converse has no such field, so json:"-" keeps it off that wire.
+	DeferLoading *bool `json:"-"`
 }
 
 // BedrockToolInputSchema represents the input schema for a tool (union type)
@@ -693,8 +735,16 @@ type BedrockGuardrailTraceDetail struct {
 // BedrockCountTokensRequest represents a Bedrock CountTokens API request
 type BedrockCountTokensRequest struct {
 	Input struct {
-		Converse *BedrockConverseRequest `json:"converse,omitempty"`
+		Converse    *BedrockConverseRequest             `json:"converse,omitempty"`
+		InvokeModel *BedrockCountTokensInvokeModelInput `json:"invokeModel,omitempty"`
 	} `json:"input"`
+}
+
+// BedrockCountTokensInvokeModelInput is the "invokeModel" member of the
+// CountTokens input union. Body is the exact InvokeModel request body; AWS
+// takes it as base64-encoded binary, which []byte marshals to.
+type BedrockCountTokensInvokeModelInput struct {
+	Body []byte `json:"body"`
 }
 
 // BedrockCountTokensResponse represents a Bedrock CountTokens API response
@@ -730,6 +780,25 @@ type BedrockInvokeMessagesContentBlock struct {
 	Input     interface{} `json:"input,omitempty"`
 	Thinking  string      `json:"thinking,omitempty"`
 	Signature string      `json:"signature,omitempty"`
+
+	// tool_search_tool_result: the paired server_tool_use id, plus the nested
+	// tool_search_tool_search_result payload. Typed rather than a map so the two
+	// keys marshal in a stable order.
+	ToolUseID string                         `json:"tool_use_id,omitempty"`
+	Content   *BedrockInvokeToolSearchResult `json:"content,omitempty"`
+}
+
+// BedrockInvokeToolSearchResult is the "content" object of a tool_search_tool_result
+// block: {"type":"tool_search_tool_search_result","tool_references":[...]}.
+type BedrockInvokeToolSearchResult struct {
+	Type           string                       `json:"type"`
+	ToolReferences []BedrockInvokeToolReference `json:"tool_references"`
+}
+
+// BedrockInvokeToolReference is one discovered (deferred) tool.
+type BedrockInvokeToolReference struct {
+	Type     string `json:"type"`
+	ToolName string `json:"tool_name"`
 }
 
 // MarshalJSON forces the thinking key to be present on thinking blocks.

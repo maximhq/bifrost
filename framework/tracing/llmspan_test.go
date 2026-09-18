@@ -335,3 +335,44 @@ func TestErrorAttributesOverrideAccumulatedResponseTokens(t *testing.T) {
 		t.Errorf("%s = %v, want 4224 from BilledUsage", schemas.AttrTotalTokens, got)
 	}
 }
+
+// Responses API responses carry a single top-level stop_reason rather than
+// per-choice finish reasons. It must reach the span as
+// gen_ai.response.finish_reasons exactly like the chat path, otherwise model
+// refusals on /v1/responses are invisible to OTEL consumers.
+func TestPopulateResponsesResponseAttributesEmitsFinishReasons(t *testing.T) {
+	for _, reason := range []string{"refusal", "stop", "length"} {
+		attrs := map[string]any{}
+
+		PopulateResponsesResponseAttributes(&schemas.BifrostResponsesResponse{
+			StopReason: schemas.Ptr(reason),
+		}, attrs)
+
+		got, ok := attrs[schemas.AttrFinishReasons].([]string)
+		if !ok {
+			t.Fatalf("stop_reason=%q: %s = %T(%v), want []string", reason, schemas.AttrFinishReasons, attrs[schemas.AttrFinishReasons], attrs[schemas.AttrFinishReasons])
+		}
+		if len(got) != 1 || got[0] != reason {
+			t.Fatalf("stop_reason=%q: %s = %v, want [%s]", reason, schemas.AttrFinishReasons, got, reason)
+		}
+	}
+}
+
+// A Responses API response without a stop_reason must not emit either finish
+// reason attribute: an empty or placeholder value would read as a real outcome
+// to OTEL consumers.
+func TestPopulateResponsesResponseAttributesOmitsFinishReasonsWhenStopReasonNil(t *testing.T) {
+	attrs := map[string]any{}
+
+	PopulateResponsesResponseAttributes(&schemas.BifrostResponsesResponse{
+		ID:    schemas.Ptr("resp_123"),
+		Model: "gpt-4o-mini",
+	}, attrs)
+
+	if got, ok := attrs[schemas.AttrFinishReasons]; ok {
+		t.Fatalf("%s = %v, want absent when stop_reason is nil", schemas.AttrFinishReasons, got)
+	}
+	if got, ok := attrs[schemas.AttrFinishReason]; ok {
+		t.Fatalf("%s = %v, want absent when stop_reason is nil", schemas.AttrFinishReason, got)
+	}
+}

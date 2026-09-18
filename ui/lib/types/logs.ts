@@ -429,6 +429,7 @@ export interface LLMUsage {
 	prompt_tokens: number;
 	completion_tokens: number;
 	total_tokens: number;
+	audio_seconds?: number;
 	prompt_tokens_details?: TokenDetails;
 	completion_tokens_details?: CompletionTokensDetails;
 }
@@ -588,6 +589,16 @@ export interface BifrostError {
 	is_bifrost_error: boolean;
 	status_code?: number;
 	error: ErrorField;
+	extra_fields?: BifrostErrorExtraFields;
+}
+
+// Subset of Go's schemas.BifrostErrorExtraFields that the UI reads. raw_response holds the
+// provider's error body as received, which is the only place the reason survives when the
+// provider's error shape does not match what its parser expected.
+export interface BifrostErrorExtraFields {
+	raw_response?: unknown;
+	raw_request?: unknown;
+	latency?: number;
 }
 
 // Citation and Annotation types
@@ -1322,6 +1333,30 @@ export interface WebSocketLogMessage {
 
 // MCP Tool Log Entry - represents a single MCP tool execution
 export interface MCPToolLogEntry {
+	request_id?: string;
+	user_id?: string | null;
+	user_name?: string | null;
+	team_id?: string | null;
+	team_name?: string | null;
+	customer_id?: string | null;
+	customer_name?: string | null;
+	business_unit_id?: string | null;
+	business_unit_name?: string | null;
+	// Index-aligned with their ids: team_names[i] names team_ids[i].
+	team_ids?: string[];
+	team_names?: string[];
+	customer_ids?: string[];
+	customer_names?: string[];
+	business_unit_ids?: string[];
+	business_unit_names?: string[];
+	budget_ids?: string[];
+	rate_limit_ids?: string[];
+	project_id?: string | null;
+	project_name?: string | null;
+	device_id?: string;
+	app_key?: string;
+	decision?: string;
+	source?: string;
 	id: string;
 	llm_request_id?: string; // Links to the LLM request that triggered this tool call
 	timestamp: string; // ISO string format
@@ -1346,6 +1381,13 @@ export interface MCPToolLogEntry {
 
 // MCP Tool Log Filters
 export interface MCPToolLogFilters {
+	user_ids?: string[];
+	team_ids?: string[];
+	customer_ids?: string[];
+	business_unit_ids?: string[];
+	project_ids?: string[];
+	device_ids?: string[];
+
 	tool_names?: string[];
 	server_labels?: string[];
 	status?: string[];

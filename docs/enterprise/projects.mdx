@@ -172,8 +172,8 @@ A project holds at most one configuration per provider. Each one carries:
 |---|---|
 | `provider_name` | The provider this configuration allows |
 | `all_models_allowed` | Allows every model the provider offers |
-| `allowed_models` | An allowlist; `["*"]` means all models |
-| `blacklisted_models` | A denylist, which wins over the allowlist |
+| `allowed_models` | An allowlist; `["*"]` means all models. An entry starting with `regex:` is an RE2 pattern matched against the whole model name, case-insensitively |
+| `blacklisted_models` | A denylist, which wins over the allowlist. `regex:` entries work the same way |
 | `key_ids` | Which provider keys may serve it; `["*"]` means all, and an empty list means none |
 | `weight` | Load-balancing preference for this provider inside the project |
 | `budgets`, `rate_limit` | Money for this provider specifically |

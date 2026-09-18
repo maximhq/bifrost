@@ -99,7 +99,7 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 					return resp.ExtraFields.RawResponse, nil
 				}
 			}
-			return resp, nil
+			return cohere.ToCohereChatResponse(resp), nil
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return cohere.ToCohereError(err)

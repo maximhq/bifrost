@@ -1186,7 +1186,17 @@ func (p *OAuth2Provider) exchangeRefreshToken(ctx context.Context, tokenURL, cli
 	if resource != "" {
 		data.Set("resource", resource)
 	}
-	data.Set("client_secret", clientSecret)
+	// Only include client_secret when there is one, matching
+	// exchangeCodeForTokensWithPKCE. A dynamically registered public client
+	// (token_endpoint_auth_method "none", the only method some MCP
+	// authorization servers offer) has no secret; sending an empty
+	// client_secret= would present a client_secret_post authentication
+	// attempt with a wrong secret, which a strict server answers with
+	// invalid_client, and a 401 there flips the token row to needs_reauth
+	// even though the refresh token itself is perfectly good.
+	if clientSecret != "" {
+		data.Set("client_secret", clientSecret)
+	}
 
 	return p.callTokenEndpoint(ctx, tokenURL, data)
 }

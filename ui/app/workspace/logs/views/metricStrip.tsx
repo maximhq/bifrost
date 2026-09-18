@@ -24,12 +24,12 @@ import {
 	windowTrend,
 } from "./metricStrip.utils";
 
-// Palette is taken verbatim from the approved design direction. Each entry pairs
-// the mock's own value with a lighter counterpart of the same hue for dark mode,
-// since the mock only specifies a light surface.
-const positive = "text-[#16794f] dark:text-[#3fbd85]";
-const negative = "text-[#c0392b] dark:text-[#e8705f]";
-const warning = "text-[#d98324] dark:text-[#eaa14f]";
+// Tones come from the chart color system in globals.css: the semantic palette
+// for status and the teal token ramp for the split bar, so the strip matches
+// the dashboard charts in both themes.
+const positive = "text-chart-success-ink";
+const negative = "text-chart-error-ink";
+const warning = "text-chart-warning-ink";
 // The neutrals come from the theme tokens rather than the mock's own greys: the
 // strip sits inside a `bg-card` panel, and a hard-coded warm near-black surface
 // read as a foreign block against the app's cooler card colour in dark mode.
@@ -39,9 +39,9 @@ const value = "text-foreground";
 const track = "bg-muted";
 const divider = "bg-border";
 const surface = "bg-card";
-const fill = "bg-[#16794f] dark:bg-[#3fbd85]";
-const tokensIn = "bg-[#4c6fdc] dark:bg-[#7f9bf0]";
-const tokensOut = "bg-[#a8bcf2] dark:bg-[#c3d2f7]";
+const fill = "bg-chart-success";
+const tokensIn = "bg-chart-token-input";
+const tokensOut = "bg-chart-token-output";
 
 // The palette stays here rather than in metricStrip.utils so the formatters hold
 // no Tailwind classes and can be tested on their own.
@@ -509,10 +509,10 @@ export function MetricStrip({ stats, requestHistogram, latencyHistogram, costHis
 							second={completionTokens}
 							tooltip={
 								<TooltipBody heading="Token split">
-									<TooltipRow name="Input" className="text-[#4c6fdc] dark:text-[#7f9bf0]">
+									<TooltipRow name="Input" className="text-chart-token-input">
 										{`${formatCount(promptTokens)}${tokenTotal > 0 ? ` (${((promptTokens / tokenTotal) * 100).toFixed(1)}%)` : ""}`}
 									</TooltipRow>
-									<TooltipRow name="Output" className="text-[#7f93cc] dark:text-[#c3d2f7]">
+									<TooltipRow name="Output" className="text-chart-token-output">
 										{`${formatCount(completionTokens)}${tokenTotal > 0 ? ` (${((completionTokens / tokenTotal) * 100).toFixed(1)}%)` : ""}`}
 									</TooltipRow>
 									<TooltipRow name="Total">{formatCount(stats?.total_tokens ?? 0)}</TooltipRow>

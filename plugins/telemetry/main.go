@@ -212,6 +212,7 @@ type PrometheusPlugin struct {
 
 	// gates bifrost_overhead_component_microseconds. Off by default.
 	overheadBreakdownEnabled atomic.Bool
+	userLabelsEnabled        atomic.Bool
 	// PostLLMHook-resolved labels handed to Inject, keyed by trace ID (values are
 	// *pendingOverheadEntry). Inject drains them; sweepPendingOverheadLabels bounds it.
 	pendingOverheadLabels sync.Map
@@ -235,6 +236,9 @@ type Config struct {
 	// Exports bifrost_overhead_component_microseconds. Off by default. Needs tracing on
 	// (the breakdown comes from completed trace spans).
 	OverheadBreakdownEnabled *bool `json:"overhead_breakdown_enabled,omitempty"`
+	// Adds user_id and user_name labels. Off by default: unbounded values
+	// multiply series, and Prometheus cannot drop a label afterwards.
+	UserLabelsEnabled *bool `json:"user_labels_enabled,omitempty"`
 }
 
 // Keep in sync with plugins/otel/metrics.go's identical arrays so the Prometheus
@@ -283,6 +287,10 @@ var (
 )
 
 // Init creates a new PrometheusPlugin with initialized metrics.
+// userLabelNames are appended to defaultBifrostLabelNames when
+// user_labels_enabled is set.
+var userLabelNames = []string{"user_id", "user_name"}
+
 // defaultBifrostLabelNames is the canonical set of Prometheus labels attached to
 // bifrost.* metrics. It is a package var (not an Init local) so the connector-
 // parity conformance test can assert it against the shared enrichment registry
@@ -376,6 +384,11 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 
 	defaultHTTPLabels := []string{"path", "method", "status"}
 	defaultBifrostLabels := append([]string(nil), defaultBifrostLabelNames...)
+	userLabelsEnabled := config.UserLabelsEnabled != nil && *config.UserLabelsEnabled
+	if userLabelsEnabled {
+		defaultBifrostLabels = append(defaultBifrostLabels, userLabelNames...)
+		logger.Warn("telemetry plugin: user_labels_enabled multiplies metric series by end-user count; monitor Prometheus memory")
+	}
 
 	var filteredCustomLabels []string
 	if len(config.CustomLabels) > 0 {
@@ -483,12 +496,15 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		append(defaultBifrostLabels, filteredCustomLabels...),
 	)
 
+	// error_type is the normalized reason, status_code the raw fact it came from.
+	// Cardinality is bounded: error_type is near-determined by status_code for
+	// upstream failures, so it splits few series that were not already split.
 	bifrostErrorRequestsTotal := factory.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "bifrost_error_requests_total",
-			Help: "Total number of error requests forwarded to upstream providers by Bifrost.",
+			Help: "Total number of failed requests, by raw status_code and normalized error_type.",
 		},
-		append(append(defaultBifrostLabels, "status_code"), filteredCustomLabels...),
+		append(append(defaultBifrostLabels, "status_code", "error_type"), filteredCustomLabels...),
 	)
 
 	bifrostInputTokensTotal := factory.NewCounterVec(
@@ -723,6 +739,8 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 	if config.OverheadBreakdownEnabled != nil {
 		plugin.overheadBreakdownEnabled.Store(*config.OverheadBreakdownEnabled)
 	}
+	// Must match the label set built above, or Prometheus rejects every observation.
+	plugin.userLabelsEnabled.Store(userLabelsEnabled)
 	// Sweep the label handoff only when the breakdown is on (otherwise the map stays empty).
 	if plugin.overheadBreakdownEnabled.Load() {
 		plugin.overheadSweepStop = make(chan struct{})
@@ -1206,6 +1224,10 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		"project_id":           projectID,
 		"project_name":         projectName,
 	}
+	if p.userLabelsEnabled.Load() {
+		labelValues["user_id"] = bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
+		labelValues["user_name"] = bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserName)
+	}
 
 	// Get all custom prometheus labels from context BEFORE the goroutine.
 	p.applyCustomLabels(ctx, labelValues)
@@ -1317,9 +1339,14 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 			if bifrostErr.StatusCode != nil {
 				statusCode = strconv.Itoa(*bifrostErr.StatusCode)
 			}
-			errorPromLabelValues := make([]string, 0, len(promLabelValues)+1)
+			// Same requestType that fills the `method` label, so verdict and labels
+			// cannot disagree. Never empty: bifrostErr is non-nil in this branch.
+			errorType := schemas.ClassifyErrorType(bifrostErr, requestType)
+
+			errorPromLabelValues := make([]string, 0, len(promLabelValues)+2)
 			errorPromLabelValues = append(errorPromLabelValues, promLabelValues[:len(p.defaultBifrostLabels)]...) // all default labels
 			errorPromLabelValues = append(errorPromLabelValues, statusCode)                                       // status_code
+			errorPromLabelValues = append(errorPromLabelValues, string(errorType))                                // error_type
 			errorPromLabelValues = append(errorPromLabelValues, promLabelValues[len(p.defaultBifrostLabels):]...) // then custom labels
 
 			p.ErrorRequestsTotal.WithLabelValues(errorPromLabelValues...).Inc()

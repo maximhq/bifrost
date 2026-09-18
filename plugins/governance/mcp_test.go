@@ -219,3 +219,40 @@ func TestVirtualMCPInMemoryCRUD(t *testing.T) {
 	assert.Nil(t, gs.virtualMCPByID(7))
 	assert.Equal(t, []uint{7}, gs.assignedVirtualMCPIDs("vk-2"), "stale id remains; resolution skips it via the nil lookup")
 }
+
+// TestPostMCPHook_RecordsAccountedLimitIDs verifies a tool call leaves behind the
+// budgets and rate limits it was billed against, the way PostLLMHook does for
+// inference. The logging plugin reads these keys when it completes the tool log,
+// so without them an MCP row cannot say what funded it.
+func TestPostMCPHook_RecordsAccountedLimitIDs(t *testing.T) {
+	logger := NewMockLogger()
+	rateLimit := buildRateLimitWithUsage("vk-rl", 10000, 0, 1000, 0)
+	vk := buildVirtualKeyWithRateLimit("vk1", "sk-bf-test", "Test VK", rateLimit)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		RateLimits:  []configstoreTables.TableRateLimit{*rateLimit},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	require.NoError(t, err)
+	defer plugin.Cleanup()
+
+	ctx := resolverCtx(store, "sk-bf-test")
+	settled, settleErr := resolveLimits(ctx, store, "", "")
+	require.NoError(t, settleErr)
+	require.NotNil(t, settled)
+
+	_, _, err = plugin.PostMCPHook(ctx, &schemas.BifrostMCPResponse{
+		ExtraFields: schemas.BifrostMCPResponseExtraFields{
+			MCPRequestType: schemas.MCPRequestTypeExecuteTool,
+			ClientName:     "client",
+			ToolName:       "tool",
+		},
+	}, nil)
+	require.NoError(t, err)
+	plugin.wg.Wait()
+
+	rateLimitIDs, _ := ctx.Value(schemas.BifrostContextKeyGovernanceRateLimitIDs).([]string)
+	assert.Contains(t, rateLimitIDs, "vk-rl")
+}

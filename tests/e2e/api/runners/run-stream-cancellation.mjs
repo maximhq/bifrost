@@ -5,6 +5,7 @@
 import { writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { evaluateProbeStream } from "./lib/stream-probe-verdict.mjs";
+import { evaluateNonStreamCancel } from "./lib/nonstream-cancel-verdict.mjs";
 import { resolveVariables } from "./lib/resolve-variables.mjs";
 
 const require = createRequire(import.meta.url);
@@ -33,6 +34,18 @@ const abortAfterBytes = Number(args["abort-after-bytes"] || 1);
 // response can return) to force a client-disconnect on a non-streaming request,
 // exercising the non-streaming client-disconnect billing path (#3357).
 const nonStreamAbortMs = Number(args["nonstream-abort-ms"] || 300);
+// Repeat the non-streaming abort this many times per provider. The worker hands the
+// finished result to the caller through a select between a send into a cap-1 channel
+// and ctx.Done(); with the caller gone both are ready and Go picks at random, so a
+// single trial let a 50% race pass about half the time (#6972). Six trials miss such
+// a race with probability 2^-6 per provider.
+const parsedNonStreamTrials = Number(args["nonstream-trials"] || 6);
+if (!Number.isSafeInteger(parsedNonStreamTrials) || parsedNonStreamTrials < 1) {
+  // A bare `--nonstream-trials` parses as "true" and Number("true") is NaN, which
+  // would silently produce zero trials; fail loudly instead.
+  throw new Error(`--nonstream-trials must be a positive integer, got ${JSON.stringify(args["nonstream-trials"])}`);
+}
+const nonStreamTrials = parsedNonStreamTrials;
 // Cost verification: after aborting a stream mid-flight, confirm the logs DB row
 // for that request carries a cost (#3357). Needs a logs DB. Skip with --no-cost-check.
 const skipCostCheck = args["no-cost-check"] === "true";
@@ -124,10 +137,9 @@ function expectedCost(entry, row) {
 }
 
 // A streaming cancel is logged status=cancelled (dedicated status since #4930;
-// older builds logged error); a non-streaming cancel may finish server-side
-// and log success - accept any terminal cancel outcome per kind.
-function statusIsCancelOutcome(status, nonStream) {
-  if (nonStream) return status === "cancelled" || status === "error" || status === "success";
+// older builds logged error). Non-streaming trials are judged by
+// lib/nonstream-cancel-verdict.mjs instead.
+function statusIsCancelOutcome(status) {
   return status === "cancelled" || status === "error";
 }
 
@@ -227,13 +239,15 @@ const streamCases = [
 // aborted shortly after dispatch (before the response returns). A higher max_tokens
 // makes generation last long enough that the abort lands while the request is still
 // in flight, producing a real client-disconnect on a non-streaming call.
-const nonStreamCases = streamCases.map((c) => ({
-  provider: c.provider,
-  name: `${c.body.model} non-stream cancel`,
-  path: c.path,
-  nonStream: true,
-  body: { ...c.body, stream: false, max_tokens: Math.max(Number(c.body.max_tokens) || 0, 1024) },
-}));
+const nonStreamCases = streamCases.flatMap((c) =>
+  Array.from({ length: nonStreamTrials }, (_, i) => ({
+    provider: c.provider,
+    name: `${c.body.model} non-stream cancel #${i + 1}/${nonStreamTrials}`,
+    path: c.path,
+    nonStream: true,
+    body: { ...c.body, stream: false, max_tokens: Math.max(Number(c.body.max_tokens) || 0, 1024) },
+  })),
+);
 
 const cases = [...streamCases, ...nonStreamCases].filter(
   (c) => !providerFilter || c.provider === providerFilter,
@@ -241,7 +255,8 @@ const cases = [...streamCases, ...nonStreamCases].filter(
 
 // Non-streaming cancel: dispatch the request, then abort the socket before the full
 // response returns. If the response comes back before the abort fires, the request
-// completed and we couldn't induce a cancellation → flagged racedToCompletion (SKIP).
+// completed and we couldn't induce a cancellation → flagged racedToCompletion, which
+// the verdict treats as a failed trial (it never exercised a disconnect).
 async function runNonStreamCase(testCase) {
   const controller = new AbortController();
   const requestId = `nonstream-cancel-${testCase.provider}-${crypto.randomUUID()}`;
@@ -260,9 +275,12 @@ async function runNonStreamCase(testCase) {
       body: JSON.stringify(resolveVariables(testCase.body)),
       signal: controller.signal,
     });
-    // Reaching here means the response returned before our abort fired.
+    // fetch() resolves once the status and headers are in, possibly before the body.
+    // Keep the abort armed until the body is drained: an abort that lands mid-body
+    // rejects text() with AbortError and is handled as an aborted trial below.
+    await response.text();
+    // Reaching here means the whole response returned before our abort fired.
     clearTimeout(timer);
-    await response.text().catch(() => {});
     return {
       ...testCase,
       requestId,
@@ -523,10 +541,33 @@ if (skipCostCheck) {
         );
       for (const r of results) {
         const kind = r.nonStream ? "non-stream" : "stream";
-        if (r.racedToCompletion) {
-          r.costCheck = "SKIP";
-          r.costDetail = "request completed before abort could fire";
-          console.error(`[stream-cancel] cost ${r.provider} (${kind}): SKIP — ${r.costDetail}`);
+        if (r.nonStream) {
+          // Every abandoned non-streaming request must reach a terminal log status,
+          // whether or not usage was recorded (#6972); see lib/nonstream-cancel-verdict.mjs.
+          const row = r.aborted && r.requestId ? await pollLogRow(db, r.requestId) : null;
+          const v = evaluateNonStreamCancel({
+            row,
+            racedToCompletion: r.racedToCompletion,
+            aborted: r.aborted,
+          });
+          r.costCheck = v.verdict;
+          r.costDetail = v.detail;
+          if (v.verdict === "FAIL") costFailures++;
+          if (v.verdict === "PASS") {
+            // Cost presence is not required (the upstream call is usually cut with a
+            // 499), but a cost that WAS recorded must still be accurate.
+            const cost = Number(row.cost || 0),
+              tokens = Number(row.total_tokens || 0);
+            if (cost > 0 && tokens > 0) {
+              const cv = costAccuracyVerdict(sheet, row, cost, tokens, kind);
+              if (cv.fail) costFailures++;
+              r.costCheck = cv.verdict;
+              r.costDetail = `${v.detail}; ${cv.detail}`;
+            }
+          }
+          console.error(
+            `[stream-cancel] cost ${r.provider} (${kind}): ${r.costCheck}${r.costDetail ? " — " + r.costDetail : ""}`,
+          );
           continue;
         }
         if (!r.aborted || !r.requestId) {
@@ -538,11 +579,8 @@ if (skipCostCheck) {
           r.costCheck = "FAIL";
           r.costDetail = `no log row for ${r.requestId}`;
           costFailures++;
-        } else if (!statusIsCancelOutcome(row.status, r.nonStream)) {
+        } else if (!statusIsCancelOutcome(row.status)) {
           // A streaming cancel logs status=cancelled (#4831; error on older builds).
-          // A non-streaming cancel may instead finish the upstream call server-side and
-          // log success — either way it must be billed, so we accept all of these for
-          // non-stream and key the cost rules off the provider, not the status.
           r.costCheck = "FAIL";
           r.costDetail = `status=${row.status}, unexpected for ${kind} cancel`;
           costFailures++;
@@ -551,9 +589,7 @@ if (skipCostCheck) {
             tokens = Number(row.total_tokens || 0);
           // Strict cost-presence only where usage is deterministically available at the
           // moment of cancel: native Anthropic streaming (input tokens in message_start).
-          // Non-streaming cancel billing is provider/timing-dependent (the upstream call
-          // may or may not have completed), so we report it but don't hard-require it.
-          if (!r.nonStream && EARLY_USAGE_PROVIDERS.has(r.provider)) {
+          if (EARLY_USAGE_PROVIDERS.has(r.provider)) {
             if (!(cost > 0 && tokens > 0)) {
               r.costCheck = "FAIL";
               r.costDetail = `cancelled ${r.provider} ${kind} logged no cost (cost=$${cost} tokens=${tokens})`;

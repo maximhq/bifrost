@@ -225,7 +225,10 @@ export const mapAppToClientApp = (app?: string | null): ClientApp => {
 	if (!app || app.trim() === "") {
 		return { name: "Unknown" };
 	}
-	return appByName.get(app) || { name: app };
+	return (
+		appByName.get(app) ||
+		userAgentAppMatchers.find((matcher) => matcher.identifiers.includes(app.trim().toLowerCase()))?.app || { name: app }
+	);
 };
 
 // mapUserAgentToApp resolves a raw User-Agent string to a client app for display.
@@ -252,15 +255,15 @@ export const logAppDisplayName = (app: ClientApp, userAgent?: string | null): st
 };
 
 export const StatusColors = {
-	success: "bg-green-100 text-green-800",
-	error: "bg-red-100 text-red-800",
+	success: "bg-chart-success/15 text-chart-success-ink",
+	error: "bg-chart-error/15 text-chart-error-ink",
 	processing: "bg-blue-100 text-blue-800",
 	cancelled: "bg-gray-100 text-gray-800",
 } as const;
 
 export const StatusBarColors = {
-	success: "bg-green-500",
-	error: "bg-red-500",
+	success: "bg-chart-success",
+	error: "bg-chart-error",
 	processing: "bg-blue-500",
 	cancelled: "bg-gray-400",
 } as const;

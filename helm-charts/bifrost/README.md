@@ -4,9 +4,27 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.40
+**Latest Version:** 2.1.43
 
 ## Changelog
+
+### 2.1.43
+- Added `bifrost.plugins.telemetry.config.user_labels_enabled` (default `false`) — adds `user_id` and `user_name` labels to every `bifrost_*` metric. Off by default because these are unbounded: they multiply metric series by end-user count, on top of a `virtual_key_id` label that already reaches tens of thousands of values in large deployments, and Prometheus cannot drop a label after the fact. Datadog and Splunk emit these dimensions unconditionally, since a costly tag can be dropped server-side there.
+
+### 2.1.42
+
+- Added `bifrost.governance.roles[].access_profiles` for granting multiple access profiles to a role. The plural list takes precedence over the deprecated singular `access_profile`; an explicit empty list removes all profile grants.
+- Added `bifrost.scim.trustedNetworks` — the private IP/CIDR allowlist the SSRF guard consults before the generic provider's outbound OIDC discovery calls (**Discover endpoints** / **Discover claims**), so a self-hosted IdP on `10.x`, `172.16-31.x`, or `192.168.x` is reachable from a declarative install instead of only from the dashboard. Each entry is `{ cidr, description }`: a bare IP is treated as a single host (`/32`, or `/128` for IPv6) and hostnames are rejected. Declaring the key makes Helm own the whole list - it replaces whatever is stored, and an explicit `trustedNetworks: []` clears dashboard-added ranges - while omitting it leaves them untouched. 
+- Added `mcp.clientConfigs[].perUserHeaderKeys` — the header names each caller must individually supply under `authType: per_user_headers` (e.g. `["Authorization"]`).
+- Added `bifrost.plugins.otel.config.overhead_breakdown_enabled` (default `false`) and `bifrost.plugins.telemetry.config.overhead_breakdown_enabled` - exports the per-component overhead histogram `bifrost_overhead_component_microseconds`, overhead latency split by the `overhead_component` label. 
+- Fixed `bifrost.plugins.otel.config.export_overhead_spans` not rendering into `config.json`.
+- Added `bifrost.accessProfiles[].virtual_mcps` and `bifrost.accessProfiles[].mcp_configs` (`{ mcp_client_id, tools_to_execute }`) — the current spelling of a profile's MCP grants. The values schema previously declared only the retired `mcp_tool_groups` / `mcp_servers` / `mcp_tool_overrides` keys under `additionalProperties: false`, so a chart using the keys Bifrost actually reads failed schema validation and MCP grants could not be managed declaratively at all. `tools_to_execute` is `["*"]` for every tool including future ones, `[]` for none, or a named list.
+- Virtual MCPs are now assigned **by name**: `bifrost.accessProfiles[].virtual_mcps[]` and `bifrost.governance.projects[].virtual_mcps[]` take `{ virtual_mcp_name }`, matching how `mcp_configs` names its MCP client. Resolved on startup; a name matching no Virtual MCP is refused. `virtual_mcp_id` is still accepted as an alternative and wins when both are set.
+- Deprecated `bifrost.accessProfiles[].mcp_tool_groups`, `.mcp_servers`, and `.mcp_tool_overrides`. They still render and Bifrost now folds them into `virtual_mcps` / `mcp_configs` at load time with a warning in the startup logs, instead of dropping them silently. `mcp_tool_groups` is ignored when `virtual_mcps` is present; `mcp_servers` becomes a `["*"]` allowlist except for clients `mcp_configs` already names.
+
+### 2.1.41
+
+- This version has been missed. Please refer to v2.1.42
 
 ### 2.1.40
 
@@ -28,10 +46,6 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Added `bifrost.client.vkRotationCooldown` (default `0`) — grace period after a virtual key rotation during which the previous key value still authenticates. Go duration string (e.g. `"5m"`), max 30 days; `0` disables
 - Added `databricks_key_config` (`workspace_url`, `api_format`, `client_id`/`client_secret` for OAuth M2M, `forward_gateway_tags`) to provider keys, with `bifrost.providers.databricks` examples in `values.yaml`.
 - Added `allow_all_providers` to `bifrost.governance.projects[]` and `bifrost.accessProfiles[]` (default `false`) — grant access to every provider, including ones without a `provider_configs` entry and providers added later; listed providers keep their own model, key, budget, and rate-limit rules. Renders into each entry's `allow_all_providers`.
-=======
-**Latest Version:** 2.1.38
-
-## Changelog
 
 ### 2.1.38
 
@@ -64,7 +78,6 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Documented `endpoints` on the `bedrock` and `bedrock_mantle` key examples (AWS PrivateLink interface VPC endpoint hosts: `runtime`, `control_plane`, `mantle`, `agent_runtime`, `s3`). Passes through into `bedrock_key_config.endpoints` / `bedrock_mantle_key_config.endpoints`.
 - Extended `bifrost.governance.budgets[]` with quarterly resets (`reset_duration: "1Q"`) and `reset_config.quarter_start_month` (1–12, sets the fiscal Q1 month). Passes through into `budgets[].reset_config`.
 - Added `target` (`llm` default, or `mcp`) to `bifrost.governance` guardrail rules to select the rule's execution target. Passes through into the rule's `target`.
-
 
 ### 2.1.34
 
