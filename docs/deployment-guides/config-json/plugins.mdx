@@ -272,6 +272,48 @@ Sends APM traces and metrics to a Datadog Agent.
 
 </Tab>
 
+<Tab title="Nadir Routing">
+
+### Nadir Routing
+
+Picks the model per request. A request that names `nadir-auto` is classified by [Nadir](https://getnadir.com)'s decision API, a trained complexity classifier rather than an LLM call, and rewritten to the model configured for the tier it lands in: `simple`, `medium` or `complex`.
+
+Only the decision leaves. The provider call, your keys, fallbacks, governance, caching and telemetry are untouched, and Nadir sees the text it classifies, never the completion. A request naming any other model is passed through unchanged, so this is opt-in per request rather than a gateway-wide takeover.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `config.tiers` | - | **Required.** Maps a bucket (`simple`, `medium`, `complex`) to `"provider/model"` |
+| `config.fallback_model` | - | **Required.** `"provider/model"` used when a tier cannot be decided |
+| `config.trigger_model` | `"nadir-auto"` | Model name that opts a request into routing |
+| `config.api_key` | `NADIR_API_KEY` | Nadir API key. Optional: the endpoint answers without one, rate limited per IP |
+| `config.base_url` | `NADIR_API_BASE`, then `https://api.getnadir.com` | Point at a self-hosted Nadir |
+| `config.timeout_ms` | `3000` | Budget for the classification call |
+
+```json
+{
+  "plugins": [
+    {
+      "name": "nadir",
+      "enabled": true,
+      "config": {
+        "tiers": {
+          "simple": "openai/gpt-4o-mini",
+          "medium": "openai/gpt-4o",
+          "complex": "anthropic/claude-sonnet-4-5"
+        },
+        "fallback_model": "openai/gpt-4o"
+      }
+    }
+  ]
+}
+```
+
+A classification that fails, times out past `timeout_ms`, or returns a bucket with no tier configured routes to `fallback_model` and logs the reason as a warning on the request's routing engine log. Nothing here can fail a request, and `nadir-auto` never reaches a provider.
+
+Two things to weigh. It classifies over the network, so it costs a round trip per routed request. And the messages are sent to whichever host `base_url` names, a third party unless that host is yours.
+
+</Tab>
+
 </Tabs>
 
 ---

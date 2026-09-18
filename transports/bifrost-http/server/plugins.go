@@ -12,6 +12,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/plugins/modelcatalogresolver"
+	"github.com/maximhq/bifrost/plugins/nadir"
 	"github.com/maximhq/bifrost/plugins/otel"
 	"github.com/maximhq/bifrost/plugins/prompts"
 	"github.com/maximhq/bifrost/plugins/routing"
@@ -152,6 +153,13 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 			return nil, fmt.Errorf("failed to marshal compat plugin config: %w", err)
 		}
 		return compat.Init(*compatConfig, logger, bifrostConfig.ModelCatalog)
+
+	case nadir.PluginName:
+		nadirConfig, err := MarshalPluginConfig[nadir.Config](pluginConfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal nadir plugin config: %w", err)
+		}
+		return nadir.Init(nadirConfig, logger)
 
 	case modelcatalogresolver.PluginName:
 		return modelcatalogresolver.Init(bifrostConfig.ModelCatalog, logger)

@@ -1,0 +1,1 @@
+- feat: initial release. Routes a request to a model tier chosen by Nadir's decision API, with a configurable trigger model and a required fallback model.
