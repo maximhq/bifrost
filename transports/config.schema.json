@@ -2663,11 +2663,22 @@
                   "properties": {
                     "tiers": {
                       "type": "object",
-                      "description": "Maps a Nadir complexity bucket to the model that tier routes to, as \"provider/model\". Keys are simple, medium and complex.",
-                      "additionalProperties": {
-                        "type": "string",
-                        "minLength": 1
+                      "description": "Maps a Nadir complexity bucket to the model that tier routes to, as \"provider/model\". Only the buckets Nadir returns are accepted, so a misspelled key is rejected at startup rather than leaving that tier unreachable.",
+                      "properties": {
+                        "simple": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "medium": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "complex": {
+                          "type": "string",
+                          "minLength": 1
+                        }
                       },
+                      "additionalProperties": false,
                       "minProperties": 1
                     },
                     "fallback_model": {

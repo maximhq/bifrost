@@ -21,6 +21,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -46,6 +47,11 @@ const (
 
 	bucketPath = "/v1/bucket"
 )
+
+// supportedBuckets are the tiers Nadir grades. A key outside this set is rejected at Init:
+// the bucket would never come back, so a typo like "simlpe" would leave that tier silently
+// unreachable and quietly serve fallback_model for the traffic it was meant to catch.
+var supportedBuckets = []string{"simple", "medium", "complex"}
 
 // Config is the plugin's configuration block.
 type Config struct {
@@ -99,11 +105,16 @@ func Init(cfg *Config, logger schemas.Logger) (*Plugin, error) {
 	}
 	tiers := make(map[string]target, len(cfg.Tiers))
 	for bucket, model := range cfg.Tiers {
+		name := strings.ToLower(strings.TrimSpace(bucket))
+		if !slices.Contains(supportedBuckets, name) {
+			return nil, fmt.Errorf("%s: tier %q is not a bucket Nadir returns; use one of %s",
+				PluginName, bucket, strings.Join(supportedBuckets, ", "))
+		}
 		parsed, err := parseTarget(model)
 		if err != nil {
 			return nil, fmt.Errorf("%s: tier %q: %w", PluginName, bucket, err)
 		}
-		tiers[strings.ToLower(strings.TrimSpace(bucket))] = parsed
+		tiers[name] = parsed
 	}
 	if cfg.FallbackModel == "" {
 		return nil, fmt.Errorf("%s: fallback_model is required, so a failed classification still has somewhere to go", PluginName)
@@ -259,7 +270,7 @@ func (p *Plugin) classify(ctx context.Context, messages []map[string]string) (st
 
 // extractMessages pulls the text Nadir classifies out of whichever request shape arrived.
 //
-// Chat and text completions only. Every other request type (embeddings, speech, images...)
+// Chat, Responses and text completions. Every other request type (embeddings, speech, images...)
 // has no complexity tier to choose and routes to fallback_model, which is also what a caller
 // naming the trigger model on one of those endpoints should get.
 func extractMessages(req *schemas.BifrostRequest) []map[string]string {
@@ -272,6 +283,22 @@ func extractMessages(req *schemas.BifrostRequest) []map[string]string {
 				continue
 			}
 			messages = append(messages, map[string]string{"role": string(message.Role), "content": text})
+		}
+		return messages
+	case req.ResponsesRequest != nil:
+		messages := make([]map[string]string, 0, len(req.ResponsesRequest.Input))
+		for _, message := range req.ResponsesRequest.Input {
+			text := responsesText(message.Content)
+			if text == "" {
+				continue
+			}
+			// Role is optional on a Responses item (a bare input item carries none), and an
+			// item with text but no role is still the caller's ask, so it is classified as one.
+			role := "user"
+			if message.Role != nil {
+				role = string(*message.Role)
+			}
+			messages = append(messages, map[string]string{"role": role, "content": text})
 		}
 		return messages
 	case req.TextCompletionRequest != nil && req.TextCompletionRequest.Input != nil:
@@ -289,6 +316,23 @@ func extractMessages(req *schemas.BifrostRequest) []map[string]string {
 // messageText flattens a message's content to the text a classifier can read, dropping
 // image, audio and file blocks.
 func messageText(content *schemas.ChatMessageContent) string {
+	if content == nil {
+		return ""
+	}
+	if content.ContentStr != nil {
+		return strings.TrimSpace(*content.ContentStr)
+	}
+	parts := make([]string, 0, len(content.ContentBlocks))
+	for _, block := range content.ContentBlocks {
+		if block.Text != nil && *block.Text != "" {
+			parts = append(parts, *block.Text)
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
+// responsesText is messageText for the Responses API's own content shape.
+func responsesText(content *schemas.ResponsesMessageContent) string {
 	if content == nil {
 		return ""
 	}
