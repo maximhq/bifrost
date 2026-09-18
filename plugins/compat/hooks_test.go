@@ -2,6 +2,8 @@ package compat
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"sync"
 	"testing"
@@ -171,5 +173,180 @@ func TestPluginDroppedParamsClearedBetweenAttempts(t *testing.T) {
 
 	if got := resp.ChatResponse.ExtraFields.DroppedCompatPluginParams; len(got) != 0 {
 		t.Errorf("dropped_compat_plugin_params = %v, want empty - the fallback attempt dropped nothing", got)
+	}
+}
+
+// newReasoningToolsPlugin seeds the catalog from a model-parameters feed so
+// the endpoint index and the parameter allowlist come from the same row, as
+// they do in production. Both are needed: the conversion asks whether
+// /responses is reachable, and the allowlist says whether reasoning may ride
+// alongside tools on chat completions.
+func newReasoningToolsPlugin(t *testing.T, cfg Config, paramsJSON string) *CompatPlugin {
+	t.Helper()
+	paramsPath := filepath.Join(t.TempDir(), "params.json")
+	if err := os.WriteFile(paramsPath, []byte(paramsJSON), 0o600); err != nil {
+		t.Fatalf("write model-parameters testdata: %v", err)
+	}
+	ds := datasheet.New(nil, bifrost.NewNoOpLogger(), datasheet.Config{
+		ModelParametersURL: "file://" + paramsPath,
+	})
+	if err := ds.LoadModelParamsFromURLIntoMemory(t.Context()); err != nil {
+		t.Fatalf("load model-parameters testdata: %v", err)
+	}
+	p, err := Init(cfg, bifrost.NewNoOpLogger(), modelcatalog.NewTestCatalogWithDatasheet(ds))
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	return p
+}
+
+// Astra-shaped row: reasons, takes tools, but not both on chat completions,
+// and /responses is available. This is what the datasheet must say for
+// gpt-6-astra / gpt-5.6-* once supports_reasoning_with_tool_calls is
+// published as false (#7275).
+const reasoningToolsChatOnlyParams = `{
+	"astra-like": {
+		"mode": "chat",
+		"supported_endpoints": ["/v1/chat/completions", "/v1/responses"],
+		"supports_reasoning": true,
+		"supports_function_calling": true,
+		"supports_reasoning_with_tool_calls": false,
+		"supports_none_reasoning_effort": true
+	},
+	"reasoning-with-tools-ok": {
+		"mode": "chat",
+		"supported_endpoints": ["/v1/chat/completions", "/v1/responses"],
+		"supports_reasoning": true,
+		"supports_function_calling": true,
+		"supports_reasoning_with_tool_calls": true
+	},
+	"chat-only": {
+		"mode": "chat",
+		"supported_endpoints": ["/v1/chat/completions"],
+		"supports_reasoning": true,
+		"supports_function_calling": true,
+		"supports_reasoning_with_tool_calls": false,
+		"supports_none_reasoning_effort": true
+	}
+}`
+
+func newReasoningToolsChatRequest(model string, requestType schemas.RequestType, withTools bool) *schemas.BifrostRequest {
+	params := &schemas.ChatParameters{
+		Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr("medium")},
+	}
+	if withTools {
+		params.Tools = []schemas.ChatTool{{
+			Type: schemas.ChatToolTypeFunction,
+			Function: &schemas.ChatToolFunction{
+				Name:        "get_weather",
+				Description: schemas.Ptr("Returns weather"),
+			},
+		}}
+	}
+	return &schemas.BifrostRequest{
+		RequestType: requestType,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    model,
+			Params:   params,
+		},
+	}
+}
+
+// Chat + function tools on a model that cannot reason alongside tools on chat
+// completions is moved to /responses, where the combination is legal, instead
+// of having its reasoning disabled — which Azure rejects for these models.
+func TestPluginChatWithToolsAndReasoningConvertsToResponses(t *testing.T) {
+	for _, requestType := range []schemas.RequestType{schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest} {
+		t.Run(string(requestType), func(t *testing.T) {
+			p := newReasoningToolsPlugin(t, Config{ConvertChatToResponses: true, ShouldDropParams: true}, reasoningToolsChatOnlyParams)
+			ctx := newTestContext()
+
+			got, _, err := p.PreLLMHook(ctx, newReasoningToolsChatRequest("astra-like", requestType, true))
+			if err != nil {
+				t.Fatalf("PreLLMHook: %v", err)
+			}
+
+			changeType, ok := ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType)
+			if !ok || changeType != schemas.ResponsesRequest {
+				t.Fatalf("change request type = %v (%v), want %v", changeType, ok, schemas.ResponsesRequest)
+			}
+			if got.ChatRequest.Params.Reasoning == nil || got.ChatRequest.Params.Reasoning.Effort == nil || *got.ChatRequest.Params.Reasoning.Effort != "medium" {
+				t.Fatalf("reasoning = %+v, want effort \"medium\" preserved for the /responses wire", got.ChatRequest.Params.Reasoning)
+			}
+			if len(got.ChatRequest.Params.Tools) != 1 {
+				t.Fatalf("tools = %v, want preserved", got.ChatRequest.Params.Tools)
+			}
+			if dropped, _ := ctx.Value(schemas.BifrostContextKeyCompatDroppedParams).([]string); slices.Contains(dropped, "reasoning") {
+				t.Errorf("dropped params %v contain reasoning, want untouched", dropped)
+			}
+		})
+	}
+}
+
+// Without convert_chat_to_responses the request stays on chat completions and
+// the pre-existing effort=none fallback still applies.
+func TestPluginChatWithToolsAndReasoningConversionDisabled(t *testing.T) {
+	p := newReasoningToolsPlugin(t, Config{ConvertChatToResponses: false, ShouldDropParams: true}, reasoningToolsChatOnlyParams)
+	ctx := newTestContext()
+
+	got, _, err := p.PreLLMHook(ctx, newReasoningToolsChatRequest("astra-like", schemas.ChatCompletionRequest, true))
+	if err != nil {
+		t.Fatalf("PreLLMHook: %v", err)
+	}
+
+	if _, converted := ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); converted {
+		t.Fatal("request was converted with convert_chat_to_responses off")
+	}
+	if effort := got.ChatRequest.Params.Reasoning.Effort; effort == nil || *effort != "none" {
+		t.Fatalf("reasoning.effort = %v, want the existing \"none\" fallback when conversion is off", effort)
+	}
+}
+
+// The x-bf-compat header sets BifrostContextKeyCompatConvertChatToResponses,
+// which turns the conversion on for a single request with the config off.
+func TestPluginChatWithToolsAndReasoningHeaderOverride(t *testing.T) {
+	p := newReasoningToolsPlugin(t, Config{ConvertChatToResponses: false, ShouldDropParams: true}, reasoningToolsChatOnlyParams)
+	ctx := newTestContext()
+	ctx.SetValue(schemas.BifrostContextKeyCompatConvertChatToResponses, true)
+
+	got, _, err := p.PreLLMHook(ctx, newReasoningToolsChatRequest("astra-like", schemas.ChatCompletionRequest, true))
+	if err != nil {
+		t.Fatalf("PreLLMHook: %v", err)
+	}
+
+	if changeType, ok := ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); !ok || changeType != schemas.ResponsesRequest {
+		t.Fatalf("change request type = %v (%v), want %v via header override", changeType, ok, schemas.ResponsesRequest)
+	}
+	if effort := got.ChatRequest.Params.Reasoning.Effort; effort == nil || *effort != "medium" {
+		t.Fatalf("reasoning.effort = %v, want \"medium\" preserved", effort)
+	}
+}
+
+// The conversion is specific to the chat + tools + reasoning combination:
+// a request missing any leg, or a model that either handles the combination
+// on chat or cannot reach /responses, is left on chat completions.
+func TestPluginChatWithToolsAndReasoningNotConverted(t *testing.T) {
+	cases := []struct {
+		name      string
+		model     string
+		withTools bool
+	}{
+		{name: "no tools", model: "astra-like", withTools: false},
+		{name: "reasoning with tools supported", model: "reasoning-with-tools-ok", withTools: true},
+		{name: "responses unsupported", model: "chat-only", withTools: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newReasoningToolsPlugin(t, Config{ConvertChatToResponses: true, ShouldDropParams: true}, reasoningToolsChatOnlyParams)
+			ctx := newTestContext()
+
+			if _, _, err := p.PreLLMHook(ctx, newReasoningToolsChatRequest(tc.model, schemas.ChatCompletionRequest, tc.withTools)); err != nil {
+				t.Fatalf("PreLLMHook: %v", err)
+			}
+			if changeType, converted := ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); converted {
+				t.Fatalf("request was converted to %v, want left on chat completions", changeType)
+			}
+		})
 	}
 }

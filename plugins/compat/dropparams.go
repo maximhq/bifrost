@@ -70,13 +70,16 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 			params.PromptCacheRetention = nil
 			dropped = append(dropped, "prompt_cache_retention")
 		}
+		// Reasoning + tools is only a problem on the chat completions wire; a
+		// request already headed for /responses keeps its reasoning as sent.
+		reasoningWithToolsUnsupported := hasSupportedTools && !isSupported["reasoning_with_tool_calls"] && !isConvertedToResponses(ctx)
 		if params.Reasoning != nil {
 			// for chat completions, some models do not support reasoning_effort
 			// with tools
 			if !isSupported["reasoning"] {
 				params.Reasoning = nil
 				dropped = append(dropped, "reasoning")
-			} else if hasSupportedTools && !isSupported["reasoning_with_tool_calls"] {
+			} else if reasoningWithToolsUnsupported {
 				// models like gpt-5.6 series models defaults to reasoning, even when
 				// reasoning_effort is not set.
 				if isSupported["supports_none_reasoning_effort"] {
@@ -87,7 +90,7 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 					dropped = append(dropped, "reasoning")
 				}
 			}
-		} else if isSupported["reasoning"] && isSupported["supports_none_reasoning_effort"] && hasSupportedTools && !isSupported["reasoning_with_tool_calls"] {
+		} else if isSupported["reasoning"] && isSupported["supports_none_reasoning_effort"] && reasoningWithToolsUnsupported {
 			params.Reasoning = &schemas.ChatReasoning{Effort: new("none")}
 			dropped = append(dropped, "reasoning")
 		}

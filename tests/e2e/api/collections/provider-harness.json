@@ -152749,6 +152749,138 @@
           ]
         }
       ]
+    },
+    {
+      "name": "101. Chat + function tools + reasoning served through /responses (#7275 / compat convert_chat_to_responses)",
+      "description": "Regression coverage for #7275. Azure Foundry gpt-6-astra and gpt-5.6-* reject function tools together with reasoning_effort on /v1/chat/completions, and also reject reasoning_effort=none - the fallback #6293 introduced - so no chat-completions request with tools can succeed. Production path: x-bf-compat convert_chat_to_responses -> compat plugin PreLLMHook sees chat + tools on a model whose datasheet row says supports_reasoning=true, supports_reasoning_with_tool_calls=false and lists /v1/responses -> marks BifrostContextKeyChangeRequestType=ResponsesRequest and skips the effort=none rewrite -> core ToResponsesRequest -> POST /responses -> ToBifrostChatResponse (stream: wrapConvertedStreamPostHookRunner). gpt-5.6-luna is used because it is deployed in the harness Azure profile and its datasheet row already carries supports_reasoning_with_tool_calls=false; gpt-6-astra takes the same path once its datasheet row publishes that flag. 101.1 pins the non-streaming wire (Responses tools shape, reasoning.effort preserved, no none) and the chat-shaped result; 101.2 pins that the streamed Responses events reach the caller as chat.completion.chunk frames.",
+      "item": [
+        {
+          "name": "azure/gpt-5.6-luna chat + function tools + reasoning_effort is served through /responses - #7275",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('101.1 2xx - an Azure 400 \"Function tools with reasoning_effort are not supported\" or \"does not support none\" is the regression', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "pm.test('101.1 caller still receives a chat completion', function () {",
+                  "  pm.expect(body.object, JSON.stringify(body).slice(0, 300)).to.equal('chat.completion');",
+                  "  pm.expect(body.choices, 'choices missing').to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('101.1 compat reports the request was converted to responses', function () {",
+                  "  pm.expect((body.extra_fields || {}).converted_request_type, JSON.stringify(body.extra_fields || {}).slice(0, 300)).to.equal('responses');",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('101.1 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "pm.test('101.1 upstream wire is Responses-shaped: tools[].name at top level, reasoning.effort kept, no effort=none', function () {",
+                  "  pm.expect(rr.input, 'Responses input missing - request stayed on chat completions').to.be.an('array');",
+                  "  pm.expect(rr.tools && rr.tools[0] && rr.tools[0].name, JSON.stringify(rr.tools || []).slice(0, 300)).to.equal('get_weather');",
+                  "  pm.expect(rr.reasoning && rr.reasoning.effort, JSON.stringify(rr.reasoning || {})).to.equal('medium');",
+                  "  pm.expect(JSON.stringify(rr), 'effort=none reached the wire').to.not.include('\"none\"');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_chat_to_responses\"]"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/gpt-5.6-luna\",\n  \"stream\": false,\n  \"max_completion_tokens\": 64,\n  \"reasoning_effort\": \"medium\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Paris? Use the tool.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Returns the weather for a city\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": \"auto\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "azure/gpt-5.6-luna chat + function tools + reasoning_effort streams through /responses as chat chunks - #7275",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('101.2 2xx - an Azure 400 on chat + tools + reasoning is the regression', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var text = pm.response.text();",
+                  "pm.test('101.2 SSE frames are chat.completion.chunk, not Responses events', function () {",
+                  "  pm.expect(text, 'no chat chunks in stream: ' + text.slice(0, 300)).to.include('\"object\":\"chat.completion.chunk\"');",
+                  "  pm.expect(text, 'Responses event leaked to a chat caller').to.not.include('\"type\":\"response.');",
+                  "});",
+                  "pm.test('101.2 stream terminates', function () {",
+                  "  pm.expect(text.indexOf('[DONE]'), 'missing [DONE]').to.be.above(-1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_chat_to_responses\"]"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/gpt-5.6-luna\",\n  \"stream\": true,\n  \"max_completion_tokens\": 64,\n  \"reasoning_effort\": \"medium\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Paris? Use the tool.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Returns the weather for a city\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": \"auto\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }
