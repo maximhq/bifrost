@@ -42,8 +42,16 @@ func (m *mockToolClientManager) GetClientByName(clientName string) *schemas.MCPC
 	return nil
 }
 
-func (m *mockToolClientManager) GetClientForTool(toolName string) *schemas.MCPClientState {
+func (m *mockToolClientManager) GetClientForTool(_ context.Context, toolName string) (*schemas.MCPClientState, *schemas.MCPDiscovery) {
+	return nil, nil
+}
+
+func (m *mockToolClientManager) GetToolsForClient(_ context.Context, clientID string) map[string]schemas.ChatTool {
 	return nil
+}
+
+func (m *mockToolClientManager) GetInstructionsForClient(_ context.Context, clientID string) string {
+	return ""
 }
 
 func (m *mockToolClientManager) GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool {

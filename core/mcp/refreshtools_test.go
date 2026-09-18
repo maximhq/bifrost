@@ -16,18 +16,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// refreshToolMapKeys snapshots the prefixed tool names currently cached on a
-// client, so a test can watch the manager's view of an upstream tool set
-// without reaching into the connection.
+// refreshToolMapKeys snapshots the prefixed tool names currently recorded for
+// a client in the manager's discovery store, so a test can watch the manager's view
+// of an upstream tool set without reaching into the connection.
 func refreshToolMapKeys(m *MCPManager, id string) []string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	cs, ok := m.clientMap[id]
-	if !ok || cs.ToolMap == nil {
+	tools := m.discoveryStore.GetDiscovery(context.Background(), id).GetTools()
+	if len(tools) == 0 {
 		return nil
 	}
-	keys := make([]string, 0, len(cs.ToolMap))
-	for k := range cs.ToolMap {
+	keys := make([]string, 0, len(tools))
+	for k := range tools {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
@@ -266,8 +264,6 @@ func TestRefreshClientTools_AwaitingAdminVerification_Refuses(t *testing.T) {
 				Name:            config.Name,
 				ExecutionConfig: config,
 				State:           schemas.MCPConnectionStatePendingVerification,
-				ToolMap:         map[string]schemas.ChatTool{},
-				ToolNameMapping: map[string]string{},
 				ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
 			}
 			m.mu.Unlock()
@@ -277,11 +273,11 @@ func TestRefreshClientTools_AwaitingAdminVerification_Refuses(t *testing.T) {
 
 			m.mu.RLock()
 			state := m.clientMap[config.ID].State
-			tools := len(m.clientMap[config.ID].ToolMap)
 			m.mu.RUnlock()
 			assert.Equal(t, schemas.MCPConnectionStatePendingVerification, state,
 				"a refused refresh must leave the client awaiting its admin")
-			assert.Zero(t, tools, "nothing may be discovered onto a client still awaiting verification")
+			assert.Empty(t, storedTools(m, config.ID),
+				"nothing may be discovered onto a client still awaiting verification")
 		})
 	}
 }
@@ -305,8 +301,6 @@ func TestRefreshClientTools_DisabledAndNeedsReauth_Refuse(t *testing.T) {
 				Name:            config.Name,
 				ExecutionConfig: config,
 				State:           state,
-				ToolMap:         map[string]schemas.ChatTool{},
-				ToolNameMapping: map[string]string{},
 				ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
 			}
 			m.mu.Unlock()

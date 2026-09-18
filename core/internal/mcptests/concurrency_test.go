@@ -398,10 +398,10 @@ func TestConcurrent_EditClientDuringExecution(t *testing.T) {
 		for i := 0; i < 10; i++ {
 			// Try to execute any available tool
 			clients := manager.GetClients()
-			if len(clients) > 0 && len(clients[0].ToolMap) > 0 {
+			if len(clients) > 0 && len(clientTools(manager, clients[0].ExecutionConfig.ID)) > 0 {
 				// Get first available tool
 				var toolName string
-				for name := range clients[0].ToolMap {
+				for name := range clientTools(manager, clients[0].ExecutionConfig.ID) {
 					toolName = name
 					break
 				}

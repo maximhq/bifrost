@@ -18,10 +18,24 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// ClientManager interface for accessing MCP clients and tools
+// ClientManager interface for accessing MCP clients and tools.
+// Client state snapshots carry connection state only; tools and instructions
+// always come from the discovery store, which lookups consult with the
+// caller's ctx (a ctx-aware store may serve different callers different
+// discoveries).
 type ClientManager interface {
 	GetClientByName(clientName string) *schemas.MCPClientState
-	GetClientForTool(toolName string) *schemas.MCPClientState
+	// GetClientForTool resolves toolName for the caller on ctx and returns
+	// the owning client's state together with the discovery the tool was
+	// found in, as an atomic pair; (nil, nil) when no client serves it.
+	GetClientForTool(ctx context.Context, toolName string) (*schemas.MCPClientState, *schemas.MCPDiscovery)
+	// GetToolsForClient returns the tools the caller on ctx should see for
+	// one client, or nil when it has none recorded.
+	GetToolsForClient(ctx context.Context, clientID string) map[string]schemas.ChatTool
+	// GetInstructionsForClient returns the upstream instructions the caller on
+	// ctx should see for one client, from the same discovery its tools come
+	// from; "" when it has none.
+	GetInstructionsForClient(ctx context.Context, clientID string) string
 	GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool
 	// InstructionCaps returns the configured instruction byte caps, zero meaning unset.
 	InstructionCaps() InstructionCaps
@@ -935,7 +949,7 @@ func (m *ToolsManager) attemptCallFailureRecovery(
 	executionConfig *schemas.MCPClientConfig,
 	toolExecutionTimeout time.Duration,
 ) (*mcp.CallToolResult, bool, bool) {
-	state := m.clientManager.GetClientForTool(toolName)
+	state, stateDiscovery := m.clientManager.GetClientForTool(ctx, toolName)
 
 	// Safety opt-out: a spurious retry against a destructive, non-idempotent
 	// tool could cause a real-world side effect twice. This gates only the
@@ -950,7 +964,7 @@ func (m *ToolsManager) attemptCallFailureRecovery(
 	// simply never set the hint.
 	retryOptedOut := false
 	if state != nil {
-		if tool, ok := state.ToolMap[toolName]; ok {
+		if tool, ok := stateDiscovery.GetTools()[toolName]; ok {
 			readOnly := false
 			destructive := true
 			idempotent := false
@@ -975,7 +989,7 @@ func (m *ToolsManager) attemptCallFailureRecovery(
 	var retryResponse *mcp.CallToolResult
 	recovered, budgetExhausted := m.recoverCall(ctx, toolName, state, executionConfig, toolExecutionTimeout, retryOptedOut,
 		func(state *schemas.MCPClientState) bool {
-			_, ok := state.ToolMap[toolName]
+			_, ok := m.clientManager.GetToolsForClient(ctx, state.ExecutionConfig.ID)[toolName]
 			return ok
 		},
 		func(ctx context.Context, conn *client.Client) error {
@@ -1157,7 +1171,8 @@ func (m *ToolsManager) recoverSharedConnection(
 	// letting the original auth failure surface is strictly safer than
 	// guessing. GetClientByName returns a snapshot copy of the client state,
 	// so it must be re-resolved after the reconnect to pick up the fresh
-	// connection.
+	// connection; the tool's continued presence is checked against the
+	// discovery store's current discovery for this client.
 	state := m.clientManager.GetClientByName(executionConfig.Name)
 	if state == nil || state.ExecutionConfig == nil || state.ExecutionConfig.ID != executionConfig.ID {
 		return false, false

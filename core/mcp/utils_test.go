@@ -328,8 +328,9 @@ func TestAuthorizeCodeModeToolCall(t *testing.T) {
 }
 
 func injectedToolTestManager(state schemas.MCPConnectionState) *MCPManager {
-	return &MCPManager{
-		logger: &MockLogger{},
+	m := &MCPManager{
+		logger:         &MockLogger{},
+		discoveryStore: NewDiscoveryStore(),
 		clientMap: map[string]*schemas.MCPClientState{
 			"id-tavily": {
 				State: state,
@@ -340,25 +341,28 @@ func injectedToolTestManager(state schemas.MCPConnectionState) *MCPManager {
 					// provider's injected web search must still resolve and run.
 					ToolsToExecute: schemas.WhiteList{},
 				},
-				ToolMap: map[string]schemas.ChatTool{
-					"tavily-search": {
-						Type: schemas.ChatToolTypeFunction,
-						Function: &schemas.ChatToolFunction{
-							Name:        "tavily-search",
-							Description: schemas.Ptr("Search the web"),
-							Parameters:  &schemas.ToolFunctionParameters{Type: "object", Required: []string{"query"}},
-						},
-					},
-				},
 			},
 		},
 	}
+	m.discoveryStore.SetDiscovery(context.Background(), "id-tavily", &schemas.MCPDiscovery{
+		Tools: map[string]schemas.ChatTool{
+			"tavily-search": {
+				Type: schemas.ChatToolTypeFunction,
+				Function: &schemas.ChatToolFunction{
+					Name:        "tavily-search",
+					Description: schemas.Ptr("Search the web"),
+					Parameters:  &schemas.ToolFunctionParameters{Type: "object", Required: []string{"query"}},
+				},
+			},
+		},
+	})
+	return m
 }
 
 func TestGetInjectedTool(t *testing.T) {
 	m := injectedToolTestManager(schemas.MCPConnectionStateHealthy)
 
-	tool, err := m.GetInjectedTool("tavily", "search")
+	tool, err := m.GetInjectedTool(context.Background(), "tavily", "search")
 	require.NoError(t, err, "injected tools ignore tools_to_execute: the provider config is the authorization")
 	require.NotNil(t, tool.Function)
 	assert.Equal(t, "tavily-search", tool.Function.Name)
@@ -366,18 +370,18 @@ func TestGetInjectedTool(t *testing.T) {
 	tool.Function.Name = "mutated"
 	tool.Function.Parameters.Required[0] = "mutated"
 	tool.Function.Parameters.Type = "mutated"
-	again, err := m.GetInjectedTool("tavily", "search")
+	again, err := m.GetInjectedTool(context.Background(), "tavily", "search")
 	require.NoError(t, err)
-	assert.Equal(t, "tavily-search", again.Function.Name, "the returned tool must be a copy, never the client's ToolMap entry")
+	assert.Equal(t, "tavily-search", again.Function.Name, "the returned tool must be a copy, never the stored discovery's entry")
 	assert.Equal(t, "object", again.Function.Parameters.Type, "the parameter schema is copied too")
 	assert.Equal(t, []string{"query"}, again.Function.Parameters.Required, "nested schema slices are copied too")
 
-	_, err = m.GetInjectedTool("exa", "search")
+	_, err = m.GetInjectedTool(context.Background(), "exa", "search")
 	assert.ErrorContains(t, err, "not found")
-	_, err = m.GetInjectedTool("tavily", "crawl")
+	_, err = m.GetInjectedTool(context.Background(), "tavily", "crawl")
 	assert.ErrorContains(t, err, "does not expose")
 
-	_, err = injectedToolTestManager(schemas.MCPConnectionStateDisabled).GetInjectedTool("tavily", "search")
+	_, err = injectedToolTestManager(schemas.MCPConnectionStateDisabled).GetInjectedTool(context.Background(), "tavily", "search")
 	assert.ErrorContains(t, err, "disabled")
 }
 
@@ -417,7 +421,7 @@ func TestPrepareToolExecution_CodeModeToolNeedsAReachableCodeModeClient(t *testi
 				delete(m.clientMap, "codey-id")
 				m.mu.Unlock()
 			}
-			_, _, release, err := m.prepareToolExecution(ctx, request)
+			_, _, _, release, err := m.prepareToolExecution(ctx, request)
 			if tc.wantErr {
 				assert.ErrorContains(t, err, "not permitted")
 				return

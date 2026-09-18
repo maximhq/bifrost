@@ -9,16 +9,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// snapshotAddClientState copies the fields the assertions below care about while
-// holding the manager lock.
-func snapshotAddClientState(m *MCPManager, id string) (state schemas.MCPClientState, exists bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	cs, ok := m.clientMap[id]
-	if !ok {
-		return schemas.MCPClientState{}, false
-	}
-	return *cs, true
+// snapshotAddClientState copies the fields the assertions below care about
+// while holding the manager lock, with the client's discovery read from the
+// store (client state no longer carries discovery data). Reuses clientSnapshot
+// from makebeforebreak_test.go (same package).
+func snapshotAddClientState(m *MCPManager, id string) (state clientSnapshot, exists bool) {
+	return snapshotClientState(m, id)
 }
 
 // TestAddClient_PerUserHeaders_DiscoveredToolsStateSelection covers

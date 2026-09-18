@@ -145,7 +145,7 @@ func TestPerformAdminToolDiscovery_PerUserOAuth_ExtractsBearerTokenAndDispatches
 	ts, rec := buildAdminDiscoveryHTTPServer(t)
 
 	cred := &fakeAdminCredStore{headers: http.Header{"Authorization": []string{"Bearer admin-secret-token"}}}
-	m := &MCPManager{credStore: cred, logger: &MockLogger{}}
+	m := &MCPManager{credStore: cred, logger: &MockLogger{}, discoveryStore: NewDiscoveryStore()}
 
 	config := &schemas.MCPClientConfig{
 		ID:               "client-1",
@@ -174,7 +174,7 @@ func TestPerformAdminToolDiscovery_PerUserOAuth_ExtractsBearerTokenAndDispatches
 // own error instead of ever attempting a connection.
 func TestPerformAdminToolDiscovery_PerUserOAuth_EmptyBearerToken_ErrorsWithoutDialing(t *testing.T) {
 	cred := &fakeAdminCredStore{headers: http.Header{}} // no Authorization header at all
-	m := &MCPManager{credStore: cred, logger: &MockLogger{}}
+	m := &MCPManager{credStore: cred, logger: &MockLogger{}, discoveryStore: NewDiscoveryStore()}
 
 	config := &schemas.MCPClientConfig{
 		ID:       "client-1b",
@@ -204,7 +204,7 @@ func TestPerformAdminToolDiscovery_PerUserHeaders_ConvertsHeadersAndDispatches(t
 		"X-Api-Key":   []string{"admin-key-1"},
 		"X-Tenant-Id": []string{"tenant-42"},
 	}}
-	m := &MCPManager{credStore: cred, logger: &MockLogger{}}
+	m := &MCPManager{credStore: cred, logger: &MockLogger{}, discoveryStore: NewDiscoveryStore()}
 
 	config := &schemas.MCPClientConfig{
 		ID:                "client-2",
@@ -239,7 +239,7 @@ func TestPerformAdminToolDiscovery_PerUserHeaders_ConvertsHeadersAndDispatches(t
 // instead of attempting discovery.
 func TestPerformAdminToolDiscovery_UnsupportedAuthType_ReturnsError(t *testing.T) {
 	cred := &fakeAdminCredStore{headers: http.Header{"Authorization": []string{"Bearer x"}}}
-	m := &MCPManager{credStore: cred, logger: &MockLogger{}}
+	m := &MCPManager{credStore: cred, logger: &MockLogger{}, discoveryStore: NewDiscoveryStore()}
 
 	config := &schemas.MCPClientConfig{
 		ID:       "client-3",
@@ -264,7 +264,7 @@ func TestPerformAdminToolDiscovery_SharedOAuth_PerCall_ExtractsBearerTokenAndDis
 	ts, rec := buildAdminDiscoveryHTTPServer(t)
 
 	cred := &fakeAdminCredStore{headers: http.Header{"Authorization": []string{"Bearer shared-secret-token"}}}
-	m := &MCPManager{credStore: cred, logger: &MockLogger{}}
+	m := &MCPManager{credStore: cred, logger: &MockLogger{}, discoveryStore: NewDiscoveryStore()}
 
 	config := &schemas.MCPClientConfig{
 		ID:               "client-5",
@@ -297,7 +297,7 @@ func TestPerformAdminToolDiscovery_SharedHeadersAndNone_PerCall_ConvertsHeadersA
 			ts, rec := buildAdminDiscoveryHTTPServer(t)
 
 			cred := &fakeAdminCredStore{headers: http.Header{"X-Api-Key": []string{"shared-key-1"}}}
-			m := &MCPManager{credStore: cred, logger: &MockLogger{}}
+			m := &MCPManager{credStore: cred, logger: &MockLogger{}, discoveryStore: NewDiscoveryStore()}
 
 			config := &schemas.MCPClientConfig{
 				ID:               "client-6",
@@ -332,7 +332,7 @@ func TestPerformAdminToolDiscovery_SharedHeaders_PerCall_EmptyHeadersStillDispat
 	ts, _ := buildAdminDiscoveryHTTPServer(t)
 
 	cred := &fakeAdminCredStore{headers: http.Header{}} // resolves to nothing
-	m := &MCPManager{credStore: cred, logger: &MockLogger{}}
+	m := &MCPManager{credStore: cred, logger: &MockLogger{}, discoveryStore: NewDiscoveryStore()}
 
 	config := &schemas.MCPClientConfig{
 		ID:               "client-7",
@@ -353,7 +353,7 @@ func TestPerformAdminToolDiscovery_SharedHeaders_PerCall_EmptyHeadersStillDispat
 func TestPerformAdminToolDiscovery_CredStoreError_Propagates(t *testing.T) {
 	credErr := errors.New("admin credential store unavailable")
 	cred := &fakeAdminCredStore{err: credErr}
-	m := &MCPManager{credStore: cred, logger: &MockLogger{}}
+	m := &MCPManager{credStore: cred, logger: &MockLogger{}, discoveryStore: NewDiscoveryStore()}
 
 	config := &schemas.MCPClientConfig{
 		ID:       "client-4",

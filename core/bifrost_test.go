@@ -8613,12 +8613,18 @@ func TestSetMCPDiscoveryChangeCallback_ReachesLazyManager(t *testing.T) {
 // listedToolsManager serves one client whose tool the test holds on to.
 type listedToolsManager struct {
 	mcp.MCPManagerInterface
-	state schemas.MCPClientState
+	state     schemas.MCPClientState
+	discovery *schemas.MCPDiscovery
 }
 
 // GetClients returns the held client state as the manager would.
 func (m *listedToolsManager) GetClients() []schemas.MCPClientState {
 	return []schemas.MCPClientState{m.state}
+}
+
+// GetClientDiscovery returns the held discovery as the manager's store would.
+func (m *listedToolsManager) GetClientDiscovery(context.Context, string) *schemas.MCPDiscovery {
+	return m.discovery
 }
 
 // TestGetMCPClients_ListedToolsAreOwned: a caller that edits a listed tool's annotations, icons or
@@ -8633,10 +8639,15 @@ func TestGetMCPClients_ListedToolsAreOwned(t *testing.T) {
 			OutputSchema: json.RawMessage(`{"type":"object"}`),
 		},
 	}
-	manager := &listedToolsManager{state: schemas.MCPClientState{
-		ExecutionConfig: &schemas.MCPClientConfig{ID: "docs-id", Name: "docs"},
-		ToolMap:         map[string]schemas.ChatTool{"docs-search": held},
-	}}
+	manager := &listedToolsManager{
+		state: schemas.MCPClientState{ExecutionConfig: &schemas.MCPClientConfig{ID: "docs-id", Name: "docs"}},
+		discovery: &schemas.MCPDiscovery{
+			Tools:             map[string]schemas.ChatTool{"docs-search": held},
+			Resources:         []mcpgo.Resource{mcpgo.NewResource("file:///b.md", "b"), mcpgo.NewResource("file:///a.md", "a")},
+			ResourceTemplates: []mcpgo.ResourceTemplate{mcpgo.NewResourceTemplate("repo://{name}", "repo")},
+			Prompts:           []mcpgo.Prompt{mcpgo.NewPrompt("docs-review")},
+		},
+	}
 	b := &Bifrost{MCPManager: manager}
 
 	clients, err := b.GetMCPClients()
@@ -8650,6 +8661,16 @@ func TestGetMCPClients_ListedToolsAreOwned(t *testing.T) {
 
 	if held.Annotations.Title != "Search" || held.MCP.Icons[0].Src != "https://example.com/search.png" || string(held.MCP.OutputSchema) != `{"type":"object"}` {
 		t.Fatalf("editing a listed tool changed the served one: annotations %q, icon %q, schema %s", held.Annotations.Title, held.MCP.Icons[0].Src, held.MCP.OutputSchema)
+	}
+
+	// The discovered lists are the caller's own copies too, so sorting or editing one cannot
+	// change what the manager serves.
+	clients[0].Resources[0] = mcpgo.NewResource("file:///edited.md", "edited")
+	clients[0].ResourceTemplates[0].Name = "edited"
+	clients[0].Prompts[0].Name = "edited"
+	served := manager.discovery
+	if served.Resources[0].URI != "file:///b.md" || served.ResourceTemplates[0].Name != "repo" || served.Prompts[0].Name != "docs-review" {
+		t.Fatalf("editing a listed list changed the served one: resource %q, template %q, prompt %q", served.Resources[0].URI, served.ResourceTemplates[0].Name, served.Prompts[0].Name)
 	}
 }
 

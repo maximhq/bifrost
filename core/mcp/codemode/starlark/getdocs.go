@@ -131,7 +131,7 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 	}
 
 	// Generate detailed documentation using generateTypeDefinitions
-	docContent := generateTypeDefinitions(matchedClientName, []schemas.ChatTool{*matchedTool}, true, s.serverInstructionsComment(matchedClientName), !s.jsonModuleShadowed(availableToolsPerClient))
+	docContent := generateTypeDefinitions(matchedClientName, []schemas.ChatTool{*matchedTool}, true, s.serverInstructionsComment(ctx, matchedClientName), !s.jsonModuleShadowed(availableToolsPerClient))
 
 	return createToolResponseMessage(toolCall, docContent, false), nil
 }

@@ -27,7 +27,7 @@ func TestSetClientDiscovery_FiresToolsChangeCallback(t *testing.T) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{ID: "client-1", Name: "client-one"}
 	m.mu.Lock()
-	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, ToolMap: map[string]schemas.ChatTool{}}
+	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config}
 	m.mu.Unlock()
 
 	var calls []toolsChangeCall
@@ -59,13 +59,13 @@ func TestDiscoveryChanged_LateCallbackDeliversTheCurrentDiscovery(t *testing.T) 
 	m.SetDiscoveryChangeCallback(func(_, _ string, discovery *schemas.MCPDiscovery) {
 		delivered = append(delivered, discovery.Instructions)
 	})
-	state := &schemas.MCPClientState{Name: "docs", ToolMap: map[string]schemas.ChatTool{}}
+	state := &schemas.MCPClientState{Name: "docs"}
 	m.clientMap["docs-id"] = state
 
 	m.mu.Lock()
-	state.ServerInstructions = "first"
+	m.discoveryStore.SetDiscovery(m.ctx, "docs-id", &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}, Instructions: "first"})
 	older := m.discoveryChanged(state, "docs-id")
-	state.ServerInstructions = "second"
+	m.discoveryStore.SetDiscovery(m.ctx, "docs-id", &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}, Instructions: "second"})
 	newer := m.discoveryChanged(state, "docs-id")
 	m.mu.Unlock()
 	require.NotNil(t, older)
@@ -125,12 +125,13 @@ func TestPerformCheck_PerCall_SuccessfulDiscovery_FiresToolsChangeCallback(t *te
 
 	cred := &fakeAdminCredStore{headers: http.Header{"Authorization": []string{"Bearer shared-token"}}}
 	manager := &MCPManager{
-		credStore: cred,
-		logger:    &MockLogger{},
-		clientMap: map[string]*schemas.MCPClientState{},
+		discoveryStore: NewDiscoveryStore(),
+		credStore:      cred,
+		logger:         &MockLogger{},
+		clientMap:      map[string]*schemas.MCPClientState{},
 	}
 
-	state, config := newSyncTestClientState("client-checker-percall", "checker-client", schemas.MCPAuthTypeHeaders, map[string]schemas.ChatTool{})
+	state, config := newSyncTestClientState("client-checker-percall", "checker-client", schemas.MCPAuthTypeHeaders)
 	config.ConnectionType = schemas.MCPConnectionTypeHTTP
 	config.ConnectionString = schemas.NewSecretVar(ts.URL)
 	manager.clientMap[config.ID] = state

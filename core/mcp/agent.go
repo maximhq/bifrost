@@ -192,7 +192,7 @@ func (a *AgentModeExecutor) executeAgent(
 			}
 
 			toolName := *toolCall.Function.Name
-			client := clientManager.GetClientForTool(toolName)
+			client, _ := clientManager.GetClientForTool(ctx, toolName)
 			if client == nil {
 				// Allow code mode list, read, and docs tools (all read-only operations)
 				if toolName == ToolTypeListToolFiles || toolName == ToolTypeReadToolFile || toolName == ToolTypeGetToolDocs {
