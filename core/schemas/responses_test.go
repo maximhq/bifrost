@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -944,4 +945,63 @@ func TestDeepCopyResponsesMessagePreservesMediaResolution(t *testing.T) {
 	if *got.NumTokens != 512 {
 		t.Fatalf("numTokens = %d, want 512", *got.NumTokens)
 	}
+}
+
+// TestResponsesOpenAIWireShapes pins OpenAI Responses shapes that previously failed
+// to decode or re-encoded lossily: each input must survive an unmarshal/marshal
+// round trip unchanged.
+func TestResponsesOpenAIWireShapes(t *testing.T) {
+	assertRoundTrip := func(t *testing.T, v any, in string) {
+		t.Helper()
+		if err := Unmarshal([]byte(in), v); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		out, err := MarshalSorted(v)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var got, want any
+		if err := json.Unmarshal(out, &got); err != nil {
+			t.Fatalf("decode output: %v", err)
+		}
+		if err := json.Unmarshal([]byte(in), &want); err != nil {
+			t.Fatalf("decode input: %v", err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("round trip mismatch\n got: %s\nwant: %s", out, in)
+		}
+	}
+
+	t.Run("mcp_approval_response_keeps_approval_request_id", func(t *testing.T) {
+		assertRoundTrip(t, &ResponsesMessage{}, `{"type":"mcp_approval_response","approval_request_id":"mcpr_1","approve":true,"reason":"ok"}`)
+	})
+
+	t.Run("mcp_call_structured_errors", func(t *testing.T) {
+		for _, tc := range []struct{ in, text string }{
+			{`{"type":"mcp_call","id":"mcp_1","name":"search","arguments":"{}","error":{"type":"mcp_protocol_error","code":-32602,"message":"bad params"}}`, "bad params"},
+			{`{"type":"mcp_call","id":"mcp_2","name":"search","arguments":"{}","error":{"type":"http_error","code":502,"message":"upstream down"}}`, "upstream down"},
+			{`{"type":"mcp_call","id":"mcp_3","name":"search","arguments":"{}","error":{"type":"mcp_tool_execution_error","content":[{"type":"text","text":"boom"}]}}`, `[{"type":"text","text":"boom"}]`},
+			{`{"type":"mcp_call","id":"mcp_4","name":"search","arguments":"{}","error":"legacy string"}`, "legacy string"},
+		} {
+			msg := &ResponsesMessage{}
+			assertRoundTrip(t, msg, tc.in)
+			if got := msg.ResponsesToolMessage.Error.Text(); got != tc.text {
+				t.Fatalf("Text() = %q, want %q", got, tc.text)
+			}
+		}
+	})
+
+	t.Run("conversation_accepts_string_and_object", func(t *testing.T) {
+		assertRoundTrip(t, &ResponsesParameters{}, `{"conversation":"conv_1"}`)
+		assertRoundTrip(t, &ResponsesParameters{}, `{"conversation":{"id":"conv_1"}}`)
+	})
+
+	t.Run("mcp_allowed_tools_accepts_array_and_filter", func(t *testing.T) {
+		assertRoundTrip(t, &ResponsesTool{}, `{"type":"mcp","server_label":"docs","server_url":"https://mcp.example.com","allowed_tools":["search","fetch"]}`)
+		assertRoundTrip(t, &ResponsesTool{}, `{"type":"mcp","server_label":"docs","server_url":"https://mcp.example.com","allowed_tools":{"read_only":true,"tool_names":["search"]}}`)
+	})
+
+	t.Run("file_search_in_and_nin_filters", func(t *testing.T) {
+		assertRoundTrip(t, &ResponsesTool{}, `{"type":"file_search","vector_store_ids":["vs_1"],"filters":{"type":"and","filters":[{"type":"in","key":"region","value":["us","eu"]},{"type":"nin","key":"year","value":[2023,2024]}]}}`)
+	})
 }

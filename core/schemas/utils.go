@@ -1389,7 +1389,16 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 		}
 
 		if original.ResponsesToolMessage.Error != nil {
-			copyError := *original.ResponsesToolMessage.Error
+			copyError := ResponsesToolMessageError{}
+			if original.ResponsesToolMessage.Error.ResponsesToolMessageErrorStr != nil {
+				copyErrorStr := *original.ResponsesToolMessage.Error.ResponsesToolMessageErrorStr
+				copyError.ResponsesToolMessageErrorStr = &copyErrorStr
+			}
+			if original.ResponsesToolMessage.Error.ResponsesToolMessageErrorStruct != nil {
+				copyErrorStruct := *original.ResponsesToolMessage.Error.ResponsesToolMessageErrorStruct
+				copyErrorStruct.Content = append(json.RawMessage(nil), copyErrorStruct.Content...)
+				copyError.ResponsesToolMessageErrorStruct = &copyErrorStruct
+			}
 			copy.ResponsesToolMessage.Error = &copyError
 		}
 

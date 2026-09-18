@@ -505,31 +505,31 @@ type PromptCacheBreakpoint struct {
 }
 
 type ResponsesParameters struct {
-	Background           *bool                         `json:"background,omitempty"`
-	Conversation         *string                       `json:"conversation,omitempty"`
-	Include              []string                      `json:"include,omitempty"` // Supported values: "web_search_call.action.sources", "code_interpreter_call.outputs", "computer_call_output.output.image_url", "file_search_call.results", "message.input_image.image_url", "message.output_text.logprobs", "reasoning.encrypted_content"
-	Instructions         *string                       `json:"instructions,omitempty"`
-	MaxOutputTokens      *int                          `json:"max_output_tokens,omitempty"`
-	MaxToolCalls         *int                          `json:"max_tool_calls,omitempty"`
-	Metadata             *map[string]any               `json:"metadata,omitempty"`
-	ParallelToolCalls    *bool                         `json:"parallel_tool_calls,omitempty"`
-	PreviousResponseID   *string                       `json:"previous_response_id,omitempty"`
-	PromptCacheKey       *string                       `json:"prompt_cache_key,omitempty"` // Prompt cache key
-	PromptCacheRetention *string                       `json:"prompt_cache_retention,omitempty"`
-	PromptCacheOptions   *PromptCacheOptions           `json:"prompt_cache_options,omitempty"` // Request-wide prompt cache options (OpenAI gpt-5.6+)
-	Reasoning            *ResponsesParametersReasoning `json:"reasoning,omitempty"`            // Configuration options for reasoning models
-	SafetyIdentifier     *string                       `json:"safety_identifier,omitempty"`    // Safety identifier
-	ServiceTier          *BifrostServiceTier           `json:"service_tier,omitempty"`
-	StreamOptions        *ResponsesStreamOptions       `json:"stream_options,omitempty"`
-	Store                *bool                         `json:"store,omitempty"`
-	Temperature          *float64                      `json:"temperature,omitempty"`
-	Text                 *ResponsesTextConfig          `json:"text,omitempty"`
-	TopLogProbs          *int                          `json:"top_logprobs,omitempty"`
-	TopP                 *float64                      `json:"top_p,omitempty"`       // Controls diversity via nucleus sampling
-	ToolChoice           *ResponsesToolChoice          `json:"tool_choice,omitempty"` // Whether to call a tool
-	Tools                []ResponsesTool               `json:"tools,omitempty"`       // Tools to use
-	Truncation           *string                       `json:"truncation,omitempty"`
-	User                 *string                       `json:"user,omitempty"`
+	Background           *bool                          `json:"background,omitempty"`
+	Conversation         *ResponsesResponseConversation `json:"conversation,omitempty"`
+	Include              []string                       `json:"include,omitempty"` // Supported values: "web_search_call.action.sources", "code_interpreter_call.outputs", "computer_call_output.output.image_url", "file_search_call.results", "message.input_image.image_url", "message.output_text.logprobs", "reasoning.encrypted_content"
+	Instructions         *string                        `json:"instructions,omitempty"`
+	MaxOutputTokens      *int                           `json:"max_output_tokens,omitempty"`
+	MaxToolCalls         *int                           `json:"max_tool_calls,omitempty"`
+	Metadata             *map[string]any                `json:"metadata,omitempty"`
+	ParallelToolCalls    *bool                          `json:"parallel_tool_calls,omitempty"`
+	PreviousResponseID   *string                        `json:"previous_response_id,omitempty"`
+	PromptCacheKey       *string                        `json:"prompt_cache_key,omitempty"` // Prompt cache key
+	PromptCacheRetention *string                        `json:"prompt_cache_retention,omitempty"`
+	PromptCacheOptions   *PromptCacheOptions            `json:"prompt_cache_options,omitempty"` // Request-wide prompt cache options (OpenAI gpt-5.6+)
+	Reasoning            *ResponsesParametersReasoning  `json:"reasoning,omitempty"`            // Configuration options for reasoning models
+	SafetyIdentifier     *string                        `json:"safety_identifier,omitempty"`    // Safety identifier
+	ServiceTier          *BifrostServiceTier            `json:"service_tier,omitempty"`
+	StreamOptions        *ResponsesStreamOptions        `json:"stream_options,omitempty"`
+	Store                *bool                          `json:"store,omitempty"`
+	Temperature          *float64                       `json:"temperature,omitempty"`
+	Text                 *ResponsesTextConfig           `json:"text,omitempty"`
+	TopLogProbs          *int                           `json:"top_logprobs,omitempty"`
+	TopP                 *float64                       `json:"top_p,omitempty"`       // Controls diversity via nucleus sampling
+	ToolChoice           *ResponsesToolChoice           `json:"tool_choice,omitempty"` // Whether to call a tool
+	Tools                []ResponsesTool                `json:"tools,omitempty"`       // Tools to use
+	Truncation           *string                        `json:"truncation,omitempty"`
+	User                 *string                        `json:"user,omitempty"`
 
 	// Opts into running built-in server-side tools (e.g. Google Search) in the same
 	// turn as function declarations. Required by Gemini 3+, which otherwise rejects
@@ -1454,7 +1454,7 @@ const (
 	ResponsesMessageTypeImageGenerationCall  ResponsesMessageType = "image_generation_call"
 	ResponsesMessageTypeMCPListTools         ResponsesMessageType = "mcp_list_tools"
 	ResponsesMessageTypeMCPApprovalRequest   ResponsesMessageType = "mcp_approval_request"
-	ResponsesMessageTypeMCPApprovalResponses ResponsesMessageType = "mcp_approval_responses"
+	ResponsesMessageTypeMCPApprovalResponses ResponsesMessageType = "mcp_approval_response"
 	ResponsesMessageTypeReasoning            ResponsesMessageType = "reasoning"
 	ResponsesMessageTypeItemReference        ResponsesMessageType = "item_reference"
 	ResponsesMessageTypeRefusal              ResponsesMessageType = "refusal"
@@ -1912,7 +1912,7 @@ type ResponsesToolMessage struct {
 	Execution *string                           `json:"execution,omitempty"` // "client" on deferred calls (e.g. tool_search_call); Codex needs it to dispatch the call
 	Output    *ResponsesToolMessageOutputStruct `json:"output,omitempty"`
 	Action    *ResponsesToolMessageActionStruct `json:"action,omitempty"`
-	Error     *string                           `json:"error,omitempty"`
+	Error     *ResponsesToolMessageError        `json:"error,omitempty"`
 	// Caller is the neutral form of Anthropic's "caller" union on server-tool blocks
 	Caller *ResponsesToolCaller `json:"tool_caller,omitempty"`
 
@@ -2198,6 +2198,73 @@ func (output *ResponsesToolMessageOutputStruct) UnmarshalJSON(data []byte) error
 		return nil
 	}
 	return fmt.Errorf("responses tool message output struct is neither a string nor an array of responses message content blocks nor a computer tool call output data nor an image generation call output")
+}
+
+// ResponsesToolMessageError is a tool item's error: a plain string (mcp_list_tools,
+// and mcp_call before OpenAI structured it) or a structured mcp_call error object.
+type ResponsesToolMessageError struct {
+	ResponsesToolMessageErrorStr    *string
+	ResponsesToolMessageErrorStruct *ResponsesToolMessageErrorStruct
+}
+
+// ResponsesToolMessageErrorStruct is the structured mcp_call error: mcp_protocol_error
+// and http_error carry code and message, mcp_tool_execution_error carries content.
+type ResponsesToolMessageErrorStruct struct {
+	Type    string          `json:"type"`
+	Code    *int            `json:"code,omitempty"`
+	Message *string         `json:"message,omitempty"`
+	Content json.RawMessage `json:"content,omitempty"` // untyped in OpenAI's spec, kept verbatim
+}
+
+func (e ResponsesToolMessageError) MarshalJSON() ([]byte, error) {
+	if e.ResponsesToolMessageErrorStr != nil && e.ResponsesToolMessageErrorStruct != nil {
+		return nil, fmt.Errorf("both ResponsesToolMessageErrorStr and ResponsesToolMessageErrorStruct are set; only one should be non-nil")
+	}
+	if e.ResponsesToolMessageErrorStr != nil {
+		return MarshalSorted(*e.ResponsesToolMessageErrorStr)
+	}
+	if e.ResponsesToolMessageErrorStruct != nil {
+		return MarshalSorted(e.ResponsesToolMessageErrorStruct)
+	}
+	return MarshalSorted(nil)
+}
+
+func (e *ResponsesToolMessageError) UnmarshalJSON(data []byte) error {
+	var str string
+	if err := Unmarshal(data, &str); err == nil {
+		e.ResponsesToolMessageErrorStr = &str
+		return nil
+	}
+	var errStruct ResponsesToolMessageErrorStruct
+	if err := Unmarshal(data, &errStruct); err == nil {
+		e.ResponsesToolMessageErrorStruct = &errStruct
+		return nil
+	}
+	return fmt.Errorf("responses tool message error is neither a string nor an error object")
+}
+
+// Text returns the error as plain text; nil-safe, "" when there is no error.
+func (e *ResponsesToolMessageError) Text() string {
+	if e == nil {
+		return ""
+	}
+	if e.ResponsesToolMessageErrorStr != nil {
+		return *e.ResponsesToolMessageErrorStr
+	}
+	if s := e.ResponsesToolMessageErrorStruct; s != nil {
+		if s.Message != nil {
+			return *s.Message
+		}
+		if len(s.Content) > 0 && string(s.Content) != "null" {
+			var str string
+			if err := Unmarshal(s.Content, &str); err == nil {
+				return str
+			}
+			return string(s.Content)
+		}
+		return s.Type
+	}
+	return ""
 }
 
 // =============================================================================
@@ -2553,9 +2620,9 @@ type ResponsesMCPApprovalRequestAction struct {
 
 // ResponsesMCPApprovalResponse represents a MCP approval response
 type ResponsesMCPApprovalResponse struct {
-	ApprovalResponseID string  `json:"approval_response_id"`
-	Approve            bool    `json:"approve"`
-	Reason             *string `json:"reason,omitempty"`
+	ApprovalRequestID string  `json:"approval_request_id"`
+	Approve           bool    `json:"approve"`
+	Reason            *string `json:"reason,omitempty"`
 }
 
 // ResponsesMCPToolCall represents a MCP tool call
@@ -3276,7 +3343,7 @@ type ResponsesToolFileSearch struct {
 
 // ResponsesToolFileSearchFilter represents a file search filter
 type ResponsesToolFileSearchFilter struct {
-	Type string `json:"type"` // "eq" | "ne" | "gt" | "gte" | "lt" | "lte" | "and" | "or"
+	Type string `json:"type"` // "eq" | "ne" | "gt" | "gte" | "lt" | "lte" | "in" | "nin" | "and" | "or"
 
 	// Filter types - only one should be set
 	*ResponsesToolFileSearchComparisonFilter
@@ -3302,7 +3369,7 @@ func (f *ResponsesToolFileSearchFilter) MarshalJSON() ([]byte, error) {
 	}
 
 	switch f.Type {
-	case "eq", "ne", "gt", "gte", "lt", "lte":
+	case "eq", "ne", "gt", "gte", "lt", "lte", "in", "nin":
 		if f.ResponsesToolFileSearchComparisonFilter == nil {
 			return nil, fmt.Errorf("comparison filter is nil but type is %s", f.Type)
 		}
@@ -3353,7 +3420,7 @@ func (f *ResponsesToolFileSearchFilter) UnmarshalJSON(data []byte) error {
 
 	// Initialize the appropriate embedded struct based on type
 	switch typeStr {
-	case "eq", "ne", "gt", "gte", "lt", "lte":
+	case "eq", "ne", "gt", "gte", "lt", "lte", "in", "nin":
 		// This is a comparison filter
 		f.ResponsesToolFileSearchComparisonFilter = &ResponsesToolFileSearchComparisonFilter{}
 		f.ResponsesToolFileSearchCompoundFilter = nil
@@ -3390,7 +3457,7 @@ func (f *ResponsesToolFileSearchFilter) UnmarshalJSON(data []byte) error {
 		}
 
 	default:
-		return fmt.Errorf("unknown filter type: %s (supported types: eq, ne, gt, gte, lt, lte, and, or)", typeStr)
+		return fmt.Errorf("unknown filter type: %s (supported types: eq, ne, gt, gte, lt, lte, in, nin, and, or)", typeStr)
 	}
 
 	return nil
@@ -3400,7 +3467,7 @@ func (f *ResponsesToolFileSearchFilter) UnmarshalJSON(data []byte) error {
 type ResponsesToolFileSearchComparisonFilter struct {
 	Key   string      `json:"key"`   // The key to compare against the value
 	Type  string      `json:"type"`  //
-	Value interface{} `json:"value"` // The value to compare (string, number, or boolean)
+	Value interface{} `json:"value"` // The value to compare (string, number, boolean, or an array for in/nin)
 }
 
 // ResponsesToolFileSearchCompoundFilter represents a file search compound filter
@@ -3532,8 +3599,35 @@ type ResponsesToolMCP struct {
 // ResponsesToolMCPAllowedTools - List of allowed tool names or a filter object
 type ResponsesToolMCPAllowedTools struct {
 	// Either a simple array of tool names or a filter object
-	ToolNames []string                            `json:",omitempty"`
-	Filter    *ResponsesToolMCPAllowedToolsFilter `json:",omitempty"`
+	ToolNames []string
+	Filter    *ResponsesToolMCPAllowedToolsFilter
+}
+
+func (a ResponsesToolMCPAllowedTools) MarshalJSON() ([]byte, error) {
+	if a.ToolNames != nil && a.Filter != nil {
+		return nil, fmt.Errorf("both ToolNames and Filter are set; only one should be non-nil")
+	}
+	if a.ToolNames != nil {
+		return MarshalSorted(a.ToolNames)
+	}
+	if a.Filter != nil {
+		return MarshalSorted(a.Filter)
+	}
+	return MarshalSorted(nil)
+}
+
+func (a *ResponsesToolMCPAllowedTools) UnmarshalJSON(data []byte) error {
+	var toolNames []string
+	if err := Unmarshal(data, &toolNames); err == nil {
+		a.ToolNames = toolNames
+		return nil
+	}
+	var filter ResponsesToolMCPAllowedToolsFilter
+	if err := Unmarshal(data, &filter); err == nil {
+		a.Filter = &filter
+		return nil
+	}
+	return fmt.Errorf("mcp allowed_tools is neither an array of tool names nor a filter object")
 }
 
 // ResponsesToolMCPAllowedToolsFilter - A filter object to specify which tools are allowed

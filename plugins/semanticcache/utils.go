@@ -827,7 +827,13 @@ func (plugin *Plugin) extractResponsesParametersToMetadata(params *schemas.Respo
 	putIfSet(metadata, "max_tokens", params.MaxOutputTokens)
 	putIfSet(metadata, "parallel_tool_calls", params.ParallelToolCalls)
 	putIfSet(metadata, "background", params.Background)
-	putIfSet(metadata, "conversation", params.Conversation)
+	if params.Conversation != nil {
+		if params.Conversation.ResponsesResponseConversationStr != nil {
+			metadata["conversation"] = *params.Conversation.ResponsesResponseConversationStr
+		} else if params.Conversation.ResponsesResponseConversationStruct != nil {
+			metadata["conversation"] = params.Conversation.ResponsesResponseConversationStruct.ID
+		}
+	}
 	putSortedSetIfNonEmpty(metadata, "include", params.Include)
 	putIfSet(metadata, "instructions", params.Instructions)
 	putIfSet(metadata, "max_tool_calls", params.MaxToolCalls)
