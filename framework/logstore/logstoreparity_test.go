@@ -591,6 +591,8 @@ func TestLogStoreParity(t *testing.T) {
 		"complexity_mechanisms": {ComplexityMechanisms: []string{"lexical"}},
 		"mechanism_skipped":     {ComplexityMechanisms: []string{"skipped"}},
 		"session":               {SessionID: "session-1"},
+		"roots_only":            {RootsOnly: true},
+		"group_sessions":        {RootsOnly: true, GroupSessions: true},
 		"objects":               {Objects: []string{"embedding"}},
 		"aliases":               {Aliases: []string{"a1"}},
 		"selected_keys":         {SelectedKeyIDs: []string{"sk1"}},

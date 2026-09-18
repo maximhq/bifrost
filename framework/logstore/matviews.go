@@ -989,6 +989,7 @@ func canUseMatViewFilters(f SearchFilters) bool {
 		f.ParentRequestID == "" &&
 		f.SessionID == "" &&
 		!f.RootsOnly &&
+		!f.GroupSessions &&
 		len(f.MetadataFilters) == 0 &&
 		canUseMatViewStatusFilter(f.Status) &&
 		len(f.RoutingEngineUsed) == 0 &&
