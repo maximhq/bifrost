@@ -172,109 +172,7 @@ func (a *AgentModeExecutor) executeAgent(
 			break
 		}
 
-		// Separate tools into auto-executable and non-auto-executable groups
-		var autoExecutableTools []schemas.ChatAssistantMessageToolCall
-		var nonAutoExecutableTools []schemas.ChatAssistantMessageToolCall
-
-		for _, toolCall := range toolCalls {
-			if toolCall.Function.Name == nil {
-				// Skip tools without names
-				nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)
-				continue
-			}
-
-			toolName := *toolCall.Function.Name
-			client := clientManager.GetClientForTool(toolName)
-			if client == nil {
-				// Allow code mode list, read, and docs tools (all read-only operations)
-				if toolName == ToolTypeListToolFiles || toolName == ToolTypeReadToolFile || toolName == ToolTypeGetToolDocs {
-					autoExecutableTools = append(autoExecutableTools, toolCall)
-					a.logger.Debug("Tool %s can be auto-executed", toolName)
-					continue
-				} else if toolName == ToolTypeExecuteToolCode {
-					// Build allowed auto-execution tools map for code mode validation
-					allClientNames, allowedAutoExecutionTools := buildAllowedAutoExecutionTools(ctx, clientManager)
-
-					// Parse tool arguments
-					var arguments map[string]interface{}
-					if err := sonic.Unmarshal([]byte(toolCall.Function.Arguments), &arguments); err != nil {
-						a.logger.Debug("%s Failed to parse tool arguments: %v", CodeModeLogPrefix, err)
-						nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)
-						continue
-					}
-
-					code, ok := arguments["code"].(string)
-					if !ok || code == "" {
-						a.logger.Debug("%s Code parameter missing or empty", CodeModeLogPrefix)
-						nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)
-						continue
-					}
-
-					// Step 1: Extract tool calls from the original source code during validation
-					extractedToolCalls, err := extractToolCallsFromCode(code)
-					if err != nil {
-						a.logger.Debug("%s Failed to parse code for tool calls: %v", CodeModeLogPrefix, err)
-						nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)
-						continue
-					}
-
-					a.logger.Debug("%s Extracted %d tool call(s) from code", CodeModeLogPrefix, len(extractedToolCalls))
-
-					// Step 3: Validate all tool calls against allowedAutoExecutionTools
-					canAutoExecute := true
-					if len(extractedToolCalls) > 0 {
-						// If there are tool calls, we need allowedAutoExecutionTools to validate them
-						if len(allowedAutoExecutionTools) == 0 {
-							a.logger.Debug("%s Validation failed: no allowed auto-execution tools configured", CodeModeLogPrefix)
-							canAutoExecute = false
-						} else {
-							a.logger.Debug("%s Validating %d tool call(s) against %d allowed server(s)", CodeModeLogPrefix, len(extractedToolCalls), len(allowedAutoExecutionTools))
-
-							// Validate each tool call
-							for _, extractedToolCall := range extractedToolCalls {
-								isAllowed := isToolCallAllowedForCodeMode(extractedToolCall.serverName, extractedToolCall.toolName, allClientNames, allowedAutoExecutionTools)
-								if !isAllowed {
-									a.logger.Debug("%s Validation failed: tool call %s.%s not in auto-execute list", CodeModeLogPrefix, extractedToolCall.serverName, extractedToolCall.toolName)
-									canAutoExecute = false
-									break
-								}
-							}
-							if canAutoExecute {
-								a.logger.Debug("%s All tool calls validated successfully", CodeModeLogPrefix)
-							}
-						}
-					} else {
-						a.logger.Debug("%s No tool calls found in code, skipping validation", CodeModeLogPrefix)
-					}
-
-					// Add to appropriate list based on validation result
-					if canAutoExecute {
-						autoExecutableTools = append(autoExecutableTools, toolCall)
-						a.logger.Debug("Tool %s can be auto-executed (validation passed)", toolName)
-					} else {
-						nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)
-						a.logger.Debug("Tool %s cannot be auto-executed (validation failed)", toolName)
-					}
-					continue
-				}
-				// Else, if client not found, treat as non-auto-executable (can be a manually passed tool)
-				a.logger.Debug("Client not found for tool %s, treating as non-auto-executable", toolName)
-				nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)
-				continue
-			}
-
-			// Check if tool can be auto-executed
-			if canAutoExecuteTool(toolName, client.ExecutionConfig) {
-				autoExecutableTools = append(autoExecutableTools, toolCall)
-				a.logger.Debug("Tool %s can be auto-executed", toolName)
-			} else {
-				nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)
-				a.logger.Debug("Tool %s cannot be auto-executed", toolName)
-			}
-		}
-
-		a.logger.Debug("Auto-executable tools: %d", len(autoExecutableTools))
-		a.logger.Debug("Non-auto-executable tools: %d", len(nonAutoExecutableTools))
+		autoExecutableTools, nonAutoExecutableTools := a.partitionToolCalls(ctx, toolCalls, clientManager)
 
 		// Execute auto-executable tools first
 		var executedToolResults []*schemas.ChatMessage
@@ -282,72 +180,10 @@ func (a *AgentModeExecutor) executeAgent(
 			// Add assistant message with auto-executable tool calls to conversation
 			conversationHistory = adapter.addAssistantMessage(conversationHistory, currentResponse)
 
-			// Execute all auto-executable tool calls parallelly
-			wg := sync.WaitGroup{}
-			wg.Add(len(autoExecutableTools))
-			channelToolResults := make(chan *schemas.ChatMessage, len(autoExecutableTools))
-			var authRequiredErr *schemas.MCPAuthRequiredError
-			var authRequiredOnce sync.Once
-			for _, toolCall := range autoExecutableTools {
-				go func(toolCall schemas.ChatAssistantMessageToolCall) {
-					defer wg.Done()
-					// Create a derived context with a unique MCP log ID so that the logging
-					// plugin can create separate log entries for each parallel tool call.
-					toolCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
-					toolCtx.SetValue(schemas.BifrostContextKeyMCPLogID, uuid.New().String())
-
-					// Create MCP request for this tool call
-					mcpRequest := &schemas.BifrostMCPRequest{
-						RequestType:                  schemas.MCPRequestTypeChatToolCall,
-						ChatAssistantMessageToolCall: &toolCall,
-					}
-
-					mcpResponse, toolErr := executeToolFunc(toolCtx, mcpRequest)
-					if toolErr != nil {
-						// Check if this is a per-user auth-required error
-						var authErr *schemas.MCPAuthRequiredError
-						if errors.As(toolErr, &authErr) {
-							authRequiredOnce.Do(func() {
-								authRequiredErr = authErr
-							})
-							channelToolResults <- createToolResultMessage(toolCall, "", toolErr)
-							return
-						}
-						a.logger.Warn("Tool execution failed: %v", toolErr)
-						channelToolResults <- createToolResultMessage(toolCall, "", toolErr)
-					} else if mcpResponse != nil && mcpResponse.ChatMessage != nil {
-						channelToolResults <- mcpResponse.ChatMessage
-					} else {
-						// Fallback: empty result when mcpResponse is missing the chat message
-						// (either nil mcpResponse, missing execute-tool payload, or nil ChatMessage).
-						channelToolResults <- createToolResultMessage(toolCall, "", nil)
-					}
-				}(toolCall)
-			}
-			wg.Wait()
-			close(channelToolResults)
-
-			// If any tool required per-user OAuth, stop the agent loop and return the error
-			if authRequiredErr != nil {
-				statusCode := 401
-				errType := "mcp_auth_required"
-				return nil, &schemas.BifrostError{
-					IsBifrostError: true,
-					StatusCode:     &statusCode,
-					Error: &schemas.ErrorField{
-						Message: authRequiredErr.Message,
-						Type:    &errType,
-					},
-					ExtraFields: schemas.BifrostErrorExtraFields{
-						MCPAuthRequired: authRequiredErr,
-					},
-				}
-			}
-
-			// Collect tool results
-			executedToolResults = make([]*schemas.ChatMessage, 0, len(autoExecutableTools))
-			for toolResult := range channelToolResults {
-				executedToolResults = append(executedToolResults, toolResult)
+			var execErr *schemas.BifrostError
+			executedToolResults, execErr = a.executeToolCallsInParallel(ctx, autoExecutableTools, executeToolFunc)
+			if execErr != nil {
+				return nil, execErr
 			}
 
 			// Track executed tool results and calls across all iterations
@@ -394,6 +230,198 @@ func (a *AgentModeExecutor) executeAgent(
 
 	adapter.applyUsage(currentResponse, accumulatedUsage)
 	return currentResponse, nil
+}
+
+// partitionToolCalls splits a response's tool calls into those Bifrost may execute itself and
+// those the caller must hand back. Code-mode calls are validated against the auto-execute
+// allowlist before being treated as auto-executable.
+func (a *AgentModeExecutor) partitionToolCalls(
+	ctx *schemas.BifrostContext,
+	toolCalls []schemas.ChatAssistantMessageToolCall,
+	clientManager ClientManager,
+) ([]schemas.ChatAssistantMessageToolCall, []schemas.ChatAssistantMessageToolCall) {
+	// Separate tools into auto-executable and non-auto-executable groups
+	var autoExecutableTools []schemas.ChatAssistantMessageToolCall
+	var nonAutoExecutableTools []schemas.ChatAssistantMessageToolCall
+
+	for _, toolCall := range toolCalls {
+		if toolCall.Function.Name == nil {
+			// Skip tools without names
+			nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)
+			continue
+		}
+
+		toolName := *toolCall.Function.Name
+		client := clientManager.GetClientForTool(toolName)
+		if client == nil {
+			// Allow code mode list, read, and docs tools (all read-only operations)
+			if toolName == ToolTypeListToolFiles || toolName == ToolTypeReadToolFile || toolName == ToolTypeGetToolDocs {
+				autoExecutableTools = append(autoExecutableTools, toolCall)
+				a.logger.Debug("Tool %s can be auto-executed", toolName)
+				continue
+			} else if toolName == ToolTypeExecuteToolCode {
+				// Build allowed auto-execution tools map for code mode validation
+				allClientNames, allowedAutoExecutionTools := buildAllowedAutoExecutionTools(ctx, clientManager)
+
+				// Parse tool arguments
+				var arguments map[string]interface{}
+				if err := sonic.Unmarshal([]byte(toolCall.Function.Arguments), &arguments); err != nil {
+					a.logger.Debug("%s Failed to parse tool arguments: %v", CodeModeLogPrefix, err)
+					nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)
+					continue
+				}
+
+				code, ok := arguments["code"].(string)
+				if !ok || code == "" {
+					a.logger.Debug("%s Code parameter missing or empty", CodeModeLogPrefix)
+					nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)
+					continue
+				}
+
+				// Step 1: Extract tool calls from the original source code during validation
+				extractedToolCalls, err := extractToolCallsFromCode(code)
+				if err != nil {
+					a.logger.Debug("%s Failed to parse code for tool calls: %v", CodeModeLogPrefix, err)
+					nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)
+					continue
+				}
+
+				a.logger.Debug("%s Extracted %d tool call(s) from code", CodeModeLogPrefix, len(extractedToolCalls))
+
+				// Step 3: Validate all tool calls against allowedAutoExecutionTools
+				canAutoExecute := true
+				if len(extractedToolCalls) > 0 {
+					// If there are tool calls, we need allowedAutoExecutionTools to validate them
+					if len(allowedAutoExecutionTools) == 0 {
+						a.logger.Debug("%s Validation failed: no allowed auto-execution tools configured", CodeModeLogPrefix)
+						canAutoExecute = false
+					} else {
+						a.logger.Debug("%s Validating %d tool call(s) against %d allowed server(s)", CodeModeLogPrefix, len(extractedToolCalls), len(allowedAutoExecutionTools))
+
+						// Validate each tool call
+						for _, extractedToolCall := range extractedToolCalls {
+							isAllowed := isToolCallAllowedForCodeMode(extractedToolCall.serverName, extractedToolCall.toolName, allClientNames, allowedAutoExecutionTools)
+							if !isAllowed {
+								a.logger.Debug("%s Validation failed: tool call %s.%s not in auto-execute list", CodeModeLogPrefix, extractedToolCall.serverName, extractedToolCall.toolName)
+								canAutoExecute = false
+								break
+							}
+						}
+						if canAutoExecute {
+							a.logger.Debug("%s All tool calls validated successfully", CodeModeLogPrefix)
+						}
+					}
+				} else {
+					a.logger.Debug("%s No tool calls found in code, skipping validation", CodeModeLogPrefix)
+				}
+
+				// Add to appropriate list based on validation result
+				if canAutoExecute {
+					autoExecutableTools = append(autoExecutableTools, toolCall)
+					a.logger.Debug("Tool %s can be auto-executed (validation passed)", toolName)
+				} else {
+					nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)
+					a.logger.Debug("Tool %s cannot be auto-executed (validation failed)", toolName)
+				}
+				continue
+			}
+			// Else, if client not found, treat as non-auto-executable (can be a manually passed tool)
+			a.logger.Debug("Client not found for tool %s, treating as non-auto-executable", toolName)
+			nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)
+			continue
+		}
+
+		// Check if tool can be auto-executed
+		if canAutoExecuteTool(toolName, client.ExecutionConfig) {
+			autoExecutableTools = append(autoExecutableTools, toolCall)
+			a.logger.Debug("Tool %s can be auto-executed", toolName)
+		} else {
+			nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)
+			a.logger.Debug("Tool %s cannot be auto-executed", toolName)
+		}
+	}
+
+	a.logger.Debug("Auto-executable tools: %d", len(autoExecutableTools))
+	a.logger.Debug("Non-auto-executable tools: %d", len(nonAutoExecutableTools))
+	return autoExecutableTools, nonAutoExecutableTools
+}
+
+// executeToolCallsInParallel runs every supplied tool call concurrently and collects their
+// results. A per-user auth failure on any call aborts the batch with a 401 so the caller can
+// surface the re-authorization prompt instead of continuing the loop.
+func (a *AgentModeExecutor) executeToolCallsInParallel(
+	ctx *schemas.BifrostContext,
+	toolCalls []schemas.ChatAssistantMessageToolCall,
+	executeToolFunc MCPToolExecutor,
+) ([]*schemas.ChatMessage, *schemas.BifrostError) {
+	// Execute all auto-executable tool calls parallelly
+	wg := sync.WaitGroup{}
+	wg.Add(len(toolCalls))
+	channelToolResults := make(chan *schemas.ChatMessage, len(toolCalls))
+	var authRequiredErr *schemas.MCPAuthRequiredError
+	var authRequiredOnce sync.Once
+	for _, toolCall := range toolCalls {
+		go func(toolCall schemas.ChatAssistantMessageToolCall) {
+			defer wg.Done()
+			// Create a derived context with a unique MCP log ID so that the logging
+			// plugin can create separate log entries for each parallel tool call.
+			toolCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			toolCtx.SetValue(schemas.BifrostContextKeyMCPLogID, uuid.New().String())
+
+			// Create MCP request for this tool call
+			mcpRequest := &schemas.BifrostMCPRequest{
+				RequestType:                  schemas.MCPRequestTypeChatToolCall,
+				ChatAssistantMessageToolCall: &toolCall,
+			}
+
+			mcpResponse, toolErr := executeToolFunc(toolCtx, mcpRequest)
+			if toolErr != nil {
+				// Check if this is a per-user auth-required error
+				var authErr *schemas.MCPAuthRequiredError
+				if errors.As(toolErr, &authErr) {
+					authRequiredOnce.Do(func() {
+						authRequiredErr = authErr
+					})
+					channelToolResults <- createToolResultMessage(toolCall, "", toolErr)
+					return
+				}
+				a.logger.Warn("Tool execution failed: %v", toolErr)
+				channelToolResults <- createToolResultMessage(toolCall, "", toolErr)
+			} else if mcpResponse != nil && mcpResponse.ChatMessage != nil {
+				channelToolResults <- mcpResponse.ChatMessage
+			} else {
+				// Fallback: empty result when mcpResponse is missing the chat message
+				// (either nil mcpResponse, missing execute-tool payload, or nil ChatMessage).
+				channelToolResults <- createToolResultMessage(toolCall, "", nil)
+			}
+		}(toolCall)
+	}
+	wg.Wait()
+	close(channelToolResults)
+
+	// If any tool required per-user OAuth, stop the agent loop and return the error
+	if authRequiredErr != nil {
+		statusCode := 401
+		errType := "mcp_auth_required"
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			StatusCode:     &statusCode,
+			Error: &schemas.ErrorField{
+				Message: authRequiredErr.Message,
+				Type:    &errType,
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				MCPAuthRequired: authRequiredErr,
+			},
+		}
+	}
+
+	// Collect tool results
+	executedToolResults := make([]*schemas.ChatMessage, 0, len(toolCalls))
+	for toolResult := range channelToolResults {
+		executedToolResults = append(executedToolResults, toolResult)
+	}
+	return executedToolResults, nil
 }
 
 // extractToolCalls extracts all tool calls from a chat response.
