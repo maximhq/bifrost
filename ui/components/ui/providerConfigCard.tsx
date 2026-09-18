@@ -1,7 +1,7 @@
 import { AsyncMultiSelect } from "@/components/ui/asyncMultiselect";
 import { ModelAccessSelector, summarizeModelAccess } from "@/components/modelAccess";
 import { Label } from "@/components/ui/label";
-import { ModelMultiselect } from "@/components/ui/modelMultiselect";
+import { ModelSelector } from "@/components/ui/modelSelector";
 import MultiBudgetLines, { BudgetLineEntry } from "@/components/ui/multibudgets";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
 import { budgetLinesLabel, money, shortPeriod, swatchClass } from "@/lib/budgetOutline";
@@ -190,7 +190,7 @@ export function ProviderConfigCard({
 			.join(" · ") || "No budget";
 	const ws = globalProviderCap;
 
-	// Key scope handed to ModelMultiselect so model suggestions match the keys
+	// Key scope handed to ModelSelector so model suggestions match the keys
 	// actually granted on this provider config.
 	const keys = providerKeys ?? [];
 	const modelKeyScope = value.keyIds.includes("*")
@@ -481,10 +481,9 @@ export function ProviderConfigCard({
 							{modelsOpen && (
 								<div className="pt-1 pr-3.5 pb-2.5 pl-16">
 									<div className="w-[200px]">
-										<ModelMultiselect
-											isSingleSelect
-											clearable
+										<ModelSelector
 											hideSearchIcon
+											contentWidth={360}
 											data-testid={`${tid}-add-model-budget-${index}`}
 											provider={value.providerName}
 											value=""

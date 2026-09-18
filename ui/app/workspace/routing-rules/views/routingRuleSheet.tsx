@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { ComboboxSelect } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ModelMultiselect } from "@/components/ui/modelMultiselect";
+import { ModelSelector } from "@/components/ui/modelSelector";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -602,12 +602,12 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 													/>
 												</div>
 												<div className="flex-1">
-													<ModelMultiselect
+													<ModelSelector
 														provider={fbProvider || undefined}
 														value={fbModel}
 														onChange={handleModelChange}
 														placeholder="Incoming (optional)"
-														isSingleSelect
+														allowCustomModel
 														disabled={!fbProvider}
 														className="!h-9 !min-h-9 w-full"
 													/>
@@ -742,13 +742,12 @@ function TargetRow({ target, index, providerOptions, allKeys, showRemove, onUpda
 					</Label>
 					<div className="flex gap-1.5">
 						<div className="flex-1" data-testid={`routing-target-${index}-model-select`}>
-							<ModelMultiselect
+							<ModelSelector
 								provider={target.provider || undefined}
 								value={target.model}
 								onChange={(value) => onUpdate(index, "model", value)}
 								placeholder="Incoming (optional)"
-								isSingleSelect
-								loadModelsOnEmptyProvider
+								allowCustomModel
 								className="!h-9 !min-h-9"
 								inputId={`routing-target-${index}-model-input`}
 								ariaLabelledBy={`routing-target-${index}-model-label`}

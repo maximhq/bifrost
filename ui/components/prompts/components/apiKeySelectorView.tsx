@@ -101,6 +101,7 @@ export function ApiKeySelectorView({
 					showClear={Boolean(value) && value !== "__auto__"}
 					showTrigger
 					disabled={disabled}
+					className="h-9"
 				/>
 				<ComboboxContent>
 					<ComboboxList>
