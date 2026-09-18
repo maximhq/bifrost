@@ -157938,6 +157938,179 @@
           }
         }
       ]
+    },
+    {
+      "name": "103. Stream chunks carry only delta - no message object or empty reasoning noise (#7294) (stream-chunk-shape)",
+      "description": "Issue #7294: with a DeepSeek-shaped OpenAI-compatible upstream (ModelScope), every streamed /v1/chat/completions chunk carried a full `message` object next to `delta` plus empty reasoning, reasoning_content, and reasoning_details fields on content-phase chunks. Bifrost passed the message object through (BifrostResponseChoice decodes both embedded shapes) and amplified the empty reasoning noise (UnmarshalJSON folded \"\" into a non-nil Reasoning, synthesized an empty details entry, and MarshalJSON re-emitted both spellings). Reasoning-aware clients rendered a fresh \"[Thinking 0.0s]\" block between every piece of the answer. Fixed by normalizing empty reasoning to absent in the schema unmarshalers and dropping the non-stream choice shape whenever a delta is present in the OpenAI-family stream loop. 103.1 pins the chunk shape on the plain OpenAI path; 103.2 pins it on a reasoning-emitting model and additionally asserts real (non-empty) reasoning deltas still stream, guarding against over-pruning.",
+      "item": [
+        {
+          "name": "103.1 openai/gpt-4o-mini /v1/chat/completions streaming - chunks have no message object and no empty reasoning keys - #7294",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// #7294: ModelScope-style upstreams put a full `message` object next to `delta`",
+                  "// in every stream chunk and keep sending empty reasoning/reasoning_content/",
+                  "// reasoning_details on content-phase chunks. Bifrost used to pass the message",
+                  "// object through and amplify the empty reasoning fields (alias + synthesized",
+                  "// details), making reasoning-aware clients open a thinking block per chunk.",
+                  "// chat.completion.chunk choices carry only delta:",
+                  "// https://developers.openai.com/api/reference/resources/chat/subresources/completions/streaming-events",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "// A 400 is normally a real failure here (a request-shape rejection would be a regression),",
+                  "// but provider monthly usage-limit 400s are account noise, not the #7294 signature - skip those only.",
+                  "if (pm.response.code === 400 && (pm.response.text() || '').indexOf('API usage limits') !== -1) { return; }",
+                  "pm.test('103.1 streaming request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "var offenders = [], sawContent = false, sawReasoning = false, chunks = 0;",
+                  "(pm.response.text() || '').split('\\n').forEach(function (l) {",
+                  "  if (l.indexOf('data: ') !== 0) { return; }",
+                  "  var p = l.slice(6).trim();",
+                  "  if (p === '[DONE]' || !p.length) { return; }",
+                  "  var j; try { j = JSON.parse(p); } catch (e) { return; }",
+                  "  if (!j.choices || !j.choices.length) { return; }",
+                  "  chunks++;",
+                  "  j.choices.forEach(function (ch) {",
+                  "    if (ch.message !== undefined) { offenders.push('message object in chunk: ' + p.slice(0, 200)); }",
+                  "    var d = ch.delta || {};",
+                  "    if (d.content) { sawContent = true; }",
+                  "    if (typeof d.reasoning === 'string' && d.reasoning.length) { sawReasoning = true; }",
+                  "    if (d.reasoning === '') { offenders.push('empty delta.reasoning: ' + p.slice(0, 200)); }",
+                  "    if (d.reasoning_content === '') { offenders.push('empty delta.reasoning_content: ' + p.slice(0, 200)); }",
+                  "    if (Object.prototype.hasOwnProperty.call(d, 'reasoning_details')) {",
+                  "      var det = d.reasoning_details || [];",
+                  "      var payload = false;",
+                  "      det.forEach(function (e) { if (e && ((e.text && e.text.length) || e.summary || e.signature || e.data)) { payload = true; } });",
+                  "      if (!payload) { offenders.push('payload-free delta.reasoning_details: ' + p.slice(0, 200)); }",
+                  "    }",
+                  "  });",
+                  "});",
+                  "pm.test('103.1 chunks carry only delta - no message object, no empty reasoning keys - #7294', function () {",
+                  "  pm.expect(offenders.join(' ~~ '), 'offending chunks found').to.eql('');",
+                  "});",
+                  "pm.test('103.1 stream still delivered content', function () {",
+                  "  pm.expect(chunks, 'no parseable chunks seen').to.be.above(0);",
+                  "  pm.expect(sawContent, 'no content delta seen').to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"stream\": true,\n  \"max_tokens\": 48,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in one short sentence.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "103.2 anthropic/claude-opus-4-7 /v1/chat/completions streaming - real reasoning streams, empty reasoning noise does not - #7294",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// #7294: ModelScope-style upstreams put a full `message` object next to `delta`",
+                  "// in every stream chunk and keep sending empty reasoning/reasoning_content/",
+                  "// reasoning_details on content-phase chunks. Bifrost used to pass the message",
+                  "// object through and amplify the empty reasoning fields (alias + synthesized",
+                  "// details), making reasoning-aware clients open a thinking block per chunk.",
+                  "// chat.completion.chunk choices carry only delta:",
+                  "// https://developers.openai.com/api/reference/resources/chat/subresources/completions/streaming-events",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "// A 400 is normally a real failure here (a request-shape rejection would be a regression),",
+                  "// but provider monthly usage-limit 400s are account noise, not the #7294 signature - skip those only.",
+                  "if (pm.response.code === 400 && (pm.response.text() || '').indexOf('API usage limits') !== -1) { return; }",
+                  "pm.test('103.2 streaming request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "var offenders = [], sawContent = false, sawReasoning = false, chunks = 0;",
+                  "(pm.response.text() || '').split('\\n').forEach(function (l) {",
+                  "  if (l.indexOf('data: ') !== 0) { return; }",
+                  "  var p = l.slice(6).trim();",
+                  "  if (p === '[DONE]' || !p.length) { return; }",
+                  "  var j; try { j = JSON.parse(p); } catch (e) { return; }",
+                  "  if (!j.choices || !j.choices.length) { return; }",
+                  "  chunks++;",
+                  "  j.choices.forEach(function (ch) {",
+                  "    if (ch.message !== undefined) { offenders.push('message object in chunk: ' + p.slice(0, 200)); }",
+                  "    var d = ch.delta || {};",
+                  "    if (d.content) { sawContent = true; }",
+                  "    if (typeof d.reasoning === 'string' && d.reasoning.length) { sawReasoning = true; }",
+                  "    if (d.reasoning === '') { offenders.push('empty delta.reasoning: ' + p.slice(0, 200)); }",
+                  "    if (d.reasoning_content === '') { offenders.push('empty delta.reasoning_content: ' + p.slice(0, 200)); }",
+                  "    if (Object.prototype.hasOwnProperty.call(d, 'reasoning_details')) {",
+                  "      var det = d.reasoning_details || [];",
+                  "      var payload = false;",
+                  "      det.forEach(function (e) { if (e && ((e.text && e.text.length) || e.summary || e.signature || e.data)) { payload = true; } });",
+                  "      if (!payload) { offenders.push('payload-free delta.reasoning_details: ' + p.slice(0, 200)); }",
+                  "    }",
+                  "  });",
+                  "});",
+                  "pm.test('103.2 chunks carry only delta - no message object, no empty reasoning keys - #7294', function () {",
+                  "  pm.expect(offenders.join(' ~~ '), 'offending chunks found').to.eql('');",
+                  "});",
+                  "pm.test('103.2 stream still delivered content', function () {",
+                  "  pm.expect(chunks, 'no parseable chunks seen').to.be.above(0);",
+                  "  pm.expect(sawContent, 'no content delta seen').to.be.true;",
+                  "});",
+                  "pm.test('103.2 non-empty reasoning deltas still stream (the cleanup must not eat real reasoning)', function () {",
+                  "  pm.expect(sawReasoning, 'no non-empty delta.reasoning seen in the whole stream').to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-opus-4-7\",\n  \"stream\": true,\n  \"max_tokens\": 2048,\n  \"reasoning_effort\": \"low\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }
