@@ -22,6 +22,7 @@ require (
 	github.com/maximhq/bifrost/plugins/logging v1.7.2
 	github.com/maximhq/bifrost/plugins/maxim v1.7.2
 	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.1.2
+	github.com/maximhq/bifrost/plugins/nadir v1.0.0
 	github.com/maximhq/bifrost/plugins/otel v1.5.2
 	github.com/maximhq/bifrost/plugins/prompts v1.1.2
 	github.com/maximhq/bifrost/plugins/routing v1.0.2
@@ -241,3 +242,7 @@ require (
 	gorm.io/driver/clickhouse v0.7.0 // indirect
 	gorm.io/driver/postgres v1.6.0 // indirect
 )
+
+// The nadir plugin module is not published yet. Drop this line once it is tagged, the same
+// way every other plugins/* module is consumed by version.
+replace github.com/maximhq/bifrost/plugins/nadir => ../plugins/nadir

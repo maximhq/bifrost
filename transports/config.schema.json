@@ -2399,7 +2399,7 @@
           },
           "name": {
             "type": "string",
-            "description": "Name of the plugin (built-in: telemetry, prompts, logging, governance, maxim, semantic_cache, otel, or custom plugin name)"
+            "description": "Name of the plugin (built-in: telemetry, prompts, logging, governance, maxim, semantic_cache, otel, nadir, or custom plugin name)"
           },
           "config": {
             "type": "object",
@@ -2641,6 +2641,71 @@
                     }
                   },
                   "required": ["api_key"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "name": {
+                  "const": "nadir"
+                }
+              }
+            },
+            "then": {
+              "required": ["config"],
+              "properties": {
+                "config": {
+                  "type": "object",
+                  "description": "Configuration for the Nadir routing plugin",
+                  "properties": {
+                    "tiers": {
+                      "type": "object",
+                      "description": "Maps a Nadir complexity bucket to the model that tier routes to, as \"provider/model\". Only the buckets Nadir returns are accepted, so a misspelled key is rejected at startup rather than leaving that tier unreachable.",
+                      "properties": {
+                        "simple": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "medium": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "complex": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "additionalProperties": false,
+                      "minProperties": 1
+                    },
+                    "fallback_model": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Model used whenever a tier cannot be decided (classifier unreachable, timed out, or a bucket with no tier configured), as \"provider/model\". Required: the trigger model is not a real model, so a failed classification needs somewhere to go."
+                    },
+                    "trigger_model": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Model name that opts a request into routing. Default nadir-auto. A request naming any other model is left untouched."
+                    },
+                    "api_key": {
+                      "type": "string",
+                      "description": "Nadir API key. Falls back to NADIR_API_KEY. Optional: the decision endpoint answers without one, rate limited per IP."
+                    },
+                    "base_url": {
+                      "type": "string",
+                      "description": "Nadir base URL. Falls back to NADIR_API_BASE, then https://api.getnadir.com. Point it at your own host to self-host the classifier."
+                    },
+                    "timeout_ms": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "description": "Budget for the classification call in milliseconds (default 3000). Past it the request routes to fallback_model rather than waiting."
+                    }
+                  },
+                  "required": ["tiers", "fallback_model"],
                   "additionalProperties": false
                 }
               }
