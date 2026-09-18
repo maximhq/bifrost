@@ -169,9 +169,13 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 	defaults := AnthropicProviderRequestDefaultsMap[cfg.Provider]
 
 	newErr := func(msg string, err error, reqBody []byte) *schemas.BifrostError {
+		bifrostErr := providerUtils.NewBifrostOperationError(msg, err)
+		if badRequest, ok := providerUtils.AsBifrostBadRequestError(err); ok {
+			bifrostErr = badRequest
+		}
 		return providerUtils.EnrichError(
 			ctx,
-			providerUtils.NewBifrostOperationError(msg, err),
+			bifrostErr,
 			reqBody,
 			nil,
 			cfg.ShouldSendBackRawRequest,
@@ -184,6 +188,18 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 
 	if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
 		jsonBody = request.GetRawRequestBody()
+
+		// Server-side thread state is bound to the account that created it, and
+		// Bifrost's per-request key selection, retries, and fallbacks cannot keep
+		// a continuation on that account, so the field never goes upstream. The
+		// integration refuses thread continuations outright; a create request
+		// carries the full conversation and serves fine without the field.
+		if providerUtils.JSONFieldExists(jsonBody, "thread") {
+			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "thread")
+			if err != nil {
+				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+			}
+		}
 
 		if cfg.IsCountTokens {
 			// Token-counting mode: strip max_tokens / temperature and set model.
@@ -496,9 +512,13 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 	defaults := AnthropicProviderRequestDefaultsMap[cfg.Provider]
 
 	newErr := func(msg string, err error, reqBody []byte) *schemas.BifrostError {
+		bifrostErr := providerUtils.NewBifrostOperationError(msg, err)
+		if badRequest, ok := providerUtils.AsBifrostBadRequestError(err); ok {
+			bifrostErr = badRequest
+		}
 		return providerUtils.EnrichError(
 			ctx,
-			providerUtils.NewBifrostOperationError(msg, err),
+			bifrostErr,
 			reqBody,
 			nil,
 			cfg.ShouldSendBackRawRequest,

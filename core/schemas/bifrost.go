@@ -243,6 +243,7 @@ const (
 	BifrostContextKeyDirectKey         BifrostContextKey = "x-bf-direct-key"       // schemas.Key (raw key supplied via x-bf-direct-key: true header; bypasses registered key pool)
 	BifrostContextKeyRequestID         BifrostContextKey = "request-id"            // string
 	BifrostContextKeyFallbackRequestID BifrostContextKey = "fallback-request-id"   // string
+	BifrostContextKeyBillingNonce      BifrostContextKey = "bifrost-billing-nonce" // string (internally minted per physical HTTP request; makes the billing-idempotency key unforgeable since request-id may be caller-supplied via x-request-id. Never read from headers, never echoed to the caller - DO NOT SET THIS MANUALLY)
 
 	// NOTE: []string is used for both keys, and by default all clients/tools are included (when nil).
 	// If "*" is present, all clients/tools are included, and [] means no clients/tools are included.
@@ -543,6 +544,7 @@ type LargePayloadMetadata struct {
 	SpeechConfig       bool     // true if generationConfig.speechConfig is present
 	Model              string   // model extracted without full body parsing (openai/anthropic multipart/json)
 	StreamRequested    *bool    // stream flag when available in request payload metadata
+	ThreadType         string   // Anthropic thread.type ("create"/"continue") when detected during metadata extraction; empty when absent or unknown. Lets the stateless thread refusal work when body parsing is skipped
 }
 
 //* Request Structs

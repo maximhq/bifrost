@@ -399,8 +399,34 @@ Most request-level Bifrost LLM metrics include these labels (the `bifrost_key_ro
 - `customer_id` / `customer_name` - Customer identifiers (empty when governance is not used)
 - `project_id` / `project_name` - Project the request was scoped to (empty when the request named no project). A request is scoped to at most one project, so these stay singular where team and customer identifiers can fan out
 
+`user_id` / `user_name` are **not** included by default — see [User Labels](#user-labels).
+
 <Note>
   **v1.5.0-prerelease4+**: `selected_key_id` / `selected_key_name` are only populated when the request succeeds. On final errors both are empty — use the `attempt_trail` log field to see which keys were tried.
+</Note>
+
+### User Labels
+
+`user_id` and `user_name` identify the end user a request was made on behalf of. They are available on every other observability surface — BigQuery columns, Splunk event fields, Datadog tags, span attributes — but are **off by default** on Prometheus metrics.
+
+Enable them with the telemetry plugin's `user_labels_enabled` config field, or toggle **User labels** on the pull-based tab of the **Observability → Prometheus** page in the UI.
+
+```json
+{
+  "plugins": [
+    {
+      "name": "telemetry",
+      "enabled": true,
+      "config": {
+        "user_labels_enabled": true
+      }
+    }
+  ]
+}
+```
+
+<Note>
+  Values are populated by the enterprise auth middleware that resolves the calling user. On an OSS build with no user resolution, the labels are present but empty.
 </Note>
 
 ### Key Rotation Events <sup>v1.5.0-prerelease4+</sup>

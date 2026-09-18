@@ -86,6 +86,8 @@ Base Labels:
 - `customer_id` / `customer_name`: Customer identifiers (empty when governance is not used)
 - custom labels: Custom labels configured in the Bifrost configuration
 
+`user_id` / `user_name` are not Base Labels. They are opt-in via the telemetry plugin's `user_labels_enabled` config field, because user identity has unbounded cardinality and multiplies series count. See [Prometheus → User Labels](/features/observability/prometheus#user-labels).
+
 <Note>
 `bifrost_overhead_component_microseconds` is off by default. Enable it with the telemetry plugin's `overhead_breakdown_enabled` config field (a sibling of `metrics_enabled`). It carries the Base Labels above plus an `overhead_component` label whose value is one of ten fixed categories (`serialization`, `conversion`, `plugins`, `middleware`, `routing`, `processing`, `networking`, `streaming`, `miscellaneous`, `other`), the same categories the Bifrost UI's log-detail overhead breakdown groups into; summing the components for a given label set reconstructs `bifrost_overhead_latency_microseconds`. Because the breakdown is derived from completed trace spans, it only populates when tracing is active for the request. See [Prometheus → Overhead Breakdown](/features/observability/prometheus#overhead-breakdown).
 </Note>

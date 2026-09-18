@@ -73,6 +73,9 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 				if extraConfig.OverheadBreakdownEnabled != nil {
 					telConfig.OverheadBreakdownEnabled = extraConfig.OverheadBreakdownEnabled
 				}
+				if extraConfig.UserLabelsEnabled != nil {
+					telConfig.UserLabelsEnabled = extraConfig.UserLabelsEnabled
+				}
 			}
 		}
 		return telemetry.Init(telConfig, bifrostConfig.ModelCatalog, logger)

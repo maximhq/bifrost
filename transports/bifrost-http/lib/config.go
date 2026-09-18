@@ -3806,6 +3806,12 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 			}
 			for _, existing := range config.GovernanceConfig.RateLimits {
 				if existing.ID != "" && !keep[existing.ID] {
+					if err := tx.Exec(
+						"UPDATE governance_model_configs SET rate_limit_id = NULL WHERE rate_limit_id = ?",
+						existing.ID,
+					).Error; err != nil {
+						return fmt.Errorf("failed to unlink rate limit %s from model configs: %w", existing.ID, err)
+					}
 					if err := config.ConfigStore.DeleteRateLimit(ctx, existing.ID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
 						return fmt.Errorf("failed to delete rate limit %s: %w", existing.ID, err)
 					}

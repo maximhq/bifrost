@@ -193,7 +193,9 @@ func (m *budgetOverrideTestGovernanceManager) DetachVirtualMCPFromVirtualKeyInMe
 func (m *mockRotateGovernanceManager) ReloadVirtualMCP(ctx context.Context, id uint) (*configstoreTables.TableVirtualMCP, error) {
 	return nil, nil
 }
-func (m *mockRotateGovernanceManager) RemoveVirtualMCP(ctx context.Context, id uint) error { return nil }
+func (m *mockRotateGovernanceManager) RemoveVirtualMCP(ctx context.Context, id uint) error {
+	return nil
+}
 func (m *mockRotateGovernanceManager) AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
 	return nil
 }
@@ -4243,4 +4245,106 @@ func TestBudgetLastResetUsesBudgetQuarterStart(t *testing.T) {
 	// A nil budget must not panic; callers reach this on the non-aligned path.
 	assert.False(t, budgetLastReset(false, nil).IsZero())
 	assert.False(t, budgetLastReset(true, nil).IsZero())
+}
+
+// TestApplyAssignees covers the hook that puts each virtual key's assigned user on
+// the read responses. Before it existed the assignee was only reachable through a
+// per-key endpoint, so the CSV export - which cannot issue one request per row -
+// left the "Assigned To" column blank for every user-assigned key.
+func TestApplyAssignees(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	newVKs := func() []*configstoreTables.TableVirtualKey {
+		return []*configstoreTables.TableVirtualKey{
+			{ID: "vk-1", Name: "One"},
+			{ID: "vk-2", Name: "Two"},
+		}
+	}
+
+	t.Run("fills in assignees in one batched call", func(t *testing.T) {
+		var gotIDs [][]string
+		h := &GovernanceHandler{
+			virtualKeyAssigneeResolver: func(_ context.Context, vkIDs []string) (map[string]*configstoreTables.AssignedUser, error) {
+				gotIDs = append(gotIDs, vkIDs)
+				return map[string]*configstoreTables.AssignedUser{
+					"vk-1": {ID: "user-1", Name: "Ada", Email: "ada@example.com"},
+				}, nil
+			},
+		}
+		vks := newVKs()
+		h.applyAssignees(context.Background(), vks)
+
+		// One call for the whole page, not one per key.
+		if len(gotIDs) != 1 {
+			t.Fatalf("expected a single resolver call, got %d", len(gotIDs))
+		}
+		if len(gotIDs[0]) != 2 || gotIDs[0][0] != "vk-1" || gotIDs[0][1] != "vk-2" {
+			t.Fatalf("expected both VK ids in one call, got %#v", gotIDs[0])
+		}
+		if vks[0].AssignedUser == nil || vks[0].AssignedUser.Email != "ada@example.com" {
+			t.Fatalf("expected vk-1 to carry its assignee, got %#v", vks[0].AssignedUser)
+		}
+		// A key the resolver did not mention is unassigned, not stale.
+		if vks[1].AssignedUser != nil {
+			t.Fatalf("expected vk-2 to have no assignee, got %#v", vks[1].AssignedUser)
+		}
+		// Both keys carry a settled answer, so both serialize assigned_user.
+		for _, vk := range vks {
+			if !vk.AssigneeResolved {
+				t.Fatalf("expected %s to be marked resolved after a successful lookup", vk.ID)
+			}
+		}
+	})
+
+	t.Run("no-ops without a resolver", func(t *testing.T) {
+		h := &GovernanceHandler{}
+		vks := newVKs()
+		h.applyAssignees(context.Background(), vks)
+		for _, vk := range vks {
+			if vk.AssignedUser != nil {
+				t.Fatalf("expected no assignee in OSS, got %#v", vk.AssignedUser)
+			}
+			// OSS has no VK-user link at all, so "nobody is assigned" is a settled
+			// answer, not an unknown one: the UI must not refetch what cannot exist.
+			if !vk.AssigneeResolved {
+				t.Fatalf("expected %s to be marked resolved in OSS", vk.ID)
+			}
+		}
+	})
+
+	t.Run("degrades to no assignee when the resolver fails", func(t *testing.T) {
+		h := &GovernanceHandler{
+			virtualKeyAssigneeResolver: func(_ context.Context, _ []string) (map[string]*configstoreTables.AssignedUser, error) {
+				return nil, errors.New("boom")
+			},
+		}
+		vks := newVKs()
+		h.applyAssignees(context.Background(), vks)
+		// One degraded column beats a failed page.
+		for _, vk := range vks {
+			if vk.AssignedUser != nil {
+				t.Fatalf("expected no assignee after a resolver error, got %#v", vk.AssignedUser)
+			}
+			// But the column degrades to "unknown", not to "unassigned": leaving these
+			// marked resolved would serialize null and make the UI show "-" for a key
+			// that does have an assignee, instead of falling back to a per-key lookup.
+			if vk.AssigneeResolved {
+				t.Fatalf("expected %s to stay unresolved after a resolver error", vk.ID)
+			}
+		}
+	})
+
+	t.Run("skips the resolver for an empty page", func(t *testing.T) {
+		called := false
+		h := &GovernanceHandler{
+			virtualKeyAssigneeResolver: func(_ context.Context, _ []string) (map[string]*configstoreTables.AssignedUser, error) {
+				called = true
+				return nil, nil
+			},
+		}
+		h.applyAssignees(context.Background(), nil)
+		if called {
+			t.Fatal("expected no resolver call for an empty page")
+		}
+	})
 }

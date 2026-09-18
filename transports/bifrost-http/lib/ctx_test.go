@@ -327,6 +327,69 @@ func TestConvertToBifrostContext_EmptyBaggageSessionIDIgnored(t *testing.T) {
 	}
 }
 
+// TestConvertToBifrostContext_BillingNonceIsMintedInternally verifies the
+// billing nonce exists, is not the (caller-forgeable) request ID, and cannot
+// be influenced by any inbound header. Governance keys its billing-idempotency
+// claim on this nonce, so a caller replaying a chosen x-request-id across
+// independent requests must still produce distinct billing keys.
+func TestConvertToBifrostContext_BillingNonceIsMintedInternally(t *testing.T) {
+	mkCtx := func() *fasthttp.RequestCtx {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.Set("x-request-id", "attacker-chosen-id")
+		// A caller must not be able to pin the nonce through header-derived paths.
+		ctx.Request.Header.Set("bifrost-billing-nonce", "forged-nonce")
+		ctx.Request.Header.Set("x-bf-dim-bifrost-billing-nonce", "forged-nonce")
+		return ctx
+	}
+
+	bifrostCtx1, cancel1 := ConvertToBifrostContext(mkCtx(), testHandlerStore{})
+	defer cancel1()
+	bifrostCtx2, cancel2 := ConvertToBifrostContext(mkCtx(), testHandlerStore{})
+	defer cancel2()
+
+	nonce1, ok := bifrostCtx1.Value(schemas.BifrostContextKeyBillingNonce).(string)
+	if !ok || nonce1 == "" {
+		t.Fatal("expected a billing nonce on the converted context")
+	}
+	if nonce1 == "forged-nonce" {
+		t.Fatal("billing nonce must not be settable from inbound headers")
+	}
+	if nonce1 == "attacker-chosen-id" {
+		t.Fatal("billing nonce must not equal the caller-supplied request id")
+	}
+	nonce2, _ := bifrostCtx2.Value(schemas.BifrostContextKeyBillingNonce).(string)
+	if nonce1 == nonce2 {
+		t.Fatalf("two independent requests sharing an x-request-id must get distinct billing nonces, both got %q", nonce1)
+	}
+	// The request-id itself keeps its correlation semantics.
+	if got, _ := bifrostCtx1.Value(schemas.BifrostContextKeyRequestID).(string); got != "attacker-chosen-id" {
+		t.Fatalf("request-id = %q, want the inbound x-request-id", got)
+	}
+}
+
+// TestConvertToBifrostContext_BillingNoncePreservedOnSharedContext verifies
+// that when a BifrostContext is already shared on the fasthttp context (the
+// large-payload/transport-hook path), a second conversion keeps the existing
+// nonce: both terminal settlement paths of one physical call must read the
+// same value to dedupe against each other.
+func TestConvertToBifrostContext_BillingNoncePreservedOnSharedContext(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+
+	bifrostCtx1, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+	defer cancel()
+	nonce1, _ := bifrostCtx1.Value(schemas.BifrostContextKeyBillingNonce).(string)
+	if nonce1 == "" {
+		t.Fatal("expected a billing nonce on first conversion")
+	}
+
+	bifrostCtx2, cancel2 := ConvertToBifrostContext(ctx, testHandlerStore{})
+	defer cancel2()
+	nonce2, _ := bifrostCtx2.Value(schemas.BifrostContextKeyBillingNonce).(string)
+	if nonce2 != nonce1 {
+		t.Fatalf("nonce changed across conversions of one request: %q then %q", nonce1, nonce2)
+	}
+}
+
 func TestConvertToBifrostContext_DimHeadersDoNotOverrideReservedContextKeys(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.Set("x-request-id", "trusted-request-id")

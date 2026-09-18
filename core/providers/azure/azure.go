@@ -1280,6 +1280,10 @@ func (provider *AzureProvider) VideoRetrieve(ctx *schemas.BifrostContext, key sc
 		return nil, providerUtils.NewBifrostOperationError("video_id is required", nil)
 	}
 	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
+	escapedVideoID, idErr := providerUtils.EscapeResourceID(videoID, "video_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
 	endpoint := resolveAzureEndpoint(ctx, key)
 	if endpoint == "" {
@@ -1294,7 +1298,7 @@ func (provider *AzureProvider) VideoRetrieve(ctx *schemas.BifrostContext, key sc
 	return openai.HandleOpenAIVideoRetrieveRequest(
 		ctx,
 		provider.client,
-		fmt.Sprintf("%s/openai/v1/videos/%s", endpoint, videoID),
+		fmt.Sprintf("%s/openai/v1/videos/%s", endpoint, escapedVideoID),
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
@@ -1315,6 +1319,10 @@ func (provider *AzureProvider) VideoDownload(ctx *schemas.BifrostContext, key sc
 		return nil, providerUtils.NewBifrostOperationError("video_id is required", nil)
 	}
 	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
+	escapedVideoID, idErr := providerUtils.EscapeResourceID(videoID, "video_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
 	endpoint := resolveAzureEndpoint(ctx, key)
 	if endpoint == "" {
@@ -1331,7 +1339,7 @@ func (provider *AzureProvider) VideoDownload(ctx *schemas.BifrostContext, key sc
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Build Azure URL
-	url := fmt.Sprintf("%s/openai/v1/videos/%s/content", endpoint, videoID)
+	url := fmt.Sprintf("%s/openai/v1/videos/%s/content", endpoint, escapedVideoID)
 
 	req.SetRequestURI(url)
 	req.Header.SetMethod(http.MethodGet)
@@ -1390,6 +1398,10 @@ func (provider *AzureProvider) VideoDelete(ctx *schemas.BifrostContext, key sche
 		return nil, providerUtils.NewBifrostOperationError("video_id is required", nil)
 	}
 	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
+	escapedVideoID, idErr := providerUtils.EscapeResourceID(videoID, "video_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
 	endpoint := resolveAzureEndpoint(ctx, key)
 	if endpoint == "" {
@@ -1402,7 +1414,7 @@ func (provider *AzureProvider) VideoDelete(ctx *schemas.BifrostContext, key sche
 	}
 
 	// Build Azure URL
-	url := fmt.Sprintf("%s/openai/v1/videos/%s", endpoint, videoID)
+	url := fmt.Sprintf("%s/openai/v1/videos/%s", endpoint, escapedVideoID)
 
 	response, bifrostErr := openai.HandleOpenAIVideoDeleteRequest(
 		ctx,
@@ -1689,6 +1701,10 @@ func (provider *AzureProvider) FileRetrieve(ctx *schemas.BifrostContext, keys []
 	if request.FileID == "" {
 		return nil, providerUtils.NewBifrostOperationError("file_id is required", nil)
 	}
+	escapedFileID, idErr := providerUtils.EscapeResourceID(request.FileID, "file_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
@@ -1705,7 +1721,7 @@ func (provider *AzureProvider) FileRetrieve(ctx *schemas.BifrostContext, keys []
 		resp := fasthttp.AcquireResponse()
 
 		// Build URL
-		requestURL := fmt.Sprintf("%s/openai/v1/files/%s", endpoint, url.PathEscape(request.FileID))
+		requestURL := fmt.Sprintf("%s/openai/v1/files/%s", endpoint, escapedFileID)
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -1774,6 +1790,10 @@ func (provider *AzureProvider) FileDelete(ctx *schemas.BifrostContext, keys []sc
 	if request.FileID == "" {
 		return nil, providerUtils.NewBifrostOperationError("file_id is required", nil)
 	}
+	escapedFileID, idErr := providerUtils.EscapeResourceID(request.FileID, "file_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
 	if len(keys) == 0 {
 		return nil, providerUtils.NewConfigurationError("no Azure keys available for file delete operation")
@@ -1794,7 +1814,7 @@ func (provider *AzureProvider) FileDelete(ctx *schemas.BifrostContext, keys []sc
 		resp := fasthttp.AcquireResponse()
 
 		// Build URL
-		requestURL := fmt.Sprintf("%s/openai/v1/files/%s", endpoint, url.PathEscape(request.FileID))
+		requestURL := fmt.Sprintf("%s/openai/v1/files/%s", endpoint, escapedFileID)
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -1894,6 +1914,10 @@ func (provider *AzureProvider) FileContent(ctx *schemas.BifrostContext, keys []s
 	if request.FileID == "" {
 		return nil, providerUtils.NewBifrostOperationError("file_id is required", nil)
 	}
+	escapedFileID, idErr := providerUtils.EscapeResourceID(request.FileID, "file_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
 	if len(keys) == 0 {
 		return nil, providerUtils.NewConfigurationError("no Azure keys available for file content operation")
@@ -1912,7 +1936,7 @@ func (provider *AzureProvider) FileContent(ctx *schemas.BifrostContext, keys []s
 		resp := fasthttp.AcquireResponse()
 
 		// Build URL
-		requestURL := fmt.Sprintf("%s/openai/v1/files/%s/content", endpoint, url.PathEscape(request.FileID))
+		requestURL := fmt.Sprintf("%s/openai/v1/files/%s/content", endpoint, escapedFileID)
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -2224,6 +2248,10 @@ func (provider *AzureProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys [
 	if request.BatchID == "" {
 		return nil, providerUtils.NewBifrostOperationError("batch_id is required", nil)
 	}
+	escapedBatchID, idErr := providerUtils.EscapeResourceID(request.BatchID, "batch_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
 	if len(keys) == 0 {
 		return nil, providerUtils.NewConfigurationError("no Azure keys available for batch retrieve operation")
@@ -2244,7 +2272,7 @@ func (provider *AzureProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys [
 		resp := fasthttp.AcquireResponse()
 
 		// Build URL
-		requestURL := fmt.Sprintf("%s/openai/v1/batches/%s", endpoint, url.PathEscape(request.BatchID))
+		requestURL := fmt.Sprintf("%s/openai/v1/batches/%s", endpoint, escapedBatchID)
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -2314,6 +2342,10 @@ func (provider *AzureProvider) BatchCancel(ctx *schemas.BifrostContext, keys []s
 	if request.BatchID == "" {
 		return nil, providerUtils.NewBifrostOperationError("batch_id is required", nil)
 	}
+	escapedBatchID, idErr := providerUtils.EscapeResourceID(request.BatchID, "batch_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
 	if len(keys) == 0 {
 		return nil, providerUtils.NewConfigurationError("no Azure keys available for batch cancel operation")
@@ -2334,7 +2366,7 @@ func (provider *AzureProvider) BatchCancel(ctx *schemas.BifrostContext, keys []s
 		resp := fasthttp.AcquireResponse()
 
 		// Build URL
-		requestURL := fmt.Sprintf("%s/openai/v1/batches/%s/cancel", endpoint, url.PathEscape(request.BatchID))
+		requestURL := fmt.Sprintf("%s/openai/v1/batches/%s/cancel", endpoint, escapedBatchID)
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -2781,6 +2813,10 @@ func (provider *AzureProvider) ContainerRetrieve(ctx *schemas.BifrostContext, ke
 	if request.ContainerID == "" {
 		return nil, providerUtils.NewBifrostOperationError("container_id is required", nil)
 	}
+	escapedContainerID, idErr := providerUtils.EscapeResourceID(request.ContainerID, "container_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 	if len(keys) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("provider config not found", nil)
 	}
@@ -2796,7 +2832,7 @@ func (provider *AzureProvider) ContainerRetrieve(ctx *schemas.BifrostContext, ke
 		resp := fasthttp.AcquireResponse()
 
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.buildContainerURL(ctx, key, "/containers/"+url.PathEscape(request.ContainerID)))
+		req.SetRequestURI(provider.buildContainerURL(ctx, key, "/containers/"+escapedContainerID))
 		req.Header.SetMethod(http.MethodGet)
 
 		authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
@@ -2887,6 +2923,10 @@ func (provider *AzureProvider) ContainerDelete(ctx *schemas.BifrostContext, keys
 	if request.ContainerID == "" {
 		return nil, providerUtils.NewBifrostOperationError("container_id is required", nil)
 	}
+	escapedContainerID, idErr := providerUtils.EscapeResourceID(request.ContainerID, "container_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 	if len(keys) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("provider config not found", nil)
 	}
@@ -2902,7 +2942,7 @@ func (provider *AzureProvider) ContainerDelete(ctx *schemas.BifrostContext, keys
 		resp := fasthttp.AcquireResponse()
 
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.buildContainerURL(ctx, key, "/containers/"+url.PathEscape(request.ContainerID)))
+		req.SetRequestURI(provider.buildContainerURL(ctx, key, "/containers/"+escapedContainerID))
 		req.Header.SetMethod(http.MethodDelete)
 		req.Header.SetContentType("application/json")
 
@@ -2982,6 +3022,10 @@ func (provider *AzureProvider) ContainerFileCreate(ctx *schemas.BifrostContext, 
 	if request.ContainerID == "" {
 		return nil, providerUtils.NewBifrostOperationError("invalid request: container_id is required", nil)
 	}
+	escapedContainerID, idErr := providerUtils.EscapeResourceID(request.ContainerID, "container_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 	if len(request.File) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("invalid request: file is required", nil)
 	}
@@ -3008,7 +3052,7 @@ func (provider *AzureProvider) ContainerFileCreate(ctx *schemas.BifrostContext, 
 	defer fasthttp.ReleaseResponse(resp)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.SetRequestURI(provider.buildContainerURL(ctx, key, fmt.Sprintf("/containers/%s/files", url.PathEscape(request.ContainerID))))
+	req.SetRequestURI(provider.buildContainerURL(ctx, key, fmt.Sprintf("/containers/%s/files", escapedContainerID)))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.SetBody(body.Bytes())
@@ -3077,6 +3121,10 @@ func (provider *AzureProvider) ContainerFileList(ctx *schemas.BifrostContext, ke
 	if request.ContainerID == "" {
 		return nil, providerUtils.NewBifrostOperationError("invalid request: container_id is required", nil)
 	}
+	escapedContainerID, idErr := providerUtils.EscapeResourceID(request.ContainerID, "container_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 	if len(keys) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("provider config not found", nil)
 	}
@@ -3097,7 +3145,7 @@ func (provider *AzureProvider) ContainerFileList(ctx *schemas.BifrostContext, ke
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
 
-	requestURL := provider.buildContainerURL(ctx, key, fmt.Sprintf("/containers/%s/files", url.PathEscape(request.ContainerID)))
+	requestURL := provider.buildContainerURL(ctx, key, fmt.Sprintf("/containers/%s/files", escapedContainerID))
 	queryParams := url.Values{}
 	if request.Limit > 0 {
 		queryParams.Set("limit", fmt.Sprintf("%d", request.Limit))
@@ -3193,6 +3241,14 @@ func (provider *AzureProvider) ContainerFileRetrieve(ctx *schemas.BifrostContext
 	if request.FileID == "" {
 		return nil, providerUtils.NewBifrostOperationError("invalid request: file_id is required", nil)
 	}
+	escapedContainerID, idErr := providerUtils.EscapeResourceID(request.ContainerID, "container_id")
+	if idErr != nil {
+		return nil, idErr
+	}
+	escapedFileID, idErr := providerUtils.EscapeResourceID(request.FileID, "file_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 	if len(keys) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("provider config not found", nil)
 	}
@@ -3208,7 +3264,7 @@ func (provider *AzureProvider) ContainerFileRetrieve(ctx *schemas.BifrostContext
 		resp := fasthttp.AcquireResponse()
 
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.buildContainerURL(ctx, key, fmt.Sprintf("/containers/%s/files/%s", url.PathEscape(request.ContainerID), url.PathEscape(request.FileID))))
+		req.SetRequestURI(provider.buildContainerURL(ctx, key, fmt.Sprintf("/containers/%s/files/%s", escapedContainerID, escapedFileID)))
 		req.Header.SetMethod(http.MethodGet)
 
 		authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
@@ -3298,6 +3354,14 @@ func (provider *AzureProvider) ContainerFileContent(ctx *schemas.BifrostContext,
 	if request.FileID == "" {
 		return nil, providerUtils.NewBifrostOperationError("invalid request: file_id is required", nil)
 	}
+	escapedContainerID, idErr := providerUtils.EscapeResourceID(request.ContainerID, "container_id")
+	if idErr != nil {
+		return nil, idErr
+	}
+	escapedFileID, idErr := providerUtils.EscapeResourceID(request.FileID, "file_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 	if len(keys) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("provider config not found", nil)
 	}
@@ -3313,7 +3377,7 @@ func (provider *AzureProvider) ContainerFileContent(ctx *schemas.BifrostContext,
 		resp := fasthttp.AcquireResponse()
 
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.buildContainerURL(ctx, key, fmt.Sprintf("/containers/%s/files/%s/content", url.PathEscape(request.ContainerID), url.PathEscape(request.FileID))))
+		req.SetRequestURI(provider.buildContainerURL(ctx, key, fmt.Sprintf("/containers/%s/files/%s/content", escapedContainerID, escapedFileID)))
 		req.Header.SetMethod(http.MethodGet)
 
 		authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
@@ -3388,6 +3452,14 @@ func (provider *AzureProvider) ContainerFileDelete(ctx *schemas.BifrostContext, 
 	if request.FileID == "" {
 		return nil, providerUtils.NewBifrostOperationError("invalid request: file_id is required", nil)
 	}
+	escapedContainerID, idErr := providerUtils.EscapeResourceID(request.ContainerID, "container_id")
+	if idErr != nil {
+		return nil, idErr
+	}
+	escapedFileID, idErr := providerUtils.EscapeResourceID(request.FileID, "file_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 	if len(keys) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("provider config not found", nil)
 	}
@@ -3403,7 +3475,7 @@ func (provider *AzureProvider) ContainerFileDelete(ctx *schemas.BifrostContext, 
 		resp := fasthttp.AcquireResponse()
 
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.buildContainerURL(ctx, key, fmt.Sprintf("/containers/%s/files/%s", url.PathEscape(request.ContainerID), url.PathEscape(request.FileID))))
+		req.SetRequestURI(provider.buildContainerURL(ctx, key, fmt.Sprintf("/containers/%s/files/%s", escapedContainerID, escapedFileID)))
 		req.Header.SetMethod(http.MethodDelete)
 
 		authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)

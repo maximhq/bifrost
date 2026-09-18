@@ -473,12 +473,31 @@ func isAnthropicAPIKeyAuth(ctx *fasthttp.RequestCtx) bool {
 	}
 	// Check for OAuth token in Authorization header
 	if authHeader := string(ctx.Request.Header.Peek("Authorization")); authHeader != "" {
-		if strings.HasPrefix(strings.ToLower(authHeader), "bearer sk-ant-oat") {
+		if isAnthropicOAuthBearer(authHeader) {
 			return false // OAuth mode, NOT API
 		}
 	}
 	// Default to API mode
 	return true
+}
+
+// isAnthropicOAuthBearer reports whether the Authorization header value carries an
+// Anthropic OAuth access token (e.g. Claude Code's "Bearer sk-ant-oat01-...").
+func isAnthropicOAuthBearer(authHeader string) bool {
+	return strings.HasPrefix(strings.ToLower(authHeader), "bearer sk-ant-oat")
+}
+
+// isJWTBearer reports whether the Authorization header value carries a JWT bearer
+// token (three dot-separated segments, first one a base64url JSON header starting
+// with "eyJ"), e.g. ChatGPT/Codex OAuth access tokens. Plain "Bearer sk-..." API
+// keys and Bifrost virtual keys do not match.
+func isJWTBearer(authHeader string) bool {
+	const prefix = "bearer "
+	if len(authHeader) <= len(prefix) || !strings.EqualFold(authHeader[:len(prefix)], prefix) {
+		return false
+	}
+	parts := strings.Split(strings.TrimSpace(authHeader[len(prefix):]), ".")
+	return len(parts) == 3 && strings.HasPrefix(parts[0], "eyJ") && parts[1] != "" && parts[2] != ""
 }
 
 // resolveLargePayloadMetadata returns metadata from the sync context key,

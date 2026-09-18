@@ -1,0 +1,3 @@
+- feat: metrics export includes user id and user name labels, so per-user attribution is available in Prometheus (#7267)
+- chore: upgraded core to v1.9.1 and framework to v1.7.1
+- feat: `bifrost_error_requests_total` carries a normalized `error_type` label alongside `status_code`, drawn from a closed prefix-structured vocabulary (`caller_*`, `policy_*`, `provider_*`, `bifrost_*`, `_OTHER`), so alarm expressions can separate fault domains with a single regex instead of enumerating status codes (#7141)

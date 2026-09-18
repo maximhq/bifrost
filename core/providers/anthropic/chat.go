@@ -50,7 +50,7 @@ func leadingAnthropicReasoningBlockCount(blocks []AnthropicContentBlock) int {
 // (schemas.ChatTool with non-nil Function) into an AnthropicTool.
 // Factored out from ToAnthropicChatRequest's tool loop so the loop can branch
 // cleanly between function and server-tool shapes.
-func convertFunctionToolToAnthropic(tool schemas.ChatTool) AnthropicTool {
+func convertFunctionToolToAnthropic(tool schemas.ChatTool) (AnthropicTool, error) {
 	anthropicTool := AnthropicTool{
 		Name: tool.Function.Name,
 	}
@@ -64,6 +64,11 @@ func convertFunctionToolToAnthropic(tool schemas.ChatTool) AnthropicTool {
 	}
 
 	if anthropicTool.InputSchema != nil {
+		var err error
+		anthropicTool.InputSchema, err = normalizeAnthropicToolInputSchema(anthropicTool.InputSchema)
+		if err != nil {
+			return AnthropicTool{}, err
+		}
 		anthropicTool.InputSchema = anthropicTool.InputSchema.Normalized()
 	}
 
@@ -92,7 +97,7 @@ func convertFunctionToolToAnthropic(tool schemas.ChatTool) AnthropicTool {
 	if tool.Function.Strict != nil {
 		anthropicTool.Strict = tool.Function.Strict
 	}
-	return anthropicTool
+	return anthropicTool, nil
 }
 
 // convertServerToolToAnthropic reconstructs an AnthropicTool from the
@@ -631,7 +636,11 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			tools := make([]AnthropicTool, 0, len(filtered))
 			for _, tool := range filtered {
 				if tool.Function != nil {
-					tools = append(tools, convertFunctionToolToAnthropic(tool))
+					converted, err := convertFunctionToolToAnthropic(tool)
+					if err != nil {
+						return nil, err
+					}
+					tools = append(tools, converted)
 					continue
 				}
 				// Non-function tool: attempt server-tool reconstruction.

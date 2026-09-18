@@ -1262,6 +1262,7 @@ export const prometheusFormSchema = z
 	.object({
 		metrics_enabled: z.boolean().default(true),
 		overhead_breakdown_enabled: z.boolean().default(false),
+		user_labels_enabled: z.boolean().default(false),
 		push_gateway_enabled: z.boolean().default(false),
 		prometheus_config: prometheusConfigSchema,
 	})

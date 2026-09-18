@@ -2754,11 +2754,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 
 		bedrockReq.InferenceConfig = inferenceConfig
 
-		if bifrostReq.Params.ServiceTier != nil {
-			bedrockReq.ServiceTier = &BedrockServiceTier{
-				Type: mapBifrostServiceTierToBedrock(*bifrostReq.Params.ServiceTier),
-			}
-		}
+		bedrockReq.ServiceTier = bedrockServiceTierForModel(caps, bifrostReq.Params.ServiceTier)
 	}
 
 	// Convert tools (using the provider-filtered keepTools set computed above).
