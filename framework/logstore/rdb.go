@@ -321,6 +321,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		// non-root would hide the very row that was pasted.
 		baseQuery = s.applyRootsOnlyFilter(baseQuery, filters)
 	}
+	if filters.SessionGroupingActive() {
+		baseQuery = s.applySessionRootFilter(baseQuery, filters)
+	}
 	if len(filters.SelectedKeyIDs) > 0 {
 		baseQuery = baseQuery.Where("selected_key_id IN ?", filters.SelectedKeyIDs)
 	}
@@ -518,11 +521,77 @@ func (s *RDBLogStore) applyRootsOnlyFilter(baseQuery *gorm.DB, filters SearchFil
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	cond, sub := s.chainRootCondition(ctx, filters, "logs")
+	return baseQuery.Where(cond, sub)
+}
 
+// applySessionRootFilter collapses each session to a single listed row, so a
+// long conversation takes one line in the table instead of one per turn.
+//
+// The row kept is the session's earliest row that is itself a chain root,
+// ordered by (timestamp, id) so a tie between rows written in the same instant
+// resolves the same way on every backend. Requiring the peer to be a chain root
+// matters: a fallback attempt inside the session is already hidden by
+// RootsOnly, and if it were allowed to suppress its peers the session's real
+// root would be hidden too and the whole session would vanish from the list.
+//
+// Like applyRootsOnlyFilter, the peer set is the *filtered, scoped* population,
+// so a session whose first turn falls outside the current filters promotes the
+// earliest surviving turn instead of disappearing. Rows with no session_id are
+// untouched, and the NULL check short-circuits ahead of the anti-join.
+func (s *RDBLogStore) applySessionRootFilter(baseQuery *gorm.DB, filters SearchFilters) *gorm.DB {
+	ctx := baseQuery.Statement.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// Same filters, minus the ones describing this query's shape. Clearing
+	// GroupSessions stops the recursion the way clearing RootsOnly does.
+	// An empty session_id is no session, the same as NULL: attachSessionAggregates
+	// already skips it, so collapsing such rows together would fold several
+	// sessionless requests onto one row carrying no rollup.
+	peerFilters := filters
+	peerFilters.RootsOnly = false
+	peerFilters.GroupSessions = false
+	peerFilters.ParentRequestID = ""
+
+	if s.db.Dialector.Name() == "clickhouse" {
+		// No correlated subqueries: pick each session's root once per query with
+		// argMin over the same (timestamp, id) ordering, bounded by the inherited
+		// filters. Nesting the chain-root test here is the uncorrelated NOT IN
+		// form, which ClickHouse handles.
+		chainRoot, parents := s.chainRootCondition(ctx, peerFilters, "logs")
+		roots := s.applyFilters(s.scopedLogsDB(ctx).Model(&Log{}), peerFilters).
+			Where("session_id IS NOT NULL AND session_id <> ''").
+			Where(chainRoot, parents).
+			Select("argMin(id, (timestamp, id)) AS id").
+			Group("session_id")
+		return baseQuery.Where("(session_id IS NULL OR session_id = '' OR id IN (?))", roots)
+	}
+
+	// Correlated anti-join elsewhere: "no earlier chain root shares my session".
+	// The comparison is spelled out rather than written as a row value so it
+	// plans against (session_id, timestamp) and runs on older SQLite.
+	chainRoot, parents := s.chainRootCondition(ctx, peerFilters, "sess")
+	peers := s.applyFilters(s.scopedLogsDB(ctx).Table("logs AS sess").Select("1"), peerFilters).
+		Where("sess.session_id = logs.session_id").
+		Where("(sess.timestamp < logs.timestamp OR (sess.timestamp = logs.timestamp AND sess.id < logs.id))").
+		Where(chainRoot, parents)
+	return baseQuery.Where("(logs.session_id IS NULL OR logs.session_id = '' OR NOT EXISTS (?))", peers)
+}
+
+// chainRootCondition builds the "this row is the root of its fallback chain"
+// predicate for a row source aliased as `alias`, returning the SQL and the
+// subquery it interpolates. It is written against an alias rather than bare
+// column names so the same test can run on the outer query and nested inside
+// another correlated subquery (session grouping picks the earliest row that is
+// itself a chain root).
+func (s *RDBLogStore) chainRootCondition(ctx context.Context, filters SearchFilters, alias string) (string, *gorm.DB) {
 	// Same filters, minus the two that describe *this* query's shape rather than
 	// which rows are listable. Clearing RootsOnly also stops the recursion.
 	parentFilters := filters
 	parentFilters.RootsOnly = false
+	parentFilters.GroupSessions = false
 	parentFilters.ParentRequestID = ""
 
 	if s.db.Dialector.Name() == "clickhouse" {
@@ -531,15 +600,18 @@ func (s *RDBLogStore) applyRootsOnlyFilter(baseQuery *gorm.DB, filters SearchFil
 		// it — an unfiltered `SELECT id FROM logs` would materialize every id in
 		// the table on every page load.
 		parents := s.applyFilters(s.scopedLogsDB(ctx).Model(&Log{}).Select("id"), parentFilters)
-		return baseQuery.Where("(parent_request_id IS NULL OR parent_request_id = id OR parent_request_id NOT IN (?))", parents)
+		return fmt.Sprintf("(%[1]s.parent_request_id IS NULL OR %[1]s.parent_request_id = %[1]s.id OR %[1]s.parent_request_id NOT IN (?))", alias), parents
 	}
 
-	// Correlated form elsewhere: the PK lookup on parent.id keeps this an index
-	// probe per candidate row rather than a materialized anti-join. Unqualified
-	// columns in the filter predicates bind to the inner `parent` scope.
-	parents := s.applyFilters(s.scopedLogsDB(ctx).Table("logs AS parent").Select("1"), parentFilters).
-		Where("parent.id = logs.parent_request_id")
-	return baseQuery.Where("(parent_request_id IS NULL OR parent_request_id = id OR NOT EXISTS (?))", parents)
+	// Correlated form elsewhere: the PK lookup on the parent alias keeps this an
+	// index probe per candidate row rather than a materialized anti-join.
+	// Unqualified columns in the filter predicates bind to the inner scope, and
+	// the parent alias is derived from the outer one so two nested uses of this
+	// predicate never collide.
+	parentAlias := "parent_" + alias
+	parents := s.applyFilters(s.scopedLogsDB(ctx).Table("logs AS "+parentAlias).Select("1"), parentFilters).
+		Where(parentAlias + ".id = " + alias + ".parent_request_id")
+	return fmt.Sprintf("(%[1]s.parent_request_id IS NULL OR %[1]s.parent_request_id = %[1]s.id OR NOT EXISTS (?))", alias), parents
 }
 
 // Create inserts a new log entry into the database.
@@ -985,6 +1057,11 @@ func (s *RDBLogStore) searchLogs(ctx context.Context, filters SearchFilters, pag
 			return nil, err
 		}
 	}
+	if filters.SessionGroupingActive() {
+		if err := s.attachSessionAggregates(ctx, logs, filters); err != nil {
+			return nil, err
+		}
+	}
 
 	hasLogs := len(logs) > 0
 	if !hasLogs {
@@ -1037,6 +1114,7 @@ func (s *RDBLogStore) attachChildAggregates(ctx context.Context, logs []Log, fil
 	// child is counted against its own parent, not re-tested for one.
 	childFilters := filters
 	childFilters.RootsOnly = false
+	childFilters.GroupSessions = false
 	childFilters.ParentRequestID = ""
 
 	err := s.applyFilters(s.scopedLogsDB(ctx).Model(&Log{}), childFilters).
@@ -1061,6 +1139,78 @@ func (s *RDBLogStore) attachChildAggregates(ctx context.Context, logs []Log, fil
 			logs[i].ChildrenCost = aggs[aggIdx].ChildrenCost
 			logs[i].ChildrenTokens = aggs[aggIdx].ChildrenTokens
 		}
+	}
+	return nil
+}
+
+// attachSessionAggregates populates the session rollup on a page of collapsed
+// session roots with one grouped query over the sessions present on the page.
+//
+// The same filters that produced the page are applied here, so the rollup
+// always describes exactly the rows that expanding the session lists. The count
+// covers every row in the session, including fallback attempts nested a level
+// deeper, which is why a session's total can exceed the number of rows the
+// first expansion shows. A session with a single matching row gets nothing:
+// there is no group, so the row renders like any other.
+func (s *RDBLogStore) attachSessionAggregates(ctx context.Context, logs []Log, filters SearchFilters) error {
+	sessionIDs := make([]string, 0, len(logs))
+	seen := make(map[string]struct{}, len(logs))
+	for _, log := range logs {
+		if log.SessionID == nil || *log.SessionID == "" {
+			continue
+		}
+		if _, ok := seen[*log.SessionID]; ok {
+			continue
+		}
+		seen[*log.SessionID] = struct{}{}
+		sessionIDs = append(sessionIDs, *log.SessionID)
+	}
+	if len(sessionIDs) == 0 {
+		return nil
+	}
+
+	var aggs []struct {
+		SessionID   string  `gorm:"column:session_id"`
+		RowCount    int64   `gorm:"column:row_count"`
+		TotalCost   float64 `gorm:"column:total_cost"`
+		TotalTokens int64   `gorm:"column:total_tokens"`
+	}
+	// Clear the filters that describe the shape of the roots query rather than
+	// which rows are listable; SessionID goes too, since the IN list below is
+	// what scopes this query.
+	sessionFilters := filters
+	sessionFilters.RootsOnly = false
+	sessionFilters.GroupSessions = false
+	sessionFilters.ParentRequestID = ""
+	sessionFilters.SessionID = ""
+
+	err := s.applyFilters(s.scopedLogsDB(ctx).Model(&Log{}), sessionFilters).
+		Select("session_id, COUNT(*) AS row_count, COALESCE(SUM(cost), 0) AS total_cost, COALESCE(SUM(total_tokens), 0) AS total_tokens").
+		Where("session_id IN ?", sessionIDs).
+		Group("session_id").
+		Scan(&aggs).Error
+	if err != nil {
+		return fmt.Errorf("failed to aggregate session logs: %w", err)
+	}
+	if len(aggs) == 0 {
+		return nil
+	}
+
+	bySession := make(map[string]int, len(aggs))
+	for i, agg := range aggs {
+		bySession[agg.SessionID] = i
+	}
+	for i := range logs {
+		if logs[i].SessionID == nil {
+			continue
+		}
+		aggIdx, ok := bySession[*logs[i].SessionID]
+		if !ok || aggs[aggIdx].RowCount <= 1 {
+			continue
+		}
+		logs[i].SessionChildCount = aggs[aggIdx].RowCount - 1
+		logs[i].SessionTotalCost = aggs[aggIdx].TotalCost
+		logs[i].SessionTotalTokens = aggs[aggIdx].TotalTokens
 	}
 	return nil
 }
