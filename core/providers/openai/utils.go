@@ -66,6 +66,11 @@ func defaultCanDisableReasoning(model string) bool {
 	}
 }
 
+// defaultSupportsAsyncTools: async tool calling is GPT-6 Astra and later.
+func defaultSupportsAsyncTools(model string) bool {
+	return strings.Contains(bareModelLower(model), "gpt-6")
+}
+
 // omittedEffortReasons reports OpenAI reasoning models that still reason when
 // reasoning.effort is omitted. Only GPT-5.1 through GPT-5.4 default to "none";
 // their -pro variants always reason.

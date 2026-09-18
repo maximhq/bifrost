@@ -289,6 +289,10 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 
 		copyOptionalStringFieldByName(copy.ResponsesToolMessage, original.ResponsesToolMessage, "Execution")
 
+		if original.ResponsesToolMessage.Async != nil {
+			copy.ResponsesToolMessage.Async = new(*original.ResponsesToolMessage.Async)
+		}
+
 		if original.ResponsesToolMessage.Error != nil {
 			copyError := schemas.ResponsesToolMessageError{}
 			if original.ResponsesToolMessage.Error.ResponsesToolMessageErrorStr != nil {
