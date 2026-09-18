@@ -146,9 +146,11 @@ export const logsApi = baseApi.injectEndpoints({
 				pagination: Pagination;
 				/** Grouped view: hide fallback-child rows so each chain lists as its root */
 				rootsOnly?: boolean;
+				/** Grouped view: collapse each session onto its earliest root row. Needs rootsOnly. */
+				groupSessions?: boolean;
 			}
 		>({
-			query: ({ filters, pagination, rootsOnly }) => ({
+			query: ({ filters, pagination, rootsOnly, groupSessions }) => ({
 				url: "/logs",
 				params: {
 					limit: pagination.limit,
@@ -156,6 +158,7 @@ export const logsApi = baseApi.injectEndpoints({
 					sort_by: pagination.sort_by,
 					order: pagination.order,
 					...(rootsOnly ? { roots_only: "true" } : {}),
+					...(groupSessions ? { group_sessions: "true" } : {}),
 					...buildFilterParams(filters),
 				},
 			}),
