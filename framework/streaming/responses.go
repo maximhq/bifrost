@@ -143,6 +143,11 @@ func deepCopyResponsesStreamResponse(original *schemas.BifrostResponsesStreamRes
 		copy.Command = &copyCommand
 	}
 
+	if original.Diff != nil {
+		copyDiff := *original.Diff
+		copy.Diff = &copyDiff
+	}
+
 	if original.CommandIndex != nil {
 		copyCommandIndex := *original.CommandIndex
 		copy.CommandIndex = &copyCommandIndex
@@ -563,6 +568,14 @@ func deepCopyToolCallEnvelope(original *schemas.ResponsesToolCallEnvelope) *sche
 			environment.ContainerID = &containerID
 		}
 		copied.Environment = &environment
+	}
+	if original.Operation != nil {
+		operation := *original.Operation
+		if original.Operation.Diff != nil {
+			diff := *original.Operation.Diff
+			operation.Diff = &diff
+		}
+		copied.Operation = &operation
 	}
 	if original.Caller != nil {
 		caller := *original.Caller

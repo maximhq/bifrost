@@ -115,6 +115,12 @@ describe("summarizeResponsesToolCall", () => {
 		expect(summarizeResponsesToolCall(item({ type: "shell_call", action: { commands: ["pwd", "ls -la"] } }))).toBe("pwd && ls -la");
 	});
 
+	it("names the operation of an apply_patch_call", () => {
+		expect(summarizeResponsesToolCall(item({ type: "apply_patch_call", operation: { type: "create_file", path: "hello.txt", diff: "+hi\n" } }))).toBe(
+			"create_file · hello.txt",
+		);
+	});
+
 	it("uses the action type alone when it carries no detail", () => {
 		expect(summarizeResponsesToolCall(item({ type: "computer_call", action: { type: "screenshot" } }))).toBe("screenshot");
 	});
