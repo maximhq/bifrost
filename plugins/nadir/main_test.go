@@ -278,6 +278,33 @@ func TestTextIsExtractedFromEveryShapeItArrivesIn(t *testing.T) {
 			}),
 			want: "explain this diff",
 		},
+		"responses api content string": {
+			req: &schemas.BifrostRequest{
+				RequestType: schemas.ResponsesRequest,
+				ResponsesRequest: &schemas.BifrostResponsesRequest{
+					Model: DefaultTriggerModel,
+					Input: []schemas.ResponsesMessage{{
+						Role:    responsesRole(schemas.ResponsesInputMessageRoleUser),
+						Content: &schemas.ResponsesMessageContent{ContentStr: &block},
+					}},
+				},
+			},
+			want: "explain this diff",
+		},
+		"responses api content blocks": {
+			req: &schemas.BifrostRequest{
+				RequestType: schemas.ResponsesRequest,
+				ResponsesRequest: &schemas.BifrostResponsesRequest{
+					Model: DefaultTriggerModel,
+					Input: []schemas.ResponsesMessage{{
+						Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+							{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: &block},
+						}},
+					}},
+				},
+			},
+			want: "explain this diff",
+		},
 		"text completion prompt": {
 			req: &schemas.BifrostRequest{
 				RequestType: schemas.TextCompletionRequest,
@@ -358,5 +385,56 @@ func TestBucketNameMatchingIsCaseAndSpaceInsensitive(t *testing.T) {
 	_ = plugin.PreRequestHook(testContext(t), req)
 	if got := routedTo(t, req); got != "anthropic/claude-sonnet-4-5" {
 		t.Fatalf("routed to %s, want anthropic/claude-sonnet-4-5", got)
+	}
+}
+
+func responsesRole(role schemas.ResponsesMessageRoleType) *schemas.ResponsesMessageRoleType {
+	return &role
+}
+
+// A /v1/responses request carrying the trigger model reaches PreRequestHook the same way a
+// chat request does, so it must be classified rather than dropped on fallback_model.
+func TestResponsesRequestsAreClassified(t *testing.T) {
+	server := newBucketServer(t, "complex")
+	plugin := newPlugin(t, testConfig(server.URL))
+	text := "port the scheduler to the new executor and prove it terminates"
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ResponsesRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Model: DefaultTriggerModel,
+			Input: []schemas.ResponsesMessage{{
+				Role:    responsesRole(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: &text},
+			}},
+		},
+	}
+
+	if err := plugin.PreRequestHook(testContext(t), req); err != nil {
+		t.Fatalf("PreRequestHook: %v", err)
+	}
+	if server.callCount != 1 {
+		t.Fatalf("classified %d times, want 1", server.callCount)
+	}
+	messages, _ := server.lastBody["messages"].([]any)
+	if len(messages) != 1 {
+		t.Fatalf("sent %d messages, want 1: %s", len(messages), server.rawPayload)
+	}
+	if first, _ := messages[0].(map[string]any); first["content"] != text {
+		t.Fatalf("content = %v, want %q", first["content"], text)
+	}
+	if got := routedTo(t, req); got != "anthropic/claude-sonnet-4-5" {
+		t.Fatalf("routed to %s, want the complex tier, not the fallback", got)
+	}
+}
+
+// A bucket name Nadir never returns can only ever route to fallback_model, so the tier it
+// configures would be silently unreachable. Rejected at Init instead.
+func TestInitRejectsATierNadirNeverReturns(t *testing.T) {
+	_, err := Init(&Config{
+		Tiers:         map[string]string{"simlpe": "openai/gpt-4o-mini"},
+		FallbackModel: "openai/gpt-4o",
+	}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	if err == nil {
+		t.Fatal("Init accepted a tier key Nadir never returns")
 	}
 }

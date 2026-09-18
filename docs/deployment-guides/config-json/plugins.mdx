@@ -308,6 +308,8 @@ Only the decision leaves. The provider call, your keys, fallbacks, governance, c
 }
 ```
 
+Chat completions, the Responses API and text completions are classified. Any other request type naming the trigger model (embeddings, speech, images) has no complexity tier to pick and routes to `fallback_model`.
+
 A classification that fails, times out past `timeout_ms`, or returns a bucket with no tier configured routes to `fallback_model` and logs the reason as a warning on the request's routing engine log. Nothing here can fail a request, and `nadir-auto` never reaches a provider.
 
 Two things to weigh. It classifies over the network, so it costs a round trip per routed request. And the messages are sent to whichever host `base_url` names, a third party unless that host is yours.
