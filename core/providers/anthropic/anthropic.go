@@ -3137,6 +3137,7 @@ func (provider *AnthropicProvider) Passthrough(
 
 	providerUtils.SetExtraHeaders(ctx, fasthttpReq, provider.networkConfig.ExtraHeaders, nil)
 
+	providerUtils.StripCallerAuthForInsecureURL(url, req.SafeHeaders)
 	for k, v := range req.SafeHeaders {
 		fasthttpReq.Header.Set(k, v)
 	}
@@ -3210,6 +3211,7 @@ func (provider *AnthropicProvider) PassthroughStream(
 
 	providerUtils.SetExtraHeaders(ctx, fasthttpReq, provider.networkConfig.ExtraHeaders, nil)
 
+	providerUtils.StripCallerAuthForInsecureURL(url, req.SafeHeaders)
 	for k, v := range req.SafeHeaders {
 		fasthttpReq.Header.Set(k, v)
 	}
