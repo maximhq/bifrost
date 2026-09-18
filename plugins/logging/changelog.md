@@ -1,3 +1,4 @@
+- chore: upgraded core to v1.9.1 and framework to v1.7.1
 - feat: MCP tool log rows carry governance entity names alongside their IDs, written from the request context at ingestion, so nothing is resolved on read (#7154)
 - feat: endpoint-attributed MCP observations are written onto both the pending and the final MCP tool log entry, with the observation snapshotted so it cannot alias across async entries (#6959)
 - feat: cost recalculation honours time-of-day peak and off-peak pricing, scaling usage-based charges by `off_peak_cost_multiplier` when a request falls outside every declared peak window (#6575)

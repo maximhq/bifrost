@@ -136889,7 +136889,7 @@
                   "var j = {};",
                   "try { j = pm.response.json() || {}; } catch (e) {}",
                   "var tries = Number(pm.collectionVariables.get('filesAzurePollTries') || 0);",
-                  "if (j.status !== 'processed' && j.status !== 'error' && tries < 10) {",
+                  "if (j.status !== 'processed' && j.status !== 'error' && tries < 30) {",
                   "  pm.collectionVariables.set('filesAzurePollTries', tries + 1);",
                   "  // The pending timer holds the sandbox open, which delays the next request.",
                   "  setTimeout(function () {}, 2000);",
@@ -136932,6 +136932,18 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
+                  "// Azure can still be processing the upload here (bifrost surfaces that as a",
+                  "// 409 whose body says to poll until status is \"processed\"; see 62.13a).",
+                  "// Provider-side processing lag is not a routing defect, so re-run this row",
+                  "// instead of failing on it.",
+                  "var __tries = Number(pm.collectionVariables.get('filesAzureContentTries6214') || 0);",
+                  "if (pm.response.code === 409 && __tries < 10) {",
+                  "  pm.collectionVariables.set('filesAzureContentTries6214', __tries + 1);",
+                  "  setTimeout(function () {}, 2000);",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "  return;",
+                  "}",
+                  "pm.collectionVariables.unset('filesAzureContentTries6214');",
                   "pm.test('Azure via /anthropic: 200', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 200)).to.eql(200); });",
                   "pm.test('Azure via /anthropic: body is a PDF', function () { pm.expect((pm.response.text() || '').indexOf('%PDF')).to.eql(0); });",
                   "pm.test('Azure via /anthropic: not JSON', function () { pm.expect((pm.response.headers.get('Content-Type') || '')).to.not.include('json'); });"
@@ -136982,6 +136994,16 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
+                  "// Same provider-side processing wait as 62.14: 409 means Azure has not",
+                  "// finished processing the upload yet, so re-run this row rather than fail.",
+                  "var __tries = Number(pm.collectionVariables.get('filesAzureContentTries6215') || 0);",
+                  "if (pm.response.code === 409 && __tries < 10) {",
+                  "  pm.collectionVariables.set('filesAzureContentTries6215', __tries + 1);",
+                  "  setTimeout(function () {}, 2000);",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "  return;",
+                  "}",
+                  "pm.collectionVariables.unset('filesAzureContentTries6215');",
                   "pm.test('Azure via /openai: 200', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 200)).to.eql(200); });",
                   "pm.test('Azure via /openai: body is a PDF', function () { pm.expect((pm.response.text() || '').indexOf('%PDF')).to.eql(0); });"
                 ]
@@ -137020,6 +137042,16 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
+                  "// Same provider-side processing wait as 62.14: 409 means Azure has not",
+                  "// finished processing the upload yet, so re-run this row rather than fail.",
+                  "var __tries = Number(pm.collectionVariables.get('filesAzureContentTries6216') || 0);",
+                  "if (pm.response.code === 409 && __tries < 10) {",
+                  "  pm.collectionVariables.set('filesAzureContentTries6216', __tries + 1);",
+                  "  setTimeout(function () {}, 2000);",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "  return;",
+                  "}",
+                  "pm.collectionVariables.unset('filesAzureContentTries6216');",
                   "pm.test('Azure via native /v1: 200', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 200)).to.eql(200); });",
                   "pm.test('Azure via native /v1: body is a PDF', function () { pm.expect((pm.response.text() || '').indexOf('%PDF')).to.eql(0); });"
                 ]

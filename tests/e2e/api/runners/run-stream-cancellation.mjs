@@ -579,7 +579,35 @@ if (skipCostCheck) {
           r.costCheck = "SKIP";
           continue;
         }
-        const row = await pollLogRow(db, r.requestId);
+        let row = await pollLogRow(db, r.requestId);
+        // Raced to completion: a success row WITH terminal usage means the upstream
+        // stream finished before the abort was observed - Gemini-family usage only
+        // arrives in the terminal chunk, so the provider generated and billed the
+        // full response and success is the honest log for that attempt (seen live
+        // on vertex/gemini-2.5-flash 2026-09-18: 325 completion tokens, whole tail
+        // in one burst, no SSE write left to fail). Retry the abort; a real
+        // disconnect-handling regression logs success on every attempt. A success
+        // row WITHOUT usage stays an immediate FAIL - that would be a mislabel,
+        // not a lost race.
+        let racedRetries = 0;
+        while (
+          row &&
+          row.status === "success" &&
+          Number(row.total_tokens) > 0 &&
+          racedRetries < 2
+        ) {
+          racedRetries++;
+          const rerun = await runCase({
+            provider: r.provider,
+            name: r.name,
+            path: r.path,
+            body: r.body,
+          });
+          if (!(rerun.ok && rerun.aborted && rerun.requestId)) break;
+          r.requestId = rerun.requestId;
+          row = await pollLogRow(db, rerun.requestId);
+        }
+        if (racedRetries > 0) r.racedToCompletionRetries = racedRetries;
         if (!row) {
           r.costCheck = "FAIL";
           r.costDetail = `no log row for ${r.requestId}`;

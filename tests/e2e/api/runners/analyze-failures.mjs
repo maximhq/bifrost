@@ -12,6 +12,7 @@
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { readReport } from "./lib/read-report.mjs";
+import { isExpectedStatus } from "./lib/expected-status.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).reduce((acc, cur, i, arr) => {
@@ -66,15 +67,8 @@ const truncate = (s, n) => {
   return s.length > n ? s.slice(0, n) + "...(truncated)" : s;
 };
 
-// Rows tagged [EXPECT-4XX] assert an upstream rejection on purpose: they send a
-// deliberately invalid field value so the provider's 4xx proves the field actually
-// reached it (a 2xx would mean Bifrost silently dropped it). For those rows a 4xx is
-// the success path, so HTTP status alone must not mark them failed - only a real
-// assertion failure can. The collection-level status gate already fails them on a
-// 2xx, which is the case that actually matters. 5xx is still a failure: that is
-// infrastructure, not the rejection the row asked for.
-const isExpected4xx = (name, code) =>
-  code >= 400 && code <= 499 && String(name || "").indexOf("[EXPECT-4XX]") !== -1;
+// See lib/expected-status.mjs: rows tagged [EXPECT-400]/[EXPECT-4XX]/[EXPECT-202]
+// assert a non-200 status on purpose, so status alone must not mark them failed.
 
 // Single definition of "this execution failed", shared by the coverage matrix pass
 // and the failure-listing pass so the two can never disagree about a row.
@@ -82,7 +76,7 @@ const isFailedExecution = (name, code, assertFailCount, hasResponse) =>
   assertFailCount > 0 ||
   code === 0 ||
   !hasResponse ||
-  (code >= 400 && !isExpected4xx(name, code));
+  (code >= 400 && !isExpectedStatus(name, code));
 
 const categorize = (code, body, bifrostLines) => {
   // Check body content first - Bifrost's "failed to get config for provider" can manifest as
