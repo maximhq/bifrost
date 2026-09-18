@@ -617,7 +617,7 @@ export default function VirtualKeysTable({
 	// Server-side search matches the key name, its team and its customer, plus the
 	// assigned user where there is a user directory to match against. Same signal as
 	// the user filter below, so the placeholder never promises what OSS cannot do.
-	const searchHint = UserPicker ? "name, user, team, or customer" : "name, team, or customer";
+	const searchHint = UserPicker ? t("virtualKeys.searchHintWithUser") : t("virtualKeys.searchHintWithoutUser");
 
 	const toggleSort = (column: string) => {
 		if (sortBy === column) {
@@ -833,8 +833,8 @@ export default function VirtualKeysTable({
 					<div className="relative w-full max-w-sm min-w-0 flex-1 basis-full sm:min-w-[180px] sm:basis-auto">
 						<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 						<Input
-							aria-label={`Search virtual keys by ${searchHint}`}
-							placeholder={`Search by ${searchHint}...`}
+							aria-label={t("virtualKeys.searchAriaByHint", { hint: searchHint })}
+							placeholder={t("virtualKeys.searchByHint", { hint: searchHint })}
 							value={search}
 							onChange={(e) => onSearchChange(e.target.value)}
 							className="pl-9"

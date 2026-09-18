@@ -58,7 +58,9 @@
 		"completionTokens": "Completion tokens",
 		"direct": "Direct",
 		"semantic": "Semantic",
-		"costLegend": "Cost"
+		"costLegend": "Cost",
+		"source": "Source",
+		"device": "Device"
 	},
 	"dashboard": {
 		"tabs": {
@@ -433,7 +435,8 @@
 		"loading": "Loading logs...",
 		"searchPlaceholders": {
 			"request_id": "Search by request ID",
-			"content": "Search log content"
+			"content": "Search log content",
+			"auto": "Search logs or paste a request ID"
 		},
 		"searchModes": {
 			"auto": "Auto",
@@ -507,7 +510,30 @@
 			"llmRequestId": "LLM Request ID",
 			"metadata": "Metadata",
 			"deleteFailed": "Failed to delete log",
-			"invalidDate": "Invalid date"
+			"invalidDate": "Invalid date",
+			"preExecutionCheck": "pre-execution check",
+			"tool": "Tool",
+			"request": "Request",
+			"llmRequest": "LLM Request",
+			"key": "Key",
+			"moreDetails": "More details",
+			"localNative": "Local · Native",
+			"requestId": "Request ID",
+			"decision": "Decision",
+			"nativeTool": "Native Tool",
+			"mcpTool": "MCP Tool",
+			"inspectionTime": "Inspection time",
+			"policyCheckTimestamp": "Policy Check Timestamp",
+			"observedTimestamp": "Observed Timestamp",
+			"users": "Users",
+			"teams": "Teams",
+			"customers": "Customers",
+			"businessUnits": "Business Units",
+			"projects": "Projects",
+			"devices": "Devices",
+			"filterBy": "Filter by {{label}}",
+			"summary": "timings, request meta",
+			"summaryWithMetadata": "timings, request meta, metadata"
 		},
 		"waitingForNew": "Waiting for new MCP logs...",
 		"loadingDetails": "Loading MCP log details",
@@ -540,7 +566,8 @@
 			"observedDescription": "Tool activity was captured, but its execution outcome is not known.",
 			"executionDescription": "Recorded tool execution outcome."
 		},
-		"noResults": "No results found. Try adjusting your filters and/or time range."
+		"noResults": "No results found. Try adjusting your filters and/or time range.",
+		"observedRoundTrip": "Observed round trip"
 	},
 	"connectors": {
 		"providers": "Providers",

@@ -455,7 +455,12 @@
 			"1w": "每周",
 			"1M": "每月",
 			"1Q": "每季度"
-		}
+		},
+		"searchHintWithUser": "名称、用户、团队或客户",
+		"searchHintWithoutUser": "名称、团队或客户",
+		"searchByHint": "按 {{hint}} 搜索…",
+		"searchAriaByHint": "按 {{hint}} 搜索虚拟密钥",
+		"unknownNotResolved": "未知（未解析）"
 	},
 	"modelLimits": {
 		"title": "预算与限额",
