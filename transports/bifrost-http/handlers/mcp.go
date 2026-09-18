@@ -27,6 +27,7 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/oauth2"
+	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
@@ -1958,6 +1959,10 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid client name: %v", err))
 		return
 	}
+	if req.Name == warp.BifrostMCPClientName {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid client name: %q is reserved for Bifrost's built-in MCP server", req.Name))
+		return
+	}
 	// Reject an underivable endpoint slug up front, before any upstream verify/OAuth dial, so
 	// invalid input fails fast with a 400 instead of after contacting the MCP server.
 	if !endpointSlugDerivable(req.EndpointSlug, req.Name) {
@@ -2539,6 +2544,10 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusNotFound, "MCP client not found")
 		return
 	}
+	if existingConfig.Name == warp.BifrostMCPClientName {
+		SendError(ctx, fasthttp.StatusForbidden, fmt.Sprintf("%s is Bifrost's built-in MCP server and cannot be edited", warp.BifrostMCPClientName))
+		return
+	}
 	if err := validateNeedsSessionStickiness(req.NeedsSessionStickiness, existingConfig.ConnectionType); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -2677,6 +2686,12 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	}
 	if err := mcp.ValidateMCPClientName(name); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid client name: %v", err))
+		return
+	}
+	// The built-in client itself was refused above, so any other client
+	// taking the name would be mistaken for it on the next boot.
+	if name == warp.BifrostMCPClientName {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid client name: %q is reserved for Bifrost's built-in MCP server", name))
 		return
 	}
 	if err := validateAllowedExtraHeaders(allowedExtraHeaders); err != nil {
@@ -3365,6 +3380,14 @@ func (h *MCPHandler) deleteMCPClient(ctx *fasthttp.RequestCtx) {
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid id: %v", err))
 		return
+	}
+	if h.store.MCPConfig != nil {
+		for _, client := range h.store.MCPConfig.ClientConfigs {
+			if client != nil && client.ID == id && client.Name == warp.BifrostMCPClientName {
+				SendError(ctx, fasthttp.StatusForbidden, fmt.Sprintf("%s is Bifrost's built-in MCP server and cannot be deleted", warp.BifrostMCPClientName))
+				return
+			}
+		}
 	}
 	// Delete from DB first to avoid memory/DB inconsistency if DB delete fails
 	if h.store.ConfigStore != nil {

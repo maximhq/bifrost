@@ -2,6 +2,7 @@ package warp
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -227,7 +228,8 @@ func TestWarpRequestHeadersPinSelectedKey(t *testing.T) {
 			// every call must keep the deployment's end-user MCP tools out of its
 			// context, including calls outside a conversation.
 			require.Equal(t, []string{UserAgent}, headers["User-Agent"], "Warp's traffic is always labelled")
-			require.Equal(t, []string{excludeMCPToolsValue}, headers[ExcludeMCPToolsHeader], "every call must exclude the deployment's MCP tools")
+			require.Equal(t, []string{BifrostMCPClientName}, headers[IncludeMCPClientsHeader], "every call must exclude the deployment's other MCP clients")
+			require.Equal(t, []string{strings.Join(allowedMCPToolNames(), ",")}, headers[IncludeMCPToolsHeader], "every call must include only Warp's own tools")
 
 			if tc.wantPin != "" {
 				require.Equal(t, []string{tc.wantPin}, headers[PinnedKeyHeader])

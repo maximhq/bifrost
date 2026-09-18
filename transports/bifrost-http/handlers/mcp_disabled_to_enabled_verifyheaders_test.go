@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -126,4 +128,69 @@ func TestUpdateMCPClient_DisabledToEnabled_WithInvalidReplacementHeaders_Preflig
 	if !existing.Disabled {
 		t.Fatalf("expected in-memory config to remain disabled after rejection, got Disabled=false")
 	}
+}
+
+// The built-in MCP server's client name is reserved: it is found by name at
+// boot, so any other client carrying it would be adopted as the built-in on the
+// next restart. Both create and rename must refuse it before any store write.
+func TestMCPClientReservedBuiltinNameRejected(t *testing.T) {
+	SetLogger(&mockLogger{})
+	newHandler := func(existing ...*schemas.MCPClientConfig) (*MCPHandler, *mockUpdateConfigStore, *fakeMCPManagerVerifyOnly) {
+		store := &lib.Config{MCPConfig: &schemas.MCPConfig{ClientConfigs: existing}}
+		store.ClientConfig = &configstore.ClientConfig{}
+		cfgStore := &mockUpdateConfigStore{}
+		store.ConfigStore = cfgStore
+		mgr := &fakeMCPManagerVerifyOnly{}
+		return &MCPHandler{store: store, mcpManager: mgr}, cfgStore, mgr
+	}
+
+	t.Run("create", func(t *testing.T) {
+		h, _, _ := newHandler()
+		body, err := json.Marshal(map[string]any{
+			"name":              warp.BifrostMCPClientName,
+			"connection_type":   "http",
+			"connection_string": "https://example.com/mcp",
+			"auth_type":         "none",
+		})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetBody(body)
+		h.addMCPClient(ctx)
+		if code := ctx.Response.StatusCode(); code != fasthttp.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", code, string(ctx.Response.Body()))
+		}
+		if !strings.Contains(string(ctx.Response.Body()), "reserved") {
+			t.Fatalf("expected the refusal to name the reservation, got %s", string(ctx.Response.Body()))
+		}
+	})
+
+	t.Run("rename", func(t *testing.T) {
+		existing := &schemas.MCPClientConfig{
+			ID:             "client-1",
+			Name:           "docs",
+			ConnectionType: schemas.MCPConnectionTypeHTTP,
+			AuthType:       schemas.MCPAuthTypeNone,
+		}
+		h, cfgStore, mgr := newHandler(existing)
+		name := warp.BifrostMCPClientName
+		body, err := json.Marshal(MCPClientUpdateRequest{Name: &name})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		ctx := &fasthttp.RequestCtx{}
+		ctx.SetUserValue("id", existing.ID)
+		ctx.Request.SetBody(body)
+		h.updateMCPClient(ctx)
+		if code := ctx.Response.StatusCode(); code != fasthttp.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", code, string(ctx.Response.Body()))
+		}
+		if cfgStore.updates != 0 || mgr.updateCalls != 0 {
+			t.Fatalf("expected no store or live update, got store=%d live=%d", cfgStore.updates, mgr.updateCalls)
+		}
+		if existing.Name != "docs" {
+			t.Fatalf("expected the in-memory name to stay %q, got %q", "docs", existing.Name)
+		}
+	})
 }

@@ -110,6 +110,14 @@ type Event struct {
 // never need a live provider.
 type ChatFunc func(ctx context.Context, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError)
 
+// MCPExecutor is the loop's dependency on tool dispatch. Warp's own read-only
+// tools now live on Bifrost's MCP server (framework/mcptools) rather than as
+// Go closures Warp calls directly - see executeTool - so this wraps
+// *bifrost.Bifrost's ExecuteChatMCPTool the same way ChatFunc wraps its
+// inference call: a function rather than a concrete dependency, so tests can
+// script tool results without a live MCP server behind them.
+type MCPExecutor func(ctx *schemas.BifrostContext, toolCall *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError)
+
 // CostFunc prices one turn's usage.
 //
 // Most providers return no cost of their own, and Warp's client is plugin-free
@@ -121,8 +129,9 @@ type CostFunc func(usage *schemas.BifrostLLMUsage) float64
 type Agent struct {
 	chat             ChatFunc
 	cost             CostFunc
-	tools            []Tool
-	deps             *ToolDeps
+	mcp              MCPExecutor
+	tools            MCPToolLister
+	scope            Scope
 	config           *schemas.WarpConfig
 	maxIterations    int
 	utcOffsetMinutes int
@@ -136,12 +145,13 @@ type Agent struct {
 
 // NewAgent assembles a loop for one request.
 //
-// The fields stay unexported and the tool set is fixed here rather than passed
-// in: a caller that could swap the tools could also widen what Warp is able to
-// read, and the whole read surface is meant to be reviewable from LogReader
-// (and, for describe_virtual_key, GovernanceReader) alone. What a caller does
-// supply is the inference function, the pricing function, the scope, and the
-// asker's UTC offset - the things that genuinely vary per request.
+// The tool set itself is not a parameter: it is whatever Bifrost's MCP server
+// declares, narrowed to the fixed allow-list in tools.go, so nothing here can
+// widen what Warp is able to read - that surface is reviewable from
+// framework/mcptools plus allowedTools alone. What a caller does supply is the
+// inference function, the tool-dispatch and tool-listing functions, the
+// pricing function, the scope, and the asker's UTC offset - the things that
+// genuinely vary per request.
 //
 // scope comes from the caller because it must be lifted off the request context
 // before the agent's goroutine starts. queryscope treats a missing scope as no
@@ -151,16 +161,13 @@ type Agent struct {
 // sanitizeUTCOffsetMinutes and sanitizeTimezone); this constructor trusts them
 // rather than re-validating, since Turn is the one place a raw client value
 // exists.
-func NewAgent(chat ChatFunc, cost CostFunc, logs LogReader, governance GovernanceReader, scope Scope, config *schemas.WarpConfig, utcOffsetMinutes int, timezone string, semantic ...*SemanticSearcher) *Agent {
-	var searcher *SemanticSearcher
-	if len(semantic) > 0 {
-		searcher = semantic[0]
-	}
+func NewAgent(chat ChatFunc, cost CostFunc, mcp MCPExecutor, tools MCPToolLister, scope Scope, config *schemas.WarpConfig, utcOffsetMinutes int, timezone string) *Agent {
 	return &Agent{
 		chat:             chat,
 		cost:             cost,
-		tools:            buildToolsFor(searcher),
-		deps:             &ToolDeps{logManager: logs, semantic: searcher, scope: scope, governance: governance},
+		mcp:              mcp,
+		tools:            tools,
+		scope:            scope,
 		config:           config,
 		maxIterations:    config.EffectiveMaxIterations(),
 		utcOffsetMinutes: utcOffsetMinutes,
@@ -492,10 +499,11 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 		}
 	}
 
-	// a.tools is buildToolsFor's fixed output for this deployment's semantic
-	// search availability (see NewAgent), so this is the matching memoized
-	// declaration set - parsed once for the process, not once per turn.
-	declared, err := declaredTools(a.deps != nil && a.deps.semantic != nil)
+	// The tool declarations are fetched fresh per turn from Bifrost's MCP
+	// server, filtered to Warp's allowed subset (see declaredTools). Dispatch
+	// itself runs through a.mcp (see executeTool); this is only the schema the
+	// model is shown.
+	declared, err := declaredTools(ctx, a.tools)
 	if err != nil {
 		emit(Event{Type: EventError, Code: ErrUpstream, Message: err.Error()})
 		return
@@ -511,7 +519,7 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 	// system item. The Responses API models instructions as a property of the
 	// request, not a turn in the transcript, and keeping it out of Input means the
 	// history bound below counts only real turns.
-	instructions := systemInstructions(a.config, a.deps != nil && a.deps.semantic != nil, timeContext{timezone: a.timezone, utcOffsetMinutes: a.utcOffsetMinutes})
+	instructions := systemInstructions(a.config, askerContext{timezone: a.timezone, utcOffsetMinutes: a.utcOffsetMinutes, identity: identityFor(a.scope)})
 	finalInstructions := instructions + finalStepInstructions
 	conversation := append([]schemas.ResponsesMessage{}, messages...)
 	// conversationTokens tracks the running estimate behind
@@ -542,11 +550,15 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 	// and a follow-up may fairly repeat a link an earlier answer carried.
 	issued := issuedLinks{}
 	issued.collect(responsesText(messages))
-	// emitText streams one step's text as its own paragraph. Steps used to go
-	// out back to back, so a turn that narrated between lookups read "...what
-	// the root cause was.These are all overloaded_error" - live, in the saved
-	// answer, and in the history replayed to the model. Only what the break is
-	// missing is added, so text that already ends its paragraph is left alone.
+	// emitText streams one step's text as its own paragraph. A delta here is a
+	// whole message from one iteration, not a token: the narration the model
+	// wrote alongside its tool calls, then whatever it wrote on the pass after.
+	// Both the buffered fold and the streaming client concatenate what they
+	// receive, so emitted back to back a turn read "...for you.There are no
+	// failed requests" - live, in the saved answer, and in the history replayed
+	// to the model. Separating them here rather than in either consumer keeps
+	// the two transports showing the same answer. Only what the break is missing
+	// is added, so text that already ends its paragraph is left alone.
 	streamedTail := ""
 	emitText := func(text string) bool {
 		if text == "" {
@@ -924,7 +936,9 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 			if !succeeded[q.index] {
 				continue
 			}
-			if q.name == "describe_filter_space" {
+			// Prefix-tolerant, like executeTool: the model sometimes echoes the
+			// MCP-prefixed name, and it means the same tool.
+			if strings.TrimPrefix(q.name, mcpToolPrefix) == "describe_filter_space" {
 				describedFilterSpace = true
 			} else {
 				calledTool = true
@@ -967,45 +981,90 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 
 // executeTool runs one tool and returns the string handed back to the model.
 //
+// Dispatch goes through a.mcp rather than a local closure: Warp's tools are
+// hosted on Bifrost's own MCP server (framework/mcptools) now, and Warp is
+// just a restricted client of it, same as any other caller - see MCPExecutor.
+// Only a name on the allow-list is dispatched: the model was offered exactly
+// that set, so anything else is a hallucinated tool and is refused here rather
+// than reaching the server. The tool-name prefix is the convention every
+// MCP-hosted tool uses (see core/mcp's client-name-prefix stripping); the raw
+// arguments string is passed straight through with no local JSON
+// pre-validation, since core/mcp/toolmanager.go's executeToolInternal parses
+// it again downstream regardless.
+//
 // A tool failure is reported to the model as a tool result rather than aborting
 // the request. The model can then correct itself - fix a filter name, widen a
 // range - which is usually what a failed call means. Aborting would turn a
 // recoverable mistake into a dead end.
 func (a *Agent) executeTool(ctx context.Context, name, arguments string) (string, bool) {
-	tool, ok := toolByName(a.tools, name)
-	if !ok {
+	// The model is offered un-prefixed names, but it sees the prefixed form in
+	// tool results and error text and sometimes echoes it back. It means the
+	// same tool, so accept it rather than spending an iteration teaching the
+	// model a naming convention that is Bifrost's business, not its own. The
+	// allow-list still decides: only the stripped name is looked up.
+	name = strings.TrimPrefix(name, mcpToolPrefix)
+	if !slices.Contains(allowedTools, name) {
 		return fmt.Sprintf(`{"error":"no tool named %q is available"}`, name), true
 	}
-
-	args := map[string]any{}
-	if strings.TrimSpace(arguments) != "" {
-		if err := sonic.UnmarshalString(arguments, &args); err != nil {
-			return fmt.Sprintf(`{"error":"arguments were not valid JSON: %s"}`, err.Error()), true
-		}
+	bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(ctx)
+	defer cancel()
+	if a.scope.HasIdentity {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyUserID, a.scope.UserID)
 	}
 
-	// An argument the tool does not take is refused rather than dropped. Dropped,
-	// the call runs as if it had been honoured, and the model reads the result
-	// as shaped by an argument that never existed - then guesses another.
-	if accepted := tool.argumentNames(); len(accepted) > 0 {
-		unknown := []string{}
-		for name := range args {
-			if !slices.Contains(accepted, name) {
-				unknown = append(unknown, name)
-			}
-		}
-		if len(unknown) > 0 {
-			slices.Sort(unknown)
-			return fmt.Sprintf(`{"error":%q}`, fmt.Sprintf("%s does not take %s. Its arguments are: %s. Filters such as time range, provider, model and status go inside filters.",
-				name, strings.Join(unknown, ", "), strings.Join(accepted, ", "))), true
-		}
+	toolCall := &schemas.ChatAssistantMessageToolCall{
+		Function: schemas.ChatAssistantMessageToolCallFunction{
+			Name:      schemas.Ptr(mcpToolPrefix + name),
+			Arguments: arguments,
+		},
 	}
 
-	result, err := tool.execute(ctx, a.deps, args)
-	if err != nil {
-		return fmt.Sprintf(`{"error":%q}`, err.Error()), true
+	message, bifrostErr := a.mcp(bifrostCtx, toolCall)
+	if bifrostErr != nil {
+		return fmt.Sprintf(`{"error":%q}`, errorMessage(bifrostErr)), true
 	}
-	return boundToolResult(result), false
+	if message == nil {
+		return `{"error":"tool call returned no result"}`, true
+	}
+
+	failed := message.ChatToolMessage != nil && message.ChatToolMessage.IsError != nil && *message.ChatToolMessage.IsError
+	return boundResultText(chatMessageText(message)), failed
+}
+
+// chatMessageText extracts the text of an MCP tool result. A tool result is
+// always plain text on the wire (see framework/mcptools/server.go's
+// mcp.NewToolResultText), so ContentBlocks is only a fallback for whatever
+// shape a future non-text result might take.
+func chatMessageText(message *schemas.ChatMessage) string {
+	if message.Content == nil {
+		return ""
+	}
+	if message.Content.ContentStr != nil {
+		return *message.Content.ContentStr
+	}
+	var builder strings.Builder
+	for _, block := range message.Content.ContentBlocks {
+		if block.Text != nil {
+			builder.WriteString(*block.Text)
+		}
+	}
+	return builder.String()
+}
+
+// boundResultText re-applies the result-size cap to what came back over MCP.
+// The server already bounds every result (see mcptools' boundToolResult), so
+// this only bites on a path that bypassed it - a test double, or a transport
+// that wrapped the payload - and it protects the same context window either
+// way. Over budget, the payload is replaced with an instruction rather than
+// truncated: a tail-truncated JSON document reads to the model as complete.
+func boundResultText(text string) string {
+	if len(text) <= MaxToolResultBytes {
+		return text
+	}
+	return fmt.Sprintf(
+		`{"error":"result too large (%d bytes, limit %d). Narrow the time range, add filters, or lower the limit, then try again.","truncated":true}`,
+		len(text), MaxToolResultBytes,
+	)
 }
 
 // errorMessage extracts a human-readable message from an upstream error,
@@ -1028,7 +1087,14 @@ func errorMessage(err *schemas.BifrostError) string {
 // first move is almost always a query. Everything here is therefore a lookup
 // that tolerates absence rather than a dereference.
 func responsesText(output []schemas.ResponsesMessage) string {
-	var builder strings.Builder
+	// Each message item is its own statement, and a turn can carry several: a
+	// model that narrates before querying and then answers after the result
+	// sends two, and providers do not pad either one. Concatenated raw they run
+	// together mid-sentence - "...for you.There are no failed requests" - so
+	// items are joined as the separate paragraphs they are. Content blocks
+	// within one item are a single message split for transport and are joined
+	// as written.
+	var parts []string
 	for _, item := range output {
 		if item.Type != nil && *item.Type != schemas.ResponsesMessageTypeMessage {
 			continue
@@ -1037,16 +1103,22 @@ func responsesText(output []schemas.ResponsesMessage) string {
 			continue
 		}
 		if item.Content.ContentStr != nil {
-			builder.WriteString(*item.Content.ContentStr)
+			if *item.Content.ContentStr != "" {
+				parts = append(parts, *item.Content.ContentStr)
+			}
 			continue
 		}
+		var builder strings.Builder
 		for _, block := range item.Content.ContentBlocks {
 			if block.Text != nil {
 				builder.WriteString(*block.Text)
 			}
 		}
+		if builder.Len() > 0 {
+			parts = append(parts, builder.String())
+		}
 	}
-	return builder.String()
+	return strings.Join(parts, "\n\n")
 }
 
 // responsesToolCalls returns the function calls in an output list, flattened

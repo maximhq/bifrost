@@ -15,6 +15,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/mcptools"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 )
 
@@ -423,7 +424,7 @@ func buildLogIndexItem(entry *logstore.Log) (logIndexItem, bool) {
 	if entry == nil || entry.ID == "" || entry.ContentHidden || !terminalWarpLogStatus(entry.Status) || !conversationalWarpObject(entry.Object) {
 		return logIndexItem{}, false
 	}
-	if entry.App != nil && strings.EqualFold(strings.TrimSpace(*entry.App), warpAppName) {
+	if entry.App != nil && strings.EqualFold(strings.TrimSpace(*entry.App), mcptools.WarpAppName) {
 		return logIndexItem{}, false
 	}
 	if entry.UserAgent != nil && strings.Contains(strings.ToLower(*entry.UserAgent), "bifrost-warp") {

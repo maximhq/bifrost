@@ -16,9 +16,11 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
+	"gorm.io/gorm"
 )
 
 // sseHeartbeatInterval is the cadence of SSE comment pings on the MCP SSE
@@ -511,6 +513,8 @@ func (h *MCPServerHandler) admit(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.B
 		return &mcpRefusal{status: status, message: bifrost.GetErrorMessage(refused)}
 	}
 
+	stampQueryScope(bifrostCtx)
+
 	// A /mcp/<slug> endpoint serves one Virtual MCP or one MCP client: gate on the caller's grant and
 	// narrow the tools to it. The plain /mcp route carries no slug and serves the full access.
 	if slug, _ := ctx.UserValue("slug").(string); slug != "" {
@@ -550,6 +554,34 @@ func mcpAuthRequiredToolResult(authReq *schemas.MCPAuthRequiredError) string {
 		message += schemas.MCPAuthTempTokenReminder
 	}
 	return message
+}
+
+// stampQueryScope turns the identity governance just resolved into the row filter every
+// store read applies via ScopedDB. It is the /mcp analogue of what the dashboard's session auth
+// does for Warp: the transport derives the scope once, and everything downstream only carries it.
+//
+// Only set when nothing has claimed the scope yet. An enterprise data-access-control plugin
+// sets QueryScope unconditionally and is authoritative, so whichever order the two run in, its
+// answer stands. Team is checked first: a team-associated key also carries its parent customer,
+// and scoping it by customer would widen it to every team's rows. A key that names neither a
+// customer nor a team is left unscoped on purpose: that is an admin-style key, and the whole
+// deployment is what it is meant to see.
+func stampQueryScope(bifrostCtx *schemas.BifrostContext) {
+	if queryscope.FromContext(bifrostCtx) != nil {
+		return
+	}
+	customerID, _ := bifrostCtx.Value(schemas.BifrostContextKeyGovernanceCustomerID).(string)
+	teamID, _ := bifrostCtx.Value(schemas.BifrostContextKeyGovernanceTeamID).(string)
+	var scope queryscope.QueryScope
+	switch {
+	case teamID != "":
+		scope = func(db *gorm.DB) *gorm.DB { return db.Where("team_id = ?", teamID) }
+	case customerID != "":
+		scope = func(db *gorm.DB) *gorm.DB { return db.Where("customer_id = ?", customerID) }
+	default:
+		return
+	}
+	bifrostCtx.SetValue(schemas.BifrostContextKeyQueryScope, scope)
 }
 
 // admitBySlug narrows an already-admitted request to the Virtual MCP or MCP client its slug names,

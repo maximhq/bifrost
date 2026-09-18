@@ -14,12 +14,16 @@ import (
 
 // chatService builds a service whose model is scripted and whose store holds a
 // usable configuration, which is the shape both transports run against.
-func chatService(model *scriptedModel, fake *fakeLogReader) *Service {
+func chatService(t testing.TB, model *scriptedModel, fake *fakeLogReader) *Service {
+	t.Helper()
+	mcp := newTestMCP(t, fake)
 	return NewService(nil,
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
 		WithVectorStore(newFakeWarpVectorStore()),
 		WithLogReader(fake),
 		WithChatFunc(model.respond),
+		WithMCPExecutor(mcp.execute),
+		WithMCPToolLister(mcp.list),
 	)
 }
 
@@ -107,12 +111,12 @@ func TestWarpRunTurnBufferedAndStreamedAgree(t *testing.T) {
 	// otherwise be the one field the two responses legitimately differ on.
 	request := &ChatRequest{ConversationID: "thread-1", Messages: []ChatMessage{{Role: "user", Content: "how many?"}}}
 
-	buffered := chatService(turns(), &fakeLogReader{})
+	buffered := chatService(t, turns(), &fakeLogReader{})
 	turn, err := buffered.NewTurn(context.Background(), request, 64)
 	require.NoError(t, err)
 	fromBuffer := buffered.RunTurn(context.Background(), turn, nil)
 
-	streamed := chatService(turns(), &fakeLogReader{})
+	streamed := chatService(t, turns(), &fakeLogReader{})
 	turn, err = streamed.NewTurn(context.Background(), request, 64)
 	require.NoError(t, err)
 	replay := newFold()
@@ -180,11 +184,15 @@ func TestWarpRunTurnStopsWhenSinkRefuses(t *testing.T) {
 		close(released)
 		return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: ctx.Err().Error()}}
 	}
+	fake := &fakeLogReader{}
+	mcp := newTestMCP(t, fake)
 	service := NewService(nil,
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
 		WithVectorStore(newFakeWarpVectorStore()),
-		WithLogReader(&fakeLogReader{}),
+		WithLogReader(fake),
 		WithChatFunc(blocking),
+		WithMCPExecutor(mcp.execute),
+		WithMCPToolLister(mcp.list),
 	)
 	turn, err := service.NewTurn(context.Background(), &ChatRequest{Messages: []ChatMessage{{Role: "user", Content: "hi"}}}, 32)
 	require.NoError(t, err)
@@ -237,7 +245,7 @@ func TestWarpRunTurnStopsWhenSinkRefuses(t *testing.T) {
 }
 
 func TestWarpNewTurnMapsRequestProblems(t *testing.T) {
-	service := chatService(&scriptedModel{}, &fakeLogReader{})
+	service := chatService(t, &scriptedModel{}, &fakeLogReader{})
 	_, err := service.NewTurn(context.Background(), &ChatRequest{}, 10)
 	require.ErrorIs(t, err, ErrEmptyConversation)
 
@@ -255,7 +263,7 @@ func TestWarpNewTurnMapsRequestProblems(t *testing.T) {
 // NewTurn is the one place a raw client-sent offset exists; everything
 // downstream trusts what it produces, so the sanitizing has to happen here.
 func TestWarpNewTurnSanitizesUTCOffset(t *testing.T) {
-	service := chatService(&scriptedModel{}, &fakeLogReader{})
+	service := chatService(t, &scriptedModel{}, &fakeLogReader{})
 	message := []ChatMessage{{Role: "user", Content: "x"}}
 
 	turn, err := service.NewTurn(context.Background(), &ChatRequest{Messages: message, UTCOffsetMinutes: 330}, 10)
@@ -273,7 +281,7 @@ func TestWarpNewTurnSanitizesUTCOffset(t *testing.T) {
 
 // NewTurn is also the one place a raw client-sent zone name exists.
 func TestWarpNewTurnSanitizesTimezone(t *testing.T) {
-	service := chatService(&scriptedModel{}, &fakeLogReader{})
+	service := chatService(t, &scriptedModel{}, &fakeLogReader{})
 	message := []ChatMessage{{Role: "user", Content: "x"}}
 
 	turn, err := service.NewTurn(context.Background(), &ChatRequest{Messages: message, Timezone: "Asia/Kolkata"}, 10)
@@ -292,9 +300,34 @@ func TestWarpNewTurnSanitizesTimezone(t *testing.T) {
 // Without a log reader there is nothing to research, so the service must say
 // so up front rather than register a chat route that always fails.
 func TestWarpCanChatRequiresLogReader(t *testing.T) {
-	require.False(t, NewService(nil, WithChatFunc((&scriptedModel{}).respond)).CanChat())
-	require.True(t, NewService(nil, WithLogReader(&fakeLogReader{}), WithChatFunc((&scriptedModel{}).respond)).CanChat())
+	mcp := newTestMCP(t, &fakeLogReader{})
+	withMCP := []Option{WithMCPExecutor(mcp.execute), WithMCPToolLister(mcp.list)}
+	require.False(t, NewService(nil, append(withMCP, WithChatFunc((&scriptedModel{}).respond))...).CanChat())
+	require.True(t, NewService(nil, append(withMCP, WithLogReader(&fakeLogReader{}), WithChatFunc((&scriptedModel{}).respond))...).CanChat())
 	require.False(t, NewService(nil).CanChat())
+}
+
+// Every tool call goes through the MCP executor and every declaration through
+// the lister, so a service missing either cannot run a turn: CanChat says so,
+// and NewTurn refuses rather than let the agent call a nil function mid-turn.
+func TestWarpChatRequiresMCPCallbacks(t *testing.T) {
+	mcp := newTestMCP(t, &fakeLogReader{})
+	message := &ChatRequest{Messages: []ChatMessage{{Role: "user", Content: "x"}}}
+	for name, opts := range map[string][]Option{
+		"no executor": {WithMCPToolLister(mcp.list)},
+		"no lister":   {WithMCPExecutor(mcp.execute)},
+		"neither":     nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			service := NewService(nil, append(opts,
+				WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
+				WithLogReader(&fakeLogReader{}),
+				WithChatFunc((&scriptedModel{}).respond))...)
+			require.False(t, service.CanChat())
+			_, err := service.NewTurn(context.Background(), message, 10)
+			require.ErrorIs(t, err, ErrUnavailable)
+		})
+	}
 }
 
 // SetLogReader writes s.client under the lock; every reader must take it.
@@ -340,7 +373,7 @@ func TestWarpServiceClientAccessIsRaceFree(t *testing.T) {
 // tool this agent has reads logs, so the first one the model reached for
 // dereferenced nil inside the agent.
 func TestWarpNewTurnRefusesWhenTheLogReaderIsGone(t *testing.T) {
-	service := chatService(&scriptedModel{}, &fakeLogReader{})
+	service := chatService(t, &scriptedModel{}, &fakeLogReader{})
 	defer service.Shutdown()
 
 	request := &ChatRequest{Messages: []ChatMessage{{Role: "user", Content: "how much?"}}}
@@ -361,12 +394,15 @@ func TestWarpNewTurnRefusesWhenTheLogReaderIsGone(t *testing.T) {
 func TestWarpRunTurnStampsConversationIDOnDone(t *testing.T) {
 	store := newMemoryConversations()
 	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("42 requests.")}}
+	mcp := newTestMCP(t, &fakeLogReader{})
 	service := NewService(nil,
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
 		WithVectorStore(newFakeWarpVectorStore()),
 		WithLogReader(&fakeLogReader{}),
 		WithChatFunc(model.respond),
 		WithConversationStore(store),
+		WithMCPExecutor(mcp.execute),
+		WithMCPToolLister(mcp.list),
 	)
 	turn, err := service.NewTurn(context.Background(), &ChatRequest{Messages: []ChatMessage{{Role: "user", Content: "how many?"}}}, 64)
 	require.NoError(t, err)
@@ -395,6 +431,7 @@ func TestWarpStreamedErrorCarriesTheConversationID(t *testing.T) {
 	failing := func(context.Context, *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 		return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "provider is down"}}
 	}
+	mcp := newTestMCP(t, &fakeLogReader{})
 	service := NewService(nil,
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
 		WithConversationStore(store),
@@ -402,7 +439,9 @@ func TestWarpStreamedErrorCarriesTheConversationID(t *testing.T) {
 		// without it - the model failing before any tool runs is what this test is
 		// about, not running without a log store.
 		WithLogReader(&fakeLogReader{}),
-		WithChatFunc(failing))
+		WithChatFunc(failing),
+		WithMCPExecutor(mcp.execute),
+		WithMCPToolLister(mcp.list))
 
 	turn, err := service.NewTurn(ownerCtx("u1"), &ChatRequest{
 		Messages: []ChatMessage{{Role: "user", Content: "how much did we spend?"}},
@@ -430,7 +469,7 @@ func TestWarpStreamedErrorCarriesTheConversationID(t *testing.T) {
 // returns an empty id and the turn silently vanishes from history. Not a UUID
 // check: the local contract accepts ids like "thread-1".
 func TestWarpNewTurnRejectsOversizedConversationID(t *testing.T) {
-	service := chatService(&scriptedModel{}, &fakeLogReader{})
+	service := chatService(t, &scriptedModel{}, &fakeLogReader{})
 	_, err := service.NewTurn(context.Background(), &ChatRequest{
 		ConversationID: strings.Repeat("x", MaxConversationIDChars+1),
 		Messages:       []ChatMessage{{Role: "user", Content: "hi"}},

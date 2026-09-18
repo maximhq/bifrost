@@ -91,33 +91,6 @@ func TestSemanticSearchHydratesScopedLogsAndPreservesVectorOrder(t *testing.T) {
 	require.Contains(t, vectors.queries, vectorstore.Query{Field: "cost_micro_usd", Operator: vectorstore.QueryOperatorLessThanOrEqual, Value: int64(3000)})
 }
 
-func TestSemanticSearchToolAppliesDefaultCallerScope(t *testing.T) {
-	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
-	oldNow := Now
-	Now = func() time.Time { return now }
-	defer func() { Now = oldNow }()
-	userID := "asking-user"
-	reader := &semanticLogReader{logs: map[string]logstore.Log{}}
-	vectors := newFakeWarpVectorStore()
-	executor := func(*schemas.BifrostContext, *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
-		vector := make([]float64, 1536)
-		return &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: vector}}}}, nil
-	}
-	searcher := NewSemanticSearcher(&recordingStore{row: validWarpConfigRow()}, vectors, executor, reader)
-	result, err := runTool(t, "semantic_search_logs", &ToolDeps{logManager: reader, semantic: searcher, scope: Scope{HasIdentity: true, UserID: userID}}, map[string]any{
-		"query": "payment failures", "filters": map[string]any{},
-	})
-	require.NoError(t, err)
-	response := result.(map[string]any)
-	require.Equal(t, "self", response["scope"])
-	require.Contains(t, vectors.queries, vectorstore.Query{Field: "user_id", Operator: vectorstore.QueryOperatorEqual, Value: userID})
-	// The provenance footer the prompt requires needs an absolute window on
-	// every result, not just query_metrics's - otherwise the model has to
-	// recompute one from the current-time reference, which is exactly the
-	// arithmetic the prompt separately tells it not to do.
-	require.NotEmpty(t, response["window"])
-}
-
 // A filter naming two providers was dropped entirely, because the scalar helper
 // only emitted a query for exactly one value. The vector store then returned
 // candidates from every provider, the 100-candidate cap was spent on rows that
@@ -269,25 +242,4 @@ func TestWarpSemanticSearchBoundsQueryLength(t *testing.T) {
 
 	_, err := searcher.Search(context.Background(), strings.Repeat("é", MaxSemanticQueryChars+1), &logstore.SearchFilters{}, 5)
 	require.ErrorContains(t, err, fmt.Sprintf("%d characters", MaxSemanticQueryChars+1))
-}
-
-// An empty semantic result used to be four bare fields, and the model read it as
-// "search is useless here" and went off counting and listing logs instead. The
-// hint says what happened (nothing scored above the threshold) and what the
-// legitimate next moves are, so a meaning question stays a meaning question.
-func TestSemanticSearchToolHintsWhenNothingMatches(t *testing.T) {
-	reader := &semanticLogReader{logs: map[string]logstore.Log{}}
-	executor := func(*schemas.BifrostContext, *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
-		return &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: make([]float64, 1536)}}}}, nil
-	}
-	searcher := NewSemanticSearcher(&recordingStore{row: validWarpConfigRow()}, newFakeWarpVectorStore(), executor, reader)
-	result, err := runTool(t, "semantic_search_logs", &ToolDeps{logManager: reader, semantic: searcher, scope: Scope{}}, map[string]any{
-		"query": "refund requests", "filters": map[string]any{},
-	})
-	require.NoError(t, err)
-	response := result.(map[string]any)
-	require.Equal(t, 0, response["returned"])
-	hint, _ := response["hint"].(string)
-	require.Contains(t, hint, "threshold")
-	require.Contains(t, hint, "Do not fall back to count_logs or query_logs")
 }

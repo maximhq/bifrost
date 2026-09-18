@@ -913,10 +913,12 @@ func convertMCPToolToBifrostSchema(mcpTool *mcp.Tool, logger schemas.Logger) sch
 		FixArraySchemas(mcpTool.InputSchema.Properties, logger)
 
 		// mcp-go decodes properties into a Go map, so the server's key order is
-		// already lost here. Sort the keys: ranging over the map would give a
-		// different order on each tools/list sync, which changes the tool JSON
-		// sent to providers (breaking prompt caching) and the tools hash.
-		properties = schemas.OrderedMapFromMap(mcpTool.InputSchema.Properties)
+		// already lost here. Ranging over the map would give a different order on
+		// each tools/list sync, which changes the tool JSON sent to providers
+		// (breaking prompt caching) and the tools hash - so the order is rebuilt
+		// deterministically: required fields first, in the order the author
+		// listed them, then the rest sorted, recursing into nested schemas.
+		properties = orderSchemaProperties(mcpTool.InputSchema.Properties, mcpTool.InputSchema.Required)
 	} else {
 		// For tools with no parameters, initialize an empty properties map
 		// This is required by some providers (e.g., OpenAI) which expect
@@ -974,6 +976,77 @@ func convertMCPToolToBifrostSchema(mcpTool *mcp.Tool, logger schemas.Logger) sch
 		},
 		Annotations: annotations,
 	}
+}
+
+// orderSchemaProperties turns a tool's properties map into an OrderedMap with
+// a deterministic, author-respecting key order. The MCP SDK decodes schemas
+// into plain Go maps, so the server's declared order is gone by the time a
+// tool reaches here; ranging the map would hand the model a different order
+// on every listing. Required properties come first in the order the author
+// listed them - the one ordering signal that survives decoding - then the rest
+// alphabetically. Nested object schemas get the same treatment, since a
+// filter object's field order steers the model as much as the top level does.
+func orderSchemaProperties(properties map[string]any, required []string) *schemas.OrderedMap {
+	ordered := schemas.NewOrderedMapWithCapacity(len(properties))
+	for _, key := range required {
+		if value, ok := properties[key]; ok {
+			ordered.Set(key, orderNestedSchema(value))
+		}
+	}
+	rest := make([]string, 0, len(properties))
+	for key := range properties {
+		if _, ok := ordered.Get(key); !ok {
+			rest = append(rest, key)
+		}
+	}
+	slices.Sort(rest)
+	for _, key := range rest {
+		ordered.Set(key, orderNestedSchema(properties[key]))
+	}
+	return ordered
+}
+
+// orderNestedSchema applies orderSchemaProperties to any object schema found
+// inside a property value - its own "properties", an array's "items", and so
+// on - returning an order-preserving structure in place of the plain map.
+func orderNestedSchema(value any) any {
+	// A list of schemas ("anyOf", "oneOf", "allOf", tuple "items") holds object
+	// schemas too, and left as plain maps they would come back alphabetised.
+	if list, ok := value.([]any); ok {
+		ordered := make([]any, len(list))
+		for i, element := range list {
+			ordered[i] = orderNestedSchema(element)
+		}
+		return ordered
+	}
+	m, ok := value.(map[string]any)
+	if !ok {
+		return value
+	}
+	out := schemas.NewOrderedMapWithCapacity(len(m))
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	for _, key := range keys {
+		switch key {
+		case "properties":
+			if props, ok := m[key].(map[string]any); ok {
+				required, _ := m["required"].([]any)
+				names := make([]string, 0, len(required))
+				for _, r := range required {
+					if s, ok := r.(string); ok {
+						names = append(names, s)
+					}
+				}
+				out.Set(key, orderSchemaProperties(props, names))
+				continue
+			}
+		}
+		out.Set(key, orderNestedSchema(m[key]))
+	}
+	return out
 }
 
 // extractTextFromMCPResponse extracts text content from an MCP tool response.

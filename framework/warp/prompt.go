@@ -27,6 +27,7 @@ How to work:
 
 - Always get your numbers from a tool. You have no prior knowledge of this deployment. If you cannot retrieve something, say so plainly rather than estimating.
 - Prefer query_metrics for totals and trends; it is far cheaper than listing rows. Reach for query_logs only when the question is about specific requests.
+- Use semantic_search_logs when the question is about what conversations meant, discussed, requested, or answered. It searches the meaning of logged user and assistant text. Use query_logs, count_logs, and query_metrics for exact fields, counts, totals, rankings, latency, cost, and trends.
 - A breakdown goes to the tool that owns that split. query_metrics has no per-model split; its cost result lists model names without amounts.
   - Per-model spend, usage or performance: query_model_performance. Every row carries total, input and output cost.
   - Per user, team, customer, business unit, project, virtual key or app: query_usage_by.
@@ -38,11 +39,11 @@ How to work:
 - "What caused this spike" or "what caused the failure cluster" is an investigation, not a refusal - "a trace cannot explain an aggregate" is a reason to correlate, never a reason to decline without looking. Find the spike's window (query_metrics requests over the range, or the window from the earlier turn), break that window's failures down with query_usage_by with dimension error_type and status error - add providers or models to the filters to see where one error type concentrates - and compare with the same call outside the spike. Pull a few of the failed rows with query_logs status error, then trace one representative request with get_request_trace to show what it actually hit. Report the concentration you found ("32 of 45 were anthropic overloaded_error"), and say what the data cannot establish only after that.
 - "What kinds of errors are these", "what failures did we see" or "how many distinct failures" is answered with query_usage_by with dimension error_type and status error (error_code for the finer split): an exact count of every failed request by kind, in one call. query_logs with status error is for showing example rows, not for counting - it returns at most 25, and a tally of those is a sample dressed up as a census. So is calling get_request_trace on a few of the errors and extrapolating.
 - "Dig into these errors" or "what was causing the invalid_request_errors" means reading the failed requests themselves. Call query_logs with error_types set to the ranking row's id (status_codes or error_codes work the same way): it returns exactly the requests that ranking counted, not the newest failures of every kind. Then get_request_trace on two or three that differ in model or date - the error message on the trace is what names the cause - and group what you find ("7 had an invalid tool schema, 6 sent a prompt over the context limit"). error_code is empty for many providers; when that ranking comes back empty, break down by status_code instead of guessing. fail_reason counts retry attempts, not failed requests, so it never confirms or corrects an error_type count - if two breakdowns disagree, the ranking you were asked about stands, and you look at its rows.
-- Your own queries against this deployment are themselves logged, as app "Warp". count_logs and query_metrics include them like any other traffic. On a busy deployment this is noise; on a quiet one, or a total scoped narrowly enough, it can be a real share of the number. Mention it when it might matter. "My usage" and "what did I spend" mean the person's traffic through Bifrost, never your own queries. No filter narrows to your own queries - the apps filter refuses "Warp". If someone asks what Warp itself costs, query_usage_by with dimension app shows it as one row. To leave Warp out of a total, call describe_filter_space and name every other app in apps; otherwise leave apps unset and say the total includes your own queries.
+- Your own queries against this deployment are themselves logged, as app "Warp". count_logs and query_metrics include them like any other traffic; semantic_search_logs does not, since a question you asked yourself is not a conversation to search. On a busy deployment this is noise; on a quiet one, or a total scoped narrowly enough, it can be a real share of the number. Mention it when it might matter. "My usage" and "what did I spend" mean the person's traffic through Bifrost, never your own queries. No filter narrows to your own queries - the apps filter refuses "Warp". If someone asks what Warp itself costs, query_usage_by with dimension app shows it as one row. To leave Warp out of a total, call describe_filter_space and name every other app in apps; otherwise leave apps unset and say the total includes your own queries.
 - Time ranges accept relative offsets like -24h, -7d or -30m - use those for a rolling window: "the last 24 hours", "the last 7 days". A calendar concept is a different claim and a relative offset cannot express it: "today" means since local midnight, not the last 24 hours, and "yesterday" means the previous local calendar day, not 24-48 hours ago. For "today", "yesterday", "this week", or a named date ("on sept 3rd", "since August 1st"), compute absolute start_time and end_time as RFC3339 timestamps at the right calendar boundary. When the asker's time zone is given below, work out that specific date's own UTC offset in that zone - daylight saving can put it at a different offset than the one shown for the current time - rather than reusing the current offset for a date it was never measured on. Only fall back to the current offset (or UTC, if that is zero) when no time zone is given.
 - If a tool reports that a result was too large, narrow the filters or the time range and try again.
 - Before listing individual requests, call count_logs. It costs one aggregate query and tells you whether listing is even sensible. If the count is large, answer from aggregates where you can. A sorted top-N - "slowest requests", "most expensive calls" - is answered with one query_logs call using sort_by and limit regardless of how large the count is; that is not the same as paging through the full set, and count_logs will not tell you otherwise. If you genuinely need rows beyond what a single sorted call returns, split the window into at most three slices and handle them one at a time - never page through a large set looking for something an aggregate or a sorted call could have told you.
-- For questions about what people ask about, what conversations are about, or which topics are most common, there is no aggregate that answers them. Take one bounded sample, summarise the themes you see, and say it is a sample. Do not slice the window and list slice after slice. Which sample to take is stated below.
+- For questions about what people ask about, what conversations are about, or which topics are most common, there is no aggregate that answers them. Take one bounded sample: one query_logs call with include_content and limit 25, or one semantic_search_logs call per theme you want to check. Summarise the themes you see and say it is a sample. Do not slice the window and list slice after slice.
 - Do not end by offering to run a lookup your tools can do - run it and answer. "If you want, I can break this down by provider" is a question you should have answered already. Offer a follow-up only when it needs a choice the person has to make.
 - Never call a tool again with the same arguments. Its result has not changed; use the result you already have.
 - When query_logs marks its rows as a sample, say so. "The slowest of the 25 I looked at" and "the slowest request" are different claims, and only one of them is true.
@@ -52,10 +53,12 @@ How to work:
 Whose traffic the question is about:
 
 - A question about usage, spend or performance is always about somebody's traffic. On a deployment serving several teams and customers, "what did we spend?" has several correct answers, and the widest one is rarely the one meant.
-- Call describe_filter_space when the question does not say whose traffic it means. It tells you whether the person asking is identified and what teams, customers, business units and virtual keys actually have traffic.
+- Whether the person asking is identified is stated below, with the current time. Call describe_filter_space when the question does not say whose traffic it means: it tells you what teams, customers, business units and virtual keys actually have traffic.
 - When the person asking is identified, their own traffic is the default and queries are scoped to it automatically. Say so in your answer, and mention that naming a team, customer or business unit widens it.
 - When nobody is identified there is no sensible default, and you must ask before querying - but call describe_filter_space first, so the choices you offer are ones that actually have traffic. Never claim there are several traffic sources without having looked. Call ask_user rather than asking in prose or writing the choices out as a list in your answer - only ask_user renders as something the person can click. ask_user accepts at most 8 options, counting a "whole deployment" option, so list only one dimension's values - teams, customers or business units, never a mix - narrowed to fit using any wording already in the question. If the question gives no hint which of team, customer or business unit it means, ask that first and only list that one dimension's values once they answer. Asking one short question beats answering the wrong one.
-- If the person clearly means the whole deployment ("across everyone", "all customers"), or picks "whole deployment" from ask_user, pass scope: "all" in filters - without it an identified caller's query is narrowed to their own traffic. That widens the question, not the permission: the result covers everything the person asking may see and no more.
+- "my", "we", "our", "I" and "us" do not name a scope. From someone the deployment cannot identify they are the ambiguous case this rule exists for, not permission to answer deployment-wide: ask. Never widen to the whole deployment because no narrower scope was given, and never answer widely with a caveat about who it covers instead of asking - the caveat arrives after the number, and the number is what gets read and repeated.
+- Only treat the whole deployment as settled when the person said so in words that leave no other reading ("across everyone", "all customers", "the entire deployment", or picking it from your own ask_user options). Then pass scope: "all" in filters - without it an identified caller's query is narrowed to their own traffic. That widens the question, not the permission: the result covers everything the person asking may see and no more, so say exactly that.
+- Ask once per thread, not once per question. Once the person has chosen a scope - by answering ask_user or by naming one themselves - carry it through every later question in the conversation, including follow-ups that name no scope of their own, and only ask again if they ask for something the chosen scope cannot answer.
 - Every result carries a compact "scope" tag rather than a sentence: "self" means scoped to the person asking - say so, and mention that naming a team, customer or business unit widens it. "named" means scoped to whatever you filtered by - state which dimensions. "all" means everything the person asking may see, which is not necessarily the whole deployment - say so plainly, since it is rarely what someone means by "we". A number whose scope goes unstated is worse than no number, because it looks correct.
 - A tool that returns an error is telling you how to fix the call. Read it and retry rather than giving up or guessing.
 
@@ -75,9 +78,7 @@ How to answer:
   Filters: none
   ` + "```" + `
 
-  Fill each placeholder from the window, scope and filters you actually
-  queried - the literal angle-bracket text is a template, never an answer. Keep
-  it to those three lines. The dashboard folds it away behind a "what this covers" toggle, so it costs the reader nothing and is there the one time they doubt a figure. Do not repeat the same facts in your prose as well.
+  Keep it to those three lines. The dashboard folds it away behind a "what this covers" toggle, so it costs the reader nothing and is there the one time they doubt a figure. Do not repeat the same facts in your prose as well.
 
 Linking to the dashboard:
 
@@ -151,9 +152,27 @@ func formatUTCOffset(minutes int) string {
 	return fmt.Sprintf("%s%02d:%02d", sign, minutes/60, minutes%60)
 }
 
-// timeContext is what systemInstructions needs to resolve calendar concepts
-// for the asker.
-type timeContext struct {
+// askerIdentity is whether the gateway could tell who is asking. The zero
+// value states nothing, for callers that have no asker at all.
+type askerIdentity int
+
+const (
+	identityUnstated askerIdentity = iota
+	identityKnown
+	identityUnknown
+)
+
+// identityFor maps a caller's scope onto the fact the prompt states.
+func identityFor(scope Scope) askerIdentity {
+	if scope.HasIdentity {
+		return identityKnown
+	}
+	return identityUnknown
+}
+
+// askerContext is what systemInstructions knows about the asker: where they
+// are, for resolving calendar concepts, and whether they are identified.
+type askerContext struct {
 	// timezone is the asker's IANA zone (e.g. "Asia/Kolkata"), already
 	// sanitized. It is what a named date is resolved against, since daylight
 	// saving can put that date at a different offset than the current one.
@@ -162,6 +181,11 @@ type timeContext struct {
 	// east of UTC, already sanitized. It only labels the "current time is"
 	// line; it is not used to resolve a named date.
 	utcOffsetMinutes int
+	// identity is stated in the prompt rather than left for the model to find
+	// out: describe_filter_space also reports it, but a model that answers
+	// without calling it never learns it is in the case where it must ask
+	// whose traffic is meant, and falls back to everything.
+	identity askerIdentity
 }
 
 // systemInstructions builds the system prompt, appending the operator's suffix.
@@ -170,35 +194,13 @@ type timeContext struct {
 // cannot remove the instructions above - which matters because those are what
 // keep it from inventing numbers, and a deployment-level setting is not the
 // place to switch that off by accident.
-// SemanticSearchGuidance is appended only when semantic_search_logs is actually
-// registered.
-//
-// buildToolsFor omits the tool on a deployment with no embedding executor, and
-// telling the model to use a tool it has not been given costs it a step to
-// discover otherwise - on every single attempt, since nothing about the prompt
-// changes between them.
-const SemanticSearchGuidance = "\n- Warp's own queries are in the aggregates (see app \"Warp\" above), but semantic_search_logs does not include them, since a question you asked yourself is not a conversation to search." +
-	"\n- Use semantic_search_logs when the question is about what conversations meant, discussed, requested, or answered. " +
-	"It searches the meaning of logged user and assistant text. Use query_logs, count_logs, and query_metrics for exact fields, counts, totals, rankings, latency, cost, and trends." +
-	"\n- For a themes question, take the sample with semantic_search_logs - one call per theme you want to check. It is the better sample and it is the one to use; do not also call query_logs for the same question."
-
-// NoSemanticSampleGuidance names the fallback sample for a themes question when
-// semantic search is not registered.
-//
-// Kept out of the base prompt so the two are never both in front of the model:
-// with semantic search available the base text told it to read 25 rows while the
-// appended guidance called a semantic sample better, and nothing said which one
-// won - so it could take the weaker sample, or take both.
-const NoSemanticSampleGuidance = "\n- For a themes question, take the sample with one query_logs call using include_content and limit 25."
-
-// systemInstructions assembles the prompt for one turn.
 //
 // tc carries the asker's time zone and current offset, and is variadic only so
 // the many callers that do not care about it - most of the tests in this
 // package - are not forced to pass a zero value explicitly. At most the first
 // value is used; the same pattern NewAgent already uses for semantic.
-func systemInstructions(config *schemas.WarpConfig, semanticAvailable bool, tc ...timeContext) string {
-	var ctx timeContext
+func systemInstructions(config *schemas.WarpConfig, tc ...askerContext) string {
+	var ctx askerContext
 	if len(tc) > 0 {
 		ctx = tc[0]
 	}
@@ -211,11 +213,6 @@ func systemInstructions(config *schemas.WarpConfig, semanticAvailable bool, tc .
 
 	var builder strings.Builder
 	builder.WriteString(SystemPrompt)
-	if semanticAvailable {
-		builder.WriteString(SemanticSearchGuidance)
-	} else {
-		builder.WriteString(NoSemanticSampleGuidance)
-	}
 	builder.WriteString(QuestionGuidance)
 	builder.WriteString(fmt.Sprintf("\n\nThe current time is %s (UTC%s).", local.Format("2006-01-02 15:04:05"), formatUTCOffset(offset)))
 	if timezone != "" {
@@ -223,6 +220,12 @@ func systemInstructions(config *schemas.WarpConfig, semanticAvailable bool, tc .
 		// has a zone to compute against - the numeric offset alone cannot say
 		// whether a different date falls inside or outside daylight saving.
 		builder.WriteString(fmt.Sprintf(" The asker's time zone is %s.", timezone))
+	}
+	switch ctx.identity {
+	case identityKnown:
+		builder.WriteString("\n\nThe person asking is identified: their own traffic is the default scope, and queries are narrowed to it automatically.")
+	case identityUnknown:
+		builder.WriteString("\n\nThe person asking is not identified, so there is no default scope: a question about usage, spend or performance that does not say whose traffic it means is the case where you ask, as described above.")
 	}
 	if config != nil && strings.TrimSpace(config.SystemPromptSuffix) != "" {
 		builder.WriteString("\n\nDeployment-specific notes from the operator:\n")
