@@ -83,6 +83,24 @@ LogEntry:
       type: string
       description: Raw opaque Bifrost session ID resolved at ingress for key stickiness and request correlation.
       nullable: true
+    child_count:
+      type: integer
+      description: Rows nesting under this one (fallback attempts, and settled async cost rows). Present only on roots_only responses.
+    children_cost:
+      type: number
+      description: Cost summed over those nested rows, under the same filters as the listing. Present only on roots_only responses.
+    children_tokens:
+      type: integer
+      description: Tokens summed over those nested rows, under the same filters as the listing. Present only on roots_only responses.
+    session_child_count:
+      type: integer
+      description: Rows in this session other than this one. Present only on the root of a collapsed session (group_sessions responses), and absent for a session with a single matching row.
+    session_total_cost:
+      type: number
+      description: Cost summed over the whole session, this row included, under the same filters as the listing. Present only on the root of a collapsed session (group_sessions responses), and absent for a session with a single matching row or when the total is zero.
+    session_total_tokens:
+      type: integer
+      description: Tokens summed over the whole session, this row included, under the same filters as the listing. Present only on the root of a collapsed session (group_sessions responses), and absent for a session with a single matching row or when the total is zero.
     stream:
       type: boolean
     raw_request:
