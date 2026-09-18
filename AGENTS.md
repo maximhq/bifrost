@@ -555,6 +555,16 @@ Only `framework/vectorstore` needs any of this. Every other framework package pa
 
 ## Testing
 
+### Every fix and every change ships with regression tests
+
+Any issue fix or code change lands together with regression tests that pin the new behavior. This applies to every issue type (bug, feature, refactor) and every layer, not only bug fixes in `core/`:
+
+- **Unit tests wherever possible**, added to the existing test file per the convention below.
+- **A provider-harness case for every wire-visible change** (next sections).
+- **E2E coverage for `ui/` changes** (`tests/e2e/`) - the harness cannot see the UI.
+
+The only exemptions: no wire-visible effect AND no testable behavior change (comments, internal renames, log lines). An exempt change must say so explicitly in the PR.
+
 ### Bug fixes: red before green
 
 Before writing a fix, add (or extend) a test that reproduces the bug and confirm it fails for the expected reason — a wrong assertion, not a compile error or an unrelated panic. Only then implement the fix, and confirm the same test now passes. For bugs reachable through `make run-provider-harness-test`, add the harness regression case (see `.claude/skills/harness-test-writer/SKILL.md`) alongside Go-level tests: Go tests give a fast, free red/green loop while coding; the harness case is the live end-to-end pin, expected red pre-fix and green post-fix, validated structurally (`augment-provider-harness.mjs` / `filter-collection.mjs`) without needing a live paid run during development.
@@ -563,11 +573,11 @@ Before writing a fix, add (or extend) a test that reproduces the bug and confirm
 
 Do not create a new `_test.go` file for a package that already has one. Put the test in the existing file that covers the same code: `<name>_test.go` next to `<name>.go`, or the topical file that already exists (`chat_test.go`, `counttokens_test.go`). One test file per bug or feature scatters a package's tests across many small files and makes it hard to find what already covers a source file. Create a new test file only for a source file that has no test file yet, and name it after that source file.
 
-### Every `core/` change ships with a provider-harness case
+### Every wire-visible change ships with a provider-harness case
 
-Any change under `core/` that a client can observe on the wire must land together with a case in `tests/e2e/api/collections/provider-harness.json` (see `.claude/skills/harness-test-writer/SKILL.md`). This covers new features and refactors, not only bug fixes — the rule in the previous section is the narrower instance of this one.
+Any change under `core/`, `framework/`, `transports/bifrost-http/`, or `plugins/` that a client can observe on the wire must land together with a case in `tests/e2e/api/collections/provider-harness.json` (see `.claude/skills/harness-test-writer/SKILL.md`). This covers new features and refactors, not only bug fixes - the rule in the previous section is the narrower instance of this one.
 
-`core/` is the only layer every transport, integration and provider funnels through, so its behaviour is what the harness exists to pin. A Go unit test proves the function does what you meant; only the harness proves the bytes a real client sends still come back correct through the whole stack. The gap between those two is where regressions live: a fail-soft that fires on one request shape and silently skips a sibling shape passes every unit test it has.
+These layers all sit on the request path, so any of them can change the bytes a client sees - and that end-to-end behaviour is what the harness exists to pin. A Go unit test proves the function does what you meant; only the harness proves the bytes a real client sends still come back correct through the whole stack. The gap between those two is where regressions live: a fail-soft that fires on one request shape and silently skips a sibling shape passes every unit test it has.
 
 Write the case so it is **red before the change and green after**, and validate it structurally while developing — no live paid run needed:
 
@@ -682,7 +692,7 @@ Run: `make run-e2e FLOW=<feature>`
 
 ## Claude Code Skills
 
-Four skills are available via `/skill-name`:
+Skills are available via `/skill-name`:
 
 ### `/docs-writer <feature-name>`
 Write, update, or review Mintlify MDX documentation. Researches UI code, Go handlers, and config schema. Validates `config.json` examples against `transports/config.schema.json`. Outputs docs with Web UI / API / config.json tabs.
@@ -697,8 +707,11 @@ Variants:
 - `/e2e-test sync` — Detect UI changes, update affected tests automatically
 - `/e2e-test audit` — Scan specs for incorrect/weak assertions (P0-P6 severity scale)
 
+### `/harness-test-writer <PR# | issue# | URL>`
+Add regression test cases to the provider harness (`tests/e2e/api/collections/provider-harness.json`) from a merged PR or GitHub issue. Traces the affected wire path, checks existing coverage, designs cases per harness conventions, inserts them surgically without reformatting the file, and validates via the augment and filter scripts. This is the skill the Testing section's harness-case rule points at.
+
 ### `/investigate-issue <issue-id>`
-Investigate a GitHub issue from `maximhq/bifrost`. Fetches issue details, classifies by type/area, searches codebase, traces dependencies, analyzes side effects, suggests tests (LLM/MCP/E2E), and presents an implementation plan with per-change approval gates.
+Investigate a GitHub issue from `maximhq/bifrost`. Fetches issue details, classifies by type/area, searches codebase, traces dependencies, analyzes side effects, plans the required regression tests (unit/harness/LLM/MCP/E2E), and presents an implementation plan with per-change approval gates.
 
 ### `/resolve-pr-comments <pr-number>`
 Systematically address unresolved PR review comments. Uses GraphQL to get unresolved threads, presents each with FIX/REPLY/SKIP options, collects fixes locally, and only posts replies **after code is pushed** to remote.
@@ -712,6 +725,7 @@ Systematically address unresolved PR review comments. Uses GraphQL to get unreso
 2. Update converter functions in each provider's `chat.go`
 3. If streaming affected, update `framework/streaming/` (accumulator, delta copy)
 4. Run `make test-core` (all providers)
+5. Add/extend unit tests and a provider-harness regression case (see Testing section)
 
 ### Add a new field to API responses
 1. Add to schema type in `core/schemas/`
@@ -719,6 +733,7 @@ Systematically address unresolved PR review comments. Uses GraphQL to get unreso
 3. Handle in streaming accumulator if applicable
 4. Update HTTP handler if field needs special serialization
 5. Update `transports/config.schema.json` if configurable
+6. Add/extend unit tests and a provider-harness regression case (see Testing section)
 
 ### Add a new plugin
 1. Create `plugins/<name>/` with its own `go.mod`
@@ -726,6 +741,7 @@ Systematically address unresolved PR review comments. Uses GraphQL to get unreso
 3. Add to `go.work`
 4. Register in transport layer or Bifrost config
 5. Add test targets to `Makefile`
+6. Add unit tests; add a provider-harness regression case if the plugin's behavior is wire-visible
 
 ### Modify a UI feature
 1. Find workspace page: `ui/app/workspace/<feature>/`
