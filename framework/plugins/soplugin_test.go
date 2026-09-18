@@ -57,6 +57,19 @@ func TestDynamicPluginLifecycle(t *testing.T) {
 		assert.Equal(t, "hello-world", name, "Plugin name should match")
 	})
 
+	// Test FileInfo
+	t.Run("FileInfo", func(t *testing.T) {
+		dp, ok := plugin.(*DynamicPlugin)
+		require.True(t, ok, "Plugin should be a *DynamicPlugin")
+		want, err := hashFile(pluginPath)
+		require.NoError(t, err)
+		sha, loadedAt, hashErr := dp.FileInfo()
+		require.NoError(t, hashErr)
+		assert.Len(t, sha, 64)
+		assert.Equal(t, want, sha)
+		assert.False(t, loadedAt.IsZero())
+	})
+
 	// Test HTTPTransportPreHook
 	t.Run("HTTPTransportPreHook", func(t *testing.T) {
 		ctx := context.Background()

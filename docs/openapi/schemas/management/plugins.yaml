@@ -20,6 +20,13 @@ PluginStatus:
       items:
         type: string
         enum: [llm, mcp, http, observability]
+    sha256:
+      type: string
+      description: SHA-256 hex digest of the plugin file loaded on the instance that served the request (custom plugins only)
+    loaded_at:
+      type: string
+      format: date-time
+      description: When the instance that served the request loaded the plugin file (custom plugins only)
   example:
     name: my_custom_plugin
     status: active
