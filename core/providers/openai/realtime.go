@@ -124,30 +124,22 @@ func (provider *OpenAIProvider) exchangeWebRTCSDP(
 
 	answerBody := resp.Body()
 	if resp.StatusCode() < fasthttp.StatusOK || resp.StatusCode() >= fasthttp.StatusMultipleChoices {
-		return "", providerUtils.SetErrorLatency(provider.realtimeWebRTCUpstreamError(ctx, resp.StatusCode(), answerBody), latency)
+		return "", providerUtils.SetErrorLatency(provider.realtimeWebRTCUpstreamError(ctx, resp), latency)
 	}
 
 	return string(answerBody), nil
 }
 
-func (provider *OpenAIProvider) realtimeWebRTCUpstreamError(ctx *schemas.BifrostContext, statusCode int, body []byte) *schemas.BifrostError {
-	bifrostErr := &schemas.BifrostError{
-		IsBifrostError: false,
-		StatusCode:     schemas.Ptr(fasthttp.StatusBadGateway),
-		Error: &schemas.ErrorField{
-			Type:    schemas.Ptr("upstream_connection_error"),
-			Message: fmt.Sprintf("upstream realtime WebRTC handshake failed for %s", provider.GetProviderKey()),
-		},
-		ExtraFields: schemas.BifrostErrorExtraFields{
-			RequestType: schemas.RealtimeRequest,
-			Provider:    provider.GetProviderKey(),
-		},
-	}
-	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-		bifrostErr.ExtraFields.RawResponse = map[string]any{
-			"status": statusCode,
-			"body":   string(body),
-		}
+func (provider *OpenAIProvider) realtimeWebRTCUpstreamError(ctx *schemas.BifrostContext, resp *fasthttp.Response) *schemas.BifrostError {
+	bifrostErr := ParseOpenAIError(resp)
+	bifrostErr.ExtraFields.RequestType = schemas.RealtimeRequest
+	// The WebRTC SDP exchange bypasses the core orchestrator, so nothing later
+	// populates RoutingInfo on this error. Set the supported field here and keep
+	// the deprecated Provider in sync per its backward-compatibility contract.
+	bifrostErr.ExtraFields.RoutingInfo.Provider = provider.GetProviderKey()
+	bifrostErr.ExtraFields.Provider = provider.GetProviderKey()
+	if !providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		bifrostErr.ExtraFields.RawResponse = nil
 	}
 	return bifrostErr
 }
