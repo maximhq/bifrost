@@ -359,7 +359,8 @@ export function LogsHeaderView({
 					</Button>
 				</TooltipTrigger>
 				<TooltipContent sideOffset={6} className="max-w-64">
-					Groups fallback attempts and linked requests under the original root request. Expand any row to view the complete request chain.
+					Groups fallback attempts and linked requests under the original root request, and every request sharing a session under the
+					session&apos;s first request. Expand any row to view what it stands for.
 					<br />
 					<br />
 					This grouped view may load more slowly than the flat view for very large log tables.
