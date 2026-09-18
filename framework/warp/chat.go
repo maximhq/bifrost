@@ -121,9 +121,7 @@ func (s *Service) RunTurn(ctx context.Context, turn *Turn, sink func(Event) bool
 	// The scope is read off the snapshotted context, same as the row-level
 	// queryscope, so it is a fact about who asked rather than anything the
 	// request body could claim.
-	// One snapshot, so the agent's reader and searcher are the same generation.
-	logs, semantic := s.researchDeps()
-	agent := NewAgent(turn.chat, s.costFuncFor(turn.config), logs, s.governance, ScopeFromContext(runCtx), turn.config, turn.utcOffsetMinutes, turn.timezone, semantic)
+	agent := NewAgent(turn.chat, s.costFuncFor(turn.config), s.mcp, s.mcpTools, ScopeFromContext(runCtx), turn.config, turn.utcOffsetMinutes, turn.timezone)
 	agent.questionsAsked = turn.questionsAsked
 	events := make(chan Event, 16)
 	go agent.Run(runCtx, turn.messages, events)

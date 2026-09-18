@@ -13,12 +13,16 @@ import (
 
 // chatService builds a service whose model is scripted and whose store holds a
 // usable configuration, which is the shape both transports run against.
-func chatService(model *scriptedModel, fake *fakeLogReader) *Service {
+func chatService(t testing.TB, model *scriptedModel, fake *fakeLogReader) *Service {
+	t.Helper()
+	mcp := newTestMCP(t, fake)
 	return NewService(nil,
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
 		WithVectorStore(newFakeWarpVectorStore()),
 		WithLogReader(fake),
 		WithChatFunc(model.respond),
+		WithMCPExecutor(mcp.execute),
+		WithMCPToolLister(mcp.list),
 	)
 }
 
@@ -64,12 +68,12 @@ func TestWarpRunTurnBufferedAndStreamedAgree(t *testing.T) {
 	// otherwise be the one field the two responses legitimately differ on.
 	request := &ChatRequest{ConversationID: "thread-1", Messages: []ChatMessage{{Role: "user", Content: "how many?"}}}
 
-	buffered := chatService(turns(), &fakeLogReader{})
+	buffered := chatService(t, turns(), &fakeLogReader{})
 	turn, err := buffered.NewTurn(context.Background(), request, 64)
 	require.NoError(t, err)
 	fromBuffer := buffered.RunTurn(context.Background(), turn, nil)
 
-	streamed := chatService(turns(), &fakeLogReader{})
+	streamed := chatService(t, turns(), &fakeLogReader{})
 	turn, err = streamed.NewTurn(context.Background(), request, 64)
 	require.NoError(t, err)
 	replay := newFold()
@@ -137,11 +141,15 @@ func TestWarpRunTurnStopsWhenSinkRefuses(t *testing.T) {
 		close(released)
 		return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: ctx.Err().Error()}}
 	}
+	fake := &fakeLogReader{}
+	mcp := newTestMCP(t, fake)
 	service := NewService(nil,
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
 		WithVectorStore(newFakeWarpVectorStore()),
-		WithLogReader(&fakeLogReader{}),
+		WithLogReader(fake),
 		WithChatFunc(blocking),
+		WithMCPExecutor(mcp.execute),
+		WithMCPToolLister(mcp.list),
 	)
 	turn, err := service.NewTurn(context.Background(), &ChatRequest{Messages: []ChatMessage{{Role: "user", Content: "hi"}}}, 32)
 	require.NoError(t, err)
@@ -188,7 +196,7 @@ func TestWarpRunTurnStopsWhenSinkRefuses(t *testing.T) {
 }
 
 func TestWarpNewTurnMapsRequestProblems(t *testing.T) {
-	service := chatService(&scriptedModel{}, &fakeLogReader{})
+	service := chatService(t, &scriptedModel{}, &fakeLogReader{})
 	_, err := service.NewTurn(context.Background(), &ChatRequest{}, 10)
 	require.ErrorIs(t, err, ErrEmptyConversation)
 
@@ -206,7 +214,7 @@ func TestWarpNewTurnMapsRequestProblems(t *testing.T) {
 // NewTurn is the one place a raw client-sent offset exists; everything
 // downstream trusts what it produces, so the sanitizing has to happen here.
 func TestWarpNewTurnSanitizesUTCOffset(t *testing.T) {
-	service := chatService(&scriptedModel{}, &fakeLogReader{})
+	service := chatService(t, &scriptedModel{}, &fakeLogReader{})
 	message := []ChatMessage{{Role: "user", Content: "x"}}
 
 	turn, err := service.NewTurn(context.Background(), &ChatRequest{Messages: message, UTCOffsetMinutes: 330}, 10)
@@ -224,7 +232,7 @@ func TestWarpNewTurnSanitizesUTCOffset(t *testing.T) {
 
 // NewTurn is also the one place a raw client-sent zone name exists.
 func TestWarpNewTurnSanitizesTimezone(t *testing.T) {
-	service := chatService(&scriptedModel{}, &fakeLogReader{})
+	service := chatService(t, &scriptedModel{}, &fakeLogReader{})
 	message := []ChatMessage{{Role: "user", Content: "x"}}
 
 	turn, err := service.NewTurn(context.Background(), &ChatRequest{Messages: message, Timezone: "Asia/Kolkata"}, 10)

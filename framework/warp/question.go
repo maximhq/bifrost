@@ -1,7 +1,6 @@
 package warp
 
 import (
-	"context"
 	"fmt"
 	"strings"
 
@@ -87,31 +86,13 @@ const AskUserSchema = `{
   "required": ["question", "options"]
 }`
 
-// askUserToolDef builds the tool.
-//
-// Its executor deliberately does no work: posing the question *is* the effect,
-// and the value it returns exists only to tell the model to stop talking and
-// wait. The agent loop recognises this tool by name and ends the turn.
-func askUserToolDef() Tool {
-	return Tool{
-		name: AskUserTool,
-		description: "Ask the person a short multiple-choice question and wait for their answer. " +
-			"Use this when a metric question does not say which time range it means, or whose traffic it means - both change the answer, and guessing produces a confident number about the wrong thing. " +
-			"Offer concrete options they can pick rather than asking them to type. Ask about one thing at a time, and do not ask again once they have told you. " +
-			"This tool call is what renders as something the person can click - writing the same question and options into your answer as prose or a markdown list instead is not a substitute: it leaves them typing a reply you then have to re-parse, or worse, ends the turn with no way for them to answer at all.",
-		schemaJSON: AskUserSchema,
-		execute: func(_ context.Context, _ *ToolDeps, args map[string]any) (any, error) {
-			question, err := parseQuestion(args)
-			if err != nil {
-				return nil, err
-			}
-			return map[string]any{
-				"posed":   question.Question,
-				"waiting": "The question has been shown. Stop here and wait for the reply; do not answer it yourself or guess.",
-			}, nil
-		},
-	}
-}
+// askUserDescription is what tells the model when to reach for ask_user. The
+// tool has no executor: posing the question *is* the effect. The agent loop
+// recognises it by name and ends the turn (see questionFromToolCall).
+const askUserDescription = "Ask the person a short multiple-choice question and wait for their answer. " +
+	"Use this when a metric question does not say which time range it means, or whose traffic it means - both change the answer, and guessing produces a confident number about the wrong thing. " +
+	"Offer concrete options they can pick rather than asking them to type. Ask about one thing at a time, and do not ask again once they have told you. " +
+	"This tool call is what renders as something the person can click - writing the same question and options into your answer as prose or a markdown list instead is not a substitute: it leaves them typing a reply you then have to re-parse, or worse, ends the turn with no way for them to answer at all."
 
 // parseQuestion validates the model's question.
 func parseQuestion(args map[string]any) (*Question, error) {

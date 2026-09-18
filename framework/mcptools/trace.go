@@ -1,4 +1,4 @@
-package warp
+package mcptools
 
 import (
 	"context"
@@ -14,16 +14,16 @@ import (
 
 // get_request_trace: the causal drill-down behind one request.
 //
-// Every other tool answers "what happened" - counts, totals, rows. This is the
-// only one that answers "why": it walks a request's retry attempts and its full
-// fallback chain (every provider/model tried, in order), and returns each hop's
-// error, guardrail and cache decisions, and latency breakdown. get_log_detail
-// returns one row's content; this returns the causal chain around it.
+// Every other tool answers "what happened" - counts, totals, rows. This is the only one that answers "why":
+// it walks a request's retry attempts and its full fallback chain (every
+// provider/model tried, in order), and returns each hop's error, guardrail
+// and cache decisions, and latency breakdown. get_log_detail returns one
+// row's content; this returns the causal chain around it.
 //
-// It cannot explain why an *aggregate* changed - a spike, a trend - only why one
-// specific request did what it did. The system prompt says so, because a model
-// asked "why did errors spike" has every incentive to point at one bad request
-// it found and call that the cause.
+// It cannot explain why an *aggregate* changed - a spike, a trend - only why
+// one specific request did what it did. The system prompt says so, because a
+// model asked "why did errors spike" has every incentive to point at one bad
+// request it found and call that the cause.
 
 const (
 	// MaxTraceChainLength caps fallback hops returned beyond the root. A real
@@ -147,12 +147,12 @@ func getRequestTraceTool() Tool {
   },
   "required": ["log_id"]
 }`,
-		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
+		execute: func(ctx context.Context, deps *Deps, args map[string]any) (any, error) {
 			id, _ := args["log_id"].(string)
 			if id == "" {
 				return nil, fmt.Errorf("log_id is required")
 			}
-			entry, err := deps.logManager.GetLog(ctx, id)
+			entry, err := deps.LogManager.GetLog(ctx, id)
 			if err != nil {
 				return nil, fmt.Errorf("could not load log %s: %w", id, err)
 			}
@@ -167,7 +167,7 @@ func getRequestTraceTool() Tool {
 			// would recurse into fetching itself as its own root.
 			if entry.ParentRequestID != nil && *entry.ParentRequestID != "" && *entry.ParentRequestID != entry.ID {
 				rootID = *entry.ParentRequestID
-				root, err = deps.logManager.GetLog(ctx, rootID)
+				root, err = deps.LogManager.GetLog(ctx, rootID)
 				if err != nil {
 					return nil, fmt.Errorf("could not load root request %s: %w", rootID, err)
 				}
@@ -176,7 +176,7 @@ func getRequestTraceTool() Tool {
 				}
 			}
 
-			children, err := deps.logManager.Search(ctx, &logstore.SearchFilters{ParentRequestID: rootID}, &logstore.PaginationOptions{
+			children, err := deps.LogManager.Search(ctx, &logstore.SearchFilters{ParentRequestID: rootID}, &logstore.PaginationOptions{
 				Limit: MaxTraceChainLength, SortBy: "timestamp", Order: "asc",
 			})
 			if err != nil {
