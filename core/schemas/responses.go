@@ -1450,6 +1450,8 @@ const (
 	ResponsesMessageTypeLocalShellCallOutput ResponsesMessageType = "local_shell_call_output"
 	ResponsesMessageTypeShellCall            ResponsesMessageType = "shell_call"
 	ResponsesMessageTypeShellCallOutput      ResponsesMessageType = "shell_call_output"
+	ResponsesMessageTypeApplyPatchCall       ResponsesMessageType = "apply_patch_call"
+	ResponsesMessageTypeApplyPatchCallOutput ResponsesMessageType = "apply_patch_call_output"
 	ResponsesMessageTypeMCPCall              ResponsesMessageType = "mcp_call"
 	ResponsesMessageTypeCustomToolCall       ResponsesMessageType = "custom_tool_call"
 	ResponsesMessageTypeCustomToolCallOutput ResponsesMessageType = "custom_tool_call_output"
@@ -2591,13 +2593,24 @@ type ResponsesShellCallOutcome struct {
 	ExitCode *int   `json:"exit_code,omitempty"` // exit only
 }
 
-// ResponsesToolCallEnvelope carries the shell_call / shell_call_output fields that the
-// neutral tool-message shape has no home for.
+// ResponsesToolCallEnvelope carries the fields of OpenAI's shell_call /
+// shell_call_output / apply_patch_call items that the neutral tool-message shape has
+// no home for. One struct rather than one per item family: caller and created_by are
+// shared, and duplicate json keys across embedded structs silently drop both.
 type ResponsesToolCallEnvelope struct {
 	Environment     *ResponsesShellCallEnvironment `json:"environment,omitempty"`       // shell_call
-	Caller          *ResponsesShellCaller          `json:"caller,omitempty"`            // both items
-	CreatedBy       *string                        `json:"created_by,omitempty"`        // both items
+	Operation       *ResponsesApplyPatchOperation  `json:"operation,omitempty"`         // apply_patch_call
+	Caller          *ResponsesShellCaller          `json:"caller,omitempty"`            // shell + apply_patch items
+	CreatedBy       *string                        `json:"created_by,omitempty"`        // shell + apply_patch items
 	MaxOutputLength *int                           `json:"max_output_length,omitempty"` // shell_call_output
+}
+
+// ResponsesApplyPatchOperation is an apply_patch_call's file instruction. OpenAI
+// rejects a replayed item without it, so it has to survive the round trip.
+type ResponsesApplyPatchOperation struct {
+	Type string  `json:"type"` // "create_file" | "delete_file" | "update_file"
+	Path string  `json:"path"`
+	Diff *string `json:"diff,omitempty"` // absent on delete_file
 }
 
 // ResponsesShellCallEnvironment is where a shell_call ran.
@@ -2873,6 +2886,7 @@ const (
 	ResponsesToolTypeLocalShell              ResponsesToolType = "local_shell"
 	ResponsesToolTypeShell                   ResponsesToolType = "shell"
 	ResponsesToolTypeProgrammaticToolCalling ResponsesToolType = "programmatic_tool_calling"
+	ResponsesToolTypeApplyPatch              ResponsesToolType = "apply_patch"
 	ResponsesToolTypeCustom                  ResponsesToolType = "custom"
 	ResponsesToolTypeWebSearchPreview        ResponsesToolType = "web_search_preview"
 	ResponsesToolTypeMemory                  ResponsesToolType = "memory"
@@ -4014,6 +4028,9 @@ const (
 	ResponsesStreamResponseTypeShellCallOutputContentDelta ResponsesStreamResponseType = "response.shell_call_output_content.delta"
 	ResponsesStreamResponseTypeShellCallOutputContentDone  ResponsesStreamResponseType = "response.shell_call_output_content.done"
 
+	ResponsesStreamResponseTypeApplyPatchCallOperationDiffDelta ResponsesStreamResponseType = "response.apply_patch_call_operation_diff.delta"
+	ResponsesStreamResponseTypeApplyPatchCallOperationDiffDone  ResponsesStreamResponseType = "response.apply_patch_call_operation_diff.done"
+
 	ResponsesStreamResponseTypeError ResponsesStreamResponseType = "error"
 )
 
@@ -4060,6 +4077,9 @@ type BifrostResponsesStreamResponse struct {
 	CommandIndex     *int                              `json:"command_index,omitempty"`
 	Output           []ResponsesShellCallOutputContent `json:"output,omitempty"`
 	ShellOutputDelta *ResponsesShellCallOutputDelta    `json:"-"`
+
+	// Diff carries the assembled patch on response.apply_patch_call_operation_diff.done.
+	Diff *string `json:"diff,omitempty"`
 
 	PartialImageB64   *string `json:"partial_image_b64,omitempty"`
 	PartialImageIndex *int    `json:"partial_image_index,omitempty"`
@@ -4186,6 +4206,7 @@ func (resp *BifrostResponsesStreamResponse) WithDefaults() *BifrostResponsesStre
 	result.Input = resp.Input
 	result.Command = resp.Command
 	result.CommandIndex = resp.CommandIndex
+	result.Diff = resp.Diff
 	result.Output = resp.Output
 	result.ShellOutputDelta = resp.ShellOutputDelta
 	result.PartialImageB64 = resp.PartialImageB64

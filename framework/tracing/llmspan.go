@@ -1648,6 +1648,7 @@ func extractResponsesOutputMessages(resp *schemas.BifrostResponsesResponse) []Re
 			schemas.ResponsesMessageTypeCodeInterpreterCall,
 			schemas.ResponsesMessageTypeLocalShellCall,
 			schemas.ResponsesMessageTypeShellCall,
+			schemas.ResponsesMessageTypeApplyPatchCall,
 			schemas.ResponsesMessageTypeCustomToolCall,
 			schemas.ResponsesMessageTypeImageGenerationCall:
 			name := ""
@@ -1801,6 +1802,7 @@ func extractResponsesInputMessages(messages []schemas.ResponsesMessage) []Respon
 			schemas.ResponsesMessageTypeCodeInterpreterCall,
 			schemas.ResponsesMessageTypeLocalShellCall,
 			schemas.ResponsesMessageTypeShellCall,
+			schemas.ResponsesMessageTypeApplyPatchCall,
 			schemas.ResponsesMessageTypeCustomToolCall,
 			schemas.ResponsesMessageTypeImageGenerationCall:
 			name := ""
@@ -1818,6 +1820,7 @@ func extractResponsesInputMessages(messages []schemas.ResponsesMessage) []Respon
 
 		case schemas.ResponsesMessageTypeLocalShellCallOutput,
 			schemas.ResponsesMessageTypeShellCallOutput,
+			schemas.ResponsesMessageTypeApplyPatchCallOutput,
 			schemas.ResponsesMessageTypeCustomToolCallOutput:
 			content := ""
 			if msg.ResponsesToolMessage != nil {

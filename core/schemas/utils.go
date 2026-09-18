@@ -1560,6 +1560,14 @@ func deepCopyToolCallEnvelope(original *ResponsesToolCallEnvelope) *ResponsesToo
 		}
 		copied.Environment = &environment
 	}
+	if original.Operation != nil {
+		operation := *original.Operation
+		if original.Operation.Diff != nil {
+			diff := *original.Operation.Diff
+			operation.Diff = &diff
+		}
+		copied.Operation = &operation
+	}
 	if original.Caller != nil {
 		caller := *original.Caller
 		if original.Caller.CallerID != nil {

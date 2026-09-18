@@ -5757,6 +5757,7 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 		case schemas.ResponsesMessageTypeFileSearchCall,
 			schemas.ResponsesMessageTypeLocalShellCall,
 			schemas.ResponsesMessageTypeShellCall,
+			schemas.ResponsesMessageTypeApplyPatchCall,
 			schemas.ResponsesMessageTypeCustomToolCall,
 			schemas.ResponsesMessageTypeImageGenerationCall:
 			// Flush any pending tool results before processing unsupported tool calls
@@ -5780,6 +5781,7 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 
 		case schemas.ResponsesMessageTypeLocalShellCallOutput,
 			schemas.ResponsesMessageTypeShellCallOutput,
+			schemas.ResponsesMessageTypeApplyPatchCallOutput,
 			schemas.ResponsesMessageTypeCustomToolCallOutput:
 			// Handle tool outputs as user messages
 			toolOutputMsg := convertBifrostToolOutputToAnthropicMessage(&msg)
