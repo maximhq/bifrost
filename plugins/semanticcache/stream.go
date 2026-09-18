@@ -2,23 +2,37 @@ package semanticcache
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"time"
+
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 // chunkSortKey returns the (Index, ChunkIndex) tuple used to order
-// accumulated stream chunks before flush. Image-generation responses use
-// both fields; every other response shape uses ChunkIndex with Index=0.
-// Nil chunks/responses sort to the end via a max-int sentinel so they're
-// dropped deterministically by the consumer.
+// accumulated stream chunks before flush. The keys were captured by
+// responseSortKey at hook time — the chunk no longer holds the response
+// (see StreamChunk). Nil/empty chunks sort to the end via a max-int
+// sentinel so they're dropped deterministically by the consumer.
 func chunkSortKey(c *StreamChunk) (int, int) {
 	const sentinel = int(^uint(0) >> 1) // math.MaxInt without the import
-	if c == nil || c.Response == nil {
+	if c == nil || c.Serialized == "" {
 		return sentinel, sentinel
 	}
-	r := c.Response
+	return c.Index, c.ChunkIndex
+}
+
+// responseSortKey extracts the (Index, ChunkIndex) flush ordering tuple from
+// a live response. Called synchronously in PostLLMHook, while the response is
+// still safely readable — the keys are then carried on the StreamChunk so the
+// flush never touches the caller's response (issue #7233). Image-generation
+// responses use both fields; every other response shape uses ChunkIndex with
+// Index=0. Nil responses sort to the end via a max-int sentinel.
+func responseSortKey(r *schemas.BifrostResponse) (int, int) {
+	const sentinel = int(^uint(0) >> 1) // math.MaxInt without the import
+	if r == nil {
+		return sentinel, sentinel
+	}
 	switch {
 	case r.TextCompletionResponse != nil:
 		return 0, r.TextCompletionResponse.ExtraFields.ChunkIndex
@@ -101,16 +115,13 @@ func (plugin *Plugin) processAccumulatedStream(ctx context.Context, requestID st
 	})
 
 	streamResponses := make([]string, 0, len(accumulator.Chunks))
-	for i, chunk := range accumulator.Chunks {
-		if chunk.Response == nil {
+	for _, chunk := range accumulator.Chunks {
+		// Chunks were serialized at hook time (see StreamChunk); an empty
+		// payload means there was nothing to cache for that chunk.
+		if chunk == nil || chunk.Serialized == "" {
 			continue
 		}
-		chunkData, err := json.Marshal(chunk.Response)
-		if err != nil {
-			plugin.logger.Warn("Failed to marshal stream chunk %d: %v", i, err)
-			continue
-		}
-		streamResponses = append(streamResponses, string(chunkData))
+		streamResponses = append(streamResponses, chunk.Serialized)
 	}
 
 	if len(streamResponses) == 0 {
