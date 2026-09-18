@@ -143,6 +143,11 @@ func deepCopyResponsesStreamResponse(original *schemas.BifrostResponsesStreamRes
 		copy.Command = &copyCommand
 	}
 
+	if original.Diff != nil {
+		copyDiff := *original.Diff
+		copy.Diff = &copyDiff
+	}
+
 	if original.CommandIndex != nil {
 		copyCommandIndex := *original.CommandIndex
 		copy.CommandIndex = &copyCommandIndex
@@ -452,6 +457,10 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 			copy.ResponsesToolMessage.ResponsesShellCall = deepCopyShellCall(original.ResponsesToolMessage.ResponsesShellCall)
 		}
 
+		if original.ResponsesToolMessage.ResponsesApplyPatchCall != nil {
+			copy.ResponsesToolMessage.ResponsesApplyPatchCall = deepCopyApplyPatchCall(original.ResponsesToolMessage.ResponsesApplyPatchCall)
+		}
+
 		// Deep copy embedded tool call structs
 		if original.ResponsesToolMessage.ResponsesFileSearchToolCall != nil {
 			copyToolCall := *original.ResponsesToolMessage.ResponsesFileSearchToolCall
@@ -601,6 +610,20 @@ func deepCopyShellCall(original *schemas.ResponsesShellCall) *schemas.ResponsesS
 	if original.MaxOutputLength != nil {
 		maxOutputLength := *original.MaxOutputLength
 		copied.MaxOutputLength = &maxOutputLength
+	}
+	return &copied
+}
+
+// deepCopyApplyPatchCall copies the apply_patch_call operation.
+func deepCopyApplyPatchCall(original *schemas.ResponsesApplyPatchCall) *schemas.ResponsesApplyPatchCall {
+	copied := *original
+	if original.Operation != nil {
+		operation := *original.Operation
+		if original.Operation.Diff != nil {
+			diff := *original.Operation.Diff
+			operation.Diff = &diff
+		}
+		copied.Operation = &operation
 	}
 	return &copied
 }

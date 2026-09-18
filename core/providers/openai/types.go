@@ -760,6 +760,7 @@ func responsesToolSupportsAllowedCallers(t schemas.ResponsesToolType) bool {
 		schemas.ResponsesToolTypeCustom,
 		schemas.ResponsesToolTypeShell,
 		schemas.ResponsesToolTypeNamespace,
+		schemas.ResponsesToolTypeApplyPatch,
 		schemas.ResponsesToolTypeMCP,
 		schemas.ResponsesToolTypeCodeInterpreter:
 		return true

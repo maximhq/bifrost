@@ -189,7 +189,7 @@ This conversion ensures compatibility across different model architectures for t
 **Other conversions:**
 - Action types `zoom` and `region` are converted to `screenshot`
 - `cache_control` fields are stripped from messages and tools
-- Unsupported tool types are silently filtered (only these are supported: `function`, `file_search`, `computer_use_preview`, `web_search`, `mcp`, `code_interpreter`, `image_generation`, `local_shell`, `shell`, `custom`, `web_search_preview`, `tool_search`, `namespace`)
+- Unsupported tool types are silently filtered (only these are supported: `function`, `file_search`, `computer_use_preview`, `web_search`, `mcp`, `code_interpreter`, `image_generation`, `local_shell`, `shell`, `programmatic_tool_calling`, `apply_patch`, `custom`, `web_search_preview`, `tool_search`, `namespace`)
 
 **Response:** Includes `id`, `status` (`completed`, `incomplete`, `pending`, `error`), `output` array with message content, and token `usage`.
 
