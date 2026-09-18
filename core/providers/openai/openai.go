@@ -1473,6 +1473,17 @@ func HandleOpenAIChatCompletionStreaming(
 				response.Choices = []schemas.BifrostResponseChoice{}
 			}
 
+			// ModelScope-style upstreams put a full `message` object next to
+			// `delta` in every stream chunk, and BifrostResponseChoice decodes
+			// both embedded shapes. chat.completion.chunk choices carry only
+			// delta, so drop the non-stream shape whenever a delta is present
+			// (#7294). A message-only frame (no delta) is left untouched.
+			for i := range response.Choices {
+				if response.Choices[i].ChatStreamResponseChoice != nil {
+					response.Choices[i].ChatNonStreamResponseChoice = nil
+				}
+			}
+
 			// Capture every frame read, on both ingresses. The fallback path cannot do
 			// this inside its spread loop: a usage-only frame has choices: [], and
 			// ToBifrostResponsesStreamResponse returns nil for that (mux.go:1710), so
