@@ -271,6 +271,23 @@ type TableVirtualKey struct {
 	// Populated on the governance read paths from the external resolver; false in OSS.
 	IsAccessProfileManaged bool `gorm:"-" json:"is_access_profile_managed,omitempty"`
 
+	// AssignedUser is the user this key is assigned to, when any. Like
+	// IsAccessProfileManaged it is read-only and never persisted: the VK-user link
+	// lives in an enterprise table, so it is filled in on the governance read paths
+	// by a downstream resolver and stays nil in OSS. No omitempty - "no assignee" has
+	// to reach the UI as an explicit null. Absence carries the other half of the
+	// meaning, "not resolved", and is produced by MarshalJSON off AssigneeResolved
+	// rather than by a struct tag, which cannot tell the two nils apart.
+	AssignedUser *AssignedUser `gorm:"-" json:"assigned_user"`
+
+	// AssigneeResolved records whether AssignedUser is an answer or an absence of one.
+	// True means the assignee lookup ran and settled the question, so AssignedUser is
+	// authoritative (a user, or nil for genuinely unassigned) and marshals as
+	// `assigned_user`. False means nobody asked, or the resolver failed, and
+	// MarshalJSON drops the field so callers refetch instead of reading nil as
+	// "unassigned". Never persisted; set by the governance read paths.
+	AssigneeResolved bool `gorm:"-" json:"-"`
+
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
 	ConfigHash string `gorm:"type:varchar(255);null" json:"config_hash"`
@@ -293,6 +310,16 @@ type TableVirtualKey struct {
 
 	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
+}
+
+// AssignedUser is the minimal projection of the user a virtual key is assigned to,
+// carried on read responses so callers do not need a second, per-key lookup. It is
+// deliberately not the full user row: a list response has no business shipping
+// claims, config, or role.
+type AssignedUser struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Email string `json:"email"`
 }
 
 // TableName sets the table name for each model
@@ -320,15 +347,33 @@ func (vk *TableVirtualKey) VaultStoreSelfManaged() {}
 // MarshalJSON serializes TableVirtualKey with Value emitted as a resolved plain string,
 // never as a SecretVar object. This ensures all REST API responses return "bfvk-xxx"
 // rather than {"value":"bfvk-xxx","type":"plain_text"}.
+//
+// It also enforces the tri-state assigned_user contract: the field is emitted (as a user
+// or as null) only when AssigneeResolved says the lookup actually settled the question,
+// and is dropped otherwise. Without that, an unresolved assignee would serialize as null
+// and be indistinguishable from a genuinely unassigned key, so the UI would render "no
+// assignee" for a key that has one instead of refetching it.
 func (vk TableVirtualKey) MarshalJSON() ([]byte, error) {
 	type Alias TableVirtualKey
-	return json.Marshal(&struct {
+	b, err := json.Marshal(&struct {
 		Alias
 		Value string `json:"value"`
 	}{
 		Alias: Alias(vk),
 		Value: vk.Value.GetValue(),
 	})
+	if err != nil || vk.AssigneeResolved {
+		return b, err
+	}
+	// Unresolved: drop the key. Only this branch pays the extra round-trip, and the
+	// governance read paths mark every key they return as resolved (OSS included, where
+	// "no user tables" is itself a settled answer), so it stays off the common path.
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(b, &fields); err != nil {
+		return nil, err
+	}
+	delete(fields, "assigned_user")
+	return json.Marshal(fields)
 }
 
 // HasActivePreviousValue reports whether the VK carries a rotated-out value

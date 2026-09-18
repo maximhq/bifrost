@@ -121,6 +121,7 @@ const (
 	FieldVerbosity            = "verbosity"
 	FieldStore                = "store"
 	FieldWebSearchOptions     = "web_search_options"
+	FieldSearchContentTypes   = "search_content_types"
 )
 
 // Logical field names used as FieldNames keys, where the value is the wire name
@@ -312,6 +313,15 @@ func (c ModelCaps) ToolChoiceAnySupported(fallback bool) bool {
 func (c ModelCaps) SupportsForcedToolChoice(fallback bool) bool {
 	if c.record != nil && c.record.SupportsForcedToolChoice != nil {
 		return *c.record.SupportsForcedToolChoice
+	}
+	return fallback
+}
+
+// SupportsPromptCacheBreakpoints reports whether the Responses wire accepts
+// prompt_cache_breakpoint on input_text blocks in place of cache_control.
+func (c ModelCaps) SupportsPromptCacheBreakpoints(fallback bool) bool {
+	if c.record != nil && c.record.SupportsPromptCacheBreakpoints != nil {
+		return *c.record.SupportsPromptCacheBreakpoints
 	}
 	return fallback
 }

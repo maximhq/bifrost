@@ -4052,6 +4052,9 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 	if req.Diagnostics != nil {
 		params.ExtraParams["diagnostics"] = req.Diagnostics
 	}
+	if req.Container != nil {
+		params.ExtraParams["container"] = req.Container
+	}
 	if req.TopK != nil {
 		params.ExtraParams["top_k"] = *req.TopK
 	}
@@ -4498,6 +4501,30 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 					delete(anthropicReq.ExtraParams, "diagnostics")
 				}
 			}
+			if containerRaw, exists := anthropicReq.ExtraParams["container"]; exists {
+				parsed := false
+				switch v := containerRaw.(type) {
+				case *AnthropicContainer:
+					anthropicReq.Container = v
+					parsed = true
+				case AnthropicContainer:
+					anthropicReq.Container = &v
+					parsed = true
+				default:
+					// Raw forms from other surfaces: a bare string id or an
+					// object map both decode via the AnthropicContainer union.
+					if data, err := providerUtils.MarshalSorted(v); err == nil {
+						var c AnthropicContainer
+						if sonic.Unmarshal(data, &c) == nil {
+							anthropicReq.Container = &c
+							parsed = true
+						}
+					}
+				}
+				if parsed {
+					delete(anthropicReq.ExtraParams, "container")
+				}
+			}
 			topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"])
 			if ok {
 				delete(anthropicReq.ExtraParams, "top_k")
@@ -4606,7 +4633,10 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 
 		// Convert tools
 		if bifrostReq.Params.Tools != nil {
-			anthropicTools, mcpServers := convertBifrostToolsToAnthropic(caps, bifrostReq.Params.Tools, bifrostReq.Provider)
+			anthropicTools, mcpServers, err := convertBifrostToolsToAnthropic(caps, bifrostReq.Params.Tools, bifrostReq.Provider)
+			if err != nil {
+				return nil, err
+			}
 			if len(anthropicTools) > 0 {
 				if anthropicReq.Tools == nil {
 					anthropicReq.Tools = anthropicTools
@@ -8444,7 +8474,7 @@ func convertToolOutputToAnthropicContent(output *schemas.ResponsesToolMessageOut
 // convertBifrostToolsToAnthropic converts all Bifrost tools to Anthropic tools and MCP servers.
 // It handles context-dependent conversions like code_interpreter, which must be skipped when
 // web_search or web_fetch is present (Anthropic auto-injects code_execution in that case).
-func convertBifrostToolsToAnthropic(caps schemas.ModelCaps, tools []schemas.ResponsesTool, provider schemas.ModelProvider) ([]AnthropicTool, []AnthropicMCPServerV2) {
+func convertBifrostToolsToAnthropic(caps schemas.ModelCaps, tools []schemas.ResponsesTool, provider schemas.ModelProvider) ([]AnthropicTool, []AnthropicMCPServerV2, error) {
 	// Check if web search or web fetch is present — when they are, Anthropic
 	// auto-injects code_execution so we must skip it to avoid conflicts.
 	hasWebSearchOrFetch := false
@@ -8470,13 +8500,25 @@ func convertBifrostToolsToAnthropic(caps schemas.ModelCaps, tools []schemas.Resp
 			}
 			continue
 		}
-		anthropicTool := convertBifrostToolToAnthropic(caps, &tool, provider, hasWebSearchOrFetch)
+		toolForConversion := &tool
+		if tool.ResponsesToolFunction != nil && tool.ResponsesToolFunction.Parameters != nil {
+			normalized, err := normalizeAnthropicToolInputSchema(tool.ResponsesToolFunction.Parameters)
+			if err != nil {
+				return nil, nil, err
+			}
+			toolCopy := tool
+			functionCopy := *tool.ResponsesToolFunction
+			functionCopy.Parameters = normalized
+			toolCopy.ResponsesToolFunction = &functionCopy
+			toolForConversion = &toolCopy
+		}
+		anthropicTool := convertBifrostToolToAnthropic(caps, toolForConversion, provider, hasWebSearchOrFetch)
 		if anthropicTool != nil {
 			applyResponsesToolAnthropicFlags(anthropicTool, &tool)
 			anthropicTools = append(anthropicTools, *anthropicTool)
 		}
 	}
-	return anthropicTools, mcpServers
+	return anthropicTools, mcpServers, nil
 }
 
 // applyAnthropicToolFlagsToResponsesTool propagates the Anthropic-native tool

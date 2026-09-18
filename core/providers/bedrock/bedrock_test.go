@@ -368,6 +368,14 @@ func TestBedrock(t *testing.T) {
 
 // TestBifrostToBedrockRequestConversion tests the conversion from Bifrost request to Bedrock request
 func TestBifrostToBedrockRequestConversion(t *testing.T) {
+	schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if model == "claude-3-sonnet" {
+			return &schemas.ModelCapabilities{ServiceTiers: []string{"priority"}}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
 	maxTokens := testMaxTokens
 	temp := testTemp
 	topP := testTopP

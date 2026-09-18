@@ -3,7 +3,9 @@ package telemetry
 import (
 	"testing"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // TestPrometheusLabelsMatchEnrichmentRegistry keeps the Prometheus bifrost label
@@ -50,5 +52,40 @@ func TestPrometheusLabelsMatchEnrichmentRegistry(t *testing.T) {
 		if labels[n] {
 			t.Errorf("dimension %q is now a label — remove it from knownMissing", n)
 		}
+	}
+}
+
+// TestUserLabelsAreOptIn keeps user labels out of the default set and pins them
+// to real registry dimensions.
+func TestUserLabelsAreOptIn(t *testing.T) {
+	dims := map[string]bool{}
+	for _, n := range schemas.EnrichmentDimNames() {
+		dims[n] = true
+	}
+	for _, name := range userLabelNames {
+		if containsLabel(defaultBifrostLabelNames, name) {
+			t.Errorf("%q is in the default label set; it must stay behind user_labels_enabled", name)
+		}
+		if !dims[name] {
+			t.Errorf("%q is not an enrichment dimension", name)
+		}
+	}
+}
+
+// TestUserLabelsEnabledMatchesLabelSet guards a silent outage: a value map
+// disagreeing with the registered labels makes Prometheus reject everything.
+func TestUserLabelsEnabledMatchesLabelSet(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		plugin, err := Init(&Config{
+			Registry:          prometheus.NewRegistry(),
+			UserLabelsEnabled: &enabled,
+		}, nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+		if err != nil {
+			t.Fatalf("Init(user_labels_enabled=%v): %v", enabled, err)
+		}
+		if got := plugin.userLabelsEnabled.Load(); got != enabled {
+			t.Errorf("userLabelsEnabled = %v, want %v", got, enabled)
+		}
+		plugin.Cleanup()
 	}
 }

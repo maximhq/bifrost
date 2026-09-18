@@ -3019,21 +3019,52 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 				var eventType string
 				var convertedResponse interface{}
 				var err error
+				converterMissing := false
 
 				cpuStart := time.Now()
 				switch {
 				case chunk.BifrostTextCompletionResponse != nil:
-					eventType, convertedResponse, err = config.StreamConfig.TextStreamResponseConverter(bifrostCtx, chunk.BifrostTextCompletionResponse)
+					if config.StreamConfig.TextStreamResponseConverter == nil {
+						converterMissing = true
+						err = fmt.Errorf("text stream response converter is not configured")
+					} else {
+						eventType, convertedResponse, err = config.StreamConfig.TextStreamResponseConverter(bifrostCtx, chunk.BifrostTextCompletionResponse)
+					}
 				case chunk.BifrostChatResponse != nil:
-					eventType, convertedResponse, err = config.StreamConfig.ChatStreamResponseConverter(bifrostCtx, chunk.BifrostChatResponse)
+					if config.StreamConfig.ChatStreamResponseConverter == nil {
+						converterMissing = true
+						err = fmt.Errorf("chat stream response converter is not configured")
+					} else {
+						eventType, convertedResponse, err = config.StreamConfig.ChatStreamResponseConverter(bifrostCtx, chunk.BifrostChatResponse)
+					}
 				case chunk.BifrostResponsesStreamResponse != nil:
-					eventType, convertedResponse, err = config.StreamConfig.ResponsesStreamResponseConverter(bifrostCtx, chunk.BifrostResponsesStreamResponse)
+					if config.StreamConfig.ResponsesStreamResponseConverter == nil {
+						converterMissing = true
+						err = fmt.Errorf("responses stream response converter is not configured")
+					} else {
+						eventType, convertedResponse, err = config.StreamConfig.ResponsesStreamResponseConverter(bifrostCtx, chunk.BifrostResponsesStreamResponse)
+					}
 				case chunk.BifrostSpeechStreamResponse != nil:
-					eventType, convertedResponse, err = config.StreamConfig.SpeechStreamResponseConverter(bifrostCtx, chunk.BifrostSpeechStreamResponse)
+					if config.StreamConfig.SpeechStreamResponseConverter == nil {
+						converterMissing = true
+						err = fmt.Errorf("speech stream response converter is not configured")
+					} else {
+						eventType, convertedResponse, err = config.StreamConfig.SpeechStreamResponseConverter(bifrostCtx, chunk.BifrostSpeechStreamResponse)
+					}
 				case chunk.BifrostTranscriptionStreamResponse != nil:
-					eventType, convertedResponse, err = config.StreamConfig.TranscriptionStreamResponseConverter(bifrostCtx, chunk.BifrostTranscriptionStreamResponse)
+					if config.StreamConfig.TranscriptionStreamResponseConverter == nil {
+						converterMissing = true
+						err = fmt.Errorf("transcription stream response converter is not configured")
+					} else {
+						eventType, convertedResponse, err = config.StreamConfig.TranscriptionStreamResponseConverter(bifrostCtx, chunk.BifrostTranscriptionStreamResponse)
+					}
 				case chunk.BifrostImageGenerationStreamResponse != nil:
-					eventType, convertedResponse, err = config.StreamConfig.ImageGenerationStreamResponseConverter(bifrostCtx, chunk.BifrostImageGenerationStreamResponse)
+					if config.StreamConfig.ImageGenerationStreamResponseConverter == nil {
+						converterMissing = true
+						err = fmt.Errorf("image generation stream response converter is not configured")
+					} else {
+						eventType, convertedResponse, err = config.StreamConfig.ImageGenerationStreamResponseConverter(bifrostCtx, chunk.BifrostImageGenerationStreamResponse)
+					}
 				default:
 					requestType := safeGetRequestType(chunk)
 					convertedResponse, err = nil, fmt.Errorf("no response converter found for request type: %s", requestType)
@@ -3046,8 +3077,15 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 				}
 
 				if err != nil {
-					// Log conversion error but continue processing
 					g.logger.Warn("Failed to convert streaming response: %v", err)
+					if converterMissing {
+						sendConvertedStreamError(newBifrostErrorWithCode(nil, lib.ClientSafeInternalErrorMessage, fasthttp.StatusInternalServerError))
+						cancel()
+						for range streamChan {
+						}
+						return
+					}
+					// Log ordinary conversion errors and continue processing subsequent chunks.
 					continue
 				}
 

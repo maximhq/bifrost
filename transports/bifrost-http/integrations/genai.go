@@ -266,6 +266,9 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 				}
 				return "", geminiResponse, nil
 			},
+			SpeechStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostSpeechStreamResponse) (string, interface{}, error) {
+				return "", gemini.ToGeminiSpeechStreamResponse(resp), nil
+			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return gemini.ToGeminiError(err)
 			},

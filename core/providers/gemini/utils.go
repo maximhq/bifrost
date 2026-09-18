@@ -63,7 +63,6 @@ func defaultCanDisableReasoning(model string) bool {
 	return !strings.Contains(strings.ToLower(model), "gemini-2.5-pro")
 }
 
-
 // defaultEffortControl is the thinkingLevel surface for Gemini 3+, taken from
 // the per-model rung table below. nil for models that take a budget instead,
 // which is what tells callers to convert an effort into thinkingBudget.
@@ -216,6 +215,7 @@ var geminiThinkingLevelSupport = []struct {
 	levels []string
 }{
 	{"gemini-3.1-flash-lite-image", []string{"minimal", "high"}},
+	{"gemini-3.1-flash-lite", []string{"minimal", "low", "medium", "high"}},
 	{"gemini-3.7-flash", []string{"low", "medium", "high"}},
 	{"gemini-3.6-flash", []string{"minimal", "low", "medium", "high"}},
 	{"gemini-3.5-flash-lite", []string{"minimal", "low", "medium", "high"}},

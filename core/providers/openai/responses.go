@@ -47,12 +47,15 @@ type ResponsesFeatureSupport struct {
 	// ContextManagement reports whether the backend accepts the context_management
 	// Responses body field.
 	ContextManagement bool
+	// WebSearchContentTypes reports whether the backend accepts search_content_types
+	// on web_search tools.
+	WebSearchContentTypes bool
 }
 
 // ProviderFeatures maps each OpenAI-compatible provider to its supported
 // Responses wire extensions. Only providers with a known deviation are listed.
 var ProviderFeatures = map[schemas.ModelProvider]ResponsesFeatureSupport{
-	schemas.OpenAI: {AdditionalToolsItem: true, ContextManagement: true},
+	schemas.OpenAI: {AdditionalToolsItem: true, ContextManagement: true, WebSearchContentTypes: true},
 	// Bedrock Mantle validates `input` against the standard union and rejects
 	// additional_tools with "Invalid 'input': value did not match any expected
 	// variant", but accepts the same tools at the top level. It also rejects
@@ -136,6 +139,17 @@ func supportsAdditionalToolsItem(provider schemas.ModelProvider) bool {
 	return features.AdditionalToolsItem
 }
 
+// supportsWebSearchContentTypes reports whether a model accepts
+// search_content_types on web_search tools. The datasheet overrides the
+// provider default; unlisted providers are assumed to support it.
+func supportsWebSearchContentTypes(caps schemas.ModelCaps, provider schemas.ModelProvider) bool {
+	features, ok := ProviderFeatures[provider]
+	if !ok {
+		return !caps.FieldUnsupported(schemas.FieldSearchContentTypes, false)
+	}
+	return !caps.FieldUnsupported(schemas.FieldSearchContentTypes, !features.WebSearchContentTypes)
+}
+
 // hoistAdditionalTools decodes the tools carried by a codex additional_tools item.
 // The entries are ResponsesTool-shaped but live in the item's preserved raw bytes,
 // so they are decoded here rather than read off the typed message.
@@ -180,10 +194,13 @@ const maxResponsesCacheBreakpoints = 4
 //
 // Everything else either accepts cache_control directly or caches implicitly, and for
 // those the serializer's existing strip is the correct behaviour.
+//
+// This is the name-based fallback for ModelCaps.SupportsPromptCacheBreakpoints, used
+// when the datasheet row says nothing.
 func responsesUsesPromptCacheBreakpoints(provider schemas.ModelProvider, model string) bool {
 	switch provider {
 	case schemas.OpenRouter:
-		return true
+		return schemas.IsAnthropicModel(model) || schemas.IsGPT56Model(model)
 	case schemas.OpenAI, schemas.Azure, schemas.BedrockMantle, schemas.Bedrock:
 		return schemas.IsGPT56Model(model)
 	default:
@@ -561,7 +578,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	// core/bifrost.go, and providers/utils does too; this call site was the odd one out.
 	cachePromptProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
 	needsExplicitPromptCacheMode := false
-	if responsesUsesPromptCacheBreakpoints(cachePromptProvider, capModel) {
+	if caps.SupportsPromptCacheBreakpoints(responsesUsesPromptCacheBreakpoints(cachePromptProvider, capModel)) {
 		applyResponsesCacheBreakpoints(messages)
 		needsExplicitPromptCacheMode = responsesUsesPromptCacheOptions(cachePromptProvider, capModel) &&
 			responsesHasPromptCacheBreakpoint(messages)
@@ -748,8 +765,9 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		req.Tools = normalizedTools
 	}
 
-	// Filter out tools that OpenAI doesn't support
-	req.filterUnsupportedTools()
+	// Filter out tools that the OpenAI-compatible target doesn't support.
+	toolCaps := schemas.ResolveModelCaps(toolProvider, capModel)
+	req.filterUnsupportedTools(supportsWebSearchContentTypes(toolCaps, toolProvider))
 
 	if bifrostReq.Params != nil {
 		req.ExtraParams = bifrostReq.Params.ExtraParams
@@ -882,7 +900,7 @@ func assistantOutputTextAsInputText(message schemas.ResponsesMessage) schemas.Re
 	return message
 }
 
-func (resp *OpenAIResponsesRequest) filterUnsupportedTools() {
+func (resp *OpenAIResponsesRequest) filterUnsupportedTools(webSearchContentTypesSupported bool) {
 	if len(resp.Tools) == 0 {
 		return
 	}
@@ -957,7 +975,7 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools() {
 					externalWebAccess := *tool.ResponsesToolWebSearch.ExternalWebAccess
 					newWebSearch.ExternalWebAccess = &externalWebAccess
 				}
-				if len(tool.ResponsesToolWebSearch.SearchContentTypes) > 0 {
+				if webSearchContentTypesSupported && len(tool.ResponsesToolWebSearch.SearchContentTypes) > 0 {
 					newWebSearch.SearchContentTypes = append([]string(nil), tool.ResponsesToolWebSearch.SearchContentTypes...)
 				}
 

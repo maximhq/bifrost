@@ -69,7 +69,7 @@ import PluginLogsView from "../views/pluginLogsView";
 import SpeechView from "../views/speechView";
 import TranscriptionView from "../views/transcriptionView";
 import VideoView from "../views/videoView";
-import { parseRoutingDecisionLine, resolveRawJsonNoticeState } from "./logDetailView.utils";
+import { extractProviderErrorMessage, parseRoutingDecisionLine, resolveRawJsonNoticeState } from "./logDetailView.utils";
 
 // Full-precision cost for the detail view; per-request costs are often < $0.01,
 // where formatCost's 2-4 dp rounding would hide the value.
@@ -1316,6 +1316,16 @@ export function LogDetailView({
 	const audioFormat = (log.params as any)?.audio?.format || (log.params as any)?.extra_params?.audio?.format || undefined;
 	const rawRequest = applyRedactionMapping(log.raw_request, activeInputRevealMapping);
 	const rawResponse = applyRedactionMapping(log.raw_response, activeOutputRevealMapping);
+	// An error whose message the provider parser could not extract still carries the provider's
+	// body on the error's raw response (and on the raw_response column when raw-response
+	// persistence is on), so fall back to that instead of showing nothing.
+	const errorMessageFallback = (() => {
+		if (log.error_details?.error.message) return null;
+		const fromErrorDetails = extractProviderErrorMessage(log.error_details?.extra_fields?.raw_response);
+		const text = fromErrorDetails ?? (log.status === "error" ? extractProviderErrorMessage(log.raw_response) : null);
+		return text ? applyRedactionMapping(text, activeOutputRevealMapping) : null;
+	})();
+	const displayErrorMessage = log.error_details?.error.message || errorMessageFallback;
 	const passthroughRequestBody = applyRedactionMapping(log.passthrough_request_body, activeInputRevealMapping);
 	const passthroughResponseBody = applyRedactionMapping(log.passthrough_response_body, activeOutputRevealMapping);
 	const videoOutput = log.video_generation_output || log.video_retrieve_output || log.video_download_output || log.video_delete_output;
@@ -3498,18 +3508,19 @@ export function LogDetailView({
 						</CollapsibleBox>
 					)}
 
-					{(log.error_details?.error.message || log.error_details?.error.error != null) && (
+					{(displayErrorMessage || log.error_details?.error.error != null || log.status === "error") && (
 						<div className="rounded-sm border border-red-200 bg-red-50/70 p-5 dark:border-red-900 dark:bg-red-950/30">
 							<div className="flex items-center gap-2 text-red-700 dark:text-red-400">
 								<AlertCircle className="h-4 w-4 shrink-0" />
 								<span className="text-[12.5px] font-semibold">Error</span>
-								{log.error_details?.error.message ? <CopyInlineButton text={log.error_details.error.message} /> : null}
+								{displayErrorMessage ? <CopyInlineButton text={displayErrorMessage} /> : null}
 							</div>
-							{log.error_details?.error.message ? (
-								<div className="mt-2 text-[13px] leading-relaxed break-words whitespace-pre-wrap text-red-700 dark:text-red-400">
-									{log.error_details.error.message}
-								</div>
-							) : null}
+							<div className="mt-2 text-[13px] leading-relaxed break-words whitespace-pre-wrap text-red-700 dark:text-red-400">
+								{displayErrorMessage ??
+									(statusCode
+										? `The provider returned an error (HTTP ${statusCode}) without a message.`
+										: "The provider returned an error without a message.")}
+							</div>
 							{log.error_details?.error.error != null ? (
 								<details className="group mt-3 rounded-sm border border-red-200/70 bg-white/40 dark:border-red-900/70 dark:bg-red-950/40">
 									<summary className="flex cursor-pointer items-center justify-between px-3 py-2 text-[12px] text-red-700 hover:bg-red-50/80 dark:text-red-400 dark:hover:bg-red-950/60">

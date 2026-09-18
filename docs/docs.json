@@ -2137,6 +2137,7 @@
             "item": "Edge",
             "icon": "grip",
             "pages": [
+              "changelogs/edge-v0.8.0",
               "changelogs/edge-v0.7.0",
               "changelogs/edge-v0.6.0",
               {
@@ -2183,6 +2184,7 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.43",
               "changelogs/helm-v2.1.42",
               "changelogs/helm-v2.1.41",
               "changelogs/helm-v2.1.40",

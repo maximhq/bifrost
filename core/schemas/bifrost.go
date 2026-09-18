@@ -543,6 +543,7 @@ type LargePayloadMetadata struct {
 	SpeechConfig       bool     // true if generationConfig.speechConfig is present
 	Model              string   // model extracted without full body parsing (openai/anthropic multipart/json)
 	StreamRequested    *bool    // stream flag when available in request payload metadata
+	ThreadType         string   // Anthropic thread.type ("create"/"continue") when detected during metadata extraction; empty when absent or unknown. Lets the stateless thread refusal work when body parsing is skipped
 }
 
 //* Request Structs

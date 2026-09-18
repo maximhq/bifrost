@@ -64,6 +64,13 @@ describe("getMCPLogTimeline", () => {
 		expect(endTimestamp?.toISOString()).toBe("2026-09-14T10:00:00.040Z");
 	});
 
+	test("a whitespace-only inspection duration leaves the policy entry without boundaries", () => {
+		const log = pendingPolicyEntry({ decision: "allow", metadata: { inspection_phase: "pre_execution", inspection_duration_ms: "   " } });
+		const presentation = getMCPLogPresentation(log);
+		expect(presentation.inspectionDuration).toBeUndefined();
+		expect(getMCPLogTimeline(log, presentation).durationMs).toBeUndefined();
+	});
+
 	test("a non-native entry ends one duration after its timestamp", () => {
 		const log = entry({ latency: 250, status: "success" });
 		const { durationMs, startTimestamp, endTimestamp } = getMCPLogTimeline(log, getMCPLogPresentation(log));
@@ -85,5 +92,31 @@ describe("getMCPLogTimeline", () => {
 		expect(durationMs).toBeUndefined();
 		expect(startTimestamp).toBeNull();
 		expect(endTimestamp?.toISOString()).toBe(TIMESTAMP);
+	});
+});
+
+describe("observed tool timing", () => {
+	test("observed duration stays separate from execution and does not invent a start timestamp", () => {
+		const log = entry({ source: "native", metadata: { observed_latency_ms: "12.5" } });
+		const presentation = getMCPLogPresentation(log);
+		expect(presentation.durationLabel).toBe("Observed round trip");
+		expect(getMCPLogTimeline(log, presentation).durationMs).toBe(12.5);
+		expect(getMCPLogTimeline(log, presentation).startTimestamp).toBeNull();
+	});
+	test("execution wins when both measurements are present", () => {
+		const log = entry({ source: "native", latency: 0, metadata: { observed_latency_ms: "12" } });
+		const presentation = getMCPLogPresentation(log);
+		expect(presentation.durationLabel).toBe("Execution time");
+		expect(getMCPLogTimeline(log, presentation).durationMs).toBe(0);
+	});
+	test("invalid and policy observed durations are ignored", () => {
+		for (const value of ["", "   ", "NaN", "-1", "86400001"]) {
+			expect(getMCPLogPresentation(entry({ source: "native", metadata: { observed_latency_ms: value } })).observedDuration).toBeUndefined();
+		}
+		expect(
+			getMCPLogPresentation(
+				pendingPolicyEntry({ source: "native", metadata: { inspection_phase: "pre_execution", observed_latency_ms: "20" } }),
+			).observedDuration,
+		).toBeUndefined();
 	});
 });
