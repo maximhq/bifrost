@@ -41,6 +41,8 @@ func TestSpeechContentType(t *testing.T) {
 		"aac":          "audio/aac",
 		"mp3_22050_32": "audio/mpeg",
 		"pcm_16000":    "application/octet-stream",
+		"ulaw_8000":    "application/octet-stream",
+		"alaw_8000":    "application/octet-stream",
 	}
 	for format, want := range tests {
 		if got := speechContentType(format); got != want {

@@ -1430,7 +1430,8 @@ func speechContentType(responseFormat string) string {
 	switch {
 	case strings.HasPrefix(format, "pcmu_wav"), strings.HasPrefix(format, "wav"):
 		return "audio/wav"
-	case strings.HasPrefix(format, "pcmu_raw"), strings.HasPrefix(format, "pcm"):
+	case strings.HasPrefix(format, "pcmu_raw"), strings.HasPrefix(format, "pcm"),
+		strings.HasPrefix(format, "ulaw"), strings.HasPrefix(format, "alaw"):
 		return "application/octet-stream"
 	case strings.HasPrefix(format, "flac"):
 		return "audio/flac"
