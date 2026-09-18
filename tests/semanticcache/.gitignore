@@ -1,0 +1,9 @@
+# Per-run forensics written by the suite (see README "Output")
+reports/
+
+# Runtime artifacts Bifrost writes next to config.json when started with
+# APP_DIR=tests/semanticcache (config.db, logs.db, ...)
+*.db
+*.db-shm
+*.db-wal
+logs/
