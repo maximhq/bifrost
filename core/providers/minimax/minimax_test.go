@@ -64,6 +64,26 @@ func TestToMiniMaxSpeechRequest(t *testing.T) {
 	require.Empty(t, req.ExtraParams)
 }
 
+func TestToMiniMaxSpeechRequestRejectsMalformedRecognizedExtra(t *testing.T) {
+	tests := []struct {
+		name  string
+		key   string
+		value interface{}
+	}{
+		{name: "voice setting", key: "voice_setting", value: "not-an-object"},
+		{name: "audio setting", key: "audio_setting", value: []string{"not-an-object"}},
+		{name: "subtitle enable", key: "subtitle_enable", value: "yes"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := speechRequest()
+			req.Params.ExtraParams[tc.key] = tc.value
+			_, err := ToMiniMaxSpeechRequest(req, false)
+			require.ErrorContains(t, err, "invalid MiniMax "+tc.key)
+		})
+	}
+}
+
 func TestMiniMaxSpeechXKey(t *testing.T) {
 	var captured map[string]interface{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -178,6 +198,24 @@ func TestMiniMaxListModelsAndCustomProviderName(t *testing.T) {
 	require.Nil(t, bifrostErr)
 	require.Len(t, response.Data, 1)
 	require.Equal(t, "exchange-minimax/speech-2.8-turbo", response.Data[0].ID)
+
+	firstPage, bifrostErr := provider.ListModels(
+		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		nil,
+		&schemas.BifrostListModelsRequest{PageSize: 1},
+	)
+	require.Nil(t, bifrostErr)
+	require.Len(t, firstPage.Data, 1)
+	require.NotEmpty(t, firstPage.NextPageToken)
+
+	secondPage, bifrostErr := provider.ListModels(
+		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		nil,
+		&schemas.BifrostListModelsRequest{PageSize: 1, PageToken: firstPage.NextPageToken},
+	)
+	require.Nil(t, bifrostErr)
+	require.Len(t, secondPage.Data, 1)
+	require.NotEqual(t, firstPage.Data[0].ID, secondPage.Data[0].ID)
 }
 
 func TestNewMiniMaxProviderRejectsUnknownAuthType(t *testing.T) {

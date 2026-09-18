@@ -2680,7 +2680,6 @@
                         "groq",
                         "ollama",
                         "openrouter",
-                        "minimax",
                         "vertex",
                         "cerebras",
                         "deepseek",

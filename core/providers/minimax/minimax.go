@@ -102,7 +102,11 @@ func (provider *MiniMaxProvider) ListModels(ctx *schemas.BifrostContext, keys []
 	}
 	unfiltered := request != nil && request.Unfiltered
 	if len(keys) == 0 {
-		return staticModelsResponse(provider.GetProviderKey(), schemas.Key{Models: schemas.WhiteList{"*"}}, unfiltered), nil
+		response := staticModelsResponse(provider.GetProviderKey(), schemas.Key{Models: schemas.WhiteList{"*"}}, unfiltered)
+		if request == nil {
+			return response, nil
+		}
+		return response.ApplyPagination(request.PageSize, request.PageToken), nil
 	}
 
 	combined := &schemas.BifrostListModelsResponse{Data: []schemas.Model{}}

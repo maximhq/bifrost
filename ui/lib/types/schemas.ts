@@ -761,7 +761,7 @@ export const openaiConfigFormSchema = z.object({
 export type OpenAIConfigFormSchema = z.infer<typeof openaiConfigFormSchema>;
 
 export const miniMaxConfigFormSchema = z.object({
-	auth_type: z.enum(["bearer", "x-key"]),
+	auth_type: z.enum(["bearer", "x-key"]).default("bearer"),
 });
 
 export type MiniMaxConfigFormSchema = z.infer<typeof miniMaxConfigFormSchema>;

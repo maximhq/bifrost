@@ -25,17 +25,20 @@ func cloneExtraParams(src map[string]interface{}) map[string]interface{} {
 	return out
 }
 
-func consumeExtra[T any](extra map[string]interface{}, key string, dst *T) bool {
+func consumeExtra[T any](extra map[string]interface{}, key string, dst *T) error {
 	value, ok := extra[key]
 	if !ok {
-		return false
+		return nil
 	}
 	data, err := providerUtils.MarshalSorted(value)
-	if err != nil || sonic.Unmarshal(data, dst) != nil {
-		return false
+	if err != nil {
+		return fmt.Errorf("invalid MiniMax %s: %w", key, err)
+	}
+	if err := sonic.Unmarshal(data, dst); err != nil {
+		return fmt.Errorf("invalid MiniMax %s: %w", key, err)
 	}
 	delete(extra, key)
-	return true
+	return nil
 }
 
 // ToMiniMaxSpeechRequest converts the neutral Bifrost speech shape to MiniMax T2A v2.
@@ -58,19 +61,39 @@ func ToMiniMaxSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest, stream boo
 		ExtraParams:  extra,
 	}
 
-	consumeExtra(extra, "voice_setting", &req.VoiceSetting)
-	consumeExtra(extra, "audio_setting", &req.AudioSetting)
-	consumeExtra(extra, "stream_options", &req.StreamOptions)
-	consumeExtra(extra, "pronunciation_dict", &req.PronunciationDict)
-	consumeExtra(extra, "timbre_weights", &req.TimbreWeights)
-	consumeExtra(extra, "voice_modify", &req.VoiceModify)
-	consumeExtra(extra, "language_boost", &req.LanguageBoost)
-	consumeExtra(extra, "subtitle_enable", &req.SubtitleEnable)
-	consumeExtra(extra, "subtitle_type", &req.SubtitleType)
+	if err := consumeExtra(extra, "voice_setting", &req.VoiceSetting); err != nil {
+		return nil, err
+	}
+	if err := consumeExtra(extra, "audio_setting", &req.AudioSetting); err != nil {
+		return nil, err
+	}
+	if err := consumeExtra(extra, "stream_options", &req.StreamOptions); err != nil {
+		return nil, err
+	}
+	if err := consumeExtra(extra, "pronunciation_dict", &req.PronunciationDict); err != nil {
+		return nil, err
+	}
+	if err := consumeExtra(extra, "timbre_weights", &req.TimbreWeights); err != nil {
+		return nil, err
+	}
+	if err := consumeExtra(extra, "voice_modify", &req.VoiceModify); err != nil {
+		return nil, err
+	}
+	if err := consumeExtra(extra, "language_boost", &req.LanguageBoost); err != nil {
+		return nil, err
+	}
+	if err := consumeExtra(extra, "subtitle_enable", &req.SubtitleEnable); err != nil {
+		return nil, err
+	}
+	if err := consumeExtra(extra, "subtitle_type", &req.SubtitleType); err != nil {
+		return nil, err
+	}
 	// output_format is intentionally consumed but forced to hex below. Bifrost returns
 	// audio bytes, while MiniMax's url mode would require a second network fetch.
 	var ignoredOutputFormat string
-	consumeExtra(extra, "output_format", &ignoredOutputFormat)
+	if err := consumeExtra(extra, "output_format", &ignoredOutputFormat); err != nil {
+		return nil, err
+	}
 	delete(extra, "model")
 	delete(extra, "text")
 	delete(extra, "stream")
