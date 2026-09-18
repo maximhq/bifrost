@@ -49,6 +49,13 @@ type TableMCPClient struct {
 	ToolSyncInterval       int    `gorm:"default:0" json:"tool_sync_interval"`        // Per-client tool sync interval in seconds (0 = use global; negative values are rejected)
 	ToolExecutionTimeout   int    `gorm:"default:0" json:"tool_execution_timeout"`    // Per-client tool execution timeout in seconds (0 = use global from tool_manager_config)
 	MaxInstructionsLength  int    `gorm:"default:0" json:"max_instructions_length"`   // Per-client cap on forwarded instructions in bytes (0 = use global from tool_manager_config)
+	// PerUserDiscovery: each caller's discovery (tools and instructions) is
+	// made with its own credential and kept in mcp_per_user_discoveries,
+	// instead of every caller sharing the admin's discovery. Only meaningful
+	// for per-user auth types; off for everything else. Nullable like the
+	// schema field: NULL reads as off, and an update that leaves it nil keeps
+	// the stored value.
+	PerUserDiscovery *bool `json:"per_user_discovery"`
 
 	MaxProtocolVersion string `gorm:"type:varchar(20);default:''" json:"max_protocol_version"` // Per-client MCP protocol version cap ("" = use global, "auto" = newest)
 
