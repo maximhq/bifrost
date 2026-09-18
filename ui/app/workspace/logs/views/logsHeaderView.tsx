@@ -37,11 +37,6 @@ import { useTranslation } from "react-i18next";
 // / result updates all land on the same toast instead of stacking.
 const RECALC_TOAST_ID = "logs-recalculate-costs";
 
-const SEARCH_PLACEHOLDERS: Record<LogSearchMode, string> = {
-	auto: "Search logs or paste a request ID",
-	request_id: "Search by request ID",
-	content: "Search log content",
-};
 
 // Statuses a recalculation job never leaves. Polling stops at any of them.
 function isTerminalRecalcStatus(status: RecalcJobStatus["status"]): boolean {
@@ -382,7 +377,7 @@ export function LogsHeaderView({
 					type="text"
 					data-testid="logs-search-input"
 					className="!h-7 rounded-tl-none rounded-tr-sm rounded-br-sm rounded-bl-none border-none bg-slate-50 shadow-none outline-none focus-visible:ring-0"
-					placeholder={SEARCH_PLACEHOLDERS[searchMode]}
+					placeholder={t(`logs.searchPlaceholders.${searchMode}`)}
 					value={localSearch}
 					onChange={(e) => handleSearchChange(e.target.value, searchMode)}
 				/>

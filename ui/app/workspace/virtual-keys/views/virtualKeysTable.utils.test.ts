@@ -1,5 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
+import i18n from "@/lib/i18n";
 import { assignedToLabel, csvAssignedToCell, latestGraceDeadline } from "./virtualKeysTable.utils";
+
+beforeAll(async () => {
+	await i18n.changeLanguage("en");
+});
 
 describe("latestGraceDeadline", () => {
 	it("returns null when no rotated key has a grace window", () => {
