@@ -4396,31 +4396,70 @@ func TestNamespaceAllowedCallersStripped(t *testing.T) {
 	}
 }
 
-// TestFilterUnsupportedToolsKeepsProgrammaticToolCalling locks in the bare tool type
-// that turns allowed_callers: ["programmatic"] on. It used to be stripped before the
-// request left Bifrost, so the restriction was never honoured.
-func TestFilterUnsupportedToolsKeepsProgrammaticToolCalling(t *testing.T) {
+// TestFilterUnsupportedToolsKeepsBareOpenAITools locks the two bare tool types in
+// OpenAI's Tool union that carry no fields of their own. Both used to be stripped
+// before the request left Bifrost: apply_patch is accepted by OpenAI today, and
+// programmatic_tool_calling is what turns allowed_callers: ["programmatic"] on.
+// OpenAI requires status on apply_patch_call and apply_patch_call_output input items
+// ("Missing required parameter: 'input[N].status'"), and on the output it is the only
+// sign a patch without output text failed, so the input status strip must skip them.
+func TestApplyPatchReplayKeepsStatus(t *testing.T) {
+	var input []schemas.ResponsesMessage
+	if err := sonic.Unmarshal([]byte(`[
+		{"type":"function_call","call_id":"call_fn","name":"get_time","arguments":"{}","status":"completed"},
+		{"type":"apply_patch_call","call_id":"call_ap","status":"completed","operation":{"type":"create_file","path":"hello.txt","diff":"+hi\n"}},
+		{"type":"apply_patch_call_output","call_id":"call_ap","status":"failed"}
+	]`), &input); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	req := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI, Model: "gpt-5.3-codex", Input: input,
+		Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeApplyPatch}}},
+	})
+	wire, err := sonic.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var payload struct {
+		Input []map[string]any `json:"input"`
+	}
+	if err := sonic.Unmarshal(wire, &payload); err != nil || len(payload.Input) != 3 {
+		t.Fatalf("decode %s: %v", wire, err)
+	}
+	if _, ok := payload.Input[0]["status"]; ok {
+		t.Fatalf("function_call status must still be stripped: %v", payload.Input[0])
+	}
+	if payload.Input[1]["status"] != "completed" {
+		t.Fatalf("apply_patch_call lost its status: %v", payload.Input[1])
+	}
+	if payload.Input[2]["status"] != "failed" {
+		t.Fatalf("apply_patch_call_output lost its failed status: %v", payload.Input[2])
+	}
+}
+
+func TestFilterUnsupportedToolsKeepsBareOpenAITools(t *testing.T) {
 	req := &OpenAIResponsesRequest{
 		ResponsesParameters: schemas.ResponsesParameters{
 			Tools: []schemas.ResponsesTool{
 				{Type: schemas.ResponsesToolTypeProgrammaticToolCalling},
+				{Type: schemas.ResponsesToolTypeApplyPatch, AllowedCallers: []string{"programmatic"}},
 			},
 		},
 	}
 
 	req.filterUnsupportedTools(true)
 
-	if len(req.Tools) != 1 {
-		t.Fatalf("the bare tool must survive the filter; got %+v", req.Tools)
+	if len(req.Tools) != 2 {
+		t.Fatalf("both bare tools must survive the filter; got %+v", req.Tools)
 	}
-	if req.Tools[0].Type != schemas.ResponsesToolTypeProgrammaticToolCalling {
-		t.Fatalf("tool type changed: %+v", req.Tools)
+	if req.Tools[0].Type != schemas.ResponsesToolTypeProgrammaticToolCalling ||
+		req.Tools[1].Type != schemas.ResponsesToolTypeApplyPatch {
+		t.Fatalf("tool types changed: %+v", req.Tools)
 	}
 }
 
 // TestBareOpenAIToolsSerialize checks the wire shape: a bare type emits just its
-// discriminator, and code_interpreter keeps allowed_callers now that OpenAI accepts
-// the field there.
+// discriminator, and apply_patch keeps allowed_callers (OpenAI accepts it there).
 func TestBareOpenAIToolsSerialize(t *testing.T) {
 	req := &OpenAIResponsesRequest{
 		Model: "gpt-5.1",
@@ -4433,6 +4472,7 @@ func TestBareOpenAIToolsSerialize(t *testing.T) {
 		ResponsesParameters: schemas.ResponsesParameters{
 			Tools: []schemas.ResponsesTool{
 				{Type: schemas.ResponsesToolTypeProgrammaticToolCalling},
+				{Type: schemas.ResponsesToolTypeApplyPatch, AllowedCallers: []string{"code_execution_20260120"}},
 				{
 					Type:                         schemas.ResponsesToolTypeCodeInterpreter,
 					AllowedCallers:               []string{"direct"},
@@ -4450,7 +4490,8 @@ func TestBareOpenAIToolsSerialize(t *testing.T) {
 
 	for _, want := range []string{
 		`{"type":"programmatic_tool_calling"}`,
-		`"type":"code_interpreter","allowed_callers":["direct"]`, // allowed_callers is no longer stripped here
+		`{"type":"apply_patch","allowed_callers":["programmatic"]}`, // Anthropic's caller vocabulary is translated
+		`"type":"code_interpreter","allowed_callers":["direct"]`,    // allowed_callers is no longer stripped here
 	} {
 		if !strings.Contains(raw, want) {
 			t.Errorf("missing %s in request body; raw=%s", want, raw)
@@ -4463,7 +4504,8 @@ func TestBareOpenAIToolsSerialize(t *testing.T) {
 func TestResponsesToolBareTypesRoundTrip(t *testing.T) {
 	for _, input := range []string{
 		`{"type":"programmatic_tool_calling"}`,
-		`{"type":"programmatic_tool_calling","allowed_callers":["direct"]}`,
+		`{"type":"apply_patch"}`,
+		`{"type":"apply_patch","allowed_callers":["direct"]}`,
 	} {
 		var tool schemas.ResponsesTool
 		if err := schemas.Unmarshal([]byte(input), &tool); err != nil {

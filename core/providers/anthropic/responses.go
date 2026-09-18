@@ -5280,6 +5280,7 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 	var systemContent *AnthropicContent
 	var pendingToolCalls []AnthropicContentBlock
 	var pendingToolResultBlocks []AnthropicContentBlock
+	var pendingToolOutputTexts []AnthropicMessage
 	var pendingReasoningContentBlocks []AnthropicContentBlock
 	var currentAssistantMessage *AnthropicMessage
 
@@ -5392,6 +5393,11 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 	// corresponding tool_use block in the previous message:
 	// https://platform.claude.com/docs/en/agents-and-tools/tool-use/how-tool-use-works
 	flushPendingToolResults := func() {
+		// Anthropic rejects a user turn that opens with text, so held outputs follow the results.
+		defer func() {
+			anthropicMessages = append(anthropicMessages, pendingToolOutputTexts...)
+			pendingToolOutputTexts = nil
+		}()
 		if len(pendingToolResultBlocks) == 0 {
 			return
 		}
@@ -5985,14 +5991,23 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 		case schemas.ResponsesMessageTypeFileSearchCall,
 			schemas.ResponsesMessageTypeLocalShellCall,
 			schemas.ResponsesMessageTypeShellCall,
+			schemas.ResponsesMessageTypeApplyPatchCall,
 			schemas.ResponsesMessageTypeCustomToolCall,
 			schemas.ResponsesMessageTypeImageGenerationCall:
-			// Flush any pending tool results before processing unsupported tool calls
+			// Flush any pending tool results and calls before processing unsupported tool calls
 			flushPendingToolResults()
+			flushPendingToolCallsWithTracking()
 
 			// Convert unsupported tool calls to regular text messages
 			unsupportedToolMsg := convertBifrostUnsupportedToolCallToAnthropicMessage(&msg, msgType)
 			if unsupportedToolMsg != nil {
+				// Thinking must lead the assistant turn it explains.
+				if len(pendingReasoningContentBlocks) > 0 {
+					blocks := make([]AnthropicContentBlock, 0, len(pendingReasoningContentBlocks)+len(unsupportedToolMsg.Content.ContentBlocks))
+					blocks = append(append(blocks, pendingReasoningContentBlocks...), unsupportedToolMsg.Content.ContentBlocks...)
+					unsupportedToolMsg.Content.ContentBlocks = blocks
+					pendingReasoningContentBlocks = nil
+				}
 				anthropicMessages = append(anthropicMessages, *unsupportedToolMsg)
 			}
 
@@ -6008,13 +6023,14 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 
 		case schemas.ResponsesMessageTypeLocalShellCallOutput,
 			schemas.ResponsesMessageTypeShellCallOutput,
+			schemas.ResponsesMessageTypeApplyPatchCallOutput,
 			schemas.ResponsesMessageTypeCustomToolCallOutput:
 			flushPendingToolCallsWithTracking()
 
-			// Handle tool outputs as user messages
+			// Held until the next flush so a later function_call_output still leads the turn.
 			toolOutputMsg := convertBifrostToolOutputToAnthropicMessage(&msg)
 			if toolOutputMsg != nil {
-				anthropicMessages = append(anthropicMessages, *toolOutputMsg)
+				pendingToolOutputTexts = append(pendingToolOutputTexts, *toolOutputMsg)
 			}
 
 		default:
@@ -8468,11 +8484,17 @@ func convertBifrostUnsupportedToolCallToAnthropicMessage(msg *schemas.ResponsesM
 			}
 		} else {
 			description = fmt.Sprintf("Tool call of type: %s", msgType)
-			// shell_call and local_shell_call put their commands in "action", not in
-			// name or arguments, so replay loses them unless the action is rendered too.
+			// shell_call and local_shell_call put their commands in "action" and
+			// apply_patch_call its edit in "operation", not in name or arguments, so
+			// replay loses them unless both are rendered too.
 			if msg.ResponsesToolMessage.Action != nil {
 				if action, err := schemas.Marshal(msg.ResponsesToolMessage.Action); err == nil {
 					description += fmt.Sprintf(" with action: %s", action)
+				}
+			}
+			if msg.ResponsesToolMessage.ResponsesApplyPatchCall != nil && msg.ResponsesToolMessage.Operation != nil {
+				if operation, err := schemas.Marshal(msg.ResponsesToolMessage.Operation); err == nil {
+					description += fmt.Sprintf(" with operation: %s", operation)
 				}
 			}
 		}
@@ -8540,6 +8562,24 @@ func shellCallOutputReplayText(output []schemas.ResponsesShellCallOutputContent)
 	return sb.String()
 }
 
+// toolOutputFailureReplayText renders a tool output that carries no text of its own
+// but did report a failure, so the replayed turn still shows the call ran and failed
+// instead of losing it entirely. Returns "" when there is no failure to report.
+func toolOutputFailureReplayText(msg *schemas.ResponsesMessage) string {
+	detail := msg.ResponsesToolMessage.Error.Text()
+	failed := msg.Status != nil && (*msg.Status == "failed" || *msg.Status == "incomplete")
+
+	switch {
+	case detail != "" && failed:
+		return "[tool call failed: " + detail + "]"
+	case detail != "":
+		return "[tool call error: " + detail + "]"
+	case failed:
+		return "[tool call failed]"
+	}
+	return ""
+}
+
 // convertBifrostToolOutputToAnthropicMessage converts tool outputs to user messages
 func convertBifrostToolOutputToAnthropicMessage(msg *schemas.ResponsesMessage) *AnthropicMessage {
 	if msg.ResponsesToolMessage != nil {
@@ -8555,6 +8595,10 @@ func convertBifrostToolOutputToAnthropicMessage(msg *schemas.ResponsesMessage) *
 					outputText = "[no output]"
 				}
 			}
+		}
+
+		if outputText == "" {
+			outputText = toolOutputFailureReplayText(msg)
 		}
 
 		if outputText != "" {

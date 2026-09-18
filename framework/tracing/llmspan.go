@@ -1528,6 +1528,7 @@ func extractResponsesOutputMessages(resp *schemas.BifrostResponsesResponse) []Re
 		case schemas.ResponsesMessageTypeCustomToolCall,
 			schemas.ResponsesMessageTypeLocalShellCall,
 			schemas.ResponsesMessageTypeShellCall,
+			schemas.ResponsesMessageTypeApplyPatchCall,
 			schemas.ResponsesMessageTypeCodeInterpreterCall:
 			result = append(result, ResponsesMessageSummary{
 				Role:      "assistant",
@@ -1679,6 +1680,7 @@ func extractResponsesInputMessages(messages []schemas.ResponsesMessage) []Respon
 		case schemas.ResponsesMessageTypeCustomToolCall,
 			schemas.ResponsesMessageTypeLocalShellCall,
 			schemas.ResponsesMessageTypeShellCall,
+			schemas.ResponsesMessageTypeApplyPatchCall,
 			schemas.ResponsesMessageTypeCodeInterpreterCall:
 			result = append(result, ResponsesMessageSummary{
 				Role:      "assistant",
@@ -1694,6 +1696,7 @@ func extractResponsesInputMessages(messages []schemas.ResponsesMessage) []Respon
 
 		case schemas.ResponsesMessageTypeLocalShellCallOutput,
 			schemas.ResponsesMessageTypeShellCallOutput,
+			schemas.ResponsesMessageTypeApplyPatchCallOutput,
 			schemas.ResponsesMessageTypeCustomToolCallOutput:
 			content := ""
 			if msg.ResponsesToolMessage != nil {
@@ -1750,12 +1753,18 @@ func responsesItemToolCall(msg *schemas.ResponsesMessage, msgType schemas.Respon
 				tc.Args = args
 			}
 		}
+	case schemas.ResponsesMessageTypeApplyPatchCall:
+		if tm.ResponsesApplyPatchCall != nil && tm.ResponsesApplyPatchCall.Operation != nil {
+			if args, err := schemas.MarshalString(tm.ResponsesApplyPatchCall.Operation); err == nil {
+				tc.Args = args
+			}
+		}
 	case schemas.ResponsesMessageTypeCodeInterpreterCall:
 		if tm.ResponsesCodeInterpreterToolCall != nil && tm.ResponsesCodeInterpreterToolCall.Code != nil {
 			tc.Args = *tm.ResponsesCodeInterpreterToolCall.Code
 		}
 	}
-	// local_shell_call, shell_call and code_interpreter_call have no name of their own.
+	// local_shell_call, shell_call, apply_patch_call and code_interpreter_call have no name of their own.
 	if tc.Name == "" {
 		tc.Name = tc.Type
 	}
@@ -1771,6 +1780,8 @@ func responsesItemToolType(msgType schemas.ResponsesMessageType) string {
 		return "local_shell"
 	case schemas.ResponsesMessageTypeShellCall:
 		return "shell"
+	case schemas.ResponsesMessageTypeApplyPatchCall:
+		return "apply_patch"
 	case schemas.ResponsesMessageTypeCodeInterpreterCall:
 		return "code_interpreter"
 	default:

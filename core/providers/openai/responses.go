@@ -666,8 +666,12 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		}
 
 		// Gemini streaming sets status on all item types, but OpenAI rejects status on input.
-		// Strip it from all items. message is a value copy, so the caller's input is untouched.
-		message.Status = nil
+		// Strip it, except on apply_patch items, where OpenAI requires it and it carries
+		// whether the patch failed. message is a value copy, so the caller's input is untouched.
+		if message.Type == nil || (*message.Type != schemas.ResponsesMessageTypeApplyPatchCall &&
+			*message.Type != schemas.ResponsesMessageTypeApplyPatchCallOutput) {
+			message.Status = nil
+		}
 
 		// Gemini streaming generates non-standard IDs for reasoning items (msg_<id>_reasoning_N,
 		// reasoning_N) and function_call_output items (func_resp_<id>). OpenAI rejects these.
@@ -1241,6 +1245,7 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools(webSearchContentTypes
 		schemas.ResponsesToolTypeLocalShell:              true,
 		schemas.ResponsesToolTypeShell:                   true,
 		schemas.ResponsesToolTypeProgrammaticToolCalling: true,
+		schemas.ResponsesToolTypeApplyPatch:              true,
 		schemas.ResponsesToolTypeCustom:                  true,
 		schemas.ResponsesToolTypeWebSearchPreview:        true,
 		schemas.ResponsesToolTypeMemory:                  true,
