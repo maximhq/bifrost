@@ -190,14 +190,24 @@ func getRequestTraceTool() Tool {
 			}
 			sort.Slice(nodes, func(i, j int) bool { return nodes[i].FallbackIndex < nodes[j].FallbackIndex })
 
-			return map[string]any{
+			// truncated is true whenever more fallback children exist than were
+			// fetched (bounded by MaxTraceChainLength). In that case the last
+			// node by FallbackIndex is just the last one returned, not
+			// necessarily the terminal hop of the real chain - so final_status
+			// must not be inferred from it.
+			truncated := children.Pagination.TotalCount > int64(len(children.Logs))
+
+			result := map[string]any{
 				"root_id":         rootID,
 				"chain_length":    len(nodes),
-				"final_status":    nodes[len(nodes)-1].Status,
 				"nodes":           nodes,
-				"truncated_chain": children.Pagination.TotalCount > int64(len(children.Logs)),
+				"truncated_chain": truncated,
 				"link":            logDetailLink(rootID),
-			}, nil
+			}
+			if !truncated {
+				result["final_status"] = nodes[len(nodes)-1].Status
+			}
+			return result, nil
 		},
 	}
 }

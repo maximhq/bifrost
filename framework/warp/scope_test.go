@@ -133,4 +133,5 @@ func TestWarpSystemPromptExplainsScoping(t *testing.T) {
 	require.Contains(t, content, "describe_filter_space")
 	require.Contains(t, content, "their own traffic is the default")
 	require.Contains(t, content, "you must ask before querying")
+	require.Contains(t, content, "Call ask_user with the teams, customers and business units describe_filter_space reported")
 }
