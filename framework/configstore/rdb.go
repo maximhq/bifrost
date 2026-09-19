@@ -13,6 +13,7 @@ import (
 	"math"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -2349,7 +2350,7 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 	}); err != nil {
 		return err
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityMCPClient, Action: ConfigActionUpsert})
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityMCPClient, Action: ConfigActionUpsert, ID: clientConfig.ID})
 	return nil
 }
 
@@ -2616,7 +2617,7 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 	}); err != nil {
 		return err
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityMCPClient, Action: ConfigActionUpsert})
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityMCPClient, Action: ConfigActionUpsert, ID: id})
 	return nil
 }
 
@@ -2702,7 +2703,7 @@ func (s *RDBConfigStore) DeleteMCPClientConfig(ctx context.Context, id string) e
 	}); err != nil {
 		return err
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityMCPClient, Action: ConfigActionDelete})
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityMCPClient, Action: ConfigActionDelete, ID: id})
 	return nil
 }
 
@@ -3345,7 +3346,7 @@ func (s *RDBConfigStore) CreatePlugin(ctx context.Context, plugin *tables.TableP
 	if err := txDB.WithContext(ctx).Create(plugin).Error; err != nil {
 		return s.parseGormError(err)
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityPlugin, Action: ConfigActionUpsert}, txDB)
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityPlugin, Action: ConfigActionUpsert, ID: plugin.Name}, txDB)
 	return nil
 }
 
@@ -3372,7 +3373,7 @@ func (s *RDBConfigStore) UpsertPlugin(ctx context.Context, plugin *tables.TableP
 	).Create(plugin).Error; err != nil {
 		return s.parseGormError(err)
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityPlugin, Action: ConfigActionUpsert}, txDB)
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityPlugin, Action: ConfigActionUpsert, ID: plugin.Name}, txDB)
 	return nil
 }
 
@@ -3444,7 +3445,7 @@ func (s *RDBConfigStore) UpdatePlugin(ctx context.Context, plugin *tables.TableP
 			return err
 		}
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityPlugin, Action: ConfigActionUpsert}, txDB)
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityPlugin, Action: ConfigActionUpsert, ID: plugin.Name}, txDB)
 	return nil
 }
 
@@ -3466,7 +3467,7 @@ func (s *RDBConfigStore) DeletePlugin(ctx context.Context, name string, tx ...*g
 	if err := txDB.WithContext(ctx).Delete(&plugin).Error; err != nil {
 		return err
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityPlugin, Action: ConfigActionDelete}, txDB)
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityPlugin, Action: ConfigActionDelete, ID: name}, txDB)
 	return nil
 }
 
@@ -3922,7 +3923,7 @@ func (s *RDBConfigStore) CreateVirtualKey(ctx context.Context, virtualKey *table
 	if err := txDB.WithContext(ctx).Create(virtualKey).Error; err != nil {
 		return s.parseGormError(err)
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityVirtualKey, Action: ConfigActionUpsert}, txDB)
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityVirtualKey, Action: ConfigActionUpsert, ID: virtualKey.ID}, txDB)
 	return nil
 }
 
@@ -3983,7 +3984,7 @@ func (s *RDBConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *table
 			return s.parseGormError(err)
 		}
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityVirtualKey, Action: ConfigActionUpsert}, txDB)
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityVirtualKey, Action: ConfigActionUpsert, ID: virtualKey.ID}, txDB)
 	return nil
 }
 
@@ -4157,7 +4158,7 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...
 		}
 		return err
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityVirtualKey, Action: ConfigActionDelete}, txDB)
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityVirtualKey, Action: ConfigActionDelete, ID: id}, txDB)
 	return nil
 }
 
@@ -4249,7 +4250,7 @@ func (s *RDBConfigStore) CreateVirtualKeyProviderConfig(ctx context.Context, vir
 			return err
 		}
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityVKProviderConfig, Action: ConfigActionUpsert}, txDB)
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityVKProviderConfig, Action: ConfigActionUpsert, ID: virtualKeyProviderConfig.VirtualKeyID}, txDB)
 	return nil
 }
 
@@ -4552,7 +4553,7 @@ func (s *RDBConfigStore) UpdateVirtualKeyProviderConfig(ctx context.Context, vir
 			return err
 		}
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityVKProviderConfig, Action: ConfigActionUpsert}, txDB)
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityVKProviderConfig, Action: ConfigActionUpsert, ID: virtualKeyProviderConfig.VirtualKeyID}, txDB)
 	return nil
 }
 
@@ -4596,7 +4597,7 @@ func (s *RDBConfigStore) DeleteVirtualKeyProviderConfig(ctx context.Context, id 
 			return err
 		}
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityVKProviderConfig, Action: ConfigActionDelete}, txDB)
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityVKProviderConfig, Action: ConfigActionDelete, ID: providerConfig.VirtualKeyID}, txDB)
 	return nil
 }
 
@@ -4690,7 +4691,7 @@ func (s *RDBConfigStore) CreateVirtualMCP(ctx context.Context, def *tables.Table
 	}); err != nil {
 		return err
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityVirtualMCP, Action: ConfigActionUpsert})
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityVirtualMCP, Action: ConfigActionUpsert, ID: strconv.FormatUint(uint64(def.ID), 10)})
 	return nil
 }
 
@@ -4762,7 +4763,7 @@ func (s *RDBConfigStore) UpdateVirtualMCP(ctx context.Context, def *tables.Table
 	if err := s.DB().WithContext(ctx).Omit("endpoint_slug", "created_at").Save(def).Error; err != nil {
 		return err
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityVirtualMCP, Action: ConfigActionUpsert})
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityVirtualMCP, Action: ConfigActionUpsert, ID: strconv.FormatUint(uint64(def.ID), 10)})
 	return nil
 }
 
@@ -4777,7 +4778,7 @@ func (s *RDBConfigStore) DeleteVirtualMCP(ctx context.Context, id uint) error {
 	}); err != nil {
 		return err
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityVirtualMCP, Action: ConfigActionDelete})
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityVirtualMCP, Action: ConfigActionDelete, ID: strconv.FormatUint(uint64(id), 10)})
 	return nil
 }
 
@@ -4869,7 +4870,7 @@ func (s *RDBConfigStore) CreateVirtualKeyMCPConfig(ctx context.Context, virtualK
 	if err := txDB.WithContext(ctx).Create(virtualKeyMCPConfig).Error; err != nil {
 		return s.parseGormError(err)
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityVKMCPConfig, Action: ConfigActionUpsert}, txDB)
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityVKMCPConfig, Action: ConfigActionUpsert, ID: virtualKeyMCPConfig.VirtualKeyID}, txDB)
 	return nil
 }
 
@@ -4897,7 +4898,7 @@ func (s *RDBConfigStore) UpdateVirtualKeyMCPConfig(ctx context.Context, virtualK
 	if err := txDB.WithContext(ctx).Save(virtualKeyMCPConfig).Error; err != nil {
 		return s.parseGormError(err)
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityVKMCPConfig, Action: ConfigActionUpsert}, txDB)
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityVKMCPConfig, Action: ConfigActionUpsert, ID: virtualKeyMCPConfig.VirtualKeyID}, txDB)
 	return nil
 }
 
@@ -4923,7 +4924,7 @@ func (s *RDBConfigStore) DeleteVirtualKeyMCPConfig(ctx context.Context, id uint,
 	if err := txDB.WithContext(ctx).Delete(&tables.TableVirtualKeyMCPConfig{}, "id = ?", id).Error; err != nil {
 		return err
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityVKMCPConfig, Action: ConfigActionDelete}, txDB)
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityVKMCPConfig, Action: ConfigActionDelete, ID: existing.VirtualKeyID}, txDB)
 	return nil
 }
 
@@ -5445,6 +5446,38 @@ func (s *RDBConfigStore) GetBudget(ctx context.Context, id string, tx ...*gorm.D
 	return &budget, nil
 }
 
+// budgetOwnerEvent translates a budget mutation into a ConfigChangeEvent for
+// the budget's owner. A budget has no standalone in-memory representation on
+// the receiving side — every owner's Reload* method (ReloadVirtualKey,
+// ReloadTeam, ReloadCustomer, ReloadModelConfig) already preloads its
+// Budgets, so reloading the owner is what actually refreshes it. This is
+// used for every budget action (create/update/delete): the owner always
+// needs a re-fetch, never a removal, since the owner row itself did not
+// change.
+func (s *RDBConfigStore) budgetOwnerEvent(ctx context.Context, b *tables.TableBudget, txDB *gorm.DB) ConfigChangeEvent {
+	switch {
+	case b.VirtualKeyID != nil:
+		return ConfigChangeEvent{Entity: ConfigEntityVirtualKey, Action: ConfigActionUpsert, ID: *b.VirtualKeyID}
+	case b.TeamID != nil:
+		return ConfigChangeEvent{Entity: ConfigEntityTeam, Action: ConfigActionUpsert, ID: *b.TeamID}
+	case b.CustomerID != nil:
+		return ConfigChangeEvent{Entity: ConfigEntityCustomer, Action: ConfigActionUpsert, ID: *b.CustomerID}
+	case b.ModelConfigID != nil:
+		return ConfigChangeEvent{Entity: ConfigEntityModelConfig, Action: ConfigActionUpsert, ID: *b.ModelConfigID}
+	case b.ProviderConfigID != nil:
+		// A VK-provider-scoped budget: the owner is the VK holding that
+		// provider config, one lookup away.
+		var vkID string
+		if err := txDB.WithContext(ctx).Model(&tables.TableVirtualKeyProviderConfig{}).
+			Where("id = ?", *b.ProviderConfigID).Pluck("virtual_key_id", &vkID).Error; err == nil && vkID != "" {
+			return ConfigChangeEvent{Entity: ConfigEntityVirtualKey, Action: ConfigActionUpsert, ID: vkID}
+		}
+	}
+	// No recognized owner — fall back to a full reload rather than silently
+	// dropping the notification.
+	return ConfigChangeEvent{Entity: ConfigEntityFullReload, Action: ConfigActionReload}
+}
+
 // CreateBudget creates a new budget in the database.
 func (s *RDBConfigStore) CreateBudget(ctx context.Context, budget *tables.TableBudget, tx ...*gorm.DB) error {
 	var txDB *gorm.DB
@@ -5456,7 +5489,7 @@ func (s *RDBConfigStore) CreateBudget(ctx context.Context, budget *tables.TableB
 	if err := txDB.WithContext(ctx).Create(budget).Error; err != nil {
 		return s.parseGormError(err)
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityBudget, Action: ConfigActionUpsert}, txDB)
+	s.notifyChange(ctx, s.budgetOwnerEvent(ctx, budget, txDB), txDB)
 	return nil
 }
 
@@ -5552,7 +5585,7 @@ func (s *RDBConfigStore) UpdateBudget(ctx context.Context, budget *tables.TableB
 	if err := txDB.WithContext(ctx).Save(budget).Error; err != nil {
 		return s.parseGormError(err)
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityBudget, Action: ConfigActionUpsert}, txDB)
+	s.notifyChange(ctx, s.budgetOwnerEvent(ctx, budget, txDB), txDB)
 	return nil
 }
 
@@ -5604,7 +5637,7 @@ func (s *RDBConfigStore) UpdateBudgetOverride(ctx context.Context, id string, am
 	if err := txDB.First(&budget, "id = ?", id).Error; err != nil {
 		return nil, err
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityBudget, Action: ConfigActionUpsert}, tx[0])
+	s.notifyChange(ctx, s.budgetOwnerEvent(ctx, &budget, tx[0]), tx[0])
 	return &budget, nil
 }
 
@@ -5639,7 +5672,7 @@ func (s *RDBConfigStore) DeleteBudget(ctx context.Context, id string, tx ...*gor
 	if err := txDB.WithContext(ctx).Delete(&tables.TableBudget{}, "id = ?", id).Error; err != nil {
 		return s.parseGormError(err)
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityBudget, Action: ConfigActionDelete}, txDB)
+	s.notifyChange(ctx, s.budgetOwnerEvent(ctx, &existing, txDB), txDB)
 	return nil
 }
 
@@ -9833,7 +9866,7 @@ func (s *RDBConfigStore) CreateWebhookEndpoint(ctx context.Context, endpoint *ta
 	}); err != nil {
 		return err
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityWebhookEndpoint, Action: ConfigActionUpsert})
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityWebhookEndpoint, Action: ConfigActionUpsert, ID: endpoint.ID})
 	return nil
 }
 
@@ -9877,7 +9910,7 @@ func (s *RDBConfigStore) UpdateWebhookEndpoint(ctx context.Context, endpoint *ta
 	}); err != nil {
 		return err
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityWebhookEndpoint, Action: ConfigActionUpsert})
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityWebhookEndpoint, Action: ConfigActionUpsert, ID: endpoint.ID})
 	return nil
 }
 
@@ -9890,7 +9923,7 @@ func (s *RDBConfigStore) DeleteWebhookEndpoint(ctx context.Context, id string) e
 	if result.RowsAffected == 0 {
 		return ErrNotFound
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityWebhookEndpoint, Action: ConfigActionDelete})
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityWebhookEndpoint, Action: ConfigActionDelete, ID: id})
 	return nil
 }
 
@@ -9918,7 +9951,7 @@ func (s *RDBConfigStore) RotateWebhookEndpointSecret(ctx context.Context, id str
 		return nil, err
 	}
 	rotated.Secret = &schemas.SecretVar{Val: newSecret}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityWebhookEndpoint, Action: ConfigActionUpsert})
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityWebhookEndpoint, Action: ConfigActionUpsert, ID: rotated.ID})
 	return &rotated, nil
 }
 
