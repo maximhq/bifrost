@@ -741,6 +741,7 @@
 		"grantRevoked": "授权已撤销",
 		"revokeFailed": "撤销授权失败",
 		"noMatch": "没有符合筛选条件的授权。",
+		"empty": "还没有授权。MCP 客户端通过 OAuth 同意流程连接后，授权会显示在这里。（Authentication Mode 需设为 \"oauth\" 或 \"both\" 才会签发授权。）",
 		"columns": {
 			"client": "客户端",
 			"boundTo": "绑定到",
@@ -769,11 +770,11 @@
 		"title": "MCP 工具组",
 		"description": "为 MCP 服务器配置工具组，以组织并治理工具。",
 		"unlockTitle": "解锁 MCP 工具组",
-		"unlockDescription": "此功能属于 Bifrost 企业版许可。为 MCP 服务器配置工具组，以便在组织内组织并治理 MCP 工具。"
+		"unlockDescription": "此功能属于 Bifrost 企业版许可证。为 MCP 服务器配置工具组，以便在组织内组织并治理 MCP 工具。"
 	},
 	"authConfig": {
 		"unlockTitle": "解锁 MCP 鉴权配置",
-		"unlockDescription": "此功能属于 Bifrost 企业版许可。为 MCP 服务器配置鉴权以保护 MCP 连接。"
+		"unlockDescription": "此功能属于 Bifrost 企业版许可证。为 MCP 服务器配置鉴权以保护 MCP 连接。"
 	},
 	"credentials": {
 		"justNow": "刚刚",

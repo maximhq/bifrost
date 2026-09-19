@@ -140,7 +140,7 @@ export default function ModelSettingsView() {
 				<div className="space-y-4">
 					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
-							<Label htmlFor="pricing-datasheet-url">Pricing Datasheet URL</Label>
+							<Label htmlFor="pricing-datasheet-url">{t("modelSettings.pricingUrl")}</Label>
 							<p className="text-muted-foreground text-sm">{t("modelSettings.pricingUrlHelp")}</p>
 						</div>
 						<Input
@@ -156,7 +156,7 @@ export default function ModelSettingsView() {
 											value.startsWith("http://") ||
 											value.startsWith("https://") ||
 											value.startsWith("file://") ||
-											"URL must start with http://, https://, or file://"
+											t("modelSettings.urlScheme")
 										);
 									},
 								},
@@ -168,7 +168,7 @@ export default function ModelSettingsView() {
 
 					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
-							<Label htmlFor="model-parameters-url">Model Parameters URL</Label>
+							<Label htmlFor="model-parameters-url">{t("modelSettings.modelParamsUrl")}</Label>
 							<p className="text-muted-foreground text-sm">{t("modelSettings.modelParamsUrlHelp")}</p>
 						</div>
 						<Input
@@ -184,7 +184,7 @@ export default function ModelSettingsView() {
 											value.startsWith("http://") ||
 											value.startsWith("https://") ||
 											value.startsWith("file://") ||
-											"URL must start with http://, https://, or file://"
+											t("modelSettings.urlScheme")
 										);
 									},
 								},
@@ -206,9 +206,9 @@ export default function ModelSettingsView() {
 							data-testid="pricing-sync-interval-input"
 							className={errors.pricing_sync_interval_hours ? "border-destructive" : ""}
 							{...register("pricing_sync_interval_hours", {
-								required: "Pricing sync interval is required",
-								min: { value: 1, message: "Sync interval must be at least 1 hour" },
-								max: { value: 8760, message: "Sync interval cannot exceed 8760 hours (1 year)" },
+								required: t("modelSettings.pricingSyncRequired"),
+								min: { value: 1, message: t("modelSettings.pricingSyncMin") },
+								max: { value: 8760, message: t("modelSettings.pricingSyncMax") },
 								valueAsNumber: true,
 							})}
 						/>
@@ -219,10 +219,7 @@ export default function ModelSettingsView() {
 					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<Label htmlFor="live-models-sync-interval">{t("modelSettings.modelDiscoveryInterval")}</Label>
-							<p className="text-muted-foreground text-sm">
-								How often each provider&apos;s model list is re-fetched in the background, so models a provider starts serving become
-								available without a restart. Set to 0 to turn it off and refresh only from the Providers page.
-							</p>
+							<p className="text-muted-foreground text-sm">{t("modelSettings.modelDiscoveryIntervalHelp")}</p>
 						</div>
 						<Input
 							id="live-models-sync-interval"
@@ -230,13 +227,13 @@ export default function ModelSettingsView() {
 							data-testid="live-models-sync-interval-input"
 							className={errors.live_models_sync_interval_minutes ? "border-destructive" : ""}
 							{...register("live_models_sync_interval_minutes", {
-								required: "Model discovery interval is required",
+								required: t("modelSettings.discoveryRequired"),
 								validate: (value) => {
 									if (value === 0) return true;
 									if (value < MIN_LIVE_MODELS_SYNC_INTERVAL / SECONDS_PER_MINUTE) {
-										return `Interval must be 0 (disabled) or at least ${MIN_LIVE_MODELS_SYNC_INTERVAL / SECONDS_PER_MINUTE} minute`;
+										return t("modelSettings.discoveryMin", { min: MIN_LIVE_MODELS_SYNC_INTERVAL / SECONDS_PER_MINUTE });
 									}
-									if (value > 1440) return "Interval cannot exceed 1440 minutes (24 hours)";
+									if (value > 1440) return t("modelSettings.discoveryMax");
 									return true;
 								},
 								valueAsNumber: true,
@@ -246,18 +243,14 @@ export default function ModelSettingsView() {
 							<p className="text-destructive text-sm">{errors.live_models_sync_interval_minutes.message}</p>
 						)}
 						{formValues.live_models_sync_interval_minutes === 0 && !errors.live_models_sync_interval_minutes && (
-							<p className="text-muted-foreground text-sm">
-								Background discovery is off. Model lists update only at startup, on key changes, and when refreshed manually.
-							</p>
+							<p className="text-muted-foreground text-sm">{t("modelSettings.modelDiscoveryOffHelp")}</p>
 						)}
 					</div>
 
 					<div className="flex items-center justify-between rounded-sm border p-4">
 						<div className="space-y-0.5">
-							<Label htmlFor="routing-chain-max-depth">Routing Chain Max Depth</Label>
-							<p className="text-muted-foreground text-sm">
-								Maximum number of chained routing rule evaluations per request. Prevents infinite loops from circular rule definitions.
-							</p>
+							<Label htmlFor="routing-chain-max-depth">{t("modelSettings.routingChainMaxDepth")}</Label>
+							<p className="text-muted-foreground text-sm">{t("modelSettings.routingChainMaxDepthHelp")}</p>
 						</div>
 						<Input
 							id="routing-chain-max-depth"
@@ -265,9 +258,9 @@ export default function ModelSettingsView() {
 							className={`w-24 ${errors.routing_chain_max_depth ? "border-destructive" : ""}`}
 							data-testid="routing-chain-max-depth-input"
 							{...register("routing_chain_max_depth", {
-								required: "Routing chain max depth is required",
-								min: { value: 1, message: "Must be at least 1" },
-								max: { value: 100, message: "Cannot exceed 100" },
+								required: t("modelSettings.routingDepthRequired"),
+								min: { value: 1, message: t("modelSettings.routingDepthMin") },
+								max: { value: 100, message: t("modelSettings.routingDepthMax") },
 								valueAsNumber: true,
 							})}
 						/>
@@ -283,7 +276,7 @@ export default function ModelSettingsView() {
 						disabled={isForceSyncing || isLoading || hasChanges || !hasSettingsUpdateAccess}
 						data-testid="pricing-force-sync-btn"
 					>
-						{isForceSyncing ? "Syncing..." : "Force Sync Now"}
+						{isForceSyncing ? t("modelSettings.syncing") : t("modelSettings.forceSync")}
 					</Button>
 					<Button type="submit" disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess} data-testid="model-settings-save-btn">
 						{isLoading ? t("saving") : t("saveChanges")}

@@ -741,6 +741,7 @@
 		"grantRevoked": "Grant revoked",
 		"revokeFailed": "Failed to revoke grant",
 		"noMatch": "No grants match these filters.",
+		"empty": "No grants yet. Grants appear here when an MCP client connects via the OAuth consent flow. (Authentication Mode needs to be set to \"oauth\" or \"both\" for grants to be issued.)",
 		"columns": {
 			"client": "Client",
 			"boundTo": "Bound to",

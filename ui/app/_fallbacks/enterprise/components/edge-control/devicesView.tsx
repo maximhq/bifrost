@@ -8,7 +8,6 @@ export default function DevicesView() {
 		<EdgeControlFallbackView
 			icon={<MonitorSmartphone className="h-[5.5rem] w-[5.5rem]" strokeWidth={1} />}
 			title={t("enterprise.edgeDevicesTitle")}
-			description={t("enterprise.sharedDescription")}
 			readmeLink="https://docs.getbifrost.ai/edge/admin-devices"
 			testIdPrefix="edge-devices"
 		/>

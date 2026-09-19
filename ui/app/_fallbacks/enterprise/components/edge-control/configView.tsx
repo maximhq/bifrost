@@ -8,7 +8,6 @@ export default function ConfigView() {
 		<EdgeControlFallbackView
 			icon={<SlidersHorizontal className="h-[5.5rem] w-[5.5rem]" strokeWidth={1} />}
 			title={t("enterprise.edgeConfigTitle")}
-			description={t("enterprise.sharedDescription")}
 			readmeLink="https://docs.getbifrost.ai/edge/admin-configurations"
 			testIdPrefix="edge-config"
 		/>

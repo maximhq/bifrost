@@ -211,7 +211,7 @@
 		"close": "关闭"
 	},
 	"logging": {
-		"title": "Logs Settings",
+		"title": "日志设置",
 		"description": "配置请求与响应的日志记录设置。",
 		"enableLogs": "启用日志",
 		"enableLogsHelp": "将请求和响应记录到 SQL 数据库。这可能增加 40-60mb 的系统内存开销。",
@@ -271,6 +271,8 @@
 		"dropUnsupportedParamsHelp": "根据模型目录允许列表丢弃不支持的参数。",
 		"convertUnsupportedParams": "转换不支持的参数值",
 		"convertUnsupportedParamsHelp": "转换模型不支持的参数值。",
+		"azureDeepseek": "对 Azure Deepseek 模型使用 Chat Completion API",
+		"azureDeepseekHelp": "让 Claude Code、Codex 等对 Azure Deepseek 模型走 Chat Completion API。",
 		"toastSaved": "兼容性设置已成功更新。"
 	},
 	"featureFlags": {
@@ -358,7 +360,22 @@
 		"pricingSyncInterval": "定价同步间隔（小时）",
 		"pricingSyncIntervalHelp": "从数据表 URL 同步定价数据的频率。",
 		"modelDiscoveryInterval": "模型发现间隔（分钟）",
+		"modelDiscoveryIntervalHelp": "后台重新拉取各供应商模型列表的频率，以便供应商新开放的模型无需重启即可使用。设为 0 可关闭后台刷新，仅在「模型提供商」页面手动刷新。",
+		"modelDiscoveryOffHelp": "后台发现已关闭。模型列表仅在启动、密钥变更以及手动刷新时更新。",
 		"routingChainMaxDepth": "路由链最大深度",
+		"routingChainMaxDepthHelp": "每个请求允许的链式路由规则评估次数上限，用于防止循环规则定义造成死循环。",
+		"urlScheme": "URL 必须以 http://、https:// 或 file:// 开头",
+		"pricingSyncRequired": "请填写定价同步间隔",
+		"pricingSyncMin": "同步间隔不能少于 1 小时",
+		"pricingSyncMax": "同步间隔不能超过 8760 小时（1 年）",
+		"discoveryRequired": "请填写模型发现间隔",
+		"discoveryMin": "间隔必须为 0（关闭）或至少 {{min}} 分钟",
+		"discoveryMax": "间隔不能超过 1440 分钟（24 小时）",
+		"routingDepthRequired": "请填写路由链最大深度",
+		"routingDepthMin": "必须至少为 1",
+		"routingDepthMax": "不能超过 100",
+		"syncing": "正在同步…",
+		"forceSync": "立即强制同步",
 		"toastSaved": "模型设置已成功更新。",
 		"toastSynced": "定价已成功同步。"
 	},

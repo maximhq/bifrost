@@ -1,15 +1,16 @@
-import { useTranslation } from "react-i18next";
 // Results table for OAuth grants: one row per active downstream grant, with the
 // bound identity, an approximate access-token expiry, created/last-used relative
 // times, and a per-row actions menu. Owns the empty state and pagination; the
 // page passes in the current page slice plus filter/revoke state.
 
+import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
+import i18n from "@/lib/i18n";
 import type { OAuth2GrantRow } from "@/lib/store/apis/oauth2SessionsApi";
 import { ChevronLeft, ChevronRight, Fingerprint, Info, KeyRound, UserRound } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import GrantActions from "./grantActions";
 
 interface GrantsTableProps {
@@ -110,8 +111,11 @@ export default function GrantsTable({
 			{totalCount > 0 && (
 				<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 					<div className="text-muted-foreground flex items-center gap-2">
-						{(offset + 1).toLocaleString()}-{Math.min(offset + pageSize, totalCount).toLocaleString()} of {totalCount.toLocaleString()}{" "}
-						entries
+						{t("common.ofEntries", {
+							from: (offset + 1).toLocaleString(),
+							to: Math.min(offset + pageSize, totalCount).toLocaleString(),
+							total: totalCount.toLocaleString(),
+						})}
 					</div>
 
 					<div className="flex items-center gap-2">
@@ -127,9 +131,10 @@ export default function GrantsTable({
 						</Button>
 
 						<div className="flex items-center gap-1">
-							<span>Page</span>
-							<span>{Math.floor(offset / pageSize) + 1}</span>
-							<span>of {Math.ceil(totalCount / pageSize)}</span>
+							{t("common.pageRange", {
+								page: Math.floor(offset / pageSize) + 1,
+								total: Math.ceil(totalCount / pageSize),
+							})}
 						</div>
 
 						<Button
@@ -176,21 +181,22 @@ function BindingCell({ row }: { row: OAuth2GrantRow }) {
 }
 
 function AccessTokenExpiry({ row }: { row: OAuth2GrantRow }) {
+	const { t } = useTranslation("mcp");
 	// Access token TTL is 10 min (600s default). Access tokens are stateless JWTs
 	// not stored server-side, so we approximate expiry from the grant's last
 	// activity (last_used_at, falling back to created_at). Anchoring to created_at
 	// alone would read as expired for any grant that has silently refreshed.
 	const baseMs = new Date(row.last_used_at ?? row.created_at).getTime();
 	if (!Number.isFinite(baseMs)) {
-		return <span className="text-muted-foreground">Unknown</span>;
+		return <span className="text-muted-foreground">{t("oauthGrants.unknown")}</span>;
 	}
 	const expiryMs = baseMs + 600_000; // 10 min default
 	const diffMs = expiryMs - Date.now();
 	if (diffMs < 0) {
-		return <span className="text-muted-foreground">Refreshes on next use</span>;
+		return <span className="text-muted-foreground">{t("oauthGrants.refreshesOnNextUse")}</span>;
 	}
 	const mins = Math.ceil(diffMs / 60_000);
-	return <span>in {mins} min</span>;
+	return <span>{t("credentials.inMinutes", { minutes: mins })}</span>;
 }
 
 function HeaderWithTooltip({ label, tooltip }: { label: string; tooltip: string }) {
@@ -210,12 +216,10 @@ function HeaderWithTooltip({ label, tooltip }: { label: string; tooltip: string 
 }
 
 function EmptyGrantsState() {
+	const { t } = useTranslation("mcp");
 	return (
 		<div className="flex flex-col items-center gap-3 py-4">
-			<p className="text-muted-foreground text-sm">
-				No grants yet. Grants appear here when an MCP client connects via the OAuth consent flow. (Authentication Mode needs to be set to
-				"oauth" or "both" for grants to be issued.)
-			</p>
+			<p className="text-muted-foreground text-sm">{t("oauthGrants.empty")}</p>
 		</div>
 	);
 }
@@ -225,14 +229,14 @@ function formatRelativePast(iso: string): string {
 		const ts = new Date(iso).getTime();
 		if (!Number.isFinite(ts)) return iso;
 		const diffMs = Date.now() - ts;
-		if (diffMs < 0) return "just now";
+		if (diffMs < 0) return i18n.t("credentials.justNow", { ns: "mcp" });
 		const mins = Math.floor(diffMs / 60_000);
-		if (mins < 1) return "just now";
-		if (mins < 60) return `${mins}m ago`;
+		if (mins < 1) return i18n.t("credentials.justNow", { ns: "mcp" });
+		if (mins < 60) return i18n.t("credentials.minutesAgo", { ns: "mcp", minutes: mins });
 		const hrs = Math.floor(mins / 60);
-		if (hrs < 24) return `${hrs}h ago`;
+		if (hrs < 24) return i18n.t("credentials.hoursAgo", { ns: "mcp", hours: hrs });
 		const days = Math.floor(hrs / 24);
-		return `${days}d ago`;
+		return i18n.t("credentials.daysAgo", { ns: "mcp", days: days });
 	} catch {
 		return iso;
 	}
