@@ -463,6 +463,9 @@
         "wafer": {
           "$ref": "#/$defs/provider"
         },
+        "cloudflare": {
+          "$ref": "#/$defs/provider"
+        },
         "vllm": {
           "$ref": "#/$defs/provider_with_vllm_config"
         },
@@ -2700,6 +2703,7 @@
                         "vertex",
                         "cerebras",
                         "deepseek",
+                        "cloudflare",
                         "vllm",
                         "parasail",
                         "perplexity",
@@ -8754,6 +8758,7 @@
             "cerebras",
             "databricks",
             "deepseek",
+            "cloudflare",
             "gemini",
             "github-copilot",
             "openrouter",

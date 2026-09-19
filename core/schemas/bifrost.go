@@ -76,6 +76,7 @@ const (
 	Wafer         ModelProvider = "wafer"
 	GithubCopilot ModelProvider = "github-copilot"
 	Databricks    ModelProvider = "databricks"
+	Cloudflare    ModelProvider = "cloudflare"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -87,6 +88,7 @@ var SupportedBaseProviders = []ModelProvider{
 	OpenAI,
 	HuggingFace,
 	Replicate,
+	Cloudflare,
 }
 
 // StandardProviders is the list of all built-in (non-custom) providers.
@@ -123,6 +125,7 @@ var StandardProviders = []ModelProvider{
 	Wafer,
 	GithubCopilot,
 	Databricks,
+	Cloudflare,
 }
 
 // RequestType represents the type of request being made to a provider.
