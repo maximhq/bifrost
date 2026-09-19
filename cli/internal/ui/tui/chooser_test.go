@@ -275,6 +275,59 @@ func TestChooserSummaryMasksVirtualKeyAfterSave(t *testing.T) {
 	}
 }
 
+// TestChooserAuthSummaryReflectsEditedBaseURL verifies the "Auth" summary
+// line stops showing "Enterprise SSO" once the Base URL is edited away from
+// the trusted profile URL, since the actual launch (launchAgentToken in
+// cli/internal/app) withholds the SSO token in that case — the display must
+// not claim SSO will be used when it won't.
+func TestChooserAuthSummaryReflectsEditedBaseURL(t *testing.T) {
+	m := newChooserModel(ChooserConfig{
+		BaseURL:       "https://gateway.example",
+		AgentSignedIn: true,
+		Harness:       "codex",
+		Model:         "gpt-4o-mini",
+		Harnesses: []HarnessOption{{
+			ID: "codex", Label: "Codex CLI", Installed: true, SupportsModelOverride: true,
+		}},
+	})
+
+	view := m.View()
+	if !strings.Contains(view, "Enterprise SSO") {
+		t.Fatalf("expected initial summary (unedited, trusted URL) to show Enterprise SSO auth, got %q", view)
+	}
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	got := next.(chooserModel)
+	got.baseInput.SetValue("https://typo-gateway.example")
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got = next.(chooserModel)
+
+	view = got.View()
+	if strings.Contains(view, "Enterprise SSO") {
+		t.Fatalf("expected summary to stop showing Enterprise SSO after editing the base URL away from the trusted profile, got %q", view)
+	}
+}
+
+// TestChooserReservesCtrlBForTabbedMode verifies native launcher sessions do
+// not exit the chooser for a tab-manager shortcut that is unavailable there.
+func TestChooserReservesCtrlBForTabbedMode(t *testing.T) {
+	t.Run("native", func(t *testing.T) {
+		model := newChooserModel(ChooserConfig{})
+		updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyCtrlB})
+		if updated.(chooserModel).backToTabs {
+			t.Fatal("native chooser treated ctrl+b as a tab-manager shortcut")
+		}
+	})
+
+	t.Run("tabbed", func(t *testing.T) {
+		model := newChooserModel(ChooserConfig{TabBarLine: func() string { return "tabs" }})
+		updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyCtrlB})
+		if !updated.(chooserModel).backToTabs {
+			t.Fatal("tabbed chooser did not retain ctrl+b shortcut")
+		}
+	})
+}
+
 func TestChooserSummaryVirtualKeyVisibleWhileEditing(t *testing.T) {
 	m := newChooserModel(ChooserConfig{
 		BaseURL:    "http://localhost:8080",

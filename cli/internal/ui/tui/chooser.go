@@ -40,6 +40,7 @@ type ChooserConfig struct {
 	UpdateVersion string
 	BaseURL       string
 	VirtualKey    string
+	AgentSignedIn bool
 	Harness       string
 	Model         string
 	Worktree      string
@@ -290,7 +291,7 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.quit = true
 			return m, tea.Quit
 		}
-		if s == "ctrl+b" {
+		if s == "ctrl+b" && m.cfg.TabBarLine != nil {
 			m.backToTabs = true
 			return m, tea.Quit
 		}
@@ -738,7 +739,7 @@ func (m chooserModel) View() string {
 		}
 
 	case phaseVirtualKey:
-		title = accent.Render("Virtual Key") + label.Render(" (optional)")
+		title = accent.Render("Virtual Key") + label.Render(" (optional; Enterprise SSO is used when signed in)")
 		body.WriteString(m.vkInput.View())
 		if m.returnToSummary {
 			footer = hint.Render("enter: update  esc: cancel  f1: open dashboard")
@@ -853,11 +854,21 @@ func (m chooserModel) View() string {
 			body.WriteString(label.Render("               ") + " " + warnStyle.Render("⚠ Gemini function calling is not compatible with") + "\n")
 			body.WriteString(label.Render("               ") + " " + warnStyle.Render("  Claude Code and may not work as intended") + "\n")
 		}
-		vkValue := maskVirtualKey(strings.TrimSpace(m.vkInput.Value()))
-		if m.summaryEditing && m.currentSummaryAction() == summaryActionVirtualKey {
-			vkValue = m.vkInput.View()
+		authValue := "none"
+		// Enterprise SSO is only actually used at launch when the base URL
+		// still matches the trusted profile URL (see launchAgentToken in
+		// cli/internal/app) — an edited URL silently falls back to the
+		// virtual key, so the summary must not keep claiming SSO here.
+		agentEligible := m.cfg.AgentSignedIn && baseURL == strings.TrimSpace(m.cfg.BaseURL)
+		if agentEligible {
+			authValue = "Enterprise SSO"
+		} else if strings.TrimSpace(m.vkInput.Value()) != "" {
+			authValue = "virtual key " + maskVirtualKey(strings.TrimSpace(m.vkInput.Value()))
 		}
-		renderSummaryLine(summaryActionVirtualKey, "Virtual Key", vkValue)
+		if m.summaryEditing && m.currentSummaryAction() == summaryActionVirtualKey {
+			authValue = m.vkInput.View()
+		}
+		renderSummaryLine(summaryActionVirtualKey, "Auth", authValue)
 		if ho.SupportsWorktree {
 			wtState := "no"
 			if wt := strings.TrimSpace(m.worktreeInput.Value()); wt != "" {

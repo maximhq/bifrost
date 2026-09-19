@@ -679,6 +679,20 @@ func TestContextAddPreservesLocalBaseURLFlag(t *testing.T) {
 	}
 }
 
+func TestLauncherHelpDocumentsOptionalTabbedMode(t *testing.T) {
+	errOut := &bytes.Buffer{}
+	runner := &Runner{Out: &bytes.Buffer{}, ErrOut: errOut}
+	if err := runner.runLauncher(context.Background(), []string{"--help"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(errOut.String(), "-tabs") {
+		t.Fatalf("launcher help = %q, want tabs option", errOut.String())
+	}
+	if !isLegacyLauncherInvocation([]string{"--tabs"}) {
+		t.Fatal("bare --tabs invocation was not routed to the launcher")
+	}
+}
+
 // TestConfigureValidatesEndpointBeforeSavingPendingReceipt verifies a bad
 // Base URL fails fast without ever writing a pending receipt to disk, since
 // nothing was actually changed and a leftover pending receipt would
