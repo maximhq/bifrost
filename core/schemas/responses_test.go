@@ -945,3 +945,48 @@ func TestDeepCopyResponsesMessagePreservesMediaResolution(t *testing.T) {
 		t.Fatalf("numTokens = %d, want 512", *got.NumTokens)
 	}
 }
+
+// Some OpenAI-compatible upstreams emit "truncation": "" on response.created.
+// A strict Responses client accepts only "auto" or "disabled", so the empty
+// value has to be normalized rather than forwarded.
+func TestBifrostResponsesResponseDefaultsEmptyTruncation(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   *string
+		want string
+	}{
+		{"absent", nil, "disabled"},
+		{"empty", Ptr(""), "disabled"},
+		{"auto", Ptr("auto"), "auto"},
+		{"disabled", Ptr("disabled"), "disabled"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := (&BifrostResponsesResponse{Truncation: tc.in}).WithDefaults()
+			if got.Truncation == nil {
+				t.Fatalf("Truncation is nil after defaults")
+			}
+			if *got.Truncation != tc.want {
+				t.Fatalf("Truncation = %q, want %q", *got.Truncation, tc.want)
+			}
+		})
+	}
+}
+
+// The streaming path carries the same response object: response.created must
+// normalize the empty value too, or the client rejects the stream before any
+// content arrives.
+func TestBifrostResponsesStreamCreatedNormalizesEmptyTruncation(t *testing.T) {
+	ev := &BifrostResponsesStreamResponse{
+		Type:           ResponsesStreamResponseTypeCreated,
+		SequenceNumber: 0,
+		Response:       &BifrostResponsesResponse{Truncation: Ptr("")},
+	}
+
+	got := ev.WithDefaults()
+	if got == nil || got.Response == nil {
+		t.Fatal("WithDefaults dropped the response")
+	}
+	if got.Response.Truncation == nil || *got.Response.Truncation != "disabled" {
+		t.Fatalf("streamed truncation not normalized: %v", got.Response.Truncation)
+	}
+}
