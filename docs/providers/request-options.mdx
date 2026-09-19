@@ -241,7 +241,7 @@ Bindings are written when a request is served, never when it fails, and are scop
 - **Retries**: A bound key is used for every retry of a request. A session with no key binding yet rotates keys on rate limits like any other request, and the key that serves is the one that gets bound.
 - **Fallbacks**: Fallback providers select keys freely. When a fallback serves, the session is rebound to that provider and its key, so the next request starts there.
 - **Switch**: `x-bf-session-affinity: off` turns affinity off for a request, at both levels; `on` is the default.
-- **Routing trail**: Decisions the session made appear in the request's routing logs under the `session-affinity` engine, which is also listed among the routing engines used.
+- **Routing trail**: Decisions the session made appear in the request's routing logs under the `session-affinity` engine, which is also listed among the routing engines used. The UI labels it **Session**.
 
 The [Session Affinity](/providers/session-affinity) guide covers the full lifecycle of a binding, how affinity composes with each routing engine, and the health checks Bifrost Enterprise runs before following one.
 
