@@ -9,7 +9,10 @@ users:
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
     summary: List users
-    description: Returns a paginated list of users with optional search.
+    description: |
+      Returns a paginated list of users with optional search.
+
+      **Required permission:** `Users:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Users
     parameters:
@@ -56,7 +59,10 @@ users:
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
     summary: Create user
-    description: Manually creates a new user in the organization.
+    description: |
+      Manually creates a new user in the organization.
+
+      **Required permission:** `Users:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Users
     requestBody:
@@ -105,6 +111,9 @@ users-email-virtual-keys:
       has no virtual keys assigned. Intended for MDM and credential-helper
       integrations that need to resolve a user's keys without knowing their
       internal ID.
+
+
+      **Required permission:** `VirtualKeys:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Users
     parameters:
@@ -147,7 +156,10 @@ users-by-email:
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
     summary: Get user by email
-    description: Returns a single Enterprise user resolved by URL-encoded email address.
+    description: |
+      Returns a single Enterprise user resolved by URL-encoded email address.
+
+      **Required permission:** `Users:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Users
     parameters:
@@ -183,7 +195,10 @@ users-by-id:
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
     summary: Get user
-    description: Returns a single Enterprise user.
+    description: |
+      Returns a single Enterprise user.
+
+      **Required permission:** `Users:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Users
     parameters:
@@ -222,6 +237,9 @@ users-by-id:
       Permanently removes a user from the organization. This cascades to delete
       the user's governance settings (budget/rate limits), team memberships,
       access profiles, and OIDC sessions. Cannot delete yourself.
+
+
+      **Required permission:** `Users:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Users
     parameters:
@@ -284,6 +302,9 @@ users-me-permissions:
       Returns the RBAC permissions for the authenticated user. When SCIM is not
       enabled, returns full permissions for all resources. Otherwise returns the
       permissions associated with the user's assigned role.
+
+
+      **Required permission:** none. Any authenticated management caller can use this endpoint; it is exempt from RBAC ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Users
     security:
@@ -325,6 +346,9 @@ users-role:
     description: >
       Assigns an RBAC role to a user. This also auto-assigns the default
       access profile for the new role and reloads the RBAC permission cache.
+
+
+      **Required permission:** `UserProvisioning:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Users
     parameters:
@@ -372,7 +396,10 @@ users-teams:
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
     summary: Get user's teams
-    description: Returns the list of teams a user belongs to, including the membership source.
+    description: |
+      Returns the list of teams a user belongs to, including the membership source.
+
+      **Required permission:** `Users:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Users
     parameters:
@@ -416,6 +443,9 @@ users-teams:
     description: >
       Replaces the user's manual team assignments. Synced team memberships
       (from SCIM providers) are preserved and cannot be removed via this endpoint.
+
+
+      **Required permission:** `Users:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Users
     parameters:
@@ -459,6 +489,8 @@ users-teams:
 users-governance:
   post:
     operationId: createUserGovernance
+    description: |
+      **Required permission:** `Users:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     x-mint:
       metadata:
         tag: Enterprise
@@ -504,6 +536,8 @@ users-governance:
         $ref: '../../openapi.yaml#/components/responses/InternalError'
   put:
     operationId: updateUserGovernance
+    description: |
+      **Required permission:** `Users:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     x-mint:
       metadata:
         tag: Enterprise
@@ -543,6 +577,8 @@ users-governance:
         $ref: '../../openapi.yaml#/components/responses/InternalError'
   delete:
     operationId: deleteUserGovernance
+    description: |
+      **Required permission:** `Users:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     x-mint:
       metadata:
         tag: Enterprise
@@ -586,7 +622,10 @@ team-members:
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
     summary: List team members
-    description: Returns all members of a team with their user details and membership source.
+    description: |
+      Returns all members of a team with their user details and membership source.
+
+      **Required permission:** `Teams:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Teams
     parameters:
@@ -627,7 +666,10 @@ team-members:
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
     summary: Add team member
-    description: Adds a user to a team. Both the team and user must exist.
+    description: |
+      Adds a user to a team. Both the team and user must exist.
+
+      **Required permission:** `Teams:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Teams
     parameters:
@@ -679,7 +721,10 @@ team-member-by-id:
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
     summary: Remove team member
-    description: Removes a user from a team.
+    description: |
+      Removes a user from a team.
+
+      **Required permission:** `Teams:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Teams
     parameters:

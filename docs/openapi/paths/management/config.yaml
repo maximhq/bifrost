@@ -5,6 +5,8 @@ config:
     description: |
       Retrieves the current Bifrost configuration including client config, framework config,
       auth config, and connection status for various stores.
+
+      **Required permission:** none. Any authenticated management caller can use this endpoint; it is exempt from RBAC ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Configuration
     parameters:
@@ -33,6 +35,8 @@ config:
     description: |
       Updates the Bifrost configuration. Supports hot-reloading of certain settings
       like drop_excess_requests. Some settings may require a restart to take effect.
+
+      **Required permission:** `Settings:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Configuration
     requestBody:
@@ -63,6 +67,8 @@ version:
     description: |
       Returns the current Bifrost version information.
       Unauthenticated by design - `/api/version` is in the auth middleware's system whitelist.
+
+      **Required permission:** none. This endpoint is public and needs no authentication.
     tags:
       - Configuration
     # Public: system-whitelisted in AuthMiddleware.APIMiddleware().
@@ -79,7 +85,10 @@ proxy-config:
   get:
     operationId: getProxyConfig
     summary: Get proxy configuration
-    description: Retrieves the current global proxy configuration.
+    description: |
+      Retrieves the current global proxy configuration.
+
+      **Required permission:** `Settings:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Configuration
     security:
@@ -104,7 +113,10 @@ proxy-config:
   put:
     operationId: updateProxyConfig
     summary: Update proxy configuration
-    description: Updates the global proxy configuration.
+    description: |
+      Updates the global proxy configuration.
+
+      **Required permission:** `Settings:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Configuration
     requestBody:
@@ -132,7 +144,10 @@ force-sync-pricing:
   post:
     operationId: forceSyncPricing
     summary: Force pricing sync
-    description: Triggers an immediate pricing sync and resets the pricing sync timer.
+    description: |
+      Triggers an immediate pricing sync and resets the pricing sync timer.
+
+      **Required permission:** `Settings:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Configuration
     security:

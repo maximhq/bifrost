@@ -5,6 +5,8 @@ plugins-builtins:
     description: |
       Returns the canonical list of built-in plugin names available in this Bifrost build.
       Use this to discover which plugins can be enabled without supplying a custom binary.
+
+      **Required permission:** `Plugins:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Plugins
     security:
@@ -35,6 +37,8 @@ plugins:
       The `actualName` field contains the plugin name from `GetName()` (used as the map key),
       while `name` contains the display name from the configuration.
       The `types` array in the status shows which interfaces the plugin implements (llm, mcp, http).
+
+      **Required permission:** `Plugins:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Plugins
     security:
@@ -63,6 +67,8 @@ plugins:
       loopback, link-local, and CGNAT addresses are additionally allowed if explicitly
       listed in the deploy-time `server.plugin_download_private_allowlist` config. Local
       filesystem paths are unaffected.
+
+      **Required permission:** `Plugins:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Plugins
     requestBody:
@@ -105,6 +111,8 @@ plugins:
       The response includes the plugin status with types array showing which interfaces
       the plugin implements (llm, mcp, http). The `actualName` field shows the plugin name
       from GetName() (used as the map key), which may differ from the display name (`name`).
+
+      **Required permission:** `Plugins:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Plugins
     parameters:
@@ -150,6 +158,8 @@ plugins:
       loopback, link-local, and CGNAT addresses are additionally allowed if explicitly
       listed in the deploy-time `server.plugin_download_private_allowlist` config. Local
       filesystem paths are unaffected.
+
+      **Required permission:** `Plugins:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Plugins
     parameters:
@@ -193,7 +203,10 @@ plugins:
   delete:
     operationId: deletePlugin
     summary: Delete a plugin
-    description: Removes a plugin from the configuration and stops it if running.
+    description: |
+      Removes a plugin from the configuration and stops it if running.
+
+      **Required permission:** `Plugins:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Plugins
     parameters:

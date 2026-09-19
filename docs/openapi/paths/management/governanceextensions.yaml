@@ -1,6 +1,8 @@
 virtual-key-users:
   get:
     operationId: listVirtualKeyUsers
+    description: |
+      **Required permission:** `VirtualKeys:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     x-mint:
       metadata:
         tag: Enterprise
@@ -34,6 +36,8 @@ virtual-key-users:
                 count: { type: integer }
   post:
     operationId: attachVirtualKeyUsers
+    description: |
+      **Required permission:** `VirtualKeys:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     x-mint:
       metadata:
         tag: Enterprise
@@ -74,6 +78,8 @@ virtual-key-users:
 virtual-key-user:
   delete:
     operationId: detachVirtualKeyUser
+    description: |
+      **Required permission:** `VirtualKeys:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     x-mint:
       metadata:
         tag: Enterprise
@@ -117,6 +123,8 @@ user-virtual-keys:
     description: |
       Returns every virtual key assigned to the user, independent of access profiles, so
       directly-assigned standalone keys are visible alongside profile-issued ones.
+
+      **Required permission:** `VirtualKeys:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags: [Users, Virtual Keys]
     parameters:
       - name: user_id
@@ -166,6 +174,8 @@ user-virtual-keys:
       therefore hold at least one access profile — the request returns 404 otherwise — but the key
       is not tied to the profile that happened to be current when it was minted, and it survives
       that profile being detached as long as the user still holds another.
+
+      **Required permission:** `VirtualKeys:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags: [Users, Virtual Keys]
     parameters:
       - name: user_id
@@ -214,6 +224,8 @@ user-vk-creation-policy:
       Self-scoped: it always describes the caller and takes no user ID. Returns
       `{"has_access_profile": false}` when the caller has no per-user identity (local admin) or holds
       no active access profile. When several of their profiles qualify, the highest-ranked one governs.
+
+      **Required permission:** `VirtualKeys:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags: [Users, Virtual Keys]
     security:
       - ManagementBearerAuth: []
@@ -238,6 +250,8 @@ user-vk-creation-policy:
 team-customers:
   get:
     operationId: listTeamCustomers
+    description: |
+      **Required permission:** `Teams:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     x-mint:
       metadata:
         tag: Enterprise
@@ -272,6 +286,8 @@ team-customers:
                       name: { type: string }
   post:
     operationId: attachTeamCustomer
+    description: |
+      **Required permission:** `Teams:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     x-mint:
       metadata:
         tag: Enterprise
@@ -309,6 +325,8 @@ team-customers:
 team-customer:
   delete:
     operationId: detachTeamCustomer
+    description: |
+      **Required permission:** `Teams:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     x-mint:
       metadata:
         tag: Enterprise
@@ -341,6 +359,8 @@ team-customer:
 customer-teams:
   get:
     operationId: listCustomerTeams
+    description: |
+      **Required permission:** `Customers:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     x-mint:
       metadata:
         tag: Enterprise
@@ -377,6 +397,8 @@ customer-teams:
 business-unit-customers:
   get:
     operationId: listBusinessUnitCustomers
+    description: |
+      **Required permission:** `BusinessUnits:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     x-mint:
       metadata:
         tag: Enterprise
@@ -421,6 +443,8 @@ business-unit-customers:
                 offset: { type: integer }
   post:
     operationId: attachBusinessUnitCustomer
+    description: |
+      **Required permission:** `BusinessUnits:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     x-mint:
       metadata:
         tag: Enterprise
@@ -460,6 +484,8 @@ business-unit-customers:
 business-unit-customer:
   delete:
     operationId: detachBusinessUnitCustomer
+    description: |
+      **Required permission:** `BusinessUnits:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     x-mint:
       metadata:
         tag: Enterprise
@@ -492,6 +518,8 @@ business-unit-customer:
 customer-business-units:
   get:
     operationId: listCustomerBusinessUnits
+    description: |
+      **Required permission:** `Customers:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     x-mint:
       metadata:
         tag: Enterprise

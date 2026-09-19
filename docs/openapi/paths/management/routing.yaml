@@ -10,7 +10,10 @@ rules:
   get:
     operationId: listRoutingRules
     summary: List routing rules
-    description: Returns a list of all routing rules configured for intelligent request routing across providers.
+    description: |
+      Returns a list of all routing rules configured for intelligent request routing across providers.
+
+      **Required permission:** `RoutingRules:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Routing
     parameters:
@@ -40,7 +43,10 @@ rules:
   post:
     operationId: createRoutingRule
     summary: Create routing rule
-    description: Creates a new CEL-based routing rule for intelligent request routing. Provider and model can be left empty to use the incoming request values.
+    description: |
+      Creates a new CEL-based routing rule for intelligent request routing. Provider and model can be left empty to use the incoming request values.
+
+      **Required permission:** `RoutingRules:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Routing
     requestBody:
@@ -68,7 +74,10 @@ rules-by-id:
   get:
     operationId: getRoutingRule
     summary: Get routing rule
-    description: Returns a specific routing rule by ID.
+    description: |
+      Returns a specific routing rule by ID.
+
+      **Required permission:** `RoutingRules:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Routing
     parameters:
@@ -103,7 +112,10 @@ rules-by-id:
   put:
     operationId: updateRoutingRule
     summary: Update routing rule
-    description: Updates an existing routing rule's configuration.
+    description: |
+      Updates an existing routing rule's configuration.
+
+      **Required permission:** `RoutingRules:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Routing
     parameters:
@@ -143,7 +155,10 @@ rules-by-id:
   delete:
     operationId: deleteRoutingRule
     summary: Delete routing rule
-    description: Deletes a routing rule.
+    description: |
+      Deletes a routing rule.
+
+      **Required permission:** `RoutingRules:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Routing
     parameters:
@@ -178,7 +193,10 @@ complexity:
   get:
     operationId: getComplexityAnalyzerConfig
     summary: Get complexity analyzer config
-    description: Returns the full complexity analyzer runtime config, including the semantic embedding configuration, the llm fallback classifier configuration, and per-tier reference phrase lists. Returns built-in defaults if none have been configured.
+    description: |
+      Returns the full complexity analyzer runtime config, including the semantic embedding configuration, the llm fallback classifier configuration, and per-tier reference phrase lists. Returns built-in defaults if none have been configured.
+
+      **Required permission:** `Governance:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Routing
     security:
@@ -199,7 +217,10 @@ complexity:
   put:
     operationId: updateComplexityAnalyzerConfig
     summary: Update complexity analyzer config
-    description: Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the classifier; unchanged phrases are not re-embedded. Setting semantic.fallback to llm requires the llm block to be present.
+    description: |
+      Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the classifier; unchanged phrases are not re-embedded. Setting semantic.fallback to llm requires the llm block to be present.
+
+      **Required permission:** `Governance:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Routing
     requestBody:
@@ -229,7 +250,10 @@ complexity-reset:
   post:
     operationId: resetComplexityAnalyzerConfig
     summary: Reset complexity analyzer config
-    description: Restores the built-in reference phrase lists and hot-reloads the routing plugin. The saved embedding provider, model, storage configuration, and llm fallback configuration are preserved.
+    description: |
+      Restores the built-in reference phrase lists and hot-reloads the routing plugin. The saved embedding provider, model, storage configuration, and llm fallback configuration are preserved.
+
+      **Required permission:** `Governance:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Routing
     security:
@@ -252,7 +276,10 @@ rules-legacy:
     operationId: listRoutingRulesLegacy
     deprecated: true
     summary: List routing rules (deprecated path)
-    description: Returns a list of all routing rules configured for intelligent request routing across providers. Deprecated, use /api/routing/rules instead. This path is kept for backwards compatibility and behaves identically.
+    description: |
+      Returns a list of all routing rules configured for intelligent request routing across providers. Deprecated, use /api/routing/rules instead. This path is kept for backwards compatibility and behaves identically.
+
+      **Required permission:** `RoutingRules:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Routing
     parameters:
@@ -283,7 +310,10 @@ rules-legacy:
     operationId: createRoutingRuleLegacy
     deprecated: true
     summary: Create routing rule (deprecated path)
-    description: Creates a new CEL-based routing rule for intelligent request routing. Provider and model can be left empty to use the incoming request values. Deprecated, use /api/routing/rules instead. This path is kept for backwards compatibility and behaves identically.
+    description: |
+      Creates a new CEL-based routing rule for intelligent request routing. Provider and model can be left empty to use the incoming request values. Deprecated, use /api/routing/rules instead. This path is kept for backwards compatibility and behaves identically.
+
+      **Required permission:** `RoutingRules:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Routing
     requestBody:
@@ -312,7 +342,10 @@ rules-by-id-legacy:
     operationId: getRoutingRuleLegacy
     deprecated: true
     summary: Get routing rule (deprecated path)
-    description: Returns a specific routing rule by ID. Deprecated, use /api/routing/rules/{rule_id} instead. This path is kept for backwards compatibility and behaves identically.
+    description: |
+      Returns a specific routing rule by ID. Deprecated, use /api/routing/rules/{rule_id} instead. This path is kept for backwards compatibility and behaves identically.
+
+      **Required permission:** `RoutingRules:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Routing
     parameters:
@@ -348,7 +381,10 @@ rules-by-id-legacy:
     operationId: updateRoutingRuleLegacy
     deprecated: true
     summary: Update routing rule (deprecated path)
-    description: Updates an existing routing rule's configuration. Deprecated, use /api/routing/rules/{rule_id} instead. This path is kept for backwards compatibility and behaves identically.
+    description: |
+      Updates an existing routing rule's configuration. Deprecated, use /api/routing/rules/{rule_id} instead. This path is kept for backwards compatibility and behaves identically.
+
+      **Required permission:** `RoutingRules:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Routing
     parameters:
@@ -389,7 +425,10 @@ rules-by-id-legacy:
     operationId: deleteRoutingRuleLegacy
     deprecated: true
     summary: Delete routing rule (deprecated path)
-    description: Deletes a routing rule. Deprecated, use /api/routing/rules/{rule_id} instead. This path is kept for backwards compatibility and behaves identically.
+    description: |
+      Deletes a routing rule. Deprecated, use /api/routing/rules/{rule_id} instead. This path is kept for backwards compatibility and behaves identically.
+
+      **Required permission:** `RoutingRules:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Routing
     parameters:
@@ -424,7 +463,10 @@ complexity-status:
   get:
     operationId: getComplexityAnalyzerStatus
     summary: Get complexity classifier status
-    description: Returns the runtime status of the semantic complexity classifier (disabled, warming, ready, or failed), including warmup progress and whether a previous generation is still serving. When the llm fallback block is configured, also returns its readiness and the shipped default classification prompt.
+    description: |
+      Returns the runtime status of the semantic complexity classifier (disabled, warming, ready, or failed), including warmup progress and whether a previous generation is still serving. When the llm fallback block is configured, also returns its readiness and the shipped default classification prompt.
+
+      **Required permission:** `Governance:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Routing
     responses:
@@ -443,7 +485,10 @@ complexity-status-retry:
   post:
     operationId: retryComplexityAnalyzerWarmup
     summary: Retry failed complexity classifier warmup
-    description: Restarts the saved semantic classifier warmup only when its current state is failed. The retry runs asynchronously and does not change the saved configuration.
+    description: |
+      Restarts the saved semantic classifier warmup only when its current state is failed. The retry runs asynchronously and does not change the saved configuration.
+
+      **Required permission:** `Governance:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Routing
     responses:
@@ -466,7 +511,10 @@ complexity-generations:
   get:
     operationId: listComplexityGenerations
     summary: List complexity classifier generations
-    description: Lists the exemplar generations held in the vector store for semantic complexity routing, flagging the one currently serving. Every configuration change mints a new fingerprinted generation; a node-local store reclaims the previous one automatically, but on a shared external store retired generations are kept because another replica may still be serving them. The store holds no phrase text, so this listing is the only way to identify what has accumulated.
+    description: |
+      Lists the exemplar generations held in the vector store for semantic complexity routing, flagging the one currently serving. Every configuration change mints a new fingerprinted generation; a node-local store reclaims the previous one automatically, but on a shared external store retired generations are kept because another replica may still be serving them. The store holds no phrase text, so this listing is the only way to identify what has accumulated.
+
+      **Required permission:** `Governance:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Routing
     security:
@@ -489,7 +537,10 @@ complexity-generation-delete:
   delete:
     operationId: deleteComplexityGeneration
     summary: Delete a retired complexity generation
-    description: Removes one retired exemplar generation and the vectors it holds. The serving generation is refused, as are namespaces outside the classifier's own naming scheme, so this cannot drop an unrelated collection sharing the same backend. Deleting a generation that is already gone succeeds.
+    description: |
+      Removes one retired exemplar generation and the vectors it holds. The serving generation is refused, as are namespaces outside the classifier's own naming scheme, so this cannot drop an unrelated collection sharing the same backend. Deleting a generation that is already gone succeeds.
+
+      **Required permission:** `Governance:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Routing
     security:
@@ -539,7 +590,10 @@ complexity-legacy:
     operationId: getComplexityAnalyzerConfigLegacy
     deprecated: true
     summary: Get complexity analyzer config (deprecated path)
-    description: Returns the full complexity analyzer runtime config, including the semantic embedding configuration, the llm fallback classifier configuration, and per-tier reference phrase lists. Returns built-in defaults if none have been configured. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.
+    description: |
+      Returns the full complexity analyzer runtime config, including the semantic embedding configuration, the llm fallback classifier configuration, and per-tier reference phrase lists. Returns built-in defaults if none have been configured. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.
+
+      **Required permission:** `Governance:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Routing
     security:
@@ -561,7 +615,10 @@ complexity-legacy:
     operationId: updateComplexityAnalyzerConfigLegacy
     deprecated: true
     summary: Update complexity analyzer config (deprecated path)
-    description: Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the classifier; unchanged phrases are not re-embedded. Setting semantic.fallback to llm requires the llm block to be present. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.
+    description: |
+      Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the classifier; unchanged phrases are not re-embedded. Setting semantic.fallback to llm requires the llm block to be present. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.
+
+      **Required permission:** `Governance:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Routing
     requestBody:
@@ -592,7 +649,10 @@ complexity-reset-legacy:
     operationId: resetComplexityAnalyzerConfigLegacy
     deprecated: true
     summary: Reset complexity analyzer config (deprecated path)
-    description: Restores the built-in reference phrase lists and hot-reloads the routing plugin. The saved embedding provider, model, storage configuration, and llm fallback configuration are preserved. Deprecated, use /api/routing/complexity-analyzer-config/reset instead. This path is kept for backwards compatibility and behaves identically.
+    description: |
+      Restores the built-in reference phrase lists and hot-reloads the routing plugin. The saved embedding provider, model, storage configuration, and llm fallback configuration are preserved. Deprecated, use /api/routing/complexity-analyzer-config/reset instead. This path is kept for backwards compatibility and behaves identically.
+
+      **Required permission:** `Governance:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Routing
     security:

@@ -2,7 +2,10 @@ providers:
   get:
     operationId: listProviders
     summary: List all providers
-    description: Returns a list of all configured providers with their configurations and status.
+    description: |
+      Returns a list of all configured providers with their configurations and status.
+
+      **Required permission:** `ModelProvider:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Providers
     security:
@@ -21,7 +24,10 @@ providers:
   post:
     operationId: addProvider
     summary: Add a new provider
-    description: Adds a new provider with the specified configuration.
+    description: |
+      Adds a new provider with the specified configuration.
+
+      **Required permission:** `ModelProvider:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Providers
     requestBody:
@@ -55,7 +61,10 @@ providers-by-name:
   get:
     operationId: getProvider
     summary: Get a specific provider
-    description: Returns the configuration for a specific provider.
+    description: |
+      Returns the configuration for a specific provider.
+
+      **Required permission:** `ModelProvider:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Providers
     parameters:
@@ -92,6 +101,8 @@ providers-by-name:
     description: |
       Updates a provider's configuration. Expects ALL fields to be provided,
       including both edited and non-edited fields. Partial updates are not supported.
+
+      **Required permission:** `ModelProvider:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Providers
     parameters:
@@ -125,7 +136,10 @@ providers-by-name:
   delete:
     operationId: deleteProvider
     summary: Delete a provider
-    description: Removes a provider from the configuration.
+    description: |
+      Removes a provider from the configuration.
+
+      **Required permission:** `ModelProvider:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Providers
     parameters:
@@ -160,7 +174,10 @@ provider-keys:
   get:
     operationId: listProviderKeys
     summary: List keys for a provider
-    description: Returns all keys configured for a specific provider.
+    description: |
+      Returns all keys configured for a specific provider.
+
+      **Required permission:** `ModelProvider:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Providers
     parameters:
@@ -198,6 +215,8 @@ provider-keys:
       Creates a new API key for the specified provider. The key `id` is auto-generated
       if omitted. `enabled` defaults to `true` if omitted. `value` is required and must
       not be empty. Keys cannot be created on keyless providers.
+
+      **Required permission:** `ModelProvider:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Providers
     parameters:
@@ -244,7 +263,10 @@ provider-key-by-id:
   get:
     operationId: getProviderKey
     summary: Get a specific key for a provider
-    description: Returns a single key for the specified provider.
+    description: |
+      Returns a single key for the specified provider.
+
+      **Required permission:** `ModelProvider:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Providers
     parameters:
@@ -288,6 +310,8 @@ provider-key-by-id:
       Updates an existing key. Send the full key object. Redacted values sent back
       unchanged are automatically preserved (the server merges them with the stored
       raw values).
+
+      **Required permission:** `ModelProvider:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Providers
     parameters:
@@ -333,7 +357,10 @@ provider-key-by-id:
   delete:
     operationId: deleteProviderKey
     summary: Delete a key from a provider
-    description: Deletes a key from the specified provider. Returns the deleted key.
+    description: |
+      Deletes a key from the specified provider. Returns the deleted key.
+
+      **Required permission:** `ModelProvider:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Providers
     parameters:
@@ -374,7 +401,10 @@ keys:
   get:
     operationId: listKeys
     summary: List all keys
-    description: Returns a list of all configured API keys across all providers.
+    description: |
+      Returns a list of all configured API keys across all providers.
+
+      **Required permission:** `VirtualKeys:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Providers
     security:
@@ -398,6 +428,8 @@ models:
     summary: List models
     description: |
       Lists available models with optional filtering by query, provider, or keys.
+
+      **Required permission:** `ModelProvider:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Providers
     parameters:
@@ -451,6 +483,8 @@ models-details:
     summary: List model details
     description: |
       Lists available models with capability metadata, when available from the model catalog, with optional filtering by query, provider, or keys.
+
+      **Required permission:** `ModelProvider:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Providers
     parameters:
@@ -508,6 +542,9 @@ models-parameters:
       provider-qualified IDs returned by /v1/models (e.g. "openai/gpt-4o",
       "openrouter/openai/gpt-4o") and bare aliases of provider-qualified
       catalog entries resolve to the same record as the stored key.
+
+
+      **Required permission:** `ModelProvider:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Providers
     security:
@@ -537,7 +574,10 @@ models-base:
   get:
     operationId: listBaseModels
     summary: List base models
-    description: Returns a list of base models from the model catalog.
+    description: |
+      Returns a list of base models from the model catalog.
+
+      **Required permission:** `ModelProvider:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Providers
     parameters:

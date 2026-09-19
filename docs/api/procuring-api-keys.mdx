@@ -23,6 +23,40 @@ Use an API key as the bearer token when calling these endpoints from scripts, ba
   Copy the generated key when it is shown and follow general security practices.
 </Warning>
 
+## Required Permissions
+
+Every management endpoint in the [API reference](/api-reference) states the permission it needs in a **Required permission** line, written as `Resource:Operation` (for example `Dashboard:View`). You do not need to work it out from the URL: open the endpoint page and grant exactly what it lists.
+
+One permission catalog backs both ways of calling the management API:
+
+| Caller | Where the permission must be granted |
+| --- | --- |
+| Dashboard user or SSO session | The user's [RBAC role](/enterprise/rbac) must include the permission. |
+| Management API key | The key's **scopes** must include the permission. Select the scopes that match the endpoints the key will call when you create it. |
+
+A request whose role or key lacks the permission is rejected with `403 Forbidden`.
+
+### How a permission is derived
+
+- **Resource** is taken from the URL. It is usually the first segment after `/api/` (`/api/webhooks/...` requires `Webhooks`), but several paths map to a different resource. For example, `/api/logs/stats`, `/api/logs/histogram/*`, and `/api/logs/rankings*` require `Dashboard`, not `Logs`, and `/api/governance/audit-logs*` requires `AuditLogs`, not `Governance`.
+- **Operation** defaults to the HTTP method: `GET` requires `View`, `POST` requires `Create`, `PUT` and `PATCH` require `Update`, and `DELETE` requires `Delete`. A few endpoints override this, for example `POST /api/logs/recalculate-cost` requires `Logs:Update` and `POST /api/license` requires `Settings:Update`.
+
+Because these rules have exceptions, always rely on the **Required permission** line on the endpoint page rather than the URL.
+
+### Endpoints that list no permission
+
+- **Public** endpoints (for example `GET /health`, `GET /api/version`, `POST /api/session/login`) require no authentication.
+- **Exempt** endpoints (for example `GET /api/config`, `POST /api/session/ws-ticket`, `GET /api/governance/users/me/permissions`) require authentication but skip the permission check, so any authenticated management caller can use them.
+- **Not RBAC-gated** endpoints authenticate with the credential itself rather than a role or scope, such as `GET /api/governance/virtual-keys/quota`, which accepts only a virtual key.
+
+<Info>
+  Permissions and API key scopes are enforced in **Bifrost Enterprise**. Open-source Bifrost has no per-endpoint permissions: any caller that passes management authentication (the admin password or a dashboard session) can use every management endpoint.
+</Info>
+
+<Note>
+  A local admin who signs in with the admin password bypasses RBAC entirely. Separately, [Data Access Control](/enterprise/data-access-control) can narrow *which rows* a permitted caller sees, for example the logs behind `/api/logs/stats`, without changing the permission the endpoint requires.
+</Note>
+
 ## Management API Endpoints
 
 Use this bearer token for management API endpoints that configure or inspect Bifrost. The following endpoint patterns use management API authentication in the OpenAPI spec.

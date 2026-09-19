@@ -19,6 +19,8 @@ flush-cache:
       peer nodes automatically — you only need to call this on one node.
 
       Returns `400` if vault integration is not enabled.
+
+      **Required permission:** `Settings:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Vault
     security:
