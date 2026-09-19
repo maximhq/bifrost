@@ -8,6 +8,7 @@ import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { useGetAllKeysQuery, useGetProvidersQuery } from "@/lib/store";
 import { KnownProvider } from "@/lib/types/config";
 import { Info } from "lucide-react";
+import { Trans, useTranslation } from "react-i18next";
 import { useEffect, useState } from "react";
 
 // Shared provider-configuration editor for the Virtual Key (core) and Access
@@ -67,6 +68,7 @@ export function ProviderConfigsEditor({
 	onManageProviders,
 	error,
 }: ProviderConfigsEditorProps) {
+	const { t } = useTranslation("governance");
 	const { data: providersData, isLoading: isLoadingProviders, isError: isProvidersError } = useGetProvidersQuery();
 	const { data: keysData } = useGetAllKeysQuery();
 	const availableProviders = providersData || [];
@@ -116,7 +118,7 @@ export function ProviderConfigsEditor({
 	return (
 		<div className="space-y-2">
 			<div className="flex items-center gap-2">
-				<Label className="text-sm font-medium">Provider Configurations</Label>
+				<Label className="text-sm font-medium">{t("providerConfigs.title")}</Label>
 				<TooltipProvider>
 					<Tooltip>
 						<TooltipTrigger asChild>
@@ -125,10 +127,7 @@ export function ProviderConfigsEditor({
 							</span>
 						</TooltipTrigger>
 						<TooltipContent className="max-w-sm">
-							<p>
-								Configure which providers this can use and their specific settings. Leave empty to block all providers. Add providers to
-								allow them.
-							</p>
+							<p>{t("providerConfigs.tooltip")}</p>
 						</TooltipContent>
 					</Tooltip>
 				</TooltipProvider>
@@ -137,7 +136,7 @@ export function ProviderConfigsEditor({
 			{/* Allow all providers */}
 			<div className="flex w-full items-center justify-between gap-2 py-2 text-sm">
 				<div className="flex items-center gap-1.5">
-					<span>Allow all providers</span>
+					<span>{t("providerConfigs.allowAll")}</span>
 					<TooltipProvider>
 						<Tooltip>
 							<TooltipTrigger asChild>
@@ -146,10 +145,7 @@ export function ProviderConfigsEditor({
 								</span>
 							</TooltipTrigger>
 							<TooltipContent className="max-w-sm">
-								<p>
-									Grant access to every provider, including ones added later. Set budgets or limits on specific providers below, or remove a
-									provider to allow all except that one.
-								</p>
+								<p>{t("providerConfigs.allowAllTooltip")}</p>
 							</TooltipContent>
 						</Tooltip>
 					</TooltipProvider>
@@ -176,13 +172,13 @@ export function ProviderConfigsEditor({
 					}}
 				>
 					<SelectTrigger className="flex-1" data-testid={`${testIdPrefix}-provider-select`}>
-						<SelectValue placeholder="Select a provider to add" />
+						<SelectValue placeholder={t("providerConfigs.selectToAdd")} />
 					</SelectTrigger>
 					<SelectContent>
 						{isLoadingProviders ? (
-							<div className="text-muted-foreground px-2 py-1.5 text-sm">Loading providers...</div>
+							<div className="text-muted-foreground px-2 py-1.5 text-sm">{t("providerConfigs.loadingProviders")}</div>
 						) : isProvidersError ? (
-							<div className="text-destructive px-2 py-1.5 text-sm">Failed to load providers. Please retry.</div>
+							<div className="text-destructive px-2 py-1.5 text-sm">{t("providerConfigs.loadFailed")}</div>
 						) : unconfiguredProviders.length === 0 ? (
 							onManageProviders ? (
 								<SelectItem
@@ -191,11 +187,15 @@ export function ProviderConfigsEditor({
 									data-testid={`${testIdPrefix}-provider-config-link`}
 								>
 									<span>
-										No providers left to configure. <span className="text-primary font-medium underline">Click to add</span>
+										<Trans
+											t={t}
+											i18nKey="providerConfigs.noneLeftLink"
+											components={{ primary0: <span className="text-primary font-medium underline" /> }}
+										/>
 									</span>
 								</SelectItem>
 							) : (
-								<div className="text-muted-foreground px-2 py-1.5 text-sm">No providers left to configure</div>
+								<div className="text-muted-foreground px-2 py-1.5 text-sm">{t("providerConfigs.noneLeft")}</div>
 							)
 						) : (
 							<>

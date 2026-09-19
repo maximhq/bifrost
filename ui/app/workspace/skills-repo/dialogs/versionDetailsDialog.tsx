@@ -9,6 +9,7 @@ import type { SkillFile, SkillFileEntry } from "@/lib/types/skills";
 import { getApiBaseUrl } from "@/lib/utils/port";
 import { Download, Loader2, RefreshCw, X } from "lucide-react";
 import { toast } from "sonner";
+import { useTranslation } from "react-i18next";
 import { composeFrontmatter } from "../components/helpers";
 import { SkillHeader, SkillReadOnlyContent } from "../components/shared";
 
@@ -27,6 +28,8 @@ export function VersionDetailDialog({
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 }) {
+	const { t } = useTranslation("config");
+	const { t: tc } = useTranslation("common");
 	const { data: versionData, isLoading, isError } = useGetSkillQuery({ id: skillId, version }, { skip: !open });
 	const [shiftVersion, { isLoading: isShifting }] = useShiftSkillVersionMutation();
 
@@ -71,10 +74,10 @@ export function VersionDetailDialog({
 	const handleShiftVersion = async () => {
 		try {
 			await shiftVersion({ id: skillId, version }).unwrap();
-			toast.success(`Shifted to version ${version}`);
+			toast.success(t("skillsRepo.toastShifted", { version }));
 			onOpenChange(false);
 		} catch (err: unknown) {
-			toast.error("Failed to shift version", {
+			toast.error(t("skillsRepo.toastShiftFailed"), {
 				description: getErrorMessage(err),
 			});
 		}
@@ -88,7 +91,7 @@ export function VersionDetailDialog({
 			>
 				<div className="flex items-center justify-between border-b pr-2 pl-6">
 					<DialogHeader className="p-0">
-						<DialogTitle>Version {version}</DialogTitle>
+						<DialogTitle>{t("skillsRepo.versionTitle", { version })}</DialogTitle>
 					</DialogHeader>
 					<div className="flex items-center gap-1.5">
 						{downloadUrl && (
@@ -98,18 +101,18 @@ export function VersionDetailDialog({
 								className="h-8 w-8"
 								asChild
 								data-testid="skill-version-download-zip"
-								aria-label="Download ZIP"
+								aria-label={t("skillsRepo.downloadZip")}
 							>
 								<a href={downloadUrl} download>
 									<Download className="h-4 w-4" />
-									<span className="sr-only">Download ZIP</span>
+									<span className="sr-only">{t("skillsRepo.downloadZip")}</span>
 								</a>
 							</Button>
 						)}
 						<DialogClose asChild>
-							<Button variant="ghost" size="icon" className="h-8 w-8" data-testid="skill-version-dialog-close" aria-label="Close">
+							<Button variant="ghost" size="icon" className="h-8 w-8" data-testid="skill-version-dialog-close" aria-label={tc("close")}>
 								<X className="h-4 w-4" />
-								<span className="sr-only">Close</span>
+								<span className="sr-only">{tc("close")}</span>
 							</Button>
 						</DialogClose>
 					</div>
@@ -138,7 +141,7 @@ export function VersionDetailDialog({
 													variant="secondary"
 													className="bg-emerald-100 text-xs text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400"
 												>
-													Serving
+													{t("skillsRepo.serving")}
 												</Badge>
 											)}
 										</>
@@ -149,12 +152,12 @@ export function VersionDetailDialog({
 												{isShifting ? (
 													<>
 														<Loader2 className="h-3.5 w-3.5 animate-spin" />
-														Shifting...
+														{t("skillsRepo.shifting")}
 													</>
 												) : (
 													<>
 														<RefreshCw className="h-3.5 w-3.5" />
-														Shift to this version
+														{t("skillsRepo.shiftToThisVersion")}
 													</>
 												)}
 											</Button>
@@ -175,9 +178,9 @@ export function VersionDetailDialog({
 							</div>
 						</>
 					) : isError ? (
-						<p className="text-muted-foreground flex flex-1 items-center justify-center text-sm">Failed to load version</p>
+						<p className="text-muted-foreground flex flex-1 items-center justify-center text-sm">{t("skillsRepo.failedToLoadVersion")}</p>
 					) : (
-						<p className="text-muted-foreground flex flex-1 items-center justify-center text-sm">Version data not found</p>
+						<p className="text-muted-foreground flex flex-1 items-center justify-center text-sm">{t("skillsRepo.versionDataNotFound")}</p>
 					)}
 				</div>
 			</DialogContent>

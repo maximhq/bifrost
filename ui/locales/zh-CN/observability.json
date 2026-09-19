@@ -412,7 +412,10 @@
 			"tokens_one": "{{count}} 个 token",
 			"tokens_other": "{{count}} 个 token",
 			"messageCount_one": "{{count}} 条消息",
-			"messageCount_other": "{{count}} 条消息"
+			"messageCount_other": "{{count}} 条消息",
+			"loadingDetails": "正在加载日志详情",
+			"viewSession": "查看会话",
+			"entityLog": "日志"
 		},
 		"media": {
 			"pause": "暂停",
@@ -470,6 +473,44 @@
 			"user": "用户：{{message}}",
 			"assistantToolCall": "助手工具调用：{{message}}",
 			"assistant": "助手：{{message}}"
+		},
+		"video": {
+			"input": "{{type}} 输入",
+			"output": "{{type}} 输出",
+			"prompt": "PROMPT",
+			"videoId": "VIDEO ID",
+			"contentType": "CONTENT TYPE",
+			"downloaded": "视频内容已成功下载（内容未存储在日志中）",
+			"deleted": "DELETED",
+			"status": "STATUS",
+			"progress": "PROGRESS",
+			"duration": "DURATION",
+			"size": "SIZE",
+			"remixedFrom": "REMIXED FROM",
+			"errorFromProvider": "来自供应商的错误",
+			"openVideoUrl": "打开视频 URL",
+			"listOutput": "视频列表输出（{{count}}）",
+			"entityLabel": "Video"
+		},
+		"transcription": {
+			"input": "转录输入",
+			"output": "转录输出",
+			"audioFile": "AUDIO FILE",
+			"streamedUnavailable": "输出已流式传输，当前不可用。",
+			"task": "TASK",
+			"detectedLanguage": "DETECTED LANGUAGE",
+			"duration": "DURATION",
+			"wordLevelTiming": "WORD-LEVEL TIMING",
+			"segments": "SEGMENTS",
+			"segment": "片段 {{id}}",
+			"avgLogProb": "Avg LogProb: {{value}}",
+			"noSpeech": "No Speech: {{value}}%",
+			"temp": "Temp: {{value}}",
+			"logProbabilities": "LOG PROBABILITIES"
+		},
+		"pluginLogsView": {
+			"countOf": "（{{visible}} / {{total}}）",
+			"noEntries": "没有达到或高于 {{level}} 的条目。"
 		}
 	},
 	"mcpLogs": {
@@ -656,7 +697,8 @@
 			"overhead": "开销",
 			"overheadLatencySpans": "开销延迟 spans",
 			"overheadLatencySpansHelp": "内部计时 spans（setup、密钥选择、pipeline 阶段）。默认关闭。",
-			"configJsonPrecedence": "若在 config.json 的 <plugin>{{pluginName}}</plugin> 插件配置中设置了 <filter>plugin_span_filter</filter>，重启 Bifrost 后将优先于此处设置。"
+			"configJsonPrecedence": "若在 config.json 的 <plugin>{{pluginName}}</plugin> 插件配置中设置了 <filter>plugin_span_filter</filter>，重启 Bifrost 后将优先于此处设置。",
+			"destinationOtel": "the OTEL collector"
 		},
 		"savePrometheus": "保存 Prometheus 配置",
 		"saveOtel": "保存 OTEL 配置",
@@ -664,7 +706,35 @@
 		"reset": "重置",
 		"plugins": "插件",
 		"prometheus": {
-			"pullScraping": "拉取式采集"
+			"pullScraping": "拉取式采集",
+			"pullBased": "拉取式",
+			"pushBased": "推送式",
+			"pullHelp": "Prometheus 可以从 /metrics 端点抓取指标",
+			"scrapeHelp": "将 Prometheus 服务器配置为抓取此端点。仅在启用拉取式采集时提供。",
+			"userLabels": "用户标签",
+			"userLabelsHelp": "向指标添加用户数据标签",
+			"pushBasedGateway": "推送式（Push Gateway）",
+			"pushHelp": "将指标推送到 Prometheus Push Gateway，以便在集群部署中正确聚合",
+			"clusterAlert": "如果运行多个 Bifrost 节点，请使用 push gateway 以获得准确指标。拉取式 /metrics 抓取可能会漏掉负载均衡器后面的节点。",
+			"pushGatewayUrl": "Push Gateway URL",
+			"pushGatewayUrlHelp": "Prometheus Push Gateway 的 URL",
+			"pushGatewayPlaceholder": "http://pushgateway:9091 or env.PUSHGATEWAY_URL",
+			"jobName": "Job 名称",
+			"jobNameHelp": "指标的 Job 标签",
+			"pushIntervalHelp": "推送频率（1-300 秒）",
+			"instanceId": "实例 ID",
+			"instanceIdHelp": "用于在指标中标识此 Bifrost 实例。未设置时自动使用主机名。",
+			"addBasicAuth": "添加 Basic Auth",
+			"basicAuth": "Basic Authentication",
+			"username": "用户名",
+			"password": "密码",
+			"usernamePlaceholder": "Username or env.PG_USER",
+			"passwordPlaceholder": "Password or env.PG_PASS",
+			"fixBeforeSaveTab": "请先修复 {{tab}} 标签页中的验证错误再保存"
+		},
+		"configuration": "配置",
+		"maxim": {
+			"headerHelp": "你可以在请求头中发送 <code0>x-bf-log-repo-id</code0> 以及仓库 ID，以将日志写入指定仓库。"
 		}
 	},
 	"filters": {
@@ -774,5 +844,31 @@
 		"websocket_responses": "WebSocket Responses",
 		"realtime": "实时",
 		"realtime_turn": "实时轮次"
+	},
+	"celBuilder": {
+		"copied": "已复制",
+		"loading": "正在加载 CEL 构建器...",
+		"builder": "构建器",
+		"addRule": "添加规则",
+		"addRuleGroup": "添加规则组",
+		"expression": "CEL 表达式",
+		"expressionPreview": "CEL 表达式预览",
+		"leaveEmpty": "留空以匹配所有请求。",
+		"noRules": "尚未定义规则",
+		"switchTitle": "切换到可视化构建器？",
+		"switchDescription": "可视化构建器无法导入手写 CEL 表达式，因此当前 CEL 将被丢弃，构建器将从空白开始。如需保留，请先复制。",
+		"discardAndSwitch": "丢弃 CEL 并切换",
+		"selectField": "选择字段...",
+		"hasKey": "has key",
+		"keyNamePlaceholder": "{{label}} 名称（例如 x-api-key）",
+		"keyFallback": "Key",
+		"selectOperator": "选择运算符...",
+		"selectModels": "选择模型...",
+		"searchModel": "搜索模型...",
+		"selectProviders": "选择供应商...",
+		"selectPlaceholder": "选择...",
+		"value": "值",
+		"enterValue": "输入值...",
+		"commaSeparated": "输入逗号分隔的值或 JSON 数组"
 	}
 }

@@ -7,6 +7,7 @@ import type { LogEntry } from "@/lib/types/logs";
 import { useSheetNavigation } from "@/hooks/useSheetNavigation";
 import { Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { LogDetailView } from "./logDetailView";
 
 interface LogDetailSheetProps {
@@ -36,6 +37,7 @@ export function LogDetailSheet({
 	onFilterByParentRequestId,
 	onFilterBySessionId,
 }: LogDetailSheetProps) {
+	const { t } = useTranslation("observability");
 	const [pollingInterval, setPollingInterval] = useState(0);
 	const {
 		data: fullLog,
@@ -78,7 +80,7 @@ export function LogDetailSheet({
 			<SheetContent className="border-secondary flex w-full flex-col gap-4 overflow-x-hidden border p-4 sm:max-w-[60%] md:p-8">
 				{!isFullDataReady ? (
 					<div className="flex h-full items-center justify-center">
-						<SheetTitle className="sr-only">Loading log details</SheetTitle>
+						<SheetTitle className="sr-only">{t("logs.detail.loadingDetails")}</SheetTitle>
 						<Loader2 className="text-muted-foreground h-6 w-6 animate-spin" />
 					</div>
 				) : (
@@ -99,7 +101,7 @@ export function LogDetailSheet({
 										data-testid="session-button-view"
 										onClick={() => onViewSession(displayLog.parent_request_id as string, displayLog.id)}
 									>
-										View Session
+										{t("logs.detail.viewSession")}
 									</Button>
 								) : null}
 								<SheetNavigationButtons
@@ -108,7 +110,7 @@ export function LogDetailSheet({
 									onNavigate={(dir) => onNavigate?.(dir)}
 									prevKeys={prevKeys}
 									nextKeys={nextKeys}
-									entityLabel="log"
+									entityLabel={t("logs.detail.entityLog")}
 								/>
 							</>
 						}

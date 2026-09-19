@@ -199,13 +199,13 @@ export function PrometheusFormFragment({
 	const renderActions = (tabKey: "pull" | "push", tabDirty: boolean, onResetTab: () => void) => {
 		const thisTabHasErrors = tabKey === "pull" ? hasPullErrors : hasPushErrors;
 		const otherTabHasErrors = tabKey === "pull" ? hasPushErrors : hasPullErrors;
-		const otherTabLabel = tabKey === "pull" ? "Push-based" : "Pull-based";
+		const otherTabLabel = tabKey === "pull" ? t("connectors.prometheus.pushBased") : t("connectors.prometheus.pullBased");
 		const saveDisabled = !hasPrometheusAccess || !tabDirty || formIsInvalid;
 		let tooltipMsg = "";
 		if (!tabDirty) {
 			tooltipMsg = t("connectors.noChangesInTab");
 		} else if (formIsInvalid && otherTabHasErrors && !thisTabHasErrors) {
-			tooltipMsg = `Fix validation errors in the ${otherTabLabel} tab before saving`;
+			tooltipMsg = t("connectors.prometheus.fixBeforeSaveTab", { tab: otherTabLabel });
 		} else if (formIsInvalid) {
 			tooltipMsg = t("connectors.fixBeforeSave");
 		}
@@ -260,10 +260,10 @@ export function PrometheusFormFragment({
 				<Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "pull" | "push")}>
 					<TabsList className="gap-2">
 						<TabsTrigger value="pull" className="px-2 py-1" data-testid="prometheus-tab-pull">
-							Pull-based
+							{t("connectors.prometheus.pullBased")}
 						</TabsTrigger>
 						<TabsTrigger value="push" className="px-2 py-1" data-testid="prometheus-tab-push">
-							Push-based
+							{t("connectors.prometheus.pushBased")}
 						</TabsTrigger>
 					</TabsList>
 
@@ -272,14 +272,14 @@ export function PrometheusFormFragment({
 						<div className="flex items-center justify-between gap-4">
 							<div className="flex flex-col gap-1">
 								<h3 className="text-sm font-medium">{t("connectors.prometheus.pullScraping")}</h3>
-								<p className="text-muted-foreground text-xs">Prometheus can scrape metrics from the /metrics endpoint</p>
+								<p className="text-muted-foreground text-xs">{t("connectors.prometheus.pullHelp")}</p>
 							</div>
 							<FormField
 								control={form.control}
 								name="metrics_enabled"
 								render={({ field }) => (
 									<FormItem className="flex items-center gap-2">
-										<FormLabel className="text-muted-foreground text-sm font-medium">Enabled</FormLabel>
+										<FormLabel className="text-muted-foreground text-sm font-medium">{t("connectors.enabled")}</FormLabel>
 										<FormControl>
 											<Switch
 												checked={field.value}
@@ -296,7 +296,7 @@ export function PrometheusFormFragment({
 						<div className="bg-muted/50 rounded-md p-4">
 							<div className="flex items-center justify-between">
 								<div className="flex flex-col gap-1">
-									<span className="text-sm font-medium">Metrics Endpoint</span>
+									<span className="text-sm font-medium">{t("connectors.otel.metricsEndpoint")}</span>
 									<code className="text-muted-foreground text-xs">{metricsEndpoint || "http://<bifrost-host>:<port>/metrics"}</code>
 								</div>
 								{metricsEndpoint && (
@@ -313,22 +313,20 @@ export function PrometheusFormFragment({
 									</Button>
 								)}
 							</div>
-							<p className="text-muted-foreground mt-2 text-xs">
-								Configure your Prometheus server to scrape this endpoint. Served only while Pull-based scraping is enabled.
-							</p>
+							<p className="text-muted-foreground mt-2 text-xs">{t("connectors.prometheus.scrapeHelp")}</p>
 						</div>
 
 						<div className="flex items-center justify-between gap-4">
 							<div className="flex flex-col gap-1">
-								<h3 className="text-sm font-medium">Overhead breakdown</h3>
-								<p className="text-muted-foreground text-xs">Export per-component Bifrost overhead latency as a histogram.</p>
+								<h3 className="text-sm font-medium">{t("connectors.otel.overheadBreakdown")}</h3>
+								<p className="text-muted-foreground text-xs">{t("connectors.otel.overheadBreakdownHelp")}</p>
 							</div>
 							<FormField
 								control={form.control}
 								name="overhead_breakdown_enabled"
 								render={({ field }) => (
 									<FormItem className="flex items-center gap-2">
-										<FormLabel className="text-muted-foreground text-sm font-medium">Enabled</FormLabel>
+										<FormLabel className="text-muted-foreground text-sm font-medium">{t("connectors.enabled")}</FormLabel>
 										<FormControl>
 											<Switch
 												checked={field.value}
@@ -344,15 +342,15 @@ export function PrometheusFormFragment({
 
 						<div className="flex items-center justify-between gap-4">
 							<div className="flex flex-col gap-1">
-								<h3 className="text-sm font-medium">User labels</h3>
-								<p className="text-muted-foreground text-xs">Add user data labels to metrics</p>
+								<h3 className="text-sm font-medium">{t("connectors.prometheus.userLabels")}</h3>
+								<p className="text-muted-foreground text-xs">{t("connectors.prometheus.userLabelsHelp")}</p>
 							</div>
 							<FormField
 								control={form.control}
 								name="user_labels_enabled"
 								render={({ field }) => (
 									<FormItem className="flex items-center gap-2">
-										<FormLabel className="text-muted-foreground text-sm font-medium">Enabled</FormLabel>
+										<FormLabel className="text-muted-foreground text-sm font-medium">{t("connectors.enabled")}</FormLabel>
 										<FormControl>
 											<Switch
 												checked={field.value}
@@ -374,18 +372,16 @@ export function PrometheusFormFragment({
 						<div className="flex items-center justify-between gap-4">
 							<div className="flex flex-col gap-1">
 								<h3 className="flex flex-row items-center gap-2 text-sm font-medium">
-									Push-based (Push Gateway) <Badge variant="secondary">BETA</Badge>
+									{t("connectors.prometheus.pushBasedGateway")} <Badge variant="secondary">BETA</Badge>
 								</h3>
-								<p className="text-muted-foreground text-xs">
-									Push metrics to a Prometheus Push Gateway for proper aggregation in cluster deployments
-								</p>
+								<p className="text-muted-foreground text-xs">{t("connectors.prometheus.pushHelp")}</p>
 							</div>
 							<FormField
 								control={form.control}
 								name="push_gateway_enabled"
 								render={({ field }) => (
 									<FormItem className="flex items-center gap-2">
-										<FormLabel className="text-muted-foreground text-sm font-medium">Enabled</FormLabel>
+										<FormLabel className="text-muted-foreground text-sm font-medium">{t("connectors.enabled")}</FormLabel>
 										<FormControl>
 											<Switch
 												checked={field.value}
@@ -401,10 +397,7 @@ export function PrometheusFormFragment({
 
 						<Alert variant="info">
 							<AlertTriangle className="" />
-							<AlertDescription className="text-xs">
-								If you are running multiple Bifrost nodes, use push gateway for accurate metrics. Pull-based /metrics scraping may miss
-								nodes behind a load balancer.
-							</AlertDescription>
+							<AlertDescription className="text-xs">{t("connectors.prometheus.clusterAlert")}</AlertDescription>
 						</Alert>
 
 						<div className="space-y-4">
@@ -413,16 +406,16 @@ export function PrometheusFormFragment({
 								name="prometheus_config.push_gateway_url"
 								render={({ field }) => (
 									<FormItem className="w-full">
-										<FormLabel>Push Gateway URL</FormLabel>
+										<FormLabel>{t("connectors.prometheus.pushGatewayUrl")}</FormLabel>
 										<FormControl>
 											<SecretVarInput
-												placeholder="http://pushgateway:9091 or env.PUSHGATEWAY_URL"
+												placeholder={t("connectors.prometheus.pushGatewayPlaceholder")}
 												disabled={!hasPrometheusAccess}
 												data-testid="prometheus-push-gateway-url"
 												{...field}
 											/>
 										</FormControl>
-										<FormDescription>URL of your Prometheus Push Gateway</FormDescription>
+										<FormDescription>{t("connectors.prometheus.pushGatewayUrlHelp")}</FormDescription>
 										<FormMessage />
 									</FormItem>
 								)}
@@ -434,11 +427,11 @@ export function PrometheusFormFragment({
 									name="prometheus_config.job_name"
 									render={({ field }) => (
 										<FormItem>
-											<FormLabel>Job Name</FormLabel>
+											<FormLabel>{t("connectors.prometheus.jobName")}</FormLabel>
 											<FormControl>
 												<Input placeholder="bifrost" disabled={!hasPrometheusAccess} data-testid="prometheus-job-name" {...field} />
 											</FormControl>
-											<FormDescription>Job label for metrics</FormDescription>
+											<FormDescription>{t("connectors.prometheus.jobNameHelp")}</FormDescription>
 											<FormMessage />
 										</FormItem>
 									)}
@@ -449,7 +442,7 @@ export function PrometheusFormFragment({
 									name="prometheus_config.push_interval"
 									render={({ field }) => (
 										<FormItem>
-											<FormLabel>Push Interval (seconds)</FormLabel>
+											<FormLabel>{t("connectors.otel.pushInterval")}</FormLabel>
 											<FormControl>
 												<Input
 													type="number"
@@ -461,7 +454,7 @@ export function PrometheusFormFragment({
 													onChange={(e) => field.onChange(parseInt(e.target.value) || 15)}
 												/>
 											</FormControl>
-											<FormDescription>How often to push (1-300s)</FormDescription>
+											<FormDescription>{t("connectors.prometheus.pushIntervalHelp")}</FormDescription>
 											<FormMessage />
 										</FormItem>
 									)}
@@ -474,16 +467,14 @@ export function PrometheusFormFragment({
 								render={({ field }) => (
 									<FormItem>
 										<FormLabel className="flex items-center gap-2">
-											Instance ID
+											{t("connectors.prometheus.instanceId")}
 											<TooltipProvider>
 												<Tooltip>
 													<TooltipTrigger asChild>
 														<Info className="text-muted-foreground h-3 w-3" />
 													</TooltipTrigger>
 													<TooltipContent>
-														<p className="max-w-xs text-xs">
-															Used to identify this Bifrost instance in metrics. If not set, hostname is used automatically.
-														</p>
+														<p className="max-w-xs text-xs">{t("connectors.prometheus.instanceIdHelp")}</p>
 													</TooltipContent>
 												</Tooltip>
 											</TooltipProvider>
@@ -513,12 +504,12 @@ export function PrometheusFormFragment({
 										data-testid="prometheus-add-basic-auth"
 									>
 										<Plus className="mr-2 h-3 w-3" />
-										Add Basic Auth
+										{t("connectors.prometheus.addBasicAuth")}
 									</Button>
 								) : (
 									<>
 										<div className="flex items-center justify-between">
-											<span className="text-sm font-medium">Basic Authentication</span>
+											<span className="text-sm font-medium">{t("connectors.prometheus.basicAuth")}</span>
 											<Button
 												type="button"
 												variant="ghost"
@@ -538,10 +529,10 @@ export function PrometheusFormFragment({
 												name="prometheus_config.basic_auth_username"
 												render={({ field }) => (
 													<FormItem>
-														<FormLabel>Username</FormLabel>
+														<FormLabel>{t("connectors.prometheus.username")}</FormLabel>
 														<FormControl>
 															<SecretVarInput
-																placeholder="Username or env.PG_USER"
+																placeholder={t("connectors.prometheus.usernamePlaceholder")}
 																disabled={!hasPrometheusAccess}
 																data-testid="prometheus-basic-auth-username"
 																{...field}
@@ -557,11 +548,11 @@ export function PrometheusFormFragment({
 												name="prometheus_config.basic_auth_password"
 												render={({ field }) => (
 													<FormItem>
-														<FormLabel>Password</FormLabel>
+														<FormLabel>{t("connectors.prometheus.password")}</FormLabel>
 														<FormControl>
 															<SecretVarInput
 																type="password"
-																placeholder="Password or env.PG_PASS"
+																placeholder={t("connectors.prometheus.passwordPlaceholder")}
 																disabled={!hasPrometheusAccess}
 																hideValueWhenEnv
 																redactNonEnvValue
