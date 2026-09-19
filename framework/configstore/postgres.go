@@ -78,6 +78,17 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 	d := &RDBConfigStore{logger: logger}
 	d.db.Store(db)
 
+	// pg_notify publisher: uses the runtime GORM pool for NOTIFY calls.
+	d.notifier = newPGNotifier(d.DB, logger)
+
+	// pg_notify listener: uses a dedicated pgx connection for LISTEN.
+	// Created here, started later by the server via ListenForChanges.
+	if listener, err := newPGListener(config, logger); err != nil {
+		logger.Warn("configstore: failed to create pg_notify listener (cross-pod sync disabled): %v", err)
+	} else {
+		d.listener = listener
+	}
+
 	// migrateOnFreshFn: downstream consumers (e.g. bifrost-enterprise) run
 	// their migrations via this hook on a throwaway pool that closes after fn.
 	d.migrateOnFreshFn = func(ctx context.Context, fn func(context.Context, *gorm.DB) error) error {

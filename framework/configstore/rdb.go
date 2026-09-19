@@ -41,6 +41,8 @@ type RDBConfigStore struct {
 	logger           schemas.Logger
 	migrateOnFreshFn func(ctx context.Context, fn func(context.Context, *gorm.DB) error) error
 	refreshPoolFn    func(ctx context.Context) error
+	notifier         *pgNotifier  // nil for SQLite; publishes config changes via pg_notify
+	listener         *pgListener  // nil for SQLite; listens for config changes via LISTEN
 }
 
 // getWeight safely dereferences a *float64 weight pointer, returning 1.0 as default if nil.
@@ -313,7 +315,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 	// blob that is NOT part of the API-facing ClientConfig (so config.json sync
 	// can never set it). Reading it inside the transaction before DELETE keeps
 	// callers from clobbering UI prefs on every config write.
-	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	if err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing tables.TableClientConfig
 		if err := dbForUpdate(tx.Select("metadata_json")).First(&existing).Error; err == nil {
 			dbConfig.MetadataJSON = existing.MetadataJSON
@@ -338,7 +340,11 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 			}
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "client_config", Action: "upsert"})
+	return nil
 }
 
 // Ping checks if the database is reachable.
@@ -641,7 +647,7 @@ func mergeMetadataPatch(dst, patch map[string]any) {
 // with a nil value in patch are removed from the blob (callers can pass
 // {"key": nil} to clear, including nested keys).
 func (s *RDBConfigStore) UpdateClientMetadata(ctx context.Context, patch map[string]any) error {
-	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	if err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing tables.TableClientConfig
 		if err := dbForUpdate(tx).First(&existing).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -666,7 +672,11 @@ func (s *RDBConfigStore) UpdateClientMetadata(ctx context.Context, patch map[str
 			return fmt.Errorf("client config metadata update affected no rows")
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "client_config", Action: "upsert"})
+	return nil
 }
 
 // UpdateProvidersConfig updates the client configuration in the database.
@@ -874,6 +884,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 			}
 		}
 	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "provider", Action: "upsert"})
 	return nil
 }
 
@@ -921,9 +932,13 @@ func (s *RDBConfigStore) cleanupVirtualKeyProviderConfigsForDeletedProvider(ctx 
 // UpdateProvider updates a single provider configuration in the database without deleting/recreating.
 func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.ModelProvider, config ProviderConfig, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		if err := s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.UpdateProvider(ctx, provider, config, transaction)
-		})
+		}); err != nil {
+			return err
+		}
+		s.notifyChange(ctx, ConfigChangeEvent{Entity: "provider", Action: "upsert", Provider: string(provider)})
+		return nil
 	}
 
 	var txDB *gorm.DB
@@ -1234,9 +1249,13 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 // DeleteProvider deletes a single provider and all its associated keys from the database.
 func (s *RDBConfigStore) DeleteProvider(ctx context.Context, provider schemas.ModelProvider, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		if err := s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.DeleteProvider(ctx, provider, transaction)
-		})
+		}); err != nil {
+			return err
+		}
+		s.notifyChange(ctx, ConfigChangeEvent{Entity: "provider", Action: "delete", Provider: string(provider)})
+		return nil
 	}
 
 	var txDB *gorm.DB
@@ -1420,9 +1439,13 @@ func (s *RDBConfigStore) GetProviderKey(ctx context.Context, provider schemas.Mo
 // CreateProviderKey creates a new key for an existing provider.
 func (s *RDBConfigStore) CreateProviderKey(ctx context.Context, provider schemas.ModelProvider, key schemas.Key, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		if err := s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.CreateProviderKey(ctx, provider, key, transaction)
-		})
+		}); err != nil {
+			return err
+		}
+		s.notifyChange(ctx, ConfigChangeEvent{Entity: "provider_key", Action: "upsert", Provider: string(provider)})
+		return nil
 	}
 
 	var txDB *gorm.DB
@@ -1447,9 +1470,13 @@ func (s *RDBConfigStore) CreateProviderKey(ctx context.Context, provider schemas
 // UpdateProviderKey updates a single key for an existing provider.
 func (s *RDBConfigStore) UpdateProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string, key schemas.Key, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		if err := s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.UpdateProviderKey(ctx, provider, keyID, key, transaction)
-		})
+		}); err != nil {
+			return err
+		}
+		s.notifyChange(ctx, ConfigChangeEvent{Entity: "provider_key", Action: "upsert", Provider: string(provider), ID: keyID})
+		return nil
 	}
 
 	var txDB *gorm.DB
@@ -1485,9 +1512,13 @@ func (s *RDBConfigStore) UpdateProviderKey(ctx context.Context, provider schemas
 // DeleteProviderKey deletes a single key for an existing provider.
 func (s *RDBConfigStore) DeleteProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		if err := s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.DeleteProviderKey(ctx, provider, keyID, transaction)
-		})
+		}); err != nil {
+			return err
+		}
+		s.notifyChange(ctx, ConfigChangeEvent{Entity: "provider_key", Action: "delete", Provider: string(provider), ID: keyID})
+		return nil
 	}
 
 	var txDB *gorm.DB
@@ -2257,7 +2288,7 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 	}
 	// Write the slug back so the in-memory registration serves /mcp/<slug> without a restart.
 	clientConfig.EndpointSlug = endpointSlug
-	return s.DB().Transaction(func(tx *gorm.DB) error {
+	if err := s.DB().Transaction(func(tx *gorm.DB) error {
 		// Check if a client with the same name already exists
 		if _, err := s.GetMCPClientByName(ctx, clientConfig.Name); err == nil {
 			return fmt.Errorf("MCP client with name %q %w", clientConfig.Name, ErrAlreadyExists)
@@ -2315,7 +2346,11 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			return s.parseGormError(err)
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "mcp_client", Action: "upsert"})
+	return nil
 }
 
 // marshalTokenExchangeJSON serialises the token_exchange block the way
@@ -2343,7 +2378,7 @@ func marshalTokenExchangeJSON(cfg *schemas.MCPTokenExchangeConfig) (*string, err
 
 // UpdateMCPClientConfig updates an existing MCP client configuration in the database.
 func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient) error {
-	return s.DB().Transaction(func(tx *gorm.DB) error {
+	if err := s.DB().Transaction(func(tx *gorm.DB) error {
 		// Find existing client
 		var existingClient tables.TableMCPClient
 		if err := dbForUpdate(tx.WithContext(ctx)).Where("client_id = ?", id).First(&existingClient).Error; err != nil {
@@ -2578,12 +2613,16 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 			return s.parseGormError(err)
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "mcp_client", Action: "upsert"})
+	return nil
 }
 
 // DeleteMCPClientConfig deletes an MCP client configuration from the database.
 func (s *RDBConfigStore) DeleteMCPClientConfig(ctx context.Context, id string) error {
-	return s.DB().Transaction(func(tx *gorm.DB) error {
+	if err := s.DB().Transaction(func(tx *gorm.DB) error {
 		// Find existing client
 		var existingClient tables.TableMCPClient
 		if err := dbForUpdate(tx.WithContext(ctx)).Where("client_id = ?", id).First(&existingClient).Error; err != nil {
@@ -2660,7 +2699,11 @@ func (s *RDBConfigStore) DeleteMCPClientConfig(ctx context.Context, id string) e
 		// which is why each needed its own explicit delete rather than
 		// relying on cascades.
 		return tx.WithContext(ctx).Delete(&existingClient).Error
-	})
+	}); err != nil {
+		return err
+	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "mcp_client", Action: "delete"})
+	return nil
 }
 
 // GetVectorStoreConfig retrieves the vector store configuration from the database.
@@ -3127,6 +3170,7 @@ func (s *RDBConfigStore) CreatePricingOverride(ctx context.Context, override *ta
 	if err := txDB.WithContext(ctx).Create(override).Error; err != nil {
 		return s.parseGormError(err)
 	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "pricing_override", Action: "upsert"})
 	return nil
 }
 
@@ -3152,6 +3196,7 @@ func (s *RDBConfigStore) UpdatePricingOverride(ctx context.Context, override *ta
 	if err := txDB.WithContext(ctx).Save(override).Error; err != nil {
 		return s.parseGormError(err)
 	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "pricing_override", Action: "upsert"})
 	return nil
 }
 
@@ -3169,6 +3214,7 @@ func (s *RDBConfigStore) DeletePricingOverride(ctx context.Context, id string, t
 	if res.RowsAffected == 0 {
 		return ErrNotFound
 	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "pricing_override", Action: "delete"})
 	return nil
 }
 
@@ -3299,6 +3345,7 @@ func (s *RDBConfigStore) CreatePlugin(ctx context.Context, plugin *tables.TableP
 	if err := txDB.WithContext(ctx).Create(plugin).Error; err != nil {
 		return s.parseGormError(err)
 	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "plugin", Action: "upsert"})
 	return nil
 }
 
@@ -3325,6 +3372,7 @@ func (s *RDBConfigStore) UpsertPlugin(ctx context.Context, plugin *tables.TableP
 	).Create(plugin).Error; err != nil {
 		return s.parseGormError(err)
 	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "plugin", Action: "upsert"})
 	return nil
 }
 
@@ -3392,8 +3440,11 @@ func (s *RDBConfigStore) UpdatePlugin(ctx context.Context, plugin *tables.TableP
 		return s.parseGormError(err)
 	}
 	if localTx {
-		return txDB.Commit().Error
+		if err := txDB.Commit().Error; err != nil {
+			return err
+		}
 	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "plugin", Action: "upsert"})
 	return nil
 }
 
@@ -3412,7 +3463,11 @@ func (s *RDBConfigStore) DeletePlugin(ctx context.Context, name string, tx ...*g
 		}
 		return err
 	}
-	return txDB.WithContext(ctx).Delete(&plugin).Error
+	if err := txDB.WithContext(ctx).Delete(&plugin).Error; err != nil {
+		return err
+	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "plugin", Action: "delete"})
+	return nil
 }
 
 // GOVERNANCE METHODS
@@ -3867,15 +3922,20 @@ func (s *RDBConfigStore) CreateVirtualKey(ctx context.Context, virtualKey *table
 	if err := txDB.WithContext(ctx).Create(virtualKey).Error; err != nil {
 		return s.parseGormError(err)
 	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "virtual_key", Action: "upsert"})
 	return nil
 }
 
 // UpdateVirtualKey updates an existing virtual key in the database.
 func (s *RDBConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *tables.TableVirtualKey, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		if err := s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.UpdateVirtualKey(ctx, virtualKey, transaction)
-		})
+		}); err != nil {
+			return err
+		}
+		s.notifyChange(ctx, ConfigChangeEvent{Entity: "virtual_key", Action: "upsert"})
+		return nil
 	}
 
 	txDB := tx[0]
@@ -4097,6 +4157,7 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...
 		}
 		return err
 	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "virtual_key", Action: "delete"})
 	return nil
 }
 
@@ -4188,6 +4249,7 @@ func (s *RDBConfigStore) CreateVirtualKeyProviderConfig(ctx context.Context, vir
 			return err
 		}
 	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "vk_provider_config", Action: "upsert"})
 	return nil
 }
 
@@ -4406,9 +4468,13 @@ func (s *RDBConfigStore) ReplaceVirtualKeyProviderConfigs(ctx context.Context, v
 // UpdateVirtualKeyProviderConfig updates a virtual key provider config in the database.
 func (s *RDBConfigStore) UpdateVirtualKeyProviderConfig(ctx context.Context, virtualKeyProviderConfig *tables.TableVirtualKeyProviderConfig, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		if err := s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.UpdateVirtualKeyProviderConfig(ctx, virtualKeyProviderConfig, transaction)
-		})
+		}); err != nil {
+			return err
+		}
+		s.notifyChange(ctx, ConfigChangeEvent{Entity: "vk_provider_config", Action: "upsert"})
+		return nil
 	}
 
 	var txDB *gorm.DB
@@ -4493,9 +4559,13 @@ func (s *RDBConfigStore) UpdateVirtualKeyProviderConfig(ctx context.Context, vir
 // DeleteVirtualKeyProviderConfig deletes a virtual key provider config from the database.
 func (s *RDBConfigStore) DeleteVirtualKeyProviderConfig(ctx context.Context, id uint, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		if err := s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.DeleteVirtualKeyProviderConfig(ctx, id, transaction)
-		})
+		}); err != nil {
+			return err
+		}
+		s.notifyChange(ctx, ConfigChangeEvent{Entity: "vk_provider_config", Action: "delete"})
+		return nil
 	}
 
 	var txDB *gorm.DB
@@ -4604,7 +4674,7 @@ func (s *RDBConfigStore) CreateVirtualMCP(ctx context.Context, def *tables.Table
 	// Capture intent before Create: enabled has a default:true, which gorm applies to a false and
 	// writes back into the struct, so the check must use the pre-insert value.
 	wantEnabled := def.Enabled
-	return db.Transaction(func(tx *gorm.DB) error {
+	if err := db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(def).Error; err != nil {
 			if isUniqueConstraintError(err) {
 				if taken, checkErr := s.MCPEndpointSlugTaken(ctx, def.EndpointSlug); checkErr == nil && taken {
@@ -4617,7 +4687,11 @@ func (s *RDBConfigStore) CreateVirtualMCP(ctx context.Context, def *tables.Table
 			return tx.Model(def).Update("enabled", false).Error
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "virtual_mcp", Action: "upsert"})
+	return nil
 }
 
 // MCPEndpointSlugTaken reports whether a Virtual MCP or MCP client already uses the slug, across both
@@ -4685,18 +4759,26 @@ func (s *RDBConfigStore) GetVirtualMCPsPaginated(ctx context.Context, params Vir
 // UpdateVirtualMCP persists a Virtual MCP, keeping endpoint_slug and created_at immutable. Name
 // uniqueness is enforced by the table's own unique index.
 func (s *RDBConfigStore) UpdateVirtualMCP(ctx context.Context, def *tables.TableVirtualMCP) error {
-	return s.DB().WithContext(ctx).Omit("endpoint_slug", "created_at").Save(def).Error
+	if err := s.DB().WithContext(ctx).Omit("endpoint_slug", "created_at").Save(def).Error; err != nil {
+		return err
+	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "virtual_mcp", Action: "upsert"})
+	return nil
 }
 
 // DeleteVirtualMCP removes a Virtual MCP and its VK assignments (explicit, so it holds on any DB
 // regardless of FK cascade support).
 func (s *RDBConfigStore) DeleteVirtualMCP(ctx context.Context, id uint) error {
-	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	if err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("tool_group_id = ?", id).Delete(&tables.TableVirtualKeyVirtualMCP{}).Error; err != nil {
 			return err
 		}
 		return tx.Delete(&tables.TableVirtualMCP{}, id).Error
-	})
+	}); err != nil {
+		return err
+	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "virtual_mcp", Action: "delete"})
+	return nil
 }
 
 // AttachVirtualMCPToVirtualKey links a Virtual MCP to a VK, idempotently.
@@ -4787,15 +4869,20 @@ func (s *RDBConfigStore) CreateVirtualKeyMCPConfig(ctx context.Context, virtualK
 	if err := txDB.WithContext(ctx).Create(virtualKeyMCPConfig).Error; err != nil {
 		return s.parseGormError(err)
 	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "vk_mcp_config", Action: "upsert"})
 	return nil
 }
 
 // UpdateVirtualKeyMCPConfig updates a virtual key provider config in the database.
 func (s *RDBConfigStore) UpdateVirtualKeyMCPConfig(ctx context.Context, virtualKeyMCPConfig *tables.TableVirtualKeyMCPConfig, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		if err := s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.UpdateVirtualKeyMCPConfig(ctx, virtualKeyMCPConfig, transaction)
-		})
+		}); err != nil {
+			return err
+		}
+		s.notifyChange(ctx, ConfigChangeEvent{Entity: "vk_mcp_config", Action: "upsert"})
+		return nil
 	}
 
 	txDB := tx[0]
@@ -4817,9 +4904,13 @@ func (s *RDBConfigStore) UpdateVirtualKeyMCPConfig(ctx context.Context, virtualK
 // DeleteVirtualKeyMCPConfig deletes a virtual key provider config from the database.
 func (s *RDBConfigStore) DeleteVirtualKeyMCPConfig(ctx context.Context, id uint, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		if err := s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.DeleteVirtualKeyMCPConfig(ctx, id, transaction)
-		})
+		}); err != nil {
+			return err
+		}
+		s.notifyChange(ctx, ConfigChangeEvent{Entity: "vk_mcp_config", Action: "delete"})
+		return nil
 	}
 
 	txDB := tx[0]
@@ -4968,6 +5059,7 @@ func (s *RDBConfigStore) CreateTeam(ctx context.Context, team *tables.TableTeam,
 	if err := txDB.WithContext(ctx).Create(team).Error; err != nil {
 		return s.parseGormError(err)
 	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "team", Action: "upsert"})
 	return nil
 }
 
@@ -4994,6 +5086,7 @@ func (s *RDBConfigStore) UpdateTeam(ctx context.Context, team *tables.TableTeam,
 	if err := txDB.WithContext(ctx).Save(team).Error; err != nil {
 		return s.parseGormError(err)
 	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "team", Action: "upsert"})
 	return nil
 }
 
@@ -5002,9 +5095,13 @@ func (s *RDBConfigStore) UpdateTeam(ctx context.Context, team *tables.TableTeam,
 // Rate limit is a sibling row (team holds a FK to it) — deleted explicitly.
 func (s *RDBConfigStore) DeleteTeam(ctx context.Context, id string, tx ...*gorm.DB) error {
 	if len(tx) == 0 || tx[0] == nil {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		if err := s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.DeleteTeam(ctx, id, transaction)
-		})
+		}); err != nil {
+			return err
+		}
+		s.notifyChange(ctx, ConfigChangeEvent{Entity: "team", Action: "delete"})
+		return nil
 	}
 
 	txDB := tx[0]
@@ -5121,6 +5218,7 @@ func (s *RDBConfigStore) CreateCustomer(ctx context.Context, customer *tables.Ta
 	if err := txDB.WithContext(ctx).Create(customer).Error; err != nil {
 		return s.parseGormError(err)
 	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "customer", Action: "upsert"})
 	return nil
 }
 
@@ -5147,15 +5245,20 @@ func (s *RDBConfigStore) UpdateCustomer(ctx context.Context, customer *tables.Ta
 	if err := txDB.WithContext(ctx).Save(customer).Error; err != nil {
 		return s.parseGormError(err)
 	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "customer", Action: "upsert"})
 	return nil
 }
 
 // DeleteCustomer deletes a customer from the database.
 func (s *RDBConfigStore) DeleteCustomer(ctx context.Context, id string, tx ...*gorm.DB) error {
 	if len(tx) == 0 || tx[0] == nil {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		if err := s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.DeleteCustomer(ctx, id, transaction)
-		})
+		}); err != nil {
+			return err
+		}
+		s.notifyChange(ctx, ConfigChangeEvent{Entity: "customer", Action: "delete"})
+		return nil
 	}
 
 	txDB := tx[0]
@@ -5350,6 +5453,7 @@ func (s *RDBConfigStore) CreateBudget(ctx context.Context, budget *tables.TableB
 	if err := txDB.WithContext(ctx).Create(budget).Error; err != nil {
 		return s.parseGormError(err)
 	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "budget", Action: "upsert"})
 	return nil
 }
 
@@ -5375,9 +5479,13 @@ func (s *RDBConfigStore) UpdateBudgets(ctx context.Context, budgets []*tables.Ta
 // UpdateBudget updates a budget in the database.
 func (s *RDBConfigStore) UpdateBudget(ctx context.Context, budget *tables.TableBudget, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		if err := s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.UpdateBudget(ctx, budget, transaction)
-		})
+		}); err != nil {
+			return err
+		}
+		s.notifyChange(ctx, ConfigChangeEvent{Entity: "budget", Action: "upsert"})
+		return nil
 	}
 
 	txDB := tx[0]
@@ -5454,12 +5562,15 @@ func (s *RDBConfigStore) UpdateBudget(ctx context.Context, budget *tables.TableB
 func (s *RDBConfigStore) UpdateBudgetOverride(ctx context.Context, id string, amount float64, mode tables.BudgetOverrideMode, cyclesTotal int, calendarAligned bool, tx ...*gorm.DB) (*tables.TableBudget, error) {
 	if len(tx) == 0 {
 		var updated *tables.TableBudget
-		err := s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
-			var err error
-			updated, err = s.UpdateBudgetOverride(ctx, id, amount, mode, cyclesTotal, calendarAligned, transaction)
-			return err
-		})
-		return updated, err
+		if err := s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+			var txErr error
+			updated, txErr = s.UpdateBudgetOverride(ctx, id, amount, mode, cyclesTotal, calendarAligned, transaction)
+			return txErr
+		}); err != nil {
+			return nil, err
+		}
+		s.notifyChange(ctx, ConfigChangeEvent{Entity: "budget", Action: "upsert"})
+		return updated, nil
 	}
 
 	txDB := tx[0].WithContext(ctx)
@@ -5497,9 +5608,13 @@ func (s *RDBConfigStore) UpdateBudgetOverride(ctx context.Context, id string, am
 // DeleteBudget deletes a budget from the database.
 func (s *RDBConfigStore) DeleteBudget(ctx context.Context, id string, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		if err := s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.DeleteBudget(ctx, id, transaction)
-		})
+		}); err != nil {
+			return err
+		}
+		s.notifyChange(ctx, ConfigChangeEvent{Entity: "budget", Action: "delete"})
+		return nil
 	}
 
 	txDB := tx[0]
@@ -5730,7 +5845,7 @@ func (s *RDBConfigStore) CreateRoutingRule(ctx context.Context, rule *tables.Tab
 		return fmt.Errorf("routing rule with priority %d already exists for scope '%s'", rule.Priority, rule.Scope)
 	}
 
-	return s.parseGormError(database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	if err := s.parseGormError(database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		targets := rule.Targets
 		rule.Targets = nil
 		if err := tx.Omit("Targets").Create(rule).Error; err != nil {
@@ -5745,7 +5860,11 @@ func (s *RDBConfigStore) CreateRoutingRule(ctx context.Context, rule *tables.Tab
 			}
 		}
 		return nil
-	}))
+	})); err != nil {
+		return err
+	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "routing_rule", Action: "upsert"})
+	return nil
 }
 
 // UpdateRoutingRule updates an existing routing rule in the database.
@@ -5761,7 +5880,7 @@ func (s *RDBConfigStore) UpdateRoutingRule(ctx context.Context, rule *tables.Tab
 		return fmt.Errorf("scopeID is required for non-global scope '%s'", rule.Scope)
 	}
 
-	return s.parseGormError(database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	if err := s.parseGormError(database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing tables.TableRoutingRule
 		if err := dbForUpdate(tx).First(&existing, "id = ?", rule.ID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -5808,7 +5927,11 @@ func (s *RDBConfigStore) UpdateRoutingRule(ctx context.Context, rule *tables.Tab
 			}
 		}
 		return nil
-	}))
+	})); err != nil {
+		return err
+	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "routing_rule", Action: "upsert"})
+	return nil
 }
 
 // SyncRoutingRules applies a batch of routing rule creates and updates atomically, deferring the
@@ -5835,7 +5958,7 @@ func (s *RDBConfigStore) SyncRoutingRules(ctx context.Context, toAdd []tables.Ta
 		scopeID *string
 	}
 
-	return s.parseGormError(database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	if err := s.parseGormError(database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		seen := make(map[string]bool)
 		scopes := make([]scopeRef, 0, len(toAdd)+len(toUpdate))
 		record := func(rule *tables.TableRoutingRule) {
@@ -5923,7 +6046,11 @@ func (s *RDBConfigStore) SyncRoutingRules(ctx context.Context, toAdd []tables.Ta
 			}
 		}
 		return nil
-	}))
+	})); err != nil {
+		return err
+	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "routing_rule", Action: "upsert"})
+	return nil
 }
 
 // DeleteRoutingRule deletes a routing rule and its targets from the database.
@@ -5933,7 +6060,7 @@ func (s *RDBConfigStore) DeleteRoutingRule(ctx context.Context, id string, tx ..
 		database = tx[0]
 	}
 
-	return s.parseGormError(database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	if err := s.parseGormError(database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing tables.TableRoutingRule
 		if err := dbForUpdate(tx).First(&existing, "id = ?", id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -5952,7 +6079,11 @@ func (s *RDBConfigStore) DeleteRoutingRule(ctx context.Context, id string, tx ..
 			return ErrNotFound
 		}
 		return nil
-	}))
+	})); err != nil {
+		return err
+	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "routing_rule", Action: "delete"})
+	return nil
 }
 
 // GetModelConfigs retrieves all model configs from the database.
@@ -6195,9 +6326,13 @@ func (s *RDBConfigStore) CreateModelConfig(ctx context.Context, modelConfig *tab
 	// Locking the scope owner and inserting the config must be atomic, so wrap in a
 	// transaction when the caller didn't supply one.
 	if len(tx) == 0 || tx[0] == nil {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		if err := s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.CreateModelConfig(ctx, modelConfig, transaction)
-		})
+		}); err != nil {
+			return err
+		}
+		s.notifyChange(ctx, ConfigChangeEvent{Entity: "model_config", Action: "upsert"})
+		return nil
 	}
 	txDB := tx[0]
 
@@ -6258,9 +6393,13 @@ func (s *RDBConfigStore) lockModelConfigScopeOwner(ctx context.Context, txDB *go
 // UpdateModelConfig updates a model config in the database.
 func (s *RDBConfigStore) UpdateModelConfig(ctx context.Context, modelConfig *tables.TableModelConfig, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		if err := s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.UpdateModelConfig(ctx, modelConfig, transaction)
-		})
+		}); err != nil {
+			return err
+		}
+		s.notifyChange(ctx, ConfigChangeEvent{Entity: "model_config", Action: "upsert"})
+		return nil
 	}
 
 	txDB := tx[0]
@@ -6306,9 +6445,13 @@ func (s *RDBConfigStore) UpdateModelConfigs(ctx context.Context, modelConfigs []
 // DeleteModelConfig deletes a model config from the database.
 func (s *RDBConfigStore) DeleteModelConfig(ctx context.Context, id string, tx ...*gorm.DB) error {
 	if len(tx) == 0 || tx[0] == nil {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		if err := s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.DeleteModelConfig(ctx, id, transaction)
-		})
+		}); err != nil {
+			return err
+		}
+		s.notifyChange(ctx, ConfigChangeEvent{Entity: "model_config", Action: "delete"})
+		return nil
 	}
 
 	txDB := tx[0]
@@ -9676,7 +9819,7 @@ func (s *RDBConfigStore) CreateWebhookEndpoint(ctx context.Context, endpoint *ta
 	// re-encrypt. Reference fields (Secret pointer, Headers map) are only ever
 	// reassigned by the hook, never mutated through, so the shallow copy is safe.
 	persist := *endpoint
-	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	if err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing tables.TableWebhookEndpoint
 		if err := tx.Where("name = ?", endpoint.Name).First(&existing).Error; err == nil {
 			return fmt.Errorf("webhook endpoint with name %q %w", endpoint.Name, ErrAlreadyExists)
@@ -9684,7 +9827,11 @@ func (s *RDBConfigStore) CreateWebhookEndpoint(ctx context.Context, endpoint *ta
 			return err
 		}
 		return s.parseGormError(tx.Create(&persist).Error)
-	})
+	}); err != nil {
+		return err
+	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "webhook_endpoint", Action: "upsert"})
+	return nil
 }
 
 // UpdateWebhookEndpoint updates an endpoint's caller-editable fields. Callers
@@ -9698,7 +9845,7 @@ func (s *RDBConfigStore) UpdateWebhookEndpoint(ctx context.Context, endpoint *ta
 	if endpoint == nil {
 		return fmt.Errorf("webhook endpoint cannot be nil")
 	}
-	return s.DB().Transaction(func(tx *gorm.DB) error {
+	if err := s.DB().Transaction(func(tx *gorm.DB) error {
 		var existing tables.TableWebhookEndpoint
 		if err := dbForUpdate(tx.WithContext(ctx)).Where("id = ?", endpoint.ID).First(&existing).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -9724,7 +9871,11 @@ func (s *RDBConfigStore) UpdateWebhookEndpoint(ctx context.Context, endpoint *ta
 		existing.MaxConcurrentDeliveries = endpoint.MaxConcurrentDeliveries
 		existing.ConfigHash = endpoint.ConfigHash
 		return s.parseGormError(tx.WithContext(ctx).Save(&existing).Error)
-	})
+	}); err != nil {
+		return err
+	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "webhook_endpoint", Action: "upsert"})
+	return nil
 }
 
 // DeleteWebhookEndpoint removes a webhook endpoint by ID.
@@ -9736,6 +9887,7 @@ func (s *RDBConfigStore) DeleteWebhookEndpoint(ctx context.Context, id string) e
 	if result.RowsAffected == 0 {
 		return ErrNotFound
 	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "webhook_endpoint", Action: "delete"})
 	return nil
 }
 
@@ -9763,6 +9915,7 @@ func (s *RDBConfigStore) RotateWebhookEndpointSecret(ctx context.Context, id str
 		return nil, err
 	}
 	rotated.Secret = &schemas.SecretVar{Val: newSecret}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "webhook_endpoint", Action: "upsert"})
 	return &rotated, nil
 }
 
