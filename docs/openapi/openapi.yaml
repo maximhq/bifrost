@@ -1316,6 +1316,13 @@ components:
 
         Virtual keys (`sk-bf-*`) and the `x-api-key` header are not accepted on management APIs -
         the sole exception is `GET /api/governance/virtual-keys/quota`, which is virtual-key-only.
+
+        Authentication alone is not sufficient in Bifrost Enterprise: each operation's description
+        carries a **Required permission** line (`Resource:Operation`, for example `Dashboard:View`)
+        that the caller's RBAC role or management API key scopes must include, otherwise the
+        request is rejected with `403 Forbidden`. See
+        [Required permissions](/api/procuring-api-keys#required-permissions) for how permissions
+        are derived and which endpoints are exempt.
     BasicAuth:
       type: http
       scheme: basic

@@ -6,6 +6,8 @@ health:
       Returns the health status of the Bifrost server. Checks connectivity to config store,
       log store, and vector store if configured.
       Unauthenticated by design - `/health` is in the auth middleware's system whitelist.
+
+      **Required permission:** none. This endpoint is public and needs no authentication.
     tags:
       - Health
     # Public: system-whitelisted in AuthMiddleware.APIMiddleware().

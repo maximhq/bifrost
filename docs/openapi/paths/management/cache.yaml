@@ -6,6 +6,8 @@ clear-by-cache-id:
       Deletes a single cache entry by its storage ID. Read the cache ID from
       `extra_fields.cache_debug.cache_id` on a prior response — it is populated
       on both cache hits and cache misses.
+
+      **Required permission:** `Settings:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Cache
     parameters:
@@ -34,7 +36,10 @@ clear-by-cache-key:
   delete:
     operationId: clearCacheByCacheKey
     summary: Clear cache by cache key
-    description: Clears a cache entry by its direct cache key.
+    description: |
+      Clears a cache entry by its direct cache key.
+
+      **Required permission:** `Settings:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Cache
     parameters:

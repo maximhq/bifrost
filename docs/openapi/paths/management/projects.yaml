@@ -16,6 +16,8 @@ projects:
       recorded creator, and those they belong to. Each project's roster is
       narrowed the same way, so `members` is a subset of the true roster and
       `pagination.total` counts only what the caller may see.
+
+      **Required permission:** `Projects:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Projects
     parameters:
@@ -72,6 +74,8 @@ projects:
       Creates a project. `access_rule` is required and has no default, since a
       rule that could be assumed might widen a request. The project starts with
       no members: add the roster through the member routes.
+
+      **Required permission:** `Projects:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Projects
     requestBody:
@@ -111,6 +115,8 @@ projects-by-id:
       Returns one project with its caps, its provider and MCP access, and the
       part of its roster the caller may see. A project outside the caller's data
       access reads as not found rather than forbidden.
+
+      **Required permission:** `Projects:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Projects
     parameters:
@@ -156,6 +162,8 @@ projects-by-id:
       queued and its id is returned as `redivision_job_id`; the project's own
       write has already committed by then, so a failure to queue is reported as
       a server error rather than rolling the edit back.
+
+      **Required permission:** `Projects:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Projects
     parameters:
@@ -202,6 +210,8 @@ projects-by-id:
       Deletes the project with its providers, its caps, the spend recorded
       against them, and its roster. A roster is not a reason to refuse, so there
       is no force flag. Log rows keep the attribution they already carry.
+
+      **Required permission:** `Projects:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Projects
     parameters:
@@ -240,6 +250,8 @@ projects-members:
     description: |
       Returns the roster with each member's caps, narrowed to what the caller's
       data access permits. There is no pagination on this route.
+
+      **Required permission:** `Projects:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Projects
     parameters:
@@ -283,6 +295,8 @@ projects-members:
       whole units for the resulting roster is refused before anything is
       written, and the recalculation is queued and reported as
       `redivision_job_id`.
+
+      **Required permission:** `Projects:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Projects
     parameters:
@@ -333,6 +347,8 @@ projects-member-by-id:
       split the division owns those rows, and the request is refused before the
       body is read. `{member_id}` is the membership row id, and a member outside
       the caller's data access reads as not found.
+
+      **Required permission:** `Projects:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Projects
     parameters:
@@ -384,6 +400,8 @@ projects-member-by-id:
       a project with `split_policy: equal` this enlarges every remaining
       member's slice, and the recalculation is queued and reported as
       `redivision_job_id`.
+
+      **Required permission:** `Projects:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Projects
     parameters:
@@ -433,6 +451,8 @@ users-projects:
 
       This listing is assembled without the per-model caps, the member shares
       and the member display names; read a project directly for those.
+
+      **Required permission:** `Projects:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Projects
     parameters:

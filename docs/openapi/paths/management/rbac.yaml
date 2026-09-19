@@ -11,7 +11,10 @@ roles:
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
     summary: List roles
-    description: Returns all roles visible to the caller, scoped by data access control.
+    description: |
+      Returns all roles visible to the caller, scoped by data access control.
+
+      **Required permission:** `RBAC:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - RBAC
     security:
@@ -40,6 +43,8 @@ roles:
     description: |
       Creates a custom role with the specified data access control scope.
       If `dac` is omitted, defaults to `all-data`.
+
+      **Required permission:** `RBAC:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - RBAC
     requestBody:
@@ -66,6 +71,8 @@ roles:
 roles-by-id:
   get:
     operationId: getRole
+    description: |
+      **Required permission:** `RBAC:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     x-mint:
       metadata:
         tag: Enterprise
@@ -110,6 +117,8 @@ roles-by-id:
     description: |
       Partial update. Omitted fields preserve the current value.
       Notable: omitting `dac` preserves the current scope (does not default to `all-data`).
+
+      **Required permission:** `RBAC:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - RBAC
     parameters:
@@ -153,6 +162,8 @@ roles-by-id:
     summary: Delete role
     description: |
       Deletes a custom role. Built-in system roles cannot be deleted and return 403.
+
+      **Required permission:** `RBAC:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - RBAC
     parameters:
@@ -189,6 +200,8 @@ roles-by-id:
 roles-permissions:
   get:
     operationId: getRolePermissions
+    description: |
+      **Required permission:** `RBAC:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     x-mint:
       metadata:
         tag: Enterprise
@@ -233,6 +246,8 @@ roles-permissions:
     description: |
       Replaces the permission set assigned to the role.
       Send the complete list of permission IDs that should be active for the role.
+
+      **Required permission:** `RBAC:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - RBAC
     parameters:
@@ -275,7 +290,10 @@ resources:
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
     summary: List RBAC resources
-    description: Returns the set of resource names that permissions can target.
+    description: |
+      Returns the set of resource names that permissions can target.
+
+      **Required permission:** `Settings:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - RBAC
     security:
@@ -302,7 +320,10 @@ operations:
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
     summary: List RBAC operations
-    description: Returns the set of operation names that permissions can grant.
+    description: |
+      Returns the set of operation names that permissions can grant.
+
+      **Required permission:** `Settings:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - RBAC
     security:
@@ -329,7 +350,10 @@ permissions:
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
     summary: List all RBAC permissions
-    description: Returns every (resource, operation) pair that can be granted to a role.
+    description: |
+      Returns every (resource, operation) pair that can be granted to a role.
+
+      **Required permission:** `Settings:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - RBAC
     security:

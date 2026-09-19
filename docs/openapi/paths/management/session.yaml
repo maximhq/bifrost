@@ -5,6 +5,8 @@ login:
     description: |
       Authenticates a user and returns a session token.
       Sets a cookie with the session token for subsequent requests.
+
+      **Required permission:** none. This endpoint is public and needs no authentication.
     tags:
       - Session
     requestBody:
@@ -44,7 +46,10 @@ logout:
   post:
     operationId: logout
     summary: Logout
-    description: Logs out the current user and invalidates the session token.
+    description: |
+      Logs out the current user and invalidates the session token.
+
+      **Required permission:** none. Any authenticated management caller can use this endpoint; it is exempt from RBAC ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Session
     # Authenticated like every management endpoint (management API key), and the
@@ -71,7 +76,10 @@ is-auth-enabled:
   get:
     operationId: isAuthEnabled
     summary: Check if authentication is enabled
-    description: Returns whether authentication is enabled and if the current token is valid.
+    description: |
+      Returns whether authentication is enabled and if the current token is valid.
+
+      **Required permission:** none. This endpoint is public and needs no authentication.
     tags:
       - Session
     # Public: callable before login so the UI can decide whether to prompt for
@@ -94,6 +102,8 @@ ws-ticket:
     description: |
       Issues a short-lived ticket for authenticating WebSocket connections.
       The ticket can be used as a query parameter when upgrading to WebSocket.
+
+      **Required permission:** none. Any authenticated management caller can use this endpoint; it is exempt from RBAC ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - Session
     # Authenticated like every management endpoint (management API key), and the

@@ -6,6 +6,8 @@ oauth-callback:
       Handles the OAuth provider callback after user authorization.
       This endpoint processes the authorization code and exchanges it for an access token.
       On success, displays an HTML page that closes the authorization window.
+
+      **Required permission:** none. This endpoint is public and needs no authentication.
     tags:
       - OAuth
     parameters:
@@ -62,6 +64,8 @@ oauth-config-status:
       Retrieves the current status of an OAuth configuration.
       Shows whether the OAuth flow is pending, authorized, or failed,
       and includes token expiration and scopes if authorized.
+
+      **Required permission:** none. Any authenticated management caller can use this endpoint; it is exempt from RBAC ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - OAuth
     parameters:
@@ -100,6 +104,8 @@ oauth-config-by-id:
       Revocation is not terminal for the client: an admin can restore access by
       redoing consent via POST /api/mcp/client/{id}/reauthorize, which runs
       against the credentials currently stored on the client's OAuth config.
+
+      **Required permission:** none. Any authenticated management caller can use this endpoint; it is exempt from RBAC ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - OAuth
     parameters:
@@ -141,6 +147,8 @@ per-user-oauth-flow-detail:
       binding (`has_active_token`).
 
       Requires management API authentication via `Authorization: Bearer <API key>`.
+
+      **Required permission:** none. Any authenticated management caller can use this endpoint; it is exempt from RBAC ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - OAuth
     parameters:
@@ -181,6 +189,8 @@ per-user-oauth-flow-start:
       Returns 410 if the flow is no longer pending (expired / completed /
       failed). The caller should restart the original action to get a fresh
       flow.
+
+      **Required permission:** none. Any authenticated management caller can use this endpoint; it is exempt from RBAC ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - OAuth
     parameters:

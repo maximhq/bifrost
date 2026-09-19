@@ -13,6 +13,8 @@ mcp-tool-groups:
     summary: List MCP Tool Groups
     description: |
       Returns tool groups visible to the caller. When all of `limit`, `offset`, and `search` are omitted, every group is returned in one response.
+
+      **Required permission:** `VirtualMCPs:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - MCP Tool Groups
     parameters:
@@ -56,6 +58,8 @@ mcp-tool-groups:
       Creates a new tool group along with its attachments in a single transaction.
       Validates that every `mcp_client_id` points to a deployed MCP client and that every named
       tool exists on its server.
+
+      **Required permission:** `VirtualMCPs:Create`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - MCP Tool Groups
     requestBody:
@@ -82,6 +86,8 @@ mcp-tool-groups:
 mcp-tool-groups-by-id:
   get:
     operationId: getMCPToolGroup
+    description: |
+      **Required permission:** `VirtualMCPs:View`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     x-mint:
       metadata:
         tag: Enterprise
@@ -126,6 +132,8 @@ mcp-tool-groups-by-id:
     description: |
       Partial update. Scalar fields preserve the current value when omitted.
       Array fields are replace-on-send: an empty array clears all attachments in that dimension.
+
+      **Required permission:** `VirtualMCPs:Update`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - MCP Tool Groups
     parameters:
@@ -167,7 +175,10 @@ mcp-tool-groups-by-id:
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
     summary: Delete MCP Tool Group
-    description: Deletes the group; attachments are removed automatically.
+    description: |
+      Deletes the group; attachments are removed automatically.
+
+      **Required permission:** `VirtualMCPs:Delete`. In Bifrost Enterprise the caller's RBAC role or management API key scopes must include this permission ([details](/api/procuring-api-keys#required-permissions)).
     tags:
       - MCP Tool Groups
     parameters:
