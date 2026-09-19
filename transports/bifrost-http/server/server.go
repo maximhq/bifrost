@@ -3208,6 +3208,10 @@ func (s *BifrostHTTPServer) Start() error {
 		if s.IntegrationHandler != nil {
 			s.IntegrationHandler.Close()
 		}
+		if s.configListenerStop != nil {
+			logger.Info("stopping config change listener...")
+			s.configListenerStop()
+		}
 		if s.wsPool != nil {
 			s.wsPool.Close()
 		}

@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"fmt"
+	"strconv"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -53,9 +55,24 @@ func (s *BifrostHTTPServer) handleConfigChangeEvent(ctx context.Context, event c
 			logger.Warn("[pgnotify] failed to reload provider %s after key change: %v", event.Provider, err)
 		}
 
-	case configstore.ConfigEntityVirtualKey, configstore.ConfigEntityVKProviderConfig, configstore.ConfigEntityVKMCPConfig:
-		if err := s.ReloadClientConfigFromConfigStore(ctx); err != nil {
-			logger.Warn("[pgnotify] failed to reload client config after %s change: %v", event.Entity, err)
+	case configstore.ConfigEntityVirtualKey:
+		if event.Action == configstore.ConfigActionDelete {
+			if err := s.RemoveVirtualKey(ctx, event.ID); err != nil {
+				logger.Warn("[pgnotify] failed to remove virtual key %s: %v", event.ID, err)
+			}
+		} else {
+			if _, err := s.ReloadVirtualKey(ctx, event.ID); err != nil {
+				logger.Warn("[pgnotify] failed to reload virtual key %s: %v", event.ID, err)
+			}
+		}
+
+	case configstore.ConfigEntityVKProviderConfig, configstore.ConfigEntityVKMCPConfig:
+		// event.ID is the owning virtual key's ID (relations don't have a
+		// standalone in-memory representation). A relation delete still means
+		// the VK needs reloading, never removing — the VK row itself didn't
+		// change.
+		if _, err := s.ReloadVirtualKey(ctx, event.ID); err != nil {
+			logger.Warn("[pgnotify] failed to reload virtual key %s after %s change: %v", event.ID, event.Entity, err)
 		}
 
 	case configstore.ConfigEntityClientConfig:
@@ -64,15 +81,25 @@ func (s *BifrostHTTPServer) handleConfigChangeEvent(ctx context.Context, event c
 		}
 
 	case configstore.ConfigEntityMCPClient:
-		// MCP client changes are best handled via a full client config reload
-		// which re-reads all MCP client configs from the store.
-		if err := s.ReloadClientConfigFromConfigStore(ctx); err != nil {
-			logger.Warn("[pgnotify] failed to reload config after MCP client change: %v", err)
+		if event.Action == configstore.ConfigActionDelete {
+			if err := s.RemoveMCPClient(ctx, event.ID); err != nil {
+				logger.Warn("[pgnotify] failed to remove MCP client %s: %v", event.ID, err)
+			}
+		} else {
+			if err := s.ReloadMCPClientConfig(ctx, event.ID); err != nil {
+				logger.Warn("[pgnotify] failed to reload MCP client %s: %v", event.ID, err)
+			}
 		}
 
 	case configstore.ConfigEntityPlugin:
-		if err := s.ReloadClientConfigFromConfigStore(ctx); err != nil {
-			logger.Warn("[pgnotify] failed to reload config after plugin change: %v", err)
+		if event.Action == configstore.ConfigActionDelete {
+			if err := s.RemovePlugin(ctx, event.ID); err != nil {
+				logger.Warn("[pgnotify] failed to remove plugin %s: %v", event.ID, err)
+			}
+		} else {
+			if err := s.ReloadPluginByName(ctx, event.ID); err != nil {
+				logger.Warn("[pgnotify] failed to reload plugin %s: %v", event.ID, err)
+			}
 		}
 
 	case configstore.ConfigEntityRoutingRule:
@@ -108,12 +135,6 @@ func (s *BifrostHTTPServer) handleConfigChangeEvent(ctx context.Context, event c
 			}
 		}
 
-	case configstore.ConfigEntityBudget:
-		// Budget definition changes require a full governance reload.
-		if err := s.ReloadClientConfigFromConfigStore(ctx); err != nil {
-			logger.Warn("[pgnotify] failed to reload config after budget change: %v", err)
-		}
-
 	case configstore.ConfigEntityModelConfig:
 		if event.Action == configstore.ConfigActionDelete {
 			if err := s.RemoveModelConfig(ctx, event.ID); err != nil {
@@ -131,13 +152,30 @@ func (s *BifrostHTTPServer) handleConfigChangeEvent(ctx context.Context, event c
 		}
 
 	case configstore.ConfigEntityVirtualMCP:
-		if err := s.ReloadClientConfigFromConfigStore(ctx); err != nil {
-			logger.Warn("[pgnotify] failed to reload config after virtual MCP change: %v", err)
+		vmcpID, err := strconv.ParseUint(event.ID, 10, 64)
+		if err != nil {
+			logger.Warn("[pgnotify] malformed virtual MCP id %q: %v", event.ID, err)
+			break
+		}
+		if event.Action == configstore.ConfigActionDelete {
+			if err := s.RemoveVirtualMCP(ctx, uint(vmcpID)); err != nil {
+				logger.Warn("[pgnotify] failed to remove virtual MCP %s: %v", event.ID, err)
+			}
+		} else {
+			if _, err := s.ReloadVirtualMCP(ctx, uint(vmcpID)); err != nil {
+				logger.Warn("[pgnotify] failed to reload virtual MCP %s: %v", event.ID, err)
+			}
 		}
 
 	case configstore.ConfigEntityWebhookEndpoint:
-		if err := s.ReloadClientConfigFromConfigStore(ctx); err != nil {
-			logger.Warn("[pgnotify] failed to reload config after webhook endpoint change: %v", err)
+		if event.Action == configstore.ConfigActionDelete {
+			if err := s.RemoveWebhookEndpoint(ctx, event.ID); err != nil {
+				logger.Warn("[pgnotify] failed to remove webhook endpoint %s: %v", event.ID, err)
+			}
+		} else {
+			if err := s.ReloadWebhookEndpoint(ctx, event.ID); err != nil {
+				logger.Warn("[pgnotify] failed to reload webhook endpoint %s: %v", event.ID, err)
+			}
 		}
 
 	default:
@@ -169,4 +207,32 @@ func (s *BifrostHTTPServer) handleFullReload(ctx context.Context) {
 	if err := s.ForceReloadPricing(ctx); err != nil {
 		logger.Warn("[pgnotify] full reload: pricing failed: %v", err)
 	}
+}
+
+// ReloadMCPClientConfig re-reads one MCP client's config from the store and
+// applies it. This is the peer-sync counterpart to UpdateMCPClient, which
+// applies a caller-supplied config without reading the store itself.
+func (s *BifrostHTTPServer) ReloadMCPClientConfig(ctx context.Context, id string) error {
+	if s.Config == nil || s.Config.ConfigStore == nil {
+		return fmt.Errorf("config store not found")
+	}
+	config, err := s.Config.ConfigStore.GetMCPClientConfigByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	return s.UpdateMCPClient(ctx, id, config)
+}
+
+// ReloadPluginByName re-reads one plugin's config from the store and applies
+// it. This is the peer-sync counterpart to ReloadPlugin, which takes an
+// already-in-hand definition instead of reading the store itself.
+func (s *BifrostHTTPServer) ReloadPluginByName(ctx context.Context, name string) error {
+	if s.Config == nil || s.Config.ConfigStore == nil {
+		return fmt.Errorf("config store not found")
+	}
+	plugin, err := s.Config.ConfigStore.GetPlugin(ctx, name)
+	if err != nil {
+		return err
+	}
+	return s.ReloadPlugin(ctx, plugin.Name, plugin.Path, plugin.Config, plugin.Placement, plugin.Order)
 }
