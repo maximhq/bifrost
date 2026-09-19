@@ -32,6 +32,14 @@ export interface WarpConfig {
 	 */
 	history_retention_days: number;
 	system_prompt_suffix?: string;
+	embedding_provider: string;
+	embedding_model: string;
+	embedding_api_key_id?: string;
+	embedding_dimension: number;
+	log_vector_store_namespace: string;
+	semantic_search_threshold: number;
+	semantic_search_limit: number;
+	vector_store_connected: boolean;
 }
 
 /** The write body. Every field round-trips; nothing here is write-only. */
@@ -46,6 +54,13 @@ export interface WarpConfigInput {
 	/** Zero means "use the default". There is no maximum. */
 	history_retention_days?: number;
 	system_prompt_suffix?: string;
+	embedding_provider: string;
+	embedding_model: string;
+	embedding_api_key_id?: string;
+	embedding_dimension: number;
+	log_vector_store_namespace: string;
+	semantic_search_threshold?: number;
+	semantic_search_limit?: number;
 }
 
 /**
@@ -55,3 +70,40 @@ export interface WarpConfigInput {
  * in-panel remedy.
  */
 export type WarpUnavailableReason = "not_configured" | "no_log_store" | "no_vector_store";
+
+export interface WarpBackfillInput {
+	start_time: string;
+	end_time: string;
+}
+
+export type WarpBackfillState = "idle" | "pending" | "running" | "completed" | "failed" | "cancelled" | "cancelling";
+
+/**
+ * A backfill that exists. Counters and id are only meaningful here - the idle
+ * response carries an id-less zeroed body, and reading its "0 / 0 scanned" as a
+ * job is how an empty progress bar ends up rendered for a job that never ran.
+ */
+export interface WarpBackfillJob {
+	id: string;
+	status: Exclude<WarpBackfillState, "idle">;
+	start_time?: string;
+	end_time?: string;
+	total: number;
+	scanned: number;
+	indexed: number;
+	skipped: number;
+	failed: number;
+	last_error?: string;
+	message?: string;
+	created_at?: string;
+	started_at?: string;
+	completed_at?: string;
+}
+
+/** No job for this deployment. `id?: undefined` is what makes `status.id` narrow. */
+export interface WarpBackfillIdle {
+	status: "idle";
+	id?: undefined;
+}
+
+export type WarpBackfillStatus = WarpBackfillIdle | WarpBackfillJob;
