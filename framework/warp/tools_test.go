@@ -3,6 +3,7 @@ package warp
 import (
 	"context"
 	"fmt"
+	"github.com/bytedance/sonic"
 	"strings"
 	"testing"
 	"time"
@@ -44,7 +45,16 @@ func (f *fakeLogReader) Search(ctx context.Context, filters *logstore.SearchFilt
 func (f *fakeLogReader) GetDimensionRankings(ctx context.Context, filters *logstore.SearchFilters, dimension logstore.RankingDimension) (*logstore.DimensionRankingResult, error) {
 	f.sawContext = ctx
 	f.rankingFilters, f.rankingDimension = filters, dimension
-	return &logstore.DimensionRankingResult{}, nil
+	return &logstore.DimensionRankingResult{
+		Dimension: dimension,
+		Rankings:  []logstore.DimensionRankingWithTrend{{}},
+	}, nil
+}
+
+func (f *fakeLogReader) GetModelRankings(ctx context.Context, filters *logstore.SearchFilters) (*logstore.ModelRankingResult, error) {
+	f.sawContext = ctx
+	f.rankingFilters = filters
+	return &logstore.ModelRankingResult{}, nil
 }
 
 func (f *fakeLogReader) GetStats(ctx context.Context, filters *logstore.SearchFilters) (*logstore.SearchStats, error) {
@@ -63,6 +73,13 @@ func runTool(t *testing.T, name string, deps *ToolDeps, args map[string]any) (an
 	t.Helper()
 	tool, ok := toolByName(buildTools(), name)
 	require.True(t, ok, "tool %s should exist", name)
+	// Default to an identified caller. A deployment with no user identity has no
+	// default scope, so an unscoped query from one is refused - correct, but it
+	// is a case of its own rather than the baseline these tools were written
+	// against. Tests about scoping set deps.scope explicitly.
+	if !deps.scope.HasIdentity && deps.scope.UserID == "" {
+		deps.scope = Scope{HasIdentity: true, UserID: "test-caller"}
+	}
 	return tool.execute(context.Background(), deps, args)
 }
 
@@ -473,6 +490,7 @@ func (f *fakeFilterSpaceReader) GetAvailableVirtualKeys(context.Context, int, st
 // skipped the filter, and the query widened without a word.
 func TestWarpFilterRejectsWrongShapedValues(t *testing.T) {
 	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	caller := Scope{HasIdentity: true, UserID: "u-1"}
 	for name, filters := range map[string]map[string]any{
 		"array is not an array":      {"providers": "openai"},
 		"array holds a number":       {"models": []any{"gpt-4o", 42}},
@@ -481,14 +499,14 @@ func TestWarpFilterRejectsWrongShapedValues(t *testing.T) {
 		"numeric filter is an array": {"max_latency": []any{500}},
 		"content search is a number": {"content_search": 42},
 	} {
-		_, err := filterArg(map[string]any{"filters": filters}, now)
+		_, err := filterArg(map[string]any{"filters": filters}, now, caller)
 		require.Error(t, err, name)
 	}
 
 	// Well-shaped values still parse.
 	parsed, err := filterArg(map[string]any{"filters": map[string]any{
 		"providers": []any{"openai"}, "min_cost": 0.02, "content_search": "declined",
-	}}, now)
+	}}, now, caller)
 	require.NoError(t, err)
 	require.Equal(t, []string{"openai"}, parsed.Providers)
 	require.InDelta(t, 0.02, *parsed.MinCost, 1e-9)
@@ -498,16 +516,17 @@ func TestWarpFilterRejectsWrongShapedValues(t *testing.T) {
 // and this package is required to bound what it hands the store.
 func TestWarpFilterBoundsInputSize(t *testing.T) {
 	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	caller := Scope{HasIdentity: true, UserID: "u-1"}
 	huge := make([]any, MaxFilterValues+1)
 	for i := range huge {
 		huge[i] = fmt.Sprintf("model-%d", i)
 	}
-	_, err := filterArg(map[string]any{"filters": map[string]any{"models": huge}}, now)
+	_, err := filterArg(map[string]any{"filters": map[string]any{"models": huge}}, now, caller)
 	require.ErrorContains(t, err, "models")
 
 	_, err = filterArg(map[string]any{"filters": map[string]any{
 		"content_search": strings.Repeat("x", MaxContentSearchChars+1),
-	}}, now)
+	}}, now, caller)
 	require.ErrorContains(t, err, "content_search")
 
 	// At the limit is fine.
@@ -515,7 +534,7 @@ func TestWarpFilterBoundsInputSize(t *testing.T) {
 	for i := range atLimit {
 		atLimit[i] = fmt.Sprintf("model-%d", i)
 	}
-	_, err = filterArg(map[string]any{"filters": map[string]any{"models": atLimit}}, now)
+	_, err = filterArg(map[string]any{"filters": map[string]any{"models": atLimit}}, now, caller)
 	require.NoError(t, err)
 
 	// The limit counts characters, as the schema's maxLength does - not bytes.
@@ -523,11 +542,11 @@ func TestWarpFilterBoundsInputSize(t *testing.T) {
 	// here, with the error reporting a byte count as a character count.
 	_, err = filterArg(map[string]any{"filters": map[string]any{
 		"content_search": strings.Repeat("é", MaxContentSearchChars),
-	}}, now)
+	}}, now, caller)
 	require.NoError(t, err, "a search at the advertised character limit must be accepted whatever its byte length")
 	_, err = filterArg(map[string]any{"filters": map[string]any{
 		"content_search": strings.Repeat("é", MaxContentSearchChars+1),
-	}}, now)
+	}}, now, caller)
 	require.ErrorContains(t, err, fmt.Sprintf("%d characters", MaxContentSearchChars+1),
 		"the rejection must report the character count, not the byte count")
 }
@@ -844,4 +863,192 @@ func TestWarpStringArgRejectsWrongShapes(t *testing.T) {
 	value, err := stringArg(map[string]any{"log_id": "abc"}, "log_id")
 	require.NoError(t, err)
 	require.Equal(t, "abc", value)
+}
+
+// describe_scope reads its dimension lists from rankings, so the fake answers
+// those too - with nothing, which is enough to exercise the payload shape.
+func (f *fakeFilterSpaceReader) GetDimensionRankings(context.Context, *logstore.SearchFilters, logstore.RankingDimension) (*logstore.DimensionRankingResult, error) {
+	return &logstore.DimensionRankingResult{}, nil
+}
+
+// describe_scope's result goes to the configured model, which is frequently a
+// third-party provider. The model needs to know *whether* the caller is
+// identified so it can decide whether to ask whose traffic is meant; the stable
+// id itself is only ever used server-side by applyScope, so sending it is
+// identity data leaving the deployment for no benefit.
+func TestWarpDescribeScopeDoesNotLeakCallerUserID(t *testing.T) {
+	tool, ok := toolByName(buildTools(), "describe_scope")
+	require.True(t, ok)
+
+	deps := &ToolDeps{logManager: &fakeFilterSpaceReader{}, scope: Scope{HasIdentity: true, UserID: "u-secret-42"}}
+	result, err := tool.execute(context.Background(), deps, map[string]any{})
+	require.NoError(t, err)
+
+	out := result.(map[string]any)
+	require.Equal(t, true, out["caller_is_identified"], "the model still needs to know an identity exists")
+	require.NotContains(t, out, "caller_user_id", "the caller's stable id must not reach the model")
+
+	encoded := boundToolResult(out)
+	require.NotContains(t, encoded, "u-secret-42", "the id must not reach the model by any key")
+}
+
+// An identified caller who asks about everyone's traffic gets narrowed to their
+// own, because "named no scope" and "explicitly asked for all" were the same
+// empty filter. The two have to be distinguishable, and row-level queryscope
+// still bounds what "all" can actually return.
+func TestWarpFilterScopeAllBypassesCallerDefault(t *testing.T) {
+	caller := Scope{HasIdentity: true, UserID: "u-1"}
+	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+
+	// Omitted: the caller default still applies, which is the safe reading of a
+	// question that did not say whose traffic it meant.
+	defaulted, err := filterArg(map[string]any{"filters": map[string]any{}}, now, caller)
+	require.NoError(t, err)
+	require.Equal(t, []string{"u-1"}, defaulted.UserIDs)
+
+	// Explicit: the caller asked about the whole deployment and must get it.
+	all, err := filterArg(map[string]any{"filters": map[string]any{"scope": "all"}}, now, caller)
+	require.NoError(t, err)
+	require.Empty(t, all.UserIDs, `scope "all" must not be narrowed back to the caller`)
+
+	// Explicit caller scope stays explicit.
+	mine, err := filterArg(map[string]any{"filters": map[string]any{"scope": "caller"}}, now, caller)
+	require.NoError(t, err)
+	require.Equal(t, []string{"u-1"}, mine.UserIDs)
+
+	// A named dimension still wins over the default, unchanged.
+	named, err := filterArg(map[string]any{"filters": map[string]any{"team_ids": []any{"t-1"}}}, now, caller)
+	require.NoError(t, err)
+	require.Empty(t, named.UserIDs)
+	require.Equal(t, []string{"t-1"}, named.TeamIDs)
+
+	// An unrecognised value is rejected rather than silently read as "caller":
+	// guessing here would answer a different question than the one asked.
+	_, err = filterArg(map[string]any{"filters": map[string]any{"scope": "everyone"}}, now, caller)
+	require.ErrorContains(t, err, "scope")
+}
+
+// Two things the explicit scope marker got wrong.
+//
+// "caller" without a caller is not a scope at all: applyScope returns early
+// without an identity, so the query runs with no traffic dimension and - where
+// no queryscope is set - covers everything. Silently answering a different
+// question than the one asked is the failure this whole mechanism exists to
+// prevent, so it is refused.
+//
+// And "all" is not the whole deployment: ScopedDB still applies the caller's
+// queryscope, so the result is only what they are permitted to see. Telling the
+// model otherwise puts a claim in the answer that the data does not support.
+func TestWarpScopeMarkerTellsTheTruthAboutCoverage(t *testing.T) {
+	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+
+	anonymous := Scope{}
+	_, err := filterArg(map[string]any{"filters": map[string]any{"scope": "caller"}}, now, anonymous)
+	require.Error(t, err, `"caller" with no caller identity must be refused, not answered deployment-wide`)
+	require.ErrorContains(t, err, "caller")
+
+	// Omitted is still fine for an anonymous caller - that is the OSS path, and
+	// queryscope (where present) is what bounds it.
+	_, err = filterArg(map[string]any{"filters": map[string]any{}}, now, anonymous)
+	require.NoError(t, err)
+
+	// The note must not promise more than the row filter allows.
+	note := scopeNote(&logstore.SearchFilters{}, Scope{HasIdentity: true, UserID: "u-1"})
+	require.NotContains(t, note, "whole deployment",
+		"queryscope still limits the rows, so the note must not claim deployment-wide coverage")
+	require.Contains(t, note, "permitted")
+}
+
+// The caller-only note must only be used when the caller is the whole story.
+//
+// parseFilters fills each dimension independently, so a filter can carry the
+// caller's own user id *and* a team. Reporting that as "scoped to the person
+// asking" tells the model to say something narrower than the query actually
+// covers - the exact failure the note exists to prevent.
+func TestWarpScopeNoteNamesEveryDimension(t *testing.T) {
+	caller := Scope{HasIdentity: true, UserID: "u-1"}
+
+	onlyCaller := &logstore.SearchFilters{UserIDs: []string{"u-1"}}
+	require.Contains(t, scopeNote(onlyCaller, caller), "the person asking")
+
+	for name, filters := range map[string]*logstore.SearchFilters{
+		"with a team":          {UserIDs: []string{"u-1"}, TeamIDs: []string{"team-1"}},
+		"with a customer":      {UserIDs: []string{"u-1"}, CustomerIDs: []string{"cust-1"}},
+		"with a business unit": {UserIDs: []string{"u-1"}, BusinessUnitIDs: []string{"bu-1"}},
+		"with a virtual key":   {UserIDs: []string{"u-1"}, VirtualKeyIDs: []string{"vk-1"}},
+	} {
+		note := scopeNote(filters, caller)
+		require.NotContains(t, note, "the person asking",
+			"%s: the caller is not the only dimension, so the note must not claim they are", name)
+		require.Contains(t, note, "dimensions named in the filters", name)
+	}
+}
+
+// The dimension ranking result must stay flat once the scope note is added.
+//
+// DimensionRankingResult already serializes as {"rankings": [...], "dimension":
+// ..., totals}, so wrapping it in another {"rankings": result} produced
+// rankings.rankings and buried the dimension and totals a level down. The model
+// reads this JSON directly: a shape it does not expect is not a parse error, it
+// is an answer built on fields the model could not find.
+func TestWarpDimensionRankingShapeStaysFlat(t *testing.T) {
+	out, err := runTool(t, "query_user_usage", &ToolDeps{logManager: &fakeLogReader{}}, map[string]any{
+		"filters": map[string]any{},
+	})
+	require.NoError(t, err)
+
+	encoded, err := sonic.Marshal(out)
+	require.NoError(t, err)
+	var shape map[string]any
+	require.NoError(t, sonic.Unmarshal(encoded, &shape))
+
+	require.Contains(t, shape, "rankings")
+	require.IsType(t, []any{}, shape["rankings"], "rankings must be the list itself, not a nested object")
+	require.Contains(t, shape, "dimension", "the dimension must stay top-level")
+	require.Contains(t, shape, "scope", "the scope note rides alongside, not instead of, the result")
+}
+
+// An explicit "caller" scope must be applied, even alongside a named dimension.
+//
+// applyScope returned early whenever any dimension was named, so
+// scope:"caller" plus team_ids became a team-wide query with the caller
+// dropped. The store applies UserIDs and each dimension as separate WHERE
+// clauses, so the two intersect - which is what "my traffic in that team"
+// means, and what the mode documents. Dropping the user filter answers about
+// everyone in the team while the model reports it as the caller's own.
+func TestWarpCallerScopeIntersectsNamedDimensions(t *testing.T) {
+	caller := Scope{HasIdentity: true, UserID: "u-1"}
+	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+
+	for name, dimension := range map[string]map[string]any{
+		"team":          {"team_ids": []any{"team-1"}},
+		"customer":      {"customer_ids": []any{"cust-1"}},
+		"business unit": {"business_unit_ids": []any{"bu-1"}},
+		"virtual key":   {"virtual_key_ids": []any{"vk-1"}},
+	} {
+		raw := map[string]any{"scope": "caller"}
+		for key, value := range dimension {
+			raw[key] = value
+		}
+		filters, err := filterArg(map[string]any{"filters": raw}, now, caller)
+		require.NoError(t, err, name)
+		require.Equal(t, []string{"u-1"}, filters.UserIDs,
+			"%s: an explicit caller scope must survive alongside the named dimension", name)
+	}
+
+	// The named dimension must still stand on its own when no scope is given -
+	// narrowing "how did team X do?" to the asker would answer a different
+	// question.
+	filters, err := filterArg(map[string]any{
+		"filters": map[string]any{"team_ids": []any{"team-1"}},
+	}, now, caller)
+	require.NoError(t, err)
+	require.Empty(t, filters.UserIDs, "an unscoped question about a team is about the team")
+
+	// And "all" still widens.
+	filters, err = filterArg(map[string]any{
+		"filters": map[string]any{"scope": "all", "team_ids": []any{"team-1"}},
+	}, now, caller)
+	require.NoError(t, err)
+	require.Empty(t, filters.UserIDs)
 }

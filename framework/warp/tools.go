@@ -71,6 +71,10 @@ var Now = func() time.Time { return time.Now().UTC() }
 // is the decision point for whether Warp can see something new.
 type ToolDeps struct {
 	logManager LogReader
+	// scope is the caller's default slice of traffic. It narrows a question that
+	// named no scope of its own; it is not an access control, which queryscope
+	// already applies inside the store.
+	scope Scope
 }
 
 // Tool pairs a model-facing declaration with its executor.
@@ -107,7 +111,8 @@ const FilterSchema = `{
     "max_latency": {"type": "number", "description": "Milliseconds."},
     "min_cost": {"type": "number"},
     "max_cost": {"type": "number"},
-    "content_search": {"type": "string", "minLength": 1, "maxLength": 500, "description": "Substring match against request and response content. Omit the field rather than sending an empty string."}
+    "content_search": {"type": "string", "minLength": 1, "maxLength": 500, "description": "Substring match against request and response content. Omit the field rather than sending an empty string."},
+    "scope": {"type": "string", "enum": ["caller", "all"], "description": "Whose traffic. Omitting it defaults to the caller's own traffic only when the caller is identified; when nobody is identified there is no default and the query is bounded only by that deployment's access rules, so ask whose traffic is meant first. Use \"all\" when the question is explicitly about everyone's - it widens the question, not the permission, so results are still limited to what the caller may see."}
   }
 }`
 
@@ -128,6 +133,7 @@ func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, e
 		"status": true, "virtual_key_ids": true, "team_ids": true, "customer_ids": true,
 		"user_ids": true, "business_unit_ids": true, "apps": true, "min_latency": true,
 		"max_latency": true, "min_cost": true, "max_cost": true, "content_search": true,
+		"scope": true,
 	}
 	unknown := []string{}
 	for key := range raw {
@@ -137,7 +143,7 @@ func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, e
 	}
 	if len(unknown) > 0 {
 		sort.Strings(unknown)
-		return nil, fmt.Errorf("unknown filter fields: %s. Supported fields are: start_time, end_time, providers, models, status, virtual_key_ids, team_ids, customer_ids, user_ids, business_unit_ids, apps, min_latency, max_latency, min_cost, max_cost, content_search", strings.Join(unknown, ", "))
+		return nil, fmt.Errorf("unknown filter fields: %s. Supported fields are: start_time, end_time, providers, models, status, virtual_key_ids, team_ids, customer_ids, user_ids, business_unit_ids, apps, min_latency, max_latency, min_cost, max_cost, content_search, scope", strings.Join(unknown, ", "))
 	}
 
 	// Presence is checked here, not left to parseTime: indexing a map gives nil
@@ -453,22 +459,37 @@ func boolArg(args map[string]any, key string) (bool, error) {
 	return flag, nil
 }
 
-// filterArg parses the shared filter object every flow accepts.
-func filterArg(args map[string]any, now time.Time) (*logstore.SearchFilters, error) {
-	value, present := args["filters"]
-	if !present || value == nil {
-		return parseFilters(nil, now)
+// filterArg parses the shared filter object every flow accepts and applies
+// the caller's default scope.
+//
+// Every flow goes through here, which is what makes the default impossible to
+// forget: a tool added later gets the scoping by construction rather than by
+// its author remembering to ask for it.
+func filterArg(args map[string]any, now time.Time, scope Scope) (*logstore.SearchFilters, error) {
+	raw, err := filtersObject(args)
+	if err != nil {
+		return nil, err
 	}
-	// Rejected rather than dropped. A discarded type assertion turned a
-	// malformed argument into "no filters", which parseFilters answers with the
-	// default unfiltered 24-hour window - so a bad filter widened the query
-	// instead of failing it, and the model could not tell the difference
-	// between an unfiltered answer it asked for and one it did not.
-	raw, ok := value.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("filters must be an object mapping dimension names to values, got %T", value)
+	filters, parseErr := parseFilters(raw, now)
+	if parseErr != nil {
+		return nil, parseErr
 	}
-	return parseFilters(raw, now)
+	// Read before the filters are handed on: an explicit "all" is a different
+	// question from one that simply named no scope, and only the marker can tell
+	// them apart.
+	mode, err := ParseScopeMode(raw["scope"])
+	if err != nil {
+		return nil, err
+	}
+	// "caller" needs a caller. Without an identity applyScope adds no user
+	// filter, so the query would run with no traffic dimension at all and - on a
+	// deployment with no queryscope - answer about everyone while claiming to be
+	// scoped to the person asking.
+	if mode == ScopeModeCaller && !scope.HasIdentity {
+		return nil, fmt.Errorf("cannot scope to the caller: this deployment has no user identity. Name a team, customer or business unit, or use scope \"all\"")
+	}
+	applyScope(filters, scope, mode)
+	return filters, nil
 }
 
 // enumArg reads a string argument that the schema declares as an enum.
@@ -689,6 +710,7 @@ func buildTools() []Tool {
 		queryVirtualKeysTool(),
 		queryModelsTool(),
 		describeFilterSpaceTool(),
+		describeScopeTool(),
 	}
 }
 
@@ -720,4 +742,24 @@ func toolByName(tools []Tool, name string) (*Tool, bool) {
 		}
 	}
 	return nil, false
+}
+
+// filtersObject reads the top-level filters argument, rejecting a value of the
+// wrong shape rather than discarding it.
+//
+// A discarded type assertion turned a malformed argument into "no filters",
+// which parseFilters answers with the default unfiltered 24-hour window - so a
+// bad filter widened the query instead of failing it, and nothing told the
+// model its filter had been ignored. This checks only the top-level type; the
+// fields inside a valid object are validated by parseFilters.
+func filtersObject(args map[string]any) (map[string]any, error) {
+	value, present := args["filters"]
+	if !present || value == nil {
+		return nil, nil
+	}
+	raw, ok := value.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("filters must be an object mapping dimension names to values, got %T", value)
+	}
+	return raw, nil
 }

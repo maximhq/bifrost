@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strconv"
 
+	"github.com/bytedance/sonic"
+
 	"github.com/maximhq/bifrost/framework/logstore"
 )
 
@@ -42,7 +44,7 @@ func queryLogsTool() Tool {
 }`,
 		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
 			now := Now()
-			filters, err := filterArg(args, now)
+			filters, err := filterArg(args, now, deps.scope)
 			if err != nil {
 				return nil, err
 			}
@@ -79,6 +81,7 @@ func queryLogsTool() Tool {
 				"rows":           rows,
 				"returned":       len(rows),
 				"total_matching": result.Pagination.TotalCount,
+				"scope":          scopeNote(filters, deps.scope),
 			}, nil
 		},
 	}
@@ -154,7 +157,7 @@ func queryMetricsTool() Tool {
 }`,
 		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
 			now := Now()
-			filters, err := filterArg(args, now)
+			filters, err := filterArg(args, now, deps.scope)
 			if err != nil {
 				return nil, err
 			}
@@ -181,6 +184,7 @@ func queryMetricsTool() Tool {
 			}
 
 			out := map[string]any{
+				"scope": scopeNote(filters, deps.scope),
 				"window": map[string]string{
 					"start": filters.StartTime.UTC().Format("2006-01-02T15:04:05Z"),
 					"end":   filters.EndTime.UTC().Format("2006-01-02T15:04:05Z"),
@@ -324,7 +328,7 @@ func queryVirtualKeysTool() Tool {
 // answer needs.
 func rankByDimension(ctx context.Context, deps *ToolDeps, args map[string]any, dimension logstore.RankingDimension) (any, error) {
 	now := Now()
-	filters, err := filterArg(args, now)
+	filters, err := filterArg(args, now, deps.scope)
 	if err != nil {
 		return nil, err
 	}
@@ -337,7 +341,31 @@ func rankByDimension(ctx context.Context, deps *ToolDeps, args map[string]any, d
 	if err != nil {
 		return nil, fmt.Errorf("%s rankings failed: %w", dimension, err)
 	}
-	return result, nil
+	// Flattened, not wrapped. DimensionRankingResult already serializes as
+	// {"rankings": [...], "dimension": ..., totals}, so nesting it under another
+	// "rankings" key produced rankings.rankings and pushed the dimension and the
+	// totals a level down. The model consumes this JSON directly, and a shape it
+	// does not expect does not fail - it answers from whatever it can find.
+	return withScopeNote(result, scopeNote(filters, deps.scope))
+}
+
+// withScopeNote returns a result's own fields with the scope note alongside
+// them, rather than nested beneath a key.
+//
+// It round-trips through JSON deliberately: the tool results are typed structs
+// whose wire shape is what the model reads, so composing on the encoded form is
+// what keeps the note additive instead of restructuring the answer around it.
+func withScopeNote(result any, note string) (any, error) {
+	encoded, err := sonic.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("could not encode rankings: %w", err)
+	}
+	out := map[string]any{}
+	if err := sonic.Unmarshal(encoded, &out); err != nil {
+		return nil, fmt.Errorf("could not read back rankings: %w", err)
+	}
+	out["scope"] = note
+	return out, nil
 }
 
 // ------------------------------------------------ flow 5: providers and models
@@ -359,7 +387,7 @@ func queryModelsTool() Tool {
 }`,
 		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
 			now := Now()
-			filters, err := filterArg(args, now)
+			filters, err := filterArg(args, now, deps.scope)
 			if err != nil {
 				return nil, err
 			}
@@ -373,7 +401,7 @@ func queryModelsTool() Tool {
 			if err != nil {
 				return nil, fmt.Errorf("model rankings failed: %w", err)
 			}
-			out := map[string]any{"models": rankings}
+			out := map[string]any{"models": rankings, "scope": scopeNote(filters, deps.scope)}
 
 			includePerformance, err := boolArg(args, "include_performance")
 			if err != nil {
