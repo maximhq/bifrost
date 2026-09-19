@@ -1,14 +1,23 @@
 import { describe, expect, it } from "vitest";
 import {
+	WARP_COMPOSER_TESTID,
 	decodeTurnError,
 	encodeTurnError,
 	errorMessage,
 	historyForRequest,
 	formatWarpUsage,
+	indexStatusLabel,
 	isEncodedTurnError,
+	isInternalWarpLink,
+	isPartialAnswer,
+	isPlainLeftClick,
+	isTypingInto,
+	isWarpQuestionFinish,
 	parseWarpFrame,
+	shouldDrainQueue,
 	splitWarpAnswer,
 	splitWarpFrames,
+	turnsFromStoredMessages,
 	warpErrorDetail,
 	warpToolLabel,
 	warpToolStatusLabel,
@@ -81,12 +90,15 @@ describe("warpToolLabel", () => {
 		expect(warpToolLabel("query_metrics", true)).toBe("Querying metrics");
 		expect(warpToolLabel("count_logs", true)).toBe("Checking log volume");
 		expect(warpToolLabel("count_logs")).toBe("Checked log volume");
+		expect(warpToolLabel("semantic_search_logs", true)).toBe("Performing vector search");
+		expect(warpToolLabel("semantic_search_logs")).toBe("Performed vector search");
 	});
 
 	// Every tool the agent can call needs a label. A raw name like "count_logs"
 	// leaking into the transcript is the symptom this guards against.
 	it("labels every tool the agent exposes", () => {
 		const tools = [
+			"semantic_search_logs",
 			"count_logs",
 			"query_logs",
 			"get_log_detail",
@@ -418,5 +430,286 @@ describe("formatWarpUsage sub-cent costs", () => {
 		expect(formatWarpUsage({ total_tokens: 10, cost: { total_cost: 0.0012 } })).toContain("$0.0012");
 		expect(formatWarpUsage({ total_tokens: 10, cost: { total_cost: 0.0123 } })).toContain("$0.01");
 		expect(formatWarpUsage({ total_tokens: 10, cost: { total_cost: 1.5 } })).toContain("$1.50");
+	});
+});
+
+// The server marks an answer given on its last research step as "partial". The
+// transcript has to show that, or a half-checked figure reads as a settled one.
+describe("isPartialAnswer", () => {
+	it("recognises the partial finish reason and nothing else", () => {
+		expect(isPartialAnswer("partial")).toBe(true);
+		expect(isPartialAnswer("stop")).toBe(false);
+		expect(isPartialAnswer("question")).toBe(false);
+		expect(isPartialAnswer(undefined)).toBe(false);
+	});
+
+	it("reads it off a done frame", () => {
+		const event = parseWarpFrame('data: {"type":"done","finish_reason":"partial","iterations":8}');
+		expect(event && isPartialAnswer(event.finish_reason)).toBe(true);
+	});
+});
+
+// Warp's answers link into the dashboard with root-relative paths. Those must
+// navigate in-app, keeping the tray open; anything else is a real external link.
+describe("isInternalWarpLink", () => {
+	it("accepts root-relative dashboard paths only", () => {
+		expect(isInternalWarpLink("/workspace/logs?selected_log=abc")).toBe(true);
+		expect(isInternalWarpLink("/workspace/logs")).toBe(true);
+		expect(isInternalWarpLink("//evil.example/x")).toBe(false);
+		expect(isInternalWarpLink("https://github.com/maximhq/bifrost/issues/new")).toBe(false);
+		expect(isInternalWarpLink("javascript:alert(1)")).toBe(false);
+		expect(isInternalWarpLink(undefined)).toBe(false);
+	});
+});
+
+// A reopened thread must look like it did live: the same tool rows, the same
+// error card, the same partial note and the same cost line.
+describe("turnsFromStoredMessages", () => {
+	it("maps stored messages onto transcript turns", () => {
+		const turns = turnsFromStoredMessages([
+			{ role: "user", content: "what did we spend?", created_at: "2026-09-05T00:00:00Z" },
+			{
+				role: "assistant",
+				content: "About $12.",
+				tool_calls: [
+					{ name: "query_metrics", duration_ms: 12 },
+					{ name: "count_logs", duration_ms: 3, failed: true },
+				],
+				finish_reason: "partial",
+				total_tokens: 120,
+				cost: 0.0123,
+				created_at: "2026-09-05T00:00:01Z",
+			},
+			{ role: "assistant", content: "", error: "upstream_error:boom", created_at: "2026-09-05T00:00:02Z" },
+		]);
+		expect(turns).toHaveLength(3);
+		expect(turns[0]).toMatchObject({ role: "user", content: "what did we spend?" });
+		expect(turns[1]).toMatchObject({ role: "assistant", content: "About $12.", partial: true });
+		expect(turns[1].toolCalls).toEqual([
+			{ id: "stored-1-0", name: "query_metrics", durationMs: 12, failed: undefined },
+			{ id: "stored-1-1", name: "count_logs", durationMs: 3, failed: true },
+		]);
+		expect(turns[1].usage).toEqual({ total_tokens: 120, cost: { total_cost: 0.0123 } });
+		expect(turns[2]).toMatchObject({ role: "assistant", content: "", error: "upstream_error:boom" });
+		expect(turns[2].usage).toBeUndefined();
+		expect(turns[2].partial).toBeUndefined();
+	});
+
+	// A reopened question turn must carry the same selectable card the live
+	// turn showed. The stored structured question restores the options with
+	// their hints; without one, the bare content is still shown as a question
+	// so the reply is not misfiled as an answer.
+	it("restores a stored question's options and hints", () => {
+		const turns = turnsFromStoredMessages([
+			{
+				role: "assistant",
+				content: "Whose traffic do you mean?",
+				finish_reason: "question",
+				question: {
+					question: "Whose traffic do you mean?",
+					options: [{ label: "Platform team", hint: "team:platform" }],
+					allow_other: true,
+					kind: "scope",
+				},
+				created_at: "2026-09-05T00:00:00Z",
+			},
+			{ role: "assistant", content: "Which window?", finish_reason: "question", created_at: "2026-09-05T00:00:01Z" },
+		]);
+		expect(turns[0].question).toEqual({
+			question: "Whose traffic do you mean?",
+			options: [{ label: "Platform team", hint: "team:platform" }],
+			allow_other: true,
+			kind: "scope",
+		});
+		// Legacy rows without the stored question still come back as a question.
+		expect(turns[1].question).toEqual({ question: "Which window?", options: [] });
+	});
+});
+
+// The tray's index chip is one glance: is semantic search usable right now.
+describe("indexStatusLabel", () => {
+	it("names each state and shows progress while indexing", () => {
+		expect(indexStatusLabel({ state: "ready", vector_store_connected: true, embedding_configured: true })).toEqual({
+			label: "Index ready",
+			tone: "ok",
+		});
+		expect(indexStatusLabel({ state: "unavailable", vector_store_connected: false, embedding_configured: true })).toEqual({
+			label: "No vector store",
+			tone: "error",
+		});
+		expect(indexStatusLabel({ state: "not_configured", vector_store_connected: true, embedding_configured: false })).toEqual({
+			label: "Search not set up",
+			tone: "muted",
+		});
+		expect(
+			indexStatusLabel({
+				state: "failed",
+				vector_store_connected: true,
+				embedding_configured: true,
+				backfill: {
+					id: "job-1",
+					status: "failed",
+					total: 5000,
+					scanned: 100,
+					indexed: 0,
+					skipped: 0,
+					failed: 100,
+					last_error: "no keys found",
+				},
+			}),
+		).toEqual({ label: "Indexing failed", tone: "error", detail: "no keys found" });
+		expect(
+			indexStatusLabel({
+				state: "indexing",
+				vector_store_connected: true,
+				embedding_configured: true,
+				backfill: { id: "job-2", status: "running", total: 200, scanned: 50, indexed: 40, skipped: 10, failed: 0 },
+			}),
+		).toEqual({ label: "Indexing 25%", tone: "busy" });
+		expect(
+			indexStatusLabel({
+				state: "indexing",
+				vector_store_connected: true,
+				embedding_configured: true,
+				backfill: { id: "job-3", status: "pending", total: 0, scanned: 0, indexed: 0, skipped: 0, failed: 0 },
+			}),
+		).toEqual({ label: "Indexing", tone: "busy" });
+	});
+
+	it("does not read the idle response as a job", () => {
+		// The idle body is zeroed, not absent: total 0 and scanned 0 with no id.
+		// Read as a job it renders a 0% progress chip for a run that never
+		// started, and hides the fact that indexing simply has not been asked for.
+		expect(
+			indexStatusLabel({
+				state: "indexing",
+				vector_store_connected: true,
+				embedding_configured: true,
+				backfill: { status: "idle" },
+			}),
+		).toEqual({ label: "Indexing", tone: "busy" });
+	});
+});
+
+// The question card's shortcuts are document-level because the composer has
+// focus when the card appears. They must still work in that state - an empty
+// composer is not "typing" - and must yield the moment someone starts writing
+// their own answer.
+describe("isTypingInto", () => {
+	const composer = (value: string) => ({ tagName: "TEXTAREA", value, dataset: { testid: WARP_COMPOSER_TESTID } });
+
+	it("treats an empty composer as not typing", () => {
+		expect(isTypingInto(composer(""))).toBe(false);
+		expect(isTypingInto(composer("   "))).toBe(false);
+	});
+	it("treats a composer with text, or any input, as typing", () => {
+		expect(isTypingInto(composer("all cust"))).toBe(true);
+		expect(isTypingInto({ tagName: "INPUT", value: "" })).toBe(true);
+		expect(isTypingInto({ tagName: "INPUT", value: "x" })).toBe(true);
+	});
+	// Another textarea on the page belongs to someone else. Treating it as a
+	// shortcut target let the question card swallow a character that matched an
+	// option letter while they were writing into an unrelated field.
+	it("treats any other textarea as typing, even when empty", () => {
+		expect(isTypingInto({ tagName: "TEXTAREA", value: "" })).toBe(true);
+		expect(isTypingInto({ tagName: "TEXTAREA", value: "", dataset: { testid: "some-other-field" } })).toBe(true);
+	});
+	it("treats anything else as not typing", () => {
+		expect(isTypingInto({ tagName: "DIV" })).toBe(false);
+		expect(isTypingInto(null)).toBe(false);
+	});
+});
+
+// Messages typed while Warp is thinking wait their turn. One goes out per
+// finished turn, never two at once.
+describe("shouldDrainQueue", () => {
+	it("sends only on the streaming-to-idle transition", () => {
+		expect(shouldDrainQueue(true, false, 2)).toBe(true);
+		expect(shouldDrainQueue(false, false, 2)).toBe(false);
+		expect(shouldDrainQueue(true, true, 2)).toBe(false);
+		expect(shouldDrainQueue(true, false, 0)).toBe(false);
+	});
+});
+// isInternalWarpLink decides whether a link Warp produced is followed with the
+// router (same tab) or opened as an external link. WHATWG URL parsing folds a
+// backslash into a forward slash for special schemes, so "/\host" resolves the
+// same way "//host" does - and treating it as internal handed the router a
+// value that navigates the current tab to another origin.
+describe("isInternalWarpLink", () => {
+	it("accepts root-relative paths", () => {
+		expect(isInternalWarpLink("/workspace/logs")).toBe(true);
+		expect(isInternalWarpLink("/workspace/logs?providers=openai")).toBe(true);
+	});
+
+	it("rejects protocol-relative and backslash-folded authorities", () => {
+		for (const href of ["//evil.example/x", "/\\evil.example/x", "/\\\\evil.example/x", "/\\/evil.example"]) {
+			expect(isInternalWarpLink(href)).toBe(false);
+		}
+	});
+
+	it("rejects absolute and empty links", () => {
+		for (const href of ["https://evil.example", "http://evil.example", "javascript:alert(1)", "", undefined]) {
+			expect(isInternalWarpLink(href)).toBe(false);
+		}
+	});
+});
+describe("isTypingInto contenteditable", () => {
+	// A rich-text editor is a DIV, so tagName alone says nothing. This was
+	// covered by the inline check the helper replaced, and losing it meant the
+	// question shortcuts ate keystrokes in exactly the field where it is hardest
+	// to spot.
+	it("treats a contenteditable element as typing", () => {
+		expect(isTypingInto({ tagName: "DIV", isContentEditable: true })).toBe(true);
+	});
+
+	it("leaves an ordinary div alone, so the shortcuts still work", () => {
+		expect(isTypingInto({ tagName: "DIV" })).toBe(false);
+		expect(isTypingInto({ tagName: "DIV", isContentEditable: false })).toBe(false);
+	});
+
+	// Warp's own composer keeps its exemption: empty means the shortcuts apply.
+	it("keeps the composer exemption", () => {
+		expect(isTypingInto({ tagName: "TEXTAREA", value: "", dataset: { testid: WARP_COMPOSER_TESTID } })).toBe(false);
+		expect(isTypingInto({ tagName: "TEXTAREA", value: "draft", dataset: { testid: WARP_COMPOSER_TESTID } })).toBe(true);
+	});
+});
+describe("isPlainLeftClick", () => {
+	it("leaves modified and non-primary clicks to the browser", () => {
+		// Intercepting these took away the only way to open a cited link in a new
+		// tab without losing the answer being read.
+		expect(isPlainLeftClick({ button: 0 })).toBe(true);
+		expect(isPlainLeftClick({})).toBe(true);
+		expect(isPlainLeftClick({ button: 1 })).toBe(false);
+		expect(isPlainLeftClick({ button: 0, metaKey: true })).toBe(false);
+		expect(isPlainLeftClick({ button: 0, ctrlKey: true })).toBe(false);
+		expect(isPlainLeftClick({ button: 0, shiftKey: true })).toBe(false);
+		expect(isPlainLeftClick({ button: 0, altKey: true })).toBe(false);
+	});
+});
+
+describe("shouldDrainQueue with a pending question", () => {
+	it("holds the queue until the clarification is resolved", () => {
+		// A question ends streaming too, so without the gate the next queued
+		// follow-up became the answer to a question it has nothing to do with.
+		expect(shouldDrainQueue(true, false, 1)).toBe(true);
+		expect(shouldDrainQueue(true, false, 1, true)).toBe(false);
+		expect(shouldDrainQueue(true, false, 0, false)).toBe(false);
+		expect(shouldDrainQueue(false, false, 2, false)).toBe(false);
+	});
+});
+
+describe("turnsFromStoredMessages question markers", () => {
+	it("marks a reopened turn that asked rather than answered", () => {
+		expect(isWarpQuestionFinish("question")).toBe(true);
+		expect(isWarpQuestionFinish("stop")).toBe(false);
+		expect(isWarpQuestionFinish(undefined)).toBe(false);
+		const turns = turnsFromStoredMessages([
+			{ role: "user", content: "which provider?", created_at: "2026-09-16T09:00:00Z" },
+			{ role: "assistant", content: "Which provider did you mean?", finish_reason: "question", created_at: "2026-09-16T09:00:01Z" },
+		]);
+		// send() serialises turn.question as `question: true`. Without the marker
+		// the server reads a replayed clarification as an answer.
+		expect(turns[1].question?.question).toBe("Which provider did you mean?");
+		expect(turns[0].question).toBeUndefined();
 	});
 });

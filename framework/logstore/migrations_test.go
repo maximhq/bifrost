@@ -605,6 +605,49 @@ func TestMigrationAddWarpConversationTables_NonRollbackable(t *testing.T) {
 	assert.EqualValues(t, 1, surviving, "the saved conversation must survive")
 }
 
+// TestMigrationAddWarpMessageOutcomeColumns_RollbackGuardsRecordedUsage pins
+// that rolling the outcome columns back is refused once they hold anything.
+//
+// These are not pure schema. finish_reason is what marks an answer partial, and
+// total_tokens/cost are the recorded spend for a saved chat, so dropping a
+// populated set destroys a record rather than reversing a migration. Empty is
+// still reversible, which keeps a failed upgrade recoverable.
+func TestMigrationAddWarpMessageOutcomeColumns_RollbackGuardsRecordedUsage(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	require.NoError(t, db.AutoMigrate(&WarpConversation{}, &WarpMessage{}))
+	require.NoError(t, migrationAddWarpMessageOutcomeColumns(ctx, db, testLogger{}))
+	for _, column := range warpMessageOutcomeColumns {
+		require.True(t, db.Migrator().HasColumn(&WarpMessage{}, column.column))
+	}
+
+	// A message with no recorded outcome: the rollback is a genuine reversal.
+	require.NoError(t, db.Create(&WarpMessage{ID: "m-plain", ConversationID: "c-1", Role: "user", Content: "q"}).Error)
+	require.NoError(t, rollbackWarpMessageOutcomeColumns(db))
+	require.False(t, db.Migrator().HasColumn(&WarpMessage{}, "cost"),
+		"columns holding nothing are safe to drop")
+
+	// Re-add them, then record a turn's spend. Now the drop would destroy it.
+	require.NoError(t, db.AutoMigrate(&WarpMessage{}))
+	require.NoError(t, db.Create(&WarpMessage{
+		ID: "m-answer", ConversationID: "c-1", Role: "assistant", Content: "a",
+		FinishReason: "partial", TotalTokens: 1200, Cost: 0.042,
+	}).Error)
+
+	err = rollbackWarpMessageOutcomeColumns(db)
+	require.Error(t, err, "rollback must refuse while a recorded outcome exists")
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	assert.True(t, db.Migrator().HasColumn(&WarpMessage{}, "cost"),
+		"a refused rollback must leave the columns intact")
+
+	var got WarpMessage
+	require.NoError(t, db.Where("id = ?", "m-answer").First(&got).Error)
+	assert.Equal(t, 1200, got.TotalTokens, "the recorded usage must survive")
+	assert.InDelta(t, 0.042, got.Cost, 1e-9)
+}
+
 // The cross-owner sweep needs an index it can actually use.
 //
 // DeleteWarpConversationsOlderThan filters on updated_at alone, and the

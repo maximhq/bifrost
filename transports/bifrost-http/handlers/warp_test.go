@@ -225,6 +225,74 @@ func TestWarpBackfillStatusAndCancel(t *testing.T) {
 	require.Contains(t, string(cancelCtx.Response.Body()), tables.SidekiqStatusCancelled)
 }
 
+// The tray shows whether semantic search is usable at a glance. This summary
+// is readable by anyone who can chat, unlike the backfill controls, and folds
+// the vector store connection and the latest indexing job into one state.
+func TestWarpLogIndexStatusSummarisesState(t *testing.T) {
+	handler, jobs, cleanup := newBackfillTestHandler(t)
+	defer cleanup()
+
+	ctx := adminCtx("")
+	handler.logIndexStatus(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+	body := string(ctx.Response.Body())
+	require.Contains(t, body, `"state":"ready"`)
+	require.Contains(t, body, `"vector_store_connected":true`)
+
+	jobs.latest = &tables.TableSidekiqJob{ID: "job-f", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusFailed, LastError: "no keys found", Metadata: `{"scanned":100,"failed":100,"total":5000}`}
+	ctx = adminCtx("")
+	handler.logIndexStatus(ctx)
+	body = string(ctx.Response.Body())
+	require.Contains(t, body, `"state":"failed"`)
+	require.Contains(t, body, "no keys found")
+
+	jobs.inFlight = &tables.TableSidekiqJob{ID: "job-r", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusRunning, Metadata: `{"scanned":40,"total":100}`}
+	ctx = adminCtx("")
+	handler.logIndexStatus(ctx)
+	body = string(ctx.Response.Body())
+	require.Contains(t, body, `"state":"indexing"`)
+	require.Contains(t, body, `"scanned":40`)
+	require.Contains(t, body, `"total":100`)
+}
+
+// A page reload has no job id in memory and asks for "whatever is current".
+// Once a job finishes, nothing is in flight, so without a fallback the last
+// outcome, including a failure and its cause, vanishes from the settings page.
+func TestWarpBackfillStatusWithoutIDFallsBackToLatestJob(t *testing.T) {
+	handler, jobs, cleanup := newBackfillTestHandler(t)
+	defer cleanup()
+	jobs.latest = &tables.TableSidekiqJob{
+		ID: "job-old", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusFailed,
+		LastError: "Warp backfill stopped after 100 consecutive failures: no keys found that support model: openai/embed",
+		Metadata:  `{"scanned":100,"failed":100}`,
+	}
+
+	statusCtx := adminCtx("")
+	handler.backfillStatus(statusCtx)
+	require.Equal(t, fasthttp.StatusOK, statusCtx.Response.StatusCode())
+	body := string(statusCtx.Response.Body())
+	require.Contains(t, body, `"id":"job-old"`)
+	require.Contains(t, body, `"status":"failed"`)
+	require.Contains(t, body, `"failed":100`)
+	require.Contains(t, body, "no keys found")
+
+	// An in-flight job still takes priority over the historical one.
+	jobs.inFlight = &tables.TableSidekiqJob{ID: "job-new", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusRunning, Metadata: `{}`}
+	statusCtx = adminCtx("")
+	handler.backfillStatus(statusCtx)
+	require.Equal(t, fasthttp.StatusOK, statusCtx.Response.StatusCode())
+	require.Contains(t, string(statusCtx.Response.Body()), `"id":"job-new"`)
+}
+
+func TestWarpBackfillStatusWithoutAnyJobIsIdle(t *testing.T) {
+	handler, _, cleanup := newBackfillTestHandler(t)
+	defer cleanup()
+	statusCtx := adminCtx("")
+	handler.backfillStatus(statusCtx)
+	require.Equal(t, fasthttp.StatusOK, statusCtx.Response.StatusCode())
+	require.Contains(t, string(statusCtx.Response.Body()), `"status":"idle"`)
+}
+
 // The agent runs after the handler returns and fasthttp has recycled the
 // request. A snapshot that drops the query scope silently widens every tool to
 // the whole deployment, so the copy is asserted rather than assumed.
@@ -476,4 +544,47 @@ func TestWarpStartBackfillValidatesRangeBeforeConflict(t *testing.T) {
 	ctx = adminCtx(`{"start_time":"2026-09-02T00:00:00Z","end_time":"2026-09-01T00:00:00Z"}`)
 	handler.startBackfill(ctx)
 	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+}
+
+// The tray's index status has no admin gate, unlike the backfill endpoints, and
+// LastError carries whatever the provider or vector store said - endpoints,
+// model names, internal detail. An administrator debugging a stalled index
+// needs that text; everyone else needs the state and the counts.
+func TestWarpLogIndexStatusHidesProviderErrorFromNonAdmins(t *testing.T) {
+	handler, jobs, cleanup := newBackfillTestHandler(t)
+	defer cleanup()
+	jobs.latest = &tables.TableSidekiqJob{
+		ID: "job-f", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusFailed,
+		LastError: "dial tcp 10.0.3.7:6333: connect: connection refused",
+		Metadata:  `{"scanned":100,"failed":100,"total":5000}`,
+	}
+
+	// No local-admin marker on the context.
+	ctx := &fasthttp.RequestCtx{}
+	handler.logIndexStatus(ctx)
+	body := string(ctx.Response.Body())
+	require.Contains(t, body, `"state":"failed"`, "the state itself is not sensitive")
+	require.Contains(t, body, `"failed":100`, "nor are the counts")
+	require.NotContains(t, body, "10.0.3.7", "the provider's own error text must not reach a non-admin")
+	require.NotContains(t, body, "connection refused")
+
+	// An administrator still gets it, which is the point of keeping it at all.
+	adminRequest := adminCtx("")
+	handler.logIndexStatus(adminRequest)
+	require.Contains(t, string(adminRequest.Response.Body()), "connection refused")
+}
+
+func TestWarpJobMatchesNamespace(t *testing.T) {
+	job := func(metadata string) *tables.TableSidekiqJob {
+		return &tables.TableSidekiqJob{Metadata: metadata}
+	}
+	require.True(t, warpJobMatchesNamespace(job(`{"namespace":"warp-logs"}`), "warp-logs"))
+	require.False(t, warpJobMatchesNamespace(job(`{"namespace":"warp-logs"}`), "warp-logs-v2"),
+		"a run against the previous embedding space says nothing about the current one")
+	// Pre-upgrade jobs carry no namespace at all. Blanking the tray for an index
+	// that was legitimately built is worse than trusting them.
+	require.True(t, warpJobMatchesNamespace(job(`{}`), "warp-logs"))
+	require.True(t, warpJobMatchesNamespace(job(`{"namespace":"  "}`), "warp-logs"))
+	require.False(t, warpJobMatchesNamespace(job(`{ not json`), "warp-logs"),
+		"metadata we cannot read is not evidence about the current index")
 }

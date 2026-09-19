@@ -618,3 +618,34 @@ func TestWarpSaveConfigStillRequiresAVectorStoreToEnable(t *testing.T) {
 	_, err := service.SaveConfig(context.Background(), validWarpConfigInput())
 	require.ErrorIs(t, err, ErrNoVectorStore)
 }
+
+// A one-step budget cannot both research and answer.
+//
+// The loop reserves its last step for answering, but exempts a budget of 1 so
+// Warp is not left unable to look at anything. The result is that a deployment
+// configured with 1 spends its only step on a tool call and the run ends as
+// ErrMaxIterations - every time, with no answer ever produced. Two is the
+// smallest budget that can do both, so 1 is rejected rather than silently
+// meaning "never answers".
+func TestWarpMaxIterationsRejectsAOneStepBudget(t *testing.T) {
+	input := validWarpConfigInput()
+	input.MaxIterations = 1
+	err := ValidateConfigInput(input)
+	require.ErrorIs(t, err, ErrInvalidConfig)
+	require.ErrorContains(t, err, "max_iterations")
+
+	// Zero still means "use the default", and two upwards is fine.
+	for _, value := range []int{0, 2, 8, schemas.WarpMaxIterationsCeiling} {
+		accepted := validWarpConfigInput()
+		accepted.MaxIterations = value
+		require.NoError(t, ValidateConfigInput(accepted), "max_iterations %d must be accepted", value)
+	}
+}
+
+// A row written before that rule must not keep the broken budget.
+func TestWarpEffectiveMaxIterationsLiftsAStoredOne(t *testing.T) {
+	require.Equal(t, 2, (&schemas.WarpConfig{MaxIterations: 1}).EffectiveMaxIterations(),
+		"a stored 1 would otherwise answer nothing at all")
+	require.Equal(t, schemas.WarpDefaultMaxIterations, (&schemas.WarpConfig{}).EffectiveMaxIterations())
+	require.Equal(t, 5, (&schemas.WarpConfig{MaxIterations: 5}).EffectiveMaxIterations())
+}

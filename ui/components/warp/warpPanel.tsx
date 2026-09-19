@@ -1,16 +1,20 @@
 import WarpComposer from "@/components/warp/warpComposer";
+import WarpHistory from "@/components/warp/warpHistory";
 import { WarpMessage, WarpStreamingMessage } from "@/components/warp/warpMessage";
 import WarpQuestionCard from "@/components/warp/warpQuestion";
 import { useWarpStream } from "@/components/warp/useWarpStream";
+import { indexStatusLabel, shouldDrainQueue, turnsFromStoredMessages } from "@/components/warp/warpStream.utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { WarpIcon } from "@/components/ui/icons";
 import { ScrollArea } from "@/components/ui/scrollArea";
 import { useWarp, type WarpTurn } from "@/lib/contexts/warpContext";
-import { useGetWarpConfigQuery } from "@/lib/store/apis/warpApi";
+import { useGetWarpConfigQuery, useGetWarpLogIndexStatusQuery, useLazyGetWarpConversationQuery } from "@/lib/store/apis/warpApi";
+import type { WarpConversation } from "@/lib/types/warp";
+import { cn } from "@/lib/utils";
 import { Link } from "@tanstack/react-router";
 import { useWarpAutoScroll } from "@/components/warp/useWarpAutoScroll";
-import { ArrowDown, SquarePen, X } from "lucide-react";
+import { ArrowDown, Database, History, Loader2, SquarePen, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 /** Starter questions, shown on an empty conversation. */
@@ -75,15 +79,134 @@ export default function WarpPanel() {
 		[appendTurn],
 	);
 
-	const { streamingText, streamingToolCalls, isStreaming, question, clearQuestion, send, stop, resetConversation } = useWarpStream({
-		onTurnComplete,
-	});
+	const {
+		streamingText,
+		streamingToolCalls,
+		isStreaming,
+		question,
+		clearQuestion,
+		send,
+		stop,
+		discard,
+		resetConversation,
+		openConversation,
+	} = useWarpStream({ onTurnComplete });
 
 	const { containerRef, contentRef, isPinned, scrollToBottom } = useWarpAutoScroll();
 
-	if (!warp) return null;
+	// History is a view over the same column, not a second panel: the transcript
+	// steps aside while a thread is being picked and comes back with it loaded.
+	const [showHistory, setShowHistory] = useState(false);
+	// The thread identity is the stream's, not a second copy. A local copy was
+	// only ever written by openStored, so a thread this chat had just created was
+	// not recognised as active - deleting it cleared nothing and the next message
+	// was filed under the id that had just been deleted.
+	const activeConversationId = warp?.conversationId || undefined;
+	const [loadConversation] = useLazyGetWarpConversationQuery();
 
 	const isConfigured = config?.configured ?? false;
+
+	// The index chip. Polled faster while a backfill is running, because that is
+	// the only time the number moves; otherwise a slow heartbeat is enough to
+	// notice a vector store going away.
+	const { data: indexStatus, isError: isIndexStatusError } = useGetWarpLogIndexStatusQuery(undefined, {
+		skip: !isConfigured,
+		pollingInterval: 30000,
+	});
+	const { data: liveIndexStatus, isError: isLiveIndexStatusError } = useGetWarpLogIndexStatusQuery(undefined, {
+		skip: !isConfigured || indexStatus?.state !== "indexing",
+		pollingInterval: 5000,
+	});
+	const indexChip = liveIndexStatus ?? indexStatus;
+	// The chip is the only place that says whether semantic search is usable, so
+	// a failed status request must not simply remove it - a silently absent chip
+	// reads as "everything is fine". The settings view does not cover this
+	// either; it polls the backfill status through a different query.
+	const indexStatusUnavailable = !indexChip && (isIndexStatusError || isLiveIndexStatusError);
+
+	// Messages typed while an answer is streaming. Sent one per finished turn,
+	// in order, so a follow-up asked mid-answer is neither dropped nor fired
+	// into the middle of the request it follows up on.
+	const [queue, setQueue] = useState<string[]>([]);
+	// True while a stored conversation is being fetched. The drain must not run
+	// then: if the active stream finishes before loadConversation resolves, the
+	// follow-up goes out against the conversation being left, is persisted under
+	// it, and then vanishes when openStored replaces the transcript.
+	const [isOpeningStored, setIsOpeningStored] = useState(false);
+	// ask is redefined every render because it closes over the transcript. The
+	// drain effect reaches it through a ref so it always sends with the history
+	// as of the turn that just finished, without re-running on every render.
+	const askRef = useRef<((text: string) => void) | null>(null);
+	const wasStreaming = useRef(isStreaming);
+	// Invalidates a stored-conversation load that is still in flight. The
+	// history list stays interactive while openStored awaits, so the person can
+	// leave history, start a new chat or ask something - and the load finishing
+	// afterwards must not replace that newer state with the stored thread.
+	// Bumped by every action that moves the panel on; openStored compares its
+	// own epoch after the await and drops a result nobody is waiting for.
+	const openStoredEpoch = useRef(0);
+	// The single invalidation point: every action that abandons a stored load
+	// bumps the epoch AND clears the loading flag together. Bumping alone left
+	// isOpeningStored true until the stale request settled, so the queue stayed
+	// blocked; clearing alone let a superseded load's finally free the queue
+	// while a newer load was still pending, and a queued follow-up could drain
+	// into the conversation being left.
+	const abandonStoredLoad = () => {
+		openStoredEpoch.current++;
+		setIsOpeningStored(false);
+	};
+	useEffect(() => {
+		// Before wasStreaming is updated, so the streaming-to-idle transition is
+		// still pending when the load finishes and the queue drains then instead of
+		// being swallowed.
+		if (isOpeningStored) return;
+		const drain = shouldDrainQueue(wasStreaming.current, isStreaming, queue.length, question !== null);
+		wasStreaming.current = isStreaming;
+		if (!drain) return;
+		const [next, ...rest] = queue;
+		setQueue(rest);
+		askRef.current?.(next);
+		// question is a dependency because it gates the drain: the queue has to be
+		// re-examined when a clarification is answered, not only when a turn ends.
+		// isOpeningStored is a dependency so the queue is re-examined once the load
+		// settles, either way.
+	}, [isStreaming, queue, question, isOpeningStored]);
+
+	if (!warp) return null;
+
+	const openStored = async (conversation: WarpConversation) => {
+		// Loaded first, cleared second. A queued follow-up was typed into the thread
+		// being left and must not drain into the one being opened - but clearing
+		// before the await threw the queue away on a failed load too, when nothing
+		// had changed and the messages were still wanted.
+		//
+		// Nothing between the await and the clear can drain it: the queue drains on
+		// the streaming-to-idle transition, and discard() below is what causes that
+		// transition, so it happens after both.
+		setIsOpeningStored(true);
+		const epoch = ++openStoredEpoch.current;
+		let detail;
+		try {
+			detail = await loadConversation(conversation.id).unwrap();
+		} finally {
+			// Cleared on the failure path too, or a failed open would freeze the
+			// queue for the rest of the session - but only by the load that still
+			// owns the epoch. A superseded load clearing the flag would unblock
+			// the queue while the newer load is still pending.
+			if (epoch === openStoredEpoch.current) setIsOpeningStored(false);
+		}
+		// Superseded while loading: the person left history, started a new chat
+		// or asked something. Applying the stored thread now would replace that
+		// newer state with an older one they already moved past.
+		if (epoch !== openStoredEpoch.current) return;
+		setQueue([]);
+		// discard, not stop: the in-flight turn belongs to the thread being left,
+		// and stop() keeps it - so it would be filed under the one being opened.
+		discard();
+		warp.replaceTurns(turnsFromStoredMessages(detail.messages));
+		openConversation(detail.id);
+		setShowHistory(false);
+	};
 	// "Turned off" and "never set up" both report configured:false, but they are
 	// different situations with different fixes. Telling someone who has already
 	// filled the form in that Warp "isn't set up yet" sends them back to a page
@@ -92,6 +215,9 @@ export default function WarpPanel() {
 	const isDisabledButComplete = !!config && !config.enabled && !!config.provider && !!config.model;
 
 	const ask = (text: string, label?: string) => {
+		// A question moves the panel on, so a stored load still in flight is for
+		// a thread the person is no longer waiting to open.
+		abandonStoredLoad();
 		const history = warp.turns;
 		// Carrying the question onto the user's turn is what makes a bare "-7d" in
 		// the transcript legible later: on its own it reads as a non sequitur.
@@ -109,6 +235,7 @@ export default function WarpPanel() {
 		scrollToBottom();
 		void send(history, text);
 	};
+	askRef.current = ask;
 
 	return (
 		// No chrome of its own: WarpDock supplies the surface, so the panel is just
@@ -129,8 +256,38 @@ export default function WarpPanel() {
 					<Badge variant="secondary" className="shrink-0 text-[10px]">
 						ALPHA
 					</Badge>
+					{indexChip && <WarpIndexChip status={indexChip} />}
+					{indexStatusUnavailable && (
+						<span
+							className="text-muted-foreground border-border rounded-full border px-2 py-0.5 text-[11px]"
+							data-testid="warp-index-status-unavailable"
+							title="Warp could not read its index status. Semantic search may or may not be available."
+						>
+							Index status unavailable
+						</span>
+					)}
 				</div>
 				<div className="flex shrink-0 items-center gap-1">
+					{isConfigured && (
+						<button
+							type="button"
+							aria-label={showHistory ? "Back to chat" : "Chat history"}
+							aria-pressed={showHistory}
+							data-testid="warp-history-btn"
+							onClick={() => {
+								// Toggling away from history abandons any stored load still
+								// in flight; toggling into it starts fresh anyway.
+								abandonStoredLoad();
+								setShowHistory((current) => !current);
+							}}
+							className={cn(
+								"text-muted-foreground hover:bg-accent hover:text-accent-foreground flex size-7 cursor-pointer items-center justify-center rounded-md transition-colors",
+								showHistory && "bg-accent text-accent-foreground",
+							)}
+						>
+							<History className="size-3.5" />
+						</button>
+					)}
 					{warp.turns.length > 0 && (
 						<button
 							type="button"
@@ -139,7 +296,12 @@ export default function WarpPanel() {
 							onClick={() => {
 								// Dropping the thread id as well as the transcript, or the next
 								// question would be filed under the chat that was just cleared.
+								// The epoch bump abandons any stored load still in flight, so
+								// it cannot repopulate the chat that was just cleared.
+								abandonStoredLoad();
 								resetConversation();
+								setShowHistory(false);
+								setQueue([]);
 								warp.clear();
 							}}
 							className="text-muted-foreground hover:bg-accent hover:text-accent-foreground flex size-7 cursor-pointer items-center justify-center rounded-md transition-colors"
@@ -172,6 +334,24 @@ export default function WarpPanel() {
 					<p className="text-destructive text-xs" role="alert">
 						Could not load Warp&apos;s configuration. Reload the page to try again.
 					</p>
+				</div>
+			) : isConfigured && showHistory ? (
+				<div className="min-h-0 flex-1" data-testid="warp-history-view">
+					<WarpHistory
+						activeConversationId={activeConversationId}
+						onOpen={openStored}
+						onDeleted={(id) => {
+							// Only the thread on screen. Deleting some other row leaves the
+							// open conversation alone.
+							if (id !== activeConversationId) return;
+							discard();
+							setQueue([]);
+							warp.clear();
+							// Forget the id too, or the next message reopens the thread
+							// that was just deleted by writing to its id.
+							resetConversation();
+						}}
+					/>
 				</div>
 			) : !isConfigured ? (
 				// An unconfigured Warp is fixable by the operator, so the panel points
@@ -235,6 +415,29 @@ export default function WarpPanel() {
 									warp.turns.map((turn, index) => <WarpMessage key={index} turn={turn} isLatest={index === warp.turns.length - 1} />)
 								)}
 								{isStreaming && <WarpStreamingMessage text={streamingText} toolCalls={streamingToolCalls} isStreaming={isStreaming} />}
+								{queue.length > 0 && (
+									<ul className="space-y-2" data-testid="warp-queued">
+										{queue.map((text, index) => (
+											<li
+												key={`${index}-${text}`}
+												className="flex items-start gap-2 rounded-md border border-dashed px-3 py-2 text-sm"
+												data-testid="warp-queued-item"
+											>
+												<span className="text-muted-foreground min-w-0 flex-1 whitespace-pre-wrap">{text}</span>
+												<span className="text-muted-foreground shrink-0 text-[10px] tracking-wide uppercase">Queued</span>
+												<button
+													type="button"
+													aria-label="Remove queued message"
+													data-testid="warp-queued-remove"
+													onClick={() => setQueue((current) => current.filter((_, position) => position !== index))}
+													className="text-muted-foreground hover:text-foreground shrink-0 cursor-pointer"
+												>
+													<X className="size-3" />
+												</button>
+											</li>
+										))}
+									</ul>
+								)}
 							</div>
 						</ScrollArea>
 
@@ -294,17 +497,48 @@ export default function WarpPanel() {
 									stop();
 									clearQuestion();
 									resetConversation();
+									setQueue([]);
 									warp.clear();
 								}
 							}}
 							provider={config?.provider}
 							model={config?.model}
 							onSend={ask}
-							onStop={stop}
+							onQueue={(text) => setQueue((current) => [...current, text])}
+							// Stopping is a decision about the whole exchange: a follow-up
+							// queued behind the answer you just cut off should not fire on
+							// its own the moment the cut lands.
+							onStop={() => {
+								setQueue([]);
+								stop();
+							}}
 						/>
 					</div>
 				</div>
 			)}
 		</div>
+	);
+}
+/**
+ * Whether semantic search is usable, as one small chip beside the title.
+ *
+ * Kept in the header rather than the settings page because it answers the
+ * question people have while asking: "why did Warp not find that
+ * conversation?". A backfill in progress shows its percentage; a failure shows
+ * the cause on hover.
+ */
+function WarpIndexChip({ status }: { status: Parameters<typeof indexStatusLabel>[0] }) {
+	const { label, tone, detail } = indexStatusLabel(status);
+	return (
+		<Badge
+			variant={tone === "error" ? "destructive" : "secondary"}
+			title={detail ?? label}
+			data-testid="warp-index-chip"
+			data-state={status.state}
+			className={cn("flex shrink-0 items-center gap-1 text-[10px] font-normal", tone === "muted" && "text-muted-foreground")}
+		>
+			{tone === "busy" ? <Loader2 className="size-2.5 animate-spin" /> : <Database className="size-2.5" />}
+			{label}
+		</Badge>
 	);
 }
