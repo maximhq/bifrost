@@ -4441,6 +4441,7 @@ func (provider *BedrockProvider) invokeBuildConfig(model string, streaming, vali
 		Model:                     bareModel,
 		IsStreaming:               streaming,
 		ValidateTools:             validateTools,
+		ExcludeFields:             []string{"guardrailConfig"},
 		BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
 		ProviderExtraHeaders:      provider.networkConfig.ExtraHeaders,
 		ShouldSendBackRawRequest:  provider.sendBackRawRequest,
@@ -4462,10 +4463,14 @@ func (provider *BedrockProvider) invokeStreamHeaders() map[string]string {
 
 func (provider *BedrockProvider) invokeAnthropicChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	requestURL, region := provider.invokeURL(ctx, key, request.Model, bedrockInvokeAction)
+	extraHeaders := provider.networkConfig.ExtraHeaders
+	if request.Params != nil {
+		extraHeaders = withGuardrailHeaders(extraHeaders, request.Params.ExtraParams)
+	}
 	return anthropic.HandleAnthropicChatCompletionRequest(
 		ctx, provider.mantleClient, requestURL, request,
 		provider.invokeBuildConfig(request.Model, false, false),
-		openai.BearerAuthHeader(key), provider.networkConfig.ExtraHeaders,
+		openai.BearerAuthHeader(key), extraHeaders,
 		provider.invokeSigner(ctx, key, requestURL, bedrockInvokeAccept, region),
 		provider.logger,
 	)
@@ -4477,13 +4482,17 @@ func (provider *BedrockProvider) invokeAnthropicChatCompletionStream(ctx *schema
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
+	extraHeaders := provider.invokeStreamHeaders()
+	if request.Params != nil {
+		extraHeaders = withGuardrailHeaders(extraHeaders, request.Params.ExtraParams)
+	}
 	// The anthropic stream loop reads events through this factory for the rest
 	// of the request. Any factory set earlier is replaced: the wire format here
 	// is AWS event-stream, which an SSE reader could not parse anyway.
 	ctx.SetValue(schemas.BifrostContextKeySSEReaderFactory, invokeSSEReaderFactory)
 	return anthropic.HandleAnthropicChatCompletionStreaming(
 		ctx, provider.mantleStreamingClient, requestURL, jsonData,
-		openai.BearerAuthHeader(key), provider.invokeStreamHeaders(),
+		openai.BearerAuthHeader(key), extraHeaders,
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		provider.networkConfig.BetaHeaderOverrides,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -4496,10 +4505,14 @@ func (provider *BedrockProvider) invokeAnthropicChatCompletionStream(ctx *schema
 
 func (provider *BedrockProvider) invokeAnthropicResponses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	requestURL, region := provider.invokeURL(ctx, key, request.Model, bedrockInvokeAction)
+	extraHeaders := provider.networkConfig.ExtraHeaders
+	if request.Params != nil {
+		extraHeaders = withGuardrailHeaders(extraHeaders, request.Params.ExtraParams)
+	}
 	return anthropic.HandleAnthropicResponsesRequest(
 		ctx, provider.mantleClient, requestURL, request,
 		provider.invokeBuildConfig(request.Model, false, true),
-		openai.BearerAuthHeader(key), provider.networkConfig.ExtraHeaders,
+		openai.BearerAuthHeader(key), extraHeaders,
 		provider.invokeSigner(ctx, key, requestURL, bedrockInvokeAccept, region),
 		provider.logger,
 	)
@@ -4511,10 +4524,14 @@ func (provider *BedrockProvider) invokeAnthropicResponsesStream(ctx *schemas.Bif
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
+	extraHeaders := provider.invokeStreamHeaders()
+	if request.Params != nil {
+		extraHeaders = withGuardrailHeaders(extraHeaders, request.Params.ExtraParams)
+	}
 	ctx.SetValue(schemas.BifrostContextKeySSEReaderFactory, invokeSSEReaderFactory)
 	return anthropic.HandleAnthropicResponsesStream(
 		ctx, provider.mantleStreamingClient, requestURL, jsonData,
-		openai.BearerAuthHeader(key), provider.invokeStreamHeaders(),
+		openai.BearerAuthHeader(key), extraHeaders,
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		provider.networkConfig.BetaHeaderOverrides,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),

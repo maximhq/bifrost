@@ -1146,6 +1146,10 @@ func HandleAnthropicChatCompletionStreaming(
 					finishReason = &stopReason
 				}
 			}
+			if event.bedrockGuardrailIntervened() {
+				mappedReason := anthropicBedrockGuardrailIntervenedStopReason
+				finishReason = &mappedReason
+			}
 
 			// Handle structured output: intercept tool calls for the structured output tool
 			// and convert them to content instead of forwarding as tool calls

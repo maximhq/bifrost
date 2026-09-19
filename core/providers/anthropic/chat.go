@@ -1306,6 +1306,10 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 	}
 
 	// Create choice
+	stopReason := response.StopReason
+	if response.bedrockGuardrailIntervened() {
+		stopReason = AnthropicStopReason(anthropicBedrockGuardrailIntervenedStopReason)
+	}
 	choice := schemas.BifrostResponseChoice{
 		Index: 0,
 		ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
@@ -1313,8 +1317,8 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 			StopString: response.StopSequence,
 		},
 		FinishReason: func() *string {
-			if response.StopReason != "" {
-				mapped := ConvertAnthropicFinishReasonToBifrost(response.StopReason)
+			if stopReason != "" {
+				mapped := ConvertAnthropicFinishReasonToBifrost(stopReason)
 				// When the structured output tool was folded back into text content, the
 				// stop reason should be "stop", not "tool_calls".
 				if usedStructuredOutputTool && len(toolCalls) == 0 &&
