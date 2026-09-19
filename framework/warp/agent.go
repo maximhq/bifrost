@@ -28,8 +28,12 @@ const (
 	EventDelta         eventType = "delta"
 	EventToolCallStart eventType = "tool_call_start"
 	EventToolCallEnd   eventType = "tool_call_end"
-	EventError         eventType = "error"
-	EventDone          eventType = "done"
+	// EventQuestion carries a structured question for the person to answer.
+	// It is followed by done: the turn ends there, and the reply arrives as an
+	// ordinary next message.
+	EventQuestion eventType = "question"
+	EventError    eventType = "error"
+	EventDone     eventType = "done"
 )
 
 // Error codes carried on EventError. The client branches on these, so they
@@ -55,12 +59,22 @@ type Event struct {
 	// DurationMs and Failed describe a finished tool call. The result payload is
 	// deliberately absent: the model consumed it, and the UI only shows a chip.
 	// Echoing it would double the transcript's size for no reader benefit.
-	DurationMs int64  `json:"duration_ms,omitempty"`
-	Failed     bool   `json:"failed,omitempty"`
+	// No omitempty: a tool that finishes in under a millisecond reports 0, and
+	// the client reads a missing duration as "still running" - so the fastest
+	// calls left their row spinning forever.
+	DurationMs int64 `json:"duration_ms"`
+	Failed     bool  `json:"failed,omitempty"`
+	// ToolError is the executor's own message, carried so the panel can show why
+	// a step failed. Without it a failed step is a red tick with no account of
+	// itself, and a retry loop looks like the same query running four times for
+	// no reason.
+	ToolError  string `json:"tool_error,omitempty"`
 	ResultNote string `json:"result_note,omitempty"`
 	// Error fields.
 	Code    string `json:"code,omitempty"`
 	Message string `json:"message,omitempty"`
+	// Question carries the structured question posed by ask_user.
+	Question *Question `json:"question,omitempty"`
 	// Completion fields.
 	ConversationID string                   `json:"conversation_id,omitempty"`
 	FinishReason   string                   `json:"finish_reason,omitempty"`
@@ -73,28 +87,204 @@ type Event struct {
 // ChatFunc is the loop's dependency on inference. It is a function rather
 // than a *bifrost.Bifrost so tests can drive the loop with a scripted model and
 // never need a live provider.
-type ChatFunc func(ctx context.Context, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError)
+type ChatFunc func(ctx context.Context, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError)
 
-// Agent is one question's worth of loop state: the model to ask, the tools it
-// may run and the deployment slice those tools read.
+// CostFunc prices one turn's usage.
+//
+// Most providers return no cost of their own, and Warp's client is plugin-free
+// by design - so without this the panel could only ever show a token count, and
+// "5,313 tokens" answers a question nobody asked. Nil on a deployment with no
+// model catalog, where tokens really are all there is.
+type CostFunc func(usage *schemas.BifrostLLMUsage) float64
+
 type Agent struct {
 	chat          ChatFunc
+	cost          CostFunc
 	tools         []Tool
 	deps          *ToolDeps
 	config        *schemas.WarpConfig
 	maxIterations int
+	// questionsAsked is how many clarifying questions this thread has already
+	// had in a row. Run stops after each one, but the next request builds a new
+	// agent - so the count has to arrive with the conversation or nothing caps
+	// the loop.
+	questionsAsked int
 }
 
-// NewAgent assembles an agent for one request. Config is read per request rather
-// than captured once, so a settings change takes effect without a restart.
-func NewAgent(chat ChatFunc, logs LogReader, scope Scope, config *schemas.WarpConfig) *Agent {
+// NewAgent assembles a loop for one request.
+//
+// The fields stay unexported and the tool set is fixed here rather than passed
+// in: a caller that could swap the tools could also widen what Warp is able to
+// read, and the whole read surface is meant to be reviewable from LogReader
+// alone. What a caller does supply is the inference function, the pricing
+// function, and the scope - the three things that genuinely vary per request.
+//
+// scope comes from the caller because it must be lifted off the request context
+// before the agent's goroutine starts. queryscope treats a missing scope as no
+// restriction, so reading it late returns the whole deployment to whoever asked.
+func NewAgent(chat ChatFunc, cost CostFunc, logs LogReader, scope Scope, config *schemas.WarpConfig) *Agent {
 	return &Agent{
 		chat:          chat,
+		cost:          cost,
 		tools:         buildTools(),
 		deps:          &ToolDeps{logManager: logs, scope: scope},
 		config:        config,
 		maxIterations: config.EffectiveMaxIterations(),
 	}
+}
+
+// accumulateUsage folds one iteration's usage into the running total.
+//
+// A question that takes four research steps costs four model calls, and
+// reporting only the last one understates the answer by however many steps it
+// took - worst for exactly the expensive questions where the number matters.
+// Each turn is priced as it arrives, because a later iteration can be served by
+// a different model after a fallback and pricing the sum would use the wrong
+// rate card.
+func accumulateUsage(total, next *schemas.BifrostLLMUsage, price CostFunc) *schemas.BifrostLLMUsage {
+	if next == nil {
+		return total
+	}
+	if total == nil {
+		total = &schemas.BifrostLLMUsage{}
+	}
+	total.PromptTokens += next.PromptTokens
+	total.CompletionTokens += next.CompletionTokens
+	if next.TotalTokens > 0 {
+		total.TotalTokens += next.TotalTokens
+	} else {
+		// Some providers report the parts but not the sum. Deriving it here keeps
+		// the total honest instead of leaving it at zero beside non-zero parts.
+		total.TotalTokens += next.PromptTokens + next.CompletionTokens
+	}
+
+	// The nested detail structs have to be summed too. Carrying only the three
+	// scalars left the reported total disagreeing with its own breakdown -
+	// cached reads and reasoning tokens stuck at whatever the first turn
+	// reported - which reads as a real accounting of the request rather than a
+	// partial one. Cost is handled below rather than here, because this loop
+	// prices each turn as it arrives.
+	total.PromptTokensDetails = mergePromptTokenDetails(total.PromptTokensDetails, next.PromptTokensDetails)
+	total.CompletionTokensDetails = mergeCompletionTokenDetails(total.CompletionTokensDetails, next.CompletionTokensDetails)
+
+	turnCost := 0.0
+	if next.Cost != nil {
+		turnCost = next.Cost.TotalCost
+	}
+	// Only price what the provider did not. A provider-reported cost is what was
+	// actually billed; the catalog is an estimate, and an estimate must never
+	// overwrite a fact.
+	if turnCost == 0 && price != nil {
+		turnCost = price(next)
+	}
+	if turnCost > 0 {
+		if total.Cost == nil {
+			total.Cost = &schemas.BifrostCost{}
+		}
+		total.Cost.TotalCost += turnCost
+	}
+	// The halves are summed alongside the total, so the reported breakdown adds
+	// up to the figure beside it. A total with a zeroed breakdown reads as a
+	// real accounting of the request rather than a partial one - and this
+	// terminal event is the only place Warp's own spend is ever reported.
+	if next.Cost != nil && (next.Cost.InputCost != 0 || next.Cost.OutputCost != 0 || next.Cost.AdditionalCost != 0) {
+		if total.Cost == nil {
+			total.Cost = &schemas.BifrostCost{}
+		}
+		total.Cost.InputCost += next.Cost.InputCost
+		total.Cost.OutputCost += next.Cost.OutputCost
+		total.Cost.AdditionalCost += next.Cost.AdditionalCost
+	}
+	return total
+}
+
+// mergePromptTokenDetails and mergeCompletionTokenDetails sum the nested
+// per-turn breakdowns.
+//
+// Written here rather than reusing schemas.MergeBifrostLLMUsage: that merger
+// also combines costs, and this loop deliberately prices each turn as it
+// arrives, because a later iteration can be served by a different model after a
+// fallback and pricing the sum would apply the wrong rate card.
+func mergePromptTokenDetails(total, next *schemas.ChatPromptTokensDetails) *schemas.ChatPromptTokensDetails {
+	if next == nil {
+		return total
+	}
+	if total == nil {
+		// Deep on the nested pointer, not just the struct. A shallow copy leaves
+		// CachedWriteTokenDetails aliasing the provider response's own struct, and
+		// the next merge then adds into it in place - mutating a response this
+		// package does not own, and double-counting if that response is reused.
+		copied := *next
+		if next.CachedWriteTokenDetails != nil {
+			nested := *next.CachedWriteTokenDetails
+			copied.CachedWriteTokenDetails = &nested
+		}
+		return &copied
+	}
+	// Every field the converter populates, not a chosen few. usageFromResponses
+	// fills TextTokens, ImageTokens and CachedWriteTokens as well, and on the
+	// first turn the struct is copied wholesale - so anything left out here
+	// stayed frozen at the first turn's value while TotalTokens kept climbing,
+	// and a four-step research turn reported a breakdown that did not add up to
+	// the number beside it. That inconsistency is what these helpers exist to
+	// remove.
+	total.TextTokens += next.TextTokens
+	total.AudioTokens += next.AudioTokens
+	total.ImageTokens += next.ImageTokens
+	total.CachedReadTokens += next.CachedReadTokens
+	total.CachedWriteTokens += next.CachedWriteTokens
+	total.CachedWriteTokenDetails = mergeCachedWriteTokenDetails(total.CachedWriteTokenDetails, next.CachedWriteTokenDetails)
+	return total
+}
+
+func mergeCachedWriteTokenDetails(total, next *schemas.ChatCachedWriteTokenDetails) *schemas.ChatCachedWriteTokenDetails {
+	if next == nil {
+		return total
+	}
+	if total == nil {
+		copied := *next
+		return &copied
+	}
+	total.CachedWriteTokens5m += next.CachedWriteTokens5m
+	total.CachedWriteTokens1h += next.CachedWriteTokens1h
+	return total
+}
+
+// addOptionalTokens sums two optional counters.
+//
+// nil and zero are different answers: nil is "the provider said nothing about
+// this", zero is "it said none". Summing into a fresh pointer also matters -
+// the first turn's struct is shallow-copied, so its pointer fields are shared
+// with the response it came from, and adding in place would edit that response.
+func addOptionalTokens(total, next *int) *int {
+	if next == nil {
+		return total
+	}
+	if total == nil {
+		copied := *next
+		return &copied
+	}
+	sum := *total + *next
+	return &sum
+}
+
+func mergeCompletionTokenDetails(total, next *schemas.ChatCompletionTokensDetails) *schemas.ChatCompletionTokensDetails {
+	if next == nil {
+		return total
+	}
+	if total == nil {
+		copied := *next
+		return &copied
+	}
+	total.TextTokens += next.TextTokens
+	total.ReasoningTokens += next.ReasoningTokens
+	total.AudioTokens += next.AudioTokens
+	total.AcceptedPredictionTokens += next.AcceptedPredictionTokens
+	total.RejectedPredictionTokens += next.RejectedPredictionTokens
+	total.CitationTokens = addOptionalTokens(total.CitationTokens, next.CitationTokens)
+	total.NumSearchQueries = addOptionalTokens(total.NumSearchQueries, next.NumSearchQueries)
+	total.ImageTokens = addOptionalTokens(total.ImageTokens, next.ImageTokens)
+	return total
 }
 
 const (
@@ -109,13 +299,13 @@ const (
 	MaxHistoryBytes    = 256 * 1024
 )
 
-// Run drives the loop, emitting events onto out. It always closes out.
+// run drives the loop, emitting events onto out. It always closes out.
 //
 // The caller must pass a context that already carries the request's query scope
-// (the transport snapshots it off the request). Every tool executes against this context, and
+// (see snapshotWarpContext). Every tool executes against this context, and
 // queryscope treats a missing scope as "no restriction" - so a context that lost
 // it returns the whole deployment to whoever asked.
-func (a *Agent) Run(ctx context.Context, messages []schemas.ChatMessage, out chan<- Event) {
+func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, out chan<- Event) {
 	defer close(out)
 
 	emit := func(event Event) bool {
@@ -153,7 +343,7 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ChatMessage, out cha
 		}
 	}
 
-	declared, err := chatTools(a.tools)
+	declared, err := responsesTools(a.tools)
 	if err != nil {
 		emit(Event{Type: EventError, Code: ErrUpstream, Message: err.Error()})
 		return
@@ -165,7 +355,12 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ChatMessage, out cha
 		Provider: string(a.config.Provider),
 	})
 
-	conversation := append([]schemas.ChatMessage{systemMessage(a.config)}, messages...)
+	// The system prompt rides on Params.Instructions rather than as a leading
+	// system item. The Responses API models instructions as a property of the
+	// request, not a turn in the transcript, and keeping it out of Input means the
+	// history bound below counts only real turns.
+	instructions := systemInstructions(a.config)
+	conversation := append([]schemas.ResponsesMessage{}, messages...)
 	var usage *schemas.BifrostLLMUsage
 
 	for iteration := 1; iteration <= a.maxIterations; iteration++ {
@@ -174,18 +369,26 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ChatMessage, out cha
 			// first is ours, the second is the user's. Reporting both as
 			// cancelled hides a Warp timeout as a user action.
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				emit(Event{Type: EventError, Code: ErrTimeout, Message: "request timed out"})
+				emit(Event{Type: EventError, Code: ErrTimeout, Message: "request timed out", Usage: usage})
 				return
 			}
-			emit(Event{Type: EventError, Code: ErrCancelled, Message: "request cancelled"})
+			emit(Event{Type: EventError, Code: ErrCancelled, Message: "request cancelled", Usage: usage})
 			return
 		}
 
-		response, bifrostErr := a.chat(ctx, &schemas.BifrostChatRequest{
-			Provider: a.config.Provider,
-			Model:    a.config.Model,
-			Input:    conversation,
-			Params:   &schemas.ChatParameters{Tools: declared},
+		response, bifrostErr := a.chat(ctx, &schemas.BifrostResponsesRequest{
+			// The wire protocol, not the provider that serves the request: the
+			// configured provider rides in the model string below. See
+			// transportProvider.
+			Provider: transportProvider(),
+			// Qualified as provider/model so the routing on the other end cannot
+			// substitute a different provider for the same model name.
+			Model: modelForRequest(a.config),
+			Input: conversation,
+			Params: &schemas.ResponsesParameters{
+				Instructions: &instructions,
+				Tools:        declared,
+			},
 		})
 		if bifrostErr != nil {
 			code := ErrUpstream
@@ -196,32 +399,22 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ChatMessage, out cha
 			}
 			// An error frame is terminal. Never emit done after it, or a client
 			// keyed on done reads a failed request as a successful one.
-			emit(Event{Type: EventError, Code: code, Message: errorMessage(bifrostErr)})
+			emit(Event{Type: EventError, Code: code, Message: errorMessage(bifrostErr), Usage: usage})
 			return
 		}
-		if response == nil || len(response.Choices) == 0 {
-			emit(Event{Type: EventError, Code: ErrUpstream, Message: "the model returned no choices"})
+		if response == nil || len(response.Output) == 0 {
+			emit(Event{Type: EventError, Code: ErrUpstream, Message: "the model returned no output", Usage: usage})
 			return
 		}
-		// Accumulated, not replaced: the loop makes one model call per iteration
-		// and the done event is documented as covering the whole request. It is
-		// also the compensating control for Warp's own traffic never reaching the
-		// gateway's logs, so under-reporting it hides real spend.
-		usage = addUsage(usage, response.Usage)
+		usage = accumulateUsage(usage, usageFromResponses(response.Usage), a.cost)
 
-		message := assistantMessage(response)
-		if message == nil {
-			emit(Event{Type: EventError, Code: ErrUpstream, Message: "the model returned no message"})
-			return
-		}
-		// Stamp ids before the turn is recorded, so the transcript declares the
-		// same ids the tool results will answer. Doing it later would leave the
-		// assistant turn referring to calls no tool message can match.
-		ensureToolCallIDs(message, iteration)
-		conversation = append(conversation, *message)
+		// Every output item goes back verbatim, reasoning items included. Replaying
+		// a reasoning model's own items is what lets it continue the thought it
+		// started; dropping them makes each iteration start over.
+		conversation = append(conversation, response.Output...)
 
-		text := messageText(message)
-		toolCalls := messageToolCalls(message)
+		text := responsesText(response.Output)
+		toolCalls := responsesToolCalls(response.Output)
 
 		if len(toolCalls) == 0 {
 			if text != "" && !emit(Event{Type: EventDelta, Delta: text}) {
@@ -243,19 +436,49 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ChatMessage, out cha
 			return
 		}
 
-		// The conversation already carries the assistant turn declaring every call
-		// the model asked for, and providers reject a follow-up that leaves any
-		// declared tool_call_id unanswered. So the cap bounds what actually runs,
-		// and the overflow still gets a result saying why it did not - which also
-		// tells the model to ask for fewer next time.
-		executed := toolCalls
-		var dropped []schemas.ChatAssistantMessageToolCall
-		if len(toolCalls) > MaxToolCallsPerTurn {
-			executed, dropped = toolCalls[:MaxToolCallsPerTurn], toolCalls[MaxToolCallsPerTurn:]
-		}
+		for index, call := range toolCalls {
+			name, arguments, id := call.Name, call.Arguments, call.ID
 
-		for index, call := range executed {
-			name, arguments, id := toolCallParts(call, iteration, index)
+			// Past the cap the call is refused, not dropped. The whole output list
+			// - every function_call in it - was appended to the conversation above,
+			// and providers require each one to be answered: Anthropic rejects the
+			// next request outright with "tool_use ids were found without
+			// tool_result blocks immediately after". Truncating the slice left
+			// exactly those orphans behind, so a model that asked for too much at
+			// once turned into Warp being unreachable, with nothing in the message
+			// to suggest tool limits had anything to do with it.
+			if index >= MaxToolCallsPerTurn {
+				conversation = append(conversation, toolResultMessage(id,
+					fmt.Sprintf(`{"error":"not run: no more than %d tools may be called in one step. Ask for the ones you need most, then continue."}`, MaxToolCallsPerTurn)))
+				continue
+			}
+
+			// ask_user is not a query, it is the end of the turn. Emitting the
+			// question and stopping is what makes the exchange turn-based: the reply
+			// arrives as an ordinary next message, so there is no second channel and
+			// no request held open while somebody reads.
+			if question := questionFromToolCall(name, arguments); question != nil {
+				// Past the limit the model is stalling rather than narrowing, and
+				// the person is being interrogated. Refusing as a tool error rather
+				// than erroring the turn puts it back on the answering path with
+				// what it already has, which is what they asked for.
+				if a.questionsAsked >= MaxConsecutiveQuestions {
+					conversation = append(conversation, toolResultMessage(id,
+						fmt.Sprintf(`{"error":"not run: you have already asked %d questions in a row. Answer with the data you have, stating what you assumed."}`, a.questionsAsked)))
+					continue
+				}
+				if !emit(Event{Type: EventQuestion, Question: question}) {
+					return
+				}
+				emit(Event{
+					Type:         EventDone,
+					FinishReason: "question",
+					Iterations:   iteration,
+					Usage:        usage,
+				})
+				return
+			}
+
 			if !emit(Event{
 				Type: EventToolCallStart, ToolID: id, ToolName: name,
 				Arguments: arguments, Iteration: iteration,
@@ -265,40 +488,30 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ChatMessage, out cha
 
 			started := time.Now()
 			result, failed := a.executeTool(ctx, name, arguments)
-			if !emit(Event{
+			end := Event{
 				Type: EventToolCallEnd, ToolID: id, ToolName: name,
 				DurationMs: time.Since(started).Milliseconds(), Failed: failed,
-			}) {
+			}
+			if failed {
+				// The result *is* the error message on a failed call, and it is
+				// already bounded, so it can be surfaced as-is.
+				end.ToolError = result
+			}
+			if !emit(end) {
 				return
 			}
 
-			conversation = append(conversation, schemas.ChatMessage{
-				Role: schemas.ChatMessageRoleTool,
-				Content: &schemas.ChatMessageContent{
-					ContentStr: &result,
-				},
-				ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: &id},
-			})
-		}
-
-		for index, call := range dropped {
-			_, _, id := toolCallParts(call, iteration, MaxToolCallsPerTurn+index)
-			refusal := fmt.Sprintf(
-				"not run: this turn asked for %d tool calls and at most %d run per turn. Ask for the most important ones first.",
-				len(toolCalls), MaxToolCallsPerTurn)
-			conversation = append(conversation, schemas.ChatMessage{
-				Role:            schemas.ChatMessageRoleTool,
-				Content:         &schemas.ChatMessageContent{ContentStr: &refusal},
-				ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: &id},
-			})
+			conversation = append(conversation, toolResultMessage(id, result))
 		}
 	}
 
-	// Out of iterations. Terminal error, no done frame.
+	// Out of iterations. Terminal error, no done frame. Usage rides along: this
+	// is the run that spent the most, and it is the only report of that spend.
 	emit(Event{
 		Type:    EventError,
 		Code:    ErrMaxIterations,
 		Message: fmt.Sprintf("Warp reached its limit of %d research steps without settling on an answer. Try a narrower question.", a.maxIterations),
+		Usage:   usage,
 	})
 }
 
@@ -340,99 +553,126 @@ func errorMessage(err *schemas.BifrostError) string {
 	return "the model provider returned an error"
 }
 
-// assistantMessage pulls the assistant turn out of a completion. Warp uses
-// the non-streaming response shape, so only that branch is populated.
-func assistantMessage(response *schemas.BifrostChatResponse) *schemas.ChatMessage {
-	choice := response.Choices[0]
-	if choice.ChatNonStreamResponseChoice != nil {
-		return choice.ChatNonStreamResponseChoice.Message
-	}
-	return nil
-}
-
-// messageText returns the message text, or empty when the turn carried none.
+// responsesText concatenates the assistant prose in an output list.
 //
-// Content is a pointer and providers routinely leave it nil on a turn that is
-// purely tool calls - which is the single most common shape in this loop, since
-// Warp's first move is almost always a tool call. Dereferencing it without this
-// check panics, and because the loop runs in a goroutine the panic takes the
-// whole server down rather than failing one request.
-func messageText(message *schemas.ChatMessage) string {
-	if message == nil || message.Content == nil || message.Content.ContentStr == nil {
-		return ""
-	}
-	return *message.Content.ContentStr
-}
-
-// messageToolCalls returns the tool calls on an assistant turn, if any.
-func messageToolCalls(message *schemas.ChatMessage) []schemas.ChatAssistantMessageToolCall {
-	if message == nil || message.ChatAssistantMessage == nil {
-		return nil
-	}
-	return message.ChatAssistantMessage.ToolCalls
-}
-
-// toolCallParts flattens a tool call into the three values the loop needs.
-// Name, arguments and id are all optional on the wire, so each is defaulted to
-// empty rather than dereferenced blindly. An id the provider omitted is
-// substituted with the same synthetic one ensureToolCallIDs stamped, so the
-// tool result matches the declared call.
-func toolCallParts(call schemas.ChatAssistantMessageToolCall, iteration, index int) (name, arguments, id string) {
-	if call.Function.Name != nil {
-		name = *call.Function.Name
-	}
-	arguments = call.Function.Arguments
-	if call.ID != nil {
-		id = *call.ID
-	}
-	if id == "" {
-		id = syntheticToolCallID(iteration, index)
-	}
-	return name, arguments, id
-}
-
-// syntheticToolCallID names a call the provider left unidentified. It is
-// deterministic in the turn and position so the stamped declaration and the
-// tool result that answers it agree without threading state between them.
-func syntheticToolCallID(iteration, index int) string {
-	return fmt.Sprintf("warp-call-%d-%d", iteration, index)
-}
-
-// ensureToolCallIDs gives every tool call on an assistant turn an id.
-//
-// tool_call_id is optional on the wire but mandatory in the transcript: a tool
-// message answering an empty id is rejected, and a client rendering progress
-// cannot pair a start frame with its end. Stamping here, before the turn is
-// appended, keeps the declaration and its answer consistent.
-func ensureToolCallIDs(message *schemas.ChatMessage, iteration int) {
-	if message == nil || message.ChatAssistantMessage == nil {
-		return
-	}
-	calls := message.ChatAssistantMessage.ToolCalls
-	for i := range calls {
-		if calls[i].ID != nil && *calls[i].ID != "" {
+// A Responses turn is a list of items, not one message: prose, reasoning and
+// tool calls arrive as siblings, and a turn that is purely tool calls carries no
+// text item at all - the single most common shape in this loop, since Warp's
+// first move is almost always a query. Everything here is therefore a lookup
+// that tolerates absence rather than a dereference.
+func responsesText(output []schemas.ResponsesMessage) string {
+	var builder strings.Builder
+	for _, item := range output {
+		if item.Type != nil && *item.Type != schemas.ResponsesMessageTypeMessage {
 			continue
 		}
-		calls[i].ID = new(syntheticToolCallID(iteration, i))
+		if item.Content == nil {
+			continue
+		}
+		if item.Content.ContentStr != nil {
+			builder.WriteString(*item.Content.ContentStr)
+			continue
+		}
+		for _, block := range item.Content.ContentBlocks {
+			if block.Text != nil {
+				builder.WriteString(*block.Text)
+			}
+		}
+	}
+	return builder.String()
+}
+
+// responsesToolCalls returns the function calls in an output list, flattened
+// to the three values the loop needs. Name, arguments and call id are all
+// optional on the wire, so each is defaulted rather than dereferenced blindly.
+func responsesToolCalls(output []schemas.ResponsesMessage) []ToolCall {
+	var calls []ToolCall
+	for _, item := range output {
+		if item.Type == nil || *item.Type != schemas.ResponsesMessageTypeFunctionCall {
+			continue
+		}
+		if item.ResponsesToolMessage == nil {
+			continue
+		}
+		call := ToolCall{}
+		if item.Name != nil {
+			call.Name = *item.Name
+		}
+		if item.Arguments != nil {
+			call.Arguments = *item.Arguments
+		}
+		if item.CallID != nil {
+			call.ID = *item.CallID
+		}
+		calls = append(calls, call)
+	}
+	return calls
+}
+
+// ToolCall is one function call the model asked for.
+type ToolCall struct {
+	ID        string
+	Name      string
+	Arguments string
+}
+
+// toolResultMessage builds the function_call_output item that answers a
+// call. The call id is what pairs it with its request, so a lost id turns a
+// perfectly good result into an orphan the model cannot attribute.
+func toolResultMessage(callID, result string) schemas.ResponsesMessage {
+	itemType := schemas.ResponsesMessageTypeFunctionCallOutput
+	return schemas.ResponsesMessage{
+		Type: &itemType,
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: &callID,
+			Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: &result},
+		},
 	}
 }
 
-// addUsage folds one turn's usage into the running total. Either side may be
-// nil: the first turn has nothing to add to, and a provider may omit usage on
-// any given turn without that meaning zero.
-func addUsage(total, turn *schemas.BifrostLLMUsage) *schemas.BifrostLLMUsage {
-	if turn == nil {
-		return total
+// usageFromResponses converts Responses usage into the chat-shaped usage the
+// rest of Warp reports.
+//
+// The two APIs count the same thing under different names (input/output versus
+// prompt/completion). Converting at this one boundary keeps the pricing helper,
+// the SSE event and the panel on a single shape, rather than teaching each of
+// them about both.
+func usageFromResponses(usage *schemas.ResponsesResponseUsage) *schemas.BifrostLLMUsage {
+	if usage == nil {
+		return nil
 	}
-	if total == nil {
-		copied := *turn
-		return &copied
+	converted := &schemas.BifrostLLMUsage{
+		PromptTokens:     usage.InputTokens,
+		CompletionTokens: usage.OutputTokens,
+		TotalTokens:      usage.TotalTokens,
+		Cost:             usage.Cost,
 	}
-	// Delegated rather than summed here. Providers populate PromptTokensDetails,
-	// CompletionTokensDetails and Cost, and adding only the three scalars left
-	// the reported total disagreeing with its own breakdown - which reads as a
-	// real accounting of the request rather than a partial one. The shared
-	// merger already knows how to combine the nested structs, so this stays
-	// correct as fields are added to them.
-	return schemas.MergeBifrostLLMUsage(total, turn)
+	// The breakdowns travel too. Copying only the scalars left
+	// PromptTokensDetails and CompletionTokensDetails nil on every real turn, so
+	// the merge in accumulateUsage had nothing to accumulate. It also loses the
+	// cached-read count, which CalculateCostForUsage prices lower than fresh
+	// input - so a cached turn was reported as costing full price.
+	if details := usage.InputTokensDetails; details != nil {
+		converted.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
+			TextTokens:              details.TextTokens,
+			AudioTokens:             details.AudioTokens,
+			ImageTokens:             details.ImageTokens,
+			CachedReadTokens:        details.CachedReadTokens,
+			CachedWriteTokens:       details.CachedWriteTokens,
+			CachedWriteTokenDetails: details.CachedWriteTokenDetails,
+		}
+	}
+	if details := usage.OutputTokensDetails; details != nil {
+		converted.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
+			TextTokens:               details.TextTokens,
+			AudioTokens:              details.AudioTokens,
+			ReasoningTokens:          details.ReasoningTokens,
+			AcceptedPredictionTokens: details.AcceptedPredictionTokens,
+			RejectedPredictionTokens: details.RejectedPredictionTokens,
+			ImageTokens:              details.ImageTokens,
+			CitationTokens:           details.CitationTokens,
+			NumSearchQueries:         details.NumSearchQueries,
+		}
+	}
+	return converted
 }

@@ -81,7 +81,11 @@ func queryLogsTool() Tool {
 				"rows":           rows,
 				"returned":       len(rows),
 				"total_matching": result.Pagination.TotalCount,
-				"scope":          scopeNote(filters, deps.scope),
+				// Stated rather than left to be inferred from the two counts above.
+				// The prompt asks the model to caveat a partial answer, and a caveat
+				// it has to derive by comparing numbers is the one it forgets.
+				"sampled": int64(len(rows)) < result.Pagination.TotalCount,
+				"scope":   scopeNote(filters, deps.scope),
 			}, nil
 		},
 	}
@@ -129,6 +133,72 @@ func getLogDetailTool() Tool {
 // readers, which is why the bucket is computed for them and skipped for it.
 func isHistogramMetric(metric string) bool {
 	return metric != "summary"
+}
+
+// countLogsTool answers "how much is there?" before anything answers "what
+// is it?".
+//
+// A log question over a wide window can match hundreds of thousands of rows.
+// Fetching a page of them to find that out is the expensive way to learn it, and
+// the model cannot tell a genuine "no matches" from "I looked at 25 of 400,000"
+// unless it is told. This costs one aggregate query and turns a blind pull into
+// a decision: narrow first, or slice the window and ask again.
+func countLogsTool() Tool {
+	return Tool{
+		name: "count_logs",
+		description: "Count matching requests and summarise them, without fetching any rows. " +
+			"Call this before query_logs whenever the window is wider than a few hours or the filters are loose. " +
+			"If the count is large, narrow the filters or split the question into smaller time slices and count again - do not page through the whole set.",
+		schemaJSON: `{
+  "type": "object",
+  "properties": {
+    "filters": ` + FilterSchema + `
+  },
+  "required": ["filters"]
+}`,
+		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
+			now := Now()
+			filters, err := filterArg(args, now, deps.scope)
+			if err != nil {
+				return nil, err
+			}
+			stats, err := deps.logManager.GetStats(ctx, filters)
+			if err != nil {
+				return nil, fmt.Errorf("count failed: %w", err)
+			}
+
+			out := map[string]any{
+				"total_requests":     stats.TotalRequests,
+				"total_tokens":       stats.TotalTokens,
+				"total_cost":         stats.TotalCost,
+				"success_rate":       stats.SuccessRate,
+				"average_latency_ms": stats.AverageLatency,
+				"scope":              scopeNote(filters, deps.scope),
+			}
+			// The advice travels with the number rather than living only in the
+			// prompt: this is the moment the decision gets made, and the threshold
+			// is a property of the tool rather than of the conversation.
+			switch {
+			case stats.TotalRequests == 0:
+				out["guidance"] = "Nothing matched. Widen the time range or check the filter values with describe_filter_space before concluding there is no traffic."
+			case stats.TotalRequests > LargeResultThreshold:
+				out["too_many_to_list"] = true
+				out["guidance"] = fmt.Sprintf(
+					"%d requests match - far too many to list. Answer from aggregates (query_metrics, query_model_performance) where you can. If you genuinely need individual rows, narrow by provider, model, status or virtual key, or split the window into smaller slices and handle one at a time.",
+					stats.TotalRequests)
+			case stats.TotalRequests > MaxLogRows:
+				// Between MaxLogRows and LargeResultThreshold, "list it" was advice
+				// the tool cannot take: query_logs returns at most MaxLogRows, so the
+				// model got a sample and had no way to know it was one.
+				out["guidance"] = fmt.Sprintf(
+					"%d requests match, and query_logs returns at most %d - listing them would answer from a sample without saying so. Answer from aggregates (query_metrics, query_model_performance), or narrow by provider, model, status or virtual key, or split the window, until the count is %d or fewer.",
+					stats.TotalRequests, MaxLogRows, MaxLogRows)
+			default:
+				out["guidance"] = fmt.Sprintf("Small enough to list with query_logs if individual rows are needed - it returns up to %d.", MaxLogRows)
+			}
+			return out, nil
+		},
+	}
 }
 
 // ------------------------------------------------------------- flow 2: metrics
@@ -408,7 +478,12 @@ func queryModelsTool() Tool {
 				return nil, err
 			}
 			if includePerformance {
-				bucket, err := bucketSize(filters)
+				// A coarse bucket on purpose. The dashboard's bucket size is chosen for
+				// a chart with hundreds of pixels; the same series as JSON, once per
+				// provider, was overflowing the tool-result budget and sending Warp
+				// round the retry loop. A dozen buckets carry the shape of a latency
+				// trend, which is all the answer needs.
+				bucket, err := coarseBucketSize(filters)
 				if err != nil {
 					return nil, err
 				}

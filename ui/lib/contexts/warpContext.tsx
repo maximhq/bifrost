@@ -1,3 +1,4 @@
+import type { WarpQuestion, WarpUsage } from "@/components/warp/warpStream.utils";
 import { createContext, useCallback, useContext, useMemo, useState } from "react";
 
 /** One turn in an Warp conversation. */
@@ -8,6 +9,32 @@ export interface WarpTurn {
 	toolCalls?: WarpTurnToolCall[];
 	/** Set when the turn ended in an error, so the UI can render it differently. */
 	error?: string;
+	/**
+	 * On a user turn, the question this message answers.
+	 *
+	 * Kept so a bare "-7d" in the transcript stays legible: on its own it reads
+	 * as a non sequitur, and the question that prompted it has already scrolled
+	 * out of the composer.
+	 */
+	answeredQuestion?: string;
+	/**
+	 * What to show instead of `content`.
+	 *
+	 * Picking an option sends the hint Warp needs ("-30d") but that is not what
+	 * anyone chose - they chose "Last 30 days". Showing the wire value makes the
+	 * transcript read like a machine log of your own conversation.
+	 */
+	displayContent?: string;
+	/**
+	 * Tokens and spend for this exchange.
+	 *
+	 * Warp's own calls never appear in the logs it reads - deliberately, so it
+	 * does not corrupt the numbers it reports - so this is the only place its
+	 * cost is visible at all.
+	 */
+	usage?: WarpUsage;
+	/** Set when the turn ended by asking something rather than answering. */
+	question?: unknown;
 }
 
 export interface WarpTurnToolCall {
@@ -15,6 +42,8 @@ export interface WarpTurnToolCall {
 	name: string;
 	durationMs?: number;
 	failed?: boolean;
+	/** Why it failed, kept so a red tick can account for itself. */
+	error?: string;
 }
 
 interface WarpContextValue {
@@ -27,6 +56,26 @@ interface WarpContextValue {
 	appendTurn: (turn: WarpTurn) => void;
 	replaceTurns: (turns: WarpTurn[]) => void;
 	clear: () => void;
+	/**
+	 * The server-side thread these turns belong to.
+	 *
+	 * It lives here rather than in the streaming hook because closing the dock
+	 * unmounts the panel: a ref in the hook died with it, so reopening replayed
+	 * the transcript but opened a second thread server-side, and one
+	 * conversation ended up filed as two.
+	 */
+	conversationId: string;
+	/**
+	 * The question Warp is waiting on, if any.
+	 *
+	 * Provider state rather than panel state for the same reason the thread id
+	 * is: closing the dock unmounts WarpPanel, and a question held in the hook
+	 * died with it - so reopening showed a thread that had visibly asked
+	 * something with no way left to answer it.
+	 */
+	question: WarpQuestion | null;
+	setQuestion: (question: WarpQuestion | null) => void;
+	setConversationId: (id: string) => void;
 }
 
 const WarpContext = createContext<WarpContextValue | null>(null);
@@ -47,17 +96,42 @@ const WarpContext = createContext<WarpContextValue | null>(null);
 export function WarpProvider({ children }: { children: React.ReactNode }) {
 	const [isOpen, setIsOpen] = useState(false);
 	const [turns, setTurns] = useState<WarpTurn[]>([]);
+	const [conversationId, setConversationId] = useState("");
+	const [question, setQuestion] = useState<WarpQuestion | null>(null);
 
 	const open = useCallback(() => setIsOpen(true), []);
 	const close = useCallback(() => setIsOpen(false), []);
 	const toggle = useCallback(() => setIsOpen((current) => !current), []);
 	const appendTurn = useCallback((turn: WarpTurn) => setTurns((current) => [...current, turn]), []);
 	const replaceTurns = useCallback((next: WarpTurn[]) => setTurns(next), []);
-	const clear = useCallback(() => setTurns([]), []);
+	// Clearing starts a new thread as well as a new transcript, or the next
+	// question would be appended to the conversation just discarded.
+	const clear = useCallback(() => {
+		setTurns([]);
+		setConversationId("");
+		// The pending question goes with the transcript that produced it. Leaving
+		// it set kept the question card on screen above an empty thread, and
+		// answering it sent the reply into a new conversation without any of the
+		// context that made it a sensible question.
+		setQuestion(null);
+	}, []);
 
 	const value = useMemo(
-		() => ({ isOpen, open, close, toggle, turns, appendTurn, replaceTurns, clear }),
-		[isOpen, open, close, toggle, turns, appendTurn, replaceTurns, clear],
+		() => ({
+			isOpen,
+			open,
+			close,
+			toggle,
+			turns,
+			appendTurn,
+			replaceTurns,
+			clear,
+			conversationId,
+			setConversationId,
+			question,
+			setQuestion,
+		}),
+		[isOpen, open, close, toggle, turns, appendTurn, replaceTurns, clear, conversationId, question],
 	);
 	return <WarpContext.Provider value={value}>{children}</WarpContext.Provider>;
 }
