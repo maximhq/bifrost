@@ -52,6 +52,7 @@ import {
 	Webhook,
 } from "lucide-react";
 
+import { WarpIcon } from "@/components/ui/icons";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
 	Sidebar,
@@ -1023,6 +1024,13 @@ export default function AppSidebar() {
 						url: "/workspace/config/security",
 						icon: ShieldCheck,
 						description: "Security settings",
+						hasAccess: hasSettingsAccess,
+					},
+					{
+						title: "Warp",
+						url: "/workspace/config/warp",
+						icon: WarpIcon,
+						description: "Warp agent configuration",
 						hasAccess: hasSettingsAccess,
 					},
 					...(IS_ENTERPRISE
