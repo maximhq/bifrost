@@ -1947,6 +1947,9 @@ type AnthropicMessageResponse struct {
 	StopDetails  *AnthropicStopDetails   `json:"stop_details,omitempty"` // refusal detail; null for every stop_reason other than "refusal"
 	StopSequence *string                 `json:"stop_sequence"`
 	Usage        *AnthropicUsage         `json:"usage,omitempty"`
+	// AmazonBedrockGuardrailAction is returned by Bedrock's native InvokeModel
+	// surface rather than as Anthropic's stop_reason.
+	AmazonBedrockGuardrailAction string `json:"amazon-bedrock-guardrailAction,omitempty"`
 	// Container is the code-execution sandbox container, present on responses that
 	// used the code execution tool. Distinct from the request-side AnthropicContainer
 	// union: the response form is always an object with id + expires_at.
@@ -1967,6 +1970,12 @@ type AnthropicMessageResponse struct {
 	// capture it stays nil and omitempty keeps the response byte-identical to the
 	// documented Anthropic shape, so ordinary clients never see a non-conformant field.
 	ExtraFields *schemas.BifrostResponseExtraFields `json:"extra_fields,omitempty"`
+}
+
+const anthropicBedrockGuardrailIntervenedStopReason = "guardrail_intervened"
+
+func (response *AnthropicMessageResponse) bedrockGuardrailIntervened() bool {
+	return response != nil && strings.EqualFold(response.AmazonBedrockGuardrailAction, "INTERVENED")
 }
 
 // AnthropicTextResponse represents the response structure from Anthropic's text completion API
@@ -2141,14 +2150,20 @@ const (
 
 // AnthropicStreamEvent represents a single event in the Anthropic streaming response
 type AnthropicStreamEvent struct {
-	ID           *string                   `json:"id,omitempty"`
-	Type         AnthropicStreamEventType  `json:"type"`
-	Message      *AnthropicMessageResponse `json:"message,omitempty"`
-	Index        *int                      `json:"index,omitempty"`
-	ContentBlock *AnthropicContentBlock    `json:"content_block,omitempty"`
-	Delta        *AnthropicStreamDelta     `json:"delta,omitempty"`
-	Usage        *AnthropicUsage           `json:"usage,omitempty"`
-	Error        *AnthropicStreamError     `json:"error,omitempty"`
+	ID                           *string                   `json:"id,omitempty"`
+	Type                         AnthropicStreamEventType  `json:"type"`
+	Message                      *AnthropicMessageResponse `json:"message,omitempty"`
+	Index                        *int                      `json:"index,omitempty"`
+	ContentBlock                 *AnthropicContentBlock    `json:"content_block,omitempty"`
+	Delta                        *AnthropicStreamDelta     `json:"delta,omitempty"`
+	Usage                        *AnthropicUsage           `json:"usage,omitempty"`
+	Error                        *AnthropicStreamError     `json:"error,omitempty"`
+	AmazonBedrockGuardrailAction string                    `json:"amazon-bedrock-guardrailAction,omitempty"`
+}
+
+func (event *AnthropicStreamEvent) bedrockGuardrailIntervened() bool {
+	return event != nil && (strings.EqualFold(event.AmazonBedrockGuardrailAction, "INTERVENED") ||
+		(event.Message != nil && event.Message.bedrockGuardrailIntervened()))
 }
 
 type AnthropicStreamDeltaType string
