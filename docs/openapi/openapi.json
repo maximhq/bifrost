@@ -118145,6 +118145,12 @@
             "description": "Bound on a single upstream call. Resolved value.",
             "default": 120
           },
+          "history_retention_days": {
+            "type": "integer",
+            "description": "How long a saved chat is kept after its last turn. Resolved value, so a\nrow that never set one reports the default rather than zero.\n\nDeliberately separate from `logs_store.retention_days`: how long request\ntelemetry is worth storing and how long someone's conversations stay\ntheirs to reopen are different questions, and one number cannot answer\nboth without either discarding transcripts early or keeping logs late.\n",
+            "minimum": 1,
+            "default": 30
+          },
           "system_prompt_suffix": {
             "type": "string",
             "description": "Appended to Warp's built-in system prompt. Additive only: an operator\ncan teach Warp local naming conventions, but cannot remove the tool-use\nand scoping instructions the built-in prompt establishes.\n"
@@ -118156,7 +118162,8 @@
           "provider",
           "model",
           "max_iterations",
-          "request_timeout_seconds"
+          "request_timeout_seconds",
+          "history_retention_days"
         ]
       },
       "WarpConfigInput": {
@@ -118223,6 +118230,11 @@
             "type": "integer",
             "minimum": 0,
             "description": "Zero means \"use the default\"."
+          },
+          "history_retention_days": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "How long a saved chat is kept after its last turn. Zero means \"use the\ndefault\"; there is no maximum, because the per-owner conversation cap\nalready bounds the table and how long a transcript stays readable is a\npolicy question with no technically correct ceiling.\n"
           },
           "system_prompt_suffix": {
             "type": "string"

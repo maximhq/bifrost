@@ -653,3 +653,204 @@ func (s *ClickHouseLogStore) UpdateAsyncJob(ctx context.Context, id string, upda
 	}
 	return s.chReinsert(ctx, &existing)
 }
+
+// --- Warp conversations ---
+//
+// The SQL implementations in warpconversations.go wrap every write in a
+// transaction. ClickHouse has none, and it has no cheap UPDATE or DELETE
+// either, so each write path is re-expressed here: the timestamp bump becomes a
+// read-modify-write re-insert under the row's RMW shard lock, and every delete
+// becomes a lightweight delete. The ordering rules are the same ones the SQL
+// versions document, and the reason is unchanged - only the primitives differ.
+//
+// The reads (ListWarpConversations, CountWarpMessages, GetWarpConversation) and
+// CreateWarpConversation are inherited as-is: plain SELECTs and a plain INSERT
+// both work here, and an id collision on create is not a case this store has to
+// absorb, because the id is generated server-side per thread.
+
+// AppendWarpMessages adds turns and bumps the thread's updated time.
+//
+// Messages are written before the bump, which is the safe half to lose: a
+// thread carrying its new messages under a stale timestamp sorts low in the
+// history but is intact, while a bumped thread with no messages would advertise
+// a turn that was never saved. The SQL store gets both or neither; here the
+// choice has to be made explicitly.
+func (s *ClickHouseLogStore) AppendWarpMessages(ctx context.Context, ownerID, conversationID string, messages []WarpMessage) error {
+	if len(messages) == 0 {
+		return nil
+	}
+	// The whole read-modify-write is held: two appends to one thread would
+	// otherwise read the same base row and the later re-insert would drop the
+	// earlier one's timestamp. The messages themselves never collide - Position
+	// is scoped to the append that wrote it.
+	//
+	// This lock is per-process. Two Bifrost instances sharing one ClickHouse
+	// cluster are not serialized by it, and ClickHouse offers neither
+	// transactions nor a conditional insert to serialize them with. The re-check
+	// below narrows that window and, more importantly, makes the losing append
+	// clean up after itself; see the comment there for what it does not fix.
+	defer s.lockRMW("warp_conversations", conversationID)()
+
+	var existing WarpConversation
+	if err := s.db.WithContext(ctx).
+		Where("id = ? AND owner_id = ?", conversationID, ownerID).
+		First(&existing).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrWarpConversationNotFound
+		}
+		return err
+	}
+	for i := range messages {
+		messages[i].ConversationID = conversationID
+		messages[i].Position = i
+	}
+	if err := s.db.WithContext(ctx).Create(&messages).Error; err != nil {
+		return err
+	}
+	// Re-read before the re-insert, because the thread may have been deleted by
+	// another instance while these messages were being written. Without this the
+	// re-insert lands with a higher ver than anything the delete left behind, and
+	// ReplacingMergeTree resurrects a conversation somebody asked to be rid of.
+	//
+	// What this fixes: the transcript no longer outlives the delete. The messages
+	// just written are removed and the caller is told the thread is gone, so the
+	// content someone deleted does not sit in warp_messages unreachable.
+	//
+	// What it does not fix: a delete committing between this check and the
+	// re-insert still resurrects the row. Closing that needs something ClickHouse
+	// cannot express here - a tombstone row carrying a ver above every live one,
+	// with every read filtering on it, which is a schema change and a migration
+	// rather than a local fix. A lightweight delete writes a row mask, not a
+	// versioned row, which is precisely why it loses to a later insert.
+	stillThere, err := s.chExistsWhere(ctx, "warp_conversations", "id = ? AND owner_id = ?", conversationID, ownerID)
+	if err != nil {
+		return err
+	}
+	if !stillThere {
+		if cleanupErr := s.chLightweightDelete(ctx, "warp_messages", "conversation_id = ?", conversationID); cleanupErr != nil {
+			return fmt.Errorf("warp conversation %s was deleted mid-append and its messages could not be removed: %w", conversationID, cleanupErr)
+		}
+		return ErrWarpConversationNotFound
+	}
+	// Nil the association before re-inserting: chReinsert goes through Create,
+	// and a populated Messages slice would have GORM write the whole transcript
+	// back as well.
+	existing.Messages = nil
+	// Monotonic against what this instance read, matching the SQL store. This is
+	// a partial guard here and deliberately labelled as one: the table is a
+	// ReplacingMergeTree keyed on ver, which defaults to now64(), so the newest
+	// reinsert wins regardless of updated_at. Two instances that both read T0 and
+	// reinsert T2 then T1 still leave T1 effective - the clamp only ever sees the
+	// stale T0 it read. Closing that needs a conditional or explicitly versioned
+	// write that keeps the greatest updated_at at commit time, which ClickHouse
+	// cannot express through this path; see the note in AppendWarpMessages.
+	stamp := messages[len(messages)-1].CreatedAt
+	if existing.UpdatedAt.After(stamp) {
+		stamp = existing.UpdatedAt
+	}
+	existing.UpdatedAt = stamp
+	return s.chReinsert(ctx, &existing)
+}
+
+// DeleteWarpConversation removes a thread and its messages.
+//
+// Messages go first here, the opposite of the bulk sweeps below, because there
+// is no staleness predicate that could spare the thread: it is going either
+// way, so the risk to avoid is the transcript outliving it. Orphaned messages
+// are unreachable copies of the exact content somebody asked to be rid of.
+func (s *ClickHouseLogStore) DeleteWarpConversation(ctx context.Context, ownerID, id string) error {
+	defer s.lockRMW("warp_conversations", id)()
+	exists, err := s.chExistsWhere(ctx, "warp_conversations", "id = ? AND owner_id = ?", id, ownerID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return ErrWarpConversationNotFound
+	}
+	if err := s.chLightweightDelete(ctx, "warp_messages", "conversation_id = ?", id); err != nil {
+		return err
+	}
+	return s.chLightweightDelete(ctx, "warp_conversations", "id = ? AND owner_id = ?", id, ownerID)
+}
+
+// PruneWarpConversations drops an owner's oldest threads beyond keep.
+func (s *ClickHouseLogStore) PruneWarpConversations(ctx context.Context, ownerID string, keep int) (int64, error) {
+	if keep <= 0 {
+		return 0, fmt.Errorf("keep must be positive")
+	}
+	var stale []WarpConversation
+	if err := s.db.WithContext(ctx).
+		Where("owner_id = ?", ownerID).
+		Order("updated_at DESC").
+		Offset(keep).
+		Limit(1000).
+		Find(&stale).Error; err != nil {
+		return 0, err
+	}
+	if len(stale) == 0 {
+		return 0, nil
+	}
+	ids := make([]string, 0, len(stale))
+	newest := stale[0].UpdatedAt
+	for _, conversation := range stale {
+		ids = append(ids, conversation.ID)
+		if conversation.UpdatedAt.After(newest) {
+			newest = conversation.UpdatedAt
+		}
+	}
+	defer s.lockRMWBatch("warp_conversations", ids)()
+	deleted, err := s.chDeleteWhere(ctx, "warp_conversations",
+		"id IN ? AND owner_id = ? AND updated_at <= ?", ids, ownerID, newest)
+	if err != nil {
+		return 0, err
+	}
+	return deleted, s.deleteStrandedWarpMessages(ctx, ids)
+}
+
+// DeleteWarpConversationsOlderThan drops threads last touched before the cutoff,
+// across all owners, and returns how many it removed.
+//
+// One bounded batch per call, like the SQL implementation, so a caller clearing
+// a backlog loops until a call returns zero. See the SQL implementation for why
+// this runs off Warp's own retention setting rather than the table TTL every
+// other table here uses.
+func (s *ClickHouseLogStore) DeleteWarpConversationsOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	var stale []WarpConversation
+	if err := s.db.WithContext(ctx).
+		Where("updated_at < ?", cutoff).
+		Limit(1000).
+		Find(&stale).Error; err != nil {
+		return 0, err
+	}
+	if len(stale) == 0 {
+		return 0, nil
+	}
+	ids := make([]string, 0, len(stale))
+	for _, conversation := range stale {
+		ids = append(ids, conversation.ID)
+	}
+	defer s.lockRMWBatch("warp_conversations", ids)()
+	deleted, err := s.chDeleteWhere(ctx, "warp_conversations", "id IN ? AND updated_at < ?", ids, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return deleted, s.deleteStrandedWarpMessages(ctx, ids)
+}
+
+// deleteStrandedWarpMessages is the ClickHouse form of the helper of the same
+// name in warpconversations.go: the bulk deletes re-assert staleness, so only
+// the threads that actually went lose their transcripts.
+func (s *ClickHouseLogStore) deleteStrandedWarpMessages(ctx context.Context, ids []string) error {
+	var survivors []string
+	if err := s.db.WithContext(ctx).
+		Model(&WarpConversation{}).
+		Where("id IN ?", ids).
+		Pluck("id", &survivors).Error; err != nil {
+		return err
+	}
+	removed := warpThreadsRemoved(ids, survivors)
+	if len(removed) == 0 {
+		return nil
+	}
+	return s.chLightweightDelete(ctx, "warp_messages", "conversation_id IN ?", removed)
+}

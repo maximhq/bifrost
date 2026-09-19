@@ -12,6 +12,9 @@ import (
 // gain at this scale.
 type ChatRequest struct {
 	Messages []ChatMessage `json:"messages"`
+	// ConversationID continues an existing thread. Empty starts a new one, and
+	// the id of the thread that was created comes back on the done event.
+	ConversationID string `json:"conversation_id,omitempty"`
 	// Stream selects the transport, not the behaviour. Both paths run the same
 	// loop; only the sink differs.
 	Stream *bool `json:"stream,omitempty"`
@@ -25,12 +28,13 @@ type ChatMessage struct {
 
 // ChatResponse is the non-streaming body: the same events, assembled.
 type ChatResponse struct {
-	Answer       string                   `json:"answer"`
-	ToolCalls    []ChatToolCall           `json:"tool_calls"`
-	Iterations   int                      `json:"iterations"`
-	FinishReason string                   `json:"finish_reason,omitempty"`
-	Usage        *schemas.BifrostLLMUsage `json:"usage,omitempty"`
-	Error        *ChatError               `json:"error,omitempty"`
+	Answer         string                   `json:"answer"`
+	ToolCalls      []ChatToolCall           `json:"tool_calls"`
+	Iterations     int                      `json:"iterations"`
+	ConversationID string                   `json:"conversation_id,omitempty"`
+	FinishReason   string                   `json:"finish_reason,omitempty"`
+	Usage          *schemas.BifrostLLMUsage `json:"usage,omitempty"`
+	Error          *ChatError               `json:"error,omitempty"`
 }
 
 // ChatToolCall summarises one tool call the agent made while answering.

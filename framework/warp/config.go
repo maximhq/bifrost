@@ -22,6 +22,7 @@ type ConfigView struct {
 	APIKeyID              string                `json:"api_key_id,omitempty"`
 	MaxIterations         int                   `json:"max_iterations"`
 	RequestTimeoutSeconds int                   `json:"request_timeout_seconds"`
+	HistoryRetentionDays  int                   `json:"history_retention_days"`
 	SystemPromptSuffix    string                `json:"system_prompt_suffix,omitempty"`
 }
 
@@ -37,6 +38,7 @@ type ConfigInput struct {
 	APIKeyID              string `json:"api_key_id,omitempty"`
 	MaxIterations         int    `json:"max_iterations,omitempty"`
 	RequestTimeoutSeconds int    `json:"request_timeout_seconds,omitempty"`
+	HistoryRetentionDays  int    `json:"history_retention_days,omitempty"`
 	SystemPromptSuffix    string `json:"system_prompt_suffix,omitempty"`
 }
 
@@ -58,6 +60,7 @@ func (s *Service) ConfigView(ctx context.Context) (ConfigView, error) {
 		return ConfigView{
 			MaxIterations:         schemas.WarpDefaultMaxIterations,
 			RequestTimeoutSeconds: schemas.WarpDefaultRequestTimeoutSeconds,
+			HistoryRetentionDays:  schemas.WarpDefaultHistoryRetentionDays,
 		}, nil
 	}
 	return configViewFromRow(row), nil
@@ -81,6 +84,7 @@ func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigVie
 		APIKeyID:              strings.TrimSpace(input.APIKeyID),
 		MaxIterations:         input.MaxIterations,
 		RequestTimeoutSeconds: input.RequestTimeoutSeconds,
+		HistoryRetentionDays:  input.HistoryRetentionDays,
 	}
 	if input.SystemPromptSuffix != "" {
 		row.SystemPromptSuffix = &input.SystemPromptSuffix
@@ -148,6 +152,13 @@ func ValidateConfigInput(input *ConfigInput) error {
 	if input.RequestTimeoutSeconds < 0 {
 		return fmt.Errorf("%w: request_timeout_seconds must not be negative", ErrInvalidConfig)
 	}
+	// Rejected rather than read as "keep forever". There is no ceiling here (see
+	// WarpConfig.HistoryRetentionDays), so a negative value has no plausible
+	// meaning left, and silently reinterpreting it would hand an operator a
+	// retention policy they did not choose.
+	if input.HistoryRetentionDays < 0 {
+		return fmt.Errorf("%w: history_retention_days must not be negative", ErrInvalidConfig)
+	}
 	return nil
 }
 
@@ -181,6 +192,7 @@ func configViewFromRow(row *tables.TableWarpConfig) ConfigView {
 		APIKeyID:              row.APIKeyID,
 		MaxIterations:         config.EffectiveMaxIterations(),
 		RequestTimeoutSeconds: config.EffectiveRequestTimeoutSeconds(),
+		HistoryRetentionDays:  config.EffectiveHistoryRetentionDays(),
 		SystemPromptSuffix:    derefString(row.SystemPromptSuffix),
 	}
 }
@@ -198,6 +210,7 @@ func configFromRow(row *tables.TableWarpConfig) *schemas.WarpConfig {
 		BaseURL:               row.BaseURL,
 		MaxIterations:         row.MaxIterations,
 		RequestTimeoutSeconds: row.RequestTimeoutSeconds,
+		HistoryRetentionDays:  row.HistoryRetentionDays,
 		SystemPromptSuffix:    derefString(row.SystemPromptSuffix),
 		UpdatedAt:             row.UpdatedAt,
 	}
