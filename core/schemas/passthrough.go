@@ -8,7 +8,7 @@ type BifrostPassthroughRequest struct {
 	RawQuery    string // raw query string, no "?"
 	UpstreamURL string // optional base URL override for host-backed passthrough routes
 	Body        []byte
-	SafeHeaders map[string]string // client headers, auth already stripped
+	SafeHeaders map[string]string // client headers; auth stripped unless the caller's OAuth/JWT bearer is the upstream credential (Anthropic sk-ant-oat, OpenAI JWT)
 }
 
 // BifrostPassthroughUsage carries usage data extracted by the provider at stream
