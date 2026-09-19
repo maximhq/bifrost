@@ -32,12 +32,12 @@ func (s *BifrostHTTPServer) startConfigChangeListener() {
 // so the receiving pod ends up in the same state as the writing pod.
 func (s *BifrostHTTPServer) handleConfigChangeEvent(ctx context.Context, event configstore.ConfigChangeEvent) {
 	switch event.Entity {
-	case "full_reload":
+	case configstore.ConfigEntityFullReload:
 		// Fired on (re)connect to catch up on anything missed while disconnected.
 		s.handleFullReload(ctx)
 
-	case "provider":
-		if event.Action == "delete" {
+	case configstore.ConfigEntityProvider:
+		if event.Action == configstore.ConfigActionDelete {
 			if err := s.RemoveProvider(ctx, schemas.ModelProvider(event.Provider)); err != nil {
 				logger.Warn("[pgnotify] failed to remove provider %s: %v", event.Provider, err)
 			}
@@ -47,36 +47,36 @@ func (s *BifrostHTTPServer) handleConfigChangeEvent(ctx context.Context, event c
 			}
 		}
 
-	case "provider_key":
+	case configstore.ConfigEntityProviderKey:
 		// Key changes are reflected through a provider reload.
 		if _, err := s.ReloadProvider(ctx, schemas.ModelProvider(event.Provider)); err != nil {
 			logger.Warn("[pgnotify] failed to reload provider %s after key change: %v", event.Provider, err)
 		}
 
-	case "virtual_key", "vk_provider_config", "vk_mcp_config":
+	case configstore.ConfigEntityVirtualKey, configstore.ConfigEntityVKProviderConfig, configstore.ConfigEntityVKMCPConfig:
 		if err := s.ReloadClientConfigFromConfigStore(ctx); err != nil {
 			logger.Warn("[pgnotify] failed to reload client config after %s change: %v", event.Entity, err)
 		}
 
-	case "client_config":
+	case configstore.ConfigEntityClientConfig:
 		if err := s.ReloadClientConfigFromConfigStore(ctx); err != nil {
 			logger.Warn("[pgnotify] failed to reload client config: %v", err)
 		}
 
-	case "mcp_client":
+	case configstore.ConfigEntityMCPClient:
 		// MCP client changes are best handled via a full client config reload
 		// which re-reads all MCP client configs from the store.
 		if err := s.ReloadClientConfigFromConfigStore(ctx); err != nil {
 			logger.Warn("[pgnotify] failed to reload config after MCP client change: %v", err)
 		}
 
-	case "plugin":
+	case configstore.ConfigEntityPlugin:
 		if err := s.ReloadClientConfigFromConfigStore(ctx); err != nil {
 			logger.Warn("[pgnotify] failed to reload config after plugin change: %v", err)
 		}
 
-	case "routing_rule":
-		if event.Action == "delete" {
+	case configstore.ConfigEntityRoutingRule:
+		if event.Action == configstore.ConfigActionDelete {
 			if err := s.RemoveRoutingRule(ctx, event.ID); err != nil {
 				logger.Warn("[pgnotify] failed to remove routing rule %s: %v", event.ID, err)
 			}
@@ -86,8 +86,8 @@ func (s *BifrostHTTPServer) handleConfigChangeEvent(ctx context.Context, event c
 			}
 		}
 
-	case "team":
-		if event.Action == "delete" {
+	case configstore.ConfigEntityTeam:
+		if event.Action == configstore.ConfigActionDelete {
 			if err := s.RemoveTeam(ctx, event.ID); err != nil {
 				logger.Warn("[pgnotify] failed to remove team %s: %v", event.ID, err)
 			}
@@ -97,8 +97,8 @@ func (s *BifrostHTTPServer) handleConfigChangeEvent(ctx context.Context, event c
 			}
 		}
 
-	case "customer":
-		if event.Action == "delete" {
+	case configstore.ConfigEntityCustomer:
+		if event.Action == configstore.ConfigActionDelete {
 			if err := s.RemoveCustomer(ctx, event.ID); err != nil {
 				logger.Warn("[pgnotify] failed to remove customer %s: %v", event.ID, err)
 			}
@@ -108,14 +108,14 @@ func (s *BifrostHTTPServer) handleConfigChangeEvent(ctx context.Context, event c
 			}
 		}
 
-	case "budget":
+	case configstore.ConfigEntityBudget:
 		// Budget definition changes require a full governance reload.
 		if err := s.ReloadClientConfigFromConfigStore(ctx); err != nil {
 			logger.Warn("[pgnotify] failed to reload config after budget change: %v", err)
 		}
 
-	case "model_config":
-		if event.Action == "delete" {
+	case configstore.ConfigEntityModelConfig:
+		if event.Action == configstore.ConfigActionDelete {
 			if err := s.RemoveModelConfig(ctx, event.ID); err != nil {
 				logger.Warn("[pgnotify] failed to remove model config %s: %v", event.ID, err)
 			}
@@ -125,17 +125,17 @@ func (s *BifrostHTTPServer) handleConfigChangeEvent(ctx context.Context, event c
 			}
 		}
 
-	case "pricing_override":
+	case configstore.ConfigEntityPricingOverride:
 		if err := s.ForceReloadPricing(ctx); err != nil {
 			logger.Warn("[pgnotify] failed to reload pricing after override change: %v", err)
 		}
 
-	case "virtual_mcp":
+	case configstore.ConfigEntityVirtualMCP:
 		if err := s.ReloadClientConfigFromConfigStore(ctx); err != nil {
 			logger.Warn("[pgnotify] failed to reload config after virtual MCP change: %v", err)
 		}
 
-	case "webhook_endpoint":
+	case configstore.ConfigEntityWebhookEndpoint:
 		if err := s.ReloadClientConfigFromConfigStore(ctx); err != nil {
 			logger.Warn("[pgnotify] failed to reload config after webhook endpoint change: %v", err)
 		}
