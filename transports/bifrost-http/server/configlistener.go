@@ -183,29 +183,148 @@ func (s *BifrostHTTPServer) handleConfigChangeEvent(ctx context.Context, event c
 	}
 }
 
-// handleFullReload re-reads all config from the database. Called on listener
-// (re)connect since messages may have been missed while disconnected.
+// handleFullReload re-reads every entity type from the store. Called on
+// listener (re)connect since messages may have been missed while
+// disconnected (LISTEN/NOTIFY has no replay). This enumerates the store's
+// current rows and reloads each one, so it catches anything created or
+// updated while disconnected. It does NOT catch deletions: a row removed
+// from the store during the outage simply no longer appears in these
+// lists, so nothing calls the matching Remove* for it and it stays
+// cached until this pod restarts (which always reads the store fresh).
+// Detecting a deletion here would require diffing against a full
+// in-memory snapshot, which the governance store does not currently
+// expose an enumerator for.
 func (s *BifrostHTTPServer) handleFullReload(ctx context.Context) {
 	logger.Info("[pgnotify] performing full config reload after (re)connect")
 	if err := s.ReloadClientConfigFromConfigStore(ctx); err != nil {
 		logger.Warn("[pgnotify] full reload: client config failed: %v", err)
 	}
-	// Reload all providers.
-	if s.Config != nil {
-		s.Config.Mu.RLock()
-		providers := make([]schemas.ModelProvider, 0, len(s.Config.Providers))
-		for p := range s.Config.Providers {
-			providers = append(providers, p)
-		}
-		s.Config.Mu.RUnlock()
-		for _, p := range providers {
+	if err := s.ForceReloadPricing(ctx); err != nil {
+		logger.Warn("[pgnotify] full reload: pricing failed: %v", err)
+	}
+
+	if s.Config == nil || s.Config.ConfigStore == nil {
+		return
+	}
+	store := s.Config.ConfigStore
+
+	// Providers: enumerate from the store, not s.Config.Providers, so a
+	// provider added while disconnected is discovered too.
+	if providers, err := store.GetProvidersConfig(ctx); err != nil {
+		logger.Warn("[pgnotify] full reload: listing providers failed: %v", err)
+	} else {
+		for p := range providers {
 			if _, err := s.ReloadProvider(ctx, p); err != nil {
 				logger.Warn("[pgnotify] full reload: provider %s failed: %v", p, err)
 			}
 		}
 	}
-	if err := s.ForceReloadPricing(ctx); err != nil {
-		logger.Warn("[pgnotify] full reload: pricing failed: %v", err)
+
+	if vks, err := store.GetVirtualKeys(ctx); err != nil {
+		logger.Warn("[pgnotify] full reload: listing virtual keys failed: %v", err)
+	} else {
+		for _, vk := range vks {
+			if _, err := s.ReloadVirtualKey(ctx, vk.ID); err != nil {
+				logger.Warn("[pgnotify] full reload: virtual key %s failed: %v", vk.ID, err)
+			}
+		}
+	}
+
+	if teams, err := store.GetTeams(ctx, ""); err != nil {
+		logger.Warn("[pgnotify] full reload: listing teams failed: %v", err)
+	} else {
+		for _, team := range teams {
+			if _, err := s.ReloadTeam(ctx, team.ID); err != nil {
+				logger.Warn("[pgnotify] full reload: team %s failed: %v", team.ID, err)
+			}
+		}
+	}
+
+	if customers, err := store.GetCustomers(ctx); err != nil {
+		logger.Warn("[pgnotify] full reload: listing customers failed: %v", err)
+	} else {
+		for _, customer := range customers {
+			if _, err := s.ReloadCustomer(ctx, customer.ID); err != nil {
+				logger.Warn("[pgnotify] full reload: customer %s failed: %v", customer.ID, err)
+			}
+		}
+	}
+
+	if modelConfigs, err := store.GetModelConfigs(ctx); err != nil {
+		logger.Warn("[pgnotify] full reload: listing model configs failed: %v", err)
+	} else {
+		for _, mc := range modelConfigs {
+			if _, err := s.ReloadModelConfig(ctx, mc.ID); err != nil {
+				logger.Warn("[pgnotify] full reload: model config %s failed: %v", mc.ID, err)
+			}
+		}
+	}
+
+	if rules, err := store.GetRoutingRules(ctx); err != nil {
+		logger.Warn("[pgnotify] full reload: listing routing rules failed: %v", err)
+	} else {
+		for _, rule := range rules {
+			if err := s.ReloadRoutingRule(ctx, rule.ID); err != nil {
+				logger.Warn("[pgnotify] full reload: routing rule %s failed: %v", rule.ID, err)
+			}
+		}
+	}
+
+	if plugins, err := store.GetPlugins(ctx); err != nil {
+		logger.Warn("[pgnotify] full reload: listing plugins failed: %v", err)
+	} else {
+		for _, plugin := range plugins {
+			if plugin == nil {
+				continue
+			}
+			if err := s.ReloadPluginByName(ctx, plugin.Name); err != nil {
+				logger.Warn("[pgnotify] full reload: plugin %s failed: %v", plugin.Name, err)
+			}
+		}
+	}
+
+	if endpoints, err := store.GetWebhookEndpoints(ctx); err != nil {
+		logger.Warn("[pgnotify] full reload: listing webhook endpoints failed: %v", err)
+	} else {
+		for _, endpoint := range endpoints {
+			if err := s.ReloadWebhookEndpoint(ctx, endpoint.ID); err != nil {
+				logger.Warn("[pgnotify] full reload: webhook endpoint %s failed: %v", endpoint.ID, err)
+			}
+		}
+	}
+
+	// MCP clients and virtual MCPs only expose paginated listing.
+	const fullReloadPageSize = 200
+	for offset := 0; ; offset += fullReloadPageSize {
+		clients, _, err := store.GetMCPClientsPaginated(ctx, configstore.MCPClientsQueryParams{Limit: fullReloadPageSize, Offset: offset})
+		if err != nil {
+			logger.Warn("[pgnotify] full reload: listing MCP clients failed: %v", err)
+			break
+		}
+		for _, client := range clients {
+			if err := s.ReloadMCPClientConfig(ctx, client.ClientID); err != nil {
+				logger.Warn("[pgnotify] full reload: MCP client %s failed: %v", client.ClientID, err)
+			}
+		}
+		if len(clients) < fullReloadPageSize {
+			break
+		}
+	}
+
+	for offset := 0; ; offset += fullReloadPageSize {
+		defs, _, err := store.GetVirtualMCPsPaginated(ctx, configstore.VirtualMCPsQueryParams{Limit: fullReloadPageSize, Offset: offset})
+		if err != nil {
+			logger.Warn("[pgnotify] full reload: listing virtual MCPs failed: %v", err)
+			break
+		}
+		for _, def := range defs {
+			if _, err := s.ReloadVirtualMCP(ctx, def.ID); err != nil {
+				logger.Warn("[pgnotify] full reload: virtual MCP %d failed: %v", def.ID, err)
+			}
+		}
+		if len(defs) < fullReloadPageSize {
+			break
+		}
 	}
 }
 
