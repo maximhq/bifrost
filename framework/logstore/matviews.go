@@ -558,6 +558,9 @@ func ensureMatViews(ctx context.Context, db *gorm.DB, enableArchive ...bool) err
 		return err
 	}
 	defer unlockHourlyMaintenance(ctx, conn)
+	if err := ensureMatViewSchedule(ctx, conn); err != nil {
+		return err
+	}
 	archiveExists, err := hourlyStateExists(ctx, conn)
 	if err != nil {
 		return err
@@ -878,6 +881,11 @@ func (g *matViewRefreshGate) markRefreshed(activityAtStart int64, activityOK boo
 // on `logs` since the last refresh. A periodic safety-interval refresh runs
 // regardless so the rolling 30-day filter window evicts aged-out rows.
 func refreshMatViews(ctx context.Context, db *gorm.DB) error {
+	return runMatViewRefresh(ctx, db, nil)
+}
+
+// runMatViewRefresh coordinates a pass and optionally enforces the shared cooldown.
+func runMatViewRefresh(ctx context.Context, db *gorm.DB, schedule *matViewSchedule) (resultErr error) {
 	sqlDB, err := db.DB()
 	if err != nil {
 		return fmt.Errorf("failed to get sql.DB for matview refresh: %w", err)
@@ -960,6 +968,17 @@ func refreshMatViews(ctx context.Context, db *gorm.DB) error {
 		}
 	}()
 
+	if schedule != nil {
+		due, err := schedule.begin(ctx, conn)
+		if err != nil || !due {
+			return err
+		}
+		started := time.Now()
+		defer func() {
+			resultErr = errors.Join(resultErr, schedule.finish(ctx, conn, time.Since(started)))
+		}()
+	}
+
 	for _, view := range matViewRefreshOrder() {
 		if archiveExists && view == "mv_logs_hourly" {
 			if err := refreshHourlyArchive(ctx, conn); err != nil {
@@ -985,17 +1004,21 @@ func refreshMatViews(ctx context.Context, db *gorm.DB) error {
 // the initial refresh failed). Returns a stop function for graceful shutdown.
 // A non-positive interval means maintenance is disabled: no goroutine starts
 // and the stop function is a no-op.
-func startMatViewRefresher(ctx context.Context, db *gorm.DB, interval, timeout time.Duration, logger schemas.Logger, readyFlag *atomic.Bool) func() {
+func startMatViewRefresher(ctx context.Context, db *gorm.DB, interval, timeout time.Duration, logger schemas.Logger, readyFlag *atomic.Bool, initialDelay ...time.Duration) func() {
 	if interval <= 0 {
 		return func() {}
 	}
 	stopCh := make(chan struct{})
 	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
+		delay := interval
+		if len(initialDelay) > 0 && initialDelay[0] > delay {
+			delay = initialDelay[0]
+		}
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
 		for {
 			select {
-			case <-ticker.C:
+			case <-timer.C:
 				// Bound each tick. refreshMatViews holds a pooled connection and a
 				// session advisory lock across REFRESH MATERIALIZED VIEW CONCURRENTLY
 				// for every view; without a deadline one pathological refresh keeps the
@@ -1003,7 +1026,7 @@ func startMatViewRefresher(ctx context.Context, db *gorm.DB, interval, timeout t
 				// fails silently, leaving matviews permanently stale.
 				started := time.Now()
 				tickCtx, cancel := context.WithTimeout(ctx, timeout)
-				err := refreshMatViews(tickCtx, db)
+				delay, err := refreshScheduledMatViews(tickCtx, db, interval, logger)
 				cancel()
 				elapsed := time.Since(started)
 
@@ -1014,12 +1037,8 @@ func startMatViewRefresher(ctx context.Context, db *gorm.DB, interval, timeout t
 					logger.Info("logstore: materialized views are ready (recovered)")
 					readyFlag.Store(true)
 				}
-				// A refresh slower than the interval means the refresher itself is the
-				// bottleneck — surface it rather than letting ticks silently coalesce.
-				if elapsed > interval {
-					logger.Warn(fmt.Sprintf("logstore: matview refresh took %s, longer than the %s refresh interval; consider raising matview_refresh_interval",
-						elapsed.Round(time.Millisecond), interval))
-				}
+				// Reset after completion: no queued tick can start a back-to-back pass.
+				timer.Reset(delay)
 			case <-ctx.Done():
 				return
 			case <-stopCh:
@@ -1027,7 +1046,7 @@ func startMatViewRefresher(ctx context.Context, db *gorm.DB, interval, timeout t
 			}
 		}
 	}()
-	return func() { close(stopCh) }
+	return sync.OnceFunc(func() { close(stopCh) })
 }
 
 // canUseMatViewFilters returns true if the given filters can be served from

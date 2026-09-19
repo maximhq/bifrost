@@ -16,16 +16,11 @@ type PostgresConfig struct {
 	// MatViewSnapshotMerge opts into durable hourly history. Once initialized,
 	// the database marker keeps every replica on the history-preserving path.
 	MatViewSnapshotMerge bool `json:"matview_snapshot_merge,omitempty"`
-	// MatViewRefreshInterval controls how often the materialized views backing
-	// /api/logs/stats and the dashboard histograms are refreshed. Accepts any
-	// Go duration string ("30s", "5m", "1h"). Empty / unset uses the default
-	// (defaultMatViewRefreshInterval). Raise this when refresh CPU cost is
-	// material on the database instance — the matview path already has
-	// activity-gated short-circuiting (see matViewRefreshGate), so the longer
-	// interval mostly affects how quickly idle clusters notice the rolling
-	// 30-day filter window has aged. Set "off" (or any non-positive duration)
-	// to disable materialized-view maintenance entirely: views are neither
-	// created nor refreshed and dashboard queries use the raw tables.
+	// MatViewRefreshInterval sets the minimum delay after a dashboard matview
+	// refresh pass. Slow passes increase a shared, persistent cooldown to twice
+	// their duration. Accepts Go duration strings ("30s", "5m", "1h"); unset
+	// uses defaultMatViewRefreshInterval. "off" disables maintenance; preserved
+	// archives remain readable and unfinalized raw history cannot expire.
 	MatViewRefreshInterval string `json:"matview_refresh_interval,omitempty"`
 
 	// MatViewRefreshTimeout bounds a single refresh pass. A refresh holds a pooled
@@ -304,7 +299,7 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 		// The initial refresh gets the same budget as a periodic tick; on a large
 		// logs table it can be slow, and it must not hold the advisory lock forever.
 		initialCtx, cancelInitial := context.WithTimeout(context.Background(), refreshTimeout)
-		err := refreshMatViews(initialCtx, db)
+		initialDelay, err := refreshScheduledMatViews(initialCtx, db, refreshInterval, logger)
 		cancelInitial()
 		if err != nil {
 			logger.Warn(fmt.Sprintf("logstore: initial matview refresh failed: %s", err))
@@ -314,7 +309,7 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 			// canUseMatView() returns false so all queries use raw tables.
 			d.matViewsReady.Store(true)
 		}
-		startMatViewRefresher(context.Background(), db, refreshInterval, refreshTimeout, logger, &d.matViewsReady)
+		startMatViewRefresher(context.Background(), db, refreshInterval, refreshTimeout, logger, &d.matViewsReady, initialDelay)
 	}()
 
 	return d, nil

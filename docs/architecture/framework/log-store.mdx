@@ -34,6 +34,23 @@ hourly analytics after raw-log retention. This is disabled by default and requir
 PostgreSQL 16 or later. Keep the existing `matview_refresh_interval` and
 `matview_refresh_timeout` settings to control scheduling and the refresh budget.
 
+Refresh scheduling adapts to database load, including the initial refresh. The
+configured interval is a minimum cooldown **after** a pass finishes. If a pass
+outlasts the current cooldown, the cooldown increases to twice that duration. For
+example, a 75-second pass with a 60-second interval produces a 150-second cooldown,
+so the next pass starts no earlier than 225 seconds after the first started.
+`bifrost_matview_schedule` shares this cooldown across replicas and restarts.
+Timeouts also receive a cooldown; a lease written before each pass protects
+against crashes or loss of the refresh connection. A crash can postpone retries
+for up to three refresh timeouts (or the existing cooldown, whichever is longer).
+Fast subsequent passes do not automatically lower the cooldown. To reset a learned
+cooldown after increasing database capacity, pause maintenance on all replicas,
+set `cooldown_ns=0, next_refresh_at=clock_timestamp()` on its singleton row, and
+resume maintenance. Inspect `last_duration_ns`, `last_finished_at`, and
+`next_refresh_at` on that row to monitor the effective cadence. The refresh timeout
+remains unchanged, and retention finalization still runs when required to safely
+expire raw logs under the same advisory lock.
+
 The published `mv_logs_hourly` materialized view is backed by a second materialized
 view, `mv_logs_hourly_snapshot`. Refreshes copy the published result, recompute
 the current hour, previous hour, and changed historical hours, then replace those
