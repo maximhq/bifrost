@@ -15,6 +15,11 @@ jobs:
   authorize:
     runs-on: ubuntu-latest
     steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
       - name: Verify repository member access
         env:
           GH_TOKEN: ${{ github.token }}
@@ -191,7 +196,7 @@ jobs:
         working-directory: .github/workflows/tools
 
       - name: Set up gcloud CLI
-        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        uses: step-security/setup-gcloud@0d4fd148182bcc22d7b88f0e12ccc0150ab691f4 # v3.0.2
         with:
           version: "575.0.1"
 
