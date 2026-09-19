@@ -232,6 +232,17 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 	refreshInterval := resolveMatViewRefreshInterval(config.MatViewRefreshInterval, logger)
 	d := &RDBLogStore{db: db, logger: logger, matViewMaintenanceDisabled: refreshInterval <= 0,
 		hourlyArchiveRequested: config.MatViewSnapshotMerge}
+	sqlDB, err := db.DB()
+	if err != nil {
+		closePool(db)
+		return nil, fmt.Errorf("inspect hourly archive pool: %w", err)
+	}
+	exists, err := hourlyStateExists(ctx, sqlDB)
+	if err != nil {
+		closePool(db)
+		return nil, fmt.Errorf("inspect hourly archive state: %w", err)
+	}
+	d.hourlyArchiveKnown.Store(exists)
 
 	// Run all index builds sequentially in a single goroutine to prevent
 	// deadlocks from concurrent CREATE INDEX CONCURRENTLY on the same table.
@@ -282,6 +293,11 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 		if err := ensureMatViews(context.Background(), db, config.MatViewSnapshotMerge); err != nil {
 			logger.Warn(fmt.Sprintf("logstore: matview creation failed: %s (dashboard queries will use raw tables)", err))
 			return
+		}
+		if sqlDB, err := db.DB(); err == nil {
+			if exists, err := hourlyStateExists(context.Background(), sqlDB); err == nil {
+				d.hourlyArchiveKnown.Store(exists)
+			}
 		}
 		refreshTimeout := resolveMatViewRefreshTimeout(config.MatViewRefreshTimeout, refreshInterval, logger)
 

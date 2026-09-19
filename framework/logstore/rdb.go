@@ -75,6 +75,8 @@ type RDBLogStore struct {
 	matViewMaintenanceDisabled bool
 	// hourlyArchiveRequested prevents retention racing archive initialization.
 	hourlyArchiveRequested bool
+	// hourlyArchiveKnown is sticky once durable archive bookkeeping is observed.
+	hourlyArchiveKnown atomic.Bool
 	// Self-heal state for the matview read path (see matviewheal.go).
 	matViewHealInFlight    atomic.Bool
 	matViewHealLastAttempt atomic.Int64 // unix nanos of the last repair attempt
@@ -282,6 +284,9 @@ func (src dimensionReadSource) base(db *gorm.DB) *gorm.DB {
 // should be respected; this helper only adds the per-call filter
 // predicates.
 func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *gorm.DB {
+	if filters.hourlyArchive {
+		baseQuery = baseQuery.Where(`NOT EXISTS (SELECT 1 FROM bifrost_hourly_hours h WHERE h.frozen AND h.hour=bifrost_hourly_bucket(timestamp))`)
+	}
 	if len(filters.Providers) > 0 {
 		baseQuery = baseQuery.Where("provider IN ?", filters.Providers)
 	}
@@ -952,7 +957,7 @@ func (s *RDBLogStore) searchLogs(ctx context.Context, filters SearchFilters, pag
 		// with the (always-raw) row list rendered alongside it. Long windows
 		// keep the matview win because raw COUNT over multi-day ranges is the
 		// expensive path.
-		if s.db.Dialector.Name() == "postgres" && s.canUseMatViewForFreshAggregate(filters) {
+		if s.db.Dialector.Name() == "postgres" && !s.hourlyArchiveKnown.Load() && !s.hourlyArchiveRequested && s.canUseMatViewForFreshAggregate(filters) {
 			c, err := s.getCountFromMatView(gCtx, filters)
 			if !s.fallBackToRaw(err) {
 				totalCount = c
@@ -1410,8 +1415,8 @@ func billingPayloadColumnFor(objectType string) string {
 	return ""
 }
 
-// GetStats calculates statistics for logs matching the given filters.
-func (s *RDBLogStore) GetStats(ctx context.Context, filters SearchFilters) (*SearchStats, error) {
+// getStats calculates statistics for logs matching the given filters.
+func (s *RDBLogStore) getStats(ctx context.Context, filters SearchFilters) (*SearchStats, error) {
 	// Stats has a stricter matview gate than other paths: short windows go to
 	// the raw table even if matview-eligible, so /api/logs/stats stays
 	// consistent with the real-time /api/logs row list. See
@@ -1596,8 +1601,8 @@ func (s *RDBLogStore) aggregateCacheHits(ctx context.Context, base *gorm.DB, fil
 	return &direct, &semantic, nil
 }
 
-// GetHistogram returns time-bucketed request counts for the given filters.
-func (s *RDBLogStore) GetHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*HistogramResult, error) {
+// getHistogram returns time-bucketed request counts for the given filters.
+func (s *RDBLogStore) getHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*HistogramResult, error) {
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600 // Default to 1 hour
 	}
@@ -1710,8 +1715,8 @@ func (s *RDBLogStore) GetHistogram(ctx context.Context, filters SearchFilters, b
 	}, nil
 }
 
-// GetTokenHistogram returns time-bucketed token usage for the given filters.
-func (s *RDBLogStore) GetTokenHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*TokenHistogramResult, error) {
+// getTokenHistogram returns time-bucketed token usage for the given filters.
+func (s *RDBLogStore) getTokenHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*TokenHistogramResult, error) {
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600 // Default to 1 hour
 	}
@@ -1828,11 +1833,11 @@ func tokensPerSecond(completionTokens int64, latencyMs float64) float64 {
 	return float64(completionTokens) / (latencyMs / 1000.0)
 }
 
-// GetThroughputHistogram returns time-bucketed token-generation throughput
+// getThroughputHistogram returns time-bucketed token-generation throughput
 // (tokens/sec) for the given filters. TokensPerSecond is the aggregate rate for
 // each bucket: SUM(completion_tokens) / (SUM(latency_ms)/1000), computed over
 // terminal rows that recorded a latency > 0.
-func (s *RDBLogStore) GetThroughputHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ThroughputHistogramResult, error) {
+func (s *RDBLogStore) getThroughputHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ThroughputHistogramResult, error) {
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600 // Default to 1 hour
 	}
@@ -1918,10 +1923,10 @@ func (s *RDBLogStore) GetThroughputHistogram(ctx context.Context, filters Search
 	return &ThroughputHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds}, nil
 }
 
-// GetProviderThroughputHistogram returns time-bucketed tokens/sec with a
+// getProviderThroughputHistogram returns time-bucketed tokens/sec with a
 // per-provider breakdown for the given filters. See GetThroughputHistogram for
 // the throughput definition.
-func (s *RDBLogStore) GetProviderThroughputHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderThroughputHistogramResult, error) {
+func (s *RDBLogStore) getProviderThroughputHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderThroughputHistogramResult, error) {
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600
 	}
@@ -2015,8 +2020,8 @@ func (s *RDBLogStore) GetProviderThroughputHistogram(ctx context.Context, filter
 	return &ProviderThroughputHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds, Providers: providers}, nil
 }
 
-// GetCostHistogram returns time-bucketed cost data with model breakdown for the given filters.
-func (s *RDBLogStore) GetCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*CostHistogramResult, error) {
+// getCostHistogram returns time-bucketed cost data with model breakdown for the given filters.
+func (s *RDBLogStore) getCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*CostHistogramResult, error) {
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600 // Default to 1 hour
 	}
@@ -2123,8 +2128,8 @@ func (s *RDBLogStore) GetCostHistogram(ctx context.Context, filters SearchFilter
 	}, nil
 }
 
-// GetModelHistogram returns time-bucketed model usage with success/error breakdown for the given filters.
-func (s *RDBLogStore) GetModelHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ModelHistogramResult, error) {
+// getModelHistogram returns time-bucketed model usage with success/error breakdown for the given filters.
+func (s *RDBLogStore) getModelHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ModelHistogramResult, error) {
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600 // Default to 1 hour
 	}
@@ -2262,10 +2267,10 @@ func computePercentile(sorted []float64, p float64) float64 {
 	return sorted[lower]*(1-frac) + sorted[upper]*frac
 }
 
-// GetLatencyHistogram returns time-bucketed latency percentiles (avg, p90, p95, p99) for the given filters.
+// getLatencyHistogram returns time-bucketed latency percentiles (avg, p90, p95, p99) for the given filters.
 // PostgreSQL uses database-level percentile_cont aggregation (returns 1 row per bucket).
 // MySQL and SQLite fall back to Go-based percentile computation (loads individual latency values).
-func (s *RDBLogStore) GetLatencyHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error) {
+func (s *RDBLogStore) getLatencyHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error) {
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600
 	}
@@ -2573,12 +2578,12 @@ func (s *RDBLogStore) buildLatencyHistogramResult(computedBuckets map[int64]Late
 	}, nil
 }
 
-// GetModelRankings returns models ranked by usage with trend comparison to the previous period.
+// getModelRankings returns models ranked by usage with trend comparison to the previous period.
 // Uses the same fresh-aggregate matview gate as GetStats: short windows go to
 // the raw table because mv_logs_hourly rounds the window out to full hour
 // buckets, which visibly inflates rankings against the raw-path stats and
 // cost-histogram totals shown on the same dashboard.
-func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilters) (*ModelRankingResult, error) {
+func (s *RDBLogStore) getModelRankings(ctx context.Context, filters SearchFilters) (*ModelRankingResult, error) {
 	if s.db.Dialector.Name() == "postgres" && s.canUseMatViewForFreshAggregate(filters) {
 		if res, err := s.getModelRankingsFromMatView(ctx, filters); !s.fallBackToRaw(err) {
 			return res, err
@@ -2746,12 +2751,12 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 	return &ModelRankingResult{Rankings: rankings}, nil
 }
 
-// GetUserRankings returns users ranked by usage with trend comparison to the previous period.
+// getUserRankings returns users ranked by usage with trend comparison to the previous period.
 // Uses the same fresh-aggregate matview gate as GetStats: short windows go to
 // the raw table because mv_logs_hourly rounds the window out to full hour
 // buckets, which visibly inflates rankings against the raw-path stats and
 // cost-histogram totals shown on the same dashboard.
-func (s *RDBLogStore) GetUserRankings(ctx context.Context, filters SearchFilters) (*UserRankingResult, error) {
+func (s *RDBLogStore) getUserRankings(ctx context.Context, filters SearchFilters) (*UserRankingResult, error) {
 	if s.db.Dialector.Name() == "postgres" && s.canUseMatViewForFreshAggregate(filters) {
 		if res, err := s.getUserRankingsFromMatView(ctx, filters); !s.fallBackToRaw(err) {
 			return res, err
@@ -2864,8 +2869,8 @@ func (s *RDBLogStore) GetUserRankings(ctx context.Context, filters SearchFilters
 	return &UserRankingResult{Rankings: rankings}, nil
 }
 
-// GetDimensionRankings returns entities ranked by usage with trend comparison, grouped by the given dimension.
-func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFilters, dimension RankingDimension) (*DimensionRankingResult, error) {
+// getDimensionRankings returns entities ranked by usage with trend comparison, grouped by the given dimension.
+func (s *RDBLogStore) getDimensionRankings(ctx context.Context, filters SearchFilters, dimension RankingDimension) (*DimensionRankingResult, error) {
 	idCol, nameCol, ok := DimensionColumnDef(dimension)
 	if !ok {
 		return nil, fmt.Errorf("invalid ranking dimension: %s", dimension)
@@ -3083,8 +3088,8 @@ func pctChange(old, new float64) float64 {
 	return (new - old) / old * 100
 }
 
-// GetProviderCostHistogram returns time-bucketed cost data with provider breakdown for the given filters.
-func (s *RDBLogStore) GetProviderCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderCostHistogramResult, error) {
+// getProviderCostHistogram returns time-bucketed cost data with provider breakdown for the given filters.
+func (s *RDBLogStore) getProviderCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderCostHistogramResult, error) {
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600
 	}
@@ -3180,8 +3185,8 @@ func (s *RDBLogStore) GetProviderCostHistogram(ctx context.Context, filters Sear
 	}, nil
 }
 
-// GetProviderTokenHistogram returns time-bucketed token usage with provider breakdown for the given filters.
-func (s *RDBLogStore) GetProviderTokenHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderTokenHistogramResult, error) {
+// getProviderTokenHistogram returns time-bucketed token usage with provider breakdown for the given filters.
+func (s *RDBLogStore) getProviderTokenHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderTokenHistogramResult, error) {
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600
 	}
@@ -3287,10 +3292,10 @@ func (s *RDBLogStore) GetProviderTokenHistogram(ctx context.Context, filters Sea
 	}, nil
 }
 
-// GetProviderLatencyHistogram returns time-bucketed latency percentiles with provider breakdown for the given filters.
+// getProviderLatencyHistogram returns time-bucketed latency percentiles with provider breakdown for the given filters.
 // PostgreSQL uses database-level percentile_cont aggregation.
 // MySQL and SQLite fall back to Go-based percentile computation.
-func (s *RDBLogStore) GetProviderLatencyHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderLatencyHistogramResult, error) {
+func (s *RDBLogStore) getProviderLatencyHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderLatencyHistogramResult, error) {
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600
 	}
@@ -3637,9 +3642,9 @@ func (s *RDBLogStore) buildProviderLatencyHistogramResult(computedBuckets map[in
 // Generic dimension histogram methods
 // ---------------------------------------------------------------------------
 
-// GetDimensionCostHistogram returns time-bucketed cost data grouped by the specified dimension.
+// getDimensionCostHistogram returns time-bucketed cost data grouped by the specified dimension.
 // Uses the mv_logs_hourly materialized view on PostgreSQL when eligible; falls back to raw queries otherwise.
-func (s *RDBLogStore) GetDimensionCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionCostHistogramResult, error) {
+func (s *RDBLogStore) getDimensionCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionCostHistogramResult, error) {
 	dimCol, ok := histogramDimensionColumn(dimension)
 	if !ok {
 		return nil, fmt.Errorf("invalid histogram dimension: %s", dimension)
@@ -3740,9 +3745,9 @@ func (s *RDBLogStore) GetDimensionCostHistogram(ctx context.Context, filters Sea
 	return &DimensionCostHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds, Dimension: dimension, DimensionValues: dimValues}, nil
 }
 
-// GetDimensionTokenHistogram returns time-bucketed token usage grouped by the specified dimension.
+// getDimensionTokenHistogram returns time-bucketed token usage grouped by the specified dimension.
 // Uses the mv_logs_hourly materialized view on PostgreSQL when eligible; falls back to raw queries otherwise.
-func (s *RDBLogStore) GetDimensionTokenHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionTokenHistogramResult, error) {
+func (s *RDBLogStore) getDimensionTokenHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionTokenHistogramResult, error) {
 	dimCol, ok := histogramDimensionColumn(dimension)
 	if !ok {
 		return nil, fmt.Errorf("invalid histogram dimension: %s", dimension)
@@ -3863,10 +3868,10 @@ func (s *RDBLogStore) GetDimensionTokenHistogram(ctx context.Context, filters Se
 	return &DimensionTokenHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds, Dimension: dimension, DimensionValues: dimValues}, nil
 }
 
-// GetDimensionLatencyHistogram returns time-bucketed latency percentiles grouped by the specified dimension.
+// getDimensionLatencyHistogram returns time-bucketed latency percentiles grouped by the specified dimension.
 // Uses the mv_logs_hourly materialized view on PostgreSQL when eligible; falls back to raw queries otherwise.
 // The fallback path computes AVG latency only (no percentiles) since percentile_cont is Postgres-specific.
-func (s *RDBLogStore) GetDimensionLatencyHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionLatencyHistogramResult, error) {
+func (s *RDBLogStore) getDimensionLatencyHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionLatencyHistogramResult, error) {
 	dimCol, ok := histogramDimensionColumn(dimension)
 	if !ok {
 		return nil, fmt.Errorf("invalid histogram dimension: %s", dimension)

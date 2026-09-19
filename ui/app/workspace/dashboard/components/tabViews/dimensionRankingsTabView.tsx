@@ -4,6 +4,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useSt
 import type { DashboardData } from "../../utils/exportUtils";
 import { DASHBOARD_RANKINGS_LIMIT } from "../../utils/rankings";
 import { DimensionRankingsTab } from "../dimensionRankingsTab";
+import { AggregationNotice } from "../aggregationNotice";
 
 export interface DimensionRankingsTabViewHandle {
 	getData: () => Partial<DashboardData>;
@@ -55,13 +56,16 @@ export const DimensionRankingsTabView = forwardRef<DimensionRankingsTabViewHandl
 		);
 
 		return (
-			<DimensionRankingsTab
-				data={(pdfMode ? (exportData ?? data) : data) ?? null}
-				loading={loading}
-				dimensionLabel={dimensionLabel}
-				testIdPrefix={testIdPrefix}
-				attributed
-			/>
+			<>
+				<AggregationNotice info={(pdfMode ? (exportData ?? data) : data)?.aggregation_info} />
+				<DimensionRankingsTab
+					data={(pdfMode ? (exportData ?? data) : data) ?? null}
+					loading={loading}
+					dimensionLabel={dimensionLabel}
+					testIdPrefix={testIdPrefix}
+					attributed
+				/>
+			</>
 		);
 	},
 );

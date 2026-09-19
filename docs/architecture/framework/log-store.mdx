@@ -27,6 +27,73 @@ The LogStore is built around the `LogStore` interface, which defines the standar
 
 The backend is configured in Bifrost's main configuration file.
 
+### Preserving PostgreSQL hourly history
+
+Set `logs_store.config.matview_snapshot_merge` to `true` to opt into preserving
+hourly analytics after raw-log retention. This is disabled by default and requires
+PostgreSQL 16 or later. Keep the existing `matview_refresh_interval` and
+`matview_refresh_timeout` settings to control scheduling and the refresh budget.
+
+The published `mv_logs_hourly` materialized view is backed by a second materialized
+view, `mv_logs_hourly_snapshot`. Refreshes copy the published result, recompute
+the current hour, previous hour, and changed historical hours, then replace those
+hours in the final result. Old aggregate rows are copied rather than recomputed
+from their raw requests. Small bookkeeping tables track changes and publication
+generations; they do not store aggregate payloads.
+
+Before retention deletes an hour's source data, the cleaner finalizes its totals,
+copies them to the snapshot, and freezes the hour. An unfinished request or a
+concurrent correction postpones freezing. The cleaner still expires rows using
+`created_at`; hourly aggregation uses the request `timestamp`. A partially expired
+hour therefore retains its complete totals. Cost edits, late arrivals, and manual
+deletions after an hour is frozen do not change that archive.
+
+Historical statistics, charts, and eligible rankings remain available after the
+raw rows expire. Partial archived hours are included in full, with at least hourly
+chart resolution. Aggregate responses include optional `aggregation_info` with
+inclusive `effective_start_time` / `effective_end_time`,
+`archived_resolution_seconds`, and `coverage`. `complete` means the selected
+aggregate history is included; `retained_only` means the requested filters or
+dimensions require raw fields absent from the archive. Detailed log search and
+pagination continue to describe only retained raw rows.
+
+#### Coordinated rollout
+
+1. Take a physical database backup that includes materialized-view contents and
+   bookkeeping tables. A schema-only backup or a logical dump that rebuilds
+   materialized views from their definitions cannot recreate expired raw history.
+2. Pause raw-log cleanup and materialized-view maintenance on existing replicas,
+   or stop those replicas during the deployment. Deploy the complete upgrade to
+   every replica before opting in. Old binaries must not refresh or repair the
+   converted view.
+3. Enable `matview_snapshot_merge` with a positive refresh interval. The first
+   conversion preserves the existing historical baseline and freezes older legacy
+   hours whose completeness is unknown. Recent legacy hours are also preserved if
+   their remaining raw population is smaller than the saved aggregate. Corrections
+   to those frozen legacy hours are not reflected in archived totals.
+4. Initialization blocks retention until the archive is ready. Resume normal
+   cleanup after initialization succeeds, and check refresh errors and duration.
+
+Once initialized, removing the opt-in flag does not revert the database to full
+refreshes. Setting the refresh interval to `off` pauses maintenance but preserves
+historical reads; mutable hours cannot expire until maintenance resumes. Do not
+roll back to a binary that predates archive support after deleting raw history.
+
+The startup/self-heal path restores a missing published view from its snapshot
+and available mutable logs. Missing both copies, or incompatible archive columns,
+requires backup restoration or a history-preserving migration. These conditions
+surface an error instead of silently reconstructing history from incomplete logs.
+
+For operational checks, `bifrost_hourly_refresh` records the published/snapshot
+generations and last successful refresh. Pending work is recorded in
+`bifrost_hourly_hours` where `generation > applied_generation AND NOT frozen`;
+`ignored_changes` records changes to frozen hours. These objects must be backed up
+together. Allow space for two durable aggregate copies and PostgreSQL's refresh
+workspace. Snapshot copying and the final refresh still process historical
+aggregate rows, so refresh cost is not independent of archive size.
+Use the application coordinator for refreshes; manually refreshing either
+materialized view bypasses its publication and recovery bookkeeping.
+
 ### Hiding request types from the dashboard
 
 Set `client.hidden_request_types` to an array of request type strings in `config.json`:

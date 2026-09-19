@@ -114,3 +114,37 @@ func TestHourlyArchiveRestoresPublishedCopy(t *testing.T) {
 	require.NoError(t, ensureMatViews(context.Background(), db))
 	assertHourlyTotals(t, db, 1, 4)
 }
+
+// TestHourlyArchiveConcurrentWriteRemainsDirty exercises a write committing after
+// the refresh's raw snapshot but before its applied-generation checkpoint.
+func TestHourlyArchiveConcurrentWriteRemainsDirty(t *testing.T) {
+	db, conn := hourlyArchiveTestDB(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	insertHourlyLog(t, db, "a", time.Now().Add(-72*time.Hour), 1)
+	require.NoError(t, refreshHourlyArchive(ctx, conn))
+	require.NoError(t, db.Exec(`UPDATE logs SET cost=2 WHERE id='a'`).Error)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	writer, err := sqlDB.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer writer.Rollback()
+	_, err = writer.ExecContext(ctx, `UPDATE logs SET cost=3 WHERE id='a'`)
+	require.NoError(t, err)
+	var pid int
+	require.NoError(t, conn.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&pid))
+	done := make(chan error, 1)
+	go func() { done <- refreshHourlyArchive(ctx, conn) }()
+	require.Eventually(t, func() bool {
+		var waiting bool
+		return sqlDB.QueryRowContext(ctx, `SELECT wait_event_type='Lock' FROM pg_stat_activity WHERE pid=$1`, pid).Scan(&waiting) == nil && waiting
+	}, 5*time.Second, 10*time.Millisecond)
+	require.NoError(t, writer.Commit())
+	require.NoError(t, <-done)
+	assertHourlyTotals(t, db, 1, 2)
+	var dirty bool
+	require.NoError(t, db.Raw(`SELECT generation>applied_generation FROM bifrost_hourly_hours`).Scan(&dirty).Error)
+	require.True(t, dirty)
+	require.NoError(t, refreshHourlyArchive(ctx, conn))
+	assertHourlyTotals(t, db, 1, 3)
+}

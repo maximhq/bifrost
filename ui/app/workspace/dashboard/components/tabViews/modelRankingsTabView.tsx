@@ -1,3 +1,4 @@
+import { AggregationNotice } from "../aggregationNotice";
 import {
 	useGetLogsModelHistogramQuery,
 	useGetModelRankingsQuery,
@@ -68,13 +69,16 @@ export const ModelRankingsTabView = forwardRef<ModelRankingsTabViewHandle, Model
 	);
 
 	return (
-		<ModelRankingsTab
-			rankingsData={(pdfMode ? (rankingsExportData ?? rankingsData) : rankingsData) ?? null}
-			loading={loadingRankings}
-			modelData={modelData ?? null}
-			loadingModels={loadingModels}
-			startTime={startTime}
-			endTime={endTime}
-		/>
+		<>
+			<AggregationNotice info={rankingsData?.aggregation_info} />
+			<ModelRankingsTab
+				rankingsData={(pdfMode ? (rankingsExportData ?? rankingsData) : rankingsData) ?? null}
+				loading={loadingRankings}
+				modelData={modelData ?? null}
+				loadingModels={loadingModels}
+				startTime={startTime}
+				endTime={endTime}
+			/>
+		</>
 	);
 });

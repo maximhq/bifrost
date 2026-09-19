@@ -1081,7 +1081,7 @@ func isTerminalLogStatus(status string) bool {
 // window between migration (which drops old views) and ensureMatViews (which
 // recreates them asynchronously).
 func (s *RDBLogStore) canUseMatView(f SearchFilters) bool {
-	return s.matViewsReady.Load() && canUseMatViewFilters(f)
+	return !f.hourlyRawOnly && s.matViewsReady.Load() && canUseMatViewFilters(f)
 }
 
 // freshAggregateMatViewMinWindow is the minimum time-range size that justifies
@@ -1105,6 +1105,9 @@ const freshAggregateMatViewMinWindow = 24 * time.Hour
 func (s *RDBLogStore) canUseMatViewForFreshAggregate(f SearchFilters) bool {
 	if !s.canUseMatView(f) {
 		return false
+	}
+	if f.hourlyArchive {
+		return true
 	}
 	if f.StartTime == nil && f.EndTime == nil {
 		return true
@@ -1133,7 +1136,11 @@ func (s *RDBLogStore) applyMatViewFilters(q *gorm.DB, f SearchFilters) *gorm.DB 
 // translation don't need a context.
 func applyMatViewFiltersOnly(q *gorm.DB, f SearchFilters) *gorm.DB {
 	if f.StartTime != nil {
-		q = q.Where("hour >= date_trunc('hour', ?::timestamptz)", *f.StartTime)
+		if f.hourlyArchive {
+			q = q.Where("hour >= bifrost_hourly_bucket(?::timestamptz)", *f.StartTime)
+		} else {
+			q = q.Where("hour >= date_trunc('hour', ?::timestamptz)", *f.StartTime)
+		}
 	}
 	if f.EndTime != nil {
 		q = q.Where("hour <= ?", *f.EndTime)
@@ -1232,7 +1239,7 @@ func (s *RDBLogStore) getCountFromMatView(ctx context.Context, filters SearchFil
 	dimFilters := filters
 	dimFilters.StartTime, dimFilters.EndTime = nil, nil
 
-	if isDegenerateHybridWindow(filters.StartTime, filters.EndTime) {
+	if !filters.hourlyArchive && isDegenerateHybridWindow(filters.StartTime, filters.EndTime) {
 		// Short window (never matview-eligible via
 		// canUseMatViewForFreshAggregate, but guard anyway): the boundary
 		// slivers would overlap, so count the whole range raw.
@@ -1247,12 +1254,12 @@ func (s *RDBLogStore) getCountFromMatView(ctx context.Context, filters SearchFil
 	var interior int64
 	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, dimFilters)
-	q = applyInteriorBucketWindow(q, filters.StartTime, filters.EndTime)
+	q = applyHourlyInterior(q, filters.StartTime, filters.EndTime, filters.hourlyArchive)
 	if err := q.Select("COALESCE(SUM(count), 0)").Row().Scan(&interior); err != nil {
 		return 0, err
 	}
 
-	sliverSQL, sliverArgs := boundarySliverWhere(filters.StartTime, filters.EndTime)
+	sliverSQL, sliverArgs := hourlyBoundarySlivers(filters.StartTime, filters.EndTime, filters.hourlyArchive)
 	if sliverSQL == "" {
 		return interior + nonTerminal, nil
 	}
@@ -1381,7 +1388,7 @@ func (s *RDBLogStore) matViewInteriorStatsAgg(ctx context.Context, dimFilters Se
 	var agg matViewStatsAgg
 	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, dimFilters)
-	q = applyInteriorBucketWindow(q, start, end)
+	q = applyHourlyInterior(q, start, end, dimFilters.hourlyArchive)
 	err := q.Select(`
 		COALESCE(SUM(count), 0) AS total_count,
 		COALESCE(SUM(success_count), 0) AS success_count,
@@ -1438,7 +1445,7 @@ func (s *RDBLogStore) getStatsFromMatView(ctx context.Context, filters SearchFil
 	dimFilters.StartTime, dimFilters.EndTime = nil, nil
 
 	var agg matViewStatsAgg
-	if isDegenerateHybridWindow(filters.StartTime, filters.EndTime) {
+	if !filters.hourlyArchive && isDegenerateHybridWindow(filters.StartTime, filters.EndTime) {
 		var err error
 		agg, err = s.rawTerminalStatsAgg(ctx, dimFilters,
 			"timestamp >= ? AND timestamp <= ?", *filters.StartTime, *filters.EndTime)
@@ -1451,7 +1458,7 @@ func (s *RDBLogStore) getStatsFromMatView(ctx context.Context, filters SearchFil
 		if err != nil {
 			return nil, err
 		}
-		if sliverSQL, sliverArgs := boundarySliverWhere(filters.StartTime, filters.EndTime); sliverSQL != "" {
+		if sliverSQL, sliverArgs := hourlyBoundarySlivers(filters.StartTime, filters.EndTime, filters.hourlyArchive); sliverSQL != "" {
 			boundary, err := s.rawTerminalStatsAgg(ctx, dimFilters, sliverSQL, sliverArgs...)
 			if err != nil {
 				return nil, err
@@ -1566,7 +1573,7 @@ func (s *RDBLogStore) getHistogramFromMatView(ctx context.Context, filters Searc
 		return rows, err
 	}
 
-	if isDegenerateHybridWindow(filters.StartTime, filters.EndTime) {
+	if !filters.hourlyArchive && isDegenerateHybridWindow(filters.StartTime, filters.EndTime) {
 		// Window too short for the interior/sliver split (reachable here:
 		// GetHistogram gates on canUseMatView, which has no window check).
 		rows, err := rawBucketed("timestamp >= ? AND timestamp <= ?", *filters.StartTime, *filters.EndTime)
@@ -1578,7 +1585,7 @@ func (s *RDBLogStore) getHistogramFromMatView(ctx context.Context, filters Searc
 		var results []histAgg
 		q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
 		q = s.applyMatViewFilters(q, dimFilters)
-		q = applyInteriorBucketWindow(q, filters.StartTime, filters.EndTime)
+		q = applyHourlyInterior(q, filters.StartTime, filters.EndTime, filters.hourlyArchive)
 		if err := q.Select(fmt.Sprintf(`
 			CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
 			SUM(count) AS total,
@@ -1592,7 +1599,7 @@ func (s *RDBLogStore) getHistogramFromMatView(ctx context.Context, filters Searc
 		}
 		merge(results)
 
-		if sliverSQL, sliverArgs := boundarySliverWhere(filters.StartTime, filters.EndTime); sliverSQL != "" {
+		if sliverSQL, sliverArgs := hourlyBoundarySlivers(filters.StartTime, filters.EndTime, filters.hourlyArchive); sliverSQL != "" {
 			rows, err := rawBucketed(sliverSQL, sliverArgs...)
 			if err != nil {
 				return nil, err
@@ -1648,7 +1655,7 @@ func (s *RDBLogStore) getTokenHistogramFromMatView(ctx context.Context, filters 
 		TotalTokens      int64 `gorm:"column:total_tkns"`
 		CachedReadTokens int64 `gorm:"column:cached_read_tokens"`
 	}
-	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
+	q := s.hourlyAggregateSource(ctx, filters)
 	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
@@ -1692,7 +1699,7 @@ func (s *RDBLogStore) getCostHistogramFromMatView(ctx context.Context, filters S
 		Model           string  `gorm:"column:model"`
 		Cost            float64 `gorm:"column:cost"`
 	}
-	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
+	q := s.hourlyAggregateSource(ctx, filters)
 	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
@@ -1748,7 +1755,7 @@ func (s *RDBLogStore) getModelHistogramFromMatView(ctx context.Context, filters 
 		ErrorCount      int64  `gorm:"column:error_count"`
 		CancelledCount  int64  `gorm:"column:cancelled_count"`
 	}
-	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
+	q := s.hourlyAggregateSource(ctx, filters)
 	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
@@ -1815,7 +1822,7 @@ func (s *RDBLogStore) getLatencyHistogramFromMatView(ctx context.Context, filter
 		TotalRequests   int64   `gorm:"column:total_requests"`
 	}
 	// Weighted average of percentiles across hourly buckets
-	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
+	q := s.hourlyAggregateSource(ctx, filters)
 	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
@@ -1873,7 +1880,7 @@ func (s *RDBLogStore) getThroughputHistogramFromMatView(ctx context.Context, fil
 		SumLatency       float64 `gorm:"column:sum_latency"`
 		TotalRequests    int64   `gorm:"column:total_requests"`
 	}
-	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
+	q := s.hourlyAggregateSource(ctx, filters)
 	q = s.applyMatViewFilters(q, filters)
 	// Successful requests only: status is a matview dimension, so this restricts
 	// the summed tokens/latency/count to success rows (see GetThroughputHistogram).
@@ -1920,7 +1927,7 @@ func (s *RDBLogStore) getProviderThroughputHistogramFromMatView(ctx context.Cont
 		SumLatency       float64 `gorm:"column:sum_latency"`
 		TotalRequests    int64   `gorm:"column:total_requests"`
 	}
-	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
+	q := s.hourlyAggregateSource(ctx, filters)
 	q = s.applyMatViewFilters(q, filters)
 	// Successful requests only — see getThroughputHistogramFromMatView.
 	q = q.Where("status = ?", "success")
@@ -1978,7 +1985,7 @@ func (s *RDBLogStore) getProviderCostHistogramFromMatView(ctx context.Context, f
 		Provider        string  `gorm:"column:provider"`
 		Cost            float64 `gorm:"column:cost"`
 	}
-	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
+	q := s.hourlyAggregateSource(ctx, filters)
 	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
@@ -2033,7 +2040,7 @@ func (s *RDBLogStore) getProviderTokenHistogramFromMatView(ctx context.Context, 
 		CompletionTokens int64  `gorm:"column:completion_tokens"`
 		TotalTokens      int64  `gorm:"column:total_tkns"`
 	}
-	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
+	q := s.hourlyAggregateSource(ctx, filters)
 	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
@@ -2107,7 +2114,7 @@ func (s *RDBLogStore) getProviderLatencyHistogramFromMatView(ctx context.Context
 		P99Latency      float64 `gorm:"column:p99_lat"`
 		TotalRequests   int64   `gorm:"column:total_requests"`
 	}
-	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
+	q := s.hourlyAggregateSource(ctx, filters)
 	q = s.applyMatViewFilters(q, filters)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
@@ -2175,7 +2182,7 @@ func (s *RDBLogStore) getDimensionCostHistogramFromMatView(ctx context.Context, 
 		DimValue        string  `gorm:"column:dim_value"`
 		Cost            float64 `gorm:"column:cost"`
 	}
-	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
+	q := s.hourlyAggregateSource(ctx, filters)
 	q = s.applyMatViewFilters(q, filters)
 	// Same ceiling as the raw path: bounded dimensions must not name ids the
 	// caller may not be shown, even when the aggregate is served pre-computed.
@@ -2237,7 +2244,7 @@ func (s *RDBLogStore) getDimensionTokenHistogramFromMatView(ctx context.Context,
 		CompletionTokens int64  `gorm:"column:completion_tokens"`
 		TotalTokens      int64  `gorm:"column:total_tkns"`
 	}
-	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
+	q := s.hourlyAggregateSource(ctx, filters)
 	q = s.applyMatViewFilters(q, filters)
 	// Same ceiling as the raw path: bounded dimensions must not name ids the
 	// caller may not be shown, even when the aggregate is served pre-computed.
@@ -2316,7 +2323,7 @@ func (s *RDBLogStore) getDimensionLatencyHistogramFromMatView(ctx context.Contex
 		P99Latency      float64 `gorm:"column:p99_lat"`
 		TotalRequests   int64   `gorm:"column:total_requests"`
 	}
-	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
+	q := s.hourlyAggregateSource(ctx, filters)
 	q = s.applyMatViewFilters(q, filters)
 	// Same ceiling as the raw path: bounded dimensions must not name ids the
 	// caller may not be shown, even when the aggregate is served pre-computed.
@@ -2389,7 +2396,7 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 		TPCompletionTokens int64          `gorm:"column:tp_completion_tokens"`
 		TPLatencyMs        float64        `gorm:"column:tp_latency_ms"`
 	}
-	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
+	q := s.hourlyAggregateSource(ctx, filters)
 	q = s.applyMatViewFilters(q, filters)
 	q = q.Where("model IS NOT NULL AND model != ''")
 	q = q.Select(`
@@ -2441,7 +2448,7 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 		prevFilters := filters
 		prevFilters.StartTime = &prevStart
 		prevFilters.EndTime = &prevEnd
-		pq := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
+		pq := s.hourlyAggregateSource(ctx, prevFilters)
 		pq = s.applyMatViewFilters(pq, prevFilters)
 		pq = pq.Where("model IS NOT NULL AND model != ''")
 		if err := pq.Select(`
@@ -2512,7 +2519,7 @@ func (s *RDBLogStore) getUserRankingsFromMatView(ctx context.Context, filters Se
 		TotalTokens int64   `gorm:"column:total_tkns"`
 		TotalCost   float64 `gorm:"column:total_cost"`
 	}
-	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
+	q := s.hourlyAggregateSource(ctx, filters)
 	q = s.applyMatViewFilters(q, filters)
 	q = q.Where("user_id != ''")
 	// Same ceiling as the raw path in GetUserRankings: the row scope alone does
@@ -2556,7 +2563,7 @@ func (s *RDBLogStore) getUserRankingsFromMatView(ctx context.Context, filters Se
 		prevFilters := filters
 		prevFilters.StartTime = &prevStart
 		prevFilters.EndTime = &prevEnd
-		pq := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
+		pq := s.hourlyAggregateSource(ctx, prevFilters)
 		pq = s.applyMatViewFilters(pq, prevFilters)
 		pq = pq.Where("user_id != ''")
 		pq = applyDimensionCeiling(ctx, pq, dimensionReadSource{}, "user_id")
@@ -2613,7 +2620,7 @@ func (s *RDBLogStore) getDimensionRankingsFromMatView(ctx context.Context, filte
 	}
 
 	var results []row
-	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
+	q := s.hourlyAggregateSource(ctx, filters)
 	q = s.applyMatViewFilters(q, filters)
 	q = q.Where(fmt.Sprintf("%s != ''", idCol))
 	// Same ceiling as the raw path in GetDimensionRankings. Only non-bucketed
@@ -2674,7 +2681,7 @@ func (s *RDBLogStore) getDimensionRankingsFromMatView(ctx context.Context, filte
 		prevFilters := filters
 		prevFilters.StartTime = &prevStart
 		prevFilters.EndTime = &prevEnd
-		pq := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
+		pq := s.hourlyAggregateSource(ctx, prevFilters)
 		pq = s.applyMatViewFilters(pq, prevFilters)
 		pq = pq.Where(fmt.Sprintf("%s != ''", idCol))
 		pq = applyDimensionCeiling(ctx, pq, dimensionReadSource{}, idCol)

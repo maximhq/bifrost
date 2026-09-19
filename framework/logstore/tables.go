@@ -46,6 +46,8 @@ const (
 
 // SearchFilters represents the available filters for log searches
 type SearchFilters struct {
+	hourlyArchive        bool              // Internal: frozen hours are served exclusively from aggregates.
+	hourlyRawOnly        bool              // Internal: this request cannot represent archived dimensions.
 	Providers            []string          `json:"providers,omitempty"`
 	Models               []string          `json:"models,omitempty"`
 	Aliases              []string          `json:"aliases,omitempty"`
@@ -139,6 +141,7 @@ type SessionSummaryResult struct {
 }
 
 type SearchStats struct {
+	AggregateMetadata         `gorm:"-"`
 	TotalRequests             int64   `json:"total_requests"`
 	SuccessRate               float64 `json:"success_rate"`                            // Percentage of individual attempts that succeeded
 	UserFacingSuccessRate     float64 `json:"user_facing_success_rate"`                // Percentage of user requests that ultimately succeeded (fallback chains counted as one request)
@@ -2028,6 +2031,7 @@ type HistogramBucket struct {
 
 // HistogramResult represents the histogram query result
 type HistogramResult struct {
+	AggregateMetadata `gorm:"-"`
 	Buckets           []HistogramBucket `json:"buckets"`
 	BucketSizeSeconds int64             `json:"bucket_size_seconds"`
 }
@@ -2043,6 +2047,7 @@ type TokenHistogramBucket struct {
 
 // TokenHistogramResult represents the token histogram query result
 type TokenHistogramResult struct {
+	AggregateMetadata `gorm:"-"`
 	Buckets           []TokenHistogramBucket `json:"buckets"`
 	BucketSizeSeconds int64                  `json:"bucket_size_seconds"`
 }
@@ -2056,6 +2061,7 @@ type CostHistogramBucket struct {
 
 // CostHistogramResult represents the cost histogram query result
 type CostHistogramResult struct {
+	AggregateMetadata `gorm:"-"`
 	Buckets           []CostHistogramBucket `json:"buckets"`
 	BucketSizeSeconds int64                 `json:"bucket_size_seconds"`
 	Models            []string              `json:"models"`
@@ -2077,6 +2083,7 @@ type ModelHistogramBucket struct {
 
 // ModelHistogramResult represents the model histogram query result
 type ModelHistogramResult struct {
+	AggregateMetadata `gorm:"-"`
 	Buckets           []ModelHistogramBucket `json:"buckets"`
 	BucketSizeSeconds int64                  `json:"bucket_size_seconds"`
 	Models            []string               `json:"models"`
@@ -2098,6 +2105,7 @@ type LatencyHistogramBucket struct {
 
 // LatencyHistogramResult represents the latency histogram query result
 type LatencyHistogramResult struct {
+	AggregateMetadata `gorm:"-"`
 	Buckets           []LatencyHistogramBucket `json:"buckets"`
 	BucketSizeSeconds int64                    `json:"bucket_size_seconds"`
 }
@@ -2113,6 +2121,7 @@ type ProviderCostHistogramBucket struct {
 
 // ProviderCostHistogramResult represents the provider cost histogram query result
 type ProviderCostHistogramResult struct {
+	AggregateMetadata `gorm:"-"`
 	Buckets           []ProviderCostHistogramBucket `json:"buckets"`
 	BucketSizeSeconds int64                         `json:"bucket_size_seconds"`
 	Providers         []string                      `json:"providers"`
@@ -2133,6 +2142,7 @@ type ProviderTokenHistogramBucket struct {
 
 // ProviderTokenHistogramResult represents the provider token histogram query result
 type ProviderTokenHistogramResult struct {
+	AggregateMetadata `gorm:"-"`
 	Buckets           []ProviderTokenHistogramBucket `json:"buckets"`
 	BucketSizeSeconds int64                          `json:"bucket_size_seconds"`
 	Providers         []string                       `json:"providers"`
@@ -2155,6 +2165,7 @@ type ProviderLatencyHistogramBucket struct {
 
 // ProviderLatencyHistogramResult represents the provider latency histogram query result
 type ProviderLatencyHistogramResult struct {
+	AggregateMetadata `gorm:"-"`
 	Buckets           []ProviderLatencyHistogramBucket `json:"buckets"`
 	BucketSizeSeconds int64                            `json:"bucket_size_seconds"`
 	Providers         []string                         `json:"providers"`
@@ -2178,6 +2189,7 @@ type ThroughputHistogramBucket struct {
 
 // ThroughputHistogramResult represents the throughput histogram query result
 type ThroughputHistogramResult struct {
+	AggregateMetadata `gorm:"-"`
 	Buckets           []ThroughputHistogramBucket `json:"buckets"`
 	BucketSizeSeconds int64                       `json:"bucket_size_seconds"`
 }
@@ -2197,6 +2209,7 @@ type ProviderThroughputHistogramBucket struct {
 
 // ProviderThroughputHistogramResult represents the provider throughput histogram query result
 type ProviderThroughputHistogramResult struct {
+	AggregateMetadata `gorm:"-"`
 	Buckets           []ProviderThroughputHistogramBucket `json:"buckets"`
 	BucketSizeSeconds int64                               `json:"bucket_size_seconds"`
 	Providers         []string                            `json:"providers"`
@@ -2261,6 +2274,7 @@ type DimensionCostHistogramBucket struct {
 
 // DimensionCostHistogramResult represents the dimension cost histogram query result
 type DimensionCostHistogramResult struct {
+	AggregateMetadata `gorm:"-"`
 	Buckets           []DimensionCostHistogramBucket `json:"buckets"`
 	BucketSizeSeconds int64                          `json:"bucket_size_seconds"`
 	Dimension         HistogramDimension             `json:"dimension"`
@@ -2282,6 +2296,7 @@ type DimensionTokenHistogramBucket struct {
 
 // DimensionTokenHistogramResult represents the dimension token histogram query result
 type DimensionTokenHistogramResult struct {
+	AggregateMetadata `gorm:"-"`
 	Buckets           []DimensionTokenHistogramBucket `json:"buckets"`
 	BucketSizeSeconds int64                           `json:"bucket_size_seconds"`
 	Dimension         HistogramDimension              `json:"dimension"`
@@ -2305,6 +2320,7 @@ type DimensionLatencyHistogramBucket struct {
 
 // DimensionLatencyHistogramResult represents the dimension latency histogram query result
 type DimensionLatencyHistogramResult struct {
+	AggregateMetadata `gorm:"-"`
 	Buckets           []DimensionLatencyHistogramBucket `json:"buckets"`
 	BucketSizeSeconds int64                             `json:"bucket_size_seconds"`
 	Dimension         HistogramDimension                `json:"dimension"`
@@ -2389,7 +2405,8 @@ type ModelRankingWithTrend struct {
 
 // ModelRankingResult is the response for the model rankings endpoint.
 type ModelRankingResult struct {
-	Rankings []ModelRankingWithTrend `json:"rankings"`
+	AggregateMetadata `gorm:"-"`
+	Rankings          []ModelRankingWithTrend `json:"rankings"`
 }
 
 // UserRankingEntry represents a single user's usage statistics.
@@ -2416,7 +2433,8 @@ type UserRankingWithTrend struct {
 
 // UserRankingResult is the response for the user rankings endpoint.
 type UserRankingResult struct {
-	Rankings []UserRankingWithTrend `json:"rankings"`
+	AggregateMetadata `gorm:"-"`
+	Rankings          []UserRankingWithTrend `json:"rankings"`
 }
 
 // RankingDimension is the column used for grouping in dimension rankings.
@@ -2487,8 +2505,9 @@ type DimensionRankingWithTrend struct {
 }
 
 type DimensionRankingResult struct {
-	Rankings  []DimensionRankingWithTrend `json:"rankings"`
-	Dimension RankingDimension            `json:"dimension"`
+	AggregateMetadata `gorm:"-"`
+	Rankings          []DimensionRankingWithTrend `json:"rankings"`
+	Dimension         RankingDimension            `json:"dimension"`
 	// TotalActualRequests / TotalAttributedRequests are set for every rollup
 	// dimension (team / business unit / customer / user / virtual key), and both
 	// include the "Unassigned" bucket that owner-less traffic falls into.
@@ -2515,6 +2534,7 @@ type DimensionRankingResult struct {
 // DashboardMeta describes the parameters the dashboard data was computed with,
 // so consumers can interpret the buckets and rankings without re-deriving them.
 type DashboardMeta struct {
+	AggregateMetadata `gorm:"-"`
 	GeneratedAt       time.Time  `json:"generated_at"`         // UTC time the response was assembled
 	BucketSizeSeconds int64      `json:"bucket_size_seconds"`  // Width of every histogram bucket, derived from the time range
 	StartTime         *time.Time `json:"start_time,omitempty"` // Resolved start of the queried range (from start_time/end_time or period)
