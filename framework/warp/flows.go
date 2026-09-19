@@ -25,6 +25,56 @@ const maxQueryMetrics = 4
 
 // ---------------------------------------------------------------- flow 1: logs
 
+// semanticSearchLogsTool finds requests by conversational meaning. It still
+// accepts the shared structured filters, but unlike query_logs the query is
+// embedded and compared with the stored user/assistant conversation vectors.
+// SemanticSearchToolName is the one tool that needs an embedding executor, so
+// it is the one tool the set can be missing.
+const SemanticSearchToolName = "semantic_search_logs"
+
+func semanticSearchLogsTool() Tool {
+	return Tool{
+		name: SemanticSearchToolName,
+		description: "Find logged conversations by meaning. Use this when the question is about what users discussed, wanted, reported, or what assistants answered, even when the wording differs. " +
+			"Use query_logs, count_logs, or query_metrics for exact fields, counts, latency, cost, and trends.",
+		schemaJSON: `{
+  "type": "object",
+  "properties": {
+    "query": {"type": "string", "maxLength": ` + strconv.Itoa(MaxSemanticQueryChars) + `, "description": "A natural-language description of the conversations to find."},
+    "filters": ` + FilterSchema + `,
+    "limit": {"type": "integer", "minimum": 1, "maximum": 25, "description": "Matches to return. Also capped by the configured semantic search limit."}
+  },
+  "required": ["query", "filters"]
+}`,
+		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
+			query, _ := args["query"].(string)
+			if deps.semantic == nil {
+				return nil, fmt.Errorf("semantic log search is not configured")
+			}
+			filters, err := filterArg(args, Now(), deps.scope)
+			if err != nil {
+				return nil, err
+			}
+			// Fallback 0 means "use the configured semantic limit", which is why
+			// absent stays 0 here rather than defaulting to a row count.
+			limit, err := intArg(args, "limit", 0, MaxLogRows)
+			if err != nil {
+				return nil, err
+			}
+			result, err := deps.semantic.Search(ctx, query, filters, limit)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{
+				"rows":      result.Rows,
+				"returned":  result.Returned,
+				"threshold": result.Threshold,
+				"scope":     scopeNote(filters, deps.scope),
+			}, nil
+		},
+	}
+}
+
 // queryLogsTool is flow 1: individual request logs, projected and row-capped.
 func queryLogsTool() Tool {
 	return Tool{

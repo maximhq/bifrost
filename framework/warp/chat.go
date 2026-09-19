@@ -62,8 +62,11 @@ type Turn struct {
 	messages     []schemas.ResponsesMessage
 	config       *schemas.WarpConfig
 	chat         ChatFunc
-	// logs is snapshotted with chat so the pair cannot drift mid-turn.
-	logs LogReader
+	// logs and semantic are snapshotted with chat so the three cannot drift
+	// mid-turn: the searcher holds its own reference to a reader, and a mismatched
+	// pair searches one backend and hydrates from another.
+	logs     LogReader
+	semantic *SemanticSearcher
 }
 
 // NewTurn validates a chat request and resolves the configuration and model
@@ -96,7 +99,7 @@ func (s *Service) NewTurn(ctx context.Context, request *ChatRequest, bodyBytes i
 	// One snapshot for both. Read separately, a turn could keep a usable chat
 	// func while the reader went nil underneath it, and the first log tool the
 	// model reached for dereferenced nil inside the agent.
-	chat, logs := s.turnDeps(ctx, config, conversationID)
+	chat, logs, semantic := s.turnDeps(ctx, config, conversationID)
 	if chat == nil {
 		return nil, ErrNoModelClient
 	}
@@ -118,6 +121,7 @@ func (s *Service) NewTurn(ctx context.Context, request *ChatRequest, bodyBytes i
 		config:         config,
 		chat:           chat,
 		logs:           logs,
+		semantic:       semantic,
 	}, nil
 }
 
@@ -141,7 +145,11 @@ func (s *Service) RunTurn(ctx context.Context, turn *Turn, sink func(Event) bool
 	// The scope is read off the snapshotted context, same as the row-level
 	// queryscope, so it is a fact about who asked rather than anything the
 	// request body could claim.
-	agent := NewAgent(turn.chat, s.costFuncFor(turn.config), turn.logs, ScopeFromContext(runCtx), turn.config)
+	// All three from the turn, not re-read here: chat, the reader and the
+	// searcher were snapshotted together at NewTurn, so a SetLogReader landing
+	// mid-turn cannot leave the agent searching one backend while it hydrates
+	// details from another - or hand it a nil reader it will dereference.
+	agent := NewAgent(turn.chat, s.costFuncFor(turn.config), turn.logs, ScopeFromContext(runCtx), turn.config, turn.semantic)
 	agent.questionsAsked = turn.questionsAsked
 	events := make(chan Event, 16)
 	go agent.Run(runCtx, turn.messages, events)

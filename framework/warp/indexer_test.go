@@ -22,8 +22,13 @@ type fakeWarpVectorStore struct {
 	embeddings map[string][]float32
 	// existing seeds namespaces the store already had, so a test can tell a
 	// namespace this save created from one it must not touch.
-	existing []string
-	deleted  []string
+	existing  []string
+	deleted   []string
+	nearest   []vectorstore.SearchResult
+	queries   []vectorstore.Query
+	limit     int64
+	limits    []int64
+	threshold float64
 	// listErr makes namespace discovery fail; addErr makes the next Add fail
 	// once. createCalls counts CreateNamespace calls, so a test can see whether
 	// provisioning ran per log or once per configuration.
@@ -68,8 +73,19 @@ func (f *fakeWarpVectorStore) GetChunks(context.Context, string, []string) ([]ve
 func (f *fakeWarpVectorStore) GetAll(context.Context, string, []vectorstore.Query, []string, *string, int64) ([]vectorstore.SearchResult, *string, error) {
 	return nil, nil, nil
 }
-func (f *fakeWarpVectorStore) GetNearest(context.Context, string, []float32, []vectorstore.Query, []string, float64, int64) ([]vectorstore.SearchResult, error) {
-	return nil, nil
+func (f *fakeWarpVectorStore) GetNearest(_ context.Context, _ string, _ []float32, queries []vectorstore.Query, _ []string, threshold float64, limit int64) ([]vectorstore.SearchResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.queries = queries
+	f.threshold = threshold
+	f.limit = limit
+	f.limits = append(f.limits, limit)
+	// A real vector store returns at most top-K. Returning the whole fixture
+	// regardless hid every bug that only shows up once the cap actually bites.
+	if limit >= 0 && int64(len(f.nearest)) > limit {
+		return append([]vectorstore.SearchResult(nil), f.nearest[:limit]...), nil
+	}
+	return f.nearest, nil
 }
 func (f *fakeWarpVectorStore) RequiresVectors() bool { return true }
 func (f *fakeWarpVectorStore) Add(_ context.Context, _ string, id string, embedding []float32, metadata map[string]interface{}) error {
