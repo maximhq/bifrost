@@ -16,3 +16,25 @@ func TestIncludeInCatalogAllowsOnlyDeclaredSDKBridgeMounts(t *testing.T) {
 		t.Fatal("undeclared SDK bridge was exposed")
 	}
 }
+
+func TestCollectOperationsClassifiesDestructiveOperations(t *testing.T) {
+	document := openAPIDocument{Paths: map[string]map[string]openAPIOperation{
+		"/items/{id}":          {"delete": {OperationID: "deleteItem"}},
+		"/batches/{id}/cancel": {"post": {OperationID: "cancelBatch"}},
+		"/items":               {"post": {OperationID: "createItem"}},
+	}}
+	operations, err := collectOperations(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destructive := map[string]bool{}
+	for _, operation := range operations {
+		destructive[operation.ID] = operation.Destructive
+	}
+	if !destructive["deleteItem"] || !destructive["cancelBatch"] {
+		t.Fatalf("destructive classifications = %#v", destructive)
+	}
+	if destructive["createItem"] {
+		t.Fatalf("createItem was classified as destructive: %#v", destructive)
+	}
+}
