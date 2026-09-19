@@ -78,7 +78,7 @@ export default function OtelView({ onDelete, isDeleting }: OtelViewProps) {
 				open={isTracingSheetOpen}
 				onClose={() => setIsTracingSheetOpen(false)}
 				pluginName="otel"
-				destination="the OTEL collector"
+				destination={t("connectors.tracing.destinationOtel")}
 			/>
 		</div>
 	);

@@ -232,7 +232,7 @@ function SkillActionsMenu({
 						size="icon"
 						className="h-8 w-8"
 						data-testid={`skill-actions-menu-${skill.name}`}
-						aria-label={`Actions for ${skill.name}`}
+						aria-label={t("skillsRepo.actionsForAria", { name: skill.name })}
 					>
 						<MoreHorizontal className="h-4 w-4" />
 					</Button>

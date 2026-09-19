@@ -9,6 +9,7 @@ import { ModelSelector } from "@/components/ui/modelSelector";
 import { ProviderSelector } from "@/components/ui/providerSelector";
 import { Textarea } from "@/components/ui/textarea";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ValueEditorProps, ValueEditorType } from "react-querybuilder";
 
 type CELValueEditorContext = {
@@ -23,6 +24,7 @@ export function ValueEditor({
 	type,
 	context,
 }: ValueEditorProps & { context?: CELValueEditorContext }) {
+	const { t } = useTranslation("observability");
 	// Compute all conditions upfront before any early returns
 	const isArrayOperator = operator === "in" || operator === "notIn";
 	const isRegexOperator = operator === "matches";
@@ -117,7 +119,7 @@ export function ValueEditor({
 					multiple
 					value={selectedModels}
 					onChange={handleMultiModelChange}
-					placeholder="Select models..."
+					placeholder={t("celBuilder.selectModels")}
 					allowCustomModel
 					className="!min-h-9 w-[360px]"
 				/>
@@ -142,7 +144,7 @@ export function ValueEditor({
 			<ModelSelector
 				value={valueToUse || ""}
 				onChange={handleOnChange}
-				placeholder="Search for a model..."
+				placeholder={t("celBuilder.searchModel")}
 				allowCustomModel
 				className="border-input w-[360px]"
 			/>
@@ -204,7 +206,7 @@ export function ValueEditor({
 					value={selectedValues}
 					onValueChange={handleMultiselectChange}
 					options={options}
-					placeholder="Select providers..."
+					placeholder={t("celBuilder.selectProviders")}
 					className="h-9 w-[360px]"
 					noPortal
 				/>
@@ -226,7 +228,7 @@ export function ValueEditor({
 				value={value || null}
 				onValueChange={(newValue) => handleOnChange(newValue ?? "")}
 				options={options}
-				placeholder={fieldData.placeholder || "Select..."}
+				placeholder={fieldData.placeholder || t("celBuilder.selectPlaceholder")}
 				className="h-9 w-[360px]"
 				noPortal
 			/>
@@ -241,7 +243,7 @@ export function ValueEditor({
 				type="text"
 				value={keyValuePair.value}
 				onChange={(e) => handleKeyValueValueChange(e.target.value)}
-				placeholder="Value"
+				placeholder={t("celBuilder.value")}
 				className="w-[180px]"
 				data-testid="cel-builder-keyvalue-value-input"
 			/>
@@ -249,10 +251,10 @@ export function ValueEditor({
 	}
 
 	const placeholder = isArrayOperator
-		? "Enter comma-separated values or JSON array"
+		? t("celBuilder.commaSeparated")
 		: isRegexOperator
 			? "e.g., .* (any), openai|anthropic (multiple), ^gpt.* (prefix)"
-			: fieldData?.placeholder || "Enter value...";
+			: fieldData?.placeholder || t("celBuilder.enterValue");
 
 	// Use textarea for array inputs
 	if (isArrayOperator) {

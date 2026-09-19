@@ -31,7 +31,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { ChevronLeft, ChevronRight, History, MoreHorizontal, PencilIcon, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { parseAsArrayOf, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { WebhookSecretDialog, WebhookSecretReveal } from "../dialogs/webhookSecretDialog";
 import { WebhookDetailsSheet } from "./webhookDetailsSheet";
@@ -120,7 +120,7 @@ function WebhookActionsMenu({
 						onViewDeliveries(endpoint);
 					}}
 				>
-					<History className="h-4 w-4" /> View deliveries
+					<History className="h-4 w-4" /> {t("webhooks.viewDeliveries")}
 				</DropdownMenuItem>
 				{hasUpdateAccess && (
 					<DropdownMenuItem
@@ -444,8 +444,11 @@ export default function WebhooksView() {
 					{totalCount > 0 && (
 						<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 							<div className="text-muted-foreground flex items-center gap-2">
-								{(offset + 1).toLocaleString()}-{Math.min(offset + PAGE_SIZE, totalCount).toLocaleString()} of {totalCount.toLocaleString()}{" "}
-								entries
+								{t("webhooks.pagination.entries", {
+									from: (offset + 1).toLocaleString(),
+									to: Math.min(offset + PAGE_SIZE, totalCount).toLocaleString(),
+									total: totalCount.toLocaleString(),
+								})}
 							</div>
 							<div className="flex items-center gap-2">
 								<Button
@@ -454,14 +457,14 @@ export default function WebhooksView() {
 									onClick={() => setUrlState({ offset: Math.max(0, offset - PAGE_SIZE) || null })}
 									disabled={offset === 0}
 									data-testid="webhooks-pagination-prev-btn"
-									aria-label="Previous page"
+									aria-label={t("webhooks.pagination.previousPage")}
 								>
 									<ChevronLeft className="size-3" />
 								</Button>
 								<div className="flex items-center gap-1">
-									<span>Page</span>
+									<span>{t("webhooks.pagination.page")}</span>
 									<span>{Math.floor(offset / PAGE_SIZE) + 1}</span>
-									<span>of {Math.ceil(totalCount / PAGE_SIZE)}</span>
+									<span>{t("webhooks.pagination.ofPages", { total: Math.ceil(totalCount / PAGE_SIZE) })}</span>
 								</div>
 								<Button
 									variant="ghost"
@@ -469,7 +472,7 @@ export default function WebhooksView() {
 									onClick={() => setUrlState({ offset: offset + PAGE_SIZE })}
 									disabled={offset + PAGE_SIZE >= totalCount}
 									data-testid="webhooks-pagination-next-btn"
-									aria-label="Next page"
+									aria-label={t("webhooks.pagination.nextPage")}
 								>
 									<ChevronRight className="size-3" />
 								</Button>
@@ -504,8 +507,7 @@ export default function WebhooksView() {
 					<AlertDialogHeader>
 						<AlertDialogTitle>{t("webhooks.deleteTitle")}</AlertDialogTitle>
 						<AlertDialogDescription>
-							Are you sure you want to delete <b>{deleteTarget?.name}</b>? Pending deliveries to it will be dropped and jobs referencing it
-							will be rejected. This action cannot be undone.
+							<Trans t={t} i18nKey="webhooks.deleteDescription" values={{ name: deleteTarget?.name }} components={{ b0: <b /> }} />
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
@@ -516,7 +518,7 @@ export default function WebhooksView() {
 							disabled={isDeleting}
 							data-testid="webhook-delete-confirm-btn"
 						>
-							Delete
+							{tCommon("delete")}
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>
@@ -527,8 +529,7 @@ export default function WebhooksView() {
 					<AlertDialogHeader>
 						<AlertDialogTitle>{t("webhooks.rotateTitle")}</AlertDialogTitle>
 						<AlertDialogDescription>
-							The current secret for <b>{rotateTarget?.name}</b> stops working immediately and deliveries are signed with the new one from
-							now on. Update your receiver right after rotating.
+							<Trans t={t} i18nKey="webhooks.rotateDescription" values={{ name: rotateTarget?.name }} components={{ b0: <b /> }} />
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>

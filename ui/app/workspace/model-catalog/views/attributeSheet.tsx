@@ -21,7 +21,9 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
 import { ExternalLink, Plus, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import i18n from "@/lib/i18n";
 import { fieldLabelByKey, PricingFieldKey, pricingFieldUnit } from "../../custom-pricing/overrides/pricingFields";
 import OverriddenPrice from "./overriddenPrice";
 
@@ -30,15 +32,15 @@ const DEFAULT_PRICING_SOURCE_URL = "https://getbifrost.ai/datasheet";
 // Scopes whose overrides can't be resolved from the model catalog alone — they
 // only apply to requests carrying the matching virtual key, user, or provider
 // key, so they are listed here but never change the displayed price.
-const SCOPE_CAVEATS: Partial<Record<PricingOverrideScopeKind, string>> = {
-	provider_key: "Applies only to requests routed through the matching provider key.",
-	virtual_key: "Applies only to requests using the matching virtual key.",
-	virtual_key_provider: "Applies only to requests using the matching virtual key and provider.",
-	virtual_key_provider_key: "Applies only to requests using the matching virtual key and provider key.",
-	user: "Applies only to requests from the matching user.",
-	user_provider: "Applies only to requests from the matching user and provider.",
-	user_provider_key: "Applies only to requests from the matching user and provider key.",
-};
+const SCOPE_CAVEAT_KINDS = new Set<PricingOverrideScopeKind>([
+	"provider_key",
+	"virtual_key",
+	"virtual_key_provider",
+	"virtual_key_provider_key",
+	"user",
+	"user_provider",
+	"user_provider_key",
+]);
 
 interface AttributeSheetProps {
 	model: ModelDetails;
@@ -84,8 +86,6 @@ function getPricingSourceUrl(configuredUrl: string | undefined, modelName: strin
 	return url.toString();
 }
 
-const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-
 // formatPeakHours renders a peak-hours schedule as a compact one-liner, e.g.
 // "Mon-Fri 01:00-04:00, 06:00-10:00 UTC".
 // The patch arrives as parsed API JSON, so the TypeScript type is a claim
@@ -101,7 +101,7 @@ function formatPeakHours(value: PeakHoursSchedule): string {
 			if (!w || typeof w !== "object") return null;
 			const days = (Array.isArray(w.days) ? w.days : [])
 				.filter((d) => typeof d === "number" && d >= 0 && d <= 6)
-				.map((d) => WEEKDAY_LABELS[d])
+				.map((d) => i18n.t(`modelCatalog.weekday.${d}`, { ns: "models" }))
 				.join(",");
 			const start = typeof w.start === "string" ? w.start : "?";
 			const end = typeof w.end === "string" ? w.end : "?";
@@ -136,6 +136,8 @@ function formatPatchValue(key: string, value: unknown): string {
 }
 
 export default function AttributeSheet({ model, overrides, onClose }: AttributeSheetProps) {
+	const { t } = useTranslation("models");
+	const { t: tc } = useTranslation("common");
 	const [isOpen, setIsOpen] = useState(true);
 	const hasUpdateAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
@@ -175,7 +177,7 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 
 	const handleSubmit = async () => {
 		if (!hasUpdateAccess) {
-			toast.error("You don't have permission to perform this action");
+			toast.error(t("modelCatalog.noPermission"));
 			return;
 		}
 
@@ -184,18 +186,18 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 		const cleaned = extraRows.map((r) => ({ key: r.key.trim(), value: r.value })).filter((r) => r.key !== "" || r.value !== "");
 		const missingKey = cleaned.find((r) => r.key === "");
 		if (missingKey) {
-			toast.error("Attribute rows must have a key");
+			toast.error(t("modelCatalog.rowsNeedKey"));
 			return;
 		}
 		const dupKey = cleaned.find((r, i) => cleaned.findIndex((other) => other.key === r.key) !== i);
 		if (dupKey) {
-			toast.error(`Duplicate attribute key: ${dupKey.key}`);
+			toast.error(t("modelCatalog.duplicateKey", { key: dupKey.key }));
 			return;
 		}
 		// "description" is the special-cased field above — disallow it as an extra row.
 		const reservedClash = cleaned.find((r) => r.key === "description");
 		if (reservedClash) {
-			toast.error("Use the Description field instead of a 'description' attribute row");
+			toast.error(t("modelCatalog.descriptionReserved"));
 			return;
 		}
 
@@ -212,7 +214,7 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 					additional_attributes: Object.keys(attributes).length > 0 ? attributes : undefined,
 				},
 			]).unwrap();
-			toast.success("Attributes saved");
+			toast.success(t("modelCatalog.attributesSaved"));
 			handleClose();
 		} catch (err) {
 			toast.error(getErrorMessage(err));
@@ -232,10 +234,9 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 				data-testid="model-catalog-attribute-sheet"
 			>
 				<SheetHeader className="flex flex-col items-start p-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8">
-					<SheetTitle>Edit Model Attributes</SheetTitle>
+					<SheetTitle>{t("modelCatalog.editAttributes")}</SheetTitle>
 					<SheetDescription>
-						Update the description and other attributes for this model. These attributes are stored on the pricing row and preserved across
-						the pricing sync.
+						{t("modelCatalog.sheetDescription")}
 					</SheetDescription>
 				</SheetHeader>
 
@@ -244,14 +245,14 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 						{/* Read-only provider / model header */}
 						<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
 							<div>
-								<Label className="text-sm font-medium">Provider</Label>
+								<Label className="text-sm font-medium">{t("modelCatalog.provider")}</Label>
 								<div className="bg-muted/30 mt-2 flex items-center gap-2 rounded-sm border px-3 py-2 text-sm">
 									<RenderProviderIcon provider={model.provider as KnownProvider} size="sm" className="h-4 w-4" />
 									<span>{ProviderLabels[model.provider as ProviderName] || model.provider}</span>
 								</div>
 							</div>
 							<div>
-								<Label className="text-sm font-medium">Model</Label>
+								<Label className="text-sm font-medium">{t("modelCatalog.model")}</Label>
 								<div className="bg-muted/30 mt-2 rounded-sm border px-3 py-2 font-mono text-sm">{model.name}</div>
 							</div>
 						</div>
@@ -261,7 +262,7 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 						{/* Pricing */}
 						<div className="space-y-3">
 							<div className="flex items-center justify-between gap-3">
-								<Label className="text-sm font-medium">Pricing</Label>
+								<Label className="text-sm font-medium">{t("modelCatalog.pricing")}</Label>
 								{canOpenPricingSource ? (
 									<a
 										href={pricingSourceUrl}
@@ -270,7 +271,7 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 										className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs"
 										data-testid="model-catalog-pricing-source-link"
 									>
-										Source
+										{t("modelCatalog.source")}
 										<ExternalLink className="h-3 w-3" />
 									</a>
 								) : (
@@ -281,7 +282,7 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 							</div>
 							<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
 								<div className="bg-muted/30 rounded-sm border px-3 py-2">
-									<p className="text-muted-foreground text-xs">Input</p>
+									<p className="text-muted-foreground text-xs">{t("modelCatalog.input")}</p>
 									<p className="mt-1 font-mono text-sm" data-testid="model-catalog-input-cost">
 										<OverriddenPrice
 											variant="full"
@@ -292,7 +293,7 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 									</p>
 								</div>
 								<div className="bg-muted/30 rounded-sm border px-3 py-2">
-									<p className="text-muted-foreground text-xs">Output</p>
+									<p className="text-muted-foreground text-xs">{t("modelCatalog.output")}</p>
 									<p className="mt-1 font-mono text-sm" data-testid="model-catalog-output-cost">
 										<OverriddenPrice
 											variant="full"
@@ -303,7 +304,7 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 									</p>
 								</div>
 								<div className="bg-muted/30 rounded-sm border px-3 py-2">
-									<p className="text-muted-foreground text-xs">Cache Write</p>
+									<p className="text-muted-foreground text-xs">{t("modelCatalog.cacheWrite")}</p>
 									<p className="mt-1 font-mono text-sm" data-testid="model-catalog-cache-write-cost">
 										<OverriddenPrice
 											variant="full"
@@ -314,7 +315,7 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 									</p>
 								</div>
 								<div className="bg-muted/30 rounded-sm border px-3 py-2">
-									<p className="text-muted-foreground text-xs">Cache Read</p>
+									<p className="text-muted-foreground text-xs">{t("modelCatalog.cacheRead")}</p>
 									<p className="mt-1 font-mono text-sm" data-testid="model-catalog-cache-read-cost">
 										<OverriddenPrice
 											variant="full"
@@ -334,17 +335,19 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 								{/* Pricing overrides */}
 								<div className="space-y-3" data-testid="model-catalog-pricing-overrides">
 									<div className="flex items-center justify-between gap-3">
-										<Label className="text-sm font-medium">Pricing overrides</Label>
+										<Label className="text-sm font-medium">{t("modelCatalog.pricingOverrides")}</Label>
 										<Link
 											to="/workspace/custom-pricing/overrides"
 											className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs"
 										>
-											Manage
+											{t("modelCatalog.manage")}
 											<ExternalLink className="h-3 w-3" />
 										</Link>
 									</div>
 									{matchingOverrides.map((override) => {
-										const caveat = SCOPE_CAVEATS[override.scope_kind];
+										const caveat = SCOPE_CAVEAT_KINDS.has(override.scope_kind)
+											? t(`modelCatalog.scopeCaveat.${override.scope_kind}`)
+											: undefined;
 										const patchEntries = Object.entries(override.patch).filter(([, value]) => value !== undefined && value !== null);
 										return (
 											<div
@@ -355,10 +358,10 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 												<div className="flex flex-wrap items-center gap-2">
 													<span className="text-sm font-medium">{override.name || override.id}</span>
 													<Badge variant="secondary">{override.scope_kind}</Badge>
-													{override.id === model.applied_override_id && <Badge variant="outline">Applied</Badge>}
+													{override.id === model.applied_override_id && <Badge variant="outline">{t("modelCatalog.applied")}</Badge>}
 												</div>
 												<p className="text-muted-foreground font-mono text-xs">
-													{override.match_type === "wildcard" ? "Matches" : "Exact"} {override.pattern}
+													{override.match_type === "wildcard" ? t("modelCatalog.matches") : t("modelCatalog.exact")} {override.pattern}
 												</p>
 												{caveat && <p className="text-muted-foreground text-xs">{caveat}</p>}
 												{override.request_types && override.request_types.length > 0 && (
@@ -391,13 +394,13 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 
 						{/* Description */}
 						<div>
-							<Label className="text-sm font-medium">Description</Label>
+							<Label className="text-sm font-medium">{t("modelCatalog.description")}</Label>
 							<Textarea
 								className="mt-2"
 								value={description}
 								onChange={(e) => setDescription(e.target.value)}
 								rows={4}
-								placeholder="A short description of this model, shown anywhere additional_attributes.description is consumed."
+								placeholder={t("modelCatalog.descriptionPlaceholder")}
 								data-testid="model-catalog-description-textarea"
 							/>
 						</div>
@@ -407,15 +410,15 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 						{/* Other attributes */}
 						<div className="space-y-3">
 							<div className="flex items-center justify-between">
-								<Label className="text-sm font-medium">Other Attributes</Label>
+								<Label className="text-sm font-medium">{t("modelCatalog.otherAttributes")}</Label>
 								<Button type="button" variant="outline" size="sm" onClick={handleAddRow} data-testid="model-catalog-add-attribute-row">
 									<Plus className="mr-1 h-3 w-3" />
-									Add
+									{t("modelCatalog.add")}
 								</Button>
 							</div>
 							{extraRows.length === 0 ? (
 								<p className="text-muted-foreground text-xs">
-									No additional attributes. Add a key-value pair for anything beyond description.
+									{t("modelCatalog.noExtraAttributes")}
 								</p>
 							) : (
 								<div className="space-y-2">
@@ -453,9 +456,9 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 
 					<div className="bg-card sticky bottom-0 shrink-0 border-t px-4 py-4 md:px-8">
 						<div className="flex items-center justify-end gap-3">
-							{!hasUpdateAccess && <p className="text-destructive text-sm">You don't have permission to perform this action</p>}
+							{!hasUpdateAccess && <p className="text-destructive text-sm">{t("modelCatalog.noPermission")}</p>}
 							<Button type="button" variant="outline" onClick={handleClose} data-testid="model-catalog-attribute-cancel">
-								Cancel
+								{tc("cancel")}
 							</Button>
 							<Button
 								type="button"
@@ -463,7 +466,7 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 								disabled={isLoading || !isDirty || !hasUpdateAccess}
 								data-testid="model-catalog-attribute-submit"
 							>
-								{isLoading ? "Saving..." : "Save Changes"}
+								{isLoading ? t("modelCatalog.saving") : t("modelCatalog.saveChanges")}
 							</Button>
 						</div>
 					</div>

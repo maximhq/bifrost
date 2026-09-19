@@ -7,6 +7,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { Info, TriangleAlert } from "lucide-react";
 import type { Control } from "react-hook-form";
 import { useWatch } from "react-hook-form";
+import { useTranslation } from "react-i18next";
 
 interface TokenExchangeScopesFieldProps {
 	variant: "input" | "textarea";
@@ -105,6 +106,7 @@ export function TokenExchangeFields({
 	scopes,
 	gridClassName = "grid grid-cols-1 gap-4 md:grid-cols-2",
 }: TokenExchangeFieldsProps) {
+	const { t } = useTranslation("mcp");
 	const useIdPCredentials = useWatch({ control, name: "token_exchange.use_idp_credentials" });
 	const credentialFieldsDisabled = disabled || !!useIdPCredentials;
 
@@ -146,7 +148,7 @@ export function TokenExchangeFields({
 												aria-checked={!checked}
 												data-testid={`${useIdPCredentialsTestId}-dedicated`}
 											>
-												Dedicated application
+												{t("registry.tokenExchange.dedicatedApplication")}
 											</Button>
 											<Button
 												type="button"
@@ -163,7 +165,7 @@ export function TokenExchangeFields({
 												aria-checked={checked}
 												data-testid={`${useIdPCredentialsTestId}-idp`}
 											>
-												Identity provider application
+												{t("registry.tokenExchange.idpApplication")}
 											</Button>
 										</div>
 									</FormControl>
@@ -272,7 +274,7 @@ export function TokenExchangeFields({
 										field.onChange(e);
 										onAudienceTouched?.();
 									}}
-									placeholder="api://my-mcp-server"
+									placeholder={t("registry.tokenExchange.audiencePlaceholder")}
 									data-testid={audienceTestId}
 								/>
 							</FormControl>
@@ -303,7 +305,7 @@ export function TokenExchangeFields({
 									{...field}
 									value={field.value ?? ""}
 									disabled={disabled}
-									placeholder="https://your-domain.okta.com/oauth2/your-auth-server-id"
+									placeholder={t("registry.tokenExchange.authServerUrlPlaceholder")}
 									data-testid={authServerUrlTestId}
 								/>
 							</FormControl>
@@ -321,7 +323,7 @@ export function TokenExchangeFields({
 								value={scopes.value}
 								disabled={scopes.disabled ?? disabled}
 								onChange={(e) => scopes.onChange(e.target.value)}
-								placeholder="jira.read, jira.write, offline_access"
+								placeholder={t("registry.tokenExchange.scopesPlaceholder")}
 								data-testid={scopes.testId}
 							/>
 						</FormControl>
@@ -338,7 +340,7 @@ export function TokenExchangeFields({
 						<Textarea
 							aria-labelledby="mcp-token-exchange-scopes-label"
 							className="h-20"
-							placeholder="jira.read, jira.write, offline_access"
+							placeholder={t("registry.tokenExchange.scopesPlaceholder")}
 							value={scopes.value}
 							disabled={scopes.disabled ?? disabled}
 							onChange={(e) => scopes.onChange(e.target.value)}
