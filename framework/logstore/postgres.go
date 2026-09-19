@@ -13,6 +13,9 @@ import (
 
 type PostgresConfig struct {
 	postgresconn.Config
+	// MatViewSnapshotMerge opts into durable hourly history. Once initialized,
+	// the database marker keeps every replica on the history-preserving path.
+	MatViewSnapshotMerge bool `json:"matview_snapshot_merge,omitempty"`
 	// MatViewRefreshInterval controls how often the materialized views backing
 	// /api/logs/stats and the dashboard histograms are refreshed. Accepts any
 	// Go duration string ("30s", "5m", "1h"). Empty / unset uses the default
@@ -227,7 +230,8 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 	}
 	logger.Info("logstore: runtime connection pool ready")
 	refreshInterval := resolveMatViewRefreshInterval(config.MatViewRefreshInterval, logger)
-	d := &RDBLogStore{db: db, logger: logger, matViewMaintenanceDisabled: refreshInterval <= 0}
+	d := &RDBLogStore{db: db, logger: logger, matViewMaintenanceDisabled: refreshInterval <= 0,
+		hourlyArchiveRequested: config.MatViewSnapshotMerge}
 
 	// Run all index builds sequentially in a single goroutine to prevent
 	// deadlocks from concurrent CREATE INDEX CONCURRENTLY on the same table.
@@ -275,7 +279,7 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 		if db.Dialector.Name() != "postgres" || refreshInterval <= 0 {
 			return
 		}
-		if err := ensureMatViews(context.Background(), db); err != nil {
+		if err := ensureMatViews(context.Background(), db, config.MatViewSnapshotMerge); err != nil {
 			logger.Warn(fmt.Sprintf("logstore: matview creation failed: %s (dashboard queries will use raw tables)", err))
 			return
 		}
