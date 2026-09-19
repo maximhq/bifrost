@@ -11,7 +11,6 @@ export default function guardrailsProviderView() {
 				className="mx-auto min-h-[80vh]"
 				icon={<Construction className="h-[5.5rem] w-[5.5rem]" strokeWidth={1} />}
 				title={t("guardrails.unlockTitle")}
-				description={t("guardrails.unlockDescription")}
 				readmeLink="https://docs.getbifrost.ai/enterprise/guardrails"
 			/>
 		</div>

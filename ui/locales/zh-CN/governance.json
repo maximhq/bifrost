@@ -5,6 +5,7 @@
 		"bookDemo": "预约演示",
 		"bookDemoAria": "预约演示（在新标签页打开 Calendly）"
 	},
+	"unlockSharedDescription": "此功能属于 Bifrost 企业版许可证。我们很想了解你的使用场景，以及如何更好地帮助你。",
 	"customers": {
 		"title": "客户",
 		"description": "管理拥有独立团队、预算与访问控制的客户账户。",
@@ -355,35 +356,50 @@
 	},
 	"alerting": {
 		"channelsUnlockTitle": "解锁告警渠道以主动监控",
-		"channelsUnlockDescription": "此功能属于 Bifrost 企业版许可。配置 Slack、PagerDuty、OpsGenie 与 webhook 告警，提前应对预算与性能问题。",
+		"channelsUnlockDescription": "此功能属于 Bifrost 企业版许可证。配置 Slack、PagerDuty、OpsGenie 与 webhook 告警，提前应对预算与性能问题。",
 		"rulesUnlockTitle": "解锁告警规则以主动监控",
-		"rulesUnlockDescription": "此功能属于 Bifrost 企业版许可。定义告警规则，在预算、延迟与降级问题演变成事故前及时发现。",
+		"rulesUnlockDescription": "此功能属于 Bifrost 企业版许可证。定义告警规则，在预算、延迟与降级问题演变成事故前及时发现。",
 		"historyUnlockTitle": "解锁告警历史以主动监控",
-		"historyUnlockDescription": "此功能属于 Bifrost 企业版许可。在同一处查看告警投递结果、失败与解决事件。"
+		"historyUnlockDescription": "此功能属于 Bifrost 企业版许可证。在同一处查看告警投递结果、失败与解决事件。"
 	},
 	"guardrails": {
-		"unlockTitle": "解锁护栏以提升安全",
-		"unlockDescription": "此功能属于 Bifrost 企业版许可。我们希望了解你的用例，以及我们能如何提供帮助。"
+		"unlockTitle": "解锁护栏以提升安全"
 	},
 	"auditLogs": {
-		"unlockTitle": "解锁审计日志以提升合规",
-		"unlockDescription": "此功能属于 Bifrost 企业版许可。我们希望了解你的用例，以及我们能如何提供帮助。"
+		"unlockTitle": "解锁审计日志以提升合规"
 	},
 	"rbac": {
-		"unlockTitle": "解锁角色与权限以提升安全",
-		"unlockDescription": "此功能属于 Bifrost 企业版许可。我们希望了解你的用例，以及我们能如何提供帮助。"
+		"unlockTitle": "解锁角色与权限以提升安全"
+	},
+	"projects": {
+		"unlockTitle": "解锁项目以限定访问与支出",
+		"unlockDescription": "此功能属于 Bifrost 企业版许可证。项目由请求主动选择：它在调用方已有权限之外再授予访问，并决定花费记入谁的账本。"
+	},
+	"userRankings": {
+		"unlockTitle": "解锁用户排行以获得更好可见性"
+	},
+	"promptDeployments": {
+		"unlockTitle": "解锁提示词部署，以便更好地做提示词版本管理与 A/B 测试。"
+	},
+	"connectorsUnlock": {
+		"splunk": "解锁原生 Splunk 数据接入以提升可观测性",
+		"pubsub": "解锁 Google Cloud Pub/Sub 追踪流式传输",
+		"datadog": "解锁原生 Datadog 数据接入以提升可观测性",
+		"bigquery": "解锁原生 BigQuery 数据接入以进行分析",
+		"kafka": "解锁原生 Kafka 日志流式传输以实现实时可观测性",
+		"kafkaDescription": "此功能属于 Bifrost 企业版许可证。将已完成的请求追踪以 JSON 流式发送到 Kafka topic，用于实时分析、告警与下游处理。"
 	},
 	"accessProfiles": {
 		"unlockTitle": "解锁访问配置以提升管控",
-		"unlockDescription": "此功能属于 Bifrost 企业版许可。创建访问配置以控制对资源的访问。"
+		"unlockDescription": "此功能属于 Bifrost 企业版许可证。创建访问配置以控制对资源的访问。"
 	},
 	"users": {
 		"unlockTitle": "解锁用户与用户治理",
-		"unlockDescription": "管理用户、设置每用户预算与速率限制，并以企业级治理控制访问。此功能属于 Bifrost 企业版许可。"
+		"unlockDescription": "管理用户、设置每用户预算与速率限制，并以企业级治理控制访问。此功能属于 Bifrost 企业版许可证。"
 	},
 	"businessUnits": {
 		"unlockTitle": "解锁业务单元与高级治理",
-		"unlockDescription": "通过企业级治理管理用户与业务单元。此功能属于 Bifrost 企业版许可。"
+		"unlockDescription": "通过企业级治理管理用户与业务单元。此功能属于 Bifrost 企业版许可证。"
 	},
 	"sheet": {
 		"saving": "保存中…",

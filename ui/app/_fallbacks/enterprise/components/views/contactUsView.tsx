@@ -7,7 +7,7 @@ interface Props {
 	className?: string;
 	icon: React.ReactNode;
 	title: string;
-	description: string;
+	description?: string;
 	readmeLink: string;
 	align?: "middle" | "top";
 	testIdPrefix?: string;
@@ -15,13 +15,14 @@ interface Props {
 
 export default function ContactUsView({ icon, title, description, className, readmeLink, align = "middle", testIdPrefix }: Props) {
 	const { t } = useTranslation("governance");
+	const body = description ?? t("unlockSharedDescription");
 
 	return (
 		<div className={cn("flex flex-col items-center gap-4 text-center", align === "middle" ? "justify-center" : "justify-start", className)}>
 			<div className="text-muted-foreground">{icon}</div>
 			<div className="flex flex-col gap-1">
 				<h1 className="text-muted-foreground text-xl font-medium">{title}</h1>
-				<div className="text-muted-foreground mt-2 max-w-[600px] text-sm font-normal">{description}</div>
+				<div className="text-muted-foreground mt-2 max-w-[600px] text-sm font-normal">{body}</div>
 				<div className="mx-auto flex flex-row items-center gap-2">
 					<Button
 						variant="outline"
