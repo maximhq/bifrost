@@ -885,7 +885,9 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 			}
 		}
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityProvider, Action: ConfigActionUpsert}, txDB)
+	for _, providerName := range sortedProviderNames(providers) {
+		s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityProvider, Action: ConfigActionUpsert, Provider: string(providerName)}, txDB)
+	}
 	return nil
 }
 
@@ -6085,7 +6087,12 @@ func (s *RDBConfigStore) SyncRoutingRules(ctx context.Context, toAdd []tables.Ta
 	})); err != nil {
 		return err
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityRoutingRule, Action: ConfigActionUpsert}, database)
+	for i := range toAdd {
+		s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityRoutingRule, Action: ConfigActionUpsert, ID: toAdd[i].ID}, database)
+	}
+	for i := range toUpdate {
+		s.notifyChange(ctx, ConfigChangeEvent{Entity: ConfigEntityRoutingRule, Action: ConfigActionUpsert, ID: toUpdate[i].ID}, database)
+	}
 	return nil
 }
 
