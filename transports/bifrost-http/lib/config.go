@@ -44,6 +44,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/maxim"
+	"github.com/maximhq/bifrost/plugins/modelcatalogresolver"
 	"github.com/maximhq/bifrost/plugins/otel"
 	"github.com/maximhq/bifrost/plugins/prompts"
 	"github.com/maximhq/bifrost/plugins/routing"
@@ -121,25 +122,27 @@ func getWeight(w *float64) float64 {
 	return *w
 }
 
-// BuiltinPluginNames is the canonical list of built-in plugin names.
-// It is the single source of truth — update here when adding or removing a built-in plugin.
+// builtinPluginNames is the canonical ordered list of user-configurable plugins in
+// the builtin placement group. The index determines execution order, so update it
+// carefully when adding, removing, or reordering a built-in plugin.
 var builtinPluginNames = []string{
 	telemetry.PluginName,
 	prompts.PluginName,
 	logging.PluginName,
 	governance.PluginName,
+	routing.PluginName,
 	otel.PluginName,
 	semanticcache.PluginName,
 	compat.PluginName,
 	maxim.PluginName,
-	routing.PluginName,
 }
 
+// GetBuiltinPluginNames returns the canonical names of user-configurable built-in plugins.
 func GetBuiltinPluginNames() []string {
 	return slices.Clone(builtinPluginNames)
 }
 
-// IsBuiltinPlugin checks if a plugin is a built-in plugin
+// IsBuiltinPlugin checks if a plugin is a user-configurable built-in plugin.
 func IsBuiltinPlugin(name string) bool {
 	return slices.Contains(builtinPluginNames, name)
 }
@@ -148,6 +151,24 @@ func IsBuiltinPlugin(name string) bool {
 type pluginOrderInfo struct {
 	Placement schemas.PluginPlacement
 	Order     int
+}
+
+// getFixedPluginOrderInfo returns loader-owned ordering metadata that callers and
+// persisted configuration must not override.
+func getFixedPluginOrderInfo(name string) (pluginOrderInfo, bool) {
+	if builtinIndex := slices.Index(builtinPluginNames, name); builtinIndex >= 0 {
+		return pluginOrderInfo{
+			Placement: schemas.PluginPlacementBuiltin,
+			Order:     builtinIndex + 1,
+		}, true
+	}
+	if name == modelcatalogresolver.PluginName {
+		return pluginOrderInfo{
+			Placement: schemas.PluginPlacementPostBuiltin,
+			Order:     math.MaxInt,
+		}, true
+	}
+	return pluginOrderInfo{}, false
 }
 
 type ServerConfig struct {
@@ -6315,14 +6336,20 @@ func (c *Config) UnregisterPlugin(name string) error {
 	}
 }
 
-// SetPluginOrderInfo stores ordering metadata for a plugin.
-// If placement is nil, defaults to "post_builtin". If order is nil, defaults to 0.
+// SetPluginOrderInfo stores ordering metadata for a plugin. Loader-managed plugins
+// always use their fixed placement and order. For custom plugins, placement defaults
+// to "post_builtin" and order defaults to 0.
 func (c *Config) SetPluginOrderInfo(name string, placement *schemas.PluginPlacement, order *int) {
 	c.pluginsMu.Lock()
 	defer c.pluginsMu.Unlock()
 
 	if c.pluginOrderMap == nil {
 		c.pluginOrderMap = make(map[string]pluginOrderInfo)
+	}
+
+	if fixedOrderInfo, ok := getFixedPluginOrderInfo(name); ok {
+		c.pluginOrderMap[name] = fixedOrderInfo
+		return
 	}
 
 	p := schemas.PluginPlacementPostBuiltin
