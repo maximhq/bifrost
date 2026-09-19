@@ -375,19 +375,13 @@ func (p *LoggerPlugin) updateLogEntry(
 // It receives the already-inserted entry directly (no DB re-read needed).
 func (p *LoggerPlugin) makePostWriteCallback(enrichFn func(*logstore.Log)) func(entry *logstore.Log) {
 	return func(entry *logstore.Log) {
-		p.mu.Lock()
-		callback := p.logCallback
-		p.mu.Unlock()
-		if callback == nil {
-			return
-		}
 		if entry == nil {
 			return
 		}
 		if enrichFn != nil {
 			enrichFn(entry)
 		}
-		callback(p.ctx, entry)
+		p.notifyLogCallbacks(p.ctx, entry)
 	}
 }
 
