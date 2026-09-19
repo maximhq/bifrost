@@ -604,3 +604,144 @@ func TestApplyCustomLabels(t *testing.T) {
 		})
 	}
 }
+
+// gaugeTotal sums every series of the named gauge family.
+func gaugeTotal(t *testing.T, reg *prometheus.Registry, name string) float64 {
+	t.Helper()
+	fams, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	for _, mf := range fams {
+		if mf.GetName() != name {
+			continue
+		}
+		var sum float64
+		for _, m := range mf.GetMetric() {
+			sum += m.GetGauge().GetValue()
+		}
+		return sum
+	}
+	return 0
+}
+
+// streamChatResponse builds a minimal stream chunk response with provider/model
+// so PostLLMHook does not take the empty-label early return.
+func streamChatResponse() *schemas.BifrostResponse {
+	resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+	}}
+	resp.PopulateExtraFields(schemas.ChatCompletionStreamRequest, schemas.OpenAI, "gpt-4o-mini", "gpt-4o-mini")
+	return resp
+}
+
+// TestActiveRequestsStreamEndIndicatorDoesNotDoubleDecrement locks the fix for
+// #7005: StreamEndIndicator is sticky on the shared request context while
+// PostLLMHook runs per chunk. Without a one-shot Dec latch, every post-hook
+// after the terminal flag is set would decrement bifrost_active_requests and
+// drive the gauge negative (client disconnect with queued chunks; streaming
+// retry that left the flag set).
+func TestActiveRequestsStreamEndIndicatorDoesNotDoubleDecrement(t *testing.T) {
+	p := newTestPlugin(t)
+	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionStreamRequest}
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(time.Minute))
+
+	if _, _, err := p.PreLLMHook(ctx, req); err != nil {
+		t.Fatalf("PreLLMHook: %v", err)
+	}
+	if got := gaugeTotal(t, p.registry, "bifrost_active_requests"); got != 1 {
+		t.Fatalf("after PreLLMHook gauge = %v, want 1", got)
+	}
+
+	// Intermediate chunk: no StreamEndIndicator → gauge stays elevated.
+	if _, _, err := p.PostLLMHook(ctx, streamChatResponse(), nil); err != nil {
+		t.Fatalf("PostLLMHook intermediate: %v", err)
+	}
+	if got := gaugeTotal(t, p.registry, "bifrost_active_requests"); got != 1 {
+		t.Fatalf("after intermediate chunk gauge = %v, want 1", got)
+	}
+
+	// Terminal path (e.g. HandleStreamCancellation) sets the sticky flag.
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	if _, _, err := p.PostLLMHook(ctx, streamChatResponse(), nil); err != nil {
+		t.Fatalf("PostLLMHook terminal: %v", err)
+	}
+	if got := gaugeTotal(t, p.registry, "bifrost_active_requests"); got != 0 {
+		t.Fatalf("after first terminal PostLLMHook gauge = %v, want 0", got)
+	}
+
+	// Queued chunks after cancel (or a retry that left the flag set) still see
+	// StreamEndIndicator=true. Dec must not fire again.
+	for i := 0; i < 5; i++ {
+		if _, _, err := p.PostLLMHook(ctx, streamChatResponse(), nil); err != nil {
+			t.Fatalf("PostLLMHook sticky #%d: %v", i, err)
+		}
+	}
+	if got := gaugeTotal(t, p.registry, "bifrost_active_requests"); got != 0 {
+		t.Fatalf("after sticky StreamEndIndicator PostLLMHooks gauge = %v, want 0 (must not go negative)", got)
+	}
+}
+
+// TestActiveRequestsLatchResetsOnFallbackPreLLMHook ensures each fallback
+// attempt (which re-runs PreLLMHook and Inc's again) can Dec exactly once.
+func TestActiveRequestsLatchResetsOnFallbackPreLLMHook(t *testing.T) {
+	p := newTestPlugin(t)
+	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest}
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(time.Minute))
+
+	if _, _, err := p.PreLLMHook(ctx, req); err != nil {
+		t.Fatalf("PreLLMHook primary: %v", err)
+	}
+	primaryResp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+	}}
+	primaryResp.PopulateExtraFields(schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o-mini", "gpt-4o-mini")
+	if _, _, err := p.PostLLMHook(ctx, primaryResp, nil); err != nil {
+		t.Fatalf("PostLLMHook primary: %v", err)
+	}
+	if got := gaugeTotal(t, p.registry, "bifrost_active_requests"); got != 0 {
+		t.Fatalf("after primary attempt gauge = %v, want 0", got)
+	}
+
+	// Fallback attempt: PreLLMHook runs again.
+	if _, _, err := p.PreLLMHook(ctx, req); err != nil {
+		t.Fatalf("PreLLMHook fallback: %v", err)
+	}
+	if got := gaugeTotal(t, p.registry, "bifrost_active_requests"); got != 1 {
+		t.Fatalf("after fallback PreLLMHook gauge = %v, want 1", got)
+	}
+	fallbackResp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+	}}
+	fallbackResp.PopulateExtraFields(schemas.ChatCompletionRequest, schemas.Anthropic, "claude-haiku", "claude-haiku")
+	if _, _, err := p.PostLLMHook(ctx, fallbackResp, nil); err != nil {
+		t.Fatalf("PostLLMHook fallback: %v", err)
+	}
+	if got := gaugeTotal(t, p.registry, "bifrost_active_requests"); got != 0 {
+		t.Fatalf("after fallback PostLLMHook gauge = %v, want 0", got)
+	}
+}
+
+// TestActiveRequestsDecrementsWhenStartTimeMissing covers the secondary leak in
+// #7005: if startTime is absent, PostLLMHook used to return before Dec'ing.
+func TestActiveRequestsDecrementsWhenStartTimeMissing(t *testing.T) {
+	p := newTestPlugin(t)
+	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest}
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(time.Minute))
+
+	if _, _, err := p.PreLLMHook(ctx, req); err != nil {
+		t.Fatalf("PreLLMHook: %v", err)
+	}
+	ctx.ClearValue(startTimeKey)
+
+	resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+	}}
+	resp.PopulateExtraFields(schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o-mini", "gpt-4o-mini")
+	if _, _, err := p.PostLLMHook(ctx, resp, nil); err != nil {
+		t.Fatalf("PostLLMHook: %v", err)
+	}
+	if got := gaugeTotal(t, p.registry, "bifrost_active_requests"); got != 0 {
+		t.Fatalf("after PostLLMHook without startTime gauge = %v, want 0", got)
+	}
+}
