@@ -20,10 +20,16 @@ func hourlyRawSelect(predicate string) string {
 // hourlyMergeSelect replaces every dimension row in selected hours, including
 // hours now empty, while retaining all other snapshot rows verbatim.
 func hourlyMergeSelect() string {
+	// Drive raw reads from selected hours. The lateral boundary prevents the
+	// planner from turning a tiny refresh manifest into a scan of all raw logs.
+	// OFFSET 0 preserves the parameterized range scan when flattening subqueries.
+	raw := strings.Replace(hourlyRawSelect("true"), "FROM logs\n", `FROM bifrost_hourly_run r
+	 CROSS JOIN LATERAL (SELECT * FROM logs
+	 WHERE timestamp >= r.hour AND timestamp < r.hour + interval '1 hour' OFFSET 0) logs
+`, 1)
 	return `SELECT s.* FROM mv_logs_hourly_snapshot s
 	 WHERE NOT EXISTS (SELECT 1 FROM bifrost_hourly_run r WHERE r.hour=s.hour)
-	 UNION ALL ` + hourlyRawSelect(`EXISTS (SELECT 1 FROM bifrost_hourly_run r
-	 WHERE logs.timestamp >= r.hour AND logs.timestamp < r.hour + interval '1 hour')`)
+	 UNION ALL ` + raw
 }
 
 // installHourlySnapshot creates an independently typed snapshot reader. Its

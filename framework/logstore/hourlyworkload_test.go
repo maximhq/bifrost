@@ -2,10 +2,12 @@ package logstore
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 // TestHourlyArchiveRefreshWorkload compares full and incremental aggregation on
@@ -40,6 +42,41 @@ func TestHourlyArchiveRefreshWorkload(t *testing.T) {
 	require.NoError(t, db.Raw(`SELECT COUNT(*) FROM logs l JOIN bifrost_hourly_run r
 	 ON l.timestamp>=r.hour AND l.timestamp<r.hour+interval '1 hour'`).Scan(&selectedRows).Error)
 	require.Less(t, selectedRows, int64(1000))
+	visited := hourlyPlanRawRows(t, db)
+	require.LessOrEqual(t, visited, selectedRows, "refresh must not scan unrelated raw hours")
 	t.Logf("100000 rows: batched ingestion=%s (%.0f rows/sec), full refresh=%s, snapshot+merge=%s, selected raw rows=%d",
 		insertTime, 100000/insertTime.Seconds(), fullTime, incrementalTime, selectedRows)
+}
+
+// hourlyPlanRawRows counts raw tuples visited, including rejected rows, in the
+// actual refresh SELECT plan. It detects full-log scans hidden by a small output.
+func hourlyPlanRawRows(t *testing.T, db *gorm.DB) int64 {
+	t.Helper()
+	var raw string
+	require.NoError(t, db.Raw("EXPLAIN (ANALYZE, FORMAT JSON) "+hourlyMergeSelect()).Row().Scan(&raw))
+	var plan []struct{ Plan hourlyPlanNode }
+	require.NoError(t, json.Unmarshal([]byte(raw), &plan))
+	require.Len(t, plan, 1)
+	return plan[0].Plan.rawRows()
+}
+
+// hourlyPlanNode retains the PostgreSQL EXPLAIN fields needed for scan accounting.
+type hourlyPlanNode struct {
+	Relation string           `json:"Relation Name"`
+	Rows     float64          `json:"Actual Rows"`
+	Removed  float64          `json:"Rows Removed by Filter"`
+	Loops    float64          `json:"Actual Loops"`
+	Plans    []hourlyPlanNode `json:"Plans"`
+}
+
+// rawRows totals actual raw-table visits across scan nodes and execution loops.
+func (p hourlyPlanNode) rawRows() int64 {
+	var total int64
+	if p.Relation == "logs" {
+		total = int64((p.Rows + p.Removed) * p.Loops)
+	}
+	for _, child := range p.Plans {
+		total += child.rawRows()
+	}
+	return total
 }
