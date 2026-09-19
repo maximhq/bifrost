@@ -3,6 +3,7 @@ package grant
 import (
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -31,6 +32,15 @@ const (
 	PermitVirtualKey PermitType = "vk"
 	// PermitAccessProfile marks permits whose access comes from a profile attached to a caller.
 	PermitAccessProfile PermitType = "access_profile"
+	// PermitTeamAccessProfile, PermitBusinessUnitAccessProfile and PermitCustomerAccessProfile mark
+	// permits whose access comes from a profile attached to a team, business unit or customer. Such a
+	// profile applies to everything under the entity - its members' requests and the keys it owns -
+	// and joins the caller's other permits under union, so it widens what may be reached. One kind
+	// each rather than one shared kind, because a refusal has to say whose profile it named: "your
+	// team's access profile" and "your business unit's" are different answers.
+	PermitTeamAccessProfile         PermitType = "team_access_profile"
+	PermitBusinessUnitAccessProfile PermitType = "business_unit_access_profile"
+	PermitCustomerAccessProfile     PermitType = "customer_access_profile"
 	// PermitProject marks permits whose access comes from a project a request names. A project is
 	// not something the caller belongs to but something the request opts into, so it grants
 	// alongside whatever the caller already holds rather than instead of it. PrettyString needs no
@@ -39,20 +49,48 @@ const (
 	PermitProject PermitType = "project"
 )
 
+// permitLabels is what a refusal calls each permit kind. Seeded with the kinds this module
+// resolves; every other kind is registered by whoever resolves it - see RegisterPermitLabel.
+var (
+	permitLabelsMu sync.RWMutex
+	permitLabels   = map[PermitType]string{
+		PermitVirtualKey: "virtual key",
+		// PermitProject needs no entry: the identifier already reads as prose, which is the only
+		// reason the others have one.
+	}
+)
+
+// RegisterPermitLabel records what a refusal should call one permit kind. Intended to be called
+// once at process startup, beside the registration of where that kind's limits live; safe to call
+// concurrently. Blank input is ignored.
+//
+// Registered rather than listed here because a kind's name belongs to whoever resolves it: the
+// access profile a user holds, and the profiles a team, business unit or customer holds, are
+// enterprise concepts, and this module would otherwise carry wording for permits it can never see.
+func RegisterPermitLabel(permitType PermitType, label string) {
+	name := strings.TrimSpace(string(permitType))
+	text := strings.TrimSpace(label)
+	if name == "" || text == "" {
+		return
+	}
+	permitLabelsMu.Lock()
+	permitLabels[PermitType(name)] = text
+	permitLabelsMu.Unlock()
+}
+
 // PrettyString names the permit kind as a refusal should say it. Refusals are read by whoever made
 // the request, so "your virtual key has expired" is the answer and "vk" is not.
 //
-// A kind it does not know renders as itself. That is not a good message, but it is better than an
+// A kind nobody registered renders as itself. That is not a good message, but it is better than an
 // empty one: a refusal that loses its subject cannot be acted on at all.
 func (t PermitType) PrettyString() string {
-	switch t {
-	case PermitVirtualKey:
-		return "virtual key"
-	case PermitAccessProfile:
-		return "access profile"
-	default:
-		return string(t)
+	permitLabelsMu.RLock()
+	label, ok := permitLabels[t]
+	permitLabelsMu.RUnlock()
+	if ok {
+		return label
 	}
+	return string(t)
 }
 
 // Permit is the one implementation of schemas.Permit.
