@@ -64,5 +64,7 @@
 		"virtualMcp": "虚拟 MCP",
 		"virtualMcps": "虚拟 MCP",
 		"video": "视频"
-	}
+	},
+	"aboutField": "关于{{field}}",
+	"thisField": "此字段"
 }

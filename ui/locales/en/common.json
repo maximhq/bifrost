@@ -64,5 +64,7 @@
 		"virtualMcp": "Virtual MCP",
 		"virtualMcps": "Virtual MCPs",
 		"video": "Video"
-	}
+	},
+	"aboutField": "About {{field}}",
+	"thisField": "this field"
 }

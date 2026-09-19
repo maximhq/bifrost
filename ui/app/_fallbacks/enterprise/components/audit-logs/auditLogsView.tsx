@@ -11,7 +11,6 @@ export default function AuditLogsView() {
 				className="mx-auto min-h-[80vh]"
 				icon={<ScrollText className="h-[5.5rem] w-[5.5rem]" strokeWidth={1} />}
 				title={t("auditLogs.unlockTitle")}
-				description={t("auditLogs.unlockDescription")}
 				readmeLink="https://docs.getbifrost.ai/enterprise/audit-logs"
 			/>
 		</div>

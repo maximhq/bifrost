@@ -10,7 +10,6 @@ export default function ClusterPage() {
 				className="mx-auto min-h-[80vh]"
 				icon={<Layers className="h-[5.5rem] w-[5.5rem]" strokeWidth={1} />}
 				title={t("enterprise.clusterTitle")}
-				description={t("enterprise.sharedDescription")}
 				readmeLink="https://docs.getbifrost.ai/enterprise/clustering"
 			/>
 		</div>

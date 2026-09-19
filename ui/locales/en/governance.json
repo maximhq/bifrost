@@ -5,6 +5,7 @@
 		"bookDemo": "Book a demo",
 		"bookDemoAria": "Book a demo (opens Calendly in new tab)"
 	},
+	"unlockSharedDescription": "This feature is a part of the Bifrost enterprise license. We would love to know more about your use case and how we can help you.",
 	"customers": {
 		"title": "Customers",
 		"description": "Manage customer accounts with their own teams, budgets, and access controls.",
@@ -362,16 +363,31 @@
 		"historyUnlockDescription": "This feature is a part of the Bifrost enterprise license. Review alert delivery outcomes, failures, and resolution events in one place."
 	},
 	"guardrails": {
-		"unlockTitle": "Unlock guardrails for better security",
-		"unlockDescription": "This feature is a part of the Bifrost enterprise license. We would love to know more about your use case and how we can help you."
+		"unlockTitle": "Unlock guardrails for better security"
 	},
 	"auditLogs": {
-		"unlockTitle": "Unlock audit logs for better compliance",
-		"unlockDescription": "This feature is a part of the Bifrost enterprise license. We would love to know more about your use case and how we can help you."
+		"unlockTitle": "Unlock audit logs for better compliance"
 	},
 	"rbac": {
-		"unlockTitle": "Unlock roles and permissions for better security",
-		"unlockDescription": "This feature is a part of the Bifrost enterprise license. We would love to know more about your use case and how we can help you."
+		"unlockTitle": "Unlock roles and permissions for better security"
+	},
+	"projects": {
+		"unlockTitle": "Unlock projects for scoped access and spend",
+		"unlockDescription": "This feature is a part of the Bifrost enterprise license. A project is something a request opts into: it grants access alongside what the caller already holds, and decides whose ledger the spend lands on."
+	},
+	"userRankings": {
+		"unlockTitle": "Unlock user rankings for better visibility"
+	},
+	"promptDeployments": {
+		"unlockTitle": "Unlock prompt deployments for better prompt versioning and A/B testing."
+	},
+	"connectorsUnlock": {
+		"splunk": "Unlock native Splunk data ingestion for better observability",
+		"pubsub": "Unlock Google Cloud Pub/Sub trace streaming",
+		"datadog": "Unlock native Datadog data ingestion for better observability",
+		"bigquery": "Unlock native BigQuery data ingestion for analytics",
+		"kafka": "Unlock native Kafka log streaming for real-time observability",
+		"kafkaDescription": "This feature is a part of the Bifrost enterprise license. Stream completed request traces as JSON to a Kafka topic for real-time analytics, alerting, and downstream processing."
 	},
 	"accessProfiles": {
 		"unlockTitle": "Unlock access profiles for better performance",

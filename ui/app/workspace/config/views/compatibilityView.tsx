@@ -146,11 +146,9 @@ export default function CompatibilityView() {
 				<div className="flex items-center justify-between space-x-2">
 					<div className="space-y-0.5">
 						<label htmlFor="compat-azure-deepseek" className="text-sm font-medium">
-                            Use Chat Completion APIs for Azure Deepseek models
+							{t("compatibility.azureDeepseek")}
 						</label>
-						<p className="text-muted-foreground text-sm">
-                            Use Chat Completion APIs for Claude Code, Codex, etc. for Azure Deepseek models.
-						</p>
+						<p className="text-muted-foreground text-sm">{t("compatibility.azureDeepseekHelp")}</p>
 					</div>
 					<Switch
 						id="compat-azure-deepseek"

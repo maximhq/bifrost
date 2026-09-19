@@ -11,7 +11,6 @@ export default function SCIMView() {
 					className="mx-auto w-full max-w-lg"
 					icon={<BookUser className="h-[5.5rem] w-[5.5rem]" strokeWidth={1} />}
 					title={t("enterprise.scimTitle")}
-					description={t("enterprise.sharedDescription")}
 					readmeLink="https://docs.getbifrost.ai/enterprise/advanced-governance"
 				/>
 			</div>

@@ -8,7 +8,6 @@ export default function InventoryView() {
 		<EdgeControlFallbackView
 			icon={<ShieldCheck className="h-[5.5rem] w-[5.5rem]" strokeWidth={1} />}
 			title={t("enterprise.edgeInventoryTitle")}
-			description={t("enterprise.sharedDescription")}
 			readmeLink="https://docs.getbifrost.ai/edge/admin-approvals"
 			testIdPrefix="edge-inventory"
 		/>

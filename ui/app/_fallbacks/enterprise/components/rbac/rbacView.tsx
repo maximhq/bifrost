@@ -11,7 +11,6 @@ export default function RBACView() {
 				className="mx-auto min-h-[80vh]"
 				icon={<UserRoundCheck className="h-[5.5rem] w-[5.5rem]" strokeWidth={1} />}
 				title={t("rbac.unlockTitle")}
-				description={t("rbac.unlockDescription")}
 				readmeLink="https://docs.getbifrost.ai/enterprise/advanced-governance"
 			/>
 		</div>
