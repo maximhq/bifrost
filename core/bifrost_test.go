@@ -1214,12 +1214,13 @@ func (m *mockKVStore) Delete(key string) (bool, error) {
 	return false, nil
 }
 
-// Test selectKeyFromProviderForModelWithPool with session stickiness
+// Test selectKeyFromProviderForModelWithPool with session stickiness: nothing is bound until a
+// request is served, and a bound key then comes back alone with rotation off.
 func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 	kvStore := newMockKVStore()
 	account := NewMockAccount()
 	account.AddProvider(schemas.OpenAI, 5, 1000)
-	// Use 2 keys so we hit the keySelector path (single key returns early)
+	// Use 2 keys so the pool can rotate (single key returns early)
 	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
 		{ID: "key-a", Name: "Key A", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
 		{ID: "key-b", Name: "Key B", Value: *schemas.NewSecretVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
@@ -1245,40 +1246,44 @@ func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	bfCtx.SetValue(schemas.BifrostContextKeySessionID, "sess-123")
 
-	// First call: cache miss, keySelector runs, key stored; returns single-element pool (canRotate=false)
+	// First request: nothing bound, so the whole pool comes back with rotation allowed and the
+	// pool builder neither selects nor writes.
 	keys1, canRotate1, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
 	if err != nil {
 		t.Fatalf("first selectKeyFromProviderForModelWithPool: %v", err)
 	}
-	if canRotate1 {
-		t.Error("first call: canRotate should be false for session-sticky request")
+	if !canRotate1 || len(keys1) != 2 {
+		t.Fatalf("first call: got %d keys canRotate=%v, want the full pool with rotation", len(keys1), canRotate1)
 	}
-	if len(keys1) != 1 || keys1[0].ID != "key-a" {
-		t.Errorf("first call: expected [key-a], got %v", keys1)
+	if keySelectorCalls != 0 {
+		t.Errorf("first call: the pool builder should not select, got %d keySelector calls", keySelectorCalls)
 	}
-	if keySelectorCalls != 1 {
-		t.Errorf("first call: expected 1 keySelector call, got %d", keySelectorCalls)
-	}
-
-	// Verify kvstore was written
 	kvKey := sessionStateKey(bfCtx, SessionStateKindKey, string(schemas.OpenAI), "gpt-4")
-	if raw, err := kvStore.Get(kvKey); err != nil || raw != "key-a" {
-		t.Errorf("kvstore after first call: expected key-a, got %v (err=%v)", raw, err)
+	if _, err := kvStore.Get(kvKey); err == nil {
+		t.Error("session bound before anything served it")
 	}
 
-	// Second call: cache hit, same key returned, keySelector NOT called
+	// The request is served by key-a, which binds the session to it.
+	bfCtx.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-a")
+	route := schemas.Route{Provider: schemas.OpenAI, Model: "gpt-4"}
+	bifrost.observeSessionOutcome(bfCtx, route, &route, false, nil)
+	if raw, err := kvStore.Get(kvKey); err != nil || raw != "key-a" {
+		t.Errorf("kvstore after the request served: expected key-a, got %v (err=%v)", raw, err)
+	}
+
+	// Second request: the bound key comes back alone, rotation off, selector not consulted.
 	keys2, canRotate2, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
 	if err != nil {
 		t.Fatalf("second selectKeyFromProviderForModelWithPool: %v", err)
 	}
 	if canRotate2 {
-		t.Error("second call: canRotate should be false for session-sticky request")
+		t.Error("second call: canRotate should be false for a session-bound key")
 	}
 	if len(keys2) != 1 || keys2[0].ID != "key-a" {
-		t.Errorf("second call: expected [key-a] (sticky), got %v", keys2)
+		t.Errorf("second call: expected [key-a] (bound), got %v", keys2)
 	}
-	if keySelectorCalls != 1 {
-		t.Errorf("second call: keySelector should not run (cache hit), got %d calls", keySelectorCalls)
+	if keySelectorCalls != 0 {
+		t.Errorf("second call: keySelector should not run, got %d calls", keySelectorCalls)
 	}
 }
 
@@ -1336,8 +1341,8 @@ func TestSelectKeyFromProviderForModel_NoStickinessWithoutSessionID(t *testing.T
 	}
 }
 
-// TestSelectKeyFromProviderForModel_SessionStickinessNoRotation verifies that when a session ID
-// is present, rate-limit retries reuse the sticky key rather than rotating to another key.
+// TestSelectKeyFromProviderForModel_SessionStickinessNoRotation verifies that once a session
+// is bound to a key, rate-limit retries reuse that key rather than rotating to another.
 func TestSelectKeyFromProviderForModel_SessionStickinessNoRotation(t *testing.T) {
 	kvStore := newMockKVStore()
 	account := NewMockAccount()
@@ -1365,6 +1370,11 @@ func TestSelectKeyFromProviderForModel_SessionStickinessNoRotation(t *testing.T)
 	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	bfCtx.SetValue(schemas.BifrostContextKeySessionID, "sess-sticky")
 	bfCtx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+
+	// An earlier request served by key-a bound the session to it.
+	bfCtx.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-a")
+	route := schemas.Route{Provider: schemas.OpenAI, Model: "gpt-4"}
+	bifrost.observeSessionOutcome(bfCtx, route, &route, false, nil)
 
 	config := createTestConfig(3, 0, 0)
 	logger := NewDefaultLogger(schemas.LogLevelError)
