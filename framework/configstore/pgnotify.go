@@ -17,12 +17,45 @@ import (
 // PGNotifyChannel is the PostgreSQL LISTEN/NOTIFY channel used for config sync.
 const PGNotifyChannel = "bifrost_config_sync"
 
+// ConfigEntity identifies the kind of row a ConfigChangeEvent describes.
+type ConfigEntity string
+
+const (
+	ConfigEntityFullReload       ConfigEntity = "full_reload"
+	ConfigEntityProvider         ConfigEntity = "provider"
+	ConfigEntityProviderKey      ConfigEntity = "provider_key"
+	ConfigEntityVirtualKey       ConfigEntity = "virtual_key"
+	ConfigEntityVKProviderConfig ConfigEntity = "vk_provider_config"
+	ConfigEntityVKMCPConfig      ConfigEntity = "vk_mcp_config"
+	ConfigEntityClientConfig     ConfigEntity = "client_config"
+	ConfigEntityMCPClient        ConfigEntity = "mcp_client"
+	ConfigEntityPlugin           ConfigEntity = "plugin"
+	ConfigEntityRoutingRule      ConfigEntity = "routing_rule"
+	ConfigEntityTeam             ConfigEntity = "team"
+	ConfigEntityCustomer         ConfigEntity = "customer"
+	ConfigEntityBudget           ConfigEntity = "budget"
+	ConfigEntityModelConfig      ConfigEntity = "model_config"
+	ConfigEntityPricingOverride  ConfigEntity = "pricing_override"
+	ConfigEntityVirtualMCP       ConfigEntity = "virtual_mcp"
+	ConfigEntityWebhookEndpoint  ConfigEntity = "webhook_endpoint"
+)
+
+// ConfigAction identifies what happened to the entity a ConfigChangeEvent describes.
+type ConfigAction string
+
+const (
+	ConfigActionUpsert ConfigAction = "upsert"
+	ConfigActionDelete ConfigAction = "delete"
+	// ConfigActionReload is only used with ConfigEntityFullReload.
+	ConfigActionReload ConfigAction = "reload"
+)
+
 // ConfigChangeEvent describes a config mutation that other pods should know about.
 type ConfigChangeEvent struct {
-	Entity   string `json:"entity"`             // "provider", "provider_key", "virtual_key", etc.
-	Action   string `json:"action"`             // "upsert" or "delete"
-	ID       string `json:"id,omitempty"`       // entity ID (empty for bulk ops)
-	Provider string `json:"provider,omitempty"` // for provider-scoped entities
+	Entity   ConfigEntity `json:"entity"`
+	Action   ConfigAction `json:"action"`
+	ID       string       `json:"id,omitempty"`       // entity ID (empty for bulk ops)
+	Provider string       `json:"provider,omitempty"` // for provider-scoped entities
 }
 
 // ConfigChangeHandler is the callback invoked when a config change event is received.
@@ -150,7 +183,7 @@ func (l *pgListener) listenOnce(ctx context.Context, handler ConfigChangeHandler
 	l.logger.Info("[pgnotify] listener connected, waiting for config change events")
 
 	// After (re)connect, trigger a full reload so we pick up anything missed.
-	handler(ctx, ConfigChangeEvent{Entity: "full_reload", Action: "reload"})
+	handler(ctx, ConfigChangeEvent{Entity: ConfigEntityFullReload, Action: ConfigActionReload})
 
 	// Reset backoff on successful connection.
 	for {
