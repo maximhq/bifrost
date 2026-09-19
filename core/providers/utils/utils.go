@@ -2443,17 +2443,18 @@ func PassthroughJSONBody(fasthttpReq *fasthttp.Request, body []byte) []byte {
 // NewUnsupportedOperationError creates a standardized error for unsupported operations.
 // This helper reduces code duplication across providers that don't support certain operations.
 func NewUnsupportedOperationError(requestType schemas.RequestType, providerName schemas.ModelProvider) *schemas.BifrostError {
-	return &schemas.BifrostError{
+	err := &schemas.BifrostError{
 		IsBifrostError: false,
 		Error: &schemas.ErrorField{
 			Message: fmt.Sprintf("%s is not supported by %s provider", requestType, providerName),
 			Code:    schemas.Ptr("unsupported_operation"),
 		},
 		ExtraFields: schemas.BifrostErrorExtraFields{
-			Provider:    providerName,
 			RequestType: requestType,
 		},
 	}
+	err.PopulateRoutingInfo(schemas.RoutingInfo{Provider: providerName})
+	return err
 }
 
 // CheckOperationAllowed enforces per-op gating using schemas.Operation.

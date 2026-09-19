@@ -1,0 +1,80 @@
+---
+title: "Zro"
+description: "Zro API integration guide — OpenAI-compatible chat completions with streaming and tool calling"
+icon: "z"
+---
+
+## Overview
+
+Zro is an **OpenAI-compatible inference provider** for frontier open models. Bifrost uses Zro's chat-completions API directly and supports non-streaming and streaming requests, tool calling, and model discovery.
+
+### Supported Operations
+
+| Operation | Non-streaming | Streaming | Endpoint |
+| --- | --- | --- | --- |
+| Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
+| Responses API | ✅ | ✅ | Mapped to chat completions |
+| List Models | ✅ | — | `/v1/models` |
+| Text Completions | ❌ | ❌ | — |
+| Embeddings | ❌ | — | — |
+| Speech, transcription, files, and batch | ❌ | ❌ | — |
+
+## Setup & Configuration
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**.
+2. Click **Add New Provider** and choose **Zro**.
+3. Add a Zro API key.
+4. Set **Allowed Models** to **All Models**, or add a specific allowlist.
+5. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "zro": {
+      "keys": [
+        {
+          "name": "zro-main",
+          "value": "env.ZRO_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+
+Refer to [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+
+</Tab>
+</Tabs>
+
+## Chat Completions
+
+Use a Zro model identifier such as `zro/deepseek-v4-flash-0731`.
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "zro/deepseek-v4-flash-0731",
+    "messages": [{"role": "user", "content": "Hello"}]
+  }'
+```
+
+For the full request parameter reference, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+## Notes
+
+- Bifrost sends a bearer token from the configured Zro key.
+- The native integration defaults to `https://zro.moonmath.ai/v1`.
+- Use `network_config.base_url` only when pointing to a compatible Zro deployment or proxy.

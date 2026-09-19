@@ -406,6 +406,33 @@
   ],
   "item": [
     {
+      "name": "77. Zro custom streaming path (PR #7047)",
+      "description": "Fixture: configure custom provider zro-path-regression with base_provider_type=zro, base_url=https://zro.moonmath.ai (no /v1), and request_path_overrides.chat_completion_stream=/v1/chat/completions. Supply its Zro key through gateway configuration. Set zroPathRegressionReady=1 only after configuring the fixture. Before the fix the stream hits /chat/completions and fails; after it reaches /v1/chat/completions. Constructor/header isolation is covered in Go because mutation of a retained Go config map has no HTTP equivalent.",
+      "item": [
+        {
+          "name": "zro/deepseek-v4-flash-0731 custom streaming override - #7047",
+          "event": [
+            {"listen":"prerequest","script":{"type":"text/javascript","exec":["if (pm.variables.get('zroPathRegressionReady') !== '1') { pm.execution.skipRequest(); }"]}},
+            {"listen":"test","script":{"type":"text/javascript","exec":[
+              "if ([401,403,429,500,502,503,504].indexOf(pm.response.code) !== -1) { return; }",
+              "pm.test('custom Zro stream reaches overridden endpoint', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "  pm.expect(pm.response.text()).to.include('data: ');",
+              "  pm.expect(pm.response.text()).to.include('[DONE]');",
+              "  pm.expect(pm.response.text()).not.to.include('unsupported_operation');",
+              "});"
+            ]}}
+          ],
+          "request": {
+            "method":"POST",
+            "header":[{"key":"Content-Type","value":"application/json"}],
+            "url":"{{baseUrl}}/v1/chat/completions",
+            "body":{"mode":"raw","raw":"{\"model\":\"zro-path-regression/deepseek-v4-flash-0731\",\"messages\":[{\"role\":\"user\",\"content\":\"Say hello.\"}],\"stream\":true,\"max_tokens\":32}"}
+          }
+        }
+      ]
+    },
+    {
       "name": "1. Native Bifrost API",
       "description": "Bifrost's own OpenAI-shaped surface. Use a `provider/model` string in the `model` field to route to any configured backend.",
       "item": [
