@@ -53,13 +53,25 @@ func newPGNotifier(dbFn func() *gorm.DB, logger schemas.Logger) *pgNotifier {
 // notify sends a config change event via pg_notify. Errors are logged and
 // swallowed — a failed notification degrades sync latency but must never
 // fail the originating write.
-func (n *pgNotifier) notify(ctx context.Context, event ConfigChangeEvent) {
+//
+// When tx is supplied, pg_notify runs on that same transaction/connection
+// instead of the ambient pool. This matters: Postgres only delivers a
+// NOTIFY to listeners after the transaction that issued it commits (and
+// never delivers it at all if that transaction rolls back). Running the
+// notify on a different connection than the write loses that guarantee —
+// the notify could reach listeners before the write is even visible, or
+// after the write has been rolled back.
+func (n *pgNotifier) notify(ctx context.Context, event ConfigChangeEvent, tx ...*gorm.DB) {
 	payload, err := json.Marshal(event)
 	if err != nil {
 		n.logger.Warn("[pgnotify] failed to marshal event: %v", err)
 		return
 	}
-	if err := n.db().WithContext(ctx).Exec("SELECT pg_notify(?, ?)", PGNotifyChannel, string(payload)).Error; err != nil {
+	db := n.db()
+	if len(tx) > 0 && tx[0] != nil {
+		db = tx[0]
+	}
+	if err := db.WithContext(ctx).Exec("SELECT pg_notify(?, ?)", PGNotifyChannel, string(payload)).Error; err != nil {
 		n.logger.Warn("[pgnotify] failed to send notification: %v", err)
 	}
 }
@@ -157,10 +169,12 @@ func (l *pgListener) listenOnce(ctx context.Context, handler ConfigChangeHandler
 
 // notifyChange is the helper called by RDBConfigStore CRUD methods.
 // It is a no-op when the store has no notifier (SQLite, or postgres before
-// the notifier is wired).
-func (s *RDBConfigStore) notifyChange(ctx context.Context, event ConfigChangeEvent) {
+// the notifier is wired). When the caller is writing inside a transaction,
+// it MUST pass that same tx here so the notify only becomes visible to
+// listeners once the transaction commits (see notify's doc comment).
+func (s *RDBConfigStore) notifyChange(ctx context.Context, event ConfigChangeEvent, tx ...*gorm.DB) {
 	if s.notifier != nil {
-		s.notifier.notify(ctx, event)
+		s.notifier.notify(ctx, event, tx...)
 	}
 }
 

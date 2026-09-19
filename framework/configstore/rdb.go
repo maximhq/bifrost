@@ -884,7 +884,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 			}
 		}
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: "provider", Action: "upsert"})
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "provider", Action: "upsert"}, txDB)
 	return nil
 }
 
@@ -937,7 +937,6 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 		}); err != nil {
 			return err
 		}
-		s.notifyChange(ctx, ConfigChangeEvent{Entity: "provider", Action: "upsert", Provider: string(provider)})
 		return nil
 	}
 
@@ -1126,6 +1125,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 		}
 	}
 
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "provider", Action: "upsert", Provider: string(provider)}, txDB)
 	return nil
 }
 
@@ -1254,7 +1254,6 @@ func (s *RDBConfigStore) DeleteProvider(ctx context.Context, provider schemas.Mo
 		}); err != nil {
 			return err
 		}
-		s.notifyChange(ctx, ConfigChangeEvent{Entity: "provider", Action: "delete", Provider: string(provider)})
 		return nil
 	}
 
@@ -1303,6 +1302,7 @@ func (s *RDBConfigStore) DeleteProvider(ctx context.Context, provider schemas.Mo
 		return err
 	}
 
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "provider", Action: "delete", Provider: string(provider)}, txDB)
 	return nil
 }
 
@@ -1444,7 +1444,6 @@ func (s *RDBConfigStore) CreateProviderKey(ctx context.Context, provider schemas
 		}); err != nil {
 			return err
 		}
-		s.notifyChange(ctx, ConfigChangeEvent{Entity: "provider_key", Action: "upsert", Provider: string(provider)})
 		return nil
 	}
 
@@ -1464,6 +1463,7 @@ func (s *RDBConfigStore) CreateProviderKey(ctx context.Context, provider schemas
 	if err := txDB.WithContext(ctx).Create(&dbKey).Error; err != nil {
 		return s.parseGormError(err)
 	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "provider_key", Action: "upsert", Provider: string(provider)}, txDB)
 	return nil
 }
 
@@ -1475,7 +1475,6 @@ func (s *RDBConfigStore) UpdateProviderKey(ctx context.Context, provider schemas
 		}); err != nil {
 			return err
 		}
-		s.notifyChange(ctx, ConfigChangeEvent{Entity: "provider_key", Action: "upsert", Provider: string(provider), ID: keyID})
 		return nil
 	}
 
@@ -1506,6 +1505,7 @@ func (s *RDBConfigStore) UpdateProviderKey(ctx context.Context, provider schemas
 		return s.parseGormError(err)
 	}
 
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "provider_key", Action: "upsert", Provider: string(provider), ID: keyID}, txDB)
 	return nil
 }
 
@@ -1517,7 +1517,6 @@ func (s *RDBConfigStore) DeleteProviderKey(ctx context.Context, provider schemas
 		}); err != nil {
 			return err
 		}
-		s.notifyChange(ctx, ConfigChangeEvent{Entity: "provider_key", Action: "delete", Provider: string(provider), ID: keyID})
 		return nil
 	}
 
@@ -1555,6 +1554,7 @@ func (s *RDBConfigStore) DeleteProviderKey(ctx context.Context, provider schemas
 		return ErrNotFound
 	}
 
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "provider_key", Action: "delete", Provider: string(provider), ID: keyID}, txDB)
 	return nil
 }
 
@@ -3170,7 +3170,7 @@ func (s *RDBConfigStore) CreatePricingOverride(ctx context.Context, override *ta
 	if err := txDB.WithContext(ctx).Create(override).Error; err != nil {
 		return s.parseGormError(err)
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: "pricing_override", Action: "upsert"})
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "pricing_override", Action: "upsert"}, txDB)
 	return nil
 }
 
@@ -3196,7 +3196,7 @@ func (s *RDBConfigStore) UpdatePricingOverride(ctx context.Context, override *ta
 	if err := txDB.WithContext(ctx).Save(override).Error; err != nil {
 		return s.parseGormError(err)
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: "pricing_override", Action: "upsert"})
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "pricing_override", Action: "upsert"}, txDB)
 	return nil
 }
 
@@ -3214,7 +3214,7 @@ func (s *RDBConfigStore) DeletePricingOverride(ctx context.Context, id string, t
 	if res.RowsAffected == 0 {
 		return ErrNotFound
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: "pricing_override", Action: "delete"})
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "pricing_override", Action: "delete"}, txDB)
 	return nil
 }
 
@@ -3345,7 +3345,7 @@ func (s *RDBConfigStore) CreatePlugin(ctx context.Context, plugin *tables.TableP
 	if err := txDB.WithContext(ctx).Create(plugin).Error; err != nil {
 		return s.parseGormError(err)
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: "plugin", Action: "upsert"})
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "plugin", Action: "upsert"}, txDB)
 	return nil
 }
 
@@ -3372,7 +3372,7 @@ func (s *RDBConfigStore) UpsertPlugin(ctx context.Context, plugin *tables.TableP
 	).Create(plugin).Error; err != nil {
 		return s.parseGormError(err)
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: "plugin", Action: "upsert"})
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "plugin", Action: "upsert"}, txDB)
 	return nil
 }
 
@@ -3444,7 +3444,7 @@ func (s *RDBConfigStore) UpdatePlugin(ctx context.Context, plugin *tables.TableP
 			return err
 		}
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: "plugin", Action: "upsert"})
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "plugin", Action: "upsert"}, txDB)
 	return nil
 }
 
@@ -3466,7 +3466,7 @@ func (s *RDBConfigStore) DeletePlugin(ctx context.Context, name string, tx ...*g
 	if err := txDB.WithContext(ctx).Delete(&plugin).Error; err != nil {
 		return err
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: "plugin", Action: "delete"})
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "plugin", Action: "delete"}, txDB)
 	return nil
 }
 
@@ -3922,7 +3922,7 @@ func (s *RDBConfigStore) CreateVirtualKey(ctx context.Context, virtualKey *table
 	if err := txDB.WithContext(ctx).Create(virtualKey).Error; err != nil {
 		return s.parseGormError(err)
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: "virtual_key", Action: "upsert"})
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "virtual_key", Action: "upsert"}, txDB)
 	return nil
 }
 
@@ -3934,7 +3934,6 @@ func (s *RDBConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *table
 		}); err != nil {
 			return err
 		}
-		s.notifyChange(ctx, ConfigChangeEvent{Entity: "virtual_key", Action: "upsert"})
 		return nil
 	}
 
@@ -3984,6 +3983,7 @@ func (s *RDBConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *table
 			return s.parseGormError(err)
 		}
 	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "virtual_key", Action: "upsert"}, txDB)
 	return nil
 }
 
@@ -4157,7 +4157,7 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...
 		}
 		return err
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: "virtual_key", Action: "delete"})
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "virtual_key", Action: "delete"}, txDB)
 	return nil
 }
 
@@ -4249,7 +4249,7 @@ func (s *RDBConfigStore) CreateVirtualKeyProviderConfig(ctx context.Context, vir
 			return err
 		}
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: "vk_provider_config", Action: "upsert"})
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "vk_provider_config", Action: "upsert"}, txDB)
 	return nil
 }
 
@@ -4473,7 +4473,6 @@ func (s *RDBConfigStore) UpdateVirtualKeyProviderConfig(ctx context.Context, vir
 		}); err != nil {
 			return err
 		}
-		s.notifyChange(ctx, ConfigChangeEvent{Entity: "vk_provider_config", Action: "upsert"})
 		return nil
 	}
 
@@ -4553,6 +4552,7 @@ func (s *RDBConfigStore) UpdateVirtualKeyProviderConfig(ctx context.Context, vir
 			return err
 		}
 	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "vk_provider_config", Action: "upsert"}, txDB)
 	return nil
 }
 
@@ -4564,7 +4564,6 @@ func (s *RDBConfigStore) DeleteVirtualKeyProviderConfig(ctx context.Context, id 
 		}); err != nil {
 			return err
 		}
-		s.notifyChange(ctx, ConfigChangeEvent{Entity: "vk_provider_config", Action: "delete"})
 		return nil
 	}
 
@@ -4597,6 +4596,7 @@ func (s *RDBConfigStore) DeleteVirtualKeyProviderConfig(ctx context.Context, id 
 			return err
 		}
 	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "vk_provider_config", Action: "delete"}, txDB)
 	return nil
 }
 
@@ -4869,7 +4869,7 @@ func (s *RDBConfigStore) CreateVirtualKeyMCPConfig(ctx context.Context, virtualK
 	if err := txDB.WithContext(ctx).Create(virtualKeyMCPConfig).Error; err != nil {
 		return s.parseGormError(err)
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: "vk_mcp_config", Action: "upsert"})
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "vk_mcp_config", Action: "upsert"}, txDB)
 	return nil
 }
 
@@ -4881,7 +4881,6 @@ func (s *RDBConfigStore) UpdateVirtualKeyMCPConfig(ctx context.Context, virtualK
 		}); err != nil {
 			return err
 		}
-		s.notifyChange(ctx, ConfigChangeEvent{Entity: "vk_mcp_config", Action: "upsert"})
 		return nil
 	}
 
@@ -4898,6 +4897,7 @@ func (s *RDBConfigStore) UpdateVirtualKeyMCPConfig(ctx context.Context, virtualK
 	if err := txDB.WithContext(ctx).Save(virtualKeyMCPConfig).Error; err != nil {
 		return s.parseGormError(err)
 	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "vk_mcp_config", Action: "upsert"}, txDB)
 	return nil
 }
 
@@ -4909,7 +4909,6 @@ func (s *RDBConfigStore) DeleteVirtualKeyMCPConfig(ctx context.Context, id uint,
 		}); err != nil {
 			return err
 		}
-		s.notifyChange(ctx, ConfigChangeEvent{Entity: "vk_mcp_config", Action: "delete"})
 		return nil
 	}
 
@@ -4921,7 +4920,11 @@ func (s *RDBConfigStore) DeleteVirtualKeyMCPConfig(ctx context.Context, id uint,
 		}
 		return err
 	}
-	return txDB.WithContext(ctx).Delete(&tables.TableVirtualKeyMCPConfig{}, "id = ?", id).Error
+	if err := txDB.WithContext(ctx).Delete(&tables.TableVirtualKeyMCPConfig{}, "id = ?", id).Error; err != nil {
+		return err
+	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "vk_mcp_config", Action: "delete"}, txDB)
+	return nil
 }
 
 const teamSelectWithVKCount = "governance_teams.*, (SELECT COUNT(*) FROM governance_virtual_keys WHERE team_id = governance_teams.id) AS virtual_key_count"
@@ -5059,7 +5062,7 @@ func (s *RDBConfigStore) CreateTeam(ctx context.Context, team *tables.TableTeam,
 	if err := txDB.WithContext(ctx).Create(team).Error; err != nil {
 		return s.parseGormError(err)
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: "team", Action: "upsert"})
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "team", Action: "upsert"}, txDB)
 	return nil
 }
 
@@ -5086,7 +5089,7 @@ func (s *RDBConfigStore) UpdateTeam(ctx context.Context, team *tables.TableTeam,
 	if err := txDB.WithContext(ctx).Save(team).Error; err != nil {
 		return s.parseGormError(err)
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: "team", Action: "upsert"})
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "team", Action: "upsert"}, txDB)
 	return nil
 }
 
@@ -5100,7 +5103,6 @@ func (s *RDBConfigStore) DeleteTeam(ctx context.Context, id string, tx ...*gorm.
 		}); err != nil {
 			return err
 		}
-		s.notifyChange(ctx, ConfigChangeEvent{Entity: "team", Action: "delete"})
 		return nil
 	}
 
@@ -5130,6 +5132,7 @@ func (s *RDBConfigStore) DeleteTeam(ctx context.Context, id string, tx ...*gorm.
 			return err
 		}
 	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "team", Action: "delete"}, txDB)
 	return nil
 }
 
@@ -5218,7 +5221,7 @@ func (s *RDBConfigStore) CreateCustomer(ctx context.Context, customer *tables.Ta
 	if err := txDB.WithContext(ctx).Create(customer).Error; err != nil {
 		return s.parseGormError(err)
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: "customer", Action: "upsert"})
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "customer", Action: "upsert"}, txDB)
 	return nil
 }
 
@@ -5245,7 +5248,7 @@ func (s *RDBConfigStore) UpdateCustomer(ctx context.Context, customer *tables.Ta
 	if err := txDB.WithContext(ctx).Save(customer).Error; err != nil {
 		return s.parseGormError(err)
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: "customer", Action: "upsert"})
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "customer", Action: "upsert"}, txDB)
 	return nil
 }
 
@@ -5257,7 +5260,6 @@ func (s *RDBConfigStore) DeleteCustomer(ctx context.Context, id string, tx ...*g
 		}); err != nil {
 			return err
 		}
-		s.notifyChange(ctx, ConfigChangeEvent{Entity: "customer", Action: "delete"})
 		return nil
 	}
 
@@ -5294,6 +5296,7 @@ func (s *RDBConfigStore) DeleteCustomer(ctx context.Context, id string, tx ...*g
 			return err
 		}
 	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "customer", Action: "delete"}, txDB)
 	return nil
 }
 
@@ -5453,7 +5456,7 @@ func (s *RDBConfigStore) CreateBudget(ctx context.Context, budget *tables.TableB
 	if err := txDB.WithContext(ctx).Create(budget).Error; err != nil {
 		return s.parseGormError(err)
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: "budget", Action: "upsert"})
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "budget", Action: "upsert"}, txDB)
 	return nil
 }
 
@@ -5484,7 +5487,6 @@ func (s *RDBConfigStore) UpdateBudget(ctx context.Context, budget *tables.TableB
 		}); err != nil {
 			return err
 		}
-		s.notifyChange(ctx, ConfigChangeEvent{Entity: "budget", Action: "upsert"})
 		return nil
 	}
 
@@ -5550,6 +5552,7 @@ func (s *RDBConfigStore) UpdateBudget(ctx context.Context, budget *tables.TableB
 	if err := txDB.WithContext(ctx).Save(budget).Error; err != nil {
 		return s.parseGormError(err)
 	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "budget", Action: "upsert"}, txDB)
 	return nil
 }
 
@@ -5569,7 +5572,6 @@ func (s *RDBConfigStore) UpdateBudgetOverride(ctx context.Context, id string, am
 		}); err != nil {
 			return nil, err
 		}
-		s.notifyChange(ctx, ConfigChangeEvent{Entity: "budget", Action: "upsert"})
 		return updated, nil
 	}
 
@@ -5602,6 +5604,7 @@ func (s *RDBConfigStore) UpdateBudgetOverride(ctx context.Context, id string, am
 	if err := txDB.First(&budget, "id = ?", id).Error; err != nil {
 		return nil, err
 	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "budget", Action: "upsert"}, tx[0])
 	return &budget, nil
 }
 
@@ -5613,7 +5616,6 @@ func (s *RDBConfigStore) DeleteBudget(ctx context.Context, id string, tx ...*gor
 		}); err != nil {
 			return err
 		}
-		s.notifyChange(ctx, ConfigChangeEvent{Entity: "budget", Action: "delete"})
 		return nil
 	}
 
@@ -5637,6 +5639,7 @@ func (s *RDBConfigStore) DeleteBudget(ctx context.Context, id string, tx ...*gor
 	if err := txDB.WithContext(ctx).Delete(&tables.TableBudget{}, "id = ?", id).Error; err != nil {
 		return s.parseGormError(err)
 	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "budget", Action: "delete"}, txDB)
 	return nil
 }
 
@@ -5863,7 +5866,7 @@ func (s *RDBConfigStore) CreateRoutingRule(ctx context.Context, rule *tables.Tab
 	})); err != nil {
 		return err
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: "routing_rule", Action: "upsert"})
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "routing_rule", Action: "upsert"}, database)
 	return nil
 }
 
@@ -5930,7 +5933,7 @@ func (s *RDBConfigStore) UpdateRoutingRule(ctx context.Context, rule *tables.Tab
 	})); err != nil {
 		return err
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: "routing_rule", Action: "upsert"})
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "routing_rule", Action: "upsert"}, database)
 	return nil
 }
 
@@ -6049,7 +6052,7 @@ func (s *RDBConfigStore) SyncRoutingRules(ctx context.Context, toAdd []tables.Ta
 	})); err != nil {
 		return err
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: "routing_rule", Action: "upsert"})
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "routing_rule", Action: "upsert"}, database)
 	return nil
 }
 
@@ -6082,7 +6085,7 @@ func (s *RDBConfigStore) DeleteRoutingRule(ctx context.Context, id string, tx ..
 	})); err != nil {
 		return err
 	}
-	s.notifyChange(ctx, ConfigChangeEvent{Entity: "routing_rule", Action: "delete"})
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "routing_rule", Action: "delete"}, database)
 	return nil
 }
 
@@ -6331,7 +6334,6 @@ func (s *RDBConfigStore) CreateModelConfig(ctx context.Context, modelConfig *tab
 		}); err != nil {
 			return err
 		}
-		s.notifyChange(ctx, ConfigChangeEvent{Entity: "model_config", Action: "upsert"})
 		return nil
 	}
 	txDB := tx[0]
@@ -6349,6 +6351,7 @@ func (s *RDBConfigStore) CreateModelConfig(ctx context.Context, modelConfig *tab
 	if err := txDB.WithContext(ctx).Create(modelConfig).Error; err != nil {
 		return s.parseGormError(err)
 	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "model_config", Action: "upsert"}, txDB)
 	return nil
 }
 
@@ -6398,7 +6401,6 @@ func (s *RDBConfigStore) UpdateModelConfig(ctx context.Context, modelConfig *tab
 		}); err != nil {
 			return err
 		}
-		s.notifyChange(ctx, ConfigChangeEvent{Entity: "model_config", Action: "upsert"})
 		return nil
 	}
 
@@ -6420,6 +6422,7 @@ func (s *RDBConfigStore) UpdateModelConfig(ctx context.Context, modelConfig *tab
 	if err := txDB.WithContext(ctx).Omit(clause.Associations).Save(modelConfig).Error; err != nil {
 		return s.parseGormError(err)
 	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "model_config", Action: "upsert"}, txDB)
 	return nil
 }
 
@@ -6450,7 +6453,6 @@ func (s *RDBConfigStore) DeleteModelConfig(ctx context.Context, id string, tx ..
 		}); err != nil {
 			return err
 		}
-		s.notifyChange(ctx, ConfigChangeEvent{Entity: "model_config", Action: "delete"})
 		return nil
 	}
 
@@ -6493,6 +6495,7 @@ func (s *RDBConfigStore) DeleteModelConfig(ctx context.Context, id string, tx ..
 			return err
 		}
 	}
+	s.notifyChange(ctx, ConfigChangeEvent{Entity: "model_config", Action: "delete"}, txDB)
 	return nil
 }
 
