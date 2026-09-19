@@ -245,7 +245,7 @@ export default function PluginsView(props: Props) {
 									className="w-full"
 								>
 									<PlusIcon className="mr-2 h-4 w-4" />
-									Add Configuration
+									{t("plugins.addConfiguration")}
 								</Button>
 							) : (
 								<FormField
@@ -266,7 +266,7 @@ export default function PluginsView(props: Props) {
 													}}
 													className="h-auto p-1 text-xs"
 												>
-													Remove
+													{t("plugins.remove")}
 												</Button>
 											</div>
 											<FormControl>
@@ -301,7 +301,7 @@ export default function PluginsView(props: Props) {
 								<div className="space-y-4">
 									{selectedPlugin.status?.logs && selectedPlugin.status.logs.length > 0 && (
 										<div className="grid gap-2">
-											<label className="text-sm font-medium">Logs</label>
+											<label className="text-sm font-medium">{t("plugins.logs")}</label>
 											<div className="rounded-md border px-4 py-2 font-mono text-xs">
 												<div className="flex flex-row items-center gap-2">
 													{selectedPlugin.status.logs.map((log, index) => (

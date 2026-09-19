@@ -12,6 +12,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect, useMemo } from "react";
 import { useForm } from "react-hook-form";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { z } from "zod";
 import { buildProviderUpdatePayload } from "../views/utils";
@@ -27,6 +28,7 @@ interface Props {
 
 // Standalone component for provider configuration tabs
 export function ApiStructureFormFragment({ provider }: Props) {
+	const { t } = useTranslation("models");
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	const dispatch = useAppDispatch();
 	const [updateProvider, { isLoading: isUpdatingProvider }] = useUpdateProviderMutation();
@@ -87,11 +89,11 @@ export function ApiStructureFormFragment({ provider }: Props) {
 		)
 			.unwrap()
 			.then(() => {
-				toast.success("Provider configuration updated successfully");
+				toast.success(t("providers.configUpdated"));
 				form.reset(data);
 			})
 			.catch((err) => {
-				toast.error("Failed to update provider configuration", {
+				toast.error(t("providers.failedUpdateConfig"), {
 					description: getErrorMessage(err),
 				});
 			});
@@ -129,11 +131,11 @@ export function ApiStructureFormFragment({ provider }: Props) {
 						name="base_provider_type"
 						render={({ field }) => (
 							<FormItem>
-								<FormLabel>Base Provider Type</FormLabel>
+								<FormLabel>{t("providers.baseProviderType")}</FormLabel>
 								<FormControl>
-									<BaseProviderSelector placeholder="Select base provider" value={field.value} onChange={field.onChange} disabled />
+									<BaseProviderSelector placeholder={t("providers.selectBaseProvider")} value={field.value} onChange={field.onChange} disabled />
 								</FormControl>
-								<FormDescription>The underlying provider this custom provider will use</FormDescription>
+								<FormDescription>{t("providers.baseProviderTypeHelp")}</FormDescription>
 								<FormMessage />
 							</FormItem>
 						)}
@@ -147,9 +149,9 @@ export function ApiStructureFormFragment({ provider }: Props) {
 									<div className="bg-muted/50 flex items-center justify-between space-x-2 rounded-sm border p-3">
 										<div className="space-y-0.5">
 											<label htmlFor="drop-excess-requests" className="text-sm font-medium">
-												Is Keyless?
+												{t("providers.isKeyless")}
 											</label>
-											<p className="text-muted-foreground text-sm">Whether the custom provider requires a key</p>
+											<p className="text-muted-foreground text-sm">{t("providers.requiresKey")}</p>
 										</div>
 										<Switch
 											id="drop-excess-requests"
@@ -172,11 +174,9 @@ export function ApiStructureFormFragment({ provider }: Props) {
 									<div className="bg-muted/50 flex items-center justify-between space-x-2 rounded-sm border p-3">
 										<div className="space-y-0.5">
 											<label htmlFor="does-not-send-done-marker" className="text-sm font-medium">
-												Does Not Send [DONE] Marker?
+												{t("providers.doesNotSendDoneMarker")}
 											</label>
-											<p className="text-muted-foreground text-sm">
-												Whether the provider ends streams on finish_reason without sending a [DONE] marker
-											</p>
+											<p className="text-muted-foreground text-sm">{t("providers.doesNotSendDoneMarkerHelp")}</p>
 										</div>
 										<Switch
 											id="does-not-send-done-marker"
@@ -199,12 +199,9 @@ export function ApiStructureFormFragment({ provider }: Props) {
 									<div className="bg-muted/50 flex items-center justify-between space-x-2 rounded-sm border p-3">
 										<div className="space-y-0.5">
 											<label htmlFor="wait-for-usage" className="text-sm font-medium">
-												Wait For Trailing Usage Chunk?
+												{t("providers.custom.waitForUsage")}
 											</label>
-											<p className="text-muted-foreground text-sm">
-												Keep reading after finish_reason so the trailing usage chunk is collected. Without this the request records zero
-												tokens and zero cost
-											</p>
+											<p className="text-muted-foreground text-sm">{t("providers.custom.waitForUsageHelp")}</p>
 										</div>
 										<Switch
 											id="wait-for-usage"
@@ -230,18 +227,18 @@ export function ApiStructureFormFragment({ provider }: Props) {
 				{/* Form Actions */}
 				<div className="flex justify-end gap-2 py-2">
 					<Button type="button" variant="outline" onClick={() => form.reset()} disabled={!hasUpdateProviderAccess}>
-						Reset
+						{t("providers.reset")}
 					</Button>
 					<TooltipProvider>
 						<Tooltip>
 							<TooltipTrigger asChild>
 								<Button type="submit" disabled={!form.formState.isDirty || !hasUpdateProviderAccess} isLoading={isUpdatingProvider}>
-									Save API Structure Configuration
+									{t("providers.saveApiStructureConfig")}
 								</Button>
 							</TooltipTrigger>
 							{!form.formState.isValid && (
 								<TooltipContent>
-									<p>{form.formState.errors.root?.message || "Please fix validation errors"}</p>
+									<p>{form.formState.errors.root?.message || t("providers.pleaseFixValidation")}</p>
 								</TooltipContent>
 							)}
 						</Tooltip>

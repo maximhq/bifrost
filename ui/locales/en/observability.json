@@ -412,7 +412,10 @@
 			"tokens_one": "{{count}} token",
 			"tokens_other": "{{count}} tokens",
 			"messageCount_one": "{{count}} Message",
-			"messageCount_other": "{{count}} Messages"
+			"messageCount_other": "{{count}} Messages",
+			"loadingDetails": "Loading log details",
+			"viewSession": "View Session",
+			"entityLog": "log"
 		},
 		"media": {
 			"pause": "Pause",
@@ -470,6 +473,44 @@
 			"user": "User: {{message}}",
 			"assistantToolCall": "Assistant Tool Call: {{message}}",
 			"assistant": "Assistant: {{message}}"
+		},
+		"video": {
+			"input": "{{type}} Input",
+			"output": "{{type}} Output",
+			"prompt": "PROMPT",
+			"videoId": "VIDEO ID",
+			"contentType": "CONTENT TYPE",
+			"downloaded": "Video content was successfully downloaded (content is not stored in logs)",
+			"deleted": "DELETED",
+			"status": "STATUS",
+			"progress": "PROGRESS",
+			"duration": "DURATION",
+			"size": "SIZE",
+			"remixedFrom": "REMIXED FROM",
+			"errorFromProvider": "Error from provider",
+			"openVideoUrl": "Open video URL",
+			"listOutput": "Video List Output ({{count}})",
+			"entityLabel": "Video"
+		},
+		"transcription": {
+			"input": "Transcription Input",
+			"output": "Transcription Output",
+			"audioFile": "AUDIO FILE",
+			"streamedUnavailable": "Output was streamed and is not available.",
+			"task": "TASK",
+			"detectedLanguage": "DETECTED LANGUAGE",
+			"duration": "DURATION",
+			"wordLevelTiming": "WORD-LEVEL TIMING",
+			"segments": "SEGMENTS",
+			"segment": "Segment {{id}}",
+			"avgLogProb": "Avg LogProb: {{value}}",
+			"noSpeech": "No Speech: {{value}}%",
+			"temp": "Temp: {{value}}",
+			"logProbabilities": "LOG PROBABILITIES"
+		},
+		"pluginLogsView": {
+			"countOf": "({{visible}} of {{total}})",
+			"noEntries": "No entries at or above {{level}}."
 		}
 	},
 	"mcpLogs": {
@@ -656,7 +697,8 @@
 			"overhead": "Overhead",
 			"overheadLatencySpans": "Overhead latency spans",
 			"overheadLatencySpansHelp": "Internal timing spans (setup, key selection, pipeline phases). Off by default.",
-			"configJsonPrecedence": "If <filter>plugin_span_filter</filter> is set in the <plugin>{{pluginName}}</plugin> plugin config in config.json, it takes precedence over these settings after restarting Bifrost."
+			"configJsonPrecedence": "If <filter>plugin_span_filter</filter> is set in the <plugin>{{pluginName}}</plugin> plugin config in config.json, it takes precedence over these settings after restarting Bifrost.",
+			"destinationOtel": "the OTEL collector"
 		},
 		"savePrometheus": "Save Prometheus Configuration",
 		"saveOtel": "Save OTEL Configuration",
@@ -664,7 +706,35 @@
 		"reset": "Reset",
 		"plugins": "Plugins",
 		"prometheus": {
-			"pullScraping": "Pull-based Scraping"
+			"pullScraping": "Pull-based Scraping",
+			"pullBased": "Pull-based",
+			"pushBased": "Push-based",
+			"pullHelp": "Prometheus can scrape metrics from the /metrics endpoint",
+			"scrapeHelp": "Configure your Prometheus server to scrape this endpoint. Served only while Pull-based scraping is enabled.",
+			"userLabels": "User labels",
+			"userLabelsHelp": "Add user data labels to metrics",
+			"pushBasedGateway": "Push-based (Push Gateway)",
+			"pushHelp": "Push metrics to a Prometheus Push Gateway for proper aggregation in cluster deployments",
+			"clusterAlert": "If you are running multiple Bifrost nodes, use push gateway for accurate metrics. Pull-based /metrics scraping may miss nodes behind a load balancer.",
+			"pushGatewayUrl": "Push Gateway URL",
+			"pushGatewayUrlHelp": "URL of your Prometheus Push Gateway",
+			"pushGatewayPlaceholder": "http://pushgateway:9091 or env.PUSHGATEWAY_URL",
+			"jobName": "Job Name",
+			"jobNameHelp": "Job label for metrics",
+			"pushIntervalHelp": "How often to push (1-300s)",
+			"instanceId": "Instance ID",
+			"instanceIdHelp": "Used to identify this Bifrost instance in metrics. If not set, hostname is used automatically.",
+			"addBasicAuth": "Add Basic Auth",
+			"basicAuth": "Basic Authentication",
+			"username": "Username",
+			"password": "Password",
+			"usernamePlaceholder": "Username or env.PG_USER",
+			"passwordPlaceholder": "Password or env.PG_PASS",
+			"fixBeforeSaveTab": "Fix validation errors in the {{tab}} tab before saving"
+		},
+		"configuration": "Configuration",
+		"maxim": {
+			"headerHelp": "You can send in header <code0>x-bf-log-repo-id</code0> with a repository ID to log to a specific repository."
 		}
 	},
 	"filters": {
@@ -774,5 +844,31 @@
 		"websocket_responses": "WebSocket Responses",
 		"realtime": "Realtime",
 		"realtime_turn": "Realtime Turn"
+	},
+	"celBuilder": {
+		"copied": "Copied",
+		"loading": "Loading CEL builder...",
+		"builder": "Builder",
+		"addRule": "Add Rule",
+		"addRuleGroup": "Add Rule Group",
+		"expression": "CEL Expression",
+		"expressionPreview": "CEL Expression Preview",
+		"leaveEmpty": "Leave empty to match all requests.",
+		"noRules": "No rules defined yet",
+		"switchTitle": "Switch to the visual builder?",
+		"switchDescription": "The visual builder can't import a hand-written CEL expression, so your current CEL will be discarded and the builder will start empty. Copy it first if you want to keep it.",
+		"discardAndSwitch": "Discard CEL & switch",
+		"selectField": "Select field...",
+		"hasKey": "has key",
+		"keyNamePlaceholder": "{{label}} name (e.g., x-api-key)",
+		"keyFallback": "Key",
+		"selectOperator": "Select operator...",
+		"selectModels": "Select models...",
+		"searchModel": "Search for a model...",
+		"selectProviders": "Select providers...",
+		"selectPlaceholder": "Select...",
+		"value": "Value",
+		"enterValue": "Enter value...",
+		"commaSeparated": "Enter comma-separated values or JSON array"
 	}
 }

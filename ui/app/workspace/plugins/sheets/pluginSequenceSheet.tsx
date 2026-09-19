@@ -8,6 +8,7 @@ import { DragDropProvider } from "@dnd-kit/react";
 import { useSortable } from "@dnd-kit/react/sortable";
 import { GripVertical, Lock } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 const BUILTIN_ID = "__builtin__";
@@ -39,6 +40,7 @@ function buildSequenceItems(plugins: Plugin[]): SequenceItem[] {
 }
 
 function SortableBlock({ item, index }: { item: SequenceItem; index: number }) {
+	const { t } = useTranslation("governance");
 	const isBuiltin = item.type === "builtin";
 	const { ref, isDragging, handleRef, targetRef } = useSortable({
 		id: item.id,
@@ -62,7 +64,7 @@ function SortableBlock({ item, index }: { item: SequenceItem; index: number }) {
 				</div>
 			)}
 			<span className={cn("text-sm", isBuiltin && "text-muted-foreground font-medium")}>
-				{isBuiltin ? "Built-in Plugins" : item.plugin?.name}
+				{isBuiltin ? t("plugins.builtInPlugins") : item.plugin?.name}
 			</span>
 			{!isBuiltin && item.plugin?.status && (
 				<div
@@ -77,6 +79,8 @@ function SortableBlock({ item, index }: { item: SequenceItem; index: number }) {
 }
 
 export default function PluginSequenceSheet({ open, onClose, plugins }: PluginSequenceSheetProps) {
+	const { t } = useTranslation("governance");
+	const { t: tCommon } = useTranslation("common");
 	const [items, setItems] = useState<SequenceItem[]>([]);
 	const [updatePlugin, { isLoading }] = useUpdatePluginMutation();
 	const wasOpenRef = useRef(false);
@@ -125,19 +129,19 @@ export default function PluginSequenceSheet({ open, onClose, plugins }: PluginSe
 					},
 				}).unwrap();
 			}
-			toast.success("Plugin sequence updated");
+			toast.success(t("plugins.sequenceUpdated"));
 			onClose();
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
-	}, [items, updatePlugin, onClose]);
+	}, [items, updatePlugin, onClose, t]);
 
 	return (
 		<Sheet open={open} onOpenChange={onClose}>
 			<SheetContent className="flex w-full flex-col overflow-x-hidden p-4 md:p-8">
 				<SheetHeader className="flex flex-col items-start p-0">
-					<SheetTitle>Edit Plugin Sequence</SheetTitle>
-					<SheetDescription>Drag plugins above or below the built-in plugins block to control execution order.</SheetDescription>
+					<SheetTitle>{t("plugins.sequenceTitle")}</SheetTitle>
+					<SheetDescription>{t("plugins.sequenceDescription")}</SheetDescription>
 				</SheetHeader>
 
 				<div className="mt-4 flex flex-1 flex-col gap-2">
@@ -167,16 +171,15 @@ export default function PluginSequenceSheet({ open, onClose, plugins }: PluginSe
 				<div className="flex flex-col gap-2">
 					<Alert variant="info">
 						<AlertDescription>
-							If your config.json file has plugin sequence configured, it will take precedence over the sequence configured in the UI after
-							restarting Bifrost.
+							{t("plugins.sequenceNote")}
 						</AlertDescription>
 					</Alert>
 					<div className="flex justify-end gap-2 pt-4">
 						<Button type="button" variant="outline" onClick={onClose} disabled={isLoading} data-testid="plugin-sequence-cancel-button">
-							Cancel
+							{tCommon("cancel")}
 						</Button>
 						<Button onClick={handleSave} disabled={isLoading} isLoading={isLoading} data-testid="plugin-sequence-save-button" type="button">
-							Save Sequence
+							{t("plugins.saveSequence")}
 						</Button>
 					</div>
 				</div>

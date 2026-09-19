@@ -30,21 +30,9 @@ import {
 } from "@/lib/store";
 import { VirtualMCP } from "@/lib/types/virtualMcps";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import {
-	AlertTriangle,
-	Check,
-	ChevronLeft,
-	ChevronRight,
-	Copy,
-	Loader2,
-	MoreHorizontal,
-	Pencil,
-	Plus,
-	Search,
-	Server,
-	Trash2,
-} from "lucide-react";
+import { AlertTriangle, Check, ChevronLeft, ChevronRight, Copy, Loader2, MoreHorizontal, Pencil, Plus, Search, Server, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 
 interface VirtualMCPsTableProps {
 	virtualMcps: VirtualMCP[];
@@ -73,6 +61,8 @@ export default function VirtualMCPsTable({
 	onCreate,
 	onEdit,
 }: VirtualMCPsTableProps) {
+	const { t } = useTranslation("mcp");
+	const { t: tc } = useTranslation("common");
 	const { toast } = useToast();
 	const [deleteVirtualMCP, { isLoading: deleting }] = useDeleteVirtualMCPMutation();
 	const [updateVirtualMCP] = useUpdateVirtualMCPMutation();
@@ -127,14 +117,9 @@ export default function VirtualMCPsTable({
 		}
 		if (unreachable === 0 && unreachableServers === 0 && disabledAtSource === 0) return null;
 		const parts: string[] = [];
-		if (unreachable > 0)
-			parts.push(
-				`${unreachable} ${unreachable === 1 ? "tool comes" : "tools come"} from an unreachable server (shown from the last successful sync)`,
-			);
-		if (unreachableServers > 0)
-			parts.push(`${unreachableServers} source ${unreachableServers === 1 ? "server is" : "servers are"} unreachable`);
-		if (disabledAtSource > 0)
-			parts.push(`${disabledAtSource} selected ${disabledAtSource === 1 ? "tool is" : "tools are"} disabled at source`);
+		if (unreachable > 0) parts.push(t("virtualMcps.toolComesUnreachable", { count: unreachable }));
+		if (unreachableServers > 0) parts.push(t("virtualMcps.sourceUnreachable", { count: unreachableServers }));
+		if (disabledAtSource > 0) parts.push(t("virtualMcps.disabledAtSource", { count: disabledAtSource }));
 		return parts.join(" · ");
 	};
 	const [pendingDelete, setPendingDelete] = useState<VirtualMCP | null>(null);
@@ -146,9 +131,9 @@ export default function VirtualMCPsTable({
 		setTogglingIds((prev) => new Set(prev).add(row.id));
 		try {
 			await updateVirtualMCP({ id: row.id, data: { enabled } }).unwrap();
-			toast({ title: enabled ? "Virtual MCP enabled" : "Virtual MCP disabled" });
+			toast({ title: enabled ? t("virtualMcps.enabledToast") : t("virtualMcps.disabledToast") });
 		} catch (err) {
-			toast({ title: "Failed to update Virtual MCP", description: getErrorMessage(err), variant: "destructive" });
+			toast({ title: t("virtualMcps.updateFailed"), description: getErrorMessage(err), variant: "destructive" });
 		} finally {
 			setTogglingIds((prev) => {
 				const next = new Set(prev);
@@ -169,9 +154,9 @@ export default function VirtualMCPsTable({
 			if (virtualMcps.length === 1 && offset > 0) {
 				onOffsetChange(Math.max(0, offset - limit));
 			}
-			toast({ title: "Virtual MCP deleted" });
+			toast({ title: t("virtualMcps.deleted") });
 		} catch (err) {
-			toast({ title: "Failed to delete Virtual MCP", description: getErrorMessage(err), variant: "destructive" });
+			toast({ title: t("virtualMcps.deleteFailed"), description: getErrorMessage(err), variant: "destructive" });
 		} finally {
 			setPendingId(null);
 		}
@@ -182,29 +167,35 @@ export default function VirtualMCPsTable({
 			<AlertDialog open={pendingDelete !== null} onOpenChange={(open) => !open && setPendingDelete(null)}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Delete this Virtual MCP?</AlertDialogTitle>
+						<AlertDialogTitle>{t("virtualMcps.deleteTitle")}</AlertDialogTitle>
 						<AlertDialogDescription>
-							{pendingDelete?.name} will stop being served at <span className="font-mono">/mcp/{pendingDelete?.endpoint_slug}</span> and
-							will be removed from any virtual keys it is assigned to. This cannot be undone.
+							<Trans
+								t={t}
+								i18nKey="virtualMcps.deleteDesc"
+								values={{ name: pendingDelete?.name, slug: pendingDelete?.endpoint_slug }}
+								components={{ mono: <span className="font-mono" /> }}
+							/>
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
-						<AlertDialogCancel data-testid="virtual-mcp-delete-cancel">Cancel</AlertDialogCancel>
+						<AlertDialogCancel data-testid="virtual-mcp-delete-cancel">{tc("cancel")}</AlertDialogCancel>
 						<AlertDialogAction onClick={confirmDelete} data-testid="virtual-mcp-delete-confirm">
-							Delete
+							{tc("delete")}
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>
 			</AlertDialog>
 
-			<PageTitle title="Virtual MCPs">Bundle tools from your MCP servers into a single endpoint, then assign it to virtual keys.</PageTitle>
+			<PageTitle title={t("virtualMcps.title")}>
+				{t("virtualMcps.description")}
+			</PageTitle>
 
 			<div className="mb-4 flex items-center justify-between gap-3">
 				<div className="relative max-w-sm min-w-[200px] flex-1">
 					<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 					<Input
-						aria-label="Search Virtual MCPs"
-						placeholder="Search by name or endpoint..."
+						aria-label={t("virtualMcps.searchAria")}
+						placeholder={t("virtualMcps.searchPlaceholder")}
 						value={search}
 						onChange={(e) => onSearchChange(e.target.value)}
 						className="pl-9"
@@ -213,7 +204,7 @@ export default function VirtualMCPsTable({
 				</div>
 				<Button onClick={onCreate} data-testid="virtual-mcp-create-btn">
 					<Plus className="h-4 w-4" />
-					Add Virtual MCP
+					{t("virtualMcps.new")}
 				</Button>
 			</div>
 
@@ -222,13 +213,13 @@ export default function VirtualMCPsTable({
 					<Table>
 						<TableHeader className="bg-muted sticky top-0 z-20">
 							<TableRow>
-								<TableHead>Name</TableHead>
-								<TableHead>Endpoint</TableHead>
-								<TableHead>Source servers</TableHead>
-								<TableHead>Included tools</TableHead>
-								<TableHead>Created</TableHead>
-								<TableHead>Assigned to</TableHead>
-								<TableHead>Enabled</TableHead>
+								<TableHead>{t("common.name")}</TableHead>
+								<TableHead>{t("registry.columns.endpoint")}</TableHead>
+								<TableHead>{t("virtualMcps.sourceServers")}</TableHead>
+								<TableHead>{t("virtualMcps.includedTools")}</TableHead>
+								<TableHead>{t("common.created")}</TableHead>
+								<TableHead>{t("virtualMcps.assignedTo")}</TableHead>
+								<TableHead>{t("common.enabled")}</TableHead>
 								<TableHead className={`bg-muted sticky right-0 z-10 w-[56px] text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
 							</TableRow>
 						</TableHeader>
@@ -237,18 +228,18 @@ export default function VirtualMCPsTable({
 								<TableRow>
 									<TableCell colSpan={8} className="h-24 text-center">
 										{isFetching ? (
-											<div className="text-muted-foreground text-sm">Loading Virtual MCPs…</div>
+											<div className="text-muted-foreground text-sm">{t("virtualMcps.loading")}</div>
 										) : hasActiveSearch ? (
-											<div className="text-muted-foreground text-sm">No Virtual MCPs match your search.</div>
+											<div className="text-muted-foreground text-sm">{t("virtualMcps.noMatch")}</div>
 										) : (
 											<div className="flex flex-col items-center gap-3 py-6">
 												<Server className="text-muted-foreground h-10 w-10" strokeWidth={1} />
 												<span className="text-muted-foreground text-sm">
-													No Virtual MCPs yet. Create one to bundle tools from your MCP servers into a single endpoint.
+													{t("virtualMcps.empty")}
 												</span>
 												<Button size="sm" onClick={onCreate}>
 													<Plus className="h-4 w-4" />
-													Add Virtual MCP
+													{t("virtualMcps.new")}
 												</Button>
 											</div>
 										)}
@@ -258,52 +249,52 @@ export default function VirtualMCPsTable({
 								virtualMcps.map((row) => {
 									const warning = toolWarning(row);
 									return (
-										<TableRow key={row.id} className="group">
-											<TableCell className="font-medium">{row.name}</TableCell>
-											<TableCell>
-												<EndpointCell slug={row.endpoint_slug} baseUrl={baseUrl} />
-											</TableCell>
-											<TableCell className="text-muted-foreground text-sm">{row.tools?.length ?? 0}</TableCell>
-											<TableCell className="text-muted-foreground text-sm">
-												<span className="flex items-center gap-1.5">
-													{clientsLoading ? "…" : clientsError ? "—" : includedToolCount(row)}
-													{warning && (
-														<Tooltip>
-															<TooltipTrigger asChild>
-																<AlertTriangle className="size-3.5 cursor-help text-amber-500" />
-															</TooltipTrigger>
-															<TooltipContent className="max-w-xs">{warning}</TooltipContent>
-														</Tooltip>
-													)}
-												</span>
-											</TableCell>
-											<TableCell className="text-muted-foreground text-sm">{formatDate(row.created_at)}</TableCell>
-											<TableCell>
-												<AssignedToCell vkIds={row.virtual_key_ids ?? []} vkNameById={vkNameById} loading={vksLoading} />
-											</TableCell>
-											<TableCell onClick={(e) => e.stopPropagation()}>
-												<Switch
-													size="md"
-													checked={row.enabled}
-													disabled={!canUpdate || togglingIds.has(row.id)}
-													onAsyncCheckedChange={(checked) => toggleEnabled(row, checked)}
-													aria-label={row.enabled ? "Disable Virtual MCP" : "Enable Virtual MCP"}
-													data-testid={`virtual-mcp-enabled-switch-${row.id}`}
-												/>
-											</TableCell>
-											<TableCell
-												className={`group-hover:bg-muted dark:bg-card dark:group-hover:bg-muted sticky right-0 z-10 bg-white text-right ${PIN_SHADOW_RIGHT}`}
-												onClick={(e) => e.stopPropagation()}
-											>
-												<RowActions
-													busy={deleting && pendingId === row.id}
-													canUpdate={canUpdate}
-													canDelete={canDelete}
-													onEdit={() => onEdit(row.id)}
-													onDelete={() => setPendingDelete(row)}
-												/>
-											</TableCell>
-										</TableRow>
+									<TableRow key={row.id} className="group">
+										<TableCell className="font-medium">{row.name}</TableCell>
+										<TableCell>
+											<EndpointCell slug={row.endpoint_slug} baseUrl={baseUrl} />
+										</TableCell>
+										<TableCell className="text-muted-foreground text-sm">{row.tools?.length ?? 0}</TableCell>
+										<TableCell className="text-muted-foreground text-sm">
+											<span className="flex items-center gap-1.5">
+												{clientsLoading ? "…" : clientsError ? "—" : includedToolCount(row)}
+												{warning && (
+													<Tooltip>
+														<TooltipTrigger asChild>
+															<AlertTriangle className="size-3.5 cursor-help text-amber-500" />
+														</TooltipTrigger>
+														<TooltipContent className="max-w-xs">{warning}</TooltipContent>
+													</Tooltip>
+												)}
+											</span>
+										</TableCell>
+										<TableCell className="text-muted-foreground text-sm">{formatDate(row.created_at)}</TableCell>
+										<TableCell>
+											<AssignedToCell vkIds={row.virtual_key_ids ?? []} vkNameById={vkNameById} loading={vksLoading} />
+										</TableCell>
+										<TableCell onClick={(e) => e.stopPropagation()}>
+											<Switch
+												size="md"
+												checked={row.enabled}
+												disabled={!canUpdate || togglingIds.has(row.id)}
+												onAsyncCheckedChange={(checked) => toggleEnabled(row, checked)}
+												aria-label={row.enabled ? t("virtualMcps.disableAria") : t("virtualMcps.enableAria")}
+												data-testid={`virtual-mcp-enabled-switch-${row.id}`}
+											/>
+										</TableCell>
+										<TableCell
+											className={`group-hover:bg-muted dark:bg-card dark:group-hover:bg-muted sticky right-0 z-10 bg-white text-right ${PIN_SHADOW_RIGHT}`}
+											onClick={(e) => e.stopPropagation()}
+										>
+											<RowActions
+												busy={deleting && pendingId === row.id}
+												canUpdate={canUpdate}
+												canDelete={canDelete}
+												onEdit={() => onEdit(row.id)}
+												onDelete={() => setPendingDelete(row)}
+											/>
+										</TableCell>
+									</TableRow>
 									);
 								})
 							)}
@@ -314,8 +305,11 @@ export default function VirtualMCPsTable({
 				{totalCount > 0 && (
 					<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 						<div className="text-muted-foreground flex items-center gap-2">
-							{(offset + 1).toLocaleString()}-{Math.min(offset + limit, totalCount).toLocaleString()} of {totalCount.toLocaleString()}{" "}
-							entries
+							{t("common.ofEntries", {
+								from: (offset + 1).toLocaleString(),
+								to: Math.min(offset + limit, totalCount).toLocaleString(),
+								total: totalCount.toLocaleString(),
+							})}
 						</div>
 
 						<div className="flex items-center gap-2">
@@ -325,15 +319,15 @@ export default function VirtualMCPsTable({
 								onClick={() => onOffsetChange(Math.max(0, offset - limit))}
 								disabled={offset === 0}
 								data-testid="virtual-mcps-pagination-prev-btn"
-								aria-label="Previous page"
+								aria-label={t("common.previousPage")}
 							>
 								<ChevronLeft className="size-3" />
 							</Button>
 
 							<div className="flex items-center gap-1">
-								<span>Page</span>
+								<span>{t("common.page")}</span>
 								<span>{Math.floor(offset / limit) + 1}</span>
-								<span>of {Math.ceil(totalCount / limit)}</span>
+								<span>{t("common.ofPages", { total: Math.ceil(totalCount / limit) })}</span>
 							</div>
 
 							<Button
@@ -342,7 +336,7 @@ export default function VirtualMCPsTable({
 								onClick={() => onOffsetChange(offset + limit)}
 								disabled={offset + limit >= totalCount}
 								data-testid="virtual-mcps-pagination-next-btn"
-								aria-label="Next page"
+								aria-label={t("common.nextPage")}
 							>
 								<ChevronRight className="size-3" />
 							</Button>
@@ -355,14 +349,15 @@ export default function VirtualMCPsTable({
 }
 
 function EndpointCell({ slug, baseUrl }: { slug: string; baseUrl: string }) {
+	const { t } = useTranslation("mcp");
 	const fullUrl = `${baseUrl}/mcp/${slug}`;
-	const { copy, copied } = useCopyToClipboard({ successMessage: "Endpoint copied" });
+	const { copy, copied } = useCopyToClipboard({ successMessage: t("common.endpointCopied") });
 	return (
 		<button
 			type="button"
 			onClick={() => copy(fullUrl)}
 			className="text-muted-foreground hover:text-foreground inline-flex cursor-pointer items-center gap-1.5 font-mono text-sm transition-colors"
-			aria-label="Copy endpoint URL"
+			aria-label={t("registry.sheet.copyEndpointAria")}
 			data-testid={`virtual-mcp-endpoint-copy-${slug}`}
 		>
 			/mcp/{slug}
@@ -374,6 +369,7 @@ function EndpointCell({ slug, baseUrl }: { slug: string; baseUrl: string }) {
 }
 
 function AssignedToCell({ vkIds, vkNameById, loading }: { vkIds: string[]; vkNameById: Map<string, string>; loading: boolean }) {
+	const { t } = useTranslation("mcp");
 	if (vkIds.length === 0) return <span className="text-muted-foreground text-sm">-</span>;
 	// Hold a stable placeholder until names resolve, so badges don't reflow from ids to names.
 	if (loading) return <div className="bg-muted/60 h-5 w-32 animate-pulse rounded" />;
@@ -384,7 +380,7 @@ function AssignedToCell({ vkIds, vkNameById, loading }: { vkIds: string[]; vkNam
 		<div className="flex flex-wrap items-center gap-1">
 			{visible.map((id) => (
 				<Badge key={id} variant="outline" className="max-w-[180px] font-normal">
-					<span className="truncate">Key: {vkNameById.get(id) ?? id}</span>
+					<span className="truncate">{t("virtualMcps.keyNamed", { name: vkNameById.get(id) ?? id })}</span>
 				</Badge>
 			))}
 			{overflow.length > 0 && (
@@ -394,7 +390,7 @@ function AssignedToCell({ vkIds, vkNameById, loading }: { vkIds: string[]; vkNam
 							+{overflow.length}
 						</Badge>
 					</TooltipTrigger>
-					<TooltipContent className="max-w-xs">{overflow.map((id) => `Key: ${vkNameById.get(id) ?? id}`).join(", ")}</TooltipContent>
+					<TooltipContent className="max-w-xs">{overflow.map((id) => t("virtualMcps.keyNamed", { name: vkNameById.get(id) ?? id })).join(", ")}</TooltipContent>
 				</Tooltip>
 			)}
 		</div>
@@ -414,12 +410,14 @@ function RowActions({
 	onEdit: () => void;
 	onDelete: () => void;
 }) {
+	const { t } = useTranslation("mcp");
+	const { t: tc } = useTranslation("common");
 	// A read-only user (no update or delete permission) gets no actions menu at all.
 	if (!canUpdate && !canDelete) return null;
 	return (
 		<DropdownMenu>
 			<DropdownMenuTrigger asChild>
-				<Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Virtual MCP actions" disabled={busy}>
+				<Button variant="ghost" size="icon" className="h-8 w-8" aria-label={t("virtualMcps.actionsAria")} disabled={busy}>
 					{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <MoreHorizontal className="h-4 w-4" />}
 				</Button>
 			</DropdownMenuTrigger>
@@ -433,7 +431,7 @@ function RowActions({
 						}}
 					>
 						<Pencil className="h-4 w-4" />
-						Edit
+						{tc("edit")}
 					</DropdownMenuItem>
 				)}
 				{canDelete && (
@@ -446,7 +444,7 @@ function RowActions({
 						}}
 					>
 						<Trash2 className="h-4 w-4" />
-						Delete
+						{tc("delete")}
 					</DropdownMenuItem>
 				)}
 			</DropdownMenuContent>
