@@ -646,6 +646,11 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				// Clear max_tokens since OpenAI doesn't use it
 				req.ResponsesParameters.Reasoning.MaxTokens = nil
 			}
+			// A model that always reasons rejects "none"; "minimal" normalizes to its lowest level.
+			if e := req.ResponsesParameters.Reasoning.Effort; e != nil && *e == schemas.ReasoningEffortNone &&
+				!caps.CanDisableReasoning(defaultCanDisableReasoning(capModel)) {
+				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(caps.NormalizeReasoningEffort(schemas.ReasoningEffortMinimal, defaultEffortControl(capModel)))
+			}
 
 			// summary:"none" is Anthropic-specific (maps to display:"omitted"); strip it for OpenAI.
 			if req.ResponsesParameters.Reasoning.Summary != nil && *req.ResponsesParameters.Reasoning.Summary == "none" {
@@ -707,8 +712,24 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			req.ResponsesParameters.Reasoning.Effort != nil {
 			effort = *req.ResponsesParameters.Reasoning.Effort
 		}
-		if topPUnsupported(caps, capModel, effort) {
+		if samplingParamUnsupported(caps, schemas.FieldTopP, capModel, effort) {
 			req.ResponsesParameters.TopP = nil
+		}
+		// Only OpenAI hosts gate these; third-party gpt-oss hosts accept them.
+		if base := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider); base == schemas.OpenAI || base == schemas.Azure {
+			if samplingParamUnsupported(caps, schemas.FieldTemperature, capModel, effort) {
+				req.ResponsesParameters.Temperature = nil
+			}
+			if samplingParamUnsupported(caps, schemas.FieldTopLogprobs, capModel, effort) {
+				req.ResponsesParameters.TopLogProbs = nil
+			}
+			if samplingParamUnsupported(caps, schemas.FieldLogprobs, capModel, effort) &&
+				slices.Contains(req.ResponsesParameters.Include, "message.output_text.logprobs") {
+				// Clone: Include shares its backing array with bifrostReq.Params.
+				req.ResponsesParameters.Include = slices.DeleteFunc(slices.Clone(req.ResponsesParameters.Include), func(s string) bool {
+					return s == "message.output_text.logprobs"
+				})
+			}
 		}
 	}
 
@@ -781,22 +802,25 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	return req
 }
 
-// topPUnsupported reports whether the model rejects top_p. The datasheet can mark
-// it unsupported outright, or conditionally via "when_effort_none" — accepted only
+// samplingParamUnsupported reports whether the model rejects a sampling field
+// (top_p, temperature, top_logprobs, logprobs). The datasheet can mark it
+// unsupported outright, or conditionally via "when_effort_none" — accepted only
 // while reasoning is off. The fallback is name detection: OpenAI reasoning models
-// (o1/o3 series) reject it, except GPT-5.x while effort is "none", which is the
-// default when omitted. The -pro and -codex variants always reason, so they always
-// strip. Gated on the OpenAI-family name rather than caps.SupportsReasoning: this
-// asks whether the API rejects top_p, which is not the same question for xAI/Groq.
-func topPUnsupported(caps schemas.ModelCaps, model, effort string) bool {
-	effortIsNone := effort == "" || effort == schemas.ReasoningEffortNone
+// (o1/o3 series, GPT-6) reject it, except GPT-5.x while effort is "none". An
+// omitted effort counts as "none" only where that is the model's default
+// (GPT-5.1 through 5.4). The -pro variants always reason, so they always strip.
+// Gated on the OpenAI-family name rather than caps.SupportsReasoning:
+// this asks whether the API rejects the field, which is not the same question for
+// xAI/Groq.
+func samplingParamUnsupported(caps schemas.ModelCaps, field, model, effort string) bool {
+	effortIsNone := effort == schemas.ReasoningEffortNone || (effort == "" && !omittedEffortReasons(model))
 	// An outright unsupported_fields entry outranks the conditional label: the
 	// row rejects the field whatever the effort. Probed with a false fallback so
 	// only an explicit true short-circuits.
-	if caps.FieldUnsupported(schemas.FieldTopP, false) {
+	if caps.FieldUnsupported(field, false) {
 		return true
 	}
-	if caps.FieldCondition(schemas.FieldTopP) == schemas.ConditionWhenEffortNone {
+	if caps.FieldCondition(field) == schemas.ConditionWhenEffortNone {
 		return !effortIsNone
 	}
 
@@ -807,12 +831,11 @@ func topPUnsupported(caps schemas.ModelCaps, model, effort string) bool {
 		_, parsedModel := schemas.ParseModelString(model, schemas.OpenAI)
 		modelLower := strings.ToLower(parsedModel)
 		if strings.Contains(modelLower, "gpt-5.") && effortIsNone &&
-			!strings.Contains(modelLower, "-pro") &&
-			!strings.Contains(modelLower, "-codex") {
+			!strings.Contains(modelLower, "-pro") {
 			fallback = false
 		}
 	}
-	return caps.FieldUnsupported(schemas.FieldTopP, fallback)
+	return caps.FieldUnsupported(field, fallback)
 }
 
 // filterUnsupportedTools removes tool types that OpenAI doesn't support

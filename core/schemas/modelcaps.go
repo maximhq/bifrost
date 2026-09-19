@@ -110,6 +110,9 @@ func (c ModelCaps) SupportsFastMode(fallback bool) bool {
 // compile instead of silently reading as "supported".
 const (
 	FieldTopP                 = "top_p"
+	FieldTemperature          = "temperature"
+	FieldTopLogprobs          = "top_logprobs"
+	FieldLogprobs             = "logprobs"
 	FieldPresencePenalty      = "presence_penalty"
 	FieldFrequencyPenalty     = "frequency_penalty"
 	FieldStop                 = "stop"
