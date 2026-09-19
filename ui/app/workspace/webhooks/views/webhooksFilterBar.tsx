@@ -7,13 +7,9 @@ import { ComboboxSelect } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
 import { WEBHOOK_EVENTS } from "@/lib/types/webhooks";
 import { Search, X } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 const EVENT_OPTIONS = WEBHOOK_EVENTS.map((event) => ({ label: event.value, value: event.value }));
-
-const STATUS_OPTIONS = [
-	{ label: "Enabled", value: "enabled" },
-	{ label: "Disabled", value: "disabled" },
-];
 
 export interface WebhooksFilterBarProps {
 	search: string;
@@ -29,13 +25,19 @@ export interface WebhooksFilterBarProps {
 }
 
 export default function WebhooksFilterBar(props: WebhooksFilterBarProps) {
+	const { t } = useTranslation("governance");
+	const statusOptions = [
+		{ label: t("webhooks.filterBar.enabled"), value: "enabled" },
+		{ label: t("webhooks.filterBar.disabled"), value: "disabled" },
+	];
+
 	return (
 		<div className="flex shrink-0 flex-wrap items-center gap-3">
 			<div className="relative max-w-sm min-w-[200px] flex-1">
 				<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 				<Input
-					aria-label="Search webhook endpoints"
-					placeholder="Search by name or URL"
+					aria-label={t("webhooks.filterBar.searchAria")}
+					placeholder={t("webhooks.filterBar.searchPlaceholder")}
 					value={props.search}
 					onChange={(e) => props.onSearchChange(e.target.value)}
 					className="pl-9"
@@ -50,7 +52,7 @@ export default function WebhooksFilterBar(props: WebhooksFilterBarProps) {
 				options={EVENT_OPTIONS}
 				value={props.eventFilter}
 				onValueChange={props.onEventFilterChange}
-				placeholder="All events"
+				placeholder={t("webhooks.filterBar.allEvents")}
 				className="h-9 w-[220px]"
 			/>
 			<ComboboxSelect
@@ -58,16 +60,16 @@ export default function WebhooksFilterBar(props: WebhooksFilterBarProps) {
 				disableSearch
 				compactTrigger
 				data-testid="webhooks-status-filter"
-				options={STATUS_OPTIONS}
+				options={statusOptions}
 				value={props.statusFilter}
 				onValueChange={props.onStatusFilterChange}
-				placeholder="All statuses"
+				placeholder={t("webhooks.filterBar.allStatuses")}
 				className="h-9 w-[170px]"
 			/>
 			{props.hasActiveFilters && (
 				<Button variant="ghost" size="sm" onClick={props.onClearFilters} data-testid="webhooks-clear-filters-btn" className="h-9">
 					<X className="h-4 w-4" />
-					Clear filters
+					{t("webhooks.filterBar.clear")}
 				</Button>
 			)}
 			{props.actions && <div className="flex items-center gap-2 sm:ml-auto">{props.actions}</div>}

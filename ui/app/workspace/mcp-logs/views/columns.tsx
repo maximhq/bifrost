@@ -8,6 +8,7 @@ import type { MCPToolLogEntry } from "@/lib/types/logs";
 import { ColumnDef, Row } from "@tanstack/react-table";
 import { format, formatDistanceToNow, isValid } from "date-fns";
 import { ArrowUpDown, MoreHorizontal, Trash2 } from "lucide-react";
+import type { TFunction } from "i18next";
 
 // Helper function to validate status and return a safe Status value
 const getValidatedStatus = (status: string): Status => {
@@ -24,6 +25,7 @@ export const createMCPColumns = (
 	handleDelete: (log: MCPToolLogEntry) => Promise<void>,
 	hasDeleteAccess: boolean,
 	customAppIcons: Record<string, string> = {},
+	t: TFunction<"observability"> = ((k: string) => k) as TFunction<"observability">,
 ): ColumnDef<MCPToolLogEntry>[] => [
 	{
 		accessorKey: "status",
@@ -32,7 +34,7 @@ export const createMCPColumns = (
 		maxSize: 8,
 		cell: ({ row }) => {
 			const status = getValidatedStatus(row.original.status);
-			const presentation = getMCPLogPresentation(row.original);
+			const presentation = getMCPLogPresentation(row.original, t);
 			return (
 				<div
 					title={presentation.label}
@@ -46,7 +48,7 @@ export const createMCPColumns = (
 		accessorKey: "timestamp",
 		header: ({ column }) => (
 			<Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
-				Time
+				{t("labels.time")}
 				<ArrowUpDown className="ml-2 h-4 w-4" />
 			</Button>
 		),
@@ -55,7 +57,7 @@ export const createMCPColumns = (
 			const timestamp = row.original.timestamp;
 			const date = timestamp ? new Date(timestamp) : null;
 			if (!date || !isValid(date)) {
-				return <div className="truncate text-xs">N/A</div>;
+				return <div className="truncate text-xs">{t("mcpLogs.detail.invalidDate")}</div>;
 			}
 			return (
 				<div className="flex flex-col leading-tight">
@@ -67,11 +69,11 @@ export const createMCPColumns = (
 	},
 	{
 		accessorKey: "tool_name",
-		header: "Tool Name",
+		header: t("labels.toolName"),
 		size: 300,
 		cell: ({ row }) => {
 			const toolName = row.getValue("tool_name") as string;
-			const presentation = getMCPLogPresentation(row.original);
+			const presentation = getMCPLogPresentation(row.original, t);
 			const preview = getMCPArgumentPreview(row.original);
 			return (
 				<div className="min-w-0 space-y-1 py-1">
@@ -93,16 +95,16 @@ export const createMCPColumns = (
 	},
 	{
 		accessorKey: "source",
-		header: "Source",
+		header: t("labels.source"),
 		size: 90,
-		cell: ({ row }) => <Badge variant="secondary">{row.original.source === "native" ? "Native" : "MCP"}</Badge>,
+		cell: ({ row }) => <Badge variant="secondary">{row.original.source === "native" ? t("mcpLogs.native") : "MCP"}</Badge>,
 	},
 	{
 		accessorKey: "server_label",
-		header: "Server",
+		header: t("labels.server"),
 		size: 150,
 		cell: ({ row }) => {
-			const serverLabel = row.original.source === "native" ? "Local" : (row.getValue("server_label") as string);
+			const serverLabel = row.original.source === "native" ? t("mcpLogs.local") : (row.getValue("server_label") as string);
 			return serverLabel ? (
 				<Badge variant="secondary" className="font-mono">
 					{serverLabel}
@@ -115,7 +117,7 @@ export const createMCPColumns = (
 	{
 		id: "app",
 		accessorKey: "app",
-		header: "App",
+		header: t("labels.app"),
 		size: 140,
 		cell: ({ row }) => {
 			const appKey = row.original.app || row.original.app_key;
@@ -133,13 +135,13 @@ export const createMCPColumns = (
 		accessorKey: "latency",
 		header: ({ column }) => (
 			<Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
-				Latency
+				{t("labels.latency")}
 				<ArrowUpDown className="ml-2 h-4 w-4" />
 			</Button>
 		),
 		size: 120,
 		cell: ({ row }) => {
-			const presentation = getMCPLogPresentation(row.original);
+			const presentation = getMCPLogPresentation(row.original, t);
 			const latency = presentation.policy ? presentation.inspectionDuration : (row.original.latency ?? presentation.observedDuration);
 			return (
 				<div className="pl-4 text-sm" title={presentation.description}>
@@ -148,7 +150,7 @@ export const createMCPColumns = (
 							? `${latency.toLocaleString()}ms`
 							: presentation.inspectionDuration != null
 								? `${presentation.inspectionDuration}ms`
-								: "Not recorded"}
+								: t("labels.nA")}
 					</span>
 					<span className="text-muted-foreground block text-xs">{presentation.durationLabel}</span>
 				</div>
@@ -157,27 +159,27 @@ export const createMCPColumns = (
 	},
 	{
 		accessorKey: "cost",
-		header: "Cost",
+		header: t("labels.cost"),
 		size: 120,
 		cell: ({ row }) => {
 			const cost = row.original.cost;
 			const isValidNumber = typeof cost === "number" && Number.isFinite(cost);
-			return <div className="font-mono text-sm">{isValidNumber ? `${cost.toFixed(4)}` : "N/A"}</div>;
+			return <div className="font-mono text-sm">{isValidNumber ? `${cost.toFixed(4)}` : t("labels.nA")}</div>;
 		},
 	},
 	{
 		id: "virtual_key",
-		header: "Virtual Key",
+		header: t("labels.virtualKey"),
 		size: 170,
 		cell: ({ row }) => {
 			const value = row.original.virtual_key?.name ?? row.original.virtual_key_name ?? row.original.virtual_key_id;
 			return <div className="max-w-[180px] truncate font-mono text-xs">{value || "-"}</div>;
 		},
 	},
-	{ id: "user", header: "User", size: 150, cell: ({ row }) => <AttributionCell name={row.original.user_name} id={row.original.user_id} /> },
+	{ id: "user", header: t("labels.user"), size: 150, cell: ({ row }) => <AttributionCell name={row.original.user_name} id={row.original.user_id} /> },
 	{
 		id: "team",
-		header: "Team",
+		header: t("labels.team"),
 		size: 150,
 		cell: ({ row }) => (
 			<AttributionCell
@@ -190,7 +192,7 @@ export const createMCPColumns = (
 	},
 	{
 		id: "customer",
-		header: "Customer",
+		header: t("labels.customer"),
 		size: 150,
 		cell: ({ row }) => (
 			<AttributionCell
@@ -203,7 +205,7 @@ export const createMCPColumns = (
 	},
 	{
 		id: "business_unit",
-		header: "Business Unit",
+		header: t("labels.businessUnit"),
 		size: 150,
 		cell: ({ row }) => (
 			<AttributionCell
@@ -216,11 +218,11 @@ export const createMCPColumns = (
 	},
 	{
 		id: "project",
-		header: "Project",
+		header: t("labels.project"),
 		size: 150,
 		cell: ({ row }) => <AttributionCell name={row.original.project_name} id={row.original.project_id} />,
 	},
-	{ id: "device", header: "Device", size: 150, cell: ({ row }) => <AttributionCell name={undefined} id={row.original.device_id} /> },
+	{ id: "device", header: t("labels.device"), size: 150, cell: ({ row }) => <AttributionCell name={undefined} id={row.original.device_id} /> },
 	...(hasDeleteAccess
 		? [
 				{
@@ -233,7 +235,7 @@ export const createMCPColumns = (
 							<div className="flex justify-center">
 								<DropdownMenu>
 									<DropdownMenuTrigger asChild onClick={(event) => event.stopPropagation()}>
-										<Button variant="ghost" size="icon" data-testid="log-actions-btn" aria-label="Log actions" className="h-7 w-7">
+										<Button variant="ghost" size="icon" data-testid="log-actions-btn" aria-label={t("mcpLogs.logActions")} className="h-7 w-7">
 											<MoreHorizontal className="h-4 w-4" />
 										</Button>
 									</DropdownMenuTrigger>
@@ -248,7 +250,7 @@ export const createMCPColumns = (
 											}}
 										>
 											<Trash2 className="h-4 w-4" />
-											Delete
+											{t("labels.delete")}
 										</DropdownMenuItem>
 									</DropdownMenuContent>
 								</DropdownMenu>

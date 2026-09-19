@@ -4,6 +4,7 @@ import { Image, ChevronLeft, ChevronRight } from "lucide-react";
 import { ImageMessage } from "@/components/chat/ImageMessage";
 import { Button } from "@/components/ui/button";
 import { RequestTypeLabels } from "@/lib/constants/logs";
+import { useTranslation } from "react-i18next";
 
 interface ImageGenerationInput {
 	prompt: string;
@@ -27,20 +28,21 @@ function getImageSrc(b64: string): string {
 }
 
 // Helper function to get method type label from request type
-function getMethodTypeLabel(requestType?: string): string {
-	if (!requestType) return "Image Generation";
+function getMethodTypeLabel(requestType: string | undefined, t: (key: string) => string): string {
+	if (!requestType) return t("logs.media.imageGeneration");
 
 	const normalizedType = requestType.toLowerCase();
 	if (normalizedType.includes("image_edit")) {
-		return RequestTypeLabels[normalizedType as keyof typeof RequestTypeLabels] || "Image Edit";
+		return RequestTypeLabels[normalizedType as keyof typeof RequestTypeLabels] || t("logs.media.imageEdit");
 	}
 	if (normalizedType.includes("image_variation")) {
-		return RequestTypeLabels[normalizedType as keyof typeof RequestTypeLabels] || "Image Variation";
+		return RequestTypeLabels[normalizedType as keyof typeof RequestTypeLabels] || t("logs.media.imageVariation");
 	}
-	return RequestTypeLabels[normalizedType as keyof typeof RequestTypeLabels] || "Image Generation";
+	return RequestTypeLabels[normalizedType as keyof typeof RequestTypeLabels] || t("logs.media.imageGeneration");
 }
 
 export default function ImageView({ imageInput, imageEditInput, imageVariationInput, imageOutput, requestType }: ImageViewProps) {
+	const { t } = useTranslation("observability");
 	const [currentIndex, setCurrentIndex] = useState(0);
 
 	// Get all valid images
@@ -49,7 +51,7 @@ export default function ImageView({ imageInput, imageEditInput, imageVariationIn
 	const currentImage = images[currentIndex] ?? null;
 
 	// Get method type label
-	const methodTypeLabel = getMethodTypeLabel(requestType);
+	const methodTypeLabel = getMethodTypeLabel(requestType, t);
 
 	// Clamp currentIndex when images array changes to ensure it's always valid
 	useEffect(() => {
@@ -124,7 +126,7 @@ export default function ImageView({ imageInput, imageEditInput, imageVariationIn
 						<div className="text-muted-foreground mb-2 text-xs font-medium">INPUT IMAGE</div>
 						<img
 							src={getImageSrc(imageVariationInput.image.image)}
-							alt="Input image"
+							alt={t("logs.media.inputImage")}
 							className="max-h-48 max-w-48 rounded border object-contain"
 						/>
 					</div>
@@ -156,13 +158,13 @@ export default function ImageView({ imageInput, imageEditInput, imageVariationIn
 
 								{totalImages > 1 && (
 									<div className="mt-3 flex items-center justify-center gap-4">
-										<Button variant="outline" size="sm" onClick={goToPrevious} aria-label="Previous image" title="Previous image">
+										<Button variant="outline" size="sm" onClick={goToPrevious} aria-label={t("logs.media.previousImage")} title={t("logs.media.previousImage")}>
 											<ChevronLeft className="h-4 w-4" />
 										</Button>
 										<span className="text-muted-foreground text-sm">
 											{currentIndex + 1} / {totalImages}
 										</span>
-										<Button variant="outline" size="sm" onClick={goToNext} aria-label="Next image" title="Next image">
+										<Button variant="outline" size="sm" onClick={goToNext} aria-label={t("logs.media.nextImage")} title={t("logs.media.nextImage")}>
 											<ChevronRight className="h-4 w-4" />
 										</Button>
 									</div>

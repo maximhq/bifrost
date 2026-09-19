@@ -7,6 +7,7 @@
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useCallback, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { FieldSelectorProps, RuleGroupType, RuleType } from "react-querybuilder";
 
 /**
@@ -31,6 +32,7 @@ function updateRuleValueAtPath(query: RuleGroupType, targetPath: number[], newVa
 }
 
 export function FieldSelector({ value, handleOnChange, options, rule, path, schema }: FieldSelectorProps) {
+	const { t } = useTranslation("observability");
 	// Check if this is a keyValue field (headers/params)
 	const fieldData = useMemo(() => schema?.fields?.find((f) => "value" in f && f.value === value), [schema?.fields, value]);
 	const isKeyValueField = fieldData && "inputType" in fieldData && fieldData.inputType === "keyValue";
@@ -72,7 +74,7 @@ export function FieldSelector({ value, handleOnChange, options, rule, path, sche
 		<div className="flex items-center gap-2">
 			<Select value={value || ""} onValueChange={handleOnChange}>
 				<SelectTrigger className="w-[180px]" data-testid="cel-builder-field-selector-select">
-					<SelectValue placeholder="Select field..." />
+					<SelectValue placeholder={t("celBuilder.selectField")} />
 				</SelectTrigger>
 				<SelectContent>
 					{options.map((option) => {
@@ -94,12 +96,12 @@ export function FieldSelector({ value, handleOnChange, options, rule, path, sche
 			</Select>
 			{isKeyValueField && (
 				<>
-					<span className="text-muted-foreground text-sm whitespace-nowrap">has key</span>
+					<span className="text-muted-foreground text-sm whitespace-nowrap">{t("celBuilder.hasKey")}</span>
 					<Input
 						type="text"
 						value={headerKey}
 						onChange={(e) => handleKeyChange(e.target.value)}
-						placeholder={`${fieldData?.label || "Key"} name (e.g., x-api-key)`}
+						placeholder={t("celBuilder.keyNamePlaceholder", { label: fieldData?.label || t("celBuilder.keyFallback") })}
 						className="w-[180px]"
 						data-testid="cel-builder-field-selector-key-input"
 					/>

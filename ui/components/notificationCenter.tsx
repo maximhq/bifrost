@@ -17,8 +17,10 @@ import type { NotificationSeverity } from "@/lib/types/notifications";
 import { cn } from "@/lib/utils";
 import { useNavigate } from "@tanstack/react-router";
 import { formatDistanceToNow } from "date-fns";
+import { zhCN } from "date-fns/locale";
 import { Check, CheckCircle2, CircleAlert, Inbox, Info, RefreshCw, TriangleAlert, X } from "lucide-react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 
 const severityStyles: Record<NotificationSeverity, string> = {
 	info: "bg-blue-500/10 text-blue-600 dark:text-blue-400",
@@ -35,6 +37,8 @@ const severityIcons = {
 };
 
 export default function NotificationCenter() {
+	const { t, i18n } = useTranslation("governance");
+	const { t: tCommon } = useTranslation("common");
 	const dispatch = useAppDispatch();
 	const navigate = useNavigate();
 	const [open, setOpen] = useState(false);
@@ -62,7 +66,7 @@ export default function NotificationCenter() {
 			<PopoverTrigger asChild>
 				<button
 					type="button"
-					aria-label={unreadCount ? `Notifications, ${unreadCount} unread` : "Notifications"}
+					aria-label={unreadCount ? t("notifications.ariaUnread", { count: unreadCount }) : t("notifications.aria")}
 					data-testid="topbar-notifications-btn"
 					// size-8 matches the theme toggle and the menu/user-pill trigger. Every topbar trigger has to
 					// share one box: Radix anchors sideOffset to the trigger's bounding box, so a shorter trigger
@@ -93,7 +97,7 @@ export default function NotificationCenter() {
 			>
 				<div className="flex h-12 items-center justify-between border-b px-4">
 					<div className="flex items-center gap-2">
-						<h2 className="text-sm font-semibold">Notifications</h2>
+						<h2 className="text-sm font-semibold">{t("notifications.title")}</h2>
 						{isFetching && !isLoading && <RefreshCw className="text-muted-foreground size-3 animate-spin" />}
 					</div>
 					{notifications.length > 0 && (
@@ -103,20 +107,20 @@ export default function NotificationCenter() {
 							className="text-muted-foreground hover:text-foreground cursor-pointer text-xs transition-colors"
 							data-testid="notifications-mark-all-read"
 						>
-							Mark all read
+							{t("notifications.markAllRead")}
 						</button>
 					)}
 				</div>
 
 				{isLoading ? (
 					<div className="text-muted-foreground flex h-44 items-center justify-center gap-2 text-sm">
-						<RefreshCw className="size-4 animate-spin" /> Loading notifications
+						<RefreshCw className="size-4 animate-spin" /> {t("notifications.loading")}
 					</div>
 				) : isError ? (
 					<div className="flex h-44 flex-col items-center justify-center gap-3 px-6 text-center">
-						<p className="text-muted-foreground text-sm">Notifications could not be loaded.</p>
+						<p className="text-muted-foreground text-sm">{t("notifications.loadFailed")}</p>
 						<button type="button" onClick={() => refetch()} className="text-primary cursor-pointer text-sm font-medium hover:underline">
-							Try again
+							{tCommon("retry")}
 						</button>
 					</div>
 				) : notifications.length === 0 ? (
@@ -124,8 +128,8 @@ export default function NotificationCenter() {
 						<span className="bg-muted text-muted-foreground flex size-9 items-center justify-center rounded-full">
 							<Check className="size-4" />
 						</span>
-						<p className="text-sm font-medium">You&apos;re all caught up</p>
-						<p className="text-muted-foreground text-xs">New notifications will appear here.</p>
+						<p className="text-sm font-medium">{t("notifications.emptyTitle")}</p>
+						<p className="text-muted-foreground text-xs">{t("notifications.emptyDescription")}</p>
 					</div>
 				) : (
 					<ScrollArea className="h-[min(26rem,calc(100vh-8rem))]">
@@ -165,20 +169,25 @@ export default function NotificationCenter() {
 											<span className="min-w-0 flex-1 pr-5">
 												<span className="flex items-start gap-2">
 													<span className={cn("min-w-0 flex-1 text-sm", !isRead && "font-semibold")}>{notification.title}</span>
-													{!isRead && <span className="bg-primary mt-1.5 size-1.5 shrink-0 rounded-full" aria-label="Unread" />}
+													{!isRead && <span className="bg-primary mt-1.5 size-1.5 shrink-0 rounded-full" aria-label={t("notifications.unread")} />}
 												</span>
 												<span className="text-muted-foreground mt-0.5 line-clamp-3 block text-xs leading-relaxed">
 													{notification.message}
 												</span>
 												<span className="text-muted-foreground mt-1.5 flex items-center gap-2 text-[11px]">
-													<span>{formatDistanceToNow(new Date(notification.created_at), { addSuffix: true })}</span>
+													<span>
+														{formatDistanceToNow(new Date(notification.created_at), {
+															addSuffix: true,
+															locale: i18n.language.startsWith("zh") ? zhCN : undefined,
+														})}
+													</span>
 													{notification.action_label && <span className="text-primary font-medium">{notification.action_label}</span>}
 												</span>
 											</span>
 										</button>
 										<button
 											type="button"
-											aria-label={`Dismiss ${notification.title}`}
+											aria-label={t("notifications.dismissAria", { title: notification.title })}
 											onClick={() => dispatch(removeNotification(notification.id))}
 											data-testid={`notification-dismiss-${notification.id}`}
 											className="text-muted-foreground hover:bg-muted hover:text-foreground absolute top-2.5 right-2.5 cursor-pointer rounded p-1 opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100"
@@ -200,7 +209,7 @@ export default function NotificationCenter() {
 							className="text-muted-foreground hover:text-destructive cursor-pointer text-xs transition-colors"
 							data-testid="notifications-clear-all"
 						>
-							Clear all
+							{t("notifications.clearAll")}
 						</button>
 					</div>
 				)}

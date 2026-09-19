@@ -13,6 +13,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { Plus, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useForm, type Resolver } from "react-hook-form";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 // Known beta headers with their prefixes, descriptions, and default support per provider.
@@ -117,6 +118,7 @@ interface BetaHeadersFormFragmentProps {
 }
 
 export function BetaHeadersFormFragment({ provider }: BetaHeadersFormFragmentProps) {
+	const { t } = useTranslation("models");
 	const dispatch = useAppDispatch();
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	const [updateProvider, { isLoading: isUpdatingProvider }] = useUpdateProviderMutation();
@@ -186,11 +188,11 @@ export function BetaHeadersFormFragment({ provider }: BetaHeadersFormFragmentPro
 		)
 			.unwrap()
 			.then(() => {
-				toast.success("Beta header configuration updated successfully");
+				toast.success(t("providers.betaHeadersUpdated"));
 				form.reset(data);
 			})
 			.catch((err) => {
-				toast.error("Failed to update beta header configuration", {
+				toast.error(t("providers.failedUpdateBetaHeaders"), {
 					description: getErrorMessage(err),
 				});
 			});
@@ -231,15 +233,15 @@ export function BetaHeadersFormFragment({ provider }: BetaHeadersFormFragmentPro
 
 		// Validate
 		if (KNOWN_PREFIXES.has(prefix)) {
-			setNewPrefixError("This is a known header; use the override dropdown above instead");
+			setNewPrefixError(t("providers.betaHeaders.knownHeaderError"));
 			return;
 		}
 		if (overrides[prefix] !== undefined) {
-			setNewPrefixError("This prefix already exists");
+			setNewPrefixError(t("providers.betaHeaders.prefixExists"));
 			return;
 		}
 		if (!/^[a-z0-9-]+$/.test(prefix)) {
-			setNewPrefixError("Prefix must contain only lowercase letters, numbers, and hyphens");
+			setNewPrefixError(t("providers.betaHeaders.prefixCharset"));
 			return;
 		}
 
@@ -247,7 +249,7 @@ export function BetaHeadersFormFragment({ provider }: BetaHeadersFormFragmentPro
 		form.setValue("beta_header_overrides", { ...current, [prefix]: true }, { shouldDirty: true });
 		setNewPrefix("");
 		setNewPrefixError(null);
-	}, [newPrefix, overrides, form]);
+	}, [newPrefix, overrides, form, t]);
 
 	const getSelectValue = (prefix: string): string => {
 		const override = overrides[prefix];
@@ -261,17 +263,14 @@ export function BetaHeadersFormFragment({ provider }: BetaHeadersFormFragmentPro
 		<Form {...form}>
 			<form onSubmit={form.handleSubmit(onSubmit)} data-testid="provider-config-beta-headers-content">
 				<div className="space-y-2 px-4 pb-6 md:px-6">
-					<p className="text-muted-foreground text-xs">
-						Configure which Anthropic beta headers are allowed for this provider. Override the defaults when a provider adds or removes
-						support for a beta feature.
-					</p>
+					<p className="text-muted-foreground text-xs">{t("providers.betaHeaders.intro")}</p>
 					<div className="rounded-md border">
 						<table className="w-full text-sm">
 							<thead>
 								<tr className="border-b">
-									<th className="px-3 py-2 text-left font-medium">Beta Header</th>
-									<th className="px-3 py-2 text-left font-medium">Default</th>
-									<th className="w-[180px] px-3 py-2 text-left font-medium">Override</th>
+									<th className="px-3 py-2 text-left font-medium">{t("providers.betaHeaders.colHeader")}</th>
+									<th className="px-3 py-2 text-left font-medium">{t("providers.betaHeaders.colDefault")}</th>
+									<th className="w-[180px] px-3 py-2 text-left font-medium">{t("providers.betaHeaders.colOverride")}</th>
 								</tr>
 							</thead>
 							<tbody>
@@ -280,12 +279,14 @@ export function BetaHeadersFormFragment({ provider }: BetaHeadersFormFragmentPro
 										<td className="px-3 py-2">
 											<div className="flex flex-col gap-0.5">
 												<span className="font-mono text-xs">{row.prefix}*</span>
-												<span className="text-muted-foreground text-xs">{row.description}</span>
+												<span className="text-muted-foreground text-xs">
+													{t(`providers.betaHeaders.known.${row.prefix}.description`)}
+												</span>
 											</div>
 										</td>
 										<td className="px-3 py-2">
 											<Badge variant={row.defaultSupported ? "default" : "secondary"} className="text-xs">
-												{row.defaultSupported ? "Supported" : "Unsupported"}
+												{row.defaultSupported ? t("providers.betaHeaders.supported") : t("providers.betaHeaders.unsupported")}
 											</Badge>
 										</td>
 										<td className="w-[180px] px-3 py-2">
@@ -301,9 +302,9 @@ export function BetaHeadersFormFragment({ provider }: BetaHeadersFormFragmentPro
 													<SelectValue />
 												</SelectTrigger>
 												<SelectContent>
-													<SelectItem value="default">Default</SelectItem>
-													<SelectItem value="enabled">Supported</SelectItem>
-													<SelectItem value="disabled">Unsupported</SelectItem>
+													<SelectItem value="default">{t("providers.betaHeaders.colDefault")}</SelectItem>
+													<SelectItem value="enabled">{t("providers.betaHeaders.supported")}</SelectItem>
+													<SelectItem value="disabled">{t("providers.betaHeaders.unsupported")}</SelectItem>
 												</SelectContent>
 											</Select>
 										</td>
@@ -314,12 +315,12 @@ export function BetaHeadersFormFragment({ provider }: BetaHeadersFormFragmentPro
 										<td className="px-3 py-2">
 											<div className="flex flex-col gap-0.5">
 												<span className="font-mono text-xs">{prefix}*</span>
-												<span className="text-muted-foreground text-xs">Custom header</span>
+												<span className="text-muted-foreground text-xs">{t("providers.betaHeaders.customHeader")}</span>
 											</div>
 										</td>
 										<td className="px-3 py-2">
 											<Badge variant="outline" className="text-xs">
-												Custom
+												{t("providers.betaHeaders.customBadge")}
 											</Badge>
 										</td>
 										<td className="w-[180px] px-3 py-2">
@@ -336,8 +337,8 @@ export function BetaHeadersFormFragment({ provider }: BetaHeadersFormFragmentPro
 														<SelectValue />
 													</SelectTrigger>
 													<SelectContent>
-														<SelectItem value="enabled">Supported</SelectItem>
-														<SelectItem value="disabled">Unsupported</SelectItem>
+														<SelectItem value="enabled">{t("providers.betaHeaders.supported")}</SelectItem>
+														<SelectItem value="disabled">{t("providers.betaHeaders.unsupported")}</SelectItem>
 													</SelectContent>
 												</Select>
 												<Button
@@ -348,7 +349,7 @@ export function BetaHeadersFormFragment({ provider }: BetaHeadersFormFragmentPro
 													disabled={!hasUpdateProviderAccess}
 													onClick={() => removeCustomPrefix(prefix)}
 													data-testid={`provider-beta-remove-prefix-btn-${prefix.replace(/-/g, "")}`}
-													aria-label={`Remove custom prefix ${prefix}`}
+													aria-label={t("providers.betaHeaders.removeCustomPrefix", { prefix })}
 												>
 													<Trash2 className="h-3.5 w-3.5" />
 												</Button>
@@ -363,7 +364,7 @@ export function BetaHeadersFormFragment({ provider }: BetaHeadersFormFragmentPro
 					<div className="flex items-start gap-2 pt-2">
 						<div className="flex-1">
 							<Input
-								placeholder="Add custom beta header prefix (e.g. new-feature-)"
+								placeholder={t("providers.betaHeaders.customPrefixPlaceholder")}
 								value={newPrefix}
 								onChange={(e) => {
 									setNewPrefix(e.target.value);
@@ -378,7 +379,7 @@ export function BetaHeadersFormFragment({ provider }: BetaHeadersFormFragmentPro
 								disabled={!hasUpdateProviderAccess}
 								className="h-8 text-xs"
 								data-testid="provider-beta-custom-prefix-input"
-								aria-label="Custom beta header prefix"
+								aria-label={t("providers.betaHeaders.customPrefixAria")}
 								aria-describedby={newPrefixError ? "custom-prefix-error" : undefined}
 							/>
 							{newPrefixError && (
@@ -397,7 +398,7 @@ export function BetaHeadersFormFragment({ provider }: BetaHeadersFormFragmentPro
 							data-testid="provider-beta-add-prefix-btn"
 						>
 							<Plus className="mr-1 h-3.5 w-3.5" />
-							Add
+							{t("providers.betaHeaders.add")}
 						</Button>
 					</div>
 				</div>
@@ -409,7 +410,7 @@ export function BetaHeadersFormFragment({ provider }: BetaHeadersFormFragmentPro
 						isLoading={isUpdatingProvider}
 						data-testid="provider-beta-save-btn"
 					>
-						Save Beta Header Configuration
+						{t("providers.saveBetaHeaderConfig")}
 					</Button>
 				</div>
 			</form>

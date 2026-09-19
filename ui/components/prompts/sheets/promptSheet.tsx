@@ -7,6 +7,7 @@ import { useCreatePromptMutation, useUpdatePromptMutation } from "@/lib/store/ap
 import { Prompt } from "@/lib/types/prompts";
 import { useEffect } from "react";
 import { useForm } from "react-hook-form";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 interface PromptFormData {
@@ -22,6 +23,8 @@ interface PromptSheetProps {
 }
 
 export function PromptSheet({ open, onOpenChange, prompt, folderId, onSaved }: PromptSheetProps) {
+	const { t } = useTranslation("config");
+	const { t: tc } = useTranslation("common");
 	const [createPrompt, { isLoading: isCreating }] = useCreatePromptMutation();
 	const [updatePrompt, { isLoading: isUpdating }] = useUpdatePromptMutation();
 
@@ -50,19 +53,19 @@ export function PromptSheet({ open, onOpenChange, prompt, folderId, onSaved }: P
 					id: prompt.id,
 					data: { name: data.name.trim() },
 				}).unwrap();
-				toast.success("Prompt updated");
+				toast.success(t("promptRepo.toastPromptUpdated"));
 				onSaved();
 			} else {
 				const result = await createPrompt({
 					name: data.name.trim(),
 					...(folderId ? { folder_id: folderId } : {}),
 				}).unwrap();
-				toast.success("Prompt created");
+				toast.success(t("promptRepo.toastPromptCreated"));
 				onSaved(result.prompt.id);
 			}
 			onOpenChange(false);
 		} catch (err) {
-			toast.error(`Failed to ${isEditing ? "update" : "create"} prompt`, {
+			toast.error(t("promptRepo.toastPromptFailed", { action: isEditing ? t("promptRepo.updateAction") : t("promptRepo.createAction") }), {
 				description: getErrorMessage(err),
 			});
 		}
@@ -79,23 +82,27 @@ export function PromptSheet({ open, onOpenChange, prompt, folderId, onSaved }: P
 			>
 				<form onSubmit={handleSubmit(onSubmit)} className="flex grow flex-col">
 					<SheetHeader className="flex flex-col items-start pt-8" headerClassName="px-4 md:px-8">
-						<SheetTitle>{isEditing ? "Rename Prompt" : "Create Prompt"}</SheetTitle>
+						<SheetTitle>{isEditing ? t("promptRepo.renamePrompt") : t("promptRepo.createPrompt")}</SheetTitle>
 						<SheetDescription>
-							{isEditing ? "Update the prompt name." : folderId ? "Create a new prompt in this folder." : "Create a new prompt."}
+							{isEditing
+								? t("promptRepo.updatePromptName")
+								: folderId
+									? t("promptRepo.createPromptInFolder")
+									: t("promptRepo.createPromptDesc")}
 						</SheetDescription>
 					</SheetHeader>
 
 					<div className="flex grow flex-col gap-6">
 						<div className="grow space-y-4 px-4 md:px-8">
 							<div className="space-y-2">
-								<Label htmlFor="name">Name</Label>
+								<Label htmlFor="name">{t("promptRepo.name")}</Label>
 								<Input
 									id="name"
 									data-testid="prompt-name-input"
-									placeholder="Customer Support Assistant"
+									placeholder={t("promptRepo.promptNamePlaceholder")}
 									{...register("name", {
-										required: "Prompt name is required",
-										validate: (v) => v.trim().length > 0 || "Prompt name cannot be blank",
+										required: t("promptRepo.promptNameRequired"),
+										validate: (v) => v.trim().length > 0 || t("promptRepo.promptNameBlank"),
 									})}
 									autoFocus
 								/>
@@ -105,10 +112,10 @@ export function PromptSheet({ open, onOpenChange, prompt, folderId, onSaved }: P
 
 						<SheetFooter className="flex flex-row items-center justify-end gap-2 border-t px-4 py-4 md:px-8">
 							<Button type="button" variant="outline" data-testid="prompt-cancel" onClick={() => onOpenChange(false)}>
-								Cancel
+								{tc("cancel")}
 							</Button>
 							<Button type="submit" data-testid="prompt-submit" disabled={isLoading}>
-								{isLoading ? "Saving..." : isEditing ? "Update" : "Create"}
+								{isLoading ? t("promptRepo.savingDots") : isEditing ? t("promptRepo.update") : tc("create")}
 							</Button>
 						</SheetFooter>
 					</div>

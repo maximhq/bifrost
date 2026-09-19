@@ -4,6 +4,8 @@ import { getErrorMessage } from "@/lib/store/apis/baseApi";
 import { useCompleteOAuthFlowMutation, useLazyGetOAuthConfigStatusQuery } from "@/lib/store/apis/mcpApi";
 import { AlertTriangle, CheckCircle2, ExternalLink, KeyRound, Loader2, RefreshCw, ShieldCheck, XCircle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
+import i18n from "@/lib/i18n";
 import { IconWrap, InfoBox, StepDots, UiVariant } from "./authorizerUi";
 
 interface OAuth2AuthorizerProps {
@@ -52,6 +54,8 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 	initialPopup,
 	isReauthorize,
 }) => {
+	const { t } = useTranslation("mcp");
+	const { t: tc } = useTranslation("common");
 	// Both auth types start on the confirm step and only open the popup from a
 	// direct onClick: window.open() called from anywhere else (e.g. an effect
 	// reacting to an async fetch resolving) loses the browser's "user
@@ -74,9 +78,9 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 		try {
 			return new URL(authorizeUrl).host;
 		} catch {
-			return "the OAuth provider";
+			return t("registry.authorizer.oauth.providerFallback");
 		}
-	}, [authorizeUrl]);
+	}, [authorizeUrl, t]);
 
 	const stopPolling = useCallback(() => {
 		if (pollIntervalRef.current) {
@@ -131,7 +135,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 				stopPolling();
 				await handleOAuthComplete();
 			} else if (result.status === "failed" || result.status === "expired") {
-				handleOAuthFailed(`Authorization ${result.status}`);
+				handleOAuthFailed(i18n.t("registry.authorizer.oauth.authorizationStatus", { ns: "mcp", status: result.status }));
 			}
 		} catch (error) {
 			console.error("Error checking OAuth status:", error);
@@ -149,7 +153,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 						await handleOAuthComplete();
 					} else if (result.status === "failed" || result.status === "expired") {
 						stopPolling();
-						handleOAuthFailed("Authorization failed");
+						handleOAuthFailed(i18n.t("registry.toast.authorizationFailed", { ns: "mcp" }));
 					}
 				} catch {
 					// transient error — let polling continue
@@ -206,7 +210,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 				return;
 			}
 			if (event.data?.type === "oauth_failed") {
-				handleOAuthFailed(event.data.error ?? "OAuth flow failed");
+				handleOAuthFailed(event.data.error ?? i18n.t("registry.authorizer.oauth.flowFailed", { ns: "mcp" }));
 			}
 		};
 		window.addEventListener("message", handleMessage);
@@ -237,21 +241,21 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 	const isPerUserReauth = isPerUserOauth && isReauthorize;
 
 	const titles: Record<Status, string> = {
-		confirm: isPerUserReauth ? "Refresh admin credential" : "Authorize connection",
-		polling: "Waiting for authorization",
-		blocked: "Popup blocked",
-		success: "Connection authorized",
-		failed: "Authorization failed",
+		confirm: isPerUserReauth ? t("registry.actions.refreshAdminCredential") : t("registry.authorizer.oauth.authorizeConnection"),
+		polling: t("registry.authorizer.oauth.waiting"),
+		blocked: t("registry.authorizer.oauth.popupBlocked"),
+		success: t("registry.authorizer.oauth.connectionAuthorized"),
+		failed: t("registry.toast.authorizationFailed"),
 	};
 
 	const subtitles: Record<Status, string> = {
 		confirm: isPerUserReauth
-			? "Sign in again to renew Bifrost's own discovery credential."
-			: "Sign in to verify the OAuth setup and discover available tools.",
-		polling: "Complete sign-in in the popup window to continue.",
-		blocked: "Allow popups for this site, then try again.",
-		success: "OAuth authorization completed successfully.",
-		failed: "The OAuth flow did not complete.",
+			? t("registry.authorizer.oauth.confirmRenew")
+			: t("registry.authorizer.oauth.confirmVerify"),
+		polling: t("registry.authorizer.oauth.polling"),
+		blocked: t("registry.authorizer.oauth.blocked"),
+		success: t("registry.authorizer.oauth.success"),
+		failed: t("registry.authorizer.oauth.failed"),
 	};
 
 	return (
@@ -290,22 +294,24 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 						<>
 							<InfoBox icon={<KeyRound className="size-4" />}>
 								<p>
-									We'll open <strong>{authorizationHost}</strong> to {isPerUserReauth ? "renew" : "verify"} the OAuth setup
-									{isPerUserReauth ? "" : " and discover available tools"}.
+									<Trans
+										t={t}
+										i18nKey={isPerUserReauth ? "registry.authorizer.oauth.openHostRenew" : "registry.authorizer.oauth.openHostVerify"}
+										values={{ host: authorizationHost }}
+										components={{ strong: <strong /> }}
+									/>
 								</p>
 								<p className="text-muted-foreground/80 text-xs">
-									{isPerUserReauth
-										? "This only affects Bifrost's own sign-in used for periodic tool discovery. Each end user's OAuth session is separate and unaffected; you only need to do this if the admin credential badge shows it's expired, but re-running it any time is safe."
-										: "Bifrost keeps this sign-in on file to periodically refresh the available tool list. Each user still authenticates individually when they use this server; this credential is never used for their requests."}
+									{isPerUserReauth ? t("registry.authorizer.oauth.renewHint") : t("registry.authorizer.oauth.verifyHint")}
 								</p>
 							</InfoBox>
 							<div className="flex justify-end gap-2">
 								<Button size="sm" variant="outline" onClick={handleCancel} data-testid="per-user-oauth-cancel">
-									Cancel
+									{tc("cancel")}
 								</Button>
 								<Button size="sm" onClick={openPopup} data-testid="per-user-oauth-confirm">
 									<ExternalLink className="size-3.5" />
-									Continue
+									{t("common.continue")}
 								</Button>
 							</div>
 						</>
@@ -315,13 +321,13 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 					{status === "polling" && (
 						<>
 							<InfoBox icon={<Loader2 className="size-4 animate-spin" />}>
-								<p>This dialog will update automatically once the provider redirects back.</p>
-								<p className="text-muted-foreground/80 text-xs">Keep the popup open until authorization is complete.</p>
+								<p>{t("registry.authorizer.oauth.pollingBody")}</p>
+								<p className="text-muted-foreground/80 text-xs">{t("registry.authorizer.oauth.keepPopupOpen")}</p>
 							</InfoBox>
 							<div className="flex items-center justify-between">
 								<StepDots active={2} total={3} />
 								<Button size="sm" variant="outline" onClick={handleCancel} data-testid="oauth-polling-cancel-btn">
-									Cancel
+									{tc("cancel")}
 								</Button>
 							</div>
 						</>
@@ -331,16 +337,16 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 					{status === "blocked" && (
 						<>
 							<InfoBox variant="warning" icon={<AlertTriangle className="size-4" />}>
-								<p>Your browser prevented the authorization window from opening.</p>
-								<p className="text-xs opacity-80">Enable popups for this site in your browser settings, then try again.</p>
+								<p>{t("registry.authorizer.oauth.blockedBody")}</p>
+								<p className="text-xs opacity-80">{t("registry.authorizer.oauth.enablePopups")}</p>
 							</InfoBox>
 							<div className="flex justify-end gap-2">
 								<Button size="sm" variant="outline" onClick={handleCancel} data-testid="oauth-pending-cancel-btn">
-									Cancel
+									{tc("cancel")}
 								</Button>
 								<Button size="sm" onClick={openPopup} data-testid="oauth-open-window-btn">
 									<ExternalLink className="size-3.5" />
-									Open authorization
+									{t("registry.authorizer.oauth.openAuthorization")}
 								</Button>
 							</div>
 						</>
@@ -349,8 +355,8 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 					{/* Success */}
 					{status === "success" && (
 						<InfoBox variant="success" icon={<CheckCircle2 className="size-4" />}>
-							<p className="font-medium">Finishing setup and syncing available tools.</p>
-							<p className="text-xs opacity-80">You can close this dialog; setup will complete in the background.</p>
+							<p className="font-medium">{t("registry.authorizer.oauth.finishing")}</p>
+							<p className="text-xs opacity-80">{t("registry.authorizer.oauth.closeBackground")}</p>
 						</InfoBox>
 					)}
 
@@ -358,16 +364,16 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 					{status === "failed" && (
 						<>
 							<InfoBox variant="danger" icon={<XCircle className="size-4" />}>
-								<p className="font-medium">Authorization did not complete.</p>
-								<p className="text-xs opacity-80">{errorMessage ?? "Check your OAuth provider configuration or try again."}</p>
+								<p className="font-medium">{t("registry.authorizer.oauth.didNotComplete")}</p>
+								<p className="text-xs opacity-80">{errorMessage ?? t("registry.authorizer.oauth.checkProvider")}</p>
 							</InfoBox>
 							<div className="flex justify-end gap-2">
 								<Button size="sm" variant="outline" onClick={handleCancel} data-testid="oauth-failed-close-btn">
-									Close
+									{tc("close")}
 								</Button>
 								<Button size="sm" onClick={handleRetry} data-testid="oauth-failed-retry-btn">
 									<RefreshCw className="size-3.5" />
-									Retry
+									{t("common.retry")}
 								</Button>
 							</div>
 						</>

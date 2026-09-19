@@ -17,6 +17,7 @@ import { useDebouncedValue } from "@/hooks/useDebounce";
 import { cn } from "@/lib/utils";
 import { PromptDeploymentsAccordionItem } from "@enterprise/components/prompt-deployments/promptDeploymentsAccordionItem";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ApiKeySelectorView } from "../components/apiKeySelectorView";
 import { VariablesTableView } from "../components/variablesTableView";
 import { usePromptContext } from "../context";
@@ -24,6 +25,7 @@ import { usePromptContext } from "../context";
 const VIRTUAL_KEY_PAGE_SIZE = 20;
 
 export function SettingsPanel() {
+	const { t } = useTranslation("config");
 	const {
 		provider,
 		setProvider,
@@ -201,7 +203,7 @@ export function SettingsPanel() {
 							data-testid="prompts-configuration-trigger"
 							className="text-muted-foreground shrink-0 py-3 pr-1 text-xs font-medium uppercase hover:no-underline"
 						>
-							<span className="min-w-0 flex-1 text-left font-semibold">Configuration</span>
+							<span className="min-w-0 flex-1 text-left font-semibold">{t("promptRepo.configuration")}</span>
 						</AccordionTrigger>
 						<AccordionContent
 							containerClassName="data-[state=open]:flex data-[state=open]:min-h-0 data-[state=open]:flex-1 data-[state=open]:flex-col"
@@ -209,18 +211,18 @@ export function SettingsPanel() {
 						>
 							<div className="space-y-6">
 								<div className="flex flex-col gap-2" data-testid="settings-provider">
-									<Label className="text-muted-foreground text-xs font-medium uppercase">Provider</Label>
+									<Label className="text-muted-foreground text-xs font-medium uppercase">{t("promptRepo.provider")}</Label>
 									<ComboboxSelect
 										options={providerOptions}
 										value={provider}
 										onValueChange={(v) => v && onProviderChange(v)}
-										placeholder="Select provider"
+										placeholder={t("caching.selectProvider")}
 										hideClear
 									/>
 								</div>
 
 								<div className="flex flex-col gap-2" data-testid="settings-model">
-									<Label className="text-muted-foreground text-xs font-medium uppercase">Model</Label>
+									<Label className="text-muted-foreground text-xs font-medium uppercase">{t("promptRepo.model")}</Label>
 									<ModelMultiselect
 										provider={provider}
 										keys={filterKeys && filterKeys.length > 0 ? filterKeys : undefined}
@@ -228,7 +230,7 @@ export function SettingsPanel() {
 										value={model}
 										onChange={(v) => onModelChange(v)}
 										isSingleSelect
-										placeholder={!provider ? "Select a provider first" : "Select model"}
+										placeholder={!provider ? t("caching.selectProviderFirst") : t("promptRepo.selectModel")}
 										disabled={!provider}
 										unfiltered={true}
 									/>
@@ -258,9 +260,9 @@ export function SettingsPanel() {
 									<>
 										<Separator />
 										<div className="flex flex-col gap-2" data-testid="settings-required-headers">
-											<Label className="text-muted-foreground text-xs font-medium uppercase">Required Headers</Label>
+											<Label className="text-muted-foreground text-xs font-medium uppercase">{t("promptRepo.requiredHeaders")}</Label>
 											<p className="text-muted-foreground text-xs">
-												These headers are required by the server. Provide a value for each to send requests from the playground.
+												{t("promptRepo.requiredHeadersHelp")}
 											</p>
 											<div className="flex flex-col gap-2">
 												{requiredHeaders.map((name) => (
@@ -272,7 +274,7 @@ export function SettingsPanel() {
 															id={`required-header-${name}`}
 															value={customHeaders[name] ?? ""}
 															onChange={(e) => setCustomHeaders((prev) => ({ ...prev, [name]: e.target.value }))}
-															placeholder="value"
+															placeholder={t("promptRepo.valuePlaceholder")}
 															className="h-8 flex-1"
 														/>
 													</div>

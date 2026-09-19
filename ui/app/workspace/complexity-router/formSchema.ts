@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n";
 import {
 	AnalyzerConfig,
 	DEFAULT_LLM_CONFIG,
@@ -15,6 +16,16 @@ import {
 	parseSemanticTimeoutMs,
 } from "@/lib/types/complexityRouter";
 import { z } from "zod";
+
+function complexityT(key: string, opts?: Record<string, unknown>) {
+	return i18n.t(`routing.complexityUi.${key}`, { ns: "models", ...opts });
+}
+
+function tierLabel(key: KeywordListKey) {
+	if (key === "simple_keywords") return complexityT("tierSimple");
+	if (key === "medium_keywords") return complexityT("tierMedium");
+	return complexityT("tierComplex");
+}
 
 // Form-owned duration values are always a single unit (the controls append
 // "ms"), so a plain positive-duration check is enough.
@@ -45,17 +56,20 @@ const semanticSchema = z.object({
 	// the default while the operator is still typing.
 	timeout: z
 		.string()
-		.min(1, "Enter an embedding timeout")
-		.refine((value) => isPositiveDurationString(value), `Enter a timeout greater than 0 and at most ${MAX_SEMANTIC_TIMEOUT_MS}ms`)
+		.min(1, { error: () => complexityT("enterEmbeddingTimeout") })
+		.refine((value) => isPositiveDurationString(value), { error: () => complexityT("timeoutGtZeroMax", { max: MAX_SEMANTIC_TIMEOUT_MS }) })
 		.optional(),
-	min_similarity: z.number({ error: "Enter a number between 0 and 1" }).min(0, "Must be 0 or greater").lt(1, "Must be less than 1"),
+	min_similarity: z
+		.number({ error: () => complexityT("similarityNumber") })
+		.min(0, { error: () => complexityT("mustBeZeroOrGreater") })
+		.lt(1, { error: () => complexityT("mustBeLessThanOne") }),
 	message_history_count: z
 		.number({
-			error: `Enter a number between ${MIN_SEMANTIC_MESSAGE_HISTORY} and ${MAX_SEMANTIC_MESSAGE_HISTORY}`,
+			error: () => complexityT("historyRange", { min: MIN_SEMANTIC_MESSAGE_HISTORY, max: MAX_SEMANTIC_MESSAGE_HISTORY }),
 		})
-		.int("Must be a whole number")
-		.min(MIN_SEMANTIC_MESSAGE_HISTORY, `Must be at least ${MIN_SEMANTIC_MESSAGE_HISTORY}`)
-		.max(MAX_SEMANTIC_MESSAGE_HISTORY, `Must be at most ${MAX_SEMANTIC_MESSAGE_HISTORY}`),
+		.int({ error: () => complexityT("mustBeWholeNumber") })
+		.min(MIN_SEMANTIC_MESSAGE_HISTORY, { error: () => complexityT("mustBeAtLeast", { min: MIN_SEMANTIC_MESSAGE_HISTORY }) })
+		.max(MAX_SEMANTIC_MESSAGE_HISTORY, { error: () => complexityT("mustBeAtMost", { max: MAX_SEMANTIC_MESSAGE_HISTORY }) }),
 	count_toward_budgets: z.boolean().optional(),
 	vector_store: z.enum(["embedded", "vector_store"]).optional(),
 	fallback: z.enum(["none", "llm"]),
@@ -67,26 +81,26 @@ const llmSchema = z.object({
 	// Same millisecond-edited Go duration treatment as the semantic timeout.
 	timeout: z
 		.string()
-		.min(1, "Enter a classification timeout")
-		.refine((value) => isPositiveDurationString(value), "Enter a timeout greater than 0")
+		.min(1, { error: () => complexityT("enterClassificationTimeout") })
+		.refine((value) => isPositiveDurationString(value), { error: () => complexityT("timeoutGtZero") })
 		.optional(),
-	prompt: z.string().max(MAX_LLM_PROMPT_CHARACTERS, `Must be at most ${MAX_LLM_PROMPT_CHARACTERS} characters`),
+	prompt: z.string().max(MAX_LLM_PROMPT_CHARACTERS, { error: () => complexityT("promptMaxChars", { max: MAX_LLM_PROMPT_CHARACTERS }) }),
 	message_history_count: z
 		.number({
-			error: `Enter a number between ${MIN_LLM_MESSAGE_HISTORY} and ${MAX_LLM_MESSAGE_HISTORY}`,
+			error: () => complexityT("historyRange", { min: MIN_LLM_MESSAGE_HISTORY, max: MAX_LLM_MESSAGE_HISTORY }),
 		})
-		.int("Must be a whole number")
-		.min(MIN_LLM_MESSAGE_HISTORY, `Must be at least ${MIN_LLM_MESSAGE_HISTORY}`)
-		.max(MAX_LLM_MESSAGE_HISTORY, `Must be at most ${MAX_LLM_MESSAGE_HISTORY}`),
+		.int({ error: () => complexityT("mustBeWholeNumber") })
+		.min(MIN_LLM_MESSAGE_HISTORY, { error: () => complexityT("mustBeAtLeast", { min: MIN_LLM_MESSAGE_HISTORY }) })
+		.max(MAX_LLM_MESSAGE_HISTORY, { error: () => complexityT("mustBeAtMost", { max: MAX_LLM_MESSAGE_HISTORY }) }),
 	count_toward_budgets: z.boolean().optional(),
 });
 
 export const analyzerConfigSchema = z
 	.object({
 		keywords: z.object({
-			simple_keywords: z.array(z.string()).min(1, "Simple phrases cannot be empty"),
-			medium_keywords: z.array(z.string()).min(1, "Medium phrases cannot be empty"),
-			complex_keywords: z.array(z.string()).min(1, "Complex phrases cannot be empty"),
+			simple_keywords: z.array(z.string()).min(1, { error: () => complexityT("phrasesEmpty", { tier: complexityT("tierSimple") }) }),
+			medium_keywords: z.array(z.string()).min(1, { error: () => complexityT("phrasesEmpty", { tier: complexityT("tierMedium") }) }),
+			complex_keywords: z.array(z.string()).min(1, { error: () => complexityT("phrasesEmpty", { tier: complexityT("tierComplex") }) }),
 		}),
 		semantic: semanticSchema,
 		llm: llmSchema,
@@ -102,14 +116,14 @@ export const analyzerConfigSchema = z
 			if (!hasProvider) {
 				ctx.addIssue({
 					code: "custom",
-					message: "Select an embedding provider",
+					message: complexityT("selectEmbeddingProvider"),
 					path: ["semantic", "provider"],
 				});
 			}
 			if (!hasModel) {
 				ctx.addIssue({
 					code: "custom",
-					message: "Select an embedding model",
+					message: complexityT("selectEmbeddingModel"),
 					path: ["semantic", "embedding_model"],
 				});
 			}
@@ -117,7 +131,7 @@ export const analyzerConfigSchema = z
 		if (data.session.enabled && (!hasProvider || !hasModel)) {
 			ctx.addIssue({
 				code: "custom",
-				message: "Configure the semantic classifier before enabling session routing",
+				message: complexityT("sessionNeedsClassifier"),
 				path: ["session", "enabled"],
 			});
 		}
@@ -131,14 +145,14 @@ export const analyzerConfigSchema = z
 			if (!hasLLMProvider) {
 				ctx.addIssue({
 					code: "custom",
-					message: "Select a fallback provider",
+					message: complexityT("selectFallbackProvider"),
 					path: ["llm", "provider"],
 				});
 			}
 			if (!hasLLMModel) {
 				ctx.addIssue({
 					code: "custom",
-					message: "Select a fallback model",
+					message: complexityT("selectFallbackModel"),
 					path: ["llm", "model"],
 				});
 			}
@@ -147,9 +161,9 @@ export const analyzerConfigSchema = z
 		// Mirrors validateComplexitySemanticPhrases so invalid input fails in the
 		// form instead of as an opaque 400.
 		const lists: Array<{ key: KeywordListKey; label: string }> = [
-			{ key: "simple_keywords", label: "Simple" },
-			{ key: "medium_keywords", label: "Medium" },
-			{ key: "complex_keywords", label: "Complex" },
+			{ key: "simple_keywords", label: tierLabel("simple_keywords") },
+			{ key: "medium_keywords", label: tierLabel("medium_keywords") },
+			{ key: "complex_keywords", label: tierLabel("complex_keywords") },
 		];
 
 		const seen = new Map<string, string>();
@@ -158,7 +172,7 @@ export const analyzerConfigSchema = z
 				if (phrase.length > MAX_SEMANTIC_PHRASE_CHARACTERS) {
 					ctx.addIssue({
 						code: "custom",
-						message: `A ${label} phrase exceeds the ${MAX_SEMANTIC_PHRASE_CHARACTERS}-character limit.`,
+						message: complexityT("phraseTooLong", { tier: label, max: MAX_SEMANTIC_PHRASE_CHARACTERS }),
 						path: ["keywords", key],
 					});
 					break;
@@ -168,7 +182,7 @@ export const analyzerConfigSchema = z
 				if (firstTier && firstTier !== label) {
 					ctx.addIssue({
 						code: "custom",
-						message: `"${phrase}" is also in the ${firstTier} list. Each phrase must belong to exactly one tier.`,
+						message: complexityT("phraseDuplicate", { phrase, tier: firstTier }),
 						path: ["keywords", key],
 					});
 				} else if (!firstTier) {
@@ -182,7 +196,13 @@ export const analyzerConfigSchema = z
 			if (counts.total > MAX_SEMANTIC_PHRASES) {
 				ctx.addIssue({
 					code: "custom",
-					message: `Semantic routing has ${counts.total} phrases (Simple=${counts.simple}, Medium=${counts.medium}, Complex=${counts.complex}); the maximum is ${MAX_SEMANTIC_PHRASES} across all tiers.`,
+					message: complexityT("phraseCapExceeded", {
+						total: counts.total,
+						simple: counts.simple,
+						medium: counts.medium,
+						complex: counts.complex,
+						max: MAX_SEMANTIC_PHRASES,
+					}),
 					path: ["keywords"],
 				});
 			}
