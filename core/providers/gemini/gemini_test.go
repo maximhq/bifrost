@@ -224,6 +224,43 @@ func TestToBifrostEmbeddingResponsePreservesPrecision(t *testing.T) {
 	assert.NotEqual(t, float64(float32(want)), got)
 }
 
+func TestToBifrostEmbeddingResponseUsesUsageMetadata(t *testing.T) {
+	var providerResp gemini.GeminiEmbeddingResponse
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"embeddings": [{"values": [0.1, 0.2]}],
+		"usageMetadata": {
+			"promptTokenCount": 5,
+			"promptTokenDetails": [{"modality": "TEXT", "tokenCount": 5}]
+		}
+	}`), &providerResp))
+
+	resp := gemini.ToBifrostEmbeddingResponse(&providerResp, "gemini-embedding-2")
+
+	require.NotNil(t, resp)
+	require.NotNil(t, resp.Usage)
+	assert.Equal(t, 5, resp.Usage.PromptTokens)
+	assert.Equal(t, 5, resp.Usage.TotalTokens)
+	require.NotNil(t, resp.Usage.PromptTokensDetails)
+	assert.Equal(t, 5, resp.Usage.PromptTokensDetails.TextTokens)
+}
+
+func TestToBifrostEmbeddingResponseFallsBackFromEmptyUsageMetadata(t *testing.T) {
+	resp := gemini.ToBifrostEmbeddingResponse(&gemini.GeminiEmbeddingResponse{
+		Embeddings: []gemini.GeminiEmbedding{
+			{
+				Values:     []float64{0.1, 0.2},
+				Statistics: &gemini.ContentEmbeddingStatistics{TokenCount: 7},
+			},
+		},
+		UsageMetadata: &gemini.EmbedContentResponseUsageMetadata{},
+	}, "gemini-embedding-001")
+
+	require.NotNil(t, resp)
+	require.NotNil(t, resp.Usage)
+	assert.Equal(t, 7, resp.Usage.PromptTokens)
+	assert.Equal(t, 7, resp.Usage.TotalTokens)
+}
+
 // TestThoughtSignatureInToolCalls tests that thought signatures are properly embedded in tool call IDs
 // for both streaming and non-streaming responses to enable round-trip compatibility
 func TestThoughtSignatureInToolCalls(t *testing.T) {

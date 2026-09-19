@@ -2117,8 +2117,16 @@ type FunctionResponse struct {
 
 // GeminiEmbeddingResponse represents a Google GenAI embedding response.
 type GeminiEmbeddingResponse struct {
-	Embeddings []GeminiEmbedding     `json:"embeddings"`
-	Metadata   *EmbedContentMetadata `json:"metadata,omitempty"`
+	Embeddings    []GeminiEmbedding                  `json:"embeddings"`
+	Metadata      *EmbedContentMetadata              `json:"metadata,omitempty"`
+	UsageMetadata *EmbedContentResponseUsageMetadata `json:"usageMetadata,omitempty"`
+}
+
+// EmbedContentResponseUsageMetadata represents token usage returned by Gemini embedding endpoints.
+type EmbedContentResponseUsageMetadata struct {
+	PromptTokenCount   int32                 `json:"promptTokenCount,omitempty"`
+	PromptTokenDetails []*ModalityTokenCount `json:"promptTokenDetails,omitempty"`
+	TotalTokenCount    int32                 `json:"totalTokenCount,omitempty"`
 }
 
 // GeminiEmbedContentResponse is the wire format for a single :embedContent response.
