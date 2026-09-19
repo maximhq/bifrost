@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -943,5 +944,169 @@ func TestDeepCopyResponsesMessagePreservesMediaResolution(t *testing.T) {
 	}
 	if *got.NumTokens != 512 {
 		t.Fatalf("numTokens = %d, want 512", *got.NumTokens)
+	}
+}
+
+func requireSameJSON(t *testing.T, want string, got []byte) {
+	t.Helper()
+	var wantVal, gotVal any
+	if err := json.Unmarshal([]byte(want), &wantVal); err != nil {
+		t.Fatalf("parse want: %v", err)
+	}
+	if err := json.Unmarshal(got, &gotVal); err != nil {
+		t.Fatalf("parse got: %v", err)
+	}
+	if !reflect.DeepEqual(wantVal, gotVal) {
+		t.Fatalf("JSON mismatch:\n got: %s\nwant: %s", got, want)
+	}
+}
+
+const (
+	shellCallContainerJSON     = `{"id":"sh_1","type":"shell_call","status":"completed","call_id":"call_1","action":{"commands":["ls -la"],"timeout_ms":1000,"max_output_length":500},"environment":{"type":"container_reference","container_id":"cntr_1"},"created_by":"resp_1"}`
+	shellCallOutputJSON        = `{"type":"shell_call_output","call_id":"call_1","max_output_length":500,"output":[{"stdout":"a.txt","stderr":"warn","outcome":{"type":"exit","exit_code":0},"created_by":"user"},{"stdout":"","stderr":"","outcome":{"type":"timeout"}}]}`
+	shellToolContainerAutoJSON = `{"type":"shell","environment":{"type":"container_auto","file_ids":["file_1"],"memory_limit":"4g","network_policy":{"type":"allowlist","allowed_domains":["pypi.org"],"domain_secrets":[{"domain":"pypi.org","name":"TOKEN","value":"secret"}]},"skills":[{"type":"skill_reference","skill_id":"skill_1","version":"2"},{"type":"inline","name":"csv","description":"CSV tools","source":{"type":"base64","media_type":"application/zip","data":"UEsDBA=="}}]}}`
+)
+
+func TestResponsesToolShellEnvironmentsRoundTrip(t *testing.T) {
+	for name, raw := range map[string]string{
+		"local":               `{"type":"shell","environment":{"type":"local","skills":[{"name":"csv","description":"CSV tools","path":"/skills/csv"}]}}`,
+		"container_reference": `{"type":"shell","environment":{"type":"container_reference","container_id":"cntr_1"}}`,
+		"container_auto":      shellToolContainerAutoJSON,
+		"network_disabled":    `{"type":"shell","environment":{"type":"container_auto","network_policy":{"type":"disabled"}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var tool ResponsesTool
+			if err := json.Unmarshal([]byte(raw), &tool); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			encoded, err := json.Marshal(tool)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			requireSameJSON(t, raw, encoded)
+		})
+	}
+}
+
+func TestResponsesShellItemsRoundTripAndDeepCopy(t *testing.T) {
+	for _, raw := range []string{shellCallContainerJSON, shellCallOutputJSON} {
+		var msg ResponsesMessage
+		if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		encoded, err := json.Marshal(msg)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		requireSameJSON(t, raw, encoded)
+
+		copied, err := json.Marshal(DeepCopyResponsesMessage(msg))
+		if err != nil {
+			t.Fatalf("marshal copy: %v", err)
+		}
+		requireSameJSON(t, raw, copied)
+	}
+}
+
+func TestResponsesToolMessageOutputContentBlocksNotShell(t *testing.T) {
+	var output ResponsesToolMessageOutputStruct
+	if err := json.Unmarshal([]byte(`[{"type":"input_text","text":"outcome stdout stderr"}]`), &output); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if output.ResponsesShellCallOutputItems != nil || len(output.ResponsesFunctionToolCallOutputBlocks) != 1 {
+		t.Fatalf("content blocks misrouted: %+v", output)
+	}
+}
+
+func TestDeepCopyResponsesShellActionDoesNotSharePointers(t *testing.T) {
+	var msg ResponsesMessage
+	if err := json.Unmarshal([]byte(shellCallContainerJSON), &msg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	copied := DeepCopyResponsesMessage(msg)
+	action := copied.ResponsesToolMessage.Action.ResponsesShellToolCallAction
+	*action.TimeoutMS = 1
+	*action.MaxOutputLength = 2
+	action.Commands[0] = "rm -rf /"
+
+	original := msg.ResponsesToolMessage.Action.ResponsesShellToolCallAction
+	if *original.TimeoutMS != 1000 || *original.MaxOutputLength != 500 || original.Commands[0] != "ls -la" {
+		t.Fatalf("original mutated through copy: %+v", original)
+	}
+}
+
+func TestResponsesShellItemsPreserveCaller(t *testing.T) {
+	for _, raw := range []string{
+		`{"type":"shell_call","call_id":"call_1","status":"completed","action":{"commands":["ls"]},"caller":{"type":"program","caller_id":"call_prog_1"}}`,
+		`{"type":"shell_call_output","call_id":"call_1","output":[{"stdout":"a.txt","stderr":"","outcome":{"type":"exit","exit_code":0}}],"caller":{"type":"program","caller_id":"call_prog_1"}}`,
+		`{"type":"shell_call_output","call_id":"call_1","output":[{"stdout":"a.txt","stderr":"","outcome":{"type":"exit","exit_code":0}}],"caller":{"type":"direct"}}`,
+	} {
+		var msg ResponsesMessage
+		if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		encoded, err := json.Marshal(msg)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		requireSameJSON(t, raw, encoded)
+
+		copied := DeepCopyResponsesMessage(msg)
+		copiedJSON, err := json.Marshal(copied)
+		if err != nil {
+			t.Fatalf("marshal copy: %v", err)
+		}
+		requireSameJSON(t, raw, copiedJSON)
+
+		if caller := copied.ResponsesToolMessage.ResponsesShellToolCall.Caller; caller.CallerID != nil {
+			*caller.CallerID = "mutated"
+			if *msg.ResponsesToolMessage.ResponsesShellToolCall.Caller.CallerID != "call_prog_1" {
+				t.Fatal("original caller_id mutated through copy")
+			}
+		}
+	}
+}
+
+// Payloads captured from the OpenAI Responses API (gpt-5.1 local shell, gpt-5.2 container_auto).
+var shellStreamEvents = []string{
+	`{"type":"response.shell_call_command.added","sequence_number":3,"output_index":0,"command_index":0,"command":""}`,
+	`{"type":"response.shell_call_command.delta","sequence_number":4,"output_index":0,"command_index":0,"delta":"echo hello","obfuscation":"4AruysaPbBzs"}`,
+	`{"type":"response.shell_call_command.done","sequence_number":14,"output_index":0,"command_index":0,"command":"echo hello"}`,
+	`{"type":"response.shell_call_output_content.delta","sequence_number":17,"output_index":1,"item_id":"sho_1","command_index":0,"delta":{"stdout":"hello\n","stderr":"oops\n"}}`,
+	`{"type":"response.shell_call_output_content.done","sequence_number":18,"output_index":1,"item_id":"sho_1","command_index":0,"output":[{"stdout":"hello\n","stderr":"oops\n","outcome":{"type":"exit","exit_code":0}}]}`,
+}
+
+func TestBifrostResponsesStreamResponseShellEventsRoundTrip(t *testing.T) {
+	decoders := map[string]func([]byte, any) error{"sonic": Unmarshal, "encoding/json": json.Unmarshal}
+	for _, raw := range shellStreamEvents {
+		for name, decode := range decoders {
+			var event BifrostResponsesStreamResponse
+			if err := decode([]byte(raw), &event); err != nil {
+				t.Fatalf("%s: unmarshal %s: %v", name, raw, err)
+			}
+			for label, out := range map[string]*BifrostResponsesStreamResponse{"as-is": &event, "WithDefaults": event.WithDefaults()} {
+				encoded, err := Marshal(out)
+				if err != nil {
+					t.Fatalf("%s/%s: marshal: %v", name, label, err)
+				}
+				var fields map[string]any
+				if err := json.Unmarshal(encoded, &fields); err != nil {
+					t.Fatalf("parse encoded: %v", err)
+				}
+				delete(fields, "extra_fields")
+				stripped, _ := json.Marshal(fields)
+				requireSameJSON(t, raw, stripped)
+			}
+		}
+	}
+}
+
+func TestBifrostResponsesStreamResponseTextDeltaUnchanged(t *testing.T) {
+	var event BifrostResponsesStreamResponse
+	if err := Unmarshal([]byte(`{"type":"response.output_text.delta","sequence_number":5,"output_index":0,"content_index":0,"item_id":"msg_1","delta":"hi"}`), &event); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if event.Delta == nil || *event.Delta != "hi" || event.ShellOutputDelta != nil {
+		t.Fatalf("text delta misparsed: %+v", event)
 	}
 }

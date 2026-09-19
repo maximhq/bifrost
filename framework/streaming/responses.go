@@ -138,6 +138,44 @@ func deepCopyResponsesStreamResponse(original *schemas.BifrostResponsesStreamRes
 		copy.Arguments = &copyArguments
 	}
 
+	if original.Command != nil {
+		copyCommand := *original.Command
+		copy.Command = &copyCommand
+	}
+
+	if original.CommandIndex != nil {
+		copyCommandIndex := *original.CommandIndex
+		copy.CommandIndex = &copyCommandIndex
+	}
+
+	if original.ShellOutput != nil {
+		copy.ShellOutput = make([]schemas.ResponsesShellCallOutputItem, len(original.ShellOutput))
+		for i, item := range original.ShellOutput {
+			if item.Outcome.ExitCode != nil {
+				exitCode := *item.Outcome.ExitCode
+				item.Outcome.ExitCode = &exitCode
+			}
+			if item.CreatedBy != nil {
+				createdBy := *item.CreatedBy
+				item.CreatedBy = &createdBy
+			}
+			copy.ShellOutput[i] = item
+		}
+	}
+
+	if original.ShellOutputDelta != nil {
+		copyShellOutputDelta := schemas.ResponsesShellCallOutputDelta{}
+		if original.ShellOutputDelta.Stdout != nil {
+			stdout := *original.ShellOutputDelta.Stdout
+			copyShellOutputDelta.Stdout = &stdout
+		}
+		if original.ShellOutputDelta.Stderr != nil {
+			stderr := *original.ShellOutputDelta.Stderr
+			copyShellOutputDelta.Stderr = &stderr
+		}
+		copy.ShellOutputDelta = &copyShellOutputDelta
+	}
+
 	if original.PartialImageB64 != nil {
 		copyPartialImageB64 := *original.PartialImageB64
 		copy.PartialImageB64 = &copyPartialImageB64
@@ -314,6 +352,22 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 				copyOutput := *original.ResponsesToolMessage.Output.ResponsesComputerToolCallOutput
 				copy.ResponsesToolMessage.Output.ResponsesComputerToolCallOutput = &copyOutput
 			}
+
+			if original.ResponsesToolMessage.Output.ResponsesShellCallOutputItems != nil {
+				items := make([]schemas.ResponsesShellCallOutputItem, len(original.ResponsesToolMessage.Output.ResponsesShellCallOutputItems))
+				for i, item := range original.ResponsesToolMessage.Output.ResponsesShellCallOutputItems {
+					if item.Outcome.ExitCode != nil {
+						exitCode := *item.Outcome.ExitCode
+						item.Outcome.ExitCode = &exitCode
+					}
+					if item.CreatedBy != nil {
+						createdBy := *item.CreatedBy
+						item.CreatedBy = &createdBy
+					}
+					items[i] = item
+				}
+				copy.ResponsesToolMessage.Output.ResponsesShellCallOutputItems = items
+			}
 		}
 
 		// Deep copy Action
@@ -352,6 +406,20 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 			if original.ResponsesToolMessage.Action.ResponsesLocalShellToolCallAction != nil {
 				copyAction := *original.ResponsesToolMessage.Action.ResponsesLocalShellToolCallAction
 				copy.ResponsesToolMessage.Action.ResponsesLocalShellToolCallAction = &copyAction
+			}
+
+			if original.ResponsesToolMessage.Action.ResponsesShellToolCallAction != nil {
+				copyAction := *original.ResponsesToolMessage.Action.ResponsesShellToolCallAction
+				copyAction.Commands = append([]string(nil), copyAction.Commands...)
+				if copyAction.TimeoutMS != nil {
+					timeoutMS := *copyAction.TimeoutMS
+					copyAction.TimeoutMS = &timeoutMS
+				}
+				if copyAction.MaxOutputLength != nil {
+					maxOutputLength := *copyAction.MaxOutputLength
+					copyAction.MaxOutputLength = &maxOutputLength
+				}
+				copy.ResponsesToolMessage.Action.ResponsesShellToolCallAction = &copyAction
 			}
 
 			if original.ResponsesToolMessage.Action.ResponsesMCPApprovalRequestAction != nil {
@@ -420,6 +488,35 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 				}
 			}
 			copy.ResponsesToolMessage.ResponsesComputerToolCallOutput = &copyOutput
+		}
+
+		if original.ResponsesToolMessage.ResponsesShellToolCall != nil {
+			copyCall := *original.ResponsesToolMessage.ResponsesShellToolCall
+			if copyCall.Environment != nil {
+				envCopy := *copyCall.Environment
+				if envCopy.ContainerID != nil {
+					containerID := *envCopy.ContainerID
+					envCopy.ContainerID = &containerID
+				}
+				copyCall.Environment = &envCopy
+			}
+			if copyCall.CreatedBy != nil {
+				createdBy := *copyCall.CreatedBy
+				copyCall.CreatedBy = &createdBy
+			}
+			if copyCall.MaxOutputLength != nil {
+				maxOutputLength := *copyCall.MaxOutputLength
+				copyCall.MaxOutputLength = &maxOutputLength
+			}
+			if copyCall.Caller != nil {
+				callerCopy := *copyCall.Caller
+				if callerCopy.CallerID != nil {
+					callerID := *callerCopy.CallerID
+					callerCopy.CallerID = &callerID
+				}
+				copyCall.Caller = &callerCopy
+			}
+			copy.ResponsesToolMessage.ResponsesShellToolCall = &copyCall
 		}
 
 		if original.ResponsesToolMessage.ResponsesWebFetchCall != nil {
