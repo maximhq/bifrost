@@ -225,7 +225,10 @@ export const mapAppToClientApp = (app?: string | null): ClientApp => {
 	if (!app || app.trim() === "") {
 		return { name: "Unknown" };
 	}
-	return appByName.get(app) || { name: app };
+	return (
+		appByName.get(app) ||
+		userAgentAppMatchers.find((matcher) => matcher.identifiers.includes(app.trim().toLowerCase()))?.app || { name: app }
+	);
 };
 
 // mapUserAgentToApp resolves a raw User-Agent string to a client app for display.
@@ -447,6 +450,7 @@ export const RoutingEngineUsedLabels = {
 	governance: "Governance",
 	loadbalancing: "Loadbalancing",
 	"model-catalog": "Model Catalog",
+	"session-affinity": "Session",
 	core: "Core",
 } as const;
 
@@ -455,6 +459,7 @@ export const RoutingEngineUsedColors = {
 	governance: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300",
 	loadbalancing: "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-300",
 	"model-catalog": "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-300",
+	"session-affinity": "bg-teal-100 text-teal-800 dark:bg-teal-900 dark:text-teal-300",
 	core: "bg-sky-100 text-sky-800 dark:bg-sky-900 dark:text-sky-300",
 } as const;
 

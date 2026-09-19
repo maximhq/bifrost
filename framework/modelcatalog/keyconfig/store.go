@@ -31,21 +31,7 @@ type KeyEntry struct {
 	Enabled     bool
 	Allowed     schemas.WhiteList
 	Blacklisted schemas.BlackList
-	// AllowedPatterns and BlacklistedPatterns are the key's RE2 pattern twins of
-	// Allowed and Blacklisted.
-	AllowedPatterns     schemas.ModelPatternList
-	BlacklistedPatterns schemas.ModelPatternList
-	Aliases             schemas.KeyAliases
-}
-
-// Access returns the entry's model rule: exact lists plus their pattern twins.
-func (e KeyEntry) Access() schemas.ModelAccessRule {
-	return schemas.ModelAccessRule{
-		Allowed:         e.Allowed,
-		Blocked:         e.Blacklisted,
-		AllowedPatterns: e.AllowedPatterns,
-		BlockedPatterns: e.BlacklistedPatterns,
-	}
+	Aliases     schemas.KeyAliases
 }
 
 // AliasOwner identifies which key owns an alias and carries its AliasConfig.
@@ -64,22 +50,7 @@ type providerState struct {
 	entries     []KeyEntry
 	allowed     schemas.WhiteList
 	blacklisted schemas.BlackList
-	// allowedPatterns is the union of enabled keys' allow patterns;
-	// blacklistedPatterns the intersection of their block patterns, mirroring
-	// allowed / blacklisted.
-	allowedPatterns     schemas.ModelPatternList
-	blacklistedPatterns schemas.ModelPatternList
-	aliasIndex          map[string]AliasOwner
-}
-
-// access returns the provider-wide rule for keyless evaluation.
-func (st *providerState) access() schemas.ModelAccessRule {
-	return schemas.ModelAccessRule{
-		Allowed:         st.allowed,
-		Blocked:         st.blacklisted,
-		AllowedPatterns: st.allowedPatterns,
-		BlockedPatterns: st.blacklistedPatterns,
-	}
+	aliasIndex  map[string]AliasOwner
 }
 
 type Store struct {
@@ -207,45 +178,6 @@ func (s *Store) BlacklistedFor(provider schemas.ModelProvider) schemas.BlackList
 	return slices.Clone(st.blacklisted)
 }
 
-// AllowedPatternsFor returns the union of enabled keys' allow patterns for the
-// provider, or nil when the provider is unknown.
-func (s *Store) AllowedPatternsFor(provider schemas.ModelProvider) schemas.ModelPatternList {
-	st := s.load(provider)
-	if st == nil {
-		return nil
-	}
-	return slices.Clone(st.allowedPatterns)
-}
-
-// BlacklistedPatternsFor returns the block patterns every enabled key of the
-// provider shares, or nil when the provider is unknown. A pattern present on
-// only some keys blocks nothing provider-wide, because another key can still
-// serve the model.
-func (s *Store) BlacklistedPatternsFor(provider schemas.ModelProvider) schemas.ModelPatternList {
-	st := s.load(provider)
-	if st == nil {
-		return nil
-	}
-	return slices.Clone(st.blacklistedPatterns)
-}
-
-// AccessFor returns the provider-wide model rule built from the aggregated
-// lists, or a deny-all rule when the provider is unknown. The four lists are
-// cloned, like the ones the individual accessors return, so a caller that
-// sorts or trims them cannot mutate the snapshot other readers are holding.
-func (s *Store) AccessFor(provider schemas.ModelProvider) schemas.ModelAccessRule {
-	st := s.load(provider)
-	if st == nil {
-		return schemas.ModelAccessRule{}
-	}
-	rule := st.access()
-	rule.Allowed = slices.Clone(rule.Allowed)
-	rule.Blocked = slices.Clone(rule.Blocked)
-	rule.AllowedPatterns = slices.Clone(rule.AllowedPatterns)
-	rule.BlockedPatterns = slices.Clone(rule.BlockedPatterns)
-	return rule
-}
-
 // IsAllowed reports whether at least one enabled key can actually serve the
 // model on this provider — a key whose allow-list permits it and whose
 // blacklist does not block it. Returns false for unknown providers (no state ⇒
@@ -262,17 +194,20 @@ func (s *Store) IsAllowed(provider schemas.ModelProvider, model string) bool {
 	// Keyless unrestricted provider: no per-key entries to gate on, but the
 	// aggregated allow-list ("*") governs and ambient/IAM auth routes without a key.
 	if len(st.entries) == 0 {
-		return st.access().Allows(string(provider), model)
+		return st.allowed.IsAllowed(model) && !st.blacklisted.IsBlocked(model)
 	}
-	return anyKeyAllows(st, provider, model)
+	return anyKeyAllows(st, model)
 }
 
 // anyKeyAllows reports whether any enabled key in the snapshot can serve the
 // model (allowed and not blacklisted). Shares the per-key gating predicate with
 // KeysAllowingModel.
-func anyKeyAllows(st *providerState, provider schemas.ModelProvider, model string) bool {
+func anyKeyAllows(st *providerState, model string) bool {
 	for _, e := range st.entries {
-		if e.Enabled && e.Access().Allows(string(provider), model) {
+		if !e.Enabled || e.Blacklisted.IsBlockAll() || e.Blacklisted.IsBlocked(model) {
+			continue
+		}
+		if e.Allowed.IsAllowed(model) {
 			return true
 		}
 	}
@@ -318,7 +253,10 @@ func (s *Store) KeysAllowingModel(provider schemas.ModelProvider, model string) 
 	}
 	var out []string
 	for _, e := range st.entries {
-		if e.Enabled && e.Access().Allows(string(provider), model) {
+		if !e.Enabled || e.Blacklisted.IsBlockAll() || e.Blacklisted.IsBlocked(model) {
+			continue
+		}
+		if e.Allowed.IsAllowed(model) {
 			out = append(out, e.KeyID)
 		}
 	}
@@ -359,12 +297,8 @@ func (s *Store) buildState(provider schemas.ModelProvider, keys []schemas.Key) *
 			count int
 			name  string
 		})
-		aliasIndex      = make(map[string]AliasOwner)
-		entries         = make([]KeyEntry, 0, len(keys))
-		allowedPatterns schemas.ModelPatternList
-		// blacklistPatternAgg counts, per block pattern, how many enabled keys
-		// carry it; only patterns on every enabled key block provider-wide.
-		blacklistPatternAgg = make(map[string]int)
+		aliasIndex = make(map[string]AliasOwner)
+		entries    = make([]KeyEntry, 0, len(keys))
 	)
 
 	// Keyless non-standard providers (custom providers configured without keys)
@@ -376,13 +310,11 @@ func (s *Store) buildState(provider schemas.ModelProvider, keys []schemas.Key) *
 	for _, key := range keys {
 		enabled := key.Enabled == nil || *key.Enabled
 		entries = append(entries, KeyEntry{
-			KeyID:               key.ID,
-			Enabled:             enabled,
-			Allowed:             key.Models,
-			Blacklisted:         key.BlacklistedModels,
-			AllowedPatterns:     key.ModelsPatterns,
-			BlacklistedPatterns: key.BlacklistedModelsPatterns,
-			Aliases:             key.Aliases,
+			KeyID:       key.ID,
+			Enabled:     enabled,
+			Allowed:     key.Models,
+			Blacklisted: key.BlacklistedModels,
+			Aliases:     key.Aliases,
 		})
 
 		if !enabled || key.BlacklistedModels.IsBlockAll() {
@@ -400,15 +332,6 @@ func (s *Store) buildState(provider schemas.ModelProvider, keys []schemas.Key) *
 			blacklistAgg[lower] = agg
 		}
 
-		for _, p := range key.BlacklistedModelsPatterns {
-			blacklistPatternAgg[p]++
-		}
-		for _, p := range key.ModelsPatterns {
-			if !slices.Contains(allowedPatterns, p) {
-				allowedPatterns = append(allowedPatterns, p)
-			}
-		}
-
 		if key.Models.IsUnrestricted() {
 			allModelsAllowed = true
 		} else {
@@ -416,7 +339,8 @@ func (s *Store) buildState(provider schemas.ModelProvider, keys []schemas.Key) *
 				if key.BlacklistedModels.IsBlocked(m) {
 					continue
 				}
-				if !allowed.Contains(m) {
+				// Literal dedup: a regex entry from another key must not swallow an exact name.
+				if !slices.ContainsFunc(allowed, func(s string) bool { return strings.EqualFold(s, m) }) {
 					allowed = append(allowed, m)
 				}
 			}
@@ -453,20 +377,10 @@ func (s *Store) buildState(provider schemas.ModelProvider, keys []schemas.Key) *
 		}
 	}
 
-	var blacklistedPatterns schemas.ModelPatternList
-	for p, count := range blacklistPatternAgg {
-		if count == enabledKeysCount {
-			blacklistedPatterns = append(blacklistedPatterns, p)
-		}
-	}
-	slices.Sort(blacklistedPatterns)
-
 	return &providerState{
-		entries:             entries,
-		allowed:             allowed,
-		blacklisted:         blacklisted,
-		allowedPatterns:     allowedPatterns,
-		blacklistedPatterns: blacklistedPatterns,
-		aliasIndex:          aliasIndex,
+		entries:     entries,
+		allowed:     allowed,
+		blacklisted: blacklisted,
+		aliasIndex:  aliasIndex,
 	}
 }

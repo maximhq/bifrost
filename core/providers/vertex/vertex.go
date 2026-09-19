@@ -283,20 +283,16 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	}
 
 	deployments := key.Aliases
-	access := key.ModelAccess()
+	allowedModels := key.Models
 
-	if !request.Unfiltered && (access.DeniesAll() && len(deployments) == 0) {
+	if !request.Unfiltered && (allowedModels.IsEmpty() && len(deployments) == 0 || key.BlacklistedModels.IsBlockAll()) {
 		return &schemas.BifrostListModelsResponse{Data: make([]schemas.Model, 0)}, nil
 	}
 
-	// If deployments or an exact allow list are configured, return those directly without an
-	// API call. Any allow pattern disables the fast path: a pattern names no model, so the
-	// only way to surface what it admits is the Model Garden listing, which the pipeline then
-	// filters by both the exact lists and the patterns.
+	// If deployments or allowedModels are configured, return those directly without API call
 	// Skip this fast path when Unfiltered is set so the full Vertex catalog can be retrieved
-	if !request.Unfiltered && access.AllowedPatterns.IsEmpty() &&
-		(len(deployments) > 0 || (access.Allowed.IsRestricted() && !access.Allowed.IsEmpty())) {
-		return buildResponseFromConfig(deployments, access), nil
+	if !request.Unfiltered && (len(deployments) > 0 || allowedModels.IsRestricted()) {
+		return buildResponseFromConfig(deployments, allowedModels, key.BlacklistedModels), nil
 	}
 
 	// No deployments configured - fetch from Model Garden API
@@ -421,7 +417,7 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 		PublisherModels: allPublisherModels,
 	}
 
-	response := aggregatedResponse.ToBifrostListModelsResponse(key.ModelAccess(), key.Aliases, request.Unfiltered)
+	response := aggregatedResponse.ToBifrostListModelsResponse(key.Models, key.BlacklistedModels, key.Aliases, request.Unfiltered)
 
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 		response.ExtraFields.RawRequest = rawRequests
@@ -2579,6 +2575,15 @@ func (provider *VertexProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 	return bifrostResp, nil
 }
 
+// vertexVideoModelPath returns the escaped "projects/.../models/{model}" prefix of a video operation name.
+func vertexVideoModelPath(taskID string) (string, *schemas.BifrostError) {
+	parts, bifrostErr := parseVertexResourceName(taskID, "video_id", "projects", "", "locations", "", "publishers", "", "models", "", "operations", "")
+	if bifrostErr != nil {
+		return "", bifrostErr
+	}
+	return strings.Join(parts[:8], "/"), nil
+}
+
 // VideoRetrieve retrieves the status of a video generation operation.
 // Uses the fetchPredictOperation endpoint for Vertex AI.
 func (provider *VertexProvider) VideoRetrieve(ctx *schemas.BifrostContext, key schemas.Key, bifrostReq *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
@@ -2595,14 +2600,10 @@ func (provider *VertexProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 	// Construct the URL for fetching the operation status
 	// The operation name (bifrostReq.ID) already contains the full path:
 	// projects/PROJECT_ID/locations/REGION/publishers/google/models/MODEL_ID/operations/OPERATION_ID
-	// We need to extract the model path from it to construct the fetchPredictOperation endpoint
-	// Extract: projects/.../models/MODEL_ID from the operation name
 	taskID := providerUtils.StripVideoIDProviderSuffix(bifrostReq.ID, provider.GetProviderKey())
-	var modelPath string
-	if idx := strings.Index(taskID, "/operations/"); idx != -1 {
-		modelPath = taskID[:idx]
-	} else {
-		return nil, providerUtils.NewBifrostOperationError("invalid operation ID format", nil)
+	modelPath, idErr := vertexVideoModelPath(taskID)
+	if idErr != nil {
+		return nil, idErr
 	}
 
 	// Construct the URL: https://{vertex-api-host}/v1/{modelPath}:fetchPredictOperation

@@ -2046,6 +2046,139 @@ func TestExtractPassthroughProviderResponseHeaders(t *testing.T) {
 	}
 }
 
+// providerResponseSensitiveHeaderCases is shared by the three extractor tests below so the
+// paths cannot drift apart again. Every "drop" name is credential-bearing under
+// schemas.IsSensitiveHeader but absent from providerResponseFilterHeaders, which is exactly the
+// gap that let an operator's network_config.extra_headers credential reach inference callers.
+var providerResponseSensitiveHeaderCases = []struct {
+	name  string
+	value string
+	drop  bool
+	why   string
+}{
+	// Credential names the fixed list does not enumerate.
+	{"X-Provider-Secret", "provider-secret-value", true, "contains \"secret\""},
+	{"X-Auth-Token", "auth-token-value", true, "suffix \"-token\""},
+	{"X-Session_Token", "session-token-value", true, "suffix \"_token\""},
+	{"X-Custom-Api-Key", "custom-api-key-value", true, "contains \"api-key\""},
+	{"X-Proxy-Authorization-Hint", "proxy-auth-value", true, "contains \"authorization\""},
+	{"Cf-Access-Jwt-Assertion", "signed-jwt-value", true, "prefix \"cf-access-\""},
+	{"X-Amzn-Oidc-Data", "oidc-data-value", true, "prefix \"x-amzn-oidc-\""},
+	// Names already covered by the fixed list, which must keep working.
+	{"X-Goog-Api-Key", "goog-api-key-value", true, "existing denylist entry"},
+	{"Authorization", "Bearer token-value", true, "existing denylist entry"},
+	// Benign provider headers that callers rely on and must survive.
+	{"X-Request-Id", "req-789", false, "benign correlation header"},
+	{"Retry-After", "30", false, "benign retry hint"},
+	{"X-Ratelimit-Remaining-Requests", "42", false, "benign rate-limit hint"},
+}
+
+// lookupHeaderFold finds a header case-insensitively, since fasthttp canonicalizes keys.
+func lookupHeaderFold(headers map[string]string, name string) (string, bool) {
+	for k, v := range headers {
+		if strings.EqualFold(k, name) {
+			return v, true
+		}
+	}
+	return "", false
+}
+
+// assertSensitiveHeaderCases checks one extractor's output against the shared table.
+func assertSensitiveHeaderCases(t *testing.T, extractor string, headers map[string]string) {
+	t.Helper()
+	for _, tc := range providerResponseSensitiveHeaderCases {
+		got, ok := lookupHeaderFold(headers, tc.name)
+		if tc.drop && ok {
+			t.Errorf("%s: header %q (%s) leaked to the client with value %q", extractor, tc.name, tc.why, got)
+		}
+		if !tc.drop && (!ok || got != tc.value) {
+			t.Errorf("%s: benign header %q (%s) should be forwarded as %q, got %q ok=%v",
+				extractor, tc.name, tc.why, tc.value, got, ok)
+		}
+	}
+}
+
+// TestProviderResponseSensitiveHeaderCases_MatchClassifier guards the table itself: every name
+// marked drop must really be rejected by shouldFilterProviderResponseHeader, and every name
+// marked keep must really be accepted. Without this, a typo in the table would silently weaken
+// the three extractor tests below into asserting nothing.
+func TestProviderResponseSensitiveHeaderCases_MatchClassifier(t *testing.T) {
+	for _, tc := range providerResponseSensitiveHeaderCases {
+		lower := strings.ToLower(tc.name)
+		if got := shouldFilterProviderResponseHeader(lower); got != tc.drop {
+			t.Errorf("shouldFilterProviderResponseHeader(%q) = %v, want %v (%s)", lower, got, tc.drop, tc.why)
+		}
+	}
+}
+
+// TestExtractProviderResponseHeaders_StripsSensitiveCustomHeaders verifies that the response
+// filter consults schemas.IsSensitiveHeader and not just the fixed name list, so credential
+// headers the list does not enumerate stop reaching inference callers.
+func TestExtractProviderResponseHeaders_StripsSensitiveCustomHeaders(t *testing.T) {
+	resp := &fasthttp.Response{}
+	for _, tc := range providerResponseSensitiveHeaderCases {
+		resp.Header.Set(tc.name, tc.value)
+	}
+
+	assertSensitiveHeaderCases(t, "ExtractProviderResponseHeaders", ExtractProviderResponseHeaders(resp))
+}
+
+// TestExtractPassthroughProviderResponseHeaders_StripsSensitiveCustomHeaders verifies the same
+// for the passthrough variant, and that its content-type carve-out is unaffected: content-type
+// is not credential-bearing, so the added rule must not change its verdict.
+func TestExtractPassthroughProviderResponseHeaders_StripsSensitiveCustomHeaders(t *testing.T) {
+	resp := &fasthttp.Response{}
+	for _, tc := range providerResponseSensitiveHeaderCases {
+		resp.Header.Set(tc.name, tc.value)
+	}
+	resp.Header.Set("Content-Type", "application/json")
+
+	headers := ExtractPassthroughProviderResponseHeaders(resp)
+	assertSensitiveHeaderCases(t, "ExtractPassthroughProviderResponseHeaders", headers)
+
+	if v, ok := lookupHeaderFold(headers, "content-type"); !ok || v != "application/json" {
+		t.Fatalf("passthrough content-type carve-out regressed: got %q ok=%v", v, ok)
+	}
+}
+
+// TestExtractProviderResponseHeadersFromHTTP_StripsSensitiveCustomHeaders verifies the same for
+// the net/http extractor used by providers such as Bedrock, which shares the identical filter.
+func TestExtractProviderResponseHeadersFromHTTP_StripsSensitiveCustomHeaders(t *testing.T) {
+	resp := &http.Response{Header: http.Header{}}
+	for _, tc := range providerResponseSensitiveHeaderCases {
+		resp.Header.Set(tc.name, tc.value)
+	}
+
+	assertSensitiveHeaderCases(t, "ExtractProviderResponseHeadersFromHTTP", ExtractProviderResponseHeadersFromHTTP(resp))
+}
+
+// TestProviderResponseExtractors_AgreeOnSensitiveHeaders pins the three extractors to the same
+// verdict for every name in the table. They previously shared only a map literal, which is how
+// the credential rule could be added to one definition of "sensitive" (telemetry redaction) and
+// not to this one. This test fails if any future change filters one path but not the others.
+func TestProviderResponseExtractors_AgreeOnSensitiveHeaders(t *testing.T) {
+	fastResp := &fasthttp.Response{}
+	httpResp := &http.Response{Header: http.Header{}}
+	for _, tc := range providerResponseSensitiveHeaderCases {
+		fastResp.Header.Set(tc.name, tc.value)
+		httpResp.Header.Set(tc.name, tc.value)
+	}
+
+	standard := ExtractProviderResponseHeaders(fastResp)
+	passthrough := ExtractPassthroughProviderResponseHeaders(fastResp)
+	fromHTTP := ExtractProviderResponseHeadersFromHTTP(httpResp)
+
+	for _, tc := range providerResponseSensitiveHeaderCases {
+		_, inStandard := lookupHeaderFold(standard, tc.name)
+		_, inPassthrough := lookupHeaderFold(passthrough, tc.name)
+		_, inFromHTTP := lookupHeaderFold(fromHTTP, tc.name)
+		if inStandard != inPassthrough || inStandard != inFromHTTP {
+			t.Errorf("extractors disagree on %q (%s): standard=%v passthrough=%v fromHTTP=%v",
+				tc.name, tc.why, inStandard, inPassthrough, inFromHTTP)
+		}
+	}
+}
+
 func TestStripThoughtSignature(t *testing.T) {
 	cases := []struct {
 		name string
@@ -3140,5 +3273,91 @@ func TestRealiasNamespacedFunctionCalls_RequiresExactNamespaceOwner(t *testing.T
 	owner := out.Input[1].ResponsesToolMessage
 	if *owner.Name != "a_b__x" || owner.Namespace != nil {
 		t.Errorf("the exact owner a:b must still be rewritten to its alias, got name=%q namespace=%v", *owner.Name, owner.Namespace)
+	}
+}
+
+// TestHandleProviderAPIErrorRootMessage covers AWS's flat error shape, which every Bedrock
+// surface answers with. The shared Anthropic and OpenAI handlers serve those surfaces and
+// their own parsers only read a nested error object, so without this seeding the failure
+// reason is dropped and the log shows an error with no message.
+func TestHandleProviderAPIErrorRootMessage(t *testing.T) {
+	tests := []struct {
+		name            string
+		body            string
+		expectedMessage string
+	}{
+		{
+			name:            "AWS flat error shape",
+			body:            `{"message":"data retention mode 'default' is not available for this model"}`,
+			expectedMessage: "data retention mode 'default' is not available for this model",
+		},
+		{
+			name:            "AWS flat error shape with exception type",
+			body:            `{"message":"rate exceeded","__type":"ThrottlingException"}`,
+			expectedMessage: "rate exceeded",
+		},
+		{
+			name:            "nested error envelope is left to the caller's parser",
+			body:            `{"type":"error","error":{"type":"invalid_request_error","message":"bad request"}}`,
+			expectedMessage: "",
+		},
+		{
+			name:            "blank root message is ignored",
+			body:            `{"message":"   "}`,
+			expectedMessage: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := &fasthttp.Response{}
+			resp.SetStatusCode(400)
+			resp.Header.Set("Content-Type", "application/json")
+			resp.SetBodyString(tt.body)
+
+			var errorResp map[string]interface{}
+			bifrostErr := HandleProviderAPIError(resp, &errorResp)
+
+			if bifrostErr == nil || bifrostErr.Error == nil {
+				t.Fatal("expected a non-nil error with an error field")
+			}
+			if bifrostErr.Error.Message != tt.expectedMessage {
+				t.Errorf("expected message %q, got %q", tt.expectedMessage, bifrostErr.Error.Message)
+			}
+		})
+	}
+}
+
+// TestStripCallerAuthForInsecureURL verifies that a forwarded caller Authorization
+// header only survives to HTTPS or loopback upstreams (RFC 6750 section 5.3, with
+// the RFC 8252 section 8.3 loopback rationale).
+func TestStripCallerAuthForInsecureURL(t *testing.T) {
+	for name, tc := range map[string]struct {
+		url      string
+		header   string
+		wantKept bool
+	}{
+		"https kept":              {"https://api.openai.com/v1/responses", "authorization", true},
+		"http stripped":           {"http://api.internal.example/v1/responses", "authorization", false},
+		"http localhost kept":     {"http://localhost:8080/v1/responses", "authorization", true},
+		"http 127.0.0.1 kept":     {"http://127.0.0.1:9090/v1/messages", "authorization", true},
+		"http ::1 kept":           {"http://[::1]:9090/v1/messages", "authorization", true},
+		"unparsable stripped":     {"http://bad url\x00", "authorization", false},
+		"mixed case key stripped": {"http://api.internal.example/v1/messages", "Authorization", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			safeHeaders := map[string]string{
+				tc.header:       "Bearer sk-ant-oat01-token",
+				"anthropic-beta": "context-1m",
+			}
+			StripCallerAuthForInsecureURL(tc.url, safeHeaders)
+			_, kept := safeHeaders[tc.header]
+			if kept != tc.wantKept {
+				t.Fatalf("StripCallerAuthForInsecureURL(%q): authorization kept = %v, want %v", tc.url, kept, tc.wantKept)
+			}
+			if _, ok := safeHeaders["anthropic-beta"]; !ok {
+				t.Fatal("non-auth safe header must never be stripped")
+			}
+		})
 	}
 }

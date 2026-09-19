@@ -1214,12 +1214,13 @@ func (m *mockKVStore) Delete(key string) (bool, error) {
 	return false, nil
 }
 
-// Test selectKeyFromProviderForModelWithPool with session stickiness
+// Test selectKeyFromProviderForModelWithPool with session stickiness: nothing is bound until a
+// request is served, and a bound key then comes back alone with rotation off.
 func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 	kvStore := newMockKVStore()
 	account := NewMockAccount()
 	account.AddProvider(schemas.OpenAI, 5, 1000)
-	// Use 2 keys so we hit the keySelector path (single key returns early)
+	// Use 2 keys so the pool can rotate (single key returns early)
 	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
 		{ID: "key-a", Name: "Key A", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
 		{ID: "key-b", Name: "Key B", Value: *schemas.NewSecretVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
@@ -1245,40 +1246,44 @@ func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	bfCtx.SetValue(schemas.BifrostContextKeySessionID, "sess-123")
 
-	// First call: cache miss, keySelector runs, key stored; returns single-element pool (canRotate=false)
+	// First request: nothing bound, so the whole pool comes back with rotation allowed and the
+	// pool builder neither selects nor writes.
 	keys1, canRotate1, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
 	if err != nil {
 		t.Fatalf("first selectKeyFromProviderForModelWithPool: %v", err)
 	}
-	if canRotate1 {
-		t.Error("first call: canRotate should be false for session-sticky request")
+	if !canRotate1 || len(keys1) != 2 {
+		t.Fatalf("first call: got %d keys canRotate=%v, want the full pool with rotation", len(keys1), canRotate1)
 	}
-	if len(keys1) != 1 || keys1[0].ID != "key-a" {
-		t.Errorf("first call: expected [key-a], got %v", keys1)
+	if keySelectorCalls != 0 {
+		t.Errorf("first call: the pool builder should not select, got %d keySelector calls", keySelectorCalls)
 	}
-	if keySelectorCalls != 1 {
-		t.Errorf("first call: expected 1 keySelector call, got %d", keySelectorCalls)
+	kvKey := SessionStateKey(bfCtx, SessionStateKindKey, string(schemas.OpenAI), "gpt-4")
+	if _, err := kvStore.Get(kvKey); err == nil {
+		t.Error("session bound before anything served it")
 	}
 
-	// Verify kvstore was written
-	kvKey := buildSessionKey(schemas.OpenAI, "sess-123", "gpt-4")
+	// The request is served by key-a, which binds the session to it.
+	bfCtx.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-a")
+	route := schemas.Route{Provider: schemas.OpenAI, Model: "gpt-4"}
+	bifrost.observeSessionOutcome(bfCtx, route, &route, false, nil)
 	if raw, err := kvStore.Get(kvKey); err != nil || raw != "key-a" {
-		t.Errorf("kvstore after first call: expected key-a, got %v (err=%v)", raw, err)
+		t.Errorf("kvstore after the request served: expected key-a, got %v (err=%v)", raw, err)
 	}
 
-	// Second call: cache hit, same key returned, keySelector NOT called
+	// Second request: the bound key comes back alone, rotation off, selector not consulted.
 	keys2, canRotate2, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
 	if err != nil {
 		t.Fatalf("second selectKeyFromProviderForModelWithPool: %v", err)
 	}
 	if canRotate2 {
-		t.Error("second call: canRotate should be false for session-sticky request")
+		t.Error("second call: canRotate should be false for a session-bound key")
 	}
 	if len(keys2) != 1 || keys2[0].ID != "key-a" {
-		t.Errorf("second call: expected [key-a] (sticky), got %v", keys2)
+		t.Errorf("second call: expected [key-a] (bound), got %v", keys2)
 	}
-	if keySelectorCalls != 1 {
-		t.Errorf("second call: keySelector should not run (cache hit), got %d calls", keySelectorCalls)
+	if keySelectorCalls != 0 {
+		t.Errorf("second call: keySelector should not run, got %d calls", keySelectorCalls)
 	}
 }
 
@@ -1328,13 +1333,16 @@ func TestSelectKeyFromProviderForModel_NoStickinessWithoutSessionID(t *testing.T
 		t.Errorf("expected 0 keySelector calls from pool building (no session id), got %d", keySelectorCalls)
 	}
 	// KVStore should not have a sticky entry for an empty session id
-	if _, err := kvStore.Get(buildSessionKey(schemas.OpenAI, "", "gpt-4")); err == nil {
-		t.Error("kvstore should not have a sticky entry for an empty session id")
+	kvStore.mu.RLock()
+	entries := len(kvStore.data)
+	kvStore.mu.RUnlock()
+	if entries != 0 {
+		t.Errorf("kvstore should not have a sticky entry for an empty session id, got %d entries", entries)
 	}
 }
 
-// TestSelectKeyFromProviderForModel_SessionStickinessNoRotation verifies that when a session ID
-// is present, rate-limit retries reuse the sticky key rather than rotating to another key.
+// TestSelectKeyFromProviderForModel_SessionStickinessNoRotation verifies that once a session
+// is bound to a key, rate-limit retries reuse that key rather than rotating to another.
 func TestSelectKeyFromProviderForModel_SessionStickinessNoRotation(t *testing.T) {
 	kvStore := newMockKVStore()
 	account := NewMockAccount()
@@ -1362,6 +1370,11 @@ func TestSelectKeyFromProviderForModel_SessionStickinessNoRotation(t *testing.T)
 	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	bfCtx.SetValue(schemas.BifrostContextKeySessionID, "sess-sticky")
 	bfCtx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+
+	// An earlier request served by key-a bound the session to it.
+	bfCtx.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-a")
+	route := schemas.Route{Provider: schemas.OpenAI, Model: "gpt-4"}
+	bifrost.observeSessionOutcome(bfCtx, route, &route, false, nil)
 
 	config := createTestConfig(3, 0, 0)
 	logger := NewDefaultLogger(schemas.LogLevelError)
@@ -1465,6 +1478,79 @@ func TestSelectKeyFromProviderForModel_BlacklistedModels(t *testing.T) {
 		}
 		if len(pool) != 1 || pool[0].ID != "k2" {
 			t.Fatalf("expected pool=[k2], got %v", pool)
+		}
+	})
+}
+
+func TestSelectKeyFromProviderForModel_VLLMAliasResolution(t *testing.T) {
+	account := NewMockAccount()
+	bifrost := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError)}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	newVLLMKey := func(id, modelName string, models schemas.WhiteList, aliases schemas.KeyAliases) schemas.Key {
+		return schemas.Key{
+			ID:      id,
+			Name:    id,
+			Value:   *schemas.NewSecretVar("test-key"),
+			Models:  models,
+			Aliases: aliases,
+			Weight:  1,
+			VLLMKeyConfig: &schemas.VLLMKeyConfig{
+				URL:       *schemas.NewSecretVar("http://localhost:8000"),
+				ModelName: modelName,
+			},
+		}
+	}
+
+	t.Run("resolves alias independently for each key", func(t *testing.T) {
+		account.SetKeysForProvider(schemas.VLLM, []schemas.Key{
+			newVLLMKey("vllm-a", "served-model-a", schemas.WhiteList{"chat-model"}, schemas.KeyAliases{
+				"chat-model": {ModelID: "served-model-a"},
+			}),
+			newVLLMKey("vllm-b", "served-model-b", schemas.WhiteList{"chat-model"}, schemas.KeyAliases{
+				"chat-model": {ModelID: "served-model-b"},
+			}),
+		})
+
+		keys, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, schemas.ChatCompletionRequest, schemas.VLLM, "chat-model", schemas.VLLM)
+		if err != nil {
+			t.Fatalf("selectKeyFromProviderForModelWithPool: %v", err)
+		}
+		if !canRotate {
+			t.Fatal("canRotate = false, want true for two matching keys")
+		}
+		if len(keys) != 2 || keys[0].ID != "vllm-a" || keys[1].ID != "vllm-b" {
+			t.Fatalf("got keys %v, want [vllm-a vllm-b]", keys)
+		}
+	})
+
+	t.Run("keeps allowlist checks on requested alias", func(t *testing.T) {
+		account.SetKeysForProvider(schemas.VLLM, []schemas.Key{
+			newVLLMKey("vllm-a", "served-model-a", schemas.WhiteList{"chat-model"}, schemas.KeyAliases{
+				"chat-model": {ModelID: "served-model-a"},
+			}),
+		})
+
+		_, _, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, schemas.ChatCompletionRequest, schemas.VLLM, "served-model-a", schemas.VLLM)
+		if err == nil {
+			t.Fatal("expected direct model request to be rejected when only the alias is allowlisted")
+		}
+	})
+
+	t.Run("still supports direct model names", func(t *testing.T) {
+		account.SetKeysForProvider(schemas.VLLM, []schemas.Key{
+			newVLLMKey("vllm-a", "served-model-a", schemas.WhiteList{"served-model-a"}, nil),
+		})
+
+		keys, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, schemas.ChatCompletionRequest, schemas.VLLM, "served-model-a", schemas.VLLM)
+		if err != nil {
+			t.Fatalf("selectKeyFromProviderForModelWithPool: %v", err)
+		}
+		if canRotate {
+			t.Fatal("canRotate = true, want false for one matching key")
+		}
+		if len(keys) != 1 || keys[0].ID != "vllm-a" {
+			t.Fatalf("got keys %v, want [vllm-a]", keys)
 		}
 	})
 }

@@ -139,6 +139,13 @@ const (
 //
 //	A  = Anthropic feature-availability table:
 //	     https://platform.claude.com/docs/en/build-with-claude/overview
+//	B-compact = AWS Bedrock compaction page ("Compaction is currently not
+//	     supported by the Converse API, however it is supported with InvokeModel"):
+//	     https://docs.aws.amazon.com/bedrock/latest/userguide/claude-messages-compaction.html
+//	TS-bedrock = tool search on Bedrock is InvokeModel-only ("On Amazon Bedrock,
+//	     server-side tool search is available only through the InvokeModel API,
+//	     not the Converse API"):
+//	     https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool
 //	B-header = AWS Bedrock user guide beta-header list:
 //	     https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-anthropic-claude-messages.html
 //	B-platform = https://platform.claude.com/docs/en/build-with-claude/claude-on-amazon-bedrock
@@ -162,7 +169,7 @@ type ProviderFeatureSupport struct {
 	Bash                   bool // bash client tool (cite: A, B-header)
 	Memory                 bool // memory client tool — on Bedrock bundled under context-management-2025-06-27 (cite: A, B-header)
 	TextEditor             bool // text_editor client tool (cite: A)
-	ToolSearch             bool // tool_search server tool + tool.defer_loading — tool-search-tool-2025-10-19 (cite: A). NOT supported on classic Amazon Bedrock: AWS restricts this to InvokeModel/InvokeModelWithResponseStream, never Converse, which is the only API Bifrost's Bedrock provider uses for tool-bearing requests.
+	ToolSearch             bool // tool_search server tool + tool.defer_loading — tool-search-tool-2025-10-19 (cite: A). On classic Amazon Bedrock AWS restricts this to InvokeModel/InvokeModelWithResponseStream, never Converse (cite: TS-bedrock); the Bedrock provider routes any request carrying a tool_search tool or defer_loading to InvokeModel (bedrock.go, InvokeModel section), so the flag is on.
 	MCP                    bool // MCP connector — explicit "not supported on Bedrock/Vertex" (cite: MCP-excl)
 	AdvancedToolUse        bool // advanced-tool-use-2025-11-20 bundle: allowed_callers only as of current docs — defer_loading now has its own beta, see ToolSearch (cite: A)
 	InputExamples          bool // tool.input_examples standalone — tool-examples-2025-10-29. Bedrock supports this independently of the AdvancedToolUse bundle (cite: B-header). On Anthropic / Azure the bundle implicitly covers it.
@@ -244,18 +251,19 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 	// AWS Bedrock — cite: A + B-header (definitive beta-header list).
 	// Notably NOT supported per docs: MCP, Skills, FilesAPI, WebFetch,
 	// WebSearch, CodeExecution, FastMode, TaskBudgets, AdvisorTool,
-	// InferenceGeo, RedactThinking, AdvancedToolUse (full), PromptCachingScope,
-	// ToolSearch (tool-search-tool-2025-10-19 is InvokeModel/InvokeModelWithResponseStream
-	// only per AWS's own docs; Bifrost's Bedrock provider always dispatches
-	// tool-bearing requests via Converse, so this can never work end-to-end —
-	// see the ToolSearch field comment above for citations).
+	// InferenceGeo, RedactThinking, AdvancedToolUse (full), PromptCachingScope.
+	// ToolSearch and Compaction are InvokeModel-only on AWS (TS-bedrock,
+	// B-compact) and are ON here because the Bedrock provider routes any
+	// request that carries them to InvokeModel / InvokeModelWithResponseStream
+	// instead of Converse (bedrock.go, InvokeModel section, #6825).
 	schemas.Bedrock: {
 		WebSearchNova: true, // nova_grounding — Responses path only
 		CodeExecNova:  true, // nova_code_interpreter — Responses path only
 		ComputerUse:   true, Bash: true, Memory: true, TextEditor: true,
+		ToolSearch:             true, // tool-search-tool-2025-10-19 is InvokeModel-only per TS-bedrock; delivered via InvokeModel routing (see block comment)
 		ContainerBasic:         true,
 		StructuredOutputs:      true, // documented on Bedrock per A overview matrix
-		Compaction:             true, // compact-2026-01-12 per B-header
+		Compaction:             true, // compact-2026-01-12 is InvokeModel-only per B-compact; delivered via InvokeModel routing (#6825)
 		ContextEditing:         true, // context-management-2025-06-27 per B-header (bundles memory)
 		ContextManagementField: true, // Bedrock accepts context_management body field
 		InterleavedThinking:    true, // per B-header; model-allowlisted
@@ -1317,6 +1325,42 @@ type AnthropicContentBlock struct {
 	Trigger *AnthropicFallbackTrigger `json:"trigger,omitempty"` // why the handoff happened
 }
 
+// DiscoveredToolReferences returns the tool_reference blocks a
+// tool_search_tool_result carries, accepting both shapes the payload arrives in.
+//
+// Anthropic nests them one level down, inside a tool_search_tool_search_result
+// "content" object:
+//
+//	{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_...",
+//	 "content":{"type":"tool_search_tool_search_result",
+//	            "tool_references":[{"type":"tool_reference","tool_name":"..."}]}}
+//
+// (https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool)
+//
+// ToolReferences is declared flat, so live traffic never populates it:
+// AnthropicContent.UnmarshalJSON's single-object fallback parks the inner object in
+// Content.ContentBlocks, one level below where every reader was looking. Bifrost's
+// own rebuild (convertBifrostToolSearchCallToAnthropicBlocks) does set the flat
+// field, so both are honoured, flat first. The error variant
+// (tool_search_tool_result_error) legitimately carries none and yields nil.
+func (b *AnthropicContentBlock) DiscoveredToolReferences() []AnthropicContentBlock {
+	if b == nil {
+		return nil
+	}
+	if len(b.ToolReferences) > 0 {
+		return b.ToolReferences
+	}
+	if b.Content == nil {
+		return nil
+	}
+	for _, inner := range b.Content.ContentBlocks {
+		if len(inner.ToolReferences) > 0 {
+			return inner.ToolReferences
+		}
+	}
+	return nil
+}
+
 // AnthropicFallbackModel is the {model} object on a fallback content block's from/to fields.
 type AnthropicFallbackModel struct {
 	Model string `json:"model"`
@@ -2164,8 +2208,18 @@ type AnthropicMessageError struct {
 
 // AnthropicMessageErrorStruct represents the error structure of an Anthropic messages API error response
 type AnthropicMessageErrorStruct struct {
-	Type    string `json:"type"`    // Error type
-	Message string `json:"message"` // Error message
+	Type    string                        `json:"type"`              // Error type
+	Message string                        `json:"message"`           // Error message
+	Details *AnthropicMessageErrorDetails `json:"details,omitempty"` // Machine-readable details some errors carry (e.g. thread error codes)
+}
+
+// AnthropicMessageErrorDetails is the optional machine-readable payload of an
+// Anthropic error envelope. Clients key recovery behavior on ErrorCode (e.g.
+// "thread_not_found" triggers a full-conversation replay, and
+// "thread_unsupported_request" additionally drops the thread field for the
+// rest of the session).
+type AnthropicMessageErrorDetails struct {
+	ErrorCode string `json:"error_code,omitempty"`
 }
 
 // AnthropicError represents the error response structure from Anthropic's API (legacy)

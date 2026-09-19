@@ -856,3 +856,92 @@ func TestStreamWithDefaultsStripsCodeExecutionCarry(t *testing.T) {
 		}
 	}
 }
+
+// TestCustomToolInputDoneRoundTrip preserves the terminal input clients compare with streamed custom-tool deltas.
+func TestCustomToolInputDoneRoundTrip(t *testing.T) {
+	raw := []byte(`{"type":"response.custom_tool_call_input.done","item_id":"tool1","output_index":0,"input":"grep alice@example.com"}`)
+	var response BifrostResponsesStreamResponse
+	if err := Unmarshal(raw, &response); err != nil {
+		t.Fatal(err)
+	}
+	output, err := json.Marshal(response.WithDefaults())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(output, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if fields["input"] != "grep alice@example.com" {
+		t.Fatalf("terminal input lost: %s", output)
+	}
+}
+
+// TestDeepCopyResponsesMessageCustomInput preserves custom input without sharing mutable tool state.
+func TestDeepCopyResponsesMessageCustomInput(t *testing.T) {
+	for _, input := range []string{"", "grep alice@example.com"} {
+		t.Run(input, func(t *testing.T) {
+			original := ResponsesMessage{
+				Type: Ptr(ResponsesMessageTypeCustomToolCall),
+				ResponsesToolMessage: &ResponsesToolMessage{
+					Name:                    Ptr("bash"),
+					ResponsesCustomToolCall: &ResponsesCustomToolCall{Input: input},
+				},
+			}
+			copied := DeepCopyResponsesMessage(original)
+			if copied.ResponsesToolMessage == nil || copied.ResponsesCustomToolCall == nil {
+				t.Fatal("copy lost custom tool input")
+			}
+			if copied.ResponsesCustomToolCall.Input != input {
+				t.Fatalf("input = %q, want %q", copied.ResponsesCustomToolCall.Input, input)
+			}
+			copied.ResponsesCustomToolCall.Input = "redacted"
+			if original.ResponsesCustomToolCall.Input != input {
+				t.Fatal("changing copied input mutated the original")
+			}
+		})
+	}
+}
+
+// A per-part media resolution is replayed to the provider verbatim, so DeepCopyResponsesMessage
+// must carry it across -- and must not alias it, since the copy and the original can be sent on
+// different attempts of the same request.
+func TestDeepCopyResponsesMessagePreservesMediaResolution(t *testing.T) {
+	messageType := ResponsesMessageTypeMessage
+	role := ResponsesInputMessageRoleUser
+	imageURL := "data:image/jpeg;base64,/9j/4AAQSkZJRg=="
+	numTokens := int32(512)
+
+	original := ResponsesMessage{
+		Type: &messageType,
+		Role: &role,
+		Content: &ResponsesMessageContent{
+			ContentBlocks: []ResponsesMessageContentBlock{{
+				Type:                                   ResponsesInputMessageContentBlockTypeImage,
+				ResponsesInputMessageContentBlockImage: &ResponsesInputMessageContentBlockImage{ImageURL: &imageURL},
+				MediaResolution:                        &MediaResolution{Level: "MEDIA_RESOLUTION_ULTRA_HIGH", NumTokens: &numTokens},
+			}},
+		},
+	}
+
+	copied := DeepCopyResponsesMessage(original)
+	got := copied.Content.ContentBlocks[0].MediaResolution
+	if got == nil {
+		t.Fatal("deep copy dropped the media resolution")
+	}
+	if got.Level != "MEDIA_RESOLUTION_ULTRA_HIGH" {
+		t.Fatalf("level = %q, want MEDIA_RESOLUTION_ULTRA_HIGH", got.Level)
+	}
+	if got == original.Content.ContentBlocks[0].MediaResolution {
+		t.Error("copy aliases the original media resolution struct")
+	}
+	if got.NumTokens == nil {
+		t.Fatal("deep copy dropped numTokens")
+	}
+	if got.NumTokens == original.Content.ContentBlocks[0].MediaResolution.NumTokens {
+		t.Error("copy aliases the original numTokens pointer")
+	}
+	if *got.NumTokens != 512 {
+		t.Fatalf("numTokens = %d, want 512", *got.NumTokens)
+	}
+}

@@ -1,6 +1,9 @@
 package tables
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 // TestVirtualKeyProviderConfigKeyIDs pins KeyIDs' actual empty-Keys semantics, which the Keys
 // field's own comment previously contradicted: AllowAllKeys=false with no Keys rows means no
@@ -35,32 +38,62 @@ func TestVirtualKeyProviderConfigKeyIDs(t *testing.T) {
 	})
 }
 
-// TestVirtualKeyProviderConfigBeforeSaveValidatesModelLists pins that the save hook applies the
-// shared list rules to the exact lists and their pattern twins.
-func TestVirtualKeyProviderConfigBeforeSaveValidatesModelLists(t *testing.T) {
-	ok := &TableVirtualKeyProviderConfig{Provider: "openai", AllowedModels: []string{"gpt-4o"}, AllowedModelsPatterns: []string{"^claude-3-.*"}, BlacklistedModelsPatterns: []string{".*-preview$"}}
-	if err := ok.BeforeSave(nil); err != nil {
-		t.Fatalf("valid patterns should save: %v", err)
+// TestVirtualKeyAssignedUserSerialization pins the tri-state assigned_user contract that the
+// field's own comment, the TS VirtualKey type and useVirtualKeyUsage all depend on: a resolved
+// key carries assigned_user (object or null), and a key whose assignee could not be resolved
+// omits the field entirely so the UI can tell "unassigned" from "unknown" and refetch.
+func TestVirtualKeyAssignedUserSerialization(t *testing.T) {
+	marshalToMap := func(t *testing.T, vk TableVirtualKey) map[string]json.RawMessage {
+		t.Helper()
+		b, err := json.Marshal(vk)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(b, &m); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		return m
 	}
 
-	badAllowed := &TableVirtualKeyProviderConfig{Provider: "openai", AllowedModelsPatterns: []string{"("}}
-	if err := badAllowed.BeforeSave(nil); err == nil {
-		t.Fatalf("an invalid allowed_models_patterns entry should be rejected")
-	}
+	t.Run("resolved with an assignee emits the user", func(t *testing.T) {
+		m := marshalToMap(t, TableVirtualKey{
+			ID:               "vk-1",
+			AssigneeResolved: true,
+			AssignedUser:     &AssignedUser{ID: "user-1", Name: "Ada", Email: "ada@example.com"},
+		})
+		raw, ok := m["assigned_user"]
+		if !ok {
+			t.Fatal("expected assigned_user to be present for a resolved key")
+		}
+		var got AssignedUser
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatalf("unmarshal assigned_user: %v", err)
+		}
+		if got.Email != "ada@example.com" {
+			t.Fatalf("assigned_user = %#v, want ada@example.com", got)
+		}
+	})
 
-	badBlocked := &TableVirtualKeyProviderConfig{Provider: "openai", AllowedModels: []string{"*"}, BlacklistedModelsPatterns: []string{""}}
-	if err := badBlocked.BeforeSave(nil); err == nil {
-		t.Fatalf("an empty blacklisted_models_patterns entry should be rejected")
-	}
+	t.Run("resolved with no assignee emits null, not an absent key", func(t *testing.T) {
+		m := marshalToMap(t, TableVirtualKey{ID: "vk-1", AssigneeResolved: true})
+		raw, ok := m["assigned_user"]
+		if !ok {
+			t.Fatal("expected assigned_user to be present (null) for a resolved, unassigned key")
+		}
+		if string(raw) != "null" {
+			t.Fatalf("assigned_user = %s, want null", raw)
+		}
+	})
 
-	wildcard := &TableVirtualKeyProviderConfig{Provider: "openai", AllowedModelsPatterns: []string{"*"}}
-	if err := wildcard.BeforeSave(nil); err == nil {
-		t.Fatalf("the wildcard is not a pattern")
-	}
-
-	// A regex-looking string in the exact list is an ordinary literal and saves fine.
-	literal := &TableVirtualKeyProviderConfig{Provider: "openai", AllowedModels: []string{"regex:("}}
-	if err := literal.BeforeSave(nil); err != nil {
-		t.Fatalf("a regex-looking literal in allowed_models is just a name: %v", err)
-	}
+	t.Run("unresolved omits the key so callers can tell unknown from unassigned", func(t *testing.T) {
+		m := marshalToMap(t, TableVirtualKey{ID: "vk-1"})
+		if raw, ok := m["assigned_user"]; ok {
+			t.Fatalf("expected assigned_user to be absent when unresolved, got %s", raw)
+		}
+		// The rest of the key must still serialize normally.
+		if _, ok := m["id"]; !ok {
+			t.Fatal("expected the remaining fields to survive the omission")
+		}
+	})
 }

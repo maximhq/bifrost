@@ -58,7 +58,8 @@ type ModelCapabilities struct {
 	SupportsReasoningContentBlocks  *bool `json:"supports_reasoning_content_blocks,omitempty"`
 	SupportsMultimodalToolOutput    *bool `json:"supports_multimodal_tool_output,omitempty"`
 	SupportsResponseSchemaWithTools *bool `json:"supports_response_schema_with_tools,omitempty"`
-	SupportsForcedToolChoice        *bool `json:"supports_forced_tool_choice,omitempty"` // false ⇒ tool_choice any/tool rejected (Fable 5.1+)
+	SupportsForcedToolChoice        *bool `json:"supports_forced_tool_choice,omitempty"`       // false ⇒ tool_choice any/tool rejected (Fable 5.1+)
+	SupportsPromptCacheBreakpoints  *bool `json:"supports_prompt_cache_breakpoints,omitempty"` // Responses input_text accepts prompt_cache_breakpoint (Claude via OpenRouter, gpt-5.6+)
 
 	// Baseline request-surface flags. These drive the compat plugin's
 	// parameter allowlist rather than provider request shaping, so they are
@@ -162,6 +163,13 @@ type ModelCapabilities struct {
 	// Requested label → label actually sent, for models accepting a narrower
 	// set. Example for Gemini 3 Pro: {"minimal": "low", "medium": "high"}.
 	ReasoningEffortRenames map[string]string `json:"reasoning_effort_renames,omitempty"`
+
+	// reasoning.context values the model accepts on the OpenAI Responses wire
+	// ("auto" | "current_turn" | "all_turns"). A request value outside the list
+	// is dropped before dispatch so the model's own default applies. Absent
+	// means "use the name-based default": every reasoning model takes "auto"
+	// and "current_turn", and gpt-5.4+ also "all_turns".
+	SupportedReasoningContexts []string `json:"supported_reasoning_contexts,omitempty"`
 
 	// Allowed thinking-budget range in tokens.
 	ReasoningBudget *BudgetControl `json:"reasoning_budget,omitempty"`
@@ -305,6 +313,12 @@ type ModelCapabilities struct {
 	//
 	// Absent falls back to the caller's family detection.
 	BedrockRequiresSignedReasoning *bool `json:"bedrock_requires_signed_reasoning,omitempty"`
+
+	// Whether Converse accepts image blocks inside a toolResult. Scoped to Converse:
+	// gpt-5.6 rejects them there but reads them in Responses tool output.
+	//
+	// Absent falls back to the caller's family detection.
+	SupportsConverseToolResultImages *bool `json:"supports_converse_tool_result_images,omitempty"`
 }
 
 // BedrockAPI names one wire API on a Bedrock endpoint. Which endpoint serves it

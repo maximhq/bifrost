@@ -3590,3 +3590,84 @@ func TestRecordVideoJobLifecycle_MarksTheRequestRowWithTheVideo(t *testing.T) {
 		t.Fatal("only the settlement's aggregate cost row carries an accounting block")
 	}
 }
+
+// newEndedTraceContext builds a context whose tracer already completed the trace,
+// the state a late terminal hook observes after the transport flushed the request.
+// The root span is started first because a live trace gets its root span from the
+// transport before dispatch; ending the trace removes it from the tracer's store.
+func newTracedContext(t *testing.T) (*schemas.BifrostContext, *tracing.Tracer, string) {
+	t.Helper()
+	logger := testLogger{}
+	tracer := tracing.NewTracer(tracing.NewTraceStore(time.Minute, logger), nil, logger)
+	traceID := tracer.CreateTrace("")
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+	_, root := tracer.StartSpan(ctx, "http.request", schemas.SpanKindInternal)
+	if root == nil {
+		t.Fatal("root span was not started")
+	}
+	tracer.EndSpan(root, schemas.SpanStatusOk, "")
+	return ctx, tracer, traceID
+}
+
+// TestStoreOrEnqueueAfterInjectStillWrites pins the second drop behind maximhq/bifrost#6972.
+// When a client disconnects on a non-streaming request, the transport completes and
+// flushes the trace (EndTrace, then Inject) as soon as it has written the 499, while
+// the worker is still tearing down the upstream call. The worker's abandoned-billing
+// terminal hook then reaches storeOrEnqueueEntry AFTER the trace ended. Parking the
+// entry under the trace id would leave it for nothing but the TTL sweeper, so the
+// request is billed by governance but never gets a log row. The check is against the
+// tracer, not a timer, so it holds however late the hook lands.
+func TestStoreOrEnqueueAfterInjectStillWrites(t *testing.T) {
+	plugin := &LoggerPlugin{
+		logger:     testLogger{},
+		writeQueue: make(chan *writeQueueEntry, 10),
+	}
+	ctx, tracer, traceID := newTracedContext(t)
+
+	// The transport flushed the trace with nothing parked yet.
+	completed := tracer.EndTrace(traceID)
+	if completed == nil {
+		t.Fatal("EndTrace returned nil")
+	}
+	if err := plugin.Inject(context.Background(), completed); err != nil {
+		t.Fatalf("Inject() error = %v", err)
+	}
+
+	// The worker's late terminal hook lands afterwards.
+	plugin.storeOrEnqueueEntry(ctx, &logstore.Log{ID: "req-abandoned", Model: "gpt-4o-mini"}, nil)
+
+	if got := len(plugin.writeQueue); got != 1 {
+		t.Fatalf("expected the late entry to be enqueued for writing, writeQueue has %d entries", got)
+	}
+	if _, parked := plugin.pendingLogsToInject.Load(traceID); parked {
+		t.Fatal("late entry was parked under an already-ended trace; nothing will ever drain it")
+	}
+}
+
+// TestStoreOrEnqueueBeforeInjectStillParks guards the fix above against over-correcting:
+// an entry stored while the trace is live must still be parked so Inject can attach
+// plugin logs and the trace's authoritative latency before it is written.
+func TestStoreOrEnqueueBeforeInjectStillParks(t *testing.T) {
+	plugin := &LoggerPlugin{
+		logger:     testLogger{},
+		writeQueue: make(chan *writeQueueEntry, 10),
+	}
+	ctx, tracer, traceID := newTracedContext(t)
+
+	plugin.storeOrEnqueueEntry(ctx, &logstore.Log{ID: "req-normal", Model: "gpt-4o-mini"}, nil)
+	if got := len(plugin.writeQueue); got != 0 {
+		t.Fatalf("entry stored while the trace is live must be parked, but writeQueue has %d entries", got)
+	}
+	completed := tracer.EndTrace(traceID)
+	if completed == nil {
+		t.Fatal("EndTrace returned nil")
+	}
+	if err := plugin.Inject(context.Background(), completed); err != nil {
+		t.Fatalf("Inject() error = %v", err)
+	}
+	if got := len(plugin.writeQueue); got != 1 {
+		t.Fatalf("Inject must drain the parked entry, writeQueue has %d entries", got)
+	}
+}

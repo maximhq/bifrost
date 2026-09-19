@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -25,6 +26,71 @@ func makeResponsesTextFormat(schemaName string) *schemas.ResponsesTextConfig {
 			},
 		},
 	}
+}
+
+// TestAnthropicContainerRoundTrip covers issue #5707: the "container" request
+// param (string id for container reuse, or object with skills[]) must survive
+// the /v1/messages ingress-to-egress round trip. Both forms were silently
+// dropped: ToBifrostResponsesRequest never read req.Container, so a client
+// requesting container reuse got HTTP 200 with a fresh container and all
+// previously staged files missing.
+func TestAnthropicContainerRoundTrip(t *testing.T) {
+	t.Run("StringForm", func(t *testing.T) {
+		req := &AnthropicMessageRequest{
+			Model:     "claude-sonnet-4-5",
+			MaxTokens: 100,
+			Container: &AnthropicContainer{ContainerStr: schemas.Ptr("container_011CPQ2vNi9wkjJdrCFJNkCq")},
+		}
+
+		bifrostReq := req.ToBifrostResponsesRequest(nil)
+		out, err := ToAnthropicResponsesRequest(nil, bifrostReq)
+		if err != nil {
+			t.Fatalf("egress error: %v", err)
+		}
+
+		if out.Container == nil || out.Container.ContainerStr == nil {
+			t.Fatalf("string-form container dropped in round trip: %+v", out.Container)
+		}
+		if *out.Container.ContainerStr != "container_011CPQ2vNi9wkjJdrCFJNkCq" {
+			t.Errorf("container id = %q, want %q", *out.Container.ContainerStr, "container_011CPQ2vNi9wkjJdrCFJNkCq")
+		}
+		// Consumed onto the typed field, so it must not also linger in
+		// ExtraParams and serialize twice.
+		if _, ok := out.ExtraParams["container"]; ok {
+			t.Errorf("container left in ExtraParams after promotion: %#v", out.ExtraParams["container"])
+		}
+	})
+
+	t.Run("ObjectForm", func(t *testing.T) {
+		req := &AnthropicMessageRequest{
+			Model:     "claude-sonnet-4-5",
+			MaxTokens: 100,
+			Container: &AnthropicContainer{ContainerObject: &AnthropicContainerObject{
+				ID:     schemas.Ptr("container_011CPQ2vNi9wkjJdrCFJNkCq"),
+				Skills: []AnthropicContainerSkill{{SkillID: "pdf", Type: "anthropic"}},
+			}},
+		}
+
+		bifrostReq := req.ToBifrostResponsesRequest(nil)
+		out, err := ToAnthropicResponsesRequest(nil, bifrostReq)
+		if err != nil {
+			t.Fatalf("egress error: %v", err)
+		}
+
+		if out.Container == nil || out.Container.ContainerObject == nil {
+			t.Fatalf("object-form container dropped in round trip: %+v", out.Container)
+		}
+		obj := out.Container.ContainerObject
+		if obj.ID == nil || *obj.ID != "container_011CPQ2vNi9wkjJdrCFJNkCq" {
+			t.Errorf("container object id = %v, want container_011CPQ2vNi9wkjJdrCFJNkCq", obj.ID)
+		}
+		if len(obj.Skills) != 1 || obj.Skills[0].SkillID != "pdf" || obj.Skills[0].Type != "anthropic" {
+			t.Errorf("container skills not preserved: %+v", obj.Skills)
+		}
+		if _, ok := out.ExtraParams["container"]; ok {
+			t.Errorf("container left in ExtraParams after promotion: %#v", out.ExtraParams["container"])
+		}
+	})
 }
 
 // TestToAnthropicResponsesRequest_StructuredOutput_ToolConversion verifies that,
@@ -466,5 +532,82 @@ func TestAnthropicIngressLiftsServerSideToolOptIn(t *testing.T) {
 		!*bifrostReq.Params.IncludeServerSideToolInvocations {
 		t.Fatalf("include_server_side_tool_invocations not lifted to typed param: %v",
 			bifrostReq.Params.IncludeServerSideToolInvocations)
+	}
+}
+
+// A non-streaming Responses turn cut short by the output-token cap arrives from
+// OpenAI-shaped providers (Azure, OpenAI, chat-completions fallbacks) with
+// status "incomplete" and incomplete_details.reason set, but no stop_reason:
+// that field is Anthropic/Bedrock-only. The Anthropic egress must derive
+// stop_reason from incomplete_details, never report end_turn for a truncated
+// turn (#6782). Mirrors the streaming precedence StopReason > IncompleteDetails
+// > tool_use inference > end_turn.
+func TestToAnthropicResponsesResponse_IncompleteReportsTruncationStopReason(t *testing.T) {
+	cases := []struct {
+		name       string
+		status     string
+		stopReason *string
+		incomplete *schemas.ResponsesResponseIncompleteDetails
+		want       AnthropicStopReason
+	}{
+		{
+			name:       "StopReasonLength",
+			status:     schemas.ResponsesResponseStatusIncomplete,
+			stopReason: schemas.Ptr("length"),
+			incomplete: &schemas.ResponsesResponseIncompleteDetails{Reason: schemas.ResponsesResponseIncompleteReasonMaxOutputTokens},
+			want:       AnthropicStopReasonMaxTokens,
+		},
+		{
+			// The reported shape: Azure /openai/v1/responses sets no stop_reason.
+			name:       "MaxTokensFromIncompleteDetailsOnly",
+			status:     schemas.ResponsesResponseStatusIncomplete,
+			incomplete: &schemas.ResponsesResponseIncompleteDetails{Reason: schemas.ResponsesResponseIncompleteReasonMaxOutputTokens},
+			want:       AnthropicStopReasonMaxTokens,
+		},
+		{
+			name:       "ContentFilterFromIncompleteDetailsOnly",
+			status:     schemas.ResponsesResponseStatusIncomplete,
+			incomplete: &schemas.ResponsesResponseIncompleteDetails{Reason: schemas.ResponsesResponseIncompleteReasonContentFilter},
+			want:       AnthropicStopReasonRefusal,
+		},
+		{
+			// Control: a completed text turn with neither field keeps end_turn.
+			name:   "CompletedTextIsEndTurn",
+			status: schemas.ResponsesResponseStatusCompleted,
+			want:   AnthropicStopReasonEndTurn,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			resp := ToAnthropicResponsesResponse(ctx, &schemas.BifrostResponsesResponse{
+				ID:                schemas.Ptr("resp_1"),
+				Model:             "azure-glm-5.2",
+				Status:            schemas.Ptr(tc.status),
+				StopReason:        tc.stopReason,
+				IncompleteDetails: tc.incomplete,
+				Output: []schemas.ResponsesMessage{{
+					Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+					Content: &schemas.ResponsesMessageContent{
+						ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+							Type: schemas.ResponsesOutputMessageContentTypeText,
+							Text: schemas.Ptr("1\n2\n3"),
+						}},
+					},
+				}},
+				Usage: &schemas.ResponsesResponseUsage{InputTokens: 55974, OutputTokens: 4096, TotalTokens: 60070},
+			})
+			if resp == nil {
+				t.Fatal("ToAnthropicResponsesResponse returned nil")
+			}
+			if resp.StopReason != tc.want {
+				t.Errorf("stop_reason = %q, want %q", resp.StopReason, tc.want)
+			}
+			if resp.Usage == nil || resp.Usage.OutputTokens != 4096 {
+				t.Errorf("usage.output_tokens not carried: %+v", resp.Usage)
+			}
+		})
 	}
 }

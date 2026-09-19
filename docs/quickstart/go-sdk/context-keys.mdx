@@ -98,12 +98,12 @@ A direct key bypasses the **key pool** (no weighted selection, no rotation or fa
 
 ### Session Stickiness (Session ID)
 
-Bind a session to a specific API key so that requests with the same session ID consistently use the same key. Useful for predictable rate-limit buckets, cost attribution per user, and consistent model routing per session.
+Keep a session on what served it before: the provider that last served it, when routing still offers that provider, and the key that last served it within that provider. A request that names its provider is never reordered; only the key level applies to it. Useful for keeping provider prompt caches warm across a conversation, predictable rate-limit buckets, and cost attribution per user.
 
-On the first request for a session ID, Bifrost selects a key (via weighted random) and caches the binding in the KV store. Subsequent requests with the same session ID reuse the cached key as long as it remains valid. If the cached key is no longer in the supported set (disabled, removed, or model support changed), Bifrost re-selects and overwrites the cache.
+Bindings are written when a request is served, never when it fails. A later request with the same session ID puts the bound provider first among the routes the hooks produced and uses the bound key while it remains eligible; a key that is no longer in the supported set (disabled, removed, or model support changed) is dropped and the next served request rebinds. A fallback that serves becomes the session's new home. Decisions the session made are recorded in the request's routing logs under the `session-affinity` engine.
 
 <Note>
-Session stickiness requires a `KVStore` to be configured in `BifrostConfig`.
+The policy that picks and keeps the key is `BifrostConfig.SessionAffinity`. When it is unset, Bifrost's own default applies: it needs a `KVStore` in `BifrostConfig`, binds the session to the key selected for its first request, and scopes bindings to the virtual key and user the request's grant identity is attributed to, so a session id reused by another caller does not share them. A custom `SessionAffinity` may keep its state elsewhere and scope it differently.
 </Note>
 
 ```go
@@ -112,10 +112,18 @@ bfCtx.SetValue(schemas.BifrostContextKeySessionID, "user-123-session-abc")
 
 ### Session TTL
 
-Controls how long the session-to-key binding is cached. If not set, Bifrost uses a default TTL of 1 hour. The TTL is refreshed on each request so active sessions do not expire.
+Controls how long the session bindings are kept. If not set, Bifrost uses a default TTL of 1 hour. The TTL is refreshed by each served request so active sessions do not expire.
 
 ```go
 bfCtx.SetValue(schemas.BifrostContextKeySessionTTL, 30*time.Minute)
+```
+
+### Session Affinity Switch
+
+Whether a request lets its session decide where it goes. On by default; `false` leaves the provider to routing and the key to key selection, and writes no session state for the request.
+
+```go
+bfCtx.SetValue(schemas.BifrostContextKeySessionAffinity, false)
 ```
 
 ### Request ID
@@ -366,8 +374,9 @@ func makeRequest(client *bifrost.Bifrost) {
 | `BifrostContextKeyRequestID` | `string` | Set | Custom request ID for tracking |
 | `BifrostContextKeyFallbackRequestID` | `string` | Read | Request ID used for fallback attempt |
 | `BifrostContextKeySkipKeySelection` | `bool` | Set | Skip key selection entirely |
-| `BifrostContextKeySessionID` | `string` | Set | Session ID for key stickiness (requires KV store) |
-| `BifrostContextKeySessionTTL` | `time.Duration` | Set | TTL for session-to-key cache (default: 1 hour) |
+| `BifrostContextKeySessionID` | `string` | Set | Session ID for provider and key session affinity (requires KV store) |
+| `BifrostContextKeySessionTTL` | `time.Duration` | Set | TTL for session bindings (default: 1 hour) |
+| `BifrostContextKeySessionAffinity` | `bool` | Set | Whether the session decides routing for the request (default: true) |
 | `BifrostContextKeyExtraHeaders` | `map[string][]string` | Set | Custom headers forwarded to the provider |
 | `BifrostContextKeyURLPath` | `string` | Set | Custom URL path appended to provider base URL |
 | `BifrostContextKeyStreamIdleTimeout` | `time.Duration` | Set | Per-chunk idle timeout for streaming responses |

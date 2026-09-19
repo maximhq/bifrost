@@ -85,9 +85,10 @@ const (
 	// InputBypass means the operation is unsupported or explicitly belongs to a
 	// harness background workload. It neither classifies nor refreshes a session.
 	InputBypass InputDisposition = iota
-	// InputContinuation means a supported conversational request contains no new
-	// classifiable human text. It may reuse existing session state but cannot
-	// create or escalate it.
+	// InputContinuation means a supported conversational request is continuing an
+	// earlier turn. It may reuse existing session state; when that state is not
+	// available, LastUserText retains the recoverable task for a safe fallback
+	// classification.
 	InputContinuation
 	// InputClassifiable means the request contains human-authored text that may
 	// initialize or escalate a session tier.
@@ -126,7 +127,7 @@ func BuildInputWithDisposition(ctx *schemas.BifrostContext, req *schemas.Bifrost
 			return ComplexityInput{}, InputContinuation
 		}
 		if chatHasTrailingContinuation(req.ChatRequest.Input, harness) {
-			return ComplexityInput{}, InputContinuation
+			return input, InputContinuation
 		}
 		return input, InputClassifiable
 	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
@@ -147,7 +148,7 @@ func BuildInputWithDisposition(ctx *schemas.BifrostContext, req *schemas.Bifrost
 			return ComplexityInput{}, InputContinuation
 		}
 		if responsesHasTrailingContinuation(req.ResponsesRequest.Input, harness) {
-			return ComplexityInput{}, InputContinuation
+			return input, InputContinuation
 		}
 		return input, InputClassifiable
 	default:
@@ -234,7 +235,7 @@ func extractFromChatMessages(messages []schemas.ChatMessage, harness complexityH
 		case schemas.ChatMessageRoleUser:
 			text, ok := extractChatTextOnly(msg.Content)
 			if !ok {
-				return ComplexityInput{}, false
+				continue
 			}
 			text, kind := sanitizeUserText(text, harness)
 			switch kind {

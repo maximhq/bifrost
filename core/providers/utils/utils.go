@@ -919,7 +919,10 @@ func filterHeaders(headers map[string][]string) map[string][]string {
 }
 
 // providerResponseFilterHeaders are headers to exclude when forwarding provider response headers.
-// These are transport-level headers that don't apply when re-serving the response.
+// These are transport-level headers that don't apply when re-serving the response, plus the
+// exact credential names from the /genai_passthrough leak (#3954). It is one of the two rules
+// applied by shouldFilterProviderResponseHeader; the other catches credential names this list
+// does not enumerate.
 var providerResponseFilterHeaders = map[string]bool{
 	"content-length":                   true,
 	"content-encoding":                 true,
@@ -954,8 +957,22 @@ var providerResponseFilterHeaders = map[string]bool{
 	"access-control-max-age":           true,
 }
 
+// shouldFilterProviderResponseHeader reports whether a provider response header must not be
+// re-served to the caller. The name is expected to already be lowercased.
+//
+// Two rules apply. A header is dropped when it is a transport-level or known-credential name in
+// providerResponseFilterHeaders, or when schemas.IsSensitiveHeader classifies its name as
+// credential-bearing. The second rule exists because a name-by-name denylist necessarily lags:
+// network_config.extra_headers supports arbitrary custom authentication headers, and some
+// upstreams echo request headers back (e.g. Google's file-download 302), so the set of credential
+// names that can appear in a provider response is open-ended. Sharing the classifier already used
+// by the telemetry redaction path keeps the two definitions of "credential" from diverging.
+func shouldFilterProviderResponseHeader(nameLower string) bool {
+	return providerResponseFilterHeaders[nameLower] || schemas.IsSensitiveHeader(nameLower)
+}
+
 // ExtractProviderResponseHeaders extracts and filters response headers from a
-// fasthttp response. Transport-level headers are excluded.
+// fasthttp response. Transport-level and credential-bearing headers are excluded.
 func ExtractProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
 	if resp == nil {
 		return nil
@@ -963,7 +980,7 @@ func ExtractProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
 	headers := make(map[string]string)
 	resp.Header.VisitAll(func(key, value []byte) {
 		k := string(key)
-		if providerResponseFilterHeaders[strings.ToLower(k)] {
+		if shouldFilterProviderResponseHeader(strings.ToLower(k)) {
 			return
 		}
 		v := string(value)
@@ -980,7 +997,8 @@ func ExtractProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
 }
 
 // ExtractPassthroughProviderResponseHeaders extracts and filters response headers from a
-// fasthttp response. Transport-level headers are excluded.
+// fasthttp response. Transport-level and credential-bearing headers are excluded, except
+// content-type, which the passthrough response must retain.
 func ExtractPassthroughProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
 	if resp == nil {
 		return nil
@@ -989,7 +1007,7 @@ func ExtractPassthroughProviderResponseHeaders(resp *fasthttp.Response) map[stri
 	resp.Header.VisitAll(func(key, value []byte) {
 		k := string(key)
 		kLower := strings.ToLower(k)
-		if providerResponseFilterHeaders[kLower] && kLower != "content-type" {
+		if shouldFilterProviderResponseHeader(kLower) && kLower != "content-type" {
 			return
 		}
 		v := string(value)
@@ -1006,15 +1024,15 @@ func ExtractPassthroughProviderResponseHeaders(resp *fasthttp.Response) map[stri
 }
 
 // ExtractProviderResponseHeadersFromHTTP extracts and filters response headers
-// from a standard net/http response. Transport-level headers are excluded.
-// Used by providers like Bedrock that use net/http instead of fasthttp.
+// from a standard net/http response. Transport-level and credential-bearing headers
+// are excluded. Used by providers like Bedrock that use net/http instead of fasthttp.
 func ExtractProviderResponseHeadersFromHTTP(resp *http.Response) map[string]string {
 	if resp == nil {
 		return nil
 	}
 	headers := make(map[string]string)
 	for k, values := range resp.Header {
-		if !providerResponseFilterHeaders[strings.ToLower(k)] && len(values) > 0 {
+		if !shouldFilterProviderResponseHeader(strings.ToLower(k)) && len(values) > 0 {
 			headers[k] = strings.Join(values, ", ")
 		}
 	}
@@ -1169,6 +1187,39 @@ func setPassthroughHeaders(ctx context.Context, req *fasthttp.Request, provider 
 			}
 		}
 	}
+}
+
+// StripCallerAuthForInsecureURL removes a forwarded caller Authorization header from
+// passthrough safe headers when the resolved upstream URL is neither HTTPS nor a
+// loopback address (RFC 6750 section 5.3; loopback is exempt per the RFC 8252
+// section 8.3 rationale - the bytes never leave the machine). The transport vets
+// which providers may receive caller auth, but the provider BaseURL is resolved in
+// core, so this is the last place that sees the final scheme. Stripping fails
+// closed: key selection was skipped for caller-auth requests, so an insecure
+// upstream sees an unauthenticated request instead of a cleartext token.
+func StripCallerAuthForInsecureURL(requestURL string, safeHeaders map[string]string) {
+	if len(safeHeaders) == 0 {
+		return
+	}
+	u, err := url.Parse(requestURL)
+	if err == nil && (strings.EqualFold(u.Scheme, "https") || isLoopbackHost(u.Hostname())) {
+		return
+	}
+	for k := range safeHeaders {
+		if strings.EqualFold(k, "authorization") {
+			delete(safeHeaders, k)
+		}
+	}
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 // GetPathFromContext gets the path from the context, if it exists, otherwise returns the default path.
@@ -2087,6 +2138,20 @@ func SetExtraHeadersHTTP(ctx context.Context, req *http.Request, extraHeaders ma
 	}
 }
 
+// rootErrorMessage returns a root-level "message" string from a parsed provider error
+// body, or "" when the body carries none. AWS uses this shape for every Bedrock error
+// (the exception name travels separately, in "__type" or the X-Amzn-Errortype header),
+// while providers whose errors nest the message under "error" simply have no root-level
+// "message" for this to find.
+func rootErrorMessage(raw interface{}) string {
+	body, ok := raw.(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	message, _ := body["message"].(string)
+	return strings.TrimSpace(message)
+}
+
 // HandleProviderAPIError processes error responses from provider APIs.
 // It attempts to unmarshal the error response and returns a BifrostError
 // with the appropriate status code and error information.
@@ -2162,11 +2227,17 @@ func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 
 	// Try JSON parsing first
 	if err := sonic.Unmarshal(decodedBody, errorResp); err == nil {
-		// JSON parsing succeeded, return success
+		// JSON parsing succeeded, return success. The message is seeded from a
+		// root-level "message" so a body the caller's own error shape cannot
+		// describe still reports a reason: AWS answers every Bedrock surface
+		// (bedrock-runtime and Mantle) with a flat {"message":"..."}, which
+		// neither the Anthropic error envelope nor the OpenAI one matches, and
+		// those surfaces are served by the shared Anthropic/OpenAI handlers.
+		// Callers overwrite this as soon as their own parse finds a message.
 		return &schemas.BifrostError{
 			IsBifrostError: false,
 			StatusCode:     &statusCode,
-			Error:          &schemas.ErrorField{},
+			Error:          &schemas.ErrorField{Message: rootErrorMessage(rawErrorResponse)},
 			ExtraFields: schemas.BifrostErrorExtraFields{
 				RawResponse: rawErrorResponse,
 			},
@@ -2702,6 +2773,9 @@ func NewBifrostBadRequestError(message string) *schemas.BifrostError {
 		Error: &schemas.ErrorField{
 			Message: message,
 			Type:    &errorType,
+		},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 		},
 	}
 }
@@ -3588,6 +3662,18 @@ func ProcessAndSendNonSSEStreamError(
 // This utility reduces code duplication across streaming implementations by encapsulating
 // the common pattern of running post hooks, handling errors, and sending responses with
 // proper context cancellation handling.
+// BifrostErrorCarrier is implemented by stream-reader errors that already carry
+// a fully classified *schemas.BifrostError (retryability, status code, upstream
+// error type). ProcessAndSendError forwards such an error unchanged instead of
+// wrapping it in a terminal "Error reading stream" error, so a reader plugged
+// into a shared stream loop through SSEReaderFactory (e.g. the Bedrock
+// InvokeModel event-stream reader) keeps the same retry semantics as a provider
+// loop that calls ProcessAndSendBifrostError directly.
+type BifrostErrorCarrier interface {
+	error
+	BifrostError() *schemas.BifrostError
+}
+
 func ProcessAndSendError(
 	ctx *schemas.BifrostContext,
 	postHookRunner schemas.PostHookRunner,
@@ -3596,6 +3682,13 @@ func ProcessAndSendError(
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
 ) {
+	var carrier BifrostErrorCarrier
+	if errors.As(err, &carrier) {
+		if typed := carrier.BifrostError(); typed != nil {
+			ProcessAndSendBifrostError(ctx, postHookRunner, typed, responseChan, logger, postHookSpanFinalizer)
+			return
+		}
+	}
 	// Send scanner error through channel
 	bifrostError := &schemas.BifrostError{
 		IsBifrostError: true,
@@ -3770,6 +3863,20 @@ func ProviderSendsDoneMarker(ctx *schemas.BifrostContext, providerName schemas.M
 		// Default to expecting [DONE] marker for safety
 		return true
 	}
+}
+
+// WaitForStreamUsage reports whether custom_provider_config.wait_for_usage is set.
+// It only has meaning alongside a provider that ends on finish_reason (see
+// ProviderSendsDoneMarker): the read loop then keeps reading past finish_reason so the
+// trailing usage-only chunk - which Bifrost always asks for via stream_options.include_usage -
+// is collected instead of dropped (#7143). Termination is still bounded: the usage chunk,
+// two post-finish heartbeat comments, EOF, or network_config.stream_idle_timeout_in_seconds.
+func WaitForStreamUsage(ctx *schemas.BifrostContext) bool {
+	if ctx == nil {
+		return false
+	}
+	waitForUsage, ok := ctx.Value(schemas.BifrostContextKeyWaitForUsage).(bool)
+	return ok && waitForUsage
 }
 
 func ProviderIsResponsesAPINative(providerName schemas.ModelProvider) bool {

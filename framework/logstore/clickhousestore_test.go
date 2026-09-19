@@ -872,6 +872,19 @@ func TestClickHouseFinalAfterLightweightDelete(t *testing.T) {
 	ctx := context.Background()
 	ts := time.Now().UTC().Truncate(time.Millisecond)
 
+	// A background ReplacingMergeTree merge can collapse the two versions
+	// written below at any moment, flaking the "both versions on disk"
+	// preconditions. Stop merges while the versions are written and counted.
+	// Merges must run again before the deletes: a lightweight DELETE is a
+	// mutation, mutations do not execute while merges are stopped, and the
+	// connection's mutations_sync=1 would make the delete hang forever
+	// (verified against a live server).
+	require.NoError(t, store.db.Exec("SYSTEM STOP MERGES logs").Error)
+	startMerges := sync.OnceFunc(func() {
+		require.NoError(t, store.db.Exec("SYSTEM START MERGES logs").Error)
+	})
+	t.Cleanup(startMerges)
+
 	for _, id := range []string{"ch-final-1", "ch-final-2", "ch-final-3"} {
 		require.NoError(t, store.CreateIfNotExists(ctx, chTestLog(id, ts)))
 		// A second ReplacingMergeTree version of the same id via read-modify-write.
@@ -882,6 +895,7 @@ func TestClickHouseFinalAfterLightweightDelete(t *testing.T) {
 		require.Equal(t, int64(1), chCountRows(t, store.db, "logs", id), "FINAL collapses them to one logical row")
 	}
 	require.NoError(t, store.BatchCreateMCPToolLogsIfNotExists(ctx, []*MCPToolLog{chTestMCPToolLog("ch-final-mcp", ts)}))
+	startMerges()
 
 	logsBefore := chMutationIDs(t, store.db, "logs")
 	mcpBefore := chMutationIDs(t, store.db, "mcp_tool_logs")

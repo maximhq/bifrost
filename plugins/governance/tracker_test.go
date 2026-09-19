@@ -3,6 +3,7 @@ package governance
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -270,6 +271,234 @@ func TestUsageTracker_Idempotency_DifferentAttemptsBothBilled(t *testing.T) {
 	require.NotNil(t, updatedBudget)
 	assert.Equal(t, 10.0, updatedBudget.CurrentUsage,
 		"Distinct attempts under one RequestID must each bill")
+}
+
+// TestUsageTracker_Idempotency_ForgedRequestIDsBothBilled verifies that two
+// INDEPENDENT physical calls sharing a caller-chosen request ID (x-request-id
+// is caller-supplied) each bill: the transport mints a distinct BillingNonce
+// per HTTP request, and the nonce is part of the billing key precisely so a
+// forged duplicate ID cannot claim another request's settlement.
+func TestUsageTracker_Idempotency_ForgedRequestIDsBothBilled(t *testing.T) {
+	logger := NewMockLogger()
+
+	budget := buildBudgetWithUsage("budget1", 1000.0, 0.0, "1d")
+	vk := buildVirtualKeyWithBudget("vk1", "sk-bf-test", "Test VK", budget)
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Budgets:     []configstoreTables.TableBudget{*budget},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	resolver := NewBudgetResolver(store, nil, logger, nil)
+	tracker := NewUsageTracker(context.Background(), store, resolver, nil, logger)
+	defer tracker.Cleanup()
+
+	mk := func(nonce string) *UsageUpdate {
+		return &UsageUpdate{
+			Success:       true,
+			TokensUsed:    100,
+			Cost:          10.0,
+			RequestID:     "attacker-chosen-id",
+			BillingNonce:  nonce,
+			AttemptNumber: 0,
+			HasUsageData:  true,
+		}
+	}
+
+	// Two physically distinct HTTP requests: same forged request ID, both at
+	// attempt 0, but each carrying its own transport-minted nonce.
+	tracker.UpdateUsage(context.Background(), settleLimits(store, "sk-bf-test", schemas.OpenAI, "gpt-4", mk("nonce-a")))
+	tracker.UpdateUsage(context.Background(), settleLimits(store, "sk-bf-test", schemas.OpenAI, "gpt-4", mk("nonce-b")))
+	time.Sleep(200 * time.Millisecond)
+
+	budgets := store.GetGovernanceData(context.Background()).Budgets
+	updatedBudget := budgets["budget1"]
+	require.NotNil(t, updatedBudget)
+	assert.Equal(t, 20.0, updatedBudget.CurrentUsage,
+		"Independent physical calls sharing a caller-chosen RequestID must each bill")
+}
+
+// TestUsageTracker_Idempotency_ForgedRequestIDsCrossVKBothBilled verifies the
+// cross-principal case: a duplicate request ID sent under a DIFFERENT virtual
+// key must not suppress the second key's charges — the billing map is
+// process-global, so without the nonce vk2's settlement would be claimed by
+// vk1's earlier request.
+func TestUsageTracker_Idempotency_ForgedRequestIDsCrossVKBothBilled(t *testing.T) {
+	logger := NewMockLogger()
+
+	budget1 := buildBudgetWithUsage("budget1", 1000.0, 0.0, "1d")
+	budget2 := buildBudgetWithUsage("budget2", 1000.0, 0.0, "1d")
+	vk1 := buildVirtualKeyWithBudget("vk1", "sk-bf-one", "VK One", budget1)
+	vk2 := buildVirtualKeyWithBudget("vk2", "sk-bf-two", "VK Two", budget2)
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk1, *vk2},
+		Budgets:     []configstoreTables.TableBudget{*budget1, *budget2},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	resolver := NewBudgetResolver(store, nil, logger, nil)
+	tracker := NewUsageTracker(context.Background(), store, resolver, nil, logger)
+	defer tracker.Cleanup()
+
+	mk := func(nonce string) *UsageUpdate {
+		return &UsageUpdate{
+			Success:       true,
+			TokensUsed:    100,
+			Cost:          10.0,
+			RequestID:     "shared-id",
+			BillingNonce:  nonce,
+			AttemptNumber: 0,
+			HasUsageData:  true,
+		}
+	}
+
+	tracker.UpdateUsage(context.Background(), settleLimits(store, "sk-bf-one", schemas.OpenAI, "gpt-4", mk("nonce-vk1")))
+	tracker.UpdateUsage(context.Background(), settleLimits(store, "sk-bf-two", schemas.OpenAI, "gpt-4", mk("nonce-vk2")))
+	time.Sleep(200 * time.Millisecond)
+
+	budgets := store.GetGovernanceData(context.Background()).Budgets
+	require.NotNil(t, budgets["budget1"])
+	require.NotNil(t, budgets["budget2"])
+	assert.Equal(t, 10.0, budgets["budget1"].CurrentUsage,
+		"vk1's request must bill its own budget")
+	assert.Equal(t, 10.0, budgets["budget2"].CurrentUsage,
+		"vk2's request must bill despite sharing a request ID with vk1's")
+}
+
+// TestUsageTracker_Idempotency_SameNonceSameAttemptBilledOnce verifies the race
+// the dedup was built for still holds with the nonce in the key: the
+// success-terminal and cancellation-terminal paths of ONE physical call share
+// nonce, request ID, and attempt, and must settle at most once.
+func TestUsageTracker_Idempotency_SameNonceSameAttemptBilledOnce(t *testing.T) {
+	logger := NewMockLogger()
+
+	budget := buildBudgetWithUsage("budget1", 1000.0, 0.0, "1d")
+	vk := buildVirtualKeyWithBudget("vk1", "sk-bf-test", "Test VK", budget)
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Budgets:     []configstoreTables.TableBudget{*budget},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	resolver := NewBudgetResolver(store, nil, logger, nil)
+	tracker := NewUsageTracker(context.Background(), store, resolver, nil, logger)
+	defer tracker.Cleanup()
+
+	mk := func(success bool) *UsageUpdate {
+		return &UsageUpdate{
+			Success:       success,
+			TokensUsed:    100,
+			Cost:          10.0,
+			RequestID:     "req-one-call",
+			BillingNonce:  "nonce-one-call",
+			AttemptNumber: 0,
+			HasUsageData:  true,
+		}
+	}
+
+	tracker.UpdateUsage(context.Background(), settleLimits(store, "sk-bf-test", schemas.OpenAI, "gpt-4", mk(true)))
+	tracker.UpdateUsage(context.Background(), settleLimits(store, "sk-bf-test", schemas.OpenAI, "gpt-4", mk(false))) // competing cancellation-terminal
+	time.Sleep(200 * time.Millisecond)
+
+	budgets := store.GetGovernanceData(context.Background()).Budgets
+	updatedBudget := budgets["budget1"]
+	require.NotNil(t, updatedBudget)
+	assert.Equal(t, 10.0, updatedBudget.CurrentUsage,
+		"Competing terminal paths of one physical call must settle at most once")
+}
+
+// TestUsageTracker_Idempotency_NestedCallsUnderOneNonceEachBilled verifies the
+// MCP-agent/codemode shape: nested inference calls mint a fresh RequestID each
+// (core/mcp/agent.go) but share the parent HTTP request's nonce. The RequestID
+// stays in the billing key so those calls each bill rather than colliding on
+// the shared nonce.
+func TestUsageTracker_Idempotency_NestedCallsUnderOneNonceEachBilled(t *testing.T) {
+	logger := NewMockLogger()
+
+	budget := buildBudgetWithUsage("budget1", 1000.0, 0.0, "1d")
+	vk := buildVirtualKeyWithBudget("vk1", "sk-bf-test", "Test VK", budget)
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Budgets:     []configstoreTables.TableBudget{*budget},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	resolver := NewBudgetResolver(store, nil, logger, nil)
+	tracker := NewUsageTracker(context.Background(), store, resolver, nil, logger)
+	defer tracker.Cleanup()
+
+	mk := func(requestID string) *UsageUpdate {
+		return &UsageUpdate{
+			Success:       true,
+			TokensUsed:    100,
+			Cost:          10.0,
+			RequestID:     requestID,
+			BillingNonce:  "nonce-parent-http-request",
+			AttemptNumber: 0,
+			HasUsageData:  true,
+		}
+	}
+
+	tracker.UpdateUsage(context.Background(), settleLimits(store, "sk-bf-test", schemas.OpenAI, "gpt-4", mk("nested-call-1")))
+	tracker.UpdateUsage(context.Background(), settleLimits(store, "sk-bf-test", schemas.OpenAI, "gpt-4", mk("nested-call-2")))
+	time.Sleep(200 * time.Millisecond)
+
+	budgets := store.GetGovernanceData(context.Background()).Budgets
+	updatedBudget := budgets["budget1"]
+	require.NotNil(t, updatedBudget)
+	assert.Equal(t, 20.0, updatedBudget.CurrentUsage,
+		"Nested calls sharing one nonce but distinct RequestIDs must each bill")
+}
+
+// TestUsageTracker_Idempotency_ConcurrentForgedRequestIDsAllBilled verifies the
+// forged-ID fix under concurrency: N parallel physical calls sharing one
+// caller-chosen request ID, each with its own nonce, must all bill.
+func TestUsageTracker_Idempotency_ConcurrentForgedRequestIDsAllBilled(t *testing.T) {
+	logger := NewMockLogger()
+
+	budget := buildBudgetWithUsage("budget1", 1000.0, 0.0, "1d")
+	vk := buildVirtualKeyWithBudget("vk1", "sk-bf-test", "Test VK", budget)
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Budgets:     []configstoreTables.TableBudget{*budget},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	resolver := NewBudgetResolver(store, nil, logger, nil)
+	tracker := NewUsageTracker(context.Background(), store, resolver, nil, logger)
+	defer tracker.Cleanup()
+
+	const calls = 10
+	var wg sync.WaitGroup
+	for i := 0; i < calls; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			update := settleLimits(store, "sk-bf-test", schemas.OpenAI, "gpt-4", &UsageUpdate{
+				Success:       true,
+				TokensUsed:    100,
+				Cost:          1.0,
+				RequestID:     "attacker-chosen-id",
+				BillingNonce:  fmt.Sprintf("nonce-%d", i),
+				AttemptNumber: 0,
+				HasUsageData:  true,
+			})
+			tracker.UpdateUsage(context.Background(), update)
+		}(i)
+	}
+	wg.Wait()
+	time.Sleep(200 * time.Millisecond)
+
+	budgets := store.GetGovernanceData(context.Background()).Budgets
+	updatedBudget := budgets["budget1"]
+	require.NotNil(t, updatedBudget)
+	assert.Equal(t, float64(calls), updatedBudget.CurrentUsage,
+		"All concurrent physical calls sharing a forged RequestID must bill")
 }
 
 // TestUsageTracker_Cleanup tests cleanup of the usage tracker

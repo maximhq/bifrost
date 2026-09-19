@@ -317,6 +317,10 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 	if req.ServiceTier != nil && !features.ServiceTier {
 		req.ServiceTier = nil
 	}
+	// Cache diagnostics is Claude API only; elsewhere it 400s as an unknown field.
+	if req.Diagnostics != nil && !features.Diagnostics {
+		req.Diagnostics = nil
+	}
 	// cache_control.scope — strip on providers without PromptCachingScope
 	// support at every slot scope can live: top-level request, tools, system
 	// blocks, and message content blocks. Vertex additionally uses the
@@ -3887,6 +3891,33 @@ func attachWebSearchSourcesToCall(bifrostMessages []schemas.ResponsesMessage, to
 			}
 			break
 		}
+	}
+}
+
+// attachToolSearchReferencesToCall finds the tool_search_call emitted for this
+// server_tool_use id and attaches the discovered tool names. Mirrors
+// attachWebSearchSourcesToCall: the call item and its result block arrive as two
+// separate content blocks, matched on server_tool_use.id == result.tool_use_id.
+func attachToolSearchReferencesToCall(bifrostMessages []schemas.ResponsesMessage, toolUseID string, resultBlock AnthropicContentBlock) {
+	for i := len(bifrostMessages) - 1; i >= 0; i-- {
+		msg := &bifrostMessages[i]
+		if msg.Type == nil || *msg.Type != schemas.ResponsesMessageTypeToolSearchCall ||
+			msg.ID == nil || *msg.ID != toolUseID {
+			continue
+		}
+		var refs []string
+		for _, ref := range resultBlock.DiscoveredToolReferences() {
+			if ref.ToolName != nil {
+				refs = append(refs, *ref.ToolName)
+			} else if ref.Name != nil {
+				refs = append(refs, *ref.Name)
+			}
+		}
+		if msg.ResponsesToolMessage == nil {
+			msg.ResponsesToolMessage = &schemas.ResponsesToolMessage{}
+		}
+		msg.ResponsesToolMessage.ResponsesToolSearchCall = &schemas.ResponsesToolSearchCall{ToolReferences: refs}
+		return
 	}
 }
 

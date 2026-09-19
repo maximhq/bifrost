@@ -23,7 +23,16 @@ interface RegexPatternInputProps {
  * One-line pattern editor: type an RE2 pattern, press Enter or click Add.
  * Invalid patterns show the validator's message inline and are not added.
  */
-export function RegexPatternInput({ onAdd, disabled, placeholder, inputId, ariaDescribedBy, ariaInvalid, className, ...rest }: RegexPatternInputProps) {
+export function RegexPatternInput({
+	onAdd,
+	disabled,
+	placeholder,
+	inputId,
+	ariaDescribedBy,
+	ariaInvalid,
+	className,
+	...rest
+}: RegexPatternInputProps) {
 	const [pattern, setPattern] = useState("");
 	const [error, setError] = useState<string | null>(null);
 	const testId = rest["data-testid"];
@@ -87,7 +96,7 @@ export function RegexPatternInput({ onAdd, disabled, placeholder, inputId, ariaD
 				</p>
 			) : (
 				<p id={hintId} className="text-muted-foreground text-xs">
-					Matched against the model name and provider/model, case-insensitive, full match.
+					Matched against the whole model name, case-insensitive.
 				</p>
 			)}
 		</div>

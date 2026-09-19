@@ -145,66 +145,62 @@ func toolSyncIntervalDurationToStoredSeconds(interval time.Duration) (int, error
 // schemaKeyFromTableKey converts a database key to a schema key.
 func schemaKeyFromTableKey(dbKey tables.TableKey) schemas.Key {
 	return schemas.Key{
-		ID:                        dbKey.KeyID,
-		Name:                      dbKey.Name,
-		Value:                     dbKey.Value,
-		Models:                    dbKey.Models,
-		BlacklistedModels:         dbKey.BlacklistedModels,
-		ModelsPatterns:            dbKey.ModelsPatterns,
-		BlacklistedModelsPatterns: dbKey.BlacklistedModelsPatterns,
-		Weight:                    getWeight(dbKey.Weight),
-		Enabled:                   dbKey.Enabled,
-		UseForBatchAPI:            dbKey.UseForBatchAPI,
-		UseAnthropicEndpoints:     dbKey.UseAnthropicEndpoints,
-		UseOpenAIEndpoints:        dbKey.UseOpenAIEndpoints,
-		AzureKeyConfig:            dbKey.AzureKeyConfig,
-		VertexKeyConfig:           dbKey.VertexKeyConfig,
-		BedrockKeyConfig:          dbKey.BedrockKeyConfig,
-		BedrockMantleKeyConfig:    dbKey.BedrockMantleKeyConfig,
-		Aliases:                   dbKey.Aliases,
-		VLLMKeyConfig:             dbKey.VLLMKeyConfig,
-		ReplicateKeyConfig:        dbKey.ReplicateKeyConfig,
-		OllamaKeyConfig:           dbKey.OllamaKeyConfig,
-		SGLKeyConfig:              dbKey.SGLKeyConfig,
-		DatabricksKeyConfig:       dbKey.DatabricksKeyConfig,
-		GithubCopilotKeyConfig:    dbKey.GithubCopilotKeyConfig,
-		ConfigHash:                dbKey.ConfigHash,
-		Status:                    schemas.KeyStatusType(dbKey.Status),
-		Description:               dbKey.Description,
+		ID:                     dbKey.KeyID,
+		Name:                   dbKey.Name,
+		Value:                  dbKey.Value,
+		Models:                 dbKey.Models,
+		BlacklistedModels:      dbKey.BlacklistedModels,
+		Weight:                 getWeight(dbKey.Weight),
+		Enabled:                dbKey.Enabled,
+		UseForBatchAPI:         dbKey.UseForBatchAPI,
+		UseAnthropicEndpoints:  dbKey.UseAnthropicEndpoints,
+		UseOpenAIEndpoints:     dbKey.UseOpenAIEndpoints,
+		AzureKeyConfig:         dbKey.AzureKeyConfig,
+		VertexKeyConfig:        dbKey.VertexKeyConfig,
+		BedrockKeyConfig:       dbKey.BedrockKeyConfig,
+		BedrockMantleKeyConfig: dbKey.BedrockMantleKeyConfig,
+		Aliases:                dbKey.Aliases,
+		VLLMKeyConfig:          dbKey.VLLMKeyConfig,
+		ReplicateKeyConfig:     dbKey.ReplicateKeyConfig,
+		OllamaKeyConfig:        dbKey.OllamaKeyConfig,
+		SGLKeyConfig:           dbKey.SGLKeyConfig,
+		DatabricksKeyConfig:    dbKey.DatabricksKeyConfig,
+		GithubCopilotKeyConfig: dbKey.GithubCopilotKeyConfig,
+		ConfigHash:             dbKey.ConfigHash,
+		Status:                 schemas.KeyStatusType(dbKey.Status),
+		Description:            dbKey.Description,
 	}
 }
 
 // tableKeyFromSchemaKey converts a schema key to a database key.
 func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tables.TableKey, error) {
 	dbKey := tables.TableKey{
-		Provider:                  provider.Name,
-		ProviderID:                provider.ID,
-		KeyID:                     key.ID,
-		Name:                      key.Name,
-		Value:                     key.Value,
-		Models:                    key.Models,
-		BlacklistedModels:         key.BlacklistedModels,
-		ModelsPatterns:            key.ModelsPatterns,
-		BlacklistedModelsPatterns: key.BlacklistedModelsPatterns,
-		Weight:                    &key.Weight,
-		Enabled:                   key.Enabled,
-		UseForBatchAPI:            key.UseForBatchAPI,
-		UseAnthropicEndpoints:     key.UseAnthropicEndpoints,
-		UseOpenAIEndpoints:        key.UseOpenAIEndpoints,
-		AzureKeyConfig:            key.AzureKeyConfig,
-		VertexKeyConfig:           key.VertexKeyConfig,
-		BedrockKeyConfig:          key.BedrockKeyConfig,
-		BedrockMantleKeyConfig:    key.BedrockMantleKeyConfig,
-		Aliases:                   key.Aliases,
-		VLLMKeyConfig:             key.VLLMKeyConfig,
-		ReplicateKeyConfig:        key.ReplicateKeyConfig,
-		OllamaKeyConfig:           key.OllamaKeyConfig,
-		SGLKeyConfig:              key.SGLKeyConfig,
-		DatabricksKeyConfig:       key.DatabricksKeyConfig,
-		GithubCopilotKeyConfig:    key.GithubCopilotKeyConfig,
-		ConfigHash:                key.ConfigHash,
-		Status:                    string(key.Status),
-		Description:               key.Description,
+		Provider:               provider.Name,
+		ProviderID:             provider.ID,
+		KeyID:                  key.ID,
+		Name:                   key.Name,
+		Value:                  key.Value,
+		Models:                 key.Models,
+		BlacklistedModels:      key.BlacklistedModels,
+		Weight:                 &key.Weight,
+		Enabled:                key.Enabled,
+		UseForBatchAPI:         key.UseForBatchAPI,
+		UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
+		UseOpenAIEndpoints:     key.UseOpenAIEndpoints,
+		AzureKeyConfig:         key.AzureKeyConfig,
+		VertexKeyConfig:        key.VertexKeyConfig,
+		BedrockKeyConfig:       key.BedrockKeyConfig,
+		BedrockMantleKeyConfig: key.BedrockMantleKeyConfig,
+		Aliases:                key.Aliases,
+		VLLMKeyConfig:          key.VLLMKeyConfig,
+		ReplicateKeyConfig:     key.ReplicateKeyConfig,
+		OllamaKeyConfig:        key.OllamaKeyConfig,
+		SGLKeyConfig:           key.SGLKeyConfig,
+		DatabricksKeyConfig:    key.DatabricksKeyConfig,
+		GithubCopilotKeyConfig: key.GithubCopilotKeyConfig,
+		ConfigHash:             key.ConfigHash,
+		Status:                 string(key.Status),
+		Description:            key.Description,
 	}
 
 	if key.AzureKeyConfig != nil {
@@ -752,34 +748,32 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				}
 			}
 			dbKey := tables.TableKey{
-				Provider:                  dbProvider.Name,
-				ProviderID:                dbProvider.ID,
-				KeyID:                     key.ID,
-				Name:                      key.Name,
-				Value:                     key.Value,
-				Models:                    key.Models,
-				BlacklistedModels:         key.BlacklistedModels,
-				ModelsPatterns:            key.ModelsPatterns,
-				BlacklistedModelsPatterns: key.BlacklistedModelsPatterns,
-				Weight:                    &key.Weight,
-				Enabled:                   key.Enabled,
-				UseForBatchAPI:            key.UseForBatchAPI,
-				UseAnthropicEndpoints:     key.UseAnthropicEndpoints,
-				UseOpenAIEndpoints:        key.UseOpenAIEndpoints,
-				AzureKeyConfig:            key.AzureKeyConfig,
-				VertexKeyConfig:           key.VertexKeyConfig,
-				BedrockKeyConfig:          key.BedrockKeyConfig,
-				BedrockMantleKeyConfig:    key.BedrockMantleKeyConfig,
-				Aliases:                   key.Aliases,
-				VLLMKeyConfig:             key.VLLMKeyConfig,
-				ReplicateKeyConfig:        key.ReplicateKeyConfig,
-				OllamaKeyConfig:           key.OllamaKeyConfig,
-				SGLKeyConfig:              key.SGLKeyConfig,
-				DatabricksKeyConfig:       key.DatabricksKeyConfig,
-				GithubCopilotKeyConfig:    key.GithubCopilotKeyConfig,
-				ConfigHash:                keyHash,
-				Status:                    string(key.Status),
-				Description:               key.Description,
+				Provider:               dbProvider.Name,
+				ProviderID:             dbProvider.ID,
+				KeyID:                  key.ID,
+				Name:                   key.Name,
+				Value:                  key.Value,
+				Models:                 key.Models,
+				BlacklistedModels:      key.BlacklistedModels,
+				Weight:                 &key.Weight,
+				Enabled:                key.Enabled,
+				UseForBatchAPI:         key.UseForBatchAPI,
+				UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
+				UseOpenAIEndpoints:     key.UseOpenAIEndpoints,
+				AzureKeyConfig:         key.AzureKeyConfig,
+				VertexKeyConfig:        key.VertexKeyConfig,
+				BedrockKeyConfig:       key.BedrockKeyConfig,
+				BedrockMantleKeyConfig: key.BedrockMantleKeyConfig,
+				Aliases:                key.Aliases,
+				VLLMKeyConfig:          key.VLLMKeyConfig,
+				ReplicateKeyConfig:     key.ReplicateKeyConfig,
+				OllamaKeyConfig:        key.OllamaKeyConfig,
+				SGLKeyConfig:           key.SGLKeyConfig,
+				DatabricksKeyConfig:    key.DatabricksKeyConfig,
+				GithubCopilotKeyConfig: key.GithubCopilotKeyConfig,
+				ConfigHash:             keyHash,
+				Status:                 string(key.Status),
+				Description:            key.Description,
 			}
 
 			// Handle Azure config
@@ -999,34 +993,32 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			return fmt.Errorf("failed to generate key hash: %w", err)
 		}
 		dbKey := tables.TableKey{
-			Provider:                  dbProvider.Name,
-			ProviderID:                dbProvider.ID,
-			KeyID:                     key.ID,
-			Name:                      key.Name,
-			Value:                     key.Value,
-			Models:                    key.Models,
-			BlacklistedModels:         key.BlacklistedModels,
-			ModelsPatterns:            key.ModelsPatterns,
-			BlacklistedModelsPatterns: key.BlacklistedModelsPatterns,
-			Weight:                    &key.Weight,
-			Enabled:                   key.Enabled,
-			UseForBatchAPI:            key.UseForBatchAPI,
-			UseAnthropicEndpoints:     key.UseAnthropicEndpoints,
-			UseOpenAIEndpoints:        key.UseOpenAIEndpoints,
-			AzureKeyConfig:            key.AzureKeyConfig,
-			VertexKeyConfig:           key.VertexKeyConfig,
-			BedrockKeyConfig:          key.BedrockKeyConfig,
-			BedrockMantleKeyConfig:    key.BedrockMantleKeyConfig,
-			Aliases:                   key.Aliases,
-			VLLMKeyConfig:             key.VLLMKeyConfig,
-			ReplicateKeyConfig:        key.ReplicateKeyConfig,
-			OllamaKeyConfig:           key.OllamaKeyConfig,
-			SGLKeyConfig:              key.SGLKeyConfig,
-			DatabricksKeyConfig:       key.DatabricksKeyConfig,
-			GithubCopilotKeyConfig:    key.GithubCopilotKeyConfig,
-			ConfigHash:                keyHash,
-			Status:                    string(key.Status),
-			Description:               key.Description,
+			Provider:               dbProvider.Name,
+			ProviderID:             dbProvider.ID,
+			KeyID:                  key.ID,
+			Name:                   key.Name,
+			Value:                  key.Value,
+			Models:                 key.Models,
+			BlacklistedModels:      key.BlacklistedModels,
+			Weight:                 &key.Weight,
+			Enabled:                key.Enabled,
+			UseForBatchAPI:         key.UseForBatchAPI,
+			UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
+			UseOpenAIEndpoints:     key.UseOpenAIEndpoints,
+			AzureKeyConfig:         key.AzureKeyConfig,
+			VertexKeyConfig:        key.VertexKeyConfig,
+			BedrockKeyConfig:       key.BedrockKeyConfig,
+			BedrockMantleKeyConfig: key.BedrockMantleKeyConfig,
+			Aliases:                key.Aliases,
+			VLLMKeyConfig:          key.VLLMKeyConfig,
+			ReplicateKeyConfig:     key.ReplicateKeyConfig,
+			OllamaKeyConfig:        key.OllamaKeyConfig,
+			SGLKeyConfig:           key.SGLKeyConfig,
+			DatabricksKeyConfig:    key.DatabricksKeyConfig,
+			GithubCopilotKeyConfig: key.GithubCopilotKeyConfig,
+			ConfigHash:             keyHash,
+			Status:                 string(key.Status),
+			Description:            key.Description,
 		}
 
 		// Handle Azure config
@@ -1158,34 +1150,32 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 	// Create keys for this provider
 	for _, key := range configCopy.Keys {
 		dbKey := tables.TableKey{
-			Provider:                  dbProvider.Name,
-			ProviderID:                dbProvider.ID,
-			KeyID:                     key.ID,
-			Name:                      key.Name,
-			Value:                     key.Value,
-			Models:                    key.Models,
-			BlacklistedModels:         key.BlacklistedModels,
-			ModelsPatterns:            key.ModelsPatterns,
-			BlacklistedModelsPatterns: key.BlacklistedModelsPatterns,
-			Weight:                    &key.Weight,
-			Enabled:                   key.Enabled,
-			UseForBatchAPI:            key.UseForBatchAPI,
-			UseAnthropicEndpoints:     key.UseAnthropicEndpoints,
-			UseOpenAIEndpoints:        key.UseOpenAIEndpoints,
-			AzureKeyConfig:            key.AzureKeyConfig,
-			VertexKeyConfig:           key.VertexKeyConfig,
-			BedrockKeyConfig:          key.BedrockKeyConfig,
-			BedrockMantleKeyConfig:    key.BedrockMantleKeyConfig,
-			Aliases:                   key.Aliases,
-			VLLMKeyConfig:             key.VLLMKeyConfig,
-			ReplicateKeyConfig:        key.ReplicateKeyConfig,
-			OllamaKeyConfig:           key.OllamaKeyConfig,
-			SGLKeyConfig:              key.SGLKeyConfig,
-			DatabricksKeyConfig:       key.DatabricksKeyConfig,
-			GithubCopilotKeyConfig:    key.GithubCopilotKeyConfig,
-			ConfigHash:                key.ConfigHash,
-			Status:                    string(key.Status),
-			Description:               key.Description,
+			Provider:               dbProvider.Name,
+			ProviderID:             dbProvider.ID,
+			KeyID:                  key.ID,
+			Name:                   key.Name,
+			Value:                  key.Value,
+			Models:                 key.Models,
+			BlacklistedModels:      key.BlacklistedModels,
+			Weight:                 &key.Weight,
+			Enabled:                key.Enabled,
+			UseForBatchAPI:         key.UseForBatchAPI,
+			UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
+			UseOpenAIEndpoints:     key.UseOpenAIEndpoints,
+			AzureKeyConfig:         key.AzureKeyConfig,
+			VertexKeyConfig:        key.VertexKeyConfig,
+			BedrockKeyConfig:       key.BedrockKeyConfig,
+			BedrockMantleKeyConfig: key.BedrockMantleKeyConfig,
+			Aliases:                key.Aliases,
+			VLLMKeyConfig:          key.VLLMKeyConfig,
+			ReplicateKeyConfig:     key.ReplicateKeyConfig,
+			OllamaKeyConfig:        key.OllamaKeyConfig,
+			SGLKeyConfig:           key.SGLKeyConfig,
+			DatabricksKeyConfig:    key.DatabricksKeyConfig,
+			GithubCopilotKeyConfig: key.GithubCopilotKeyConfig,
+			ConfigHash:             key.ConfigHash,
+			Status:                 string(key.Status),
+			Description:            key.Description,
 		}
 		// Handle Azure config
 		if key.AzureKeyConfig != nil {
@@ -3648,6 +3638,39 @@ func (s *RDBConfigStore) getGovernanceConfigVirtualKeys(ctx context.Context) ([]
 	}
 }
 
+// VirtualKeySearchTerm normalizes a raw search string into the LIKE pattern the
+// virtual key search clauses match against. Exported so downstream stores build
+// their extra clauses against exactly the same pattern.
+func VirtualKeySearchTerm(search string) string {
+	return "%" + strings.ToLower(search) + "%"
+}
+
+// VirtualKeySearchConditions builds the OR group that a virtual key search
+// narrows on: the key's own name, its team's name, or its customer's name - i.e.
+// everything the "Assigned To" column can display in OSS, so anything visible on
+// screen is also findable.
+//
+// It returns the condition rather than applying it so downstream stores can OR in
+// clauses of their own (enterprise adds the assigned user, whose link table it
+// alone knows about) without restating these three.
+//
+// Subqueries rather than joins: a join against teams/customers would multiply
+// rows and collide with the budget_spent sort join. The subqueries go through
+// Model() so GORM's soft-delete scope applies and a deleted team cannot
+// resurrect its keys into the results.
+func VirtualKeySearchConditions(db *gorm.DB, search string) *gorm.DB {
+	term := VirtualKeySearchTerm(search)
+	teamIDs := db.Model(&tables.TableTeam{}).
+		Select("id").
+		Where("LOWER(name) LIKE ?", term)
+	customerIDs := db.Model(&tables.TableCustomer{}).
+		Select("id").
+		Where("LOWER(name) LIKE ?", term)
+	return db.Where("LOWER(governance_virtual_keys.name) LIKE ?", term).
+		Or("governance_virtual_keys.team_id IN (?)", teamIDs).
+		Or("governance_virtual_keys.customer_id IN (?)", customerIDs)
+}
+
 // GetVirtualKeysPaginated retrieves virtual keys with pagination, filtering, and search support.
 func (s *RDBConfigStore) GetVirtualKeysPaginated(ctx context.Context, params VirtualKeyQueryParams) ([]tables.TableVirtualKey, int64, error) {
 	// Build base query with filters
@@ -3678,8 +3701,7 @@ func (s *RDBConfigStore) GetVirtualKeysPaginated(ctx context.Context, params Vir
 		baseQuery = baseQuery.Where("("+strings.Join(assignmentClauses, " OR ")+")", assignmentArgs...)
 	}
 	if params.Search != "" {
-		search := "%" + strings.ToLower(params.Search) + "%"
-		baseQuery = baseQuery.Where("LOWER(name) LIKE ?", search)
+		baseQuery = baseQuery.Where(VirtualKeySearchConditions(s.DB().WithContext(ctx), params.Search))
 	}
 
 	// Get total count before pagination
@@ -3884,6 +3906,18 @@ func (s *RDBConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *table
 			virtualKey.PreviousValueExpiresAt = existing.PreviousValueExpiresAt
 			virtualKey.RotatedAt = existing.RotatedAt
 		}
+		// Preserve NULL when a VK-scoped MC already owns the rate limit; prevents config sync from reverting migration.
+		if existing.RateLimitID == nil && virtualKey.RateLimitID != nil {
+			var mcCount int64
+			if err := txDB.WithContext(ctx).Model(&tables.TableModelConfig{}).
+				Where("scope = 'virtual_key' AND scope_id = ? AND model_name = '*' AND provider IS NULL AND rate_limit_id IS NOT NULL", virtualKey.ID).
+				Count(&mcCount).Error; err != nil {
+				return s.parseGormError(err)
+			}
+			if mcCount > 0 {
+				virtualKey.RateLimitID = nil
+			}
+		}
 		if err := txDB.WithContext(ctx).
 			Select("name", "description", "value", "is_active", "expires_at", "team_id", "customer_id", "rate_limit_id", "calendar_aligned", "allow_all_providers", "config_hash", "updated_at", "encryption_status", "value_hash", "previous_value", "previous_value_hash", "previous_value_expires_at", "rotated_at").
 			Updates(virtualKey).Error; err != nil {
@@ -3918,12 +3952,12 @@ func (s *RDBConfigStore) GetKeysByProvider(ctx context.Context, provider string)
 func (s *RDBConfigStore) GetAllRedactedKeys(ctx context.Context, ids []string) ([]schemas.Key, error) {
 	var keys []tables.TableKey
 	if len(ids) > 0 {
-		err := s.DB().WithContext(ctx).Select("id, key_id, name, models_json, blacklisted_models_json, models_patterns_json, blacklisted_models_patterns_json, weight").Where("key_id IN ?", ids).Find(&keys).Error
+		err := s.DB().WithContext(ctx).Select("id, key_id, name, models_json, blacklisted_models_json, weight").Where("key_id IN ?", ids).Find(&keys).Error
 		if err != nil {
 			return nil, err
 		}
 	} else {
-		err := s.DB().WithContext(ctx).Select("id, key_id, name, models_json, blacklisted_models_json, models_patterns_json, blacklisted_models_patterns_json, weight").Find(&keys).Error
+		err := s.DB().WithContext(ctx).Select("id, key_id, name, models_json, blacklisted_models_json, weight").Find(&keys).Error
 		if err != nil {
 			return nil, err
 		}
@@ -3938,22 +3972,12 @@ func (s *RDBConfigStore) GetAllRedactedKeys(ctx context.Context, ids []string) (
 		if blacklisted == nil {
 			blacklisted = []string{}
 		}
-		modelsPatterns := key.ModelsPatterns
-		if modelsPatterns == nil {
-			modelsPatterns = []string{}
-		}
-		blacklistedPatterns := key.BlacklistedModelsPatterns
-		if blacklistedPatterns == nil {
-			blacklistedPatterns = []string{}
-		}
 		redactedKeys[i] = schemas.Key{
-			ID:                        key.KeyID,
-			Name:                      key.Name,
-			Models:                    models,
-			BlacklistedModels:         blacklisted,
-			ModelsPatterns:            modelsPatterns,
-			BlacklistedModelsPatterns: blacklistedPatterns,
-			Weight:                    getWeight(key.Weight),
+			ID:                key.KeyID,
+			Name:              key.Name,
+			Models:            models,
+			BlacklistedModels: blacklisted,
+			Weight:            getWeight(key.Weight),
 		}
 	}
 	return redactedKeys, nil
@@ -4616,6 +4640,18 @@ func (s *RDBConfigStore) MCPEndpointSlugTaken(ctx context.Context, slug string) 
 func (s *RDBConfigStore) GetVirtualMCPByID(ctx context.Context, id uint) (*tables.TableVirtualMCP, error) {
 	var def tables.TableVirtualMCP
 	err := s.ScopedDB(ctx).First(&def, id).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &def, nil
+}
+
+func (s *RDBConfigStore) GetVirtualMCPByName(ctx context.Context, name string) (*tables.TableVirtualMCP, error) {
+	var def tables.TableVirtualMCP
+	err := s.ScopedDB(ctx).Where("name = ?", name).First(&def).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrNotFound
 	}
@@ -5387,6 +5423,11 @@ func (s *RDBConfigStore) UpdateBudget(ctx context.Context, budget *tables.TableB
 		// applied by CreateBudget on first import, and inert thereafter.
 		budget.CurrentUsage = existing.CurrentUsage
 		budget.LastReset = existing.LastReset
+		// Preserve MC ownership if already migrated; config.json sync would otherwise revert it.
+		if existing.ModelConfigID != nil {
+			budget.ModelConfigID = existing.ModelConfigID
+			budget.VirtualKeyID = nil
+		}
 		// Overrides are managed by the dedicated override path, not UpdateBudget;
 		// carry them forward so partial updates can't wipe an active override.
 		// The grant columns must travel with the derived remaining count: dropping

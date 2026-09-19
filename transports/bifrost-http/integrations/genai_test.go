@@ -2,6 +2,7 @@ package integrations
 
 import (
 	"context"
+	"encoding/base64"
 	"strings"
 	"testing"
 
@@ -134,6 +135,79 @@ func findGenAIRouteForTest(t *testing.T, routes []RouteConfig, path, method stri
 	return RouteConfig{}
 }
 
+func TestGenAISpeechStreamResponseConverter(t *testing.T) {
+	route := findGenAIRouteForTest(t, CreateGenAIRouteConfigs("/genai"), "/genai/v1beta/models/{model:*}", "POST")
+	require.NotNil(t, route.StreamConfig)
+	require.NotNil(t, route.StreamConfig.SpeechStreamResponseConverter)
+
+	audio := []byte{0x01, 0x02, 0x03, 0x04}
+	_, converted, err := route.StreamConfig.SpeechStreamResponseConverter(nil, &schemas.BifrostSpeechStreamResponse{
+		Type:  schemas.SpeechStreamResponseTypeDelta,
+		Audio: audio,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RoutingInfo: schemas.RoutingInfo{Provider: schemas.Gemini},
+		},
+	})
+	require.NoError(t, err)
+
+	response, ok := converted.(*gemini.GenerateContentResponse)
+	require.True(t, ok)
+	require.Len(t, response.Candidates, 1)
+	require.NotNil(t, response.Candidates[0].Content)
+	require.Len(t, response.Candidates[0].Content.Parts, 1)
+	require.NotNil(t, response.Candidates[0].Content.Parts[0].InlineData)
+	assert.Equal(t, base64.StdEncoding.EncodeToString(audio), response.Candidates[0].Content.Parts[0].InlineData.Data)
+	assert.Equal(t, "audio/L16;codec=pcm;rate=24000", response.Candidates[0].Content.Parts[0].InlineData.MIMEType)
+}
+
+func TestGenAISpeechStreamDoneResponseIncludesUsageAndFinishReason(t *testing.T) {
+	route := findGenAIRouteForTest(t, CreateGenAIRouteConfigs("/genai"), "/genai/v1beta/models/{model:*}", "POST")
+	_, converted, err := route.StreamConfig.SpeechStreamResponseConverter(nil, &schemas.BifrostSpeechStreamResponse{
+		Type: schemas.SpeechStreamResponseTypeDone,
+		Usage: &schemas.SpeechUsage{
+			InputTokens:  3,
+			OutputTokens: 5,
+			TotalTokens:  8,
+		},
+	})
+	require.NoError(t, err)
+
+	response := converted.(*gemini.GenerateContentResponse)
+	require.Len(t, response.Candidates, 1)
+	assert.Equal(t, gemini.FinishReasonStop, response.Candidates[0].FinishReason)
+	require.NotNil(t, response.UsageMetadata)
+	assert.Equal(t, int32(3), response.UsageMetadata.PromptTokenCount)
+	assert.Equal(t, int32(5), response.UsageMetadata.CandidatesTokenCount)
+	assert.Equal(t, int32(8), response.UsageMetadata.TotalTokenCount)
+}
+
+func TestGenAICamelCaseSpeechVoiceSurvivesConversion(t *testing.T) {
+	rawBody := []byte(`{
+		"contents":[{"role":"user","parts":[{"text":"hello"}]}],
+		"generationConfig":{
+			"responseModalities":["AUDIO"],
+			"speechConfig":{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":"alloy"}}}
+		}
+	}`)
+	requestCtx := &fasthttp.RequestCtx{}
+	requestCtx.SetUserValue("model", "gpt-4o-mini-tts:streamGenerateContent")
+	requestCtx.Request.Header.Set("x-model-provider", "openai")
+	requestCtx.Request.SetBody(rawBody)
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	geminiReq := &gemini.GeminiGenerationRequest{}
+	require.NoError(t, sonic.Unmarshal(rawBody, geminiReq))
+	require.NoError(t, extractAndSetModelAndRequestType(requestCtx, bifrostCtx, geminiReq))
+
+	route := findGenAIRouteForTest(t, CreateGenAIRouteConfigs("/genai"), "/genai/v1beta/models/{model:*}", "POST")
+	converted, err := route.RequestConverter(bifrostCtx, geminiReq)
+	require.NoError(t, err)
+	require.NotNil(t, converted.SpeechRequest)
+	require.NotNil(t, converted.SpeechRequest.Params)
+	require.NotNil(t, converted.SpeechRequest.Params.VoiceConfig)
+	require.NotNil(t, converted.SpeechRequest.Params.VoiceConfig.Voice)
+	assert.Equal(t, "alloy", *converted.SpeechRequest.Params.VoiceConfig.Voice)
+}
+
 func TestExtractAndSetModelAndRequestTypePreservesRawBodyForGenerateContent(t *testing.T) {
 	rawBody := []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}],"generationConfig":{"responseJsonSchema":{"type":"object","properties":{"b":{"type":"string"},"a":{"type":"string"}}}}}`)
 	ctx := &fasthttp.RequestCtx{}
@@ -193,6 +267,41 @@ func TestExtractAndSetModelAndRequestTypeDoesNotRawPassthroughEmbedding(t *testi
 
 	assert.Nil(t, bifrostCtx.Value(schemas.BifrostContextKeyUseRawRequestBody))
 	assert.Nil(t, bifrostCtx.Value(genAIRawRequestBodyContextKey))
+}
+
+func TestExtractAndSetModelAndRequestTypeDetectsImageEditAtAnyPartPosition(t *testing.T) {
+	textPart := `{"text":"change only the red area to black"}`
+	imagePart := `{"inlineData":{"mimeType":"image/png","data":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="}}`
+	cases := map[string]string{
+		"image first": imagePart + "," + textPart,
+		"text first":  textPart + "," + imagePart,
+	}
+
+	for name, parts := range cases {
+		t.Run(name, func(t *testing.T) {
+			rawBody := []byte(`{"contents":[{"role":"user","parts":[` + parts + `]}],"generationConfig":{"responseModalities":["IMAGE"]}}`)
+			ctx := &fasthttp.RequestCtx{}
+			ctx.SetUserValue("model", "vertex/gemini-3-pro-image:generateContent")
+			ctx.Request.Header.SetMethod("POST")
+			ctx.Request.SetBody(rawBody)
+
+			_, reqType := extractModelAndRequestType(ctx)
+			assert.Equal(t, schemas.ImageEditRequest, reqType)
+
+			req := &gemini.GeminiGenerationRequest{}
+			require.NoError(t, sonic.Unmarshal(rawBody, req))
+			bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+			require.NoError(t, extractAndSetModelAndRequestType(ctx, bifrostCtx, req))
+			assert.True(t, req.IsImageEdit)
+			assert.False(t, req.IsImageGeneration)
+
+			editReq := req.ToBifrostImageEditRequest(bifrostCtx)
+			require.NotNil(t, editReq)
+			assert.Equal(t, "change only the red area to black", editReq.Input.Prompt)
+			assert.Len(t, editReq.Input.Images, 1)
+		})
+	}
 }
 
 func TestGenAIBatchCreateConverterCarriesRawBody(t *testing.T) {
@@ -469,4 +578,43 @@ func TestConvertGeminiModelMetadataResponse_EmptyReturnsMinimalModel(t *testing.
 	model, ok := converted.(gemini.GeminiModel)
 	require.True(t, ok, "expected gemini.GeminiModel")
 	assert.Equal(t, "models/gemini-3-pro-preview", model.Name)
+}
+
+// Both generation endpoints normalize the same native thinking config before
+// governance can switch Gemini and Vertex. Exercise that conversion explicitly;
+// native Vertex project/location URLs use the separate passthrough router.
+func TestGenAIFlashLiteMinimalThinkingAfterRouting(t *testing.T) {
+	route := findGenAIRouteForTest(t, CreateGenAIRouteConfigs("/genai"), "/genai/v1beta/models/{model:*}", "POST")
+	for _, source := range []schemas.ModelProvider{schemas.Gemini, schemas.Vertex} {
+		for _, target := range []schemas.ModelProvider{schemas.Gemini, schemas.Vertex} {
+			for _, method := range []string{"generateContent", "streamGenerateContent"} {
+				t.Run(string(source)+" to "+string(target)+"/"+method, func(t *testing.T) {
+					body := []byte(`{"contents":[{"role":"user","parts":[{"text":"Say OK."}]}],"generationConfig":{"thinkingConfig":{"thinkingLevel":"MINIMAL"}}}`)
+					requestCtx := &fasthttp.RequestCtx{}
+					requestCtx.SetUserValue("model", string(source)+"/gemini-3.1-flash-lite:"+method)
+					requestCtx.Request.Header.SetMethod("POST")
+					requestCtx.Request.SetBody(body)
+					ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+					native := &gemini.GeminiGenerationRequest{}
+					require.NoError(t, sonic.Unmarshal(body, native))
+					require.NoError(t, route.PreCallback(requestCtx, ctx, native))
+					assert.Equal(t, method == "streamGenerateContent", native.Stream)
+					converted, err := route.RequestConverter(ctx, native)
+					require.NoError(t, err)
+					require.NotNil(t, converted.ResponsesRequest)
+					normalized := converted.ResponsesRequest
+					require.Equal(t, source, normalized.Provider)
+					normalized.Provider = target
+					// Inspect the normalized path even when explicit Gemini selection
+					// also retained raw bytes; rerouting must not depend on that shortcut.
+					out, err := gemini.ToGeminiResponsesRequest(ctx, normalized)
+					require.NoError(t, err)
+					require.NotNil(t, out.GenerationConfig.ThinkingConfig)
+					require.NotNil(t, out.GenerationConfig.ThinkingConfig.ThinkingLevel)
+					assert.Equal(t, "minimal", *out.GenerationConfig.ThinkingConfig.ThinkingLevel)
+					assert.Nil(t, out.GenerationConfig.ThinkingConfig.ThinkingBudget)
+				})
+			}
+		}
+	}
 }

@@ -824,6 +824,7 @@ append_dynamic_mcp_clients_insert() {
     append_dynamic_columns_postgres "$now" "$past" "$faker_sql"
     append_v200_fixtures "$db_type" "$faker_sql" "$now" "$future"
     append_v210_fixtures "$db_type" "$faker_sql" "$now"
+    append_v220_fixtures "$db_type" "$faker_sql"
   else
     now="datetime('now')"
     future="datetime('now', '+1 hour')"
@@ -848,6 +849,7 @@ append_dynamic_mcp_clients_insert() {
     append_dynamic_columns_sqlite "$now" "$past" "$faker_sql" "$config_db"
     append_v200_fixtures "$db_type" "$faker_sql" "$now" "$future" "$config_db" "$logs_db"
     append_v210_fixtures "$db_type" "$faker_sql" "$now" "$config_db" "$logs_db"
+    append_v220_fixtures "$db_type" "$faker_sql" "$config_db" "$logs_db"
   fi
 }
 
@@ -1098,6 +1100,42 @@ id|1
 tool_group_id|1
 virtual_key_id|'vk-migration-test-1'
 V210_ROW
+}
+
+# v2.2.0 introduced these columns. Same probing scheme as append_v200_fixtures
+# so the fixture set still runs against older releases; reuses the v200_*
+# helpers, which read these locals dynamically.
+# - use_openai_endpoints stays at its default (config sync rewrites config_keys
+#   on startup, so non-default values would cause a snapshot comparison diff)
+# - off_peak_cost_multiplier / peak_hours stay NULL (datasheet-sync-managed,
+#   same reasoning as the other governance_model_pricing pricing columns)
+# - mcp_tool_logs attribution columns get real values; each names array is
+#   index-aligned with its ids array, as the writers keep them
+append_v220_fixtures() {
+  local fixture_db_type="$1" fixture_output="$2"
+  local fixture_config_db="${3:-}" fixture_logs_db="${4:-}"
+  local table column value predicate
+  while IFS='|' read -r table column value predicate; do
+    if v200_column_exists "$table" "$column"; then
+      echo "UPDATE $table SET $column = $value WHERE $predicate;" >> "$fixture_output"
+    fi
+  done <<'V220_COLUMNS'
+config_keys|use_openai_endpoints|false|name = 'migration-test-key-anthropic'
+governance_model_pricing|off_peak_cost_multiplier|NULL|id = 1
+governance_model_pricing|peak_hours|NULL|id = 1
+mcp_tool_logs|user_name|'Migration Test User'|id = 'mcp-log-migration-001'
+mcp_tool_logs|team_name|'Migration Test Team'|id = 'mcp-log-migration-001'
+mcp_tool_logs|customer_name|'Migration Test Customer'|id = 'mcp-log-migration-001'
+mcp_tool_logs|business_unit_name|'Migration Test BU'|id = 'mcp-log-migration-001'
+mcp_tool_logs|team_ids|'["team-migration-test-1"]'|id = 'mcp-log-migration-001'
+mcp_tool_logs|team_names|'["Migration Test Team"]'|id = 'mcp-log-migration-001'
+mcp_tool_logs|customer_ids|'["customer-migration-test-2"]'|id = 'mcp-log-migration-001'
+mcp_tool_logs|customer_names|'["Migration Test Customer"]'|id = 'mcp-log-migration-001'
+mcp_tool_logs|business_unit_ids|'["bu-migration-test-1"]'|id = 'mcp-log-migration-001'
+mcp_tool_logs|business_unit_names|'["Migration Test BU"]'|id = 'mcp-log-migration-001'
+mcp_tool_logs|budget_ids|'["budget-migration-test-1"]'|id = 'mcp-log-migration-001'
+mcp_tool_logs|rate_limit_ids|'["ratelimit-migration-test-1"]'|id = 'mcp-log-migration-001'
+V220_COLUMNS
 }
 
 # Append dynamic column UPDATEs for columns that may not exist in older schemas (PostgreSQL)

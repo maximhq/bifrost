@@ -1099,6 +1099,10 @@ func (m *MockConfigStore) GetVirtualMCPByID(ctx context.Context, id uint) (*tabl
 	return nil, nil
 }
 
+func (m *MockConfigStore) GetVirtualMCPByName(ctx context.Context, name string) (*tables.TableVirtualMCP, error) {
+	return nil, configstore.ErrNotFound
+}
+
 func (m *MockConfigStore) GetVirtualMCPsPaginated(ctx context.Context, params configstore.VirtualMCPsQueryParams) ([]tables.TableVirtualMCP, int64, error) {
 	return nil, 0, nil
 }
@@ -18937,7 +18941,7 @@ var excludedSchemaFields = map[string]map[string]bool{
 		"business_unit_id": true, // Enterprise feature; not in OSS TableTeam
 	},
 	"governance.virtual_keys": {
-		"access_profile_id": true, // Enterprise access-profile assignment; not on OSS TableVirtualKey
+		"access_profile_id": true, // Stale: direct access-profile assignment reverted in v1.5.9 (#3669/#3670); kept deprecated in schema for backward-compatible validation
 	},
 	"governance.virtual_keys.provider_configs": {
 		"keys":    true, // Complex nested type, validated separately

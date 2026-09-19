@@ -1357,6 +1357,9 @@ false
 {{- if $client.allowedExtraHeaders }}
 {{- $_ := set $cc "allowed_extra_headers" $client.allowedExtraHeaders }}
 {{- end }}
+{{- if $client.perUserHeaderKeys }}
+{{- $_ := set $cc "per_user_header_keys" $client.perUserHeaderKeys }}
+{{- end }}
 {{- /* allowByDefault supersedes allowOnAllVirtualKeys. Emit exactly one key so the backend's
        ResolveAllowByDefault sees an unambiguous declaration: the current key when it is given,
        otherwise the deprecated one passed through untranslated. */ -}}
@@ -1619,6 +1622,12 @@ false
 {{- end }}
 {{- if $inputConfig.plugin_span_filter }}
 {{- $_ := set $otelConfig "plugin_span_filter" $inputConfig.plugin_span_filter }}
+{{- end }}
+{{- if hasKey $inputConfig "export_overhead_spans" }}
+{{- $_ := set $otelConfig "export_overhead_spans" $inputConfig.export_overhead_spans }}
+{{- end }}
+{{- if hasKey $inputConfig "overhead_breakdown_enabled" }}
+{{- $_ := set $otelConfig "overhead_breakdown_enabled" $inputConfig.overhead_breakdown_enabled }}
 {{- end }}
 {{- end }}
 {{- $plugin := dict "enabled" true "name" "otel" "config" $otelConfig }}

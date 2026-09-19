@@ -32,3 +32,17 @@ test('explicit status expectations accept only the expected response', () => {
     assert.equal(statusFailures(code, '[EXPECT-4XX] rejection'), code >= 400 && code <= 499 ? 0 : 1, `rejection HTTP ${code}`);
   }
 });
+
+// The report-side classifiers (analyze-failures, rate-limit-backoff) must agree with
+// the collection gate above about which statuses a tagged row expects, or a passing
+// [EXPECT-400] row shows up as a failure in the report (seen live with #7307 rows).
+test('isExpectedStatus mirrors the collection gate for every tag shape', async () => {
+  const { isExpectedStatus } = await import('./expected-status.mjs');
+  for (let code = 100; code <= 599; code++) {
+    assert.equal(isExpectedStatus('[EXPECT-400] traversal rejection', code), code === 400, `400-tag HTTP ${code}`);
+    assert.equal(isExpectedStatus('[EXPECT-202] async submit', code), code === 202, `202-tag HTTP ${code}`);
+    assert.equal(isExpectedStatus('[EXPECT-4XX] rejection', code), code >= 400 && code <= 499, `4XX-tag HTTP ${code}`);
+    assert.equal(isExpectedStatus('ordinary request', code), false, `untagged HTTP ${code}`);
+  }
+  assert.equal(isExpectedStatus(undefined, 400), false, 'missing name');
+});

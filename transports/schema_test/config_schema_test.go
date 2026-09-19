@@ -1911,100 +1911,113 @@ func TestSchemaGithubCopilotCredentialRequired(t *testing.T) {
 	}
 }
 
-// modelPatternConfigs returns one config per surface that declares model
-// pattern arrays, each carrying the given allow-pattern and block-pattern
-// entries. The schema must apply the same pattern rules on every surface.
-func modelPatternConfigs(allow, block string) map[string]string {
-	return map[string]string{
-		"virtual key provider config": fmt.Sprintf(
-			`{"governance": {"virtual_keys": [{"id": "vk-1", "name": "vk", "provider_configs": [{"provider": "openai", "allowed_models_patterns": %s, "blacklisted_models_patterns": %s}]}]}}`,
-			allow, block),
-		"provider key": fmt.Sprintf(
-			`{"providers": {"openai": {"keys": [{"name": "k", "weight": 1, "models_patterns": %s, "blacklisted_models_patterns": %s}]}}}`,
-			allow, block),
-		"access profile provider config": fmt.Sprintf(
-			`{"access_profiles": [{"name": "ap", "provider_configs": [{"provider_name": "openai", "allowed_models_patterns": %s, "blacklisted_models_patterns": %s}]}]}`,
-			allow, block),
-		"project provider config": fmt.Sprintf(
-			`{"governance": {"projects": [{"name": "p", "access_rule": "union", "provider_configs": [{"provider_name": "openai", "allowed_models_patterns": %s, "blacklisted_models_patterns": %s}]}]}}`,
-			allow, block),
+// TestSchemaAccessProfileMCPGrants covers the access-profile MCP keys. The
+// schema drifted from the Go struct once already: the profile grant model was
+// renamed to virtual_mcps / mcp_configs while the schema still declared only the
+// retired spellings under additionalProperties:false, so every GitOps file that
+// used the current keys failed validation.
+func TestSchemaAccessProfileMCPGrants(t *testing.T) {
+	profileConfig := func(body string) string {
+		return fmt.Sprintf(`{"access_profiles": [{"name": "platform-default", %s}]}`, body)
 	}
+
+	t.Run("access_profile def declares virtual_mcps and mcp_configs", func(t *testing.T) {
+		schema := loadSchema(t)
+		for _, key := range []string{"virtual_mcps", "mcp_configs"} {
+			if _, found := navigateJSON(schema, "$defs", "access_profile", "properties", key); !found {
+				t.Errorf("$defs/access_profile is missing %q — TableAccessProfile serializes this field", key)
+			}
+		}
+	})
+
+	t.Run("virtual_mcps assignment validates", func(t *testing.T) {
+		compiled := compileSchema(t)
+		if err := validateConfig(t, compiled, profileConfig(`"virtual_mcps": [{"virtual_mcp_id": 1}]`)); err != nil {
+			t.Errorf("virtual_mcps assignment should be valid, got: %v", err)
+		}
+	})
+
+	t.Run("mcp_configs allowlist validates", func(t *testing.T) {
+		compiled := compileSchema(t)
+		body := `"mcp_configs": [{"mcp_client_id": "github", "tools_to_execute": ["create_pull_request"]}]`
+		if err := validateConfig(t, compiled, profileConfig(body)); err != nil {
+			t.Errorf("mcp_configs allowlist should be valid, got: %v", err)
+		}
+	})
+
+	t.Run("mcp_configs allow-all and deny-all allowlists validate", func(t *testing.T) {
+		compiled := compileSchema(t)
+		for _, tools := range []string{`["*"]`, `[]`} {
+			body := fmt.Sprintf(`"mcp_configs": [{"mcp_client_id": "github", "tools_to_execute": %s}]`, tools)
+			if err := validateConfig(t, compiled, profileConfig(body)); err != nil {
+				t.Errorf("tools_to_execute %s should be valid, got: %v", tools, err)
+			}
+		}
+	})
+
+	t.Run("virtual_mcps entry missing virtual_mcp_id rejected", func(t *testing.T) {
+		compiled := compileSchema(t)
+		if err := validateConfig(t, compiled, profileConfig(`"virtual_mcps": [{}]`)); err == nil {
+			t.Error("virtual_mcps entry without virtual_mcp_id must be rejected")
+		}
+	})
+
+	t.Run("virtual_mcps entry still rejects the retired tool_group_id key", func(t *testing.T) {
+		compiled := compileSchema(t)
+		if err := validateConfig(t, compiled, profileConfig(`"virtual_mcps": [{"tool_group_id": 1}]`)); err == nil {
+			t.Error("virtual_mcps entry must not accept the retired tool_group_id spelling")
+		}
+	})
+
+	t.Run("deprecated grant keys still validate for backward compatibility", func(t *testing.T) {
+		compiled := compileSchema(t)
+		body := `"mcp_tool_groups": [{"tool_group_id": 1}],
+			"mcp_servers": [{"mcp_server_id": "github"}],
+			"mcp_tool_overrides": [{"mcp_client_id": "github", "tool_name": "create_pull_request", "action": "include"}]`
+		if err := validateConfig(t, compiled, profileConfig(body)); err != nil {
+			t.Errorf("deprecated access-profile grant keys should still validate, got: %v", err)
+		}
+	})
 }
 
-// TestSchemaModelPatternEntries pins the pattern-list contract the field
-// descriptions state and ModelPatternList.Validate enforces at runtime: a
-// pattern is never blank, is never the "*" wildcard, and never repeats.
-func TestSchemaModelPatternEntries(t *testing.T) {
+func TestSchemaVirtualMCPByName(t *testing.T) {
 	compiled := compileSchema(t)
 
-	tests := []struct {
-		name      string
-		allow     string
-		block     string
-		wantError bool
+	profile := func(body string) string {
+		return fmt.Sprintf(`{"access_profiles": [{"name": "p", "virtual_mcps": [%s]}]}`, body)
+	}
+	project := func(body string) string {
+		return fmt.Sprintf(`{"governance": {"projects": [{"name": "proj", "access_rule": "union", "virtual_mcps": [%s]}]}}`, body)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		body  string
+		valid bool
 	}{
-		{name: "real patterns are valid", allow: `["gpt-.*"]`, block: `["^o1-.*$", "claude-.*"]`},
-		{name: "empty lists are valid", allow: `[]`, block: `[]`},
-		{name: "a blank allow pattern is rejected", allow: `[""]`, block: `[]`, wantError: true},
-		{name: "a blank block pattern is rejected", allow: `[]`, block: `[""]`, wantError: true},
-		{name: "the wildcard is not an allow pattern", allow: `["*"]`, block: `[]`, wantError: true},
-		{name: "the wildcard is not a block pattern", allow: `[]`, block: `["*"]`, wantError: true},
-		{name: "a duplicate allow pattern is rejected", allow: `["gpt-.*", "gpt-.*"]`, block: `[]`, wantError: true},
-		{name: "a duplicate block pattern is rejected", allow: `[]`, block: `["gpt-.*", "gpt-.*"]`, wantError: true},
-	}
-
-	for _, tt := range tests {
-		for surface, config := range modelPatternConfigs(tt.allow, tt.block) {
-			t.Run(tt.name+" on the "+surface, func(t *testing.T) {
-				err := validateConfig(t, compiled, config)
-				if tt.wantError && err == nil {
-					t.Fatal("config should be invalid")
-				}
-				if !tt.wantError && err != nil {
-					t.Fatalf("config should be valid, got: %v", err)
-				}
-			})
-		}
-	}
-}
-
-// TestSchemaModelListDescriptions pins what every exact model list says about
-// its two boundary cases. The wildcard and the empty list are the whole
-// contract: reading one field's description should never leave the reader
-// guessing whether the field next to it behaves the same way.
-func TestSchemaModelListDescriptions(t *testing.T) {
-	schema := loadSchema(t)
-
-	// base_key declares no blacklisted_models: the schema has never carried the
-	// provider-key denylist that schemas.Key.BlacklistedModels serializes.
-	lists := []struct {
-		def   string
-		field string
-	}{
-		{"virtual_key_provider_config", "allowed_models"},
-		{"virtual_key_provider_config", "blacklisted_models"},
-		{"base_key", "models"},
-		{"access_profile_provider_config", "allowed_models"},
-		{"access_profile_provider_config", "blacklisted_models"},
-		{"project_provider_config", "allowed_models"},
-		{"project_provider_config", "blacklisted_models"},
-	}
-
-	for _, list := range lists {
-		t.Run(list.def+"."+list.field, func(t *testing.T) {
-			value, ok := navigateJSON(schema, "$defs", list.def, "properties", list.field, "description")
-			if !ok {
-				t.Fatalf("%s.%s has no description", list.def, list.field)
+		{"name only", `{"virtual_mcp_name": "Platform Tools"}`, true},
+		{"id only still valid", `{"virtual_mcp_id": 1}`, true},
+		{"both accepted, id wins at load", `{"virtual_mcp_name": "Platform Tools", "virtual_mcp_id": 1}`, true},
+		{"neither rejected", `{}`, false},
+		{"unknown key rejected", `{"virtual_mcp_slug": "x"}`, false},
+		{"id zero rejected", `{"virtual_mcp_id": 0}`, false},
+	} {
+		t.Run("access_profile/"+tc.name, func(t *testing.T) {
+			err := validateConfig(t, compiled, profile(tc.body))
+			if tc.valid && err != nil {
+				t.Errorf("expected valid, got: %v", err)
 			}
-			description, ok := value.(string)
-			if !ok {
-				t.Fatalf("%s.%s description is not a string", list.def, list.field)
+			if !tc.valid && err == nil {
+				t.Error("expected rejection")
 			}
-			if !strings.Contains(description, `["*"]`) {
-				t.Errorf("description does not say what [\"*\"] does: %q", description)
+		})
+		t.Run("project/"+tc.name, func(t *testing.T) {
+			err := validateConfig(t, compiled, project(tc.body))
+			if tc.valid && err != nil {
+				t.Errorf("expected valid, got: %v", err)
 			}
-			if !strings.Contains(description, "empty array") {
-				t.Errorf("description does not say what an empty array does: %q", description)
+			if !tc.valid && err == nil {
+				t.Error("expected rejection")
 			}
 		})
 	}

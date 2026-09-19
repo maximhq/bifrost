@@ -343,3 +343,54 @@ func TestToBifrostChatCompletionStream_ErrorFinishReasonIsNotSplit(t *testing.T)
 		})
 	}
 }
+
+// TestToGeminiChatCompletionRequest_MidConversationSystemInlined pins the Chat Completions path
+// to what the Responses path already does (inlineGeminiSystemReminder): a role:"system" message
+// that arrives after the conversation has started is inlined at its position as a user turn, not
+// hoisted into systemInstruction. Gemini's implicit cache is prefix-based, so a systemInstruction
+// that grows by one reminder per turn invalidates the whole cached conversation behind it.
+func TestToGeminiChatCompletionRequest_MidConversationSystemInlined(t *testing.T) {
+	str := func(role schemas.ChatMessageRole, text string) schemas.ChatMessage {
+		return schemas.ChatMessage{Role: role, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr(text)}}
+	}
+	const reminder = "<total_tokens>15000000 tokens left</total_tokens>"
+	turn1 := []schemas.ChatMessage{
+		str(schemas.ChatMessageRoleSystem, "You are Claude Code."),
+		str(schemas.ChatMessageRoleUser, "first user turn"),
+		str(schemas.ChatMessageRoleSystem, "Available agent types for the Agent tool: claude, Explore, Plan."),
+		str(schemas.ChatMessageRoleAssistant, "ok"),
+		str(schemas.ChatMessageRoleUser, "second user turn"),
+		str(schemas.ChatMessageRoleSystem, reminder),
+	}
+	turn2 := append(append([]schemas.ChatMessage{}, turn1...),
+		str(schemas.ChatMessageRoleAssistant, "done"),
+		str(schemas.ChatMessageRoleUser, "third user turn"),
+		str(schemas.ChatMessageRoleSystem, reminder),
+	)
+	convert := func(msgs []schemas.ChatMessage) *gemini.GeminiGenerationRequest {
+		req, err := gemini.ToGeminiChatCompletionRequest(&schemas.BifrostContext{}, &schemas.BifrostChatRequest{
+			Provider: schemas.Gemini, Model: "gemini-2.5-flash", Input: msgs,
+		})
+		require.NoError(t, err)
+		return req
+	}
+	r1, r2 := convert(turn1), convert(turn2)
+
+	require.NotNil(t, r1.SystemInstruction)
+	require.Len(t, r1.SystemInstruction.Parts, 1, "only the leading system prompt belongs in systemInstruction")
+	assert.Equal(t, r1.SystemInstruction, r2.SystemInstruction, "turn N+1 must not grow systemInstruction with the new trailing reminder")
+
+	require.GreaterOrEqual(t, len(r2.Contents), len(r1.Contents))
+	assert.Equal(t, r1.Contents, r2.Contents[:len(r1.Contents)], "contents of turn N must be a prefix of turn N+1")
+
+	inline := 0
+	for _, c := range r2.Contents {
+		for _, p := range c.Parts {
+			if strings.Contains(p.Text, "<system-reminder>\n<total_tokens>") {
+				assert.Equal(t, "user", c.Role, "inlined reminder must be a user turn")
+				inline++
+			}
+		}
+	}
+	assert.Equal(t, 2, inline, "both trailing reminders must be inlined in place, none hoisted")
+}

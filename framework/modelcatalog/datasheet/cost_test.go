@@ -2155,7 +2155,7 @@ func TestExtractCostInput_TranscriptionWithSeconds(t *testing.T) {
 	input := extractCostInput(resp)
 	require.NotNil(t, input.usage)
 	require.NotNil(t, input.audioSeconds)
-	assert.Equal(t, 60, *input.audioSeconds)
+	assert.Equal(t, 60.0, *input.audioSeconds)
 	assert.Equal(t, 1000, input.usage.PromptTokens)
 }
 

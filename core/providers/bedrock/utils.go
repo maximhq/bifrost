@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/bytedance/sonic"
@@ -216,6 +217,19 @@ func mapBifrostServiceTierToBedrock(tier schemas.BifrostServiceTier) BedrockServ
 	default:
 		return BedrockServiceTierType(tier)
 	}
+}
+
+// bedrockServiceTierForModel returns a non-default tier only when the model
+// catalog explicitly advertises it. Omitting default/auto selects Bedrock's
+// Standard tier without requiring capability metadata for every model.
+func bedrockServiceTierForModel(caps schemas.ModelCaps, tier *schemas.BifrostServiceTier) *BedrockServiceTier {
+	if tier == nil || *tier == schemas.BifrostServiceTierDefault || *tier == schemas.BifrostServiceTierAuto {
+		return nil
+	}
+	if !caps.ServiceTierSupported(*tier, false) {
+		return nil
+	}
+	return &BedrockServiceTier{Type: mapBifrostServiceTierToBedrock(*tier)}
 }
 
 // mapBedrockServiceTierToBifrost maps a BedrockServiceTierType to a BifrostServiceTier.
@@ -844,11 +858,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 			}
 		}
 	}
-	if bifrostReq.Params.ServiceTier != nil {
-		bedrockReq.ServiceTier = &BedrockServiceTier{
-			Type: mapBifrostServiceTierToBedrock(*bifrostReq.Params.ServiceTier),
-		}
-	}
+	bedrockReq.ServiceTier = bedrockServiceTierForModel(caps, bifrostReq.Params.ServiceTier)
 	// Add extra parameters
 	if len(bifrostReq.Params.ExtraParams) > 0 {
 		bedrockReq.ExtraParams = bifrostReq.Params.ExtraParams
@@ -1112,6 +1122,19 @@ func convertMessages(ctx context.Context, model string, bifrostMessages []schema
 	var messages []BedrockMessage
 	var systemMessages []BedrockSystemMessage
 
+	// Set once the leading system prompt ends (first non-system message). A system/developer
+	// message after that point is a mid-conversation reminder and is inlined in place as a
+	// user turn, folded into the preceding user turn when there is one (Converse requires
+	// alternating roles). Hoisting it into `system` grows the prompt front on every turn and
+	// invalidates Bedrock's prefix cache for the whole conversation behind it; same rule as
+	// the Responses path (ConvertBifrostMessagesToBedrockMessages with inlineSystemReminders).
+	seenNonSystemMessage := false
+
+	// Reminder blocks with no preceding user turn to fold back into, held until the next user turn
+	// arrives. Giving them a turn of their own instead would read as assistant, user, user once
+	// that turn lands, and Converse turns have to alternate.
+	var pendingReminderBlocks []BedrockContentBlock
+
 	// if only system / developer message is there, convert it to user message (since openai allows it)
 	if len(bifrostMessages) == 1 && (bifrostMessages[0].Role == schemas.ChatMessageRoleSystem || bifrostMessages[0].Role == schemas.ChatMessageRoleDeveloper) {
 		msg := bifrostMessages[0]
@@ -1129,7 +1152,18 @@ func convertMessages(ctx context.Context, model string, bifrostMessages []schema
 		msg := bifrostMessages[i]
 		switch msg.Role {
 		case schemas.ChatMessageRoleSystem, schemas.ChatMessageRoleDeveloper:
-			// Convert system message
+			if seenNonSystemMessage {
+				// Mid-conversation reminder: inline in place (see seenNonSystemMessage).
+				if reminder := convertChatSystemReminderToBedrockUserMessage(msg); reminder != nil {
+					if n := len(messages); n > 0 && messages[n-1].Role == BedrockMessageRoleUser {
+						messages[n-1].Content = append(messages[n-1].Content, reminder.Content...)
+					} else {
+						pendingReminderBlocks = append(pendingReminderBlocks, reminder.Content...)
+					}
+				}
+				continue
+			}
+			// Leading system prompt: hoist into `system`.
 			systemMsgs, err := convertSystemMessages(msg)
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to convert system message: %w", err)
@@ -1137,14 +1171,28 @@ func convertMessages(ctx context.Context, model string, bifrostMessages []schema
 			systemMessages = append(systemMessages, systemMsgs...)
 
 		case schemas.ChatMessageRoleUser, schemas.ChatMessageRoleAssistant:
+			seenNonSystemMessage = true
 			// Convert regular message
 			bedrockMsg, err := convertMessage(ctx, model, msg, docNamer)
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to convert message: %w", err)
 			}
+			if len(pendingReminderBlocks) > 0 {
+				if bedrockMsg.Role == BedrockMessageRoleUser {
+					// The reminder came before this turn in the input, so it leads the content and
+					// its cachePoint closes the cacheable prefix just ahead of the fresh user text.
+					bedrockMsg.Content = append(pendingReminderBlocks, bedrockMsg.Content...)
+				} else {
+					// assistant, reminder, assistant: the reminder still needs a user turn of its
+					// own, and putting it here is what keeps the roles alternating.
+					messages = append(messages, BedrockMessage{Role: BedrockMessageRoleUser, Content: pendingReminderBlocks})
+				}
+				pendingReminderBlocks = nil
+			}
 			messages = append(messages, bedrockMsg)
 
 		case schemas.ChatMessageRoleTool:
+			seenNonSystemMessage = true
 			// Collect all consecutive tool messages and group them into a single user message
 			var toolMessages []schemas.ChatMessage
 			toolMessages = append(toolMessages, msg)
@@ -1160,11 +1208,24 @@ func convertMessages(ctx context.Context, model string, bifrostMessages []schema
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to convert tool messages: %w", err)
 			}
+			if len(pendingReminderBlocks) > 0 {
+				// Tool results carry the user role, so the reminder folds into this turn rather than
+				// opening a second one. It trails the toolResult blocks, which stay at the front of
+				// the turn they answer.
+				bedrockMsg.Content = append(bedrockMsg.Content, pendingReminderBlocks...)
+				pendingReminderBlocks = nil
+			}
 			messages = append(messages, bedrockMsg)
 
 		default:
 			return nil, nil, fmt.Errorf("unsupported message role: %s", msg.Role)
 		}
+	}
+
+	// A reminder that ends the conversation has no later turn to fold into. It becomes the final
+	// user turn, which is the shape Converse wants at the tail anyway.
+	if len(pendingReminderBlocks) > 0 {
+		messages = append(messages, BedrockMessage{Role: BedrockMessageRoleUser, Content: pendingReminderBlocks})
 	}
 
 	return messages, systemMessages, nil
@@ -1192,6 +1253,55 @@ func newBedrockCachePoint(ttl *string) *BedrockCachePoint {
 		cp.TTL = ttl
 	}
 	return cp
+}
+
+// convertChatSystemReminderToBedrockUserMessage is the Chat Completions twin of
+// convertBifrostSystemReminderToBedrockUserMessage: a mid-conversation role:"system" chat message
+// rendered as a user turn, each text wrapped in the <system-reminder> envelope, with only the LAST
+// breakpoint kept as a trailing cachePoint (an intermediate marker inside one message closes over
+// nothing the final one does not, and would burn one of the four checkpoints). The breakpoint is
+// taken from either dialect: a cache_control on a text block, or a standalone cachePoint block.
+// Text-only, like the `system` branch it replaces. Returns nil when the message yields no text.
+func convertChatSystemReminderToBedrockUserMessage(msg schemas.ChatMessage) *BedrockMessage {
+	if msg.Content == nil {
+		return nil
+	}
+	var contentBlocks []BedrockContentBlock
+	wrap := func(text string) {
+		wrapped := "<system-reminder>\n" + text + "\n</system-reminder>\n"
+		contentBlocks = append(contentBlocks, BedrockContentBlock{Text: &wrapped})
+	}
+	// Whichever breakpoint comes last wins, in whichever dialect it arrived: a cache_control on a
+	// text block (Anthropic) or a standalone cachePoint block after the content it closes over
+	// (Converse-native, and the form convertSystemMessages preserves on the hoisted path). Reading
+	// only the first kind drops the boundary a Converse-native client asked for.
+	var lastBreakpointTTL *string
+	haveBreakpoint := false
+	if msg.Content.ContentStr != nil {
+		if *msg.Content.ContentStr != "" {
+			wrap(*msg.Content.ContentStr)
+		}
+	} else if msg.Content.ContentBlocks != nil {
+		for _, block := range msg.Content.ContentBlocks {
+			if block.Text != nil && *block.Text != "" {
+				wrap(*block.Text)
+				if block.CacheControl != nil {
+					lastBreakpointTTL, haveBreakpoint = block.CacheControl.TTL, true
+				}
+				continue
+			}
+			if block.CachePoint != nil {
+				lastBreakpointTTL, haveBreakpoint = block.CachePoint.TTL, true
+			}
+		}
+	}
+	if len(contentBlocks) == 0 {
+		return nil
+	}
+	if haveBreakpoint {
+		contentBlocks = append(contentBlocks, BedrockContentBlock{CachePoint: newBedrockCachePoint(lastBreakpointTTL)})
+	}
+	return &BedrockMessage{Role: BedrockMessageRoleUser, Content: contentBlocks}
 }
 
 // convertSystemMessages converts a Bifrost system message to Bedrock format
@@ -3033,6 +3143,43 @@ func clampBedrockCachePoints(req *BedrockConverseRequest) int {
 	}
 
 	return dropped
+}
+
+// toolResultImagePlaceholder fills a tool result emptied by hoistToolResultImages.
+const toolResultImagePlaceholder = "Image attached below."
+
+// hoistToolResultImages moves images out of tool results to follow the last toolResult
+// in their message, for models that reject images inside a toolResult.
+func hoistToolResultImages(req *BedrockConverseRequest) {
+	for i := range req.Messages {
+		content := req.Messages[i].Content
+		var images []BedrockContentBlock
+		last := -1
+		for j := range content {
+			toolResult := content[j].ToolResult
+			if toolResult == nil {
+				continue
+			}
+			last = j
+			moved := len(images)
+			kept := toolResult.Content[:0]
+			for _, block := range toolResult.Content {
+				if block.Image != nil {
+					images = append(images, block)
+					continue
+				}
+				kept = append(kept, block)
+			}
+			// An empty toolResult is rejected, so keep a stable placeholder behind.
+			if len(kept) == 0 && len(images) > moved {
+				kept = append(kept, BedrockContentBlock{Text: new(toolResultImagePlaceholder)})
+			}
+			toolResult.Content = kept
+		}
+		if len(images) > 0 {
+			req.Messages[i].Content = slices.Insert(content, last+1, images...)
+		}
+	}
 }
 
 // stripCachePointsFromBedrockRequest removes all CachePoint blocks from a

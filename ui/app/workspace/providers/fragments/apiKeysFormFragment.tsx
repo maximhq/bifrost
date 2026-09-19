@@ -370,7 +370,6 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 					)}
 				/>
 			)}
-			{!isVLLM && (
 				<>
 					<FormField
 						control={control}
@@ -385,8 +384,6 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 										unfiltered
 										value={field.value || []}
 										onChange={field.onChange}
-										patterns={form.watch("key.models_patterns") ?? []}
-										onPatternsChange={(next) => form.setValue("key.models_patterns", next, { shouldDirty: true, shouldValidate: true })}
 										label={
 											<>
 												<FormLabel>Allowed Models</FormLabel>
@@ -427,8 +424,6 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 										unfiltered
 										value={field.value || []}
 										onChange={field.onChange}
-										patterns={form.watch("key.blacklisted_models_patterns") ?? []}
-										onPatternsChange={(next) => form.setValue("key.blacklisted_models_patterns", next, { shouldDirty: true, shouldValidate: true })}
 										label={
 											<>
 												<FormLabel>Blocked Models</FormLabel>
@@ -490,7 +485,6 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 						)}
 					/>
 				</>
-			)}
 			{supportsBatchAPI && !isBedrock && !isAzure && !isVertex && <BatchAPIFormField control={control} form={form} />}
 			{isAzure && (
 				<div className="space-y-4">
@@ -1225,9 +1219,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 							<FormItem className="flex flex-row items-center justify-between rounded-sm border p-2">
 								<div className="space-y-1.5">
 									<FormLabel htmlFor="use-openai-endpoints-switch">Use OpenAI Endpoints</FormLabel>
-									<FormDescription>
-										Routes requests through Bedrock&apos;s OpenAI-compatible endpoints instead of Converse.
-									</FormDescription>
+									<FormDescription>Routes requests through Bedrock&apos;s OpenAI-compatible endpoints instead of Converse.</FormDescription>
 								</div>
 								<FormControl>
 									<Switch

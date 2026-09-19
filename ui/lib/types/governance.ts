@@ -125,6 +125,11 @@ export interface VirtualKey {
 	// Lets the UI lock edits and show the managed-key notice without the separately
 	// RBAC-gated access-profile lookup.
 	is_access_profile_managed?: boolean;
+	// Read-only, server-computed: the user this key is assigned to, or null when it
+	// is assigned to a team, a customer, or nothing. Absent (rather than null) when
+	// the response came from a path that does not resolve assignees, so callers can
+	// tell "unassigned" from "unknown". Always null in OSS, which has no users.
+	assigned_user?: { id: string; name: string; email: string } | null;
 	config_hash?: string; // Present when config is synced from config.json
 }
 
@@ -141,10 +146,6 @@ export interface VirtualKeyProviderConfig {
 	weight: number | null;
 	allowed_models: string[];
 	blacklisted_models: string[];
-	/** RE2 patterns admitting models by name shape, alongside allowed_models. */
-	allowed_models_patterns?: string[];
-	/** RE2 patterns blocking models by name shape; win over the allow side. */
-	blacklisted_models_patterns?: string[];
 	allow_all_keys: boolean; // True means all keys allowed; false with empty keys means no keys allowed
 	budgets?: Budget[];
 	rate_limit?: RateLimit;
@@ -199,8 +200,6 @@ export interface VirtualKeyProviderConfigRequest {
 	weight?: number | null;
 	allowed_models?: string[];
 	blacklisted_models?: string[];
-	allowed_models_patterns?: string[];
-	blacklisted_models_patterns?: string[];
 	budgets?: CreateBudgetRequest[];
 	rate_limit?: CreateRateLimitRequest;
 	model_budgets?: VirtualKeyModelBudgetRequest[];
@@ -213,8 +212,6 @@ export interface VirtualKeyProviderConfigUpdateRequest {
 	weight?: number | null;
 	allowed_models?: string[];
 	blacklisted_models?: string[];
-	allowed_models_patterns?: string[];
-	blacklisted_models_patterns?: string[];
 	budgets?: CreateBudgetRequest[];
 	rate_limit?: UpdateRateLimitRequest;
 	model_budgets?: VirtualKeyModelBudgetRequest[]; // Full desired per-model set when provider_configs is supplied

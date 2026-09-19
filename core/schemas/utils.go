@@ -1373,6 +1373,11 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 			copy.ResponsesToolMessage.Arguments = &copyArguments
 		}
 
+		if original.ResponsesToolMessage.ResponsesCustomToolCall != nil {
+			copyCustomToolCall := *original.ResponsesToolMessage.ResponsesCustomToolCall
+			copy.ResponsesToolMessage.ResponsesCustomToolCall = &copyCustomToolCall
+		}
+
 		if original.ResponsesToolMessage.Namespace != nil {
 			copyNamespace := *original.ResponsesToolMessage.Namespace
 			copy.ResponsesToolMessage.Namespace = &copyNamespace
@@ -1531,6 +1536,16 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 	if original.EncryptedContent != nil {
 		copy.EncryptedContent = new(string)
 		*copy.EncryptedContent = *original.EncryptedContent
+	}
+
+	// Gemini's per-part media resolution is replayed to the provider verbatim, so it has to
+	// survive the copy -- and must not share the NumTokens pointer with the original.
+	if original.MediaResolution != nil {
+		copyMediaResolution := &MediaResolution{Level: original.MediaResolution.Level}
+		if original.MediaResolution.NumTokens != nil {
+			copyMediaResolution.NumTokens = new(*original.MediaResolution.NumTokens)
+		}
+		copy.MediaResolution = copyMediaResolution
 	}
 
 	// Deep copy ResponsesInputMessageContentBlockImage
@@ -1793,6 +1808,12 @@ func IsElevenlabsSoundModel(model string) bool {
 // explicit prompt-caching cache points in the Converse API request.
 func BedrockModelSupportsCachePoints(model string) bool {
 	return IsAnthropicModel(model) || IsNovaModel(model)
+}
+
+// BedrockModelSupportsToolResultImages reports whether the Bedrock model accepts
+// image blocks inside a Converse toolResult.
+func BedrockModelSupportsToolResultImages(model string) bool {
+	return !IsOpenAIModel(model) && !IsGrokModel(model)
 }
 
 // ResolveBedrockMantleBasePath returns the URL base path Bedrock Mantle serves the

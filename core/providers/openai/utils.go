@@ -90,6 +90,33 @@ func acceptsXHighEffort(model string) bool {
 		strings.Contains(modelLower, "gpt-6")
 }
 
+// defaultReasoningContexts is the name-based fallback for
+// ModelCaps.SupportedReasoningContexts, used when the datasheet says nothing:
+// the base "auto"/"current_turn" pair, widened with "all_turns" for the
+// families that accept it.
+func defaultReasoningContexts(model string) []string {
+	contexts := []string{schemas.ReasoningContextAuto, schemas.ReasoningContextCurrentTurn}
+	if acceptsAllTurnsContext(model) {
+		contexts = append(contexts, schemas.ReasoningContextAllTurns)
+	}
+	return contexts
+}
+
+// acceptsAllTurnsContext reports models that accept reasoning.context
+// "all_turns". OpenAI documents it as the GPT-5.6 default
+// with earlier models defaulting to "current_turn"
+// (https://developers.openai.com/api/docs/guides/reasoning); gpt-5.4 and
+// gpt-5.5 (incl. -pro) accept it too, while the original gpt-5 family (incl.
+// -pro), gpt-5.1..5.3 and the o-series answer 400 "Supported values are:
+// 'auto' and 'current_turn'". Same substring matching as acceptsXHighEffort.
+func acceptsAllTurnsContext(model string) bool {
+	m := bareModelLower(model)
+	return strings.Contains(m, "gpt-5.4") ||
+		strings.Contains(m, "gpt-5.5") ||
+		strings.Contains(m, "gpt-5.6") ||
+		strings.Contains(m, "gpt-6")
+}
+
 // acceptsMinimalEffort reports models that natively accept "minimal" effort:
 // only the original GPT-5 trio. Every later dot-revision dropped it from the
 // reasoning.effort enum in favour of "none"/"xhigh"/"max".

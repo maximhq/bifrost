@@ -527,3 +527,42 @@ func TestPerformanceIndexesCoverProjectIDs(t *testing.T) {
 	assert.Equal(t, "logs", tables["idx_logs_project_id"])
 	assert.Equal(t, "mcp_tool_logs", tables["idx_mcp_logs_project_id"])
 }
+
+// TestMigrationAddMCPGovernanceSnapshots verifies the attribution columns are
+// additive, idempotent, and leave rows written before them intact — those rows
+// keep their bare ids, which is the accepted cost of not rewriting history.
+func TestMigrationAddMCPGovernanceSnapshots(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("CREATE TABLE mcp_tool_logs (id TEXT PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("INSERT INTO mcp_tool_logs (id) VALUES (?)", "mcp-existing").Error)
+
+	ctx := context.Background()
+	require.NoError(t, migrationAddMCPGovernanceSnapshots(ctx, db, testLogger{}))
+	for _, field := range []string{
+		"UserName", "TeamName", "CustomerName", "BusinessUnitName",
+		"TeamIDs", "TeamNames", "CustomerIDs", "CustomerNames",
+		"BusinessUnitIDs", "BusinessUnitNames", "BudgetIDs", "RateLimitIDs",
+	} {
+		require.True(t, db.Migrator().HasColumn(&MCPToolLog{}, field), "missing column for %s", field)
+	}
+	require.NoError(t, migrationAddMCPGovernanceSnapshots(ctx, db, testLogger{}))
+
+	var count int64
+	require.NoError(t, db.Table("mcp_tool_logs").Where("id = ?", "mcp-existing").Count(&count).Error)
+	assert.Equal(t, int64(1), count)
+}
+
+// TestMCPGovernanceSnapshotsMigrationIsRegistered keeps the migration reachable:
+// an unregistered step leaves the columns missing on every real deployment while
+// every unit test that calls it directly still passes.
+func TestMCPGovernanceSnapshotsMigrationIsRegistered(t *testing.T) {
+	for _, step := range logstoreMigrationSteps {
+		for _, id := range step.IDs {
+			if id == "mcp_tool_logs_add_governance_snapshots" {
+				return
+			}
+		}
+	}
+	t.Fatal("mcp_tool_logs_add_governance_snapshots is not registered in logstoreMigrationSteps")
+}

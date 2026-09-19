@@ -1,23 +1,19 @@
 import { cn } from "@/lib/utils";
 import { Regex } from "lucide-react";
-import { isWildcardEntry } from "./utils";
-
-export type ModelAccessEntryKind = "model" | "pattern";
+import { isRegexEntry, isWildcardEntry, regexEntryPattern } from "./utils";
 
 interface ModelAccessChipLabelProps {
 	entry: string;
-	/** "model" for an exact-list entry (the default), "pattern" for a pattern-list entry. */
-	kind?: ModelAccessEntryKind;
 	className?: string;
 }
 
 /**
  * The label shown for one list entry wherever entries are rendered as chips or
- * badges: "All Models" for the wildcard, a monospace pattern with an icon for a
- * pattern entry, the plain name otherwise.
+ * badges: "All Models" for the wildcard, the pattern in monospace with an icon
+ * for a `regex:` entry, the plain name otherwise.
  */
-export function ModelAccessChipLabel({ entry, kind = "model", className }: ModelAccessChipLabelProps) {
-	if (kind === "pattern") {
+export function ModelAccessChipLabel({ entry, className }: ModelAccessChipLabelProps) {
+	if (isRegexEntry(entry)) {
 		return (
 			<span
 				className={cn("inline-flex min-w-0 items-center gap-1 font-mono", className)}
@@ -25,7 +21,7 @@ export function ModelAccessChipLabel({ entry, kind = "model", className }: Model
 				data-model-entry-kind="regex"
 			>
 				<Regex className="text-muted-foreground h-3 w-3 shrink-0" aria-hidden />
-				<span className="truncate">{entry}</span>
+				<span className="truncate">{regexEntryPattern(entry)}</span>
 			</span>
 		);
 	}

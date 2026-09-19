@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/providers/utils"
@@ -46,12 +47,15 @@ type ResponsesFeatureSupport struct {
 	// ContextManagement reports whether the backend accepts the context_management
 	// Responses body field.
 	ContextManagement bool
+	// WebSearchContentTypes reports whether the backend accepts search_content_types
+	// on web_search tools.
+	WebSearchContentTypes bool
 }
 
 // ProviderFeatures maps each OpenAI-compatible provider to its supported
 // Responses wire extensions. Only providers with a known deviation are listed.
 var ProviderFeatures = map[schemas.ModelProvider]ResponsesFeatureSupport{
-	schemas.OpenAI: {AdditionalToolsItem: true, ContextManagement: true},
+	schemas.OpenAI: {AdditionalToolsItem: true, ContextManagement: true, WebSearchContentTypes: true},
 	// Bedrock Mantle validates `input` against the standard union and rejects
 	// additional_tools with "Invalid 'input': value did not match any expected
 	// variant", but accepts the same tools at the top level. It also rejects
@@ -135,6 +139,17 @@ func supportsAdditionalToolsItem(provider schemas.ModelProvider) bool {
 	return features.AdditionalToolsItem
 }
 
+// supportsWebSearchContentTypes reports whether a model accepts
+// search_content_types on web_search tools. The datasheet overrides the
+// provider default; unlisted providers are assumed to support it.
+func supportsWebSearchContentTypes(caps schemas.ModelCaps, provider schemas.ModelProvider) bool {
+	features, ok := ProviderFeatures[provider]
+	if !ok {
+		return !caps.FieldUnsupported(schemas.FieldSearchContentTypes, false)
+	}
+	return !caps.FieldUnsupported(schemas.FieldSearchContentTypes, !features.WebSearchContentTypes)
+}
+
 // hoistAdditionalTools decodes the tools carried by a codex additional_tools item.
 // The entries are ResponsesTool-shaped but live in the item's preserved raw bytes,
 // so they are decoded here rather than read off the typed message.
@@ -179,10 +194,13 @@ const maxResponsesCacheBreakpoints = 4
 //
 // Everything else either accepts cache_control directly or caches implicitly, and for
 // those the serializer's existing strip is the correct behaviour.
+//
+// This is the name-based fallback for ModelCaps.SupportsPromptCacheBreakpoints, used
+// when the datasheet row says nothing.
 func responsesUsesPromptCacheBreakpoints(provider schemas.ModelProvider, model string) bool {
 	switch provider {
 	case schemas.OpenRouter:
-		return true
+		return schemas.IsAnthropicModel(model) || schemas.IsGPT56Model(model)
 	case schemas.OpenAI, schemas.Azure, schemas.BedrockMantle, schemas.Bedrock:
 		return schemas.IsGPT56Model(model)
 	default:
@@ -353,6 +371,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	// Tools lifted out of codex additional_tools items for providers that reject them.
 	var hoistedTools []schemas.ResponsesTool
 	keepAdditionalTools := supportsAdditionalToolsItem(bifrostReq.Provider)
+	replayAssistantTextAsInput := isMantleGPTOSSResponses(ctx, bifrostReq.Provider, capModel)
 	for _, message := range bifrostReq.Input {
 		if !keepAdditionalTools && message.Type != nil &&
 			*message.Type == schemas.ResponsesMessageTypeAdditionalTools {
@@ -414,6 +433,10 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		// requests without it. Blocks converted from non-OpenAI surfaces (Anthropic,
 		// Gemini, Cohere, chat bridge) never carry one, so default missing values to "auto".
 		message = defaultImageDetail(message)
+
+		if replayAssistantTextAsInput {
+			message = assistantOutputTextAsInputText(message)
+		}
 
 		// Strip provider reasoning signatures (e.g. Gemini thoughtSignatures smuggled into
 		// call_id as "<baseID>_ts_<sig>") from tool call IDs, but only when the id exceeds
@@ -555,7 +578,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	// core/bifrost.go, and providers/utils does too; this call site was the odd one out.
 	cachePromptProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
 	needsExplicitPromptCacheMode := false
-	if responsesUsesPromptCacheBreakpoints(cachePromptProvider, capModel) {
+	if caps.SupportsPromptCacheBreakpoints(responsesUsesPromptCacheBreakpoints(cachePromptProvider, capModel)) {
 		applyResponsesCacheBreakpoints(messages)
 		needsExplicitPromptCacheMode = responsesUsesPromptCacheOptions(cachePromptProvider, capModel) &&
 			responsesHasPromptCacheBreakpoint(messages)
@@ -627,6 +650,23 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			// summary:"none" is Anthropic-specific (maps to display:"omitted"); strip it for OpenAI.
 			if req.ResponsesParameters.Reasoning.Summary != nil && *req.ResponsesParameters.Reasoning.Summary == "none" {
 				req.ResponsesParameters.Reasoning.Summary = nil
+			}
+
+			// reasoning.context is gated per value: every OpenAI reasoning model takes
+			// "auto"/"current_turn", but "all_turns" is a hard 400 before gpt-5.4
+			// ("Unsupported value: 'all_turns' is not supported with the 'gpt-5-pro'
+			// model"). Drop a value the model does not list so the request runs under
+			// its own default instead of failing; the datasheet row
+			// supported_reasoning_contexts overrides the name default. Other
+			// OpenAI-compatible upstreams are left alone.
+			// Match on the base provider: a custom provider built on OpenAI or Azure
+			// reports its own key ("my-openai"), so gating on the unresolved key
+			// would let an unsupported value through to the upstream 400.
+			contextProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
+			if c := req.ResponsesParameters.Reasoning.Context; c != nil &&
+				(contextProvider == schemas.OpenAI || contextProvider == schemas.Azure) &&
+				!slices.Contains(caps.SupportedReasoningContexts(defaultReasoningContexts(capModel)), *c) {
+				req.ResponsesParameters.Reasoning.Context = nil
 			}
 
 			// Bedrock's OpenAI-compatible surfaces accept only "auto". They answer
@@ -725,8 +765,9 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		req.Tools = normalizedTools
 	}
 
-	// Filter out tools that OpenAI doesn't support
-	req.filterUnsupportedTools()
+	// Filter out tools that the OpenAI-compatible target doesn't support.
+	toolCaps := schemas.ResolveModelCaps(toolProvider, capModel)
+	req.filterUnsupportedTools(supportsWebSearchContentTypes(toolCaps, toolProvider))
 
 	if bifrostReq.Params != nil {
 		req.ExtraParams = bifrostReq.Params.ExtraParams
@@ -816,7 +857,50 @@ func defaultImageDetail(message schemas.ResponsesMessage) schemas.ResponsesMessa
 	return message
 }
 
-func (resp *OpenAIResponsesRequest) filterUnsupportedTools() {
+// isMantleGPTOSSResponses reports whether the request is gpt-oss served by Bedrock Mantle's
+// /v1 Responses backend; gpt-5.x on /openai/v1 and gpt-oss elsewhere keep output_text history.
+func isMantleGPTOSSResponses(ctx *schemas.BifrostContext, provider schemas.ModelProvider, capModel string) bool {
+	base := schemas.ResolveBaseProvider(ctx, provider)
+	return (base == schemas.Bedrock || base == schemas.BedrockMantle) &&
+		strings.Contains(strings.ToLower(capModel), "gpt-oss") &&
+		schemas.ResolveBedrockMantleBasePath(capModel) == schemas.BedrockMantleBasePathV1
+}
+
+// assistantOutputTextAsInputText retags a replayed assistant message's output_text blocks
+// as input_text. Mantle /v1 strips id, status and annotations from assistant items before
+// validating, so output_text history matches no input variant and the turn fails (#7074).
+func assistantOutputTextAsInputText(message schemas.ResponsesMessage) schemas.ResponsesMessage {
+	if message.Role == nil || *message.Role != schemas.ResponsesInputMessageRoleAssistant ||
+		message.Content == nil || len(message.Content.ContentBlocks) == 0 {
+		return message
+	}
+	fixNeeded := false
+	for _, block := range message.Content.ContentBlocks {
+		if block.Type == schemas.ResponsesOutputMessageContentTypeText {
+			fixNeeded = true
+			break
+		}
+	}
+	if !fixNeeded {
+		return message
+	}
+
+	newBlocks := make([]schemas.ResponsesMessageContentBlock, len(message.Content.ContentBlocks))
+	copy(newBlocks, message.Content.ContentBlocks)
+	for i := range newBlocks {
+		if newBlocks[i].Type == schemas.ResponsesOutputMessageContentTypeText {
+			newBlocks[i].Type = schemas.ResponsesInputMessageContentBlockTypeText
+			newBlocks[i].ResponsesOutputMessageContentText = nil
+		}
+	}
+
+	contentCopy := *message.Content
+	contentCopy.ContentBlocks = newBlocks
+	message.Content = &contentCopy
+	return message
+}
+
+func (resp *OpenAIResponsesRequest) filterUnsupportedTools(webSearchContentTypesSupported bool) {
 	if len(resp.Tools) == 0 {
 		return
 	}
@@ -891,7 +975,7 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools() {
 					externalWebAccess := *tool.ResponsesToolWebSearch.ExternalWebAccess
 					newWebSearch.ExternalWebAccess = &externalWebAccess
 				}
-				if len(tool.ResponsesToolWebSearch.SearchContentTypes) > 0 {
+				if webSearchContentTypesSupported && len(tool.ResponsesToolWebSearch.SearchContentTypes) > 0 {
 					newWebSearch.SearchContentTypes = append([]string(nil), tool.ResponsesToolWebSearch.SearchContentTypes...)
 				}
 

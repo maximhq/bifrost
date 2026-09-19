@@ -719,7 +719,7 @@ func applyV1Compat(configData *ConfigData) {
 	for providerName, providerCfg := range configData.Providers {
 		changed := false
 		for i := range providerCfg.Keys {
-			if len(providerCfg.Keys[i].Models) == 0 && len(providerCfg.Keys[i].ModelsPatterns) == 0 {
+			if len(providerCfg.Keys[i].Models) == 0 {
 				providerCfg.Keys[i].Models = schemas.WhiteList{"*"}
 				changed = true
 			}
@@ -754,7 +754,7 @@ func applyV1Compat(configData *ConfigData) {
 		} else {
 			for j := range vk.ProviderConfigs {
 				pc := &vk.ProviderConfigs[j]
-				if len(pc.AllowedModels) == 0 && len(pc.AllowedModelsPatterns) == 0 {
+				if len(pc.AllowedModels) == 0 {
 					pc.AllowedModels = schemas.WhiteList{"*"}
 				}
 				if !pc.AllowAllKeys && len(pc.Keys) == 0 {
@@ -1619,27 +1619,25 @@ func mergeProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []schema
 			} else {
 				// No stored hash (legacy) - fall back to generating fresh hash
 				dbKeyHash, err := configstore.GenerateKeyHash(schemas.Key{
-					Name:                      dbKey.Name,
-					Value:                     dbKey.Value,
-					Models:                    dbKey.Models,
-					BlacklistedModels:         dbKey.BlacklistedModels,
-					ModelsPatterns:            dbKey.ModelsPatterns,
-					BlacklistedModelsPatterns: dbKey.BlacklistedModelsPatterns,
-					Weight:                    dbKey.Weight,
-					AzureKeyConfig:            dbKey.AzureKeyConfig,
-					VertexKeyConfig:           dbKey.VertexKeyConfig,
-					BedrockKeyConfig:          dbKey.BedrockKeyConfig,
-					BedrockMantleKeyConfig:    dbKey.BedrockMantleKeyConfig,
-					ReplicateKeyConfig:        dbKey.ReplicateKeyConfig,
-					Aliases:                   dbKey.Aliases,
-					VLLMKeyConfig:             dbKey.VLLMKeyConfig,
-					OllamaKeyConfig:           dbKey.OllamaKeyConfig,
-					SGLKeyConfig:              dbKey.SGLKeyConfig,
-					DatabricksKeyConfig:       dbKey.DatabricksKeyConfig,
-					GithubCopilotKeyConfig:    dbKey.GithubCopilotKeyConfig,
-					Enabled:                   dbKey.Enabled,
-					UseForBatchAPI:            dbKey.UseForBatchAPI,
-					UseAnthropicEndpoints:     dbKey.UseAnthropicEndpoints,
+					Name:                   dbKey.Name,
+					Value:                  dbKey.Value,
+					Models:                 dbKey.Models,
+					BlacklistedModels:      dbKey.BlacklistedModels,
+					Weight:                 dbKey.Weight,
+					AzureKeyConfig:         dbKey.AzureKeyConfig,
+					VertexKeyConfig:        dbKey.VertexKeyConfig,
+					BedrockKeyConfig:       dbKey.BedrockKeyConfig,
+					BedrockMantleKeyConfig: dbKey.BedrockMantleKeyConfig,
+					ReplicateKeyConfig:     dbKey.ReplicateKeyConfig,
+					Aliases:                dbKey.Aliases,
+					VLLMKeyConfig:          dbKey.VLLMKeyConfig,
+					OllamaKeyConfig:        dbKey.OllamaKeyConfig,
+					SGLKeyConfig:           dbKey.SGLKeyConfig,
+					DatabricksKeyConfig:    dbKey.DatabricksKeyConfig,
+					GithubCopilotKeyConfig: dbKey.GithubCopilotKeyConfig,
+					Enabled:                dbKey.Enabled,
+					UseForBatchAPI:         dbKey.UseForBatchAPI,
+					UseAnthropicEndpoints:  dbKey.UseAnthropicEndpoints,
 				})
 				if err != nil {
 					logger.Warn("failed to generate key hash for db key %s (%s): %v, falling back to name comparison", dbKey.Name, provider, err)
@@ -1706,27 +1704,25 @@ func reconcileProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []sc
 			} else {
 				// No stored hash (legacy) - fall back to generating fresh hash for comparison
 				dbKeyHash, err := configstore.GenerateKeyHash(schemas.Key{
-					Name:                      dbKey.Name,
-					Value:                     dbKey.Value,
-					Models:                    dbKey.Models,
-					BlacklistedModels:         dbKey.BlacklistedModels,
-					ModelsPatterns:            dbKey.ModelsPatterns,
-					BlacklistedModelsPatterns: dbKey.BlacklistedModelsPatterns,
-					Weight:                    dbKey.Weight,
-					AzureKeyConfig:            dbKey.AzureKeyConfig,
-					VertexKeyConfig:           dbKey.VertexKeyConfig,
-					BedrockKeyConfig:          dbKey.BedrockKeyConfig,
-					BedrockMantleKeyConfig:    dbKey.BedrockMantleKeyConfig,
-					ReplicateKeyConfig:        dbKey.ReplicateKeyConfig,
-					Aliases:                   dbKey.Aliases,
-					VLLMKeyConfig:             dbKey.VLLMKeyConfig,
-					OllamaKeyConfig:           dbKey.OllamaKeyConfig,
-					SGLKeyConfig:              dbKey.SGLKeyConfig,
-					DatabricksKeyConfig:       dbKey.DatabricksKeyConfig,
-					GithubCopilotKeyConfig:    dbKey.GithubCopilotKeyConfig,
-					Enabled:                   dbKey.Enabled,
-					UseForBatchAPI:            dbKey.UseForBatchAPI,
-					UseAnthropicEndpoints:     dbKey.UseAnthropicEndpoints,
+					Name:                   dbKey.Name,
+					Value:                  dbKey.Value,
+					Models:                 dbKey.Models,
+					BlacklistedModels:      dbKey.BlacklistedModels,
+					Weight:                 dbKey.Weight,
+					AzureKeyConfig:         dbKey.AzureKeyConfig,
+					VertexKeyConfig:        dbKey.VertexKeyConfig,
+					BedrockKeyConfig:       dbKey.BedrockKeyConfig,
+					BedrockMantleKeyConfig: dbKey.BedrockMantleKeyConfig,
+					ReplicateKeyConfig:     dbKey.ReplicateKeyConfig,
+					Aliases:                dbKey.Aliases,
+					VLLMKeyConfig:          dbKey.VLLMKeyConfig,
+					OllamaKeyConfig:        dbKey.OllamaKeyConfig,
+					SGLKeyConfig:           dbKey.SGLKeyConfig,
+					DatabricksKeyConfig:    dbKey.DatabricksKeyConfig,
+					GithubCopilotKeyConfig: dbKey.GithubCopilotKeyConfig,
+					Enabled:                dbKey.Enabled,
+					UseForBatchAPI:         dbKey.UseForBatchAPI,
+					UseAnthropicEndpoints:  dbKey.UseAnthropicEndpoints,
 				})
 				if err != nil {
 					logger.Warn("failed to generate key hash for db key %s (%s): %v", dbKey.Name, provider, err)
@@ -3810,6 +3806,12 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 			}
 			for _, existing := range config.GovernanceConfig.RateLimits {
 				if existing.ID != "" && !keep[existing.ID] {
+					if err := tx.Exec(
+						"UPDATE governance_model_configs SET rate_limit_id = NULL WHERE rate_limit_id = ?",
+						existing.ID,
+					).Error; err != nil {
+						return fmt.Errorf("failed to unlink rate limit %s from model configs: %w", existing.ID, err)
+					}
 					if err := config.ConfigStore.DeleteRateLimit(ctx, existing.ID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
 						return fmt.Errorf("failed to delete rate limit %s: %w", existing.ID, err)
 					}
@@ -5561,8 +5563,6 @@ func reconcileVirtualKeyAssociations(
 			existing.Weight = newPC.Weight
 			existing.AllowedModels = newPC.AllowedModels
 			existing.BlacklistedModels = newPC.BlacklistedModels
-			existing.AllowedModelsPatterns = newPC.AllowedModelsPatterns
-			existing.BlacklistedModelsPatterns = newPC.BlacklistedModelsPatterns
 			existing.AllowAllKeys = newPC.AllowAllKeys
 			existing.RateLimitID = newPC.RateLimitID
 			existing.Keys = newPC.Keys
@@ -6899,25 +6899,15 @@ func (c *Config) GetAllKeys() ([]configstoreTables.TableKey, error) {
 			if blacklisted == nil {
 				blacklisted = []string{}
 			}
-			modelsPatterns := key.ModelsPatterns
-			if modelsPatterns == nil {
-				modelsPatterns = schemas.ModelPatternList{}
-			}
-			blacklistedPatterns := key.BlacklistedModelsPatterns
-			if blacklistedPatterns == nil {
-				blacklistedPatterns = schemas.ModelPatternList{}
-			}
 			configStoreKey := configstoreTables.TableKey{
-				KeyID:                     key.ID,
-				Name:                      key.Name,
-				Value:                     *key.Value.Redacted(),
-				Models:                    models,
-				BlacklistedModels:         blacklisted,
-				ModelsPatterns:            modelsPatterns,
-				BlacklistedModelsPatterns: blacklistedPatterns,
-				Weight:                    bifrost.Ptr(key.Weight),
-				Provider:                  string(providerKey),
-				ConfigHash:                key.ConfigHash,
+				KeyID:             key.ID,
+				Name:              key.Name,
+				Value:             *key.Value.Redacted(),
+				Models:            models,
+				BlacklistedModels: blacklisted,
+				Weight:            bifrost.Ptr(key.Weight),
+				Provider:          string(providerKey),
+				ConfigHash:        key.ConfigHash,
 			}
 			if key.AzureKeyConfig != nil {
 				cfg := *key.AzureKeyConfig // safe copy

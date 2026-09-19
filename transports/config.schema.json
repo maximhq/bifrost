@@ -983,12 +983,32 @@
               "access_profile_id": {
                 "type": "integer",
                 "minimum": 1,
-                "description": "Associated access profile ID for direct access profile assignment (mutually exclusive with team_id and customer_id)"
+                "deprecated": true,
+                "description": "Deprecated and ignored: direct access-profile assignment was reverted in v1.5.9 (#3669/#3670) and the column dropped. Accepted only for backward-compatible validation of older config files."
               },
               "is_access_profile_managed": {
                 "type": "boolean",
                 "description": "Read-only, server-computed flag: true when the virtual key is governed by an access profile. Never persisted and ignored if set in config.json.",
                 "readOnly": true
+              },
+              "assigned_user": {
+                "type": ["object", "null"],
+                "readOnly": true,
+                "description": "Read-only, server-populated projection of the user this virtual key is assigned to. Present as an object (or null when resolved but unassigned) on governance read paths; omitted when the assignee could not be resolved. Never persisted and ignored if set in config.json.",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Assignee user ID"
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "Assignee display name"
+                  },
+                  "email": {
+                    "type": "string",
+                    "description": "Assignee email"
+                  }
+                }
               },
               "rate_limit_id": {
                 "type": "string",
@@ -2472,6 +2492,11 @@
                       "description": "Export the per-component overhead histogram bifrost_overhead_component_microseconds (overhead latency split by the overhead_component label). Off by default. Requires tracing to be active, since the breakdown is computed from completed trace spans.",
                       "default": false
                     },
+                    "user_labels_enabled": {
+                      "type": "boolean",
+                      "description": "Add user_id and user_name labels to every bifrost_* metric. Off by default: these are unbounded, so they multiply metric series by end-user count on top of a virtual_key_id label that already reaches tens of thousands of values in large deployments. Prometheus holds every label combination in memory for the retention period and cannot drop a label afterwards. Per-user attribution is available without this from BigQuery columns or Splunk event fields.",
+                      "default": false
+                    },
                     "push_gateway": {
                       "type": "object",
                       "description": "Configuration for pushing metrics to a Prometheus Push Gateway for multi-node cluster deployments",
@@ -3836,36 +3861,16 @@
         },
         "allowed_models": {
           "type": "array",
-          "description": "Allowed models for this provider config. Use [\"*\"] to allow all models; empty array denies all (deny-by-default).",
+          "description": "Allowed models for this provider config. Use [\"*\"] to allow all models; empty array denies all (deny-by-default). An entry starting with regex: is an RE2 pattern matched case-insensitively against the whole model name.",
           "items": {
             "type": "string"
           }
         },
         "blacklisted_models": {
           "type": "array",
-          "description": "Models blocked for this provider config even if matched by allowed_models. Use [\"*\"] to block all; empty array blocks none.",
+          "description": "Models blocked for this provider config even if matched by allowed_models. Use [\"*\"] to block all; empty array blocks none. An entry starting with regex: is an RE2 pattern matched case-insensitively against the whole model name.",
           "items": {
             "type": "string"
-          }
-        },
-        "allowed_models_patterns": {
-          "type": "array",
-          "uniqueItems": true,
-          "description": "RE2 patterns that allow models by shape, alongside allowed_models. Each pattern is matched case-insensitively as a full match against the model name and \"provider/model\". \"*\" is not a valid pattern.",
-          "items": {
-            "type": "string",
-            "minLength": 1,
-            "not": { "const": "*" }
-          }
-        },
-        "blacklisted_models_patterns": {
-          "type": "array",
-          "uniqueItems": true,
-          "description": "RE2 patterns that block models by shape, alongside blacklisted_models. Each pattern is matched case-insensitively as a full match against the model name and \"provider/model\". \"*\" is not a valid pattern. Block patterns win over allowed_models and allowed_models_patterns.",
-          "items": {
-            "type": "string",
-            "minLength": 1,
-            "not": { "const": "*" }
           }
         },
         "rate_limit_id": {
@@ -4529,27 +4534,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Models this key can access. Use [\"*\"] to allow all models; empty array denies all (deny-by-default)."
-        },
-        "models_patterns": {
-          "type": "array",
-          "uniqueItems": true,
-          "items": {
-            "type": "string",
-            "minLength": 1,
-            "not": { "const": "*" }
-          },
-          "description": "RE2 patterns that allow models by shape, alongside models. Each pattern is matched case-insensitively as a full match against the model name and \"provider/model\". \"*\" is not a valid pattern."
-        },
-        "blacklisted_models_patterns": {
-          "type": "array",
-          "uniqueItems": true,
-          "items": {
-            "type": "string",
-            "minLength": 1,
-            "not": { "const": "*" }
-          },
-          "description": "RE2 patterns that block models by shape, alongside blacklisted_models. Each pattern is matched case-insensitively as a full match against the model name and \"provider/model\". \"*\" is not a valid pattern. Block patterns win over models and models_patterns."
+          "description": "Models this key can access. Use [\"*\"] to allow all models; empty array denies all (deny-by-default). An entry starting with regex: is an RE2 pattern matched case-insensitively against the whole model name."
         },
         "weight": {
           "type": "number",
@@ -7856,23 +7841,40 @@
             "$ref": "#/$defs/access_profile_provider_config"
           }
         },
+        "virtual_mcps": {
+          "type": "array",
+          "description": "Virtual MCPs this profile grants. Canonical key; supersedes the deprecated mcp_tool_groups alias, which is ignored when this key is present. An explicit empty array detaches every Virtual MCP from the profile.",
+          "items": {
+            "$ref": "#/$defs/access_profile_virtual_mcp"
+          }
+        },
+        "mcp_configs": {
+          "type": "array",
+          "description": "Per-MCP-client tool allowlists this profile grants. Canonical key; supersedes the deprecated mcp_servers and mcp_tool_overrides aliases, which are folded into this shape at load time.",
+          "items": {
+            "$ref": "#/$defs/access_profile_mcp_config"
+          }
+        },
         "mcp_tool_groups": {
           "type": "array",
-          "description": "MCP tool group associations",
+          "description": "DEPRECATED: use virtual_mcps instead. MCP tool group associations, folded into virtual_mcps at load time. Ignored when virtual_mcps is present.",
+          "deprecated": true,
           "items": {
             "$ref": "#/$defs/access_profile_mcp_tool_group"
           }
         },
         "mcp_servers": {
           "type": "array",
-          "description": "MCP server associations",
+          "description": "DEPRECATED: use mcp_configs instead. Blanket MCP server grants, folded into mcp_configs at load time as [\"*\"] allowlists. A client listed in mcp_configs keeps its explicit allowlist; naming one client here and in mcp_configs by different spellings (an id in one, its name in the other) is ambiguous and refused.",
+          "deprecated": true,
           "items": {
             "$ref": "#/$defs/access_profile_mcp_server"
           }
         },
         "mcp_tool_overrides": {
           "type": "array",
-          "description": "Per-tool include/exclude MCP overrides",
+          "description": "DEPRECATED: use mcp_configs instead. Per-tool include/exclude overrides, folded into mcp_configs allowlists at load time. The new model has no exclude concept, so an exclude only narrows the tools that can be enumerated.",
+          "deprecated": true,
           "items": {
             "$ref": "#/$defs/access_profile_mcp_tool_override"
           }
@@ -7898,7 +7900,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Allowed model names. Use [\"*\"] to allow all models; empty array or omitted denies all unless an allowed_models_patterns entry matches (ignored when all_models_allowed is true)."
+          "description": "Allowed model names (ignored when all_models_allowed is true)"
         },
         "budgets": {
           "type": "array",
@@ -7914,26 +7916,6 @@
           "description": "Models blocked for this provider even if matched by allowed_models (denylist wins). Use [\"*\"] to block all; empty array or omitted blocks none.",
           "items": {
             "type": "string"
-          }
-        },
-        "allowed_models_patterns": {
-          "type": "array",
-          "uniqueItems": true,
-          "description": "RE2 patterns that allow models by shape, alongside allowed_models. Each pattern is matched case-insensitively as a full match against the model name and \"provider/model\". \"*\" is not a valid pattern. Ignored when all_models_allowed is true.",
-          "items": {
-            "type": "string",
-            "minLength": 1,
-            "not": { "const": "*" }
-          }
-        },
-        "blacklisted_models_patterns": {
-          "type": "array",
-          "uniqueItems": true,
-          "description": "RE2 patterns that block models by shape, alongside blacklisted_models. Each pattern is matched case-insensitively as a full match against the model name and \"provider/model\". \"*\" is not a valid pattern. Block patterns win over allowed_models and allowed_models_patterns.",
-          "items": {
-            "type": "string",
-            "minLength": 1,
-            "not": { "const": "*" }
           }
         },
         "weight": {
@@ -8092,15 +8074,19 @@
     },
     "project_virtual_mcp": {
       "type": "object",
-      "description": "A virtual MCP assigned to a project. Assignments are a set, so a repeated id is ignored rather than doubled.",
+      "description": "A Virtual MCP assigned to a project. Assignments are a set, so a repeat collapses rather than doubling.",
       "properties": {
+        "virtual_mcp_name": {
+          "type": "string",
+          "description": "Name of the Virtual MCP (as declared under mcp.virtual_mcps) the project is assigned. Resolved to the stored Virtual MCP on startup; a name that matches no Virtual MCP is refused."
+        },
         "virtual_mcp_id": {
           "type": "integer",
           "minimum": 1,
-          "description": "Virtual MCP ID. Ids are assigned by the database, so a file that has to be portable across environments should assign virtual MCPs from the dashboard or the API instead."
+          "description": "Virtual MCP ID, as an alternative to virtual_mcp_name. Wins when both are set. Ids are assigned by the database, so prefer the name in a file that has to be portable across environments."
         }
       },
-      "required": ["virtual_mcp_id"],
+      "anyOf": [{ "required": ["virtual_mcp_name"] }, { "required": ["virtual_mcp_id"] }],
       "additionalProperties": false
     },
     "project_budget": {
@@ -8204,33 +8190,13 @@
           "items": {
             "type": "string"
           },
-          "description": "Allowed model names. Use [\"*\"] to allow all models; empty array or omitted denies all unless an allowed_models_patterns entry matches (ignored when all_models_allowed is true)."
+          "description": "Allowed model names (ignored when all_models_allowed is true)"
         },
         "blacklisted_models": {
           "type": "array",
           "description": "Models blocked for this provider even if matched by allowed_models (denylist wins). Use [\"*\"] to block all; empty array or omitted blocks none.",
           "items": {
             "type": "string"
-          }
-        },
-        "allowed_models_patterns": {
-          "type": "array",
-          "uniqueItems": true,
-          "description": "RE2 patterns that allow models by shape, alongside allowed_models. Each pattern is matched case-insensitively as a full match against the model name and \"provider/model\". \"*\" is not a valid pattern. Ignored when all_models_allowed is true.",
-          "items": {
-            "type": "string",
-            "minLength": 1,
-            "not": { "const": "*" }
-          }
-        },
-        "blacklisted_models_patterns": {
-          "type": "array",
-          "uniqueItems": true,
-          "description": "RE2 patterns that block models by shape, alongside blacklisted_models. Each pattern is matched case-insensitively as a full match against the model name and \"provider/model\". \"*\" is not a valid pattern. Block patterns win over allowed_models and allowed_models_patterns.",
-          "items": {
-            "type": "string",
-            "minLength": 1,
-            "not": { "const": "*" }
           }
         },
         "key_ids": {
@@ -8309,13 +8275,51 @@
       "required": ["mcp_client_name"],
       "additionalProperties": false
     },
+    "access_profile_virtual_mcp": {
+      "type": "object",
+      "description": "A Virtual MCP granted to an access profile. Assignments are a set, so a repeat collapses rather than doubling.",
+      "properties": {
+        "virtual_mcp_name": {
+          "type": "string",
+          "description": "Name of the Virtual MCP (as declared under mcp.virtual_mcps) the profile grants. Resolved to the stored Virtual MCP on startup; a name that matches no Virtual MCP is refused."
+        },
+        "virtual_mcp_id": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Virtual MCP ID, as an alternative to virtual_mcp_name. Wins when both are set. Ids are assigned by the database, so prefer the name in a file that has to be portable across environments."
+        }
+      },
+      "anyOf": [{ "required": ["virtual_mcp_name"] }, { "required": ["virtual_mcp_id"] }],
+      "additionalProperties": false
+    },
+    "access_profile_mcp_config": {
+      "type": "object",
+      "description": "The tools of one MCP client an access profile may execute.",
+      "properties": {
+        "mcp_client_id": {
+          "type": "string",
+          "description": "MCP client ID or name (names are resolved to client ids at startup)"
+        },
+        "tools_to_execute": {
+          "type": "array",
+          "description": "Tools the profile may execute. [\"*\"] means all tools (including future ones); [] means none; a named list means only those tools.",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["mcp_client_id"],
+      "additionalProperties": false
+    },
     "access_profile_mcp_tool_group": {
       "type": "object",
+      "description": "DEPRECATED: use access_profile_virtual_mcp (virtual_mcps) instead.",
+      "deprecated": true,
       "properties": {
         "tool_group_id": {
           "type": "integer",
           "minimum": 1,
-          "description": "MCP tool group ID"
+          "description": "MCP tool group ID (the Virtual MCP's ID; the column kept its old name across the rename)"
         }
       },
       "required": ["tool_group_id"],
@@ -8323,6 +8327,8 @@
     },
     "access_profile_mcp_server": {
       "type": "object",
+      "description": "DEPRECATED: use access_profile_mcp_config (mcp_configs) instead.",
+      "deprecated": true,
       "properties": {
         "mcp_server_id": {
           "type": "string",
@@ -8334,6 +8340,8 @@
     },
     "access_profile_mcp_tool_override": {
       "type": "object",
+      "description": "DEPRECATED: use access_profile_mcp_config (mcp_configs) instead.",
+      "deprecated": true,
       "properties": {
         "mcp_client_id": {
           "type": "string",
@@ -8720,6 +8728,10 @@
         "does_not_send_done_marker": {
           "type": "boolean",
           "description": "Whether the provider ends streams on finish_reason without sending a data: [DONE] marker"
+        },
+        "wait_for_usage": {
+          "type": "boolean",
+          "description": "With does_not_send_done_marker, keep reading past finish_reason so the trailing usage-only chunk is collected instead of dropped. Without it the request records zero tokens and zero cost. An upstream that then goes silent ends on network_config.stream_idle_timeout_in_seconds"
         },
         "base_provider_type": {
           "type": "string",

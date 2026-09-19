@@ -3,6 +3,7 @@ package gemini
 import (
 	"encoding/base64"
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -32,7 +33,10 @@ func ToGeminiChatCompletionRequestWithImageURLSchemes(ctx *schemas.BifrostContex
 
 	// Convert parameters to generation config
 	if bifrostReq.Params != nil {
-		geminiReq.ExtraParams = bifrostReq.Params.ExtraParams
+		// Copy: safety_settings, cached_content and labels are removed from the
+		// outbound map below. This conversion runs once per retry/fallback attempt
+		// on the same Bifrost request, so it must not mutate the source map.
+		geminiReq.ExtraParams = maps.Clone(bifrostReq.Params.ExtraParams)
 		var err error
 		geminiReq.GenerationConfig, err = convertParamsToGenerationConfig(bifrostReq.Params, []string{}, bifrostReq.Provider, capModel)
 		if err != nil {

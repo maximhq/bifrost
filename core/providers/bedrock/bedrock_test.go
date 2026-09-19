@@ -197,6 +197,8 @@ func TestBedrock(t *testing.T) {
 		ImageEditModel:           "amazon.nova-canvas-v1:0",
 		ImageVariationModel:      "amazon.nova-canvas-v1:0",
 		InterleavedThinkingModel: "claude-opus-4-5",
+		CompactionModel:          "claude-4.6-sonnet", // compact_20260112 routes to InvokeModel (#6825); Sonnet 4.6 is on the AWS compaction model list
+		ToolSearchModel:          "claude-4.6-sonnet", // tool_search routes to InvokeModel (#6825)
 		BatchExtraParams:         batchExtraParams,
 		FileExtraParams:          fileExtraParams,
 		Scenarios: llmtests.TestScenarios{
@@ -238,6 +240,8 @@ func TestBedrock(t *testing.T) {
 			StructuredOutputs:          true,
 			InterleavedThinking:        true,
 			EagerInputStreaming:        true, // fine-grained-tool-streaming-2025-05-14 (per B-header)
+			Compaction:                 true, // InvokeModel path, see the InvokeModel section of bedrock.go
+			ToolSearch:                 true, // InvokeModel path, see the InvokeModel section of bedrock.go
 			// ServerToolsViaOpenAIEndpoint: Bedrock does not support web_search / web_fetch /
 			// code_execution server tools per Table 20, so no cases would run. Left off.
 		},
@@ -364,6 +368,14 @@ func TestBedrock(t *testing.T) {
 
 // TestBifrostToBedrockRequestConversion tests the conversion from Bifrost request to Bedrock request
 func TestBifrostToBedrockRequestConversion(t *testing.T) {
+	schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if model == "claude-3-sonnet" {
+			return &schemas.ModelCapabilities{ServiceTiers: []string{"priority"}}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
 	maxTokens := testMaxTokens
 	temp := testTemp
 	topP := testTopP
@@ -6798,12 +6810,12 @@ func TestMidConversationSystemReminderStaysInline(t *testing.T) {
 	assert.Equal(t, "second user turn", *messages[0].Content[2].Text)
 }
 
-// TestMidConversationSystemReminderHoistedForNonAnthropic verifies the Anthropic-only gating:
-// for a non-Anthropic Bedrock model (e.g. Nova), the historical behavior is preserved — every
-// role=system message, including mid-conversation ones, is hoisted into the top-level system
-// block and nothing is inlined as a <system-reminder>. The inlining is a prompt-cache workaround
-// specific to Anthropic-on-Bedrock and must not change the wire shape for other models.
-func TestMidConversationSystemReminderHoistedForNonAnthropic(t *testing.T) {
+// TestHoistEverythingModeStillHoistsAllSystemMessages pins the inlineSystemReminders=false mode.
+// No request path uses it any more (ToBedrockResponsesRequest inlines mid-conversation reminders
+// for every model family, because Bedrock's prompt cache is prefix-based for every model that
+// has one); it survives only for rendering a stored response back into a Converse shape, and
+// that caller must keep getting the hoist-everything wire shape.
+func TestHoistEverythingModeStillHoistsAllSystemMessages(t *testing.T) {
 	input := []schemas.ResponsesMessage{
 		systemReminderTextMsg("You are a helpful assistant."), // leading system prompt
 		userReminderTextMsg("first user turn"),
@@ -6815,7 +6827,7 @@ func TestMidConversationSystemReminderHoistedForNonAnthropic(t *testing.T) {
 	require.NoError(t, err)
 
 	// Both system messages are hoisted (historical behavior), not just the leading one.
-	require.Len(t, systemMessages, 2, "non-Anthropic models hoist every system message")
+	require.Len(t, systemMessages, 2, "hoist-everything mode hoists every system message")
 	assert.Equal(t, "You are a helpful assistant.", *systemMessages[0].Text)
 	assert.Equal(t, "Mid-conversation reminder.", *systemMessages[1].Text)
 
@@ -6823,7 +6835,7 @@ func TestMidConversationSystemReminderHoistedForNonAnthropic(t *testing.T) {
 	for _, m := range messages {
 		for _, b := range m.Content {
 			if b.Text != nil {
-				assert.NotContains(t, *b.Text, "<system-reminder>", "non-Anthropic path must not wrap reminders")
+				assert.NotContains(t, *b.Text, "<system-reminder>", "hoist-everything mode must not wrap reminders")
 			}
 		}
 	}
@@ -7839,7 +7851,8 @@ func TestAnthropicIngressMantleReplayUsesResponsesInputShapes(t *testing.T) {
 
 		sawAssistant = true
 		for j, part := range parts {
-			assert.Equalf(t, "output_text", part.Type, "input[%d].content[%d]: replayed assistant text stays output_text", i, j)
+			// Mantle /v1 strips status/annotations from assistant items, so only input_text validates for gpt-oss.
+			assert.Equalf(t, "input_text", part.Type, "input[%d].content[%d]: replayed gpt-oss assistant text must be input_text on Mantle", i, j)
 		}
 		if assert.NotNilf(t, item.Status,
 			"input[%d]: an assistant output message item requires `status` (ResponseOutputMessageParam), got item: %s", i, mustItem(body, i)) {

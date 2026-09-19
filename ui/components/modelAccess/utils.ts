@@ -1,20 +1,18 @@
 import { validateRegexPattern } from "@/lib/utils/celConverterRouting";
 
 /**
- * Model access is expressed as two kinds of list that live side by side:
- *
- *  - an exact list (`allowed_models` / `blacklisted_models` / `models`) holding
- *    model names, or "*" alone to mean every model;
- *  - a pattern list (`allowed_models_patterns` / `blacklisted_models_patterns` /
- *    `models_patterns`) holding raw RE2 patterns, matched case-insensitively as
- *    a full match against the model name and "provider/model".
- *
- * Exact entries are never interpreted as patterns and patterns never appear in
- * the exact list. "*" is not a valid pattern.
+ * Model access is one list (`allowed_models` / `blacklisted_models` / `models`)
+ * holding model names, "*" alone to mean every model, or entries prefixed with
+ * `regex:` that the gateway matches as a case-insensitive full RE2 match. The
+ * editor shows names and patterns on separate tabs; the wire stays one list.
  */
 export const MODEL_WILDCARD = "*";
+export const REGEX_ENTRY_PREFIX = "regex:";
 
 export type ModelAccessMode = "allow" | "block";
+
+const NAMED_GROUP = /\(\?P?<[A-Za-z0-9_]+>/g;
+const NAMED_BACKREF = /(?:^|[^\\])(?:\\\\)*\\k</;
 
 export function isWildcardEntry(entry: string): boolean {
 	return entry === MODEL_WILDCARD;
@@ -22,6 +20,30 @@ export function isWildcardEntry(entry: string): boolean {
 
 export function isWildcardList(list: readonly string[] | undefined | null): boolean {
 	return !!list && list.includes(MODEL_WILDCARD);
+}
+
+export function isRegexEntry(entry: string): boolean {
+	return entry.startsWith(REGEX_ENTRY_PREFIX);
+}
+
+/** The raw pattern behind a `regex:` entry; other entries come back unchanged. */
+export function regexEntryPattern(entry: string): string {
+	return isRegexEntry(entry) ? entry.slice(REGEX_ENTRY_PREFIX.length) : entry;
+}
+
+export function toRegexEntry(pattern: string): string {
+	return REGEX_ENTRY_PREFIX + pattern;
+}
+
+/** Splits one list into its exact entries (names and "*") and its raw patterns. */
+export function splitModelAccess(list: readonly string[] | undefined | null): { models: string[]; patterns: string[] } {
+	const models: string[] = [];
+	const patterns: string[] = [];
+	for (const entry of list ?? []) {
+		if (isRegexEntry(entry)) patterns.push(regexEntryPattern(entry));
+		else models.push(entry);
+	}
+	return { models, patterns };
 }
 
 /**
@@ -36,7 +58,11 @@ export function validateModelRegex(pattern: string): string | null {
 	if (trimmed === MODEL_WILDCARD) {
 		return 'Use the model list to allow all models; "*" is not a pattern';
 	}
-	return validateRegexPattern(trimmed);
+	if (NAMED_BACKREF.test(trimmed)) {
+		return "RE2 incompatible: named backreferences (\\k<name>) are not supported";
+	}
+	// Go accepts (?P<name>...) and names that start with a digit, JavaScript neither; the name is irrelevant to the syntax check.
+	return validateRegexPattern(trimmed.replace(NAMED_GROUP, "("));
 }
 
 /**
@@ -52,38 +78,45 @@ export function resolveWildcardSelection(current: readonly string[], next: reado
 	return [...next];
 }
 
-/** Appends a trimmed pattern to the pattern list, ignoring an exact duplicate. */
-export function addPattern(current: readonly string[], pattern: string): string[] {
-	const trimmed = pattern.trim();
-	if (current.includes(trimmed)) return [...current];
-	return [...current, trimmed];
+/**
+ * Applies a new exact selection to the list while keeping its patterns. The
+ * wildcard stands alone on the wire, so picking it also clears the patterns.
+ */
+export function replaceModels(list: readonly string[], nextModels: readonly string[]): string[] {
+	const { models, patterns } = splitModelAccess(list);
+	const resolved = resolveWildcardSelection(models, nextModels);
+	if (resolved.includes(MODEL_WILDCARD)) return [MODEL_WILDCARD];
+	return [...resolved, ...patterns.map(toRegexEntry)];
+}
+
+/** Appends a trimmed pattern as a `regex:` entry, ignoring a duplicate and dropping a lone "*". */
+export function addPattern(list: readonly string[], pattern: string): string[] {
+	const entry = toRegexEntry(pattern.trim());
+	if (list.includes(entry)) return [...list];
+	return [...list.filter((e) => !isWildcardEntry(e)), entry];
+}
+
+export function removePattern(list: readonly string[], pattern: string): string[] {
+	const entry = toRegexEntry(pattern);
+	return list.filter((e) => e !== entry);
 }
 
 /** Short collapsed-header summary such as "All models", "Deny all", "3 models, 1 pattern". */
-export function summarizeModelAccess(
-	models: readonly string[] | undefined | null,
-	patterns: readonly string[] | undefined | null,
-	mode: ModelAccessMode,
-): string {
-	const names = (models ?? []).filter((e) => !isWildcardEntry(e));
-	const wildcard = isWildcardList(models);
-	const patternCount = (patterns ?? []).length;
-	if (wildcard) return mode === "allow" ? "All models" : "All models blocked";
-	if (names.length === 0 && patternCount === 0) return mode === "allow" ? "Deny all" : "No blocked models";
+export function summarizeModelAccess(list: readonly string[] | undefined | null, mode: ModelAccessMode): string {
+	const { models, patterns } = splitModelAccess(list);
+	const names = models.filter((e) => !isWildcardEntry(e));
+	if (isWildcardList(models)) return mode === "allow" ? "All models" : "All models blocked";
+	if (names.length === 0 && patterns.length === 0) return mode === "allow" ? "Deny all" : "No blocked models";
 	const parts: string[] = [];
 	if (names.length > 0) parts.push(`${names.length} model${names.length > 1 ? "s" : ""}`);
-	if (patternCount > 0) parts.push(`${patternCount} pattern${patternCount > 1 ? "s" : ""}`);
+	if (patterns.length > 0) parts.push(`${patterns.length} pattern${patterns.length > 1 ? "s" : ""}`);
 	return parts.join(", ");
 }
 
 /** Placeholder for the picker control, mirroring the wording each surface used before. */
-export function modelAccessPlaceholder(
-	models: readonly string[] | undefined | null,
-	mode: ModelAccessMode,
-	patterns?: readonly string[] | null,
-): string {
-	const entries = models ?? [];
-	if (entries.includes(MODEL_WILDCARD)) return mode === "allow" ? "All models allowed" : "All models blocked";
-	if (entries.length === 0 && (patterns ?? []).length === 0) return mode === "allow" ? "No models (deny all)" : "No blocked models";
+export function modelAccessPlaceholder(list: readonly string[] | undefined | null, mode: ModelAccessMode): string {
+	const { models, patterns } = splitModelAccess(list);
+	if (models.includes(MODEL_WILDCARD)) return mode === "allow" ? "All models allowed" : "All models blocked";
+	if (models.length === 0 && patterns.length === 0) return mode === "allow" ? "No models (deny all)" : "No blocked models";
 	return mode === "allow" ? "Add model…" : "Search models...";
 }
