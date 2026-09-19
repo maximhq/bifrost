@@ -520,6 +520,10 @@ func ModifyExpectationsForProvider(expectations ResponseExpectations, provider s
 		expectations.ShouldHaveModel = false      // Parasail does not return model field
 		expectations.ShouldHaveLatency = true
 
+	case schemas.Nadir:
+		expectations.ShouldHaveUsageStats = true
+		expectations.ShouldHaveLatency = true
+
 	case schemas.Elevenlabs:
 		// Elevenlabs is primarily audio — usage/timestamps may not apply to all calls
 		expectations.ShouldHaveUsageStats = false

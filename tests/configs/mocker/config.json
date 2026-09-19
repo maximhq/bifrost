@@ -165,6 +165,20 @@
                 "max_retries": 0
             }
         },
+        "nadir": {
+            "keys": [
+                {
+                    "name": "mock-nadir",
+                    "value": "mock-key",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "base_url": "http://localhost:8000",
+                "default_request_timeout_in_seconds": 120,
+                "max_retries": 0
+            }
+        },
         "parasail": {
             "keys": [
                 {

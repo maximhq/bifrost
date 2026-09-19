@@ -139,6 +139,7 @@ var standardProviders = map[string]bool{
 	"opencode-go":    true,
 	"opencode-zen":   true,
 	"openrouter":     true,
+	"nadir":          true,
 	"parasail":       true,
 	"perplexity":     true,
 	"replicate":      true,
