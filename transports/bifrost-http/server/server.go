@@ -290,6 +290,11 @@ type BifrostHTTPServer struct {
 	WebhookDispatcher *webhooks.Dispatcher
 
 	wsPool *bfws.Pool
+
+	// configListenerStop stops the PostgreSQL LISTEN/NOTIFY listener that
+	// syncs config changes across pods. nil when the config store is not
+	// Postgres-backed or when the listener failed to start.
+	configListenerStop func()
 }
 
 var logger schemas.Logger
@@ -3078,6 +3083,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// upstream starts serving mid-uptime stays invisible until a restart or a
 	// key edit, since nothing else re-fetches list-models.
 	s.RestartLiveModelRefresher(s.Ctx)
+	// Start cross-pod config sync via PostgreSQL LISTEN/NOTIFY. The listener
+	// dispatches config change events to the same reload methods the REST API
+	// handlers use, so other pods' edits take effect without a restart.
+	s.startConfigChangeListener()
 	return nil
 }
 
@@ -3166,6 +3175,10 @@ func (s *BifrostHTTPServer) Start() error {
 			}
 			logger.Info("stopping live model refresher...")
 			s.stopLiveModelRefresher()
+			if s.configListenerStop != nil {
+				logger.Info("stopping config change listener...")
+				s.configListenerStop()
+			}
 			if s.SidekiqRunner != nil {
 				logger.Info("stopping sidekiq runner...")
 				s.SidekiqRunner.Shutdown()
