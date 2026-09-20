@@ -876,3 +876,60 @@ func TestExtractPassthroughModel(t *testing.T) {
 		})
 	}
 }
+
+// Caller-auth forwarding for passthrough routes: OAuth/JWT bearer tokens are the
+// upstream credential (Claude Code, ChatGPT/Codex) and must survive to the provider,
+// while plain API keys keep the strip-and-inject behavior.
+func TestApplyPassthroughCallerAuth_AnthropicOAuthForwarded(t *testing.T) {
+	bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	safeHeaders := map[string]string{}
+	applyPassthroughCallerAuth(bifrostCtx, safeHeaders, schemas.Anthropic, "Bearer sk-ant-oat01-caller-token", "")
+	if got := safeHeaders["authorization"]; got != "Bearer sk-ant-oat01-caller-token" {
+		t.Fatalf("expected OAuth token forwarded in safe headers, got %q", got)
+	}
+	if skip, _ := bifrostCtx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); !skip {
+		t.Fatal("expected SkipKeySelection to be set for OAuth passthrough")
+	}
+}
+
+func TestApplyPassthroughCallerAuth_OpenAIJWTForwarded(t *testing.T) {
+	bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	safeHeaders := map[string]string{}
+	jwt := "Bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJjb2RleCJ9.c2ln"
+	applyPassthroughCallerAuth(bifrostCtx, safeHeaders, schemas.OpenAI, jwt, "https://chatgpt.com")
+	if got := safeHeaders["authorization"]; got != jwt {
+		t.Fatalf("expected JWT forwarded in safe headers, got %q", got)
+	}
+	if skip, _ := bifrostCtx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); !skip {
+		t.Fatal("expected SkipKeySelection to be set for JWT passthrough")
+	}
+}
+
+func TestApplyPassthroughCallerAuth_APIKeysStayStripped(t *testing.T) {
+	for name, tc := range map[string]struct {
+		provider    schemas.ModelProvider
+		auth        string
+		upstreamURL string
+	}{
+		"openai plain api key":      {schemas.OpenAI, "Bearer sk-plain-api-key", ""},
+		"anthropic api key bearer":  {schemas.Anthropic, "Bearer sk-ant-api03-key", ""},
+		"provider override bedrock": {schemas.Bedrock, "Bearer sk-ant-oat01-caller-token", ""},
+		"openai two-segment token":  {schemas.OpenAI, "Bearer eyJhbGciOiJSUzI1NiJ9.c2ln", ""},
+		"http upstream override":    {schemas.OpenAI, "Bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJjb2RleCJ9.c2ln", "http://mock.local"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			safeHeaders := map[string]string{}
+			applyPassthroughCallerAuth(bifrostCtx, safeHeaders, tc.provider, tc.auth, tc.upstreamURL)
+			if _, ok := safeHeaders["authorization"]; ok {
+				t.Fatal("authorization must stay stripped")
+			}
+			if _, ok := bifrostCtx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); ok {
+				t.Fatal("SkipKeySelection must not be set")
+			}
+		})
+	}
+}

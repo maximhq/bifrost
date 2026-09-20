@@ -3388,14 +3388,48 @@ func parseMultipartPassthroughBody(body []byte, boundary string) (model string, 
 	return
 }
 
+// applyPassthroughCallerAuth forwards the caller's Authorization header upstream when
+// it is an OAuth/JWT bearer token that is itself the provider credential (Claude Code
+// sk-ant-oat tokens on Anthropic, ChatGPT/Codex JWTs on OpenAI). Key selection is
+// skipped so a stored provider key never overrides the token: providers only inject
+// their key when key.Value is non-empty, so the forwarded header survives as-is.
+// Every other provider keeps strip-and-inject; Bedrock signs with SigV4 and a stray
+// Authorization header would corrupt the signature.
+// The token is only forwarded to a TLS upstream (RFC 6750 section 5.3): a non-https
+// UpstreamURL override never receives it. An empty override means the provider's
+// operator-configured BaseURL, which carries the same trust as its stored keys.
+func applyPassthroughCallerAuth(bifrostCtx *schemas.BifrostContext, safeHeaders map[string]string, provider schemas.ModelProvider, authHeader string, upstreamURL string) {
+	if authHeader == "" {
+		return
+	}
+	if upstreamURL != "" && !strings.HasPrefix(strings.ToLower(upstreamURL), "https://") {
+		return
+	}
+	forward := false
+	switch provider {
+	case schemas.Anthropic:
+		forward = isAnthropicOAuthBearer(authHeader)
+	case schemas.OpenAI:
+		forward = isJWTBearer(authHeader)
+	}
+	if !forward {
+		return
+	}
+	safeHeaders["authorization"] = authHeader
+	bifrostCtx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
+}
+
 func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	cfg := g.passthroughCfg
 
 	safeHeaders := make(map[string]string)
+	var callerAuth string
 	ctx.Request.Header.All()(func(key, value []byte) bool {
 		keyStr := strings.ToLower(string(key))
 		switch keyStr {
-		case "authorization", "api-key", "x-api-key", "x-goog-api-key",
+		case "authorization":
+			callerAuth = string(value)
+		case "api-key", "x-api-key", "x-goog-api-key",
 			"host", "connection", "transfer-encoding", "cookie", "set-cookie", "proxy-authorization", "accept-encoding":
 		default:
 			if strings.HasPrefix(keyStr, "x-bf-") {
@@ -3426,6 +3460,7 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 		provider = cfg.ProviderDetector(ctx, bodyModel)
 	}
 	provider = getProviderFromHeader(ctx, provider)
+	applyPassthroughCallerAuth(bifrostCtx, safeHeaders, provider, callerAuth, cfg.UpstreamURL)
 	isStreaming := strings.Contains(strings.ToLower(path), "stream") || bodyStream
 
 	passthroughReq := &schemas.BifrostPassthroughRequest{

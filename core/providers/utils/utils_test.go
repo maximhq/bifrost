@@ -3327,3 +3327,37 @@ func TestHandleProviderAPIErrorRootMessage(t *testing.T) {
 		})
 	}
 }
+
+// TestStripCallerAuthForInsecureURL verifies that a forwarded caller Authorization
+// header only survives to HTTPS or loopback upstreams (RFC 6750 section 5.3, with
+// the RFC 8252 section 8.3 loopback rationale).
+func TestStripCallerAuthForInsecureURL(t *testing.T) {
+	for name, tc := range map[string]struct {
+		url      string
+		header   string
+		wantKept bool
+	}{
+		"https kept":              {"https://api.openai.com/v1/responses", "authorization", true},
+		"http stripped":           {"http://api.internal.example/v1/responses", "authorization", false},
+		"http localhost kept":     {"http://localhost:8080/v1/responses", "authorization", true},
+		"http 127.0.0.1 kept":     {"http://127.0.0.1:9090/v1/messages", "authorization", true},
+		"http ::1 kept":           {"http://[::1]:9090/v1/messages", "authorization", true},
+		"unparsable stripped":     {"http://bad url\x00", "authorization", false},
+		"mixed case key stripped": {"http://api.internal.example/v1/messages", "Authorization", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			safeHeaders := map[string]string{
+				tc.header:       "Bearer sk-ant-oat01-token",
+				"anthropic-beta": "context-1m",
+			}
+			StripCallerAuthForInsecureURL(tc.url, safeHeaders)
+			_, kept := safeHeaders[tc.header]
+			if kept != tc.wantKept {
+				t.Fatalf("StripCallerAuthForInsecureURL(%q): authorization kept = %v, want %v", tc.url, kept, tc.wantKept)
+			}
+			if _, ok := safeHeaders["anthropic-beta"]; !ok {
+				t.Fatal("non-auth safe header must never be stripped")
+			}
+		})
+	}
+}

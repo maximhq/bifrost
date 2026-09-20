@@ -3906,6 +3906,18 @@ func (s *RDBConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *table
 			virtualKey.PreviousValueExpiresAt = existing.PreviousValueExpiresAt
 			virtualKey.RotatedAt = existing.RotatedAt
 		}
+		// Preserve NULL when a VK-scoped MC already owns the rate limit; prevents config sync from reverting migration.
+		if existing.RateLimitID == nil && virtualKey.RateLimitID != nil {
+			var mcCount int64
+			if err := txDB.WithContext(ctx).Model(&tables.TableModelConfig{}).
+				Where("scope = 'virtual_key' AND scope_id = ? AND model_name = '*' AND provider IS NULL AND rate_limit_id IS NOT NULL", virtualKey.ID).
+				Count(&mcCount).Error; err != nil {
+				return s.parseGormError(err)
+			}
+			if mcCount > 0 {
+				virtualKey.RateLimitID = nil
+			}
+		}
 		if err := txDB.WithContext(ctx).
 			Select("name", "description", "value", "is_active", "expires_at", "team_id", "customer_id", "rate_limit_id", "calendar_aligned", "allow_all_providers", "config_hash", "updated_at", "encryption_status", "value_hash", "previous_value", "previous_value_hash", "previous_value_expires_at", "rotated_at").
 			Updates(virtualKey).Error; err != nil {
@@ -5411,6 +5423,11 @@ func (s *RDBConfigStore) UpdateBudget(ctx context.Context, budget *tables.TableB
 		// applied by CreateBudget on first import, and inert thereafter.
 		budget.CurrentUsage = existing.CurrentUsage
 		budget.LastReset = existing.LastReset
+		// Preserve MC ownership if already migrated; config.json sync would otherwise revert it.
+		if existing.ModelConfigID != nil {
+			budget.ModelConfigID = existing.ModelConfigID
+			budget.VirtualKeyID = nil
+		}
 		// Overrides are managed by the dedicated override path, not UpdateBudget;
 		// carry them forward so partial updates can't wipe an active override.
 		// The grant columns must travel with the derived remaining count: dropping

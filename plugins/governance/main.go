@@ -458,11 +458,16 @@ func (p *GovernancePlugin) LoadBalanceProvider(ctx *schemas.BifrostContext, req 
 		return nil
 	}
 
+	// Only weighted candidates can be selected or offered as fallbacks, so a candidate without a
+	// weight is as excluded as one a budget refused. Name it for the same reason every other
+	// exclusion above is named: the counts below are otherwise impossible to reconcile from the trail.
 	weighted := make([]schemas.ProviderCandidate, 0, len(eligible))
 	for _, candidate := range eligible {
-		if candidate.Weight != nil {
-			weighted = append(weighted, candidate)
+		if candidate.Weight == nil {
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Provider %s excluded: no weight assigned for model %s", candidate.Provider, modelStr))
+			continue
 		}
+		weighted = append(weighted, candidate)
 	}
 
 	if len(weighted) == 0 {
@@ -495,8 +500,16 @@ func (p *GovernancePlugin) LoadBalanceProvider(ctx *schemas.BifrostContext, req 
 		selectedProvider = schemas.ModelProvider(weighted[0].Provider)
 	}
 
+	var weightedProviders []string
+	for _, candidate := range weighted {
+		weightedProviders = append(weightedProviders, candidate.Provider)
+	}
+
 	p.logger.Debug("[governance] Selected provider: %s", selectedProvider)
-	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Selected provider %s for model %s (from %d eligible: %v)", selectedProvider, modelStr, len(eligible), eligibleProviders))
+	// The pool selection actually ran over, which is `weighted` and not `eligible`: reporting the
+	// wider set would describe candidates the roll could never have landed on, and would not
+	// account for the fallbacks added below.
+	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Selected provider %s for model %s (from %d weighted: %v)", selectedProvider, modelStr, len(weighted), weightedProviders))
 
 	refinedModel := modelStr
 	// Refine the model for the selected provider
@@ -1167,6 +1180,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	requestType, provider, requestedModel, _ := bifrost.GetResponseFields(result, err)
 
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
+	billingNonce := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyBillingNonce)
 
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 
@@ -1246,7 +1260,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 				}
 			}()
 			// Use the requested model for usage tracking
-			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, isFinalChunk, attemptNumber, pricingScopes, accountedBudgets, accountedRateLimits, routingMetadata)
+			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, billingNonce, isFinalChunk, attemptNumber, pricingScopes, accountedBudgets, accountedRateLimits, routingMetadata)
 		}()
 	}
 
@@ -1348,6 +1362,7 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 	}
 
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
+	billingNonce := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyBillingNonce)
 
 	// Determine if request was successful
 	success := (resp != nil && bifrostErr == nil)
@@ -1398,6 +1413,7 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 		Success:      success,
 		Cost:         toolCost,
 		RequestID:    requestID,
+		BillingNonce: billingNonce,
 		IsStreaming:  false,
 		IsFinalChunk: true,
 		HasUsageData: toolCost > 0, // Has usage data if we have a cost
@@ -1500,7 +1516,7 @@ func (p *GovernancePlugin) Cleanup() error {
 //   - isBatch: Whether the request is a batch request
 //   - isFinalChunk: Whether the request is the final chunk
 //   - pricingScopes: Prebuilt pricing lookup scopes using governance VK ID (nil if not applicable)
-func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, isFinalChunk bool, attemptNumber int, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit, routingMetadata *schemas.BifrostRoutingMetadata) {
+func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, billingNonce string, isFinalChunk bool, attemptNumber int, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit, routingMetadata *schemas.BifrostRoutingMetadata) {
 	// Determine if request was successful
 	success := (result != nil)
 	billedReason := "success"
@@ -1573,6 +1589,7 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 			TokensUsed:    int64(tokensUsed),
 			Cost:          cost,
 			RequestID:     requestID,
+			BillingNonce:  billingNonce,
 			IsStreaming:   isStreaming,
 			IsFinalChunk:  isFinalChunk,
 			HasUsageData:  tokensUsed > 0 || cost > 0,

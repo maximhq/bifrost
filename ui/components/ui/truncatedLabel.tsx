@@ -10,9 +10,14 @@ type TruncatedLabelProps = {
 	className?: string;
 	tooltip?: React.ReactNode;
 	tooltipSide?: React.ComponentProps<typeof TooltipContent>["side"];
+	/**
+	 * Which end of the string loses characters. `"start"` puts the ellipsis on
+	 * the left so the distinctive tail survives. See {@link StartTruncatedLabel}.
+	 */
+	truncateFrom?: "start" | "end";
 } & Omit<React.ComponentProps<"span">, "children">;
 
-function TruncatedLabel({ children, className, tooltip, tooltipSide = "right", ...props }: TruncatedLabelProps) {
+function TruncatedLabel({ children, className, tooltip, tooltipSide = "right", truncateFrom = "end", ...props }: TruncatedLabelProps) {
 	const [measureEl, setMeasureEl] = useState<HTMLSpanElement | null>(null);
 	const [isTruncated, setIsTruncated] = useState(false);
 
@@ -35,9 +40,10 @@ function TruncatedLabel({ children, className, tooltip, tooltipSide = "right", .
 
 	const tooltipContent = tooltip ?? (typeof children === "string" ? children : undefined);
 
+	const fromStart = truncateFrom === "start";
 	const inner = (
-		<span ref={setTextRef} className={cn("min-w-0 truncate", className)} {...props}>
-			{children}
+		<span ref={setTextRef} className={cn("min-w-0", fromStart ? "truncate-start text-left" : "truncate", className)} {...props}>
+			{fromStart ? <bdi>{children}</bdi> : children}
 		</span>
 	);
 
