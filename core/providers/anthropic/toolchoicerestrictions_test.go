@@ -80,16 +80,20 @@ func TestToAnthropicChatRequest_AllowedToolsAutoModeDoesNotForceACall(t *testing
 	assert.Equal(t, []string{"tool_a"}, toolNames(req))
 }
 
-// An allowed list naming tools that are not in the request would otherwise
-// leave no declarations at all, turning a restriction into a request that
-// cannot call anything. The originals are kept instead.
-func TestToAnthropicChatRequest_AllowedToolsUnknownNamesKeepDeclarations(t *testing.T) {
+// An allowed list naming only tools this request does not declare permits
+// nothing. Forwarding the declarations anyway would hand the model every tool
+// the caller just excluded - the same failure this conversion exists to stop,
+// arrived at from the other direction.
+func TestToAnthropicChatRequest_AllowedToolsUnknownNamesPermitNothing(t *testing.T) {
 	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
 
 	req, err := ToAnthropicChatRequest(ctx, restrictionRequest(allowedTools("required", "not_declared"), nil))
 	require.NoError(t, err)
 
-	assert.ElementsMatch(t, []string{"tool_a", "tool_b"}, toolNames(req))
+	assert.Empty(t, toolNames(req), "no declared tool was allowed, so none may be forwarded")
+	require.NotNil(t, req.ToolChoice)
+	assert.Equal(t, "none", req.ToolChoice.Type,
+		`"any" with an empty tool list is a request Anthropic rejects`)
 }
 
 // parallel_tool_calls: false has a direct Anthropic equivalent that was never

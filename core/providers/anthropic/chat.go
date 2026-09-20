@@ -687,9 +687,15 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					allowed := bifrostReq.Params.ToolChoice.ChatToolChoiceStruct.AllowedTools
 					if allowed != nil {
 						anthropicReq.Tools = filterToolsByAllowed(anthropicReq.Tools, allowed.Tools)
-						if allowed.Mode == "required" {
+						switch {
+						case len(anthropicReq.Tools) == 0:
+							// The allowed list matched nothing declared. "any" or
+							// "auto" with no tools is a request Anthropic rejects,
+							// so the restriction is stated as what it means.
+							toolChoice.Type = "none"
+						case allowed.Mode == "required":
 							toolChoice.Type = "any"
-						} else {
+						default:
 							toolChoice.Type = "auto"
 						}
 					} else {
@@ -2100,13 +2106,11 @@ func filterToolsByAllowed(tools []AnthropicTool, allowed []schemas.ChatToolChoic
 			kept = append(kept, t)
 		}
 	}
-	// Every declaration filtered out means the allowed list named tools that are
-	// not in this request. Keeping the originals is the safer reading: the
-	// caller gets the behaviour they had before, rather than a request that
-	// silently cannot call anything.
-	if len(kept) == 0 {
-		return tools
-	}
+	// An empty result means the allowed list named only tools this request does
+	// not declare. Returning the originals would forward every tool the caller
+	// just excluded, which is the bug this function exists to prevent, so the
+	// intersection is honoured literally: nothing may be called. The caller sees
+	// a request with no tools rather than one that quietly ignored the list.
 	return kept
 }
 
