@@ -130,3 +130,48 @@ func TestToAnthropicChatRequest_ParallelToolCallsTrueSendsNothing(t *testing.T) 
 		assert.Nil(t, req.ToolChoice.DisableParallelToolUse)
 	}
 }
+
+// A server tool - MCP toolset, web search, computer use - cannot be named in
+// an OpenAI allowed_tools list, which describes function tools only. Filtering
+// it on a name it cannot have would switch off a capability the caller enabled
+// elsewhere in the same request.
+func TestToAnthropicChatRequest_AllowedToolsLeavesServerToolsAlone(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+
+	req := restrictionRequest(allowedTools("required", "tool_a"), nil)
+	// Stand in for a converted server tool: it carries a Type, which a
+	// converted function tool never does.
+	converted, err := ToAnthropicChatRequest(ctx, req)
+	require.NoError(t, err)
+
+	serverType := AnthropicToolType("mcp_toolset")
+	withServer := append([]AnthropicTool{{Name: "mcp-docs", Type: &serverType}}, converted.Tools...)
+	filtered := filterToolsByAllowed(withServer, []schemas.ChatToolChoiceAllowedToolsTool{
+		{Type: "function", Function: schemas.ChatToolChoiceFunction{Name: "tool_a"}},
+	})
+
+	names := make([]string, 0, len(filtered))
+	for _, tl := range filtered {
+		names = append(names, tl.Name)
+	}
+	assert.Contains(t, names, "mcp-docs", "a server tool must survive an allowed_tools filter")
+	assert.Contains(t, names, "tool_a")
+	assert.NotContains(t, names, "tool_b")
+}
+
+// With every nameable tool excluded, the choice must still be "none" even
+// though server tools remain in the list.
+func TestToAnthropicChatRequest_AllowedToolsNoneNameableStillMeansNone(t *testing.T) {
+	serverType := AnthropicToolType("mcp_toolset")
+	tools := []AnthropicTool{
+		{Name: "mcp-docs", Type: &serverType},
+		{Name: "tool_a"},
+	}
+	assert.Equal(t, 1, countFunctionTools(tools), "only the function tool is nameable")
+
+	filtered := filterToolsByAllowed(tools, []schemas.ChatToolChoiceAllowedToolsTool{
+		{Type: "function", Function: schemas.ChatToolChoiceFunction{Name: "not_declared"}},
+	})
+	assert.Equal(t, 0, countFunctionTools(filtered), "no function tool was allowed")
+	assert.Len(t, filtered, 1, "the server tool is still there")
+}

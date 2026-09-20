@@ -688,7 +688,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					if allowed != nil {
 						anthropicReq.Tools = filterToolsByAllowed(anthropicReq.Tools, allowed.Tools)
 						switch {
-						case len(anthropicReq.Tools) == 0:
+						case countFunctionTools(anthropicReq.Tools) == 0:
 							// The allowed list matched nothing declared. "any" or
 							// "auto" with no tools is a request Anthropic rejects,
 							// so the restriction is stated as what it means.
@@ -2102,6 +2102,16 @@ func filterToolsByAllowed(tools []AnthropicTool, allowed []schemas.ChatToolChoic
 	}
 	kept := make([]AnthropicTool, 0, len(tools))
 	for _, t := range tools {
+		// Server tools - MCP toolsets, web search, computer use - carry a Type
+		// and are never named in an OpenAI allowed_tools list, which describes
+		// function tools only. Filtering them on a name they cannot have would
+		// silently switch off a capability the caller enabled elsewhere in the
+		// same request, which is the same kind of harm as dropping the
+		// restriction: a stated intent quietly discarded.
+		if t.Type != nil {
+			kept = append(kept, t)
+			continue
+		}
 		if _, ok := permitted[t.Name]; ok {
 			kept = append(kept, t)
 		}
@@ -2127,4 +2137,18 @@ func applyParallelToolUse(toolChoice *AnthropicToolChoice, parallel *bool) {
 	}
 	disable := true
 	toolChoice.DisableParallelToolUse = &disable
+}
+
+// countFunctionTools reports how many declarations a model could be told to
+// call by name. Server tools are excluded: they survive an allowed_tools
+// filter untouched, so counting them would hide the case where every nameable
+// tool was excluded.
+func countFunctionTools(tools []AnthropicTool) int {
+	n := 0
+	for _, t := range tools {
+		if t.Type == nil {
+			n++
+		}
+	}
+	return n
 }
