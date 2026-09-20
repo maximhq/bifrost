@@ -870,5 +870,13 @@
 		"value": "Value",
 		"enterValue": "Enter value...",
 		"commaSeparated": "Enter comma-separated values or JSON array"
+	},
+	"routingEngineLabels": {
+		"routing_rule": "Routing Rule",
+		"governance": "Governance",
+		"loadbalancing": "Loadbalancing",
+		"model_catalog": "Model Catalog",
+		"session_affinity": "Session",
+		"core": "Core"
 	}
 }

@@ -41,7 +41,7 @@ import {
 	RequestTypeColors,
 	getRequestTypeLabel,
 	RoutingEngineUsedColors,
-	RoutingEngineUsedLabels,
+	getRoutingEngineLabel,
 	Status,
 } from "@/lib/constants/logs";
 import { useGetProvidersQuery, useGetUserAgentMappingsQuery } from "@/lib/store";
@@ -944,7 +944,7 @@ function RoutingDecisionLogs({ logs }: { logs: string }) {
 											"bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300",
 									)}
 								>
-									{RoutingEngineUsedLabels[line.engine as keyof typeof RoutingEngineUsedLabels] ?? line.engine}
+									{getRoutingEngineLabel(line.engine, t)}
 								</span>
 							) : null}
 							{line.level ? (
@@ -2125,7 +2125,7 @@ export function LogDetailView({
 												>
 													<div className="flex items-center gap-2">
 														{RoutingEngineUsedIcons[engine as keyof typeof RoutingEngineUsedIcons]?.({ className: "h-3.5 w-3.5" })}
-														<span>{RoutingEngineUsedLabels[engine as keyof typeof RoutingEngineUsedLabels] ?? engine}</span>
+														<span>{getRoutingEngineLabel(engine, t)}</span>
 													</div>
 												</Badge>
 											))}

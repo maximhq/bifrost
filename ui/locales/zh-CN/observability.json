@@ -870,5 +870,13 @@
 		"value": "值",
 		"enterValue": "输入值...",
 		"commaSeparated": "输入逗号分隔的值或 JSON 数组"
+	},
+	"routingEngineLabels": {
+		"routing_rule": "路由规则",
+		"governance": "治理",
+		"loadbalancing": "负载均衡",
+		"model_catalog": "模型目录",
+		"session_affinity": "会话",
+		"core": "核心"
 	}
 }
