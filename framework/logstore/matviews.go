@@ -534,7 +534,7 @@ var matviewRequiredColumns = func() map[string][]string {
 // transaction. Multi-replica deployments serialize on the advisory lock so
 // only one instance does the work. It shares the same advisory lock as
 // refreshMatViews so startup create/repair cannot overlap a periodic refresh.
-func ensureMatViews(ctx context.Context, db *gorm.DB) error {
+func ensureMatViews(ctx context.Context, db *gorm.DB, enableArchive ...bool) error {
 	if db.Dialector.Name() != "postgres" {
 		return nil
 	}
@@ -561,6 +561,29 @@ func ensureMatViews(ctx context.Context, db *gorm.DB) error {
 	defer func() {
 		_, _ = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", matviewRefreshAdvisoryLockKey)
 	}()
+	archiveExists, err := hourlyStateExists(ctx, conn)
+	if err != nil {
+		return err
+	}
+	if archiveExists {
+		if err := recoverHourlyArchive(ctx, conn); err != nil {
+			return err
+		}
+	}
+	archiveRequested := len(enableArchive) > 0 && enableArchive[0]
+	var hadHourlyView bool
+	if archiveRequested && !archiveExists {
+		if err := conn.QueryRowContext(ctx, `SELECT to_regclass('mv_logs_hourly') IS NOT NULL`).Scan(&hadHourlyView); err != nil {
+			return err
+		}
+		if hadHourlyView {
+			if drift, err := matViewNeedsRebuild(ctx, conn, "mv_logs_hourly", mvLogsHourlyRequiredColumns); err != nil {
+				return err
+			} else if drift {
+				return fmt.Errorf("legacy hourly view requires a history-preserving schema migration before archive initialization")
+			}
+		}
+	}
 
 	if err := dropLegacyMatViews(ctx, conn); err != nil {
 		return err
@@ -582,6 +605,9 @@ func ensureMatViews(ctx context.Context, db *gorm.DB) error {
 	if err := ensureMatViewUniqueIndexes(ctx, conn); err != nil {
 		return err
 	}
+	if archiveRequested && !archiveExists {
+		return initializeHourlyArchive(ctx, conn, hadHourlyView)
+	}
 
 	return nil
 }
@@ -598,7 +624,17 @@ func dropLegacyMatViews(ctx context.Context, conn *sql.Conn) error {
 }
 
 func repairMatViewShapes(ctx context.Context, conn *sql.Conn) error {
+	archiveExists, err := hourlyStateExists(ctx, conn)
+	if err != nil {
+		return err
+	}
 	for view, columns := range matviewRequiredColumns {
+		if archiveExists && view == "mv_logs_hourly" {
+			if err := validateHourlyArchive(ctx, conn); err != nil {
+				return err
+			}
+			continue
+		}
 		needsRebuild, err := matViewNeedsRebuild(ctx, conn, view, columns)
 		if err != nil {
 			return err
@@ -873,7 +909,18 @@ func refreshMatViews(ctx context.Context, db *gorm.DB) error {
 	// writes that land during refresh will bump it again and trigger the next
 	// tick.
 	activityAtStart, activityOK := logsActivityCounter(ctx, conn)
-	if refreshGate.shouldSkip(activityAtStart, activityOK) {
+	archiveExists, err := hourlyStateExists(ctx, conn)
+	if err != nil {
+		return err
+	}
+	var archiveDirty bool
+	if archiveExists {
+		if err := conn.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM bifrost_hourly_hours
+		 WHERE NOT frozen AND generation>applied_generation)`).Scan(&archiveDirty); err != nil {
+			return err
+		}
+	}
+	if !archiveDirty && refreshGate.shouldSkip(activityAtStart, activityOK) {
 		return nil
 	}
 
@@ -917,6 +964,12 @@ func refreshMatViews(ctx context.Context, db *gorm.DB) error {
 	}()
 
 	for _, view := range matViewRefreshOrder() {
+		if archiveExists && view == "mv_logs_hourly" {
+			if err := refreshHourlyArchive(ctx, conn); err != nil {
+				return fmt.Errorf("refresh hourly archive: %w", err)
+			}
+			continue
+		}
 		if _, err := conn.ExecContext(ctx, "REFRESH MATERIALIZED VIEW CONCURRENTLY "+view); err != nil {
 			// A cancelled REFRESH leaves the existing view intact (CONCURRENTLY builds
 			// into a temp table and diffs at commit), so readers keep working against
