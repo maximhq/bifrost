@@ -76,6 +76,7 @@ type RoutingPlugin struct {
 	complexityAnalyzer atomic.Pointer[complexity.ComplexityAnalyzer]
 	semanticClassifier *complexity.SemanticClassifier
 	llmClassifier      *complexity.LLMClassifier
+	jevClassifier      *complexity.JevClassifier
 	sessionStore       *complexitySessionStore
 	sessionEnabled     atomic.Bool
 
@@ -173,7 +174,12 @@ func InitFromStore(
 		logger:             logger,
 		semanticClassifier: complexity.NewSemanticClassifier(ctx, logger),
 		llmClassifier:      complexity.NewLLMClassifier(logger),
+		jevClassifier:      complexity.NewJevClassifier(logger),
 	}
+	// The decision transport is plain HTTP and stateless, so it is wired at
+	// construction; availability is a config question (jev block + API key),
+	// not a wiring question. Tests swap it via SetSystemOneFunc.
+	plugin.jevClassifier.SetSystemOneFunc(complexity.HTTPSystemOneFunc)
 	if config != nil && config.KVStore != nil {
 		plugin.sessionStore = newComplexitySessionStore(config.KVStore, complexitySessionInactivityTTL)
 		// Peers sharing a vector store otherwise embed the same phrases against
@@ -257,6 +263,9 @@ func (p *RoutingPlugin) storeComplexityAnalyzerConfig(config *complexity.Analyze
 	}
 	if p.llmClassifier != nil {
 		p.llmClassifier.Configure(resolved)
+	}
+	if p.jevClassifier != nil {
+		p.jevClassifier.Configure(resolved)
 	}
 	return nil
 }
@@ -487,6 +496,15 @@ func (p *RoutingPlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *sche
 		}
 	}
 
+	// Lazy Jev decision for rules referencing jev_* variables; only runs when
+	// a jev block is configured and wired.
+	var computeJev func() *complexity.JevResult
+	if p.jevClassifier != nil && p.jevClassifier.IsConfigured() {
+		computeJev = func() *complexity.JevResult {
+			return p.computeJev(ctx, req)
+		}
+	}
+
 	routingCtx := &rules.EvaluationContext{
 		Scope:                    scope,
 		Provider:                 provider,
@@ -496,6 +514,7 @@ func (p *RoutingPlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *sche
 		QueryParams:              queryParams,
 		BudgetAndRateLimitStatus: p.governance.GetBudgetAndRateLimitStatus(ctx, provider, model, nil, nil, nil),
 		ComputeComplexity:        computeComplexity,
+		ComputeJev:               computeJev,
 	}
 
 	p.logger.Debug("[Routing] Built routing context: provider=%s, model=%s, requestType=%s, vk=%s",

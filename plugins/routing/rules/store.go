@@ -207,12 +207,13 @@ func (rs *LocalStore) GetProgram(ctx context.Context, rule *configstoreTables.Ta
 		return nil, fmt.Errorf("CEL compile error: %s", issues.Err().Error())
 	}
 
-	// Create program. Partial evaluation is only needed for complexity rules,
-	// where routing treats unavailable complexity_tier as unknown instead of
-	// leaking an empty-string sentinel.
+	// Create program. Partial evaluation is needed for complexity and jev
+	// rules, where routing treats an unavailable complexity_tier or jev_*
+	// variable as unknown instead of leaking the empty/zero placeholder into
+	// a negative predicate.
 	var program cel.Program
 	var err error
-	if celASTReferencesIdentifier(ast, "complexity_tier") {
+	if celASTReferencesIdentifier(ast, "complexity_tier") || astReferencesJevVariables(ast) {
 		program, err = rs.celEnv.Program(ast, cel.EvalOptions(cel.OptPartialEval))
 	} else {
 		program, err = rs.celEnv.Program(ast)

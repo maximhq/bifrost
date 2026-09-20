@@ -235,6 +235,14 @@ func (p *RoutingPlugin) classifyComplexityInput(ctx *schemas.BifrostContext, inp
 		)
 		return p.classifyLLMComplexity(ctx, input)
 	}
+	if p.jevClassifier != nil && p.jevClassifier.FallbackEnabled() {
+		ctx.AppendRoutingEngineLog(
+			schemas.RoutingEngineRoutingRule,
+			schemas.LogLevelInfo,
+			unavailableCause+"; falling back to the Jev classifier",
+		)
+		return p.classifyJevComplexity(ctx, input)
+	}
 	return complexityProposal{
 		Mechanism:  complexity.MechanismSkipped,
 		LogLevel:   unavailableLevel,

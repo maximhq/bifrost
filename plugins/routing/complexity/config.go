@@ -48,6 +48,9 @@ const (
 	MechanismSemantic = "semantic"
 	// MechanismLLM means the chat-completion classifier published the tier.
 	MechanismLLM = "llm"
+	// MechanismJev means the System One decision-API classifier published the
+	// tier.
+	MechanismJev = "jev"
 	// MechanismSession means a previously established session tier determined
 	// the effective tier for this turn. The current classifier either produced
 	// no tier, proposed a lower tier, or was intentionally skipped at COMPLEX.
@@ -76,6 +79,9 @@ type SemanticConfig = configstore.ComplexitySemanticConfig
 
 // LLMConfig is the chat-completion classifier configuration.
 type LLMConfig = configstore.ComplexityLLMConfig
+
+// JevConfig is the System One decision-API classifier configuration.
+type JevConfig = configstore.ComplexityJevConfig
 
 // SessionConfig controls monotonic complexity-tier retention across requests.
 type SessionConfig = configstore.ComplexitySessionConfig
