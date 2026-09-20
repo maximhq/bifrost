@@ -114,6 +114,8 @@ func TestGeminiResponsesStreamOutputDoesNotLeakAcrossStreams(t *testing.T) {
 		"flush must clear OutputItems so a pooled state cannot leak output between streams")
 }
 
+// TestGeminiResponsesStreamSingleFrameText verifies that response.completed.Output
+// retains the text message when text parts and finishReason arrive in a single frame.
 func TestGeminiResponsesStreamSingleFrameText(t *testing.T) {
 	state := &GeminiResponsesStreamState{}
 	state.flush()
@@ -141,6 +143,8 @@ func TestGeminiResponsesStreamSingleFrameText(t *testing.T) {
 	assert.NotEmpty(t, terminal.Response.Output, "single frame text output should not be empty")
 }
 
+// TestGeminiResponsesStreamSingleFrameThoughtAndText verifies that response.completed.Output
+// contains both the reasoning item and text message when thoughts, text, and finishReason share one frame.
 func TestGeminiResponsesStreamSingleFrameThoughtAndText(t *testing.T) {
 	state := &GeminiResponsesStreamState{}
 	state.flush()
@@ -174,6 +178,8 @@ func TestGeminiResponsesStreamSingleFrameThoughtAndText(t *testing.T) {
 	assert.Equal(t, 2, len(terminal.Response.Output), "both reasoning and text should be in Output")
 }
 
+// TestGeminiResponsesStreamSingleFrameFunctionCall verifies that response.completed.Output
+// includes the function call item when a functionCall part and finishReason arrive in the same frame.
 func TestGeminiResponsesStreamSingleFrameFunctionCall(t *testing.T) {
 	state := &GeminiResponsesStreamState{}
 	state.flush()
