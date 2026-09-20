@@ -111,3 +111,57 @@ func RunDecisionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context,
 		t.Logf("✅ Decision test passed: model=%s, answers=%d", response.Model, len(response.Answers))
 	})
 }
+
+// RunDecisionEmulationTest runs a decision against a general LLM model, exercising
+// the emulation path (the provider has no native decision support, so Bifrost
+// answers via tool-calling / structured output). Every question must come back
+// as a typed answer with an LLM-estimated confidence.
+func RunDecisionEmulationTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) {
+	if !testConfig.Scenarios.DecisionEmulation {
+		t.Logf("Decision emulation not enabled for provider %s", testConfig.Provider)
+		return
+	}
+	if strings.TrimSpace(testConfig.DecisionEmulationModel) == "" {
+		t.Skipf("Decision emulation enabled but no model configured for provider %s; skipping", testConfig.Provider)
+	}
+
+	t.Run("DecisionEmulation", func(t *testing.T) {
+		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+			t.Parallel()
+		}
+
+		provider, model := schemas.ParseModelString(testConfig.DecisionEmulationModel, testConfig.Provider)
+		request := &schemas.BifrostDecisionRequest{
+			Provider: provider,
+			Model:    model,
+			State:    "Customer message: I was double charged and support ignored my emails. I want a refund now or I cancel.",
+			Questions: map[string]schemas.DecisionQuestion{
+				"is_frustrated": {Kind: schemas.DecisionKindNoul, Instructions: "Is the customer frustrated?"},
+				"category": {
+					Kind:         schemas.DecisionKindChoice,
+					Instructions: "Pick the ticket category",
+					Criteria:     map[string]interface{}{"billing": "charges and refunds", "bug": "product defects", "other": "anything else"},
+				},
+				"urgency": {
+					Kind:         schemas.DecisionKindScore,
+					Instructions: "Rate how urgently this needs a human reply",
+					Criteria:     []interface{}{"low", "medium", "high"},
+				},
+			},
+		}
+
+		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+		response, bifrostErr := client.DecisionRequest(bfCtx, request)
+		if bifrostErr != nil {
+			t.Fatalf("❌ Emulated decision failed: %v", GetErrorMessage(bifrostErr))
+		}
+
+		BasicDecisionExpectations(t, response, request)
+		for name, answer := range response.Answers {
+			if answer.Confidence == nil {
+				t.Errorf("❌ Emulated answer %q has no confidence", name)
+			}
+		}
+		t.Logf("✅ Decision emulation passed via %s: %d answers", testConfig.DecisionEmulationModel, len(response.Answers))
+	})
+}
