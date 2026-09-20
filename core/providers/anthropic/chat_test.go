@@ -2572,8 +2572,14 @@ func TestToAnthropicChatRequest_AllowedToolsLeavesServerToolsAlone(t *testing.T)
 	converted, err := ToAnthropicChatRequest(ctx, req)
 	require.NoError(t, err)
 
-	serverType := AnthropicToolType("mcp_toolset")
-	withServer := append([]AnthropicTool{{Name: "mcp-docs", Type: &serverType}}, converted.Tools...)
+	// Two server-tool shapes, because they are filtered by different fields:
+	// web search sets Type, while an MCP toolset leaves Type nil and carries
+	// everything in MCPToolset with an empty Name.
+	webSearch := AnthropicToolType("web_search")
+	withServer := append([]AnthropicTool{
+		{Name: "web-search", Type: &webSearch},
+		{MCPToolset: &AnthropicMCPToolsetTool{Type: "mcp_toolset", MCPServerName: "docs"}},
+	}, converted.Tools...)
 	filtered := filterToolsByAllowed(withServer, []schemas.ChatToolChoiceAllowedToolsTool{
 		{Type: "function", Function: schemas.ChatToolChoiceFunction{Name: "tool_a"}},
 	})
@@ -2582,24 +2588,33 @@ func TestToAnthropicChatRequest_AllowedToolsLeavesServerToolsAlone(t *testing.T)
 	for _, tl := range filtered {
 		names = append(names, tl.Name)
 	}
-	assert.Contains(t, names, "mcp-docs", "a server tool must survive an allowed_tools filter")
+	assert.Contains(t, names, "web-search", "a Type-carrying server tool must survive")
 	assert.Contains(t, names, "tool_a")
 	assert.NotContains(t, names, "tool_b")
+
+	mcpKept := false
+	for _, tl := range filtered {
+		if tl.MCPToolset != nil {
+			mcpKept = true
+		}
+	}
+	assert.True(t, mcpKept, "an MCP toolset has Type nil and an empty Name; it must not be matched against the allowlist")
 }
 
 // With every nameable tool excluded, the choice must still be "none" even
 // though server tools remain in the list.
 func TestToAnthropicChatRequest_AllowedToolsNoneNameableStillMeansNone(t *testing.T) {
-	serverType := AnthropicToolType("mcp_toolset")
+	webSearch := AnthropicToolType("web_search")
 	tools := []AnthropicTool{
-		{Name: "mcp-docs", Type: &serverType},
+		{Name: "web-search", Type: &webSearch},
+		{MCPToolset: &AnthropicMCPToolsetTool{Type: "mcp_toolset", MCPServerName: "docs"}},
 		{Name: "tool_a"},
 	}
-	assert.Equal(t, 1, countFunctionTools(tools), "only the function tool is nameable")
+	assert.Equal(t, 1, countFunctionTools(tools), "only tool_a is nameable; neither server shape counts")
 
 	filtered := filterToolsByAllowed(tools, []schemas.ChatToolChoiceAllowedToolsTool{
 		{Type: "function", Function: schemas.ChatToolChoiceFunction{Name: "not_declared"}},
 	})
-	assert.Equal(t, 0, countFunctionTools(filtered), "no function tool was allowed")
-	assert.Len(t, filtered, 1, "the server tool is still there")
+	assert.Equal(t, 0, countFunctionTools(filtered), "no function tool was allowed, so the choice must be none")
+	assert.Len(t, filtered, 2, "both server tools are still there")
 }
