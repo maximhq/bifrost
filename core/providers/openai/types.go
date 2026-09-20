@@ -544,10 +544,12 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 							webSearchActionCopy := *msg.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction
 							strippedSources := make([]schemas.ResponsesWebSearchToolCallActionSearchSource, len(sources))
 							for j, source := range sources {
-								// Only keep Type and URL for OpenAI
+								// Only keep Type, URL and Name for OpenAI; Name identifies
+								// specialized API sources (type "api") that carry no URL.
 								strippedSources[j] = schemas.ResponsesWebSearchToolCallActionSearchSource{
 									Type: source.Type,
 									URL:  source.URL,
+									Name: source.Name,
 									// Title, EncryptedContent, and PageAge are omitted
 								}
 							}
