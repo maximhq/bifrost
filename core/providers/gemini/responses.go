@@ -1509,6 +1509,9 @@ func (response *GenerateContentResponse) toBifrostResponsesStream(sequenceNumber
 				responses = append(responses, webSearchResponses...)
 			}
 
+			// Record output items emitted so far in this frame before closing open items and building response.completed
+			recordGeminiOutputItems(state, responses)
+
 			// Close any open items
 			closeResponses := closeGeminiOpenItems(state, candidate.GroundingMetadata, response.UsageMetadata, sequenceNumber+len(responses), candidate.FinishReason, candidate.FinishMessage)
 			responses = append(responses, closeResponses...)

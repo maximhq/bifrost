@@ -1,6 +1,7 @@
 package gemini
 
 import (
+	"encoding/json"
 	"testing"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -111,4 +112,102 @@ func TestGeminiResponsesStreamOutputDoesNotLeakAcrossStreams(t *testing.T) {
 	state.flush()
 	assert.Empty(t, state.OutputItems,
 		"flush must clear OutputItems so a pooled state cannot leak output between streams")
+}
+
+func TestGeminiResponsesStreamSingleFrameText(t *testing.T) {
+	state := &GeminiResponsesStreamState{}
+	state.flush()
+
+	chunk := &GenerateContentResponse{
+		ResponseID:   "resp-output",
+		ModelVersion: "gemini-2.5-flash",
+		Candidates: []*Candidate{{
+			Content:      &Content{Role: "model", Parts: []*Part{{Text: "Hello world"}}},
+			FinishReason: FinishReasonStop,
+		}},
+	}
+
+	events, bifrostErr := chunk.ToBifrostResponsesStream(0, state)
+	require.Nil(t, bifrostErr)
+
+	var terminal *schemas.BifrostResponsesStreamResponse
+	for _, event := range events {
+		if event.Type == schemas.ResponsesStreamResponseTypeCompleted {
+			terminal = event
+		}
+	}
+	require.NotNil(t, terminal, "stream must end with a response.completed event")
+	require.NotNil(t, terminal.Response, "response.completed must embed a response object")
+	assert.NotEmpty(t, terminal.Response.Output, "single frame text output should not be empty")
+}
+
+func TestGeminiResponsesStreamSingleFrameThoughtAndText(t *testing.T) {
+	state := &GeminiResponsesStreamState{}
+	state.flush()
+
+	chunk := &GenerateContentResponse{
+		ResponseID:   "resp-output",
+		ModelVersion: "gemini-2.5-flash",
+		Candidates: []*Candidate{{
+			Content: &Content{
+				Role: "model",
+				Parts: []*Part{
+					{Text: "thinking...", Thought: true},
+					{Text: "Hello world"},
+				},
+			},
+			FinishReason: FinishReasonStop,
+		}},
+	}
+
+	events, bifrostErr := chunk.ToBifrostResponsesStream(0, state)
+	require.Nil(t, bifrostErr)
+
+	var terminal *schemas.BifrostResponsesStreamResponse
+	for _, event := range events {
+		if event.Type == schemas.ResponsesStreamResponseTypeCompleted {
+			terminal = event
+		}
+	}
+	require.NotNil(t, terminal, "stream must end with a response.completed event")
+	require.NotNil(t, terminal.Response, "response.completed must embed a response object")
+	assert.Equal(t, 2, len(terminal.Response.Output), "both reasoning and text should be in Output")
+}
+
+func TestGeminiResponsesStreamSingleFrameFunctionCall(t *testing.T) {
+	state := &GeminiResponsesStreamState{}
+	state.flush()
+
+	chunk := &GenerateContentResponse{
+		ResponseID:   "resp-output",
+		ModelVersion: "gemini-2.5-flash",
+		Candidates: []*Candidate{{
+			Content: &Content{
+				Role: "model",
+				Parts: []*Part{
+					{
+						FunctionCall: &FunctionCall{
+							Name: "get_weather",
+							Args: json.RawMessage(`{"location":"Paris"}`),
+						},
+					},
+				},
+			},
+			FinishReason: FinishReasonStop,
+		}},
+	}
+
+	events, bifrostErr := chunk.ToBifrostResponsesStream(0, state)
+	require.Nil(t, bifrostErr)
+
+	var terminal *schemas.BifrostResponsesStreamResponse
+	for _, event := range events {
+		if event.Type == schemas.ResponsesStreamResponseTypeCompleted {
+			terminal = event
+		}
+	}
+	require.NotNil(t, terminal)
+	require.NotNil(t, terminal.Response)
+	require.Len(t, terminal.Response.Output, 1)
+	assert.Equal(t, schemas.ResponsesMessageTypeFunctionCall, *terminal.Response.Output[0].Type)
 }
