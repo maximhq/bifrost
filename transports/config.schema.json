@@ -983,12 +983,32 @@
               "access_profile_id": {
                 "type": "integer",
                 "minimum": 1,
-                "description": "Associated access profile ID for direct access profile assignment (mutually exclusive with team_id and customer_id)"
+                "deprecated": true,
+                "description": "Deprecated and ignored: direct access-profile assignment was reverted in v1.5.9 (#3669/#3670) and the column dropped. Accepted only for backward-compatible validation of older config files."
               },
               "is_access_profile_managed": {
                 "type": "boolean",
                 "description": "Read-only, server-computed flag: true when the virtual key is governed by an access profile. Never persisted and ignored if set in config.json.",
                 "readOnly": true
+              },
+              "assigned_user": {
+                "type": ["object", "null"],
+                "readOnly": true,
+                "description": "Read-only, server-populated projection of the user this virtual key is assigned to. Present as an object (or null when resolved but unassigned) on governance read paths; omitted when the assignee could not be resolved. Never persisted and ignored if set in config.json.",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Assignee user ID"
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "Assignee display name"
+                  },
+                  "email": {
+                    "type": "string",
+                    "description": "Assignee email"
+                  }
+                }
               },
               "rate_limit_id": {
                 "type": "string",
@@ -2470,6 +2490,11 @@
                     "overhead_breakdown_enabled": {
                       "type": "boolean",
                       "description": "Export the per-component overhead histogram bifrost_overhead_component_microseconds (overhead latency split by the overhead_component label). Off by default. Requires tracing to be active, since the breakdown is computed from completed trace spans.",
+                      "default": false
+                    },
+                    "user_labels_enabled": {
+                      "type": "boolean",
+                      "description": "Add user_id and user_name labels to every bifrost_* metric. Off by default: these are unbounded, so they multiply metric series by end-user count on top of a virtual_key_id label that already reaches tens of thousands of values in large deployments. Prometheus holds every label combination in memory for the retention period and cannot drop a label afterwards. Per-user attribution is available without this from BigQuery columns or Splunk event fields.",
                       "default": false
                     },
                     "push_gateway": {

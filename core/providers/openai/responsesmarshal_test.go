@@ -1315,6 +1315,56 @@ func TestToOpenAIResponsesRequest_OpenRouterCacheControlBreakpoint(t *testing.T)
 		}
 	})
 
+	t.Run("openrouter non-claude model strips cache_control and adds no breakpoint", func(t *testing.T) {
+		blocks, raw := contentBlocks(t, newBifrostReq(schemas.OpenRouter, "openai/gpt-5.4"))
+
+		for i, b := range blocks {
+			block, ok := b.(map[string]any)
+			if !ok {
+				t.Fatalf("expected content[%d] to be an object; raw=%s", i, raw)
+			}
+			if _, present := block["cache_control"]; present {
+				t.Errorf("OpenRouter gpt-5.4: cache_control must be stripped on content[%d]; raw=%s", i, raw)
+			}
+			if _, present := block["prompt_cache_breakpoint"]; present {
+				t.Errorf("OpenRouter gpt-5.4: upstream rejects prompt_cache_breakpoint, none may be synthesized on content[%d]; raw=%s", i, raw)
+			}
+		}
+	})
+
+	t.Run("openrouter gpt-5.6 converts cache_control to prompt_cache_breakpoint", func(t *testing.T) {
+		blocks, raw := contentBlocks(t, newBifrostReq(schemas.OpenRouter, "openai/gpt-5.6"))
+
+		marked, _ := blocks[0].(map[string]any)
+		if _, ok := marked["prompt_cache_breakpoint"].(map[string]any); !ok {
+			t.Fatalf("OpenRouter gpt-5.6: cache_control must be converted to prompt_cache_breakpoint; raw=%s", raw)
+		}
+	})
+
+	t.Run("datasheet can disable breakpoints on an openrouter claude model", func(t *testing.T) {
+		no := false
+		setToolChoiceCaps(t, schemas.OpenRouter, "anthropic/claude-sonnet-4", schemas.ModelCapabilities{SupportsPromptCacheBreakpoints: &no})
+
+		blocks, raw := contentBlocks(t, newBifrostReq(schemas.OpenRouter, "anthropic/claude-sonnet-4"))
+		for i, b := range blocks {
+			block, _ := b.(map[string]any)
+			if _, present := block["prompt_cache_breakpoint"]; present {
+				t.Errorf("datasheet false must suppress prompt_cache_breakpoint on content[%d]; raw=%s", i, raw)
+			}
+		}
+	})
+
+	t.Run("datasheet can enable breakpoints on an openrouter model the fallback rejects", func(t *testing.T) {
+		yes := true
+		setToolChoiceCaps(t, schemas.OpenRouter, "openai/gpt-5.4", schemas.ModelCapabilities{SupportsPromptCacheBreakpoints: &yes})
+
+		blocks, raw := contentBlocks(t, newBifrostReq(schemas.OpenRouter, "openai/gpt-5.4"))
+		marked, _ := blocks[0].(map[string]any)
+		if _, ok := marked["prompt_cache_breakpoint"].(map[string]any); !ok {
+			t.Fatalf("datasheet true must produce prompt_cache_breakpoint; raw=%s", raw)
+		}
+	})
+
 	t.Run("openai still strips cache_control and adds no breakpoint", func(t *testing.T) {
 		blocks, raw := contentBlocks(t, newBifrostReq(schemas.OpenAI, "gpt-4o"))
 

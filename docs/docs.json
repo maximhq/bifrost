@@ -173,6 +173,7 @@
               },
               "providers/routing-rules",
               "providers/provider-routing",
+              "providers/session-affinity",
               "providers/aliasing-models",
               "providers/reasoning",
               "providers/performance",
@@ -1824,6 +1825,8 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v2.2.1",
+              "changelogs/v2.2.0",
               "changelogs/v2.1.1",
               "changelogs/v2.1.0",
               {
@@ -2043,6 +2046,7 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v2.2.1",
               "changelogs/ent-v2.2.0",
               "changelogs/ent-v2.1.1",
               "changelogs/ent-v2.1.0",
@@ -2137,6 +2141,8 @@
             "item": "Edge",
             "icon": "grip",
             "pages": [
+              "changelogs/edge-v0.9.0",
+              "changelogs/edge-v0.8.0",
               "changelogs/edge-v0.7.0",
               "changelogs/edge-v0.6.0",
               {
@@ -2183,6 +2189,7 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.43",
               "changelogs/helm-v2.1.42",
               "changelogs/helm-v2.1.41",
               "changelogs/helm-v2.1.40",

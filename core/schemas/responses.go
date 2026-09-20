@@ -2290,8 +2290,9 @@ type ResponsesWebSearchToolCallAction struct {
 
 // ResponsesWebSearchToolCallActionSearchSource represents a web search action search source
 type ResponsesWebSearchToolCallActionSearchSource struct {
-	Type string `json:"type"` // always "url"
-	URL  string `json:"url"`
+	Type string `json:"type"` // "url" for web pages, "api" for specialized API sources
+	URL  string `json:"url,omitempty"`
+	Name string `json:"name,omitempty"` // Identifies specialized API sources (type "api"), which carry no URL
 
 	// Anthropic specific fields
 	Title            *string `json:"title,omitempty"`

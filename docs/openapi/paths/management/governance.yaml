@@ -31,7 +31,10 @@ virtual-keys:
           minimum: 0
       - name: search
         in: query
-        description: Case-insensitive search by virtual key name
+        description: >-
+          Case-insensitive search across the virtual key name, its team name, and its
+          customer name. Enterprise additionally matches the name and email of the user
+          the key is assigned to.
         schema:
           type: string
       - name: customer_id

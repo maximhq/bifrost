@@ -20,6 +20,14 @@ type UsageUpdate struct {
 	Cost       float64 `json:"cost"` // Cost in dollars
 	RequestID  string  `json:"request_id"`
 
+	// BillingNonce is minted internally per physical HTTP request (never read
+	// from headers). It is part of the billing-idempotency key because
+	// RequestID may be caller-supplied via x-request-id: without the nonce,
+	// two unrelated requests sharing a chosen ID would collide on the key and
+	// the second would settle without being charged. Empty for SDK-direct and
+	// internal callers, whose request IDs are core-minted UUIDs.
+	BillingNonce string `json:"billing_nonce,omitempty"`
+
 	// Budgets and RateLimits are the limits this attempt answers to, settled when its provider and
 	// model were known and carried here rather than worked out again at charging time. They travel
 	// on the update because charging is asynchronous: by the time it runs the request may be on a
@@ -131,7 +139,7 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 	// prior behavior.
 	isTerminal := !update.IsStreaming || update.IsFinalChunk
 	if isTerminal && !t.tryClaimBilling(update) {
-		t.logger.Debug("Usage already billed for request %s attempt %d, skipping", update.RequestID, update.AttemptNumber)
+		t.logger.Debug("Usage already billed for request %s attempt %d (billing nonce %q), skipping", update.RequestID, update.AttemptNumber, update.BillingNonce)
 		return
 	}
 
@@ -262,16 +270,24 @@ func (t *UsageTracker) resetExpiredCounters(ctx context.Context) {
 }
 
 // tryClaimBilling records that the physical provider call identified by
-// (RequestID, AttemptNumber) is being billed and returns true if this is the
-// first claim. Subsequent calls for the same key return false so the same
-// physical call is never billed twice An empty RequestID is treated as
-// non-dedupable (always returns true) to preserve behavior for SDK-direct
+// (BillingNonce, RequestID, AttemptNumber) is being billed and returns true if
+// this is the first claim. Subsequent calls for the same key return false so
+// the same physical call is never billed twice. An empty RequestID is treated
+// as non-dedupable (always returns true) to preserve behavior for SDK-direct
 // callers that carry no request id.
+//
+// All three components are load-bearing: the nonce alone is not enough because
+// MCP agent mode and codemode mint a fresh RequestID per nested inference call
+// while sharing one HTTP request (one nonce), and those nested calls must each
+// bill; RequestID+attempt alone is not enough because RequestID may be
+// caller-supplied (x-request-id) and two unrelated requests sharing a chosen
+// ID must not collide. The success-vs-cancellation race for one physical call
+// matches on all three, which is what this dedup exists to guard.
 func (t *UsageTracker) tryClaimBilling(update *UsageUpdate) bool {
 	if update.RequestID == "" {
 		return true
 	}
-	key := fmt.Sprintf("%s:%d", update.RequestID, update.AttemptNumber)
+	key := fmt.Sprintf("%s:%s:%d", update.BillingNonce, update.RequestID, update.AttemptNumber)
 	t.billedMu.Lock()
 	defer t.billedMu.Unlock()
 	if _, seen := t.billed[key]; seen {
