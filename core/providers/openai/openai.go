@@ -4133,6 +4133,11 @@ func (provider *OpenAIProvider) Rerank(ctx *schemas.BifrostContext, key schemas.
 	)
 }
 
+// Decision is not supported by the OpenAI provider.
+func (provider *OpenAIProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
+}
+
 // HandleOpenAIRerankRequest handles rerank requests for custom OpenAI-compatible APIs.
 func HandleOpenAIRerankRequest(
 	ctx *schemas.BifrostContext,

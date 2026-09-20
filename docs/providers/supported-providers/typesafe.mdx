@@ -1,0 +1,189 @@
+---
+title: "TypeSafe"
+description: "TypeSafe API conversion guide - jev judgment models, decisions endpoint, question types, and model management"
+icon: "scale-balanced"
+---
+
+## Overview
+
+TypeSafe is a specialized decision provider serving the jev family of System One judgment models. A decision request carries a `state` (what to evaluate) and a map of named `questions`; the response carries one typed answer per question. Bifrost performs conversions including:
+
+- **Model ID mapping** - Uses provider model identifier directly (`jev-1.13.0`, `jev-latest`, `jev-preview`)
+- **Question conversion** - Maps Bifrost decision kinds (`noul`, `choice`, `score`) to TypeSafe's native System One question types 1:1
+- **Answer normalization** - Native `noul`/`choice`/`score` value fields normalize to a unified `value`, with `confidence`, `probabilities`, and `legend` metadata preserved
+- **Usage normalization** - `input_tokens`/`output_tokens` map to Bifrost's `prompt_tokens`/`completion_tokens` (TypeSafe bills input tokens only)
+- **Strict validation** - Unsupported kinds, missing instructions, and malformed criteria are rejected locally with a 400 rather than silently approximated
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Decisions | ✅ | - | `/v1/decisions` |
+| List Models | ✅ | - | `/v1/models` |
+| Chat Completions | ❌ | ❌ | - |
+| Responses API | ❌ | ❌ | - |
+| Text Completions | ❌ | ❌ | - |
+| Embeddings | ❌ | ❌ | - |
+
+<Note>
+**Unsupported Operations** (❌): Chat Completions, Responses API, Text Completions, Embeddings, and every other operation return `UnsupportedOperationError` - TypeSafe serves judgment models only.
+
+**Model listing**: TypeSafe documents no upstream models endpoint. Bifrost serves the jev catalog from its model datasheet, including pricing and context length.
+</Note>
+
+## Setup & Configuration
+
+Configure TypeSafe as a provider with a bearer API key:
+
+```json
+{
+  "providers": {
+    "typesafe": {
+      "keys": [
+        {
+          "name": "TypeSafe API Key",
+          "value": "env.TYPESAFE_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ]
+    }
+  }
+}
+```
+
+## Decisions API
+
+`POST /v1/decisions` evaluates state against named questions. Each question has a `kind`, `instructions` (string or structured data), and kind-specific `criteria`:
+
+| Kind | Answer value | Criteria |
+|------|--------------|----------|
+| `noul` | Probability between 0 and 1 | Optional `true`/`false` descriptions |
+| `choice` | One option string | Required map of option to description (max 255) |
+| `score` | Numeric rubric score, including fractions | Required ordered array of 2-10 level descriptions |
+
+```bash
+curl http://localhost:8080/v1/decisions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "typesafe/jev-1.13.0",
+    "state": "Customer message: I was double charged and nobody replied. I want a refund today.",
+    "questions": {
+      "is_frustrated": { "kind": "noul", "instructions": "Is the customer frustrated?" },
+      "category": {
+        "kind": "choice",
+        "instructions": "Pick the ticket category",
+        "criteria": { "billing": "charges and refunds", "bug": "product defects", "other": "anything else" }
+      },
+      "urgency": {
+        "kind": "score",
+        "instructions": "Rate how urgently this needs a human reply",
+        "criteria": ["can wait a week", "should be answered soon", "needs a reply today"]
+      }
+    }
+  }'
+```
+
+Response:
+
+```json
+{
+  "model": "jev-1.13.0",
+  "answers": {
+    "is_frustrated": { "kind": "noul", "value": 0.98 },
+    "category": {
+      "kind": "choice",
+      "value": "billing",
+      "confidence": 1,
+      "probabilities": { "billing": 1, "bug": 0, "other": 0 }
+    },
+    "urgency": {
+      "kind": "score",
+      "value": 2,
+      "confidence": 1,
+      "probabilities": { "0": 0, "1": 0, "2": 1 },
+      "legend": { "0": "can wait a week", "1": "should be answered soon", "2": "needs a reply today" }
+    }
+  },
+  "usage": { "prompt_tokens": 437, "completion_tokens": 72, "total_tokens": 509 }
+}
+```
+
+## Field Mapping Reference
+
+Complete mapping between Bifrost's `/v1/decisions` contract and TypeSafe's native `/v1/systemone` API.
+
+### Request
+
+| Bifrost field | Native field | Accepted shapes | Validation |
+|---------------|--------------|-----------------|------------|
+| `model` | `model` | `typesafe/<id>` (routing prefix stripped) | Must resolve to the typesafe provider |
+| `state` | `state` | string, object, array (lossless) | Any other shape (number, boolean, null) rejected with 400 |
+| `questions` | `questions` | Map of 1+ named questions | Empty map rejected with 400 |
+| `questions.<name>.kind` | `questions.<name>.type` | `noul`, `choice`, `score` | Any other kind rejected with 400 |
+| `questions.<name>.instructions` | `instructions` | string, object, array (lossless) | Required; other shapes rejected with 400 |
+| `questions.<name>.criteria` | `criteria` | Kind-specific, see below | Kind-specific, see below |
+| `fallbacks` | - | `["provider/model", ...]` | Bifrost-only; consumed by fallback routing, never sent upstream |
+
+### Criteria by kind
+
+| Kind | Bifrost / native shape (identical) | Validation |
+|------|------------------------------------|------------|
+| `noul` | Optional map with only `"true"` and `"false"` keys, string descriptions | Other keys or non-string descriptions rejected with 400 |
+| `choice` | Required map of option → description (string) | Missing, empty, non-map, non-string descriptions, or more than 255 options rejected with 400 |
+| `score` | Required ordered array of level descriptions | Fewer than 2 or more than 10 levels, or any non-string level, rejected with 400 |
+
+In the converted request, validated criteria values pass through to TypeSafe unchanged - descriptions are never rewritten. The conversion path re-encodes JSON, so whitespace and object-key ordering can differ; raw-request passthrough bypasses conversion and preserves the original request bytes.
+
+### Response
+
+| Bifrost field | Built from native | Notes |
+|---------------|-------------------|-------|
+| `model` | `model` | Aliases resolve upstream: request `jev-latest`, response reports `jev-1.13.0` |
+| `answers.<name>.kind` | `answers.<name>.type` | Identical vocabulary (`noul`/`choice`/`score`) |
+| `answers.<name>.value` | `answers.<name>.noul` \| `.choice` \| `.score` | Unified value field: number in [0,1] for noul (out-of-range provider values rejected), option string for choice, fractional rubric score for score |
+| `answers.<name>.confidence` | `confidence` | Present on choice/score answers when supplied |
+| `answers.<name>.probabilities` | `probabilities` | Distribution over options (choice) or level indices (score) |
+| `answers.<name>.legend` | `legend` | Level index → description map for score answers |
+| `usage.prompt_tokens` | `usage.input_tokens` | TypeSafe bills input tokens only |
+| `usage.completion_tokens` | `usage.output_tokens` | Output rate is $0 |
+| `usage.total_tokens` | - | Computed: input + output |
+| `extra_fields` | - | Bifrost-only: request type, routing info, latency, raw request/response capture |
+
+Every requested question must produce an answer of its declared kind; a missing answer, a kind mismatch, or a missing value fails the request rather than returning partial results.
+
+### Errors
+
+| Upstream status | Meaning | Bifrost behavior |
+|-----------------|---------|------------------|
+| 401 | Invalid or missing API key | Status and message preserved; key marked failed, other keys rotate in |
+| 422 | Request validation failed upstream | Status and validation detail preserved |
+| 429 | Rate limited | Retried with backoff; keys rotate (per-key limit) |
+| 529 | Service overloaded | Retried with backoff on the same key (capacity, not credential) |
+
+Requests rejected by Bifrost's own validation (see tables above) return `400` with `caller_invalid_request` before any upstream call is made.
+
+## Native Integration
+
+Bifrost also exposes TypeSafe's native API 1:1 under the `/typesafe` prefix, for clients written against TypeSafe directly:
+
+| Native Endpoint | Method | Notes |
+|-----------------|--------|-------|
+| `/typesafe/v1/systemone` | POST | Native request/response shape; questions use `type` instead of `kind` |
+| `/typesafe/v1/models` | GET | Native `{"models": [{"name", "description", "release_date"}]}` shape, served from the datasheet |
+
+The native route accepts bare model IDs (`jev-1.13.0`) exactly as TypeSafe does, and additionally accepts `typesafe/`-prefixed IDs.
+
+<Note>
+Success responses are shape-compatible with TypeSafe's own API - identical byte-for-byte only on the raw-response passthrough path, otherwise rebuilt and re-encoded (native shape preserved, exact JSON byte ordering not guaranteed). Error responses use TypeSafe's native `{"detail": {"error_type", "message"}}` shape with upstream status codes preserved. Requests rejected by Bifrost's local validation return `400` where TypeSafe's own validation would return `422`.
+</Note>
+
+## Model Naming
+
+| Model | Notes |
+|-------|-------|
+| `jev-1.13.0` | Current versioned release |
+| `jev-latest` | Alias, currently resolves to `jev-1.13.0` |
+| `jev-preview` | Preview alias, currently resolves to `jev-1.13.0` |
+
+Responses always report the resolved versioned model. TypeSafe bills input tokens only; the jev pricing, 64k context window, and rate limits are documented at [docs.typesafe.ai/models](https://docs.typesafe.ai/models).

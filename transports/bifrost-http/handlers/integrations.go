@@ -39,6 +39,7 @@ func NewIntegrationHandler(client *bifrost.Bifrost, handlerStore lib.HandlerStor
 		integrations.NewLangChainRouter(client, handlerStore, accessResolver, logger),
 		integrations.NewPydanticAIRouter(client, handlerStore, accessResolver, logger),
 		integrations.NewBedrockRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewTypesafeRouter(client, handlerStore, accessResolver, logger),
 		// passthrough routers
 		integrations.NewGenAIPassthroughRouter(client, handlerStore, accessResolver, logger),
 		integrations.NewChatGPTPassthroughRouter(client, handlerStore, accessResolver, logger),

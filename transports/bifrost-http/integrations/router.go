@@ -207,6 +207,10 @@ type EmbeddingResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.
 // It takes a BifrostRerankResponse and returns the format expected by the specific integration.
 type RerankResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostRerankResponse) (interface{}, error)
 
+// DecisionResponseConverter is a function that converts BifrostDecisionResponse to integration-specific format.
+// It takes a BifrostDecisionResponse and returns the format expected by the specific integration.
+type DecisionResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostDecisionResponse) (interface{}, error)
+
 // OCRResponseConverter is a function that converts BifrostOCRResponse to integration-specific format.
 // It takes a BifrostOCRResponse and returns the format expected by the specific integration.
 type OCRResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostOCRResponse) (interface{}, error)
@@ -457,6 +461,7 @@ const (
 	RouteConfigTypeGenAI     RouteConfigType = "genai"
 	RouteConfigTypeBedrock   RouteConfigType = "bedrock"
 	RouteConfigTypeCohere    RouteConfigType = "cohere"
+	RouteConfigTypeTypesafe  RouteConfigType = "typesafe"
 )
 
 // RouteConfig defines the configuration for a single route in an integration.
@@ -487,6 +492,7 @@ type RouteConfig struct {
 	AsyncResponsesResponseConverter        AsyncResponsesResponseConverter        // Function to convert AsyncJobResponse to integration format (SHOULD NOT BE NIL)
 	EmbeddingResponseConverter             EmbeddingResponseConverter             // Function to convert BifrostEmbeddingResponse to integration format (SHOULD NOT BE NIL)
 	RerankResponseConverter                RerankResponseConverter                // Function to convert BifrostRerankResponse to integration format
+	DecisionResponseConverter              DecisionResponseConverter              // Function to convert BifrostDecisionResponse to integration format
 	OCRResponseConverter                   OCRResponseConverter                   // Function to convert BifrostOCRResponse to integration format
 	SpeechResponseConverter                SpeechResponseConverter                // Function to convert BifrostSpeechResponse to integration format (SHOULD NOT BE NIL)
 	TranscriptionResponseConverter         TranscriptionResponseConverter         // Function to convert BifrostTranscriptionResponse to integration format (SHOULD NOT BE NIL)
@@ -1132,6 +1138,29 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 			response, err = config.RerankResponseConverter(bifrostCtx, rerankResponse)
 		} else {
 			response = rerankResponse
+		}
+
+	case bifrostReq.DecisionRequest != nil:
+		decisionResponse, bifrostErr := g.client.DecisionRequest(bifrostCtx, bifrostReq.DecisionRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, decisionResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+		if decisionResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+		bifrostExtraFields = decisionResponse.ExtraFields
+		if config.DecisionResponseConverter != nil {
+			response, err = config.DecisionResponseConverter(bifrostCtx, decisionResponse)
+		} else {
+			response = decisionResponse
 		}
 
 	case bifrostReq.OCRRequest != nil:

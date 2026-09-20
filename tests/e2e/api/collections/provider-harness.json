@@ -158192,6 +158192,267 @@
           }
         }
       ]
+    },
+    {
+      "name": "105. Typesafe decisions provider (typesafe-decisions)",
+      "item": [
+        {
+          "name": "/v1/decisions - mixed kinds return typed answers - typesafe/jev-1.13.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('decision succeeds', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('every question produced a typed answer', function () {",
+                  "    pm.expect(body.answers, 'missing answers: ' + pm.response.text()).to.be.an('object');",
+                  "    pm.expect(body.answers.is_frustrated.kind).to.eql('noul');",
+                  "    pm.expect(body.answers.is_frustrated.value).to.be.a('number');",
+                  "    pm.expect(body.answers.is_frustrated.value).to.be.at.least(0);",
+                  "    pm.expect(body.answers.is_frustrated.value).to.be.at.most(1);",
+                  "    pm.expect(body.answers.category.kind).to.eql('choice');",
+                  "    pm.expect(['billing', 'bug', 'other']).to.include(body.answers.category.value);",
+                  "    pm.expect(body.answers.urgency.kind).to.eql('score');",
+                  "    pm.expect(body.answers.urgency.value).to.be.a('number');",
+                  "});",
+                  "pm.test('usage is normalized', function () {",
+                  "    pm.expect(body.usage.prompt_tokens, 'usage: ' + JSON.stringify(body.usage)).to.be.above(0);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-1.13.0\",\n  \"state\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": {\n    \"is_frustrated\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    \"category\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Pick the ticket category\",\n      \"criteria\": {\n        \"billing\": \"charges and refunds\",\n        \"bug\": \"product defects\",\n        \"other\": \"anything else\"\n      }\n    },\n    \"urgency\": {\n      \"kind\": \"score\",\n      \"instructions\": \"Rate how urgently this needs a human reply\",\n      \"criteria\": [\n        \"can wait a week\",\n        \"should be answered soon\",\n        \"needs a reply today\"\n      ]\n    }\n  }\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/v1/decisions - structured object, array, and null criteria accepted - typesafe/jev-1.13.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('every allowed criteria type is accepted, not rejected as non-string', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('every question still produced a typed answer', function () {",
+                  "    pm.expect(body.answers, 'missing answers: ' + pm.response.text()).to.be.an('object');",
+                  "    ['is_frustrated', 'asks_refund', 'threatens_cancel'].forEach(function (name) {",
+                  "        pm.expect(body.answers[name].kind, name).to.eql('noul');",
+                  "        pm.expect(body.answers[name].value, name).to.be.at.least(0);",
+                  "        pm.expect(body.answers[name].value, name).to.be.at.most(1);",
+                  "    });",
+                  "    pm.expect(body.answers.category.kind).to.eql('choice');",
+                  "    pm.expect(['billing', 'bug', 'support', 'other']).to.include(body.answers.category.value);",
+                  "    pm.expect(body.answers.category.probabilities, 'choice probabilities are a required response field').to.be.an('object');",
+                  "    pm.expect(body.answers.urgency.kind).to.eql('score');",
+                  "    pm.expect(body.answers.urgency.value).to.be.a('number');",
+                  "    // The legend echoes each level's description verbatim - structured",
+                  "    // levels come back as objects/arrays, not stringified.",
+                  "    pm.expect(body.answers.urgency.legend['0']).to.eql('can wait a week');",
+                  "    pm.expect(body.answers.urgency.legend['1']).to.deep.eql({level: 'should be answered soon'});",
+                  "    pm.expect(body.answers.urgency.legend['2']).to.deep.eql(['needs a reply today', 'churn risk']);",
+                  "    pm.expect(body.answers.urgency.probabilities, 'score probabilities are a required response field').to.be.an('object');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-1.13.0\",\n  \"state\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": {\n    \"is_frustrated\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer frustrated?\",\n      \"criteria\": {\n        \"true\": {\n          \"meaning\": \"clearly upset\",\n          \"signals\": [\n            \"threats to cancel\",\n            \"repeated contact\"\n          ]\n        },\n        \"false\": [\n          \"calm\",\n          \"neutral tone\"\n        ]\n      }\n    },\n    \"asks_refund\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer ask for a refund?\",\n      \"criteria\": {\n        \"true\": [\n          \"asks for money back\",\n          \"mentions refund\"\n        ],\n        \"false\": {\n          \"meaning\": \"no refund language\"\n        }\n      }\n    },\n    \"threatens_cancel\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer threaten to cancel?\",\n      \"criteria\": {\n        \"true\": \"cancellation is threatened\",\n        \"false\": \"no cancellation language\"\n      }\n    },\n    \"category\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Pick the ticket category\",\n      \"criteria\": {\n        \"billing\": {\n          \"rubric\": \"charges and refunds\",\n          \"examples\": [\n            \"double charge\",\n            \"refund request\"\n          ]\n        },\n        \"bug\": [\n          \"crash\",\n          \"product defect\"\n        ],\n        \"support\": \"service questions\",\n        \"other\": null\n      }\n    },\n    \"urgency\": {\n      \"kind\": \"score\",\n      \"instructions\": \"Rate how urgently this needs a human reply\",\n      \"criteria\": [\n        \"can wait a week\",\n        {\n          \"level\": \"should be answered soon\"\n        },\n        [\n          \"needs a reply today\",\n          \"churn risk\"\n        ]\n      ]\n    }\n  }\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/v1/decisions - unsupported kind rejected with 400 - typesafe/jev-1.13.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('unsupported kind is rejected, not silently approximated', function () {",
+                  "    pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
+                  "    pm.expect(pm.response.text()).to.include('unsupported kind');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-1.13.0\",\n  \"state\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": {\n    \"plain\": {\n      \"kind\": \"ranking\",\n      \"instructions\": \"rank it\"\n    }\n  }\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/typesafe/v1/systemone - native questions round trip - jev-1.13.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('native systemone succeeds', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('all three native answer types come back', function () {",
+                  "    pm.expect(body.answers.is_frustrated.type).to.eql('noul');",
+                  "    pm.expect(body.answers.is_frustrated.noul).to.be.a('number');",
+                  "    pm.expect(body.answers.category.type).to.eql('choice');",
+                  "    pm.expect(['billing', 'bug', 'other']).to.include(body.answers.category.choice);",
+                  "    pm.expect(body.answers.urgency.type).to.eql('score');",
+                  "    pm.expect(body.answers.urgency.score).to.be.a('number');",
+                  "});",
+                  "pm.test('native model and usage shape retained', function () {",
+                  "    pm.expect(body.model, 'model: ' + body.model).to.be.a('string');",
+                  "    pm.expect(body.model).to.not.include('typesafe/');",
+                  "    pm.expect(body.usage.input_tokens).to.be.above(0);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/typesafe/v1/systemone",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "typesafe",
+                "v1",
+                "systemone"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"state\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"model\": \"jev-1.13.0\",\n  \"questions\": {\n    \"is_frustrated\": {\n      \"type\": \"noul\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    \"category\": {\n      \"type\": \"choice\",\n      \"instructions\": \"Pick the ticket category\",\n      \"criteria\": {\n        \"billing\": \"charges and refunds\",\n        \"bug\": \"product defects\",\n        \"other\": \"anything else\"\n      }\n    },\n    \"urgency\": {\n      \"type\": \"score\",\n      \"instructions\": \"Rate how urgently this needs a human reply\",\n      \"criteria\": [\n        \"can wait a week\",\n        \"should be answered soon\",\n        \"needs a reply today\"\n      ]\n    }\n  }\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/typesafe/v1/models - native catalog shape - jev models",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('models list succeeds', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('native shape lists bare jev model names', function () {",
+                  "    pm.expect(body.models, 'body: ' + pm.response.text()).to.be.an('array');",
+                  "    var names = body.models.map(function (m) { return m.name; });",
+                  "    pm.expect(names).to.include('jev-1.13.0');",
+                  "    pm.expect(names).to.include('jev-latest');",
+                  "    names.forEach(function (n) { pm.expect(n).to.not.include('typesafe/'); });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/typesafe/v1/models",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "typesafe",
+                "v1",
+                "models"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

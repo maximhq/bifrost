@@ -79,6 +79,7 @@
                   "quickstart/gateway/tool-calling",
                   "quickstart/gateway/multimodal",
                   "quickstart/gateway/reranking",
+                  "quickstart/gateway/decisions",
                   "quickstart/gateway/integrations"
                 ]
               },
@@ -94,6 +95,7 @@
                   "quickstart/go-sdk/tool-calling",
                   "quickstart/go-sdk/multimodal",
                   "quickstart/go-sdk/reranking",
+                  "quickstart/go-sdk/decisions",
                   "quickstart/go-sdk/logger"
                 ]
               }
@@ -165,6 +167,7 @@
                   "providers/supported-providers/runway",
                   "providers/supported-providers/sarvam",
                   "providers/supported-providers/sgl",
+                  "providers/supported-providers/typesafe",
                   "providers/supported-providers/vertex",
                   "providers/supported-providers/vllm",
                   "providers/supported-providers/wafer",
@@ -512,6 +515,7 @@
               "integrations/litellm-sdk",
               "integrations/langchain-sdk",
               "integrations/pydanticai-sdk",
+              "integrations/typesafe-sdk",
               "integrations/passthrough"
             ]
           },
@@ -792,6 +796,13 @@
                 ]
               },
               {
+                "group": "Decisions",
+                "expanded": false,
+                "pages": [
+                  "POST /v1/decisions"
+                ]
+              },
+              {
                 "group": "Embeddings",
                 "expanded": false,
                 "pages": [
@@ -1053,6 +1064,14 @@
                   "POST /cohere/v2/embed",
                   "POST /cohere/v2/rerank",
                   "POST /cohere/v1/tokenize"
+                ]
+              },
+              {
+                "group": "Typesafe Integration",
+                "expanded": false,
+                "pages": [
+                  "POST /typesafe/v1/systemone",
+                  "GET /typesafe/v1/models"
                 ]
               },
               {
