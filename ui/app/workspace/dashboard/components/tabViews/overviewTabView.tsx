@@ -1,3 +1,4 @@
+import { AggregationNotice } from "../aggregationNotice";
 import {
 	useGetLogsCostHistogramQuery,
 	useGetLogsHistogramQuery,
@@ -143,44 +144,47 @@ export const OverviewTabView = forwardRef<OverviewTabViewHandle, OverviewTabView
 	);
 
 	return (
-		<OverviewTab
-			histogramData={histogramData ?? null}
-			tokenData={tokenData ?? null}
-			costData={costData ?? null}
-			modelData={modelData ?? null}
-			latencyData={latencyData ?? null}
-			throughputData={throughputData ?? null}
-			logsStats={logsStats ?? null}
-			loadingHistogram={loadingHistogram}
-			loadingTokens={loadingTokens}
-			loadingCost={loadingCost}
-			loadingModels={loadingModels}
-			loadingLatency={loadingLatency}
-			loadingThroughput={loadingThroughput}
-			loadingStats={loadingStats}
-			startTime={startTime}
-			endTime={endTime}
-			volumeChartType={volumeChartType}
-			tokenChartType={tokenChartType}
-			costChartType={costChartType}
-			modelChartType={modelChartType}
-			latencyChartType={latencyChartType}
-			overheadChartType={overheadChartType}
-			throughputChartType={throughputChartType}
-			costModel={costModel}
-			usageModel={usageModel}
-			costModels={costModels}
-			usageModels={usageModels}
-			availableModels={availableModels}
-			onVolumeChartToggle={onVolumeChartToggle}
-			onTokenChartToggle={onTokenChartToggle}
-			onCostChartToggle={onCostChartToggle}
-			onModelChartToggle={onModelChartToggle}
-			onLatencyChartToggle={onLatencyChartToggle}
-			onOverheadChartToggle={onOverheadChartToggle}
-			onThroughputChartToggle={onThroughputChartToggle}
-			onCostModelChange={onCostModelChange}
-			onUsageModelChange={onUsageModelChange}
-		/>
+		<>
+			<AggregationNotice info={logsStats?.aggregation_info} />
+			<OverviewTab
+				histogramData={histogramData ?? null}
+				tokenData={tokenData ?? null}
+				costData={costData ?? null}
+				modelData={modelData ?? null}
+				latencyData={latencyData ?? null}
+				throughputData={throughputData ?? null}
+				logsStats={logsStats ?? null}
+				loadingHistogram={loadingHistogram}
+				loadingTokens={loadingTokens}
+				loadingCost={loadingCost}
+				loadingModels={loadingModels}
+				loadingLatency={loadingLatency}
+				loadingThroughput={loadingThroughput}
+				loadingStats={loadingStats}
+				startTime={startTime}
+				endTime={endTime}
+				volumeChartType={volumeChartType}
+				tokenChartType={tokenChartType}
+				costChartType={costChartType}
+				modelChartType={modelChartType}
+				latencyChartType={latencyChartType}
+				overheadChartType={overheadChartType}
+				throughputChartType={throughputChartType}
+				costModel={costModel}
+				usageModel={usageModel}
+				costModels={costModels}
+				usageModels={usageModels}
+				availableModels={availableModels}
+				onVolumeChartToggle={onVolumeChartToggle}
+				onTokenChartToggle={onTokenChartToggle}
+				onCostChartToggle={onCostChartToggle}
+				onModelChartToggle={onModelChartToggle}
+				onLatencyChartToggle={onLatencyChartToggle}
+				onOverheadChartToggle={onOverheadChartToggle}
+				onThroughputChartToggle={onThroughputChartToggle}
+				onCostModelChange={onCostModelChange}
+				onUsageModelChange={onUsageModelChange}
+			/>
+		</>
 	);
 });

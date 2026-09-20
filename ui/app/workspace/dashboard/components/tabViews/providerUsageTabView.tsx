@@ -1,3 +1,4 @@
+import { AggregationNotice } from "../aggregationNotice";
 import {
 	useGetLogsProviderCostHistogramQuery,
 	useGetLogsProviderLatencyHistogramQuery,
@@ -155,38 +156,41 @@ export const ProviderUsageTabView = forwardRef<ProviderUsageTabViewHandle, Provi
 	);
 
 	return (
-		<ProviderUsageTab
-			providerCostData={providerCostData ?? null}
-			providerTokenData={providerTokenData ?? null}
-			providerLatencyData={providerLatencyData ?? null}
-			providerThroughputData={providerThroughputData ?? null}
-			loadingProviderCost={loadingProviderCost}
-			loadingProviderTokens={loadingProviderTokens}
-			loadingProviderLatency={loadingProviderLatency}
-			loadingProviderThroughput={loadingProviderThroughput}
-			startTime={startTime}
-			endTime={endTime}
-			providerCostChartType={providerCostChartType}
-			providerTokenChartType={providerTokenChartType}
-			providerLatencyChartType={providerLatencyChartType}
-			providerThroughputChartType={providerThroughputChartType}
-			providerCostProvider={providerCostProvider}
-			providerTokenProvider={providerTokenProvider}
-			providerLatencyProvider={providerLatencyProvider}
-			providerThroughputProvider={providerThroughputProvider}
-			availableProviders={availableProviders}
-			providerCostProviders={providerCostProviders}
-			providerTokenProviders={providerTokenProviders}
-			providerLatencyProviders={providerLatencyProviders}
-			providerThroughputProviders={providerThroughputProviders}
-			onProviderCostChartToggle={onProviderCostChartToggle}
-			onProviderTokenChartToggle={onProviderTokenChartToggle}
-			onProviderLatencyChartToggle={onProviderLatencyChartToggle}
-			onProviderThroughputChartToggle={onProviderThroughputChartToggle}
-			onProviderCostProviderChange={onProviderCostProviderChange}
-			onProviderTokenProviderChange={onProviderTokenProviderChange}
-			onProviderLatencyProviderChange={onProviderLatencyProviderChange}
-			onProviderThroughputProviderChange={onProviderThroughputProviderChange}
-		/>
+		<>
+			<AggregationNotice info={providerCostData?.aggregation_info} />
+			<ProviderUsageTab
+				providerCostData={providerCostData ?? null}
+				providerTokenData={providerTokenData ?? null}
+				providerLatencyData={providerLatencyData ?? null}
+				providerThroughputData={providerThroughputData ?? null}
+				loadingProviderCost={loadingProviderCost}
+				loadingProviderTokens={loadingProviderTokens}
+				loadingProviderLatency={loadingProviderLatency}
+				loadingProviderThroughput={loadingProviderThroughput}
+				startTime={startTime}
+				endTime={endTime}
+				providerCostChartType={providerCostChartType}
+				providerTokenChartType={providerTokenChartType}
+				providerLatencyChartType={providerLatencyChartType}
+				providerThroughputChartType={providerThroughputChartType}
+				providerCostProvider={providerCostProvider}
+				providerTokenProvider={providerTokenProvider}
+				providerLatencyProvider={providerLatencyProvider}
+				providerThroughputProvider={providerThroughputProvider}
+				availableProviders={availableProviders}
+				providerCostProviders={providerCostProviders}
+				providerTokenProviders={providerTokenProviders}
+				providerLatencyProviders={providerLatencyProviders}
+				providerThroughputProviders={providerThroughputProviders}
+				onProviderCostChartToggle={onProviderCostChartToggle}
+				onProviderTokenChartToggle={onProviderTokenChartToggle}
+				onProviderLatencyChartToggle={onProviderLatencyChartToggle}
+				onProviderThroughputChartToggle={onProviderThroughputChartToggle}
+				onProviderCostProviderChange={onProviderCostProviderChange}
+				onProviderTokenProviderChange={onProviderTokenProviderChange}
+				onProviderLatencyProviderChange={onProviderLatencyProviderChange}
+				onProviderThroughputProviderChange={onProviderThroughputProviderChange}
+			/>
+		</>
 	);
 });

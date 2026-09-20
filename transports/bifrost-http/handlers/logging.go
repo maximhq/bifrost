@@ -1781,6 +1781,12 @@ func (h *LoggingHandler) getDashboard(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Dashboard data calculation failed: %v", err))
 		return
 	}
+	if result.Overview.Stats != nil {
+		result.Meta.AggregationInfo = result.Overview.Stats.AggregationInfo
+	}
+	if result.Overview.Requests != nil {
+		result.Meta.BucketSizeSeconds = result.Overview.Requests.BucketSizeSeconds
+	}
 
 	SendJSON(ctx, result)
 }

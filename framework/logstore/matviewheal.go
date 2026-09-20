@@ -54,10 +54,12 @@ func (s *RDBLogStore) fallBackToRaw(err error) bool {
 	}
 	s.matViewsReady.Store(false)
 	if s.logger != nil {
-		s.logger.Warn(fmt.Sprintf("logstore: matview query failed with shape error, serving from raw tables until repaired: %s", err))
+		s.logger.Warn(fmt.Sprintf("logstore: matview query failed with shape error; attempting repair (raw fallback permitted: %t): %s", !s.hourlyArchiveKnown.Load(), err))
 	}
 	s.triggerMatViewSelfHeal()
-	return true
+	// Once raw logs expire, raw fallback cannot reproduce archived history.
+	// Let aggregate callers surface the error until the snapshot repairs it.
+	return !s.hourlyArchiveKnown.Load()
 }
 
 // matViewHealCooldown bounds how often a process attempts a background

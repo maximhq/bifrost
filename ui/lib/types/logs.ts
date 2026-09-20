@@ -822,7 +822,15 @@ export interface Pagination {
 	order: "asc" | "desc";
 }
 
+export interface AggregationInfo {
+	effective_start_time?: string;
+	effective_end_time?: string;
+	archived_resolution_seconds?: number;
+	coverage: "complete" | "retained_only" | "unavailable";
+}
+
 export interface LogStats {
+	aggregation_info?: AggregationInfo;
 	total_requests: number;
 	success_rate: number;
 	user_facing_success_rate: number;
@@ -874,6 +882,7 @@ export interface HistogramBucket {
 }
 
 export interface LogsHistogramResponse {
+	aggregation_info?: AggregationInfo;
 	buckets: HistogramBucket[];
 	bucket_size_seconds: number;
 }
@@ -888,6 +897,7 @@ export interface TokenHistogramBucket {
 }
 
 export interface TokenHistogramResponse {
+	aggregation_info?: AggregationInfo;
 	buckets: TokenHistogramBucket[];
 	bucket_size_seconds: number;
 }
@@ -900,6 +910,7 @@ export interface CostHistogramBucket {
 }
 
 export interface CostHistogramResponse {
+	aggregation_info?: AggregationInfo;
 	buckets: CostHistogramBucket[];
 	bucket_size_seconds: number;
 	models: string[];
@@ -919,6 +930,7 @@ export interface ModelHistogramBucket {
 }
 
 export interface ModelHistogramResponse {
+	aggregation_info?: AggregationInfo;
 	buckets: ModelHistogramBucket[];
 	bucket_size_seconds: number;
 	models: string[];
@@ -939,6 +951,7 @@ export interface LatencyHistogramBucket {
 }
 
 export interface LatencyHistogramResponse {
+	aggregation_info?: AggregationInfo;
 	buckets: LatencyHistogramBucket[];
 	bucket_size_seconds: number;
 }
@@ -952,6 +965,7 @@ export interface ProviderCostHistogramBucket {
 }
 
 export interface ProviderCostHistogramResponse {
+	aggregation_info?: AggregationInfo;
 	buckets: ProviderCostHistogramBucket[];
 	bucket_size_seconds: number;
 	providers: string[];
@@ -969,6 +983,7 @@ export interface ProviderTokenHistogramBucket {
 }
 
 export interface ProviderTokenHistogramResponse {
+	aggregation_info?: AggregationInfo;
 	buckets: ProviderTokenHistogramBucket[];
 	bucket_size_seconds: number;
 	providers: string[];
@@ -988,6 +1003,7 @@ export interface ProviderLatencyHistogramBucket {
 }
 
 export interface ProviderLatencyHistogramResponse {
+	aggregation_info?: AggregationInfo;
 	buckets: ProviderLatencyHistogramBucket[];
 	bucket_size_seconds: number;
 	providers: string[];
@@ -1004,6 +1020,7 @@ export interface ThroughputHistogramBucket {
 }
 
 export interface ThroughputHistogramResponse {
+	aggregation_info?: AggregationInfo;
 	buckets: ThroughputHistogramBucket[];
 	bucket_size_seconds: number;
 }
@@ -1020,6 +1037,7 @@ export interface ProviderThroughputHistogramBucket {
 }
 
 export interface ProviderThroughputHistogramResponse {
+	aggregation_info?: AggregationInfo;
 	buckets: ProviderThroughputHistogramBucket[];
 	bucket_size_seconds: number;
 	providers: string[];
@@ -1494,6 +1512,7 @@ export interface ModelRankingEntry {
 }
 
 export interface ModelRankingsResponse {
+	aggregation_info?: AggregationInfo;
 	rankings: ModelRankingEntry[];
 }
 
@@ -1513,6 +1532,7 @@ export interface UserRankingEntry {
 }
 
 export interface UserRankingsResponse {
+	aggregation_info?: AggregationInfo;
 	rankings: UserRankingEntry[];
 }
 
@@ -1535,6 +1555,7 @@ export interface DimensionRankingEntry {
 }
 
 export interface DimensionRankingsResponse {
+	aggregation_info?: AggregationInfo;
 	rankings: DimensionRankingEntry[];
 	dimension: RankingDimension;
 	total_actual_requests?: number; // shows the actual request count for units that can have multiple child entities
