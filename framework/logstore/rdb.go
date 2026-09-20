@@ -73,6 +73,8 @@ type RDBLogStore struct {
 	// matViewMaintenanceDisabled records that matview_refresh_interval resolved
 	// to disabled, so the self-heal path must not recreate the views either.
 	matViewMaintenanceDisabled bool
+	// hourlyArchiveRequested prevents retention racing archive initialization.
+	hourlyArchiveRequested bool
 	// Self-heal state for the matview read path (see matviewheal.go).
 	matViewHealInFlight    atomic.Bool
 	matViewHealLastAttempt atomic.Int64 // unix nanos of the last repair attempt
@@ -4536,6 +4538,22 @@ func (s *RDBLogStore) FindAllDistinct(ctx context.Context, query any, fields ...
 
 // DeleteLogsBatch deletes logs older than the cutoff time in batches.
 func (s *RDBLogStore) DeleteLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error) {
+	if s.db.Dialector.Name() == "postgres" {
+		sqlDB, err := s.db.DB()
+		if err != nil {
+			return 0, err
+		}
+		exists, err := hourlyStateExists(ctx, sqlDB)
+		if err != nil {
+			return 0, err
+		}
+		if exists {
+			return s.deleteArchivedLogsBatch(ctx, cutoff, batchSize)
+		}
+		if s.hourlyArchiveRequested {
+			return 0, fmt.Errorf("log retention deferred until hourly archive initialization completes")
+		}
+	}
 	// First, select the IDs of logs to delete with proper LIMIT
 	var ids []string
 	if err := s.db.WithContext(ctx).

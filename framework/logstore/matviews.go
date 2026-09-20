@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"errors"
 	"fmt"
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"sort"
@@ -550,17 +551,13 @@ func ensureMatViews(ctx context.Context, db *gorm.DB, enableArchive ...bool) err
 	}
 	defer conn.Close()
 
-	var acquired bool
-	if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", matviewRefreshAdvisoryLockKey).Scan(&acquired); err != nil {
-		return fmt.Errorf("failed to try advisory lock for matview creation: %w", err)
+	if err := lockHourlyMaintenance(ctx, conn); err != nil {
+		if errors.Is(err, errHourlyMaintenanceBusy) {
+			return nil
+		}
+		return err
 	}
-	if !acquired {
-		// Another replica is doing the work — nothing to do here.
-		return nil
-	}
-	defer func() {
-		_, _ = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", matviewRefreshAdvisoryLockKey)
-	}()
+	defer unlockHourlyMaintenance(ctx, conn)
 	archiveExists, err := hourlyStateExists(ctx, conn)
 	if err != nil {
 		return err
