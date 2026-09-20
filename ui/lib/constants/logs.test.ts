@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { mapAppToClientApp, mapUserAgentToApp, RequestTypeColors, RequestTypeLabels, RequestTypes } from "./logs";
+import { mapAppToClientApp, mapUserAgentToApp, RequestTypeColors, RequestTypeLabels, RequestTypes, RoutingEngineUsedLabels } from "./logs";
 
 describe("logs constants", () => {
 	it("recognizes Cowork independently of Claude Code", () => {
@@ -12,6 +12,10 @@ describe("logs constants", () => {
 		expect(RequestTypes).toContain("realtime.turn");
 		expect(RequestTypeLabels["realtime.turn"]).toBe("Realtime Turn");
 		expect(RequestTypeColors["realtime.turn"]).toBeTruthy();
+	});
+
+	it("registers session-affinity as a routing engine", () => {
+		expect(RoutingEngineUsedLabels["session-affinity"]).toBe("Session");
 	});
 
 	it("maps backend app names to display metadata", () => {

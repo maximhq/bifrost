@@ -466,6 +466,11 @@ export const RoutingEngineUsedLabels = {
 	core: "Core",
 } as const;
 
+export function getRoutingEngineLabel(engine: string, t: TFunction): string {
+	const label = RoutingEngineUsedLabels[engine as keyof typeof RoutingEngineUsedLabels];
+	return label ? t(`routingEngineLabels.${engine.replaceAll("-", "_")}`, { ns: "observability", defaultValue: label }) : engine;
+}
+
 export const RoutingEngineUsedColors = {
 	"routing-rule": "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300",
 	governance: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300",

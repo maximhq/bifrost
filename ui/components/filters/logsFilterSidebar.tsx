@@ -8,7 +8,7 @@ import { ScrollArea } from "@/components/ui/scrollArea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { getRequestTypeLabel, RequestTypes, RoutingEngineUsedLabels, Statuses } from "@/lib/constants/logs";
+import { getRequestTypeLabel, getRoutingEngineLabel, RequestTypes, Statuses } from "@/lib/constants/logs";
 import { useGetAvailableFilterDataQuery, useGetProvidersQuery } from "@/lib/store";
 import {
 	COMPLEXITY_MECHANISM_LABELS,
@@ -877,7 +877,7 @@ function RoutingEnginesFilter({ filters, onFiltersChange, defaultOpen }: FilterC
 				placeholder={t("filters.searchEngines")}
 				items={availableRoutingEngines.map((engine) => ({
 					key: engine,
-					label: RoutingEngineUsedLabels[engine as keyof typeof RoutingEngineUsedLabels] ?? engine,
+					label: getRoutingEngineLabel(engine, t),
 				}))}
 				isSelected={(engine) => (filters.routing_engine_used || []).includes(engine)}
 				onToggle={(engine) => {
