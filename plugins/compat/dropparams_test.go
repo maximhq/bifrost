@@ -311,6 +311,29 @@ func TestDropUnsupportedParams_ChatReasoningWithUnsupportedTools(t *testing.T) {
 	if !slices.Contains(dropped, "reasoning") {
 		t.Errorf("reasoning not reported in dropped=%v, want present", dropped)
 	}
+
+	// Once the request is headed for /responses, reasoning + tools is legal
+	// again, so neither the effort=none rewrite nor the drop may run — Azure's
+	// gpt-6-astra / gpt-5.6 deployments reject effort=none outright (#7275).
+	for _, supported := range [][]string{
+		{"reasoning", "tools", "supports_none_reasoning_effort"},
+		{"reasoning", "tools"},
+	} {
+		converted := newChat()
+		converted.ChatRequest.Params.Reasoning.Effort = schemas.Ptr("medium")
+		ctx := newTestContext()
+		ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ResponsesRequest)
+		dropped = dropUnsupportedParams(ctx, converted, supported)
+		if converted.ChatRequest.Params.Reasoning == nil {
+			t.Fatalf("supported=%v: reasoning = nil, want preserved when request is converted to responses", supported)
+		}
+		if got := converted.ChatRequest.Params.Reasoning.Effort; got == nil || *got != "medium" {
+			t.Fatalf("supported=%v: reasoning.effort = %v, want \"medium\" preserved", supported, got)
+		}
+		if slices.Contains(dropped, "reasoning") {
+			t.Errorf("supported=%v: reasoning reported in dropped=%v, want absent", supported, dropped)
+		}
+	}
 }
 
 func TestDropUnsupportedParams_ChatReasoningNilForcedToNoneWithUnsupportedTools(t *testing.T) {
@@ -361,6 +384,19 @@ func TestDropUnsupportedParams_ChatReasoningNilForcedToNoneWithUnsupportedTools(
 	dropped = dropUnsupportedParams(newTestContext(), reasoningWithToolsSupported, []string{"reasoning", "tools", "reasoning_with_tool_calls", "supports_none_reasoning_effort"})
 	if reasoningWithToolsSupported.ChatRequest.Params.Reasoning != nil {
 		t.Fatalf("reasoning = %v, want left nil when reasoning_with_tool_calls is supported", reasoningWithToolsSupported.ChatRequest.Params.Reasoning)
+	}
+	if slices.Contains(dropped, "reasoning") {
+		t.Errorf("reasoning reported in dropped=%v, want absent since it was never set", dropped)
+	}
+
+	// The default-reasoning model is leaving chat completions for /responses,
+	// where the model's own default effort is what the caller asked for.
+	convertedToResponses := newChatNoReasoning()
+	ctx := newTestContext()
+	ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ResponsesRequest)
+	dropped = dropUnsupportedParams(ctx, convertedToResponses, []string{"reasoning", "tools", "supports_none_reasoning_effort"})
+	if convertedToResponses.ChatRequest.Params.Reasoning != nil {
+		t.Fatalf("reasoning = %v, want left nil when request is converted to responses", convertedToResponses.ChatRequest.Params.Reasoning)
 	}
 	if slices.Contains(dropped, "reasoning") {
 		t.Errorf("reasoning reported in dropped=%v, want absent since it was never set", dropped)
