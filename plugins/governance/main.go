@@ -1670,7 +1670,7 @@ func (p *GovernancePlugin) reportBatchModelUsage(ctx context.Context, usage joba
 	if len(usage.ModelUsage) == 0 {
 		return nil
 	}
-	alreadyCharged := make(map[string]bool, len(usage.BudgetIDs)+len(usage.RateLimitIDs))
+	alreadyCharged := make(map[string]bool)
 	for _, id := range usage.BudgetIDs {
 		alreadyCharged["budget:"+id] = true
 	}
