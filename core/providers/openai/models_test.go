@@ -11,6 +11,8 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// TestListModelsByKeyResponseShapes verifies that supported upstream model-list
+// envelope shapes normalize into the same Bifrost model representation.
 func TestListModelsByKeyResponseShapes(t *testing.T) {
 	t.Parallel()
 
