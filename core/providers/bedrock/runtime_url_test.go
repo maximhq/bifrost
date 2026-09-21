@@ -66,6 +66,41 @@ func TestRuntimeModelURLUsesBedrockRuntimeEnvironmentEndpoint(t *testing.T) {
 	}
 }
 
+func TestRuntimeModelURLEnvironmentFallbackOrder(t *testing.T) {
+	cases := []struct {
+		name        string
+		runtimeURL  string
+		genericURL  string
+		wantBaseURL string
+	}{
+		{
+			name:        "generic fallback",
+			genericURL:  "https://bedrock-global.env.example/",
+			wantBaseURL: "https://bedrock-global.env.example",
+		},
+		{
+			name:        "runtime endpoint wins",
+			runtimeURL:  "https://bedrock-runtime.env.example/",
+			genericURL:  "https://bedrock-global.env.example/",
+			wantBaseURL: "https://bedrock-runtime.env.example",
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			clearBedrockEndpointEnv(t)
+			t.Setenv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", tt.runtimeURL)
+			t.Setenv("AWS_ENDPOINT_URL", tt.genericURL)
+
+			got := (&BedrockProvider{}).runtimeModelURL("us-east-1", "example-model/converse", nil)
+			want := tt.wantBaseURL + "/model/example-model/converse"
+			if got != want {
+				t.Fatalf("runtimeModelURL() = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 func TestRuntimeModelURLNetworkConfigBaseURLWinsOverEnvironment(t *testing.T) {
 	clearBedrockEndpointEnv(t)
 	t.Setenv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", "https://bedrock-runtime.env.example")
