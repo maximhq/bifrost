@@ -30,6 +30,49 @@ const (
 	VirtualKeyPrefix = "sk-bf-"
 )
 
+// A team or a customer can carry budgets and a rate limit of its own. The enterprise build adds a
+// second way to govern the same entity - an access profile attached to it - and the two cannot both
+// apply, or the entity ends up with two caps on the same keys.
+//
+// Enterprise registers the check here, and the paths that write those limits ask before writing: the
+// team and customer update handlers, and the config reconcile that applies governance.budgets from
+// config.json. In the OSS build nothing is registered, so nothing is refused.
+const (
+	// LegacyLimitHolderTeam and LegacyLimitHolderCustomer name the two kinds of entity that can hold
+	// budgets and a rate limit of their own.
+	LegacyLimitHolderTeam     = "team"
+	LegacyLimitHolderCustomer = "customer"
+)
+
+// LegacyLimitGuard names what already governs an entity's spend, or "" when nothing does. An error
+// means the question could not be answered; callers fail closed rather than write a second cap.
+type LegacyLimitGuard func(ctx context.Context, holderKind, holderID string) (governedBy string, err error)
+
+var (
+	legacyLimitGuardMu sync.RWMutex
+	legacyLimitGuard   LegacyLimitGuard
+)
+
+// RegisterLegacyLimitGuard installs the guard for this process. Passing nil clears it, which is how a
+// test puts the process back as it found it.
+func RegisterLegacyLimitGuard(guard LegacyLimitGuard) {
+	legacyLimitGuardMu.Lock()
+	legacyLimitGuard = guard
+	legacyLimitGuardMu.Unlock()
+}
+
+// LegacyLimitsGovernedBy names what already governs this entity's spend, or "" when nothing does -
+// including every build where no guard is registered.
+func LegacyLimitsGovernedBy(ctx context.Context, holderKind, holderID string) (string, error) {
+	legacyLimitGuardMu.RLock()
+	guard := legacyLimitGuard
+	legacyLimitGuardMu.RUnlock()
+	if guard == nil || holderID == "" {
+		return "", nil
+	}
+	return guard(ctx, holderKind, holderID)
+}
+
 // Config is the configuration for the governance plugin
 type Config struct {
 	IsVkMandatory         *bool     `json:"is_vk_mandatory"`
