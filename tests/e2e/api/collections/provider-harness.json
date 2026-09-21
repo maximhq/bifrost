@@ -163152,6 +163152,453 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "108. Safeguards pass-through (Claude Code auto-mode classifier) (safeguards)",
+      "description": "Safeguards are retained for supported Claude models on Anthropic, Bedrock Invoke/Mantle, Vertex, and Azure, with dangerous-tool-use-2026-09-03 automatically enabled. These synthetic probes check forwarding, not evaluated verdicts: the valid classifier payload will be supplied separately. Only HTTP 200 or a safeguards-specific HTTP 400 is allowed; auth, rate limits, and unrelated errors fail. Haiku retains the negative model-gate case.",
+      "item": [
+        {
+          "name": "[EXPECT-4XX] Anthropic /v1/messages - safeguards forwarded on typed path, provider rejects it by name (claude-sonnet-5) - safeguards",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('safeguards forwarded with required beta where body carries it', function () {",
+                  "  pm.expect([200, 400], 'unexpected status: ' + pm.response.text()).to.include(pm.response.code);",
+                  "  if (pm.response.code === 400) {",
+                  "    pm.expect(pm.response.text(), 'synthetic payload must be rejected by name: ' + pm.response.text()).to.include('safeguards');",
+                  "    pm.expect(pm.response.text(), 'required safeguards beta was not activated').to.not.include('safeguards: Extra inputs are not permitted');",
+                  "  } else {",
+                  "    var body = pm.response.json();",
+                  "    pm.expect(body.extra_fields, 'raw request capture missing: ' + pm.response.text()).to.exist;",
+                  "    var raw = body.extra_fields.raw_request;",
+                  "    if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "    pm.expect(raw, 'outbound safeguards missing').to.have.property('safeguards');",
+                  "    if (raw.anthropic_version) {",
+                  "      pm.expect(raw.anthropic_beta, 'required body beta missing').to.include('dangerous-tool-use-2026-09-03');",
+                  "    }",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"safeguards\": {\n    \"probe\": \"auto_mode_classifier\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-4XX] Anthropic /v1/messages stream - safeguards forwarded on claude-cli passthrough, provider rejects it by name (claude-sonnet-5) - safeguards",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('safeguards forwarded on the claude-cli passthrough', function () {",
+                  "  pm.expect([200, 400], 'unexpected status: ' + text).to.include(pm.response.code);",
+                  "  if (pm.response.code === 400) {",
+                  "    pm.expect(text, 'a 4xx must be the upstream rejecting the forwarded field by name: ' + text).to.include('safeguards');",
+                  "    pm.expect(text, 'required safeguards beta was not activated').to.not.include('safeguards: Extra inputs are not permitted');",
+                  "    return;",
+                  "  }",
+                  "  pm.expect(text, 'missing message_start: ' + text.slice(0, 500)).to.include('event: message_start');",
+                  "  pm.expect(text, 'missing message_stop: ' + text.slice(-500)).to.include('event: message_stop');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.278 (external)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5\",\n  \"max_tokens\": 32,\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"safeguards\": {\n    \"probe\": \"auto_mode_classifier\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic /v1/messages - safeguards stripped for a model outside the auto-mode set (claude-haiku-4-5) - safeguards",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('safeguards is stripped fail-closed from the outbound request', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.extra_fields, 'extra_fields missing - raw request capture not enabled: ' + pm.response.text()).to.exist;",
+                  "  var rawReq = JSON.stringify(body.extra_fields.raw_request);",
+                  "  pm.expect(rawReq, 'haiku is outside the Sonnet 5 / Opus 4.7+ / Fable auto-mode set, so SupportsSafeguards strips it rather than 400 the real request: ' + rawReq).to.not.include('\"safeguards\"');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"safeguards\": {\n    \"probe\": \"auto_mode_classifier\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock /v1/messages - safeguards forwarded with automatic beta (global.anthropic.claude-opus-4-8) - safeguards",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('safeguards forwarded with required beta where body carries it', function () {",
+                  "  pm.expect([200, 400], 'unexpected status: ' + pm.response.text()).to.include(pm.response.code);",
+                  "  if (pm.response.code === 400) {",
+                  "    pm.expect(pm.response.text(), 'synthetic payload must be rejected by name: ' + pm.response.text()).to.include('safeguards');",
+                  "    pm.expect(pm.response.text(), 'required safeguards beta was not activated').to.not.include('safeguards: Extra inputs are not permitted');",
+                  "  } else {",
+                  "    var body = pm.response.json();",
+                  "    pm.expect(body.extra_fields, 'raw request capture missing: ' + pm.response.text()).to.exist;",
+                  "    var raw = body.extra_fields.raw_request;",
+                  "    if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "    pm.expect(raw, 'outbound safeguards missing').to.have.property('safeguards');",
+                  "    if (raw.anthropic_version) {",
+                  "      pm.expect(raw.anthropic_beta, 'required body beta missing').to.include('dangerous-tool-use-2026-09-03');",
+                  "    }",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-opus-4-8\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"safeguards\": {\n    \"probe\": \"auto_mode_classifier\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Vertex /v1/messages - safeguards forwarded with automatic beta (claude-opus-4-8) - safeguards",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('safeguards forwarded with required beta where body carries it', function () {",
+                  "  pm.expect([200, 400], 'unexpected status: ' + pm.response.text()).to.include(pm.response.code);",
+                  "  if (pm.response.code === 400) {",
+                  "    pm.expect(pm.response.text(), 'synthetic payload must be rejected by name: ' + pm.response.text()).to.include('safeguards');",
+                  "    pm.expect(pm.response.text(), 'required safeguards beta was not activated').to.not.include('safeguards: Extra inputs are not permitted');",
+                  "  } else {",
+                  "    var body = pm.response.json();",
+                  "    pm.expect(body.extra_fields, 'raw request capture missing: ' + pm.response.text()).to.exist;",
+                  "    var raw = body.extra_fields.raw_request;",
+                  "    if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "    pm.expect(raw, 'outbound safeguards missing').to.have.property('safeguards');",
+                  "    if (raw.anthropic_version) {",
+                  "      pm.expect(raw.anthropic_beta, 'required body beta missing').to.include('dangerous-tool-use-2026-09-03');",
+                  "    }",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-4-8\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"safeguards\": {\n    \"probe\": \"auto_mode_classifier\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Azure /v1/messages - safeguards forwarded with automatic beta (claude-opus-4-8) - safeguards",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('safeguards forwarded with required beta where body carries it', function () {",
+                  "  pm.expect([200, 400], 'unexpected status: ' + pm.response.text()).to.include(pm.response.code);",
+                  "  if (pm.response.code === 400) {",
+                  "    pm.expect(pm.response.text(), 'synthetic payload must be rejected by name: ' + pm.response.text()).to.include('safeguards');",
+                  "    pm.expect(pm.response.text(), 'required safeguards beta was not activated').to.not.include('safeguards: Extra inputs are not permitted');",
+                  "  } else {",
+                  "    var body = pm.response.json();",
+                  "    pm.expect(body.extra_fields, 'raw request capture missing: ' + pm.response.text()).to.exist;",
+                  "    var raw = body.extra_fields.raw_request;",
+                  "    if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "    pm.expect(raw, 'outbound safeguards missing').to.have.property('safeguards');",
+                  "    if (raw.anthropic_version) {",
+                  "      pm.expect(raw.anthropic_beta, 'required body beta missing').to.include('dangerous-tool-use-2026-09-03');",
+                  "    }",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/claude-opus-4-8\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"safeguards\": {\n    \"probe\": \"auto_mode_classifier\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock Mantle /v1/messages - safeguards forwarded with automatic beta (claude-opus-4-8) - safeguards",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('safeguards forwarded with required beta where body carries it', function () {",
+                  "  pm.expect([200, 400], 'unexpected status: ' + pm.response.text()).to.include(pm.response.code);",
+                  "  if (pm.response.code === 400) {",
+                  "    pm.expect(pm.response.text(), 'synthetic payload must be rejected by name: ' + pm.response.text()).to.include('safeguards');",
+                  "    pm.expect(pm.response.text(), 'required safeguards beta was not activated').to.not.include('safeguards: Extra inputs are not permitted');",
+                  "  } else {",
+                  "    var body = pm.response.json();",
+                  "    pm.expect(body.extra_fields, 'raw request capture missing: ' + pm.response.text()).to.exist;",
+                  "    var raw = body.extra_fields.raw_request;",
+                  "    if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "    pm.expect(raw, 'outbound safeguards missing').to.have.property('safeguards');",
+                  "    if (raw.anthropic_version) {",
+                  "      pm.expect(raw.anthropic_beta, 'required body beta missing').to.include('dangerous-tool-use-2026-09-03');",
+                  "    }",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/anthropic.claude-opus-4-8\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"safeguards\": {\n    \"probe\": \"auto_mode_classifier\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

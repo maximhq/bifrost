@@ -366,6 +366,25 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 	// Convert parameters
 	if bifrostReq.Params != nil {
 		anthropicReq.ExtraParams = bifrostReq.Params.ExtraParams
+		if safeguards, exists := anthropicReq.ExtraParams["safeguards"]; exists {
+			// Copy before consuming the key: the input may be reused for a fallback.
+			extra := make(map[string]interface{}, len(anthropicReq.ExtraParams))
+			for k, v := range anthropicReq.ExtraParams {
+				extra[k] = v
+			}
+			anthropicReq.ExtraParams = extra
+			delete(anthropicReq.ExtraParams, "safeguards")
+			switch v := safeguards.(type) {
+			case json.RawMessage:
+				anthropicReq.Safeguards = v
+			case []byte:
+				anthropicReq.Safeguards = json.RawMessage(v)
+			default:
+				if data, err := providerUtils.MarshalSorted(v); err == nil {
+					anthropicReq.Safeguards = data
+				}
+			}
+		}
 
 		// reasoningParams is the effective reasoning config for this request. It is
 		// normally just Params.Reasoning; when the caller used Anthropic's native

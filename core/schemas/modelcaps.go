@@ -105,6 +105,27 @@ func (c ModelCaps) SupportsFastMode(fallback bool) bool {
 	return fallback
 }
 
+// SupportsSafeguards returns true if the model supports the Claude Code
+// auto-mode server-side classifier (`safeguards` request field /
+// `safeguard_results` response field) on surfaces where the feature is
+// model-gated. Auto mode on Amazon Bedrock, Google Cloud's Agent Platform,
+// Microsoft Foundry, and Claude apps gateway sessions is supported only on
+// Sonnet 5, Opus 4.7 or later, and the Fable models. Anthropic direct uses the
+// same model gate. Payloads are forwarded opaquely after capability filtering.
+//
+// Sources:
+//   - https://code.claude.com/docs/en/auto-mode-classifier-billing
+//   - https://code.claude.com/docs/en/permission-modes#enable-auto-mode-on-bedrock-agent-platform-or-foundry
+//
+// Prefers the datasheet's supports_safeguards boolean when set, falling back to
+// name detection when no record is registered.
+func (c ModelCaps) SupportsSafeguards(fallback bool) bool {
+	if c.record != nil && c.record.SupportsSafeguards != nil {
+		return *c.record.SupportsSafeguards
+	}
+	return fallback
+}
+
 // Wire field names used as UnsupportedFields and ConditionallyUnsupportedFields
 // keys. Call sites pass these rather than string literals so a typo fails to
 // compile instead of silently reading as "supported".

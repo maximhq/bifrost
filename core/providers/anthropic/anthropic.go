@@ -1784,6 +1784,14 @@ func HandleAnthropicResponsesStream(
 						response.ExtraFields.RawResponse = eventData
 					}
 
+					// Carry safeguard_results (Claude Code auto-mode classifier) so the
+					// Anthropic egress can restore it on re-rendered frames. Attached to
+					// the same single chunk as the raw frame, and not gated on raw capture
+					// so the fully typed path benefits too.
+					if i == rawIdx && len(event.SafeguardResults) > 0 {
+						response.SafeguardResults = event.SafeguardResults
+					}
+
 					if isLastChunk && i == len(responses)-1 {
 						if response.Response == nil {
 							response.Response = &schemas.BifrostResponsesResponse{}

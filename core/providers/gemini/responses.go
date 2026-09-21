@@ -950,6 +950,8 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 	// Skip lifecycle events that don't have corresponding Gemini equivalents
 	switch bifrostResp.Type {
 	case schemas.ResponsesStreamResponseTypePing,
+		schemas.ResponsesStreamResponseTypeSafeguardsUpdate,
+		schemas.ResponsesStreamResponseTypeProviderRawEvent,
 		schemas.ResponsesStreamResponseTypeCreated,
 		schemas.ResponsesStreamResponseTypeInProgress,
 		schemas.ResponsesStreamResponseTypeReasoningSummaryPartAdded,

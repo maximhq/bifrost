@@ -1131,6 +1131,69 @@ func TestUsesAnthropicInvokePath_ExtraParamsShapes(t *testing.T) {
 	})
 }
 
+// Supported safeguards requests use InvokeModel so the native field and beta
+// reach Claude together. Absent or unsupported safeguards preserve Converse.
+func TestResponsesUsesAnthropicInvokePath_Safeguards(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	model := "us.anthropic.claude-sonnet-5"
+
+	t.Run("nonempty safeguards diverts to invoke", func(t *testing.T) {
+		for _, v := range []interface{}{
+			json.RawMessage(`{"check":"auto_mode"}`),
+			[]byte(`{"check":"auto_mode"}`),
+			json.RawMessage(``),
+			nil,
+		} {
+			req := &schemas.BifrostResponsesRequest{Model: model, Params: &schemas.ResponsesParameters{
+				ExtraParams: map[string]interface{}{"safeguards": v},
+			}}
+			want := extraParamsHasSafeguards(req.Params.ExtraParams)
+			require.Equal(t, want, responsesUsesAnthropicInvokePath(ctx, req))
+			require.Equal(t, want, chatUsesAnthropicInvokePath(ctx, &schemas.BifrostChatRequest{Model: model, Params: &schemas.ChatParameters{ExtraParams: req.Params.ExtraParams}}))
+		}
+	})
+	t.Run("absent safeguards stays on converse", func(t *testing.T) {
+		req := &schemas.BifrostResponsesRequest{Model: model, Params: &schemas.ResponsesParameters{}}
+		require.False(t, responsesUsesAnthropicInvokePath(ctx, req))
+	})
+	t.Run("unsupported model stays on converse", func(t *testing.T) {
+		extra := map[string]interface{}{"safeguards": json.RawMessage(`{"check":"auto_mode"}`)}
+		require.False(t, responsesUsesAnthropicInvokePath(ctx, &schemas.BifrostResponsesRequest{Model: "us.anthropic.claude-haiku-4-5", Params: &schemas.ResponsesParameters{ExtraParams: extra}}))
+		require.False(t, chatUsesAnthropicInvokePath(ctx, &schemas.BifrostChatRequest{Model: "us.anthropic.claude-haiku-4-5", Params: &schemas.ChatParameters{ExtraParams: extra}}))
+	})
+	t.Run("catalog can disable invoke routing", func(t *testing.T) {
+		schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities {
+			return &schemas.ModelCapabilities{SupportsSafeguards: schemas.Ptr(false)}
+		})
+		defer schemas.SetCapabilityResolver(nil)
+		extra := map[string]interface{}{"safeguards": json.RawMessage(`{"check":"auto_mode"}`)}
+		require.False(t, responsesUsesAnthropicInvokePath(ctx, &schemas.BifrostResponsesRequest{Model: model, Params: &schemas.ResponsesParameters{ExtraParams: extra}}))
+		require.False(t, chatUsesAnthropicInvokePath(ctx, &schemas.BifrostChatRequest{Model: model, Params: &schemas.ChatParameters{ExtraParams: extra}}))
+	})
+	t.Run("non-anthropic model stays on converse even with safeguards", func(t *testing.T) {
+		req := &schemas.BifrostResponsesRequest{Model: "us.amazon.nova-lite-v1:0", Params: &schemas.ResponsesParameters{
+			ExtraParams: map[string]interface{}{"safeguards": json.RawMessage(`{"check":"auto_mode"}`)},
+		}}
+		require.False(t, responsesUsesAnthropicInvokePath(ctx, req))
+	})
+	// Catalog overrides remain authoritative for model support.
+	t.Run("datasheet-enabled pair diverts to invoke", func(t *testing.T) {
+		yes := true
+		schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+			if p == schemas.Bedrock {
+				return &schemas.ModelCapabilities{SupportsSafeguards: &yes}
+			}
+			return nil
+		})
+		defer schemas.SetCapabilityResolver(nil)
+
+		req := &schemas.BifrostResponsesRequest{Model: model, Params: &schemas.ResponsesParameters{
+			ExtraParams: map[string]interface{}{"safeguards": json.RawMessage(`{"check":"auto_mode"}`)},
+		}}
+		require.True(t, responsesUsesAnthropicInvokePath(ctx, req))
+	})
+}
+
 // The InvokeModel route (and Mantle) go through fasthttp, whose path
 // normalisation decodes a percent-encoded inference-profile ARN in the model
 // segment. The provider must build its fasthttp clients with that disabled;

@@ -1497,6 +1497,40 @@ func TestStripUnsupportedFieldsFromRawBody(t *testing.T) {
 		}
 	})
 
+	t.Run("safeguards_gated_via_feature_map", func(t *testing.T) {
+		// safeguards is the Claude Code auto-mode classifier request field —
+		// supported providers retain it for Sonnet 5 / Opus 4.7+ / Fable only.
+		const body = `{"model":"claude-opus-4-8","safeguards":{"check":"auto_mode"}}`
+		const haikuBody = `{"model":"claude-haiku-4-5","safeguards":{"check":"auto_mode"}}`
+		result, err := StripUnsupportedFieldsFromRawBody([]byte(body), schemas.Anthropic, "claude-opus-4-8")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !providerUtils.JSONFieldExists(result, "safeguards") {
+			t.Errorf("expected safeguards to be kept for Anthropic, got: %s", string(result))
+		}
+		// Anthropic direct is model-gated too: haiku is outside the auto-mode set.
+		result, err = StripUnsupportedFieldsFromRawBody([]byte(haikuBody), schemas.Anthropic, "claude-haiku-4-5")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if providerUtils.JSONFieldExists(result, "safeguards") {
+			t.Errorf("expected safeguards to be stripped for Anthropic on haiku, got: %s", string(result))
+		}
+		// Cloud surfaces retain safeguards on supported models with the required beta.
+		for _, provider := range []schemas.ModelProvider{schemas.Azure, schemas.Bedrock, schemas.BedrockMantle, schemas.Vertex} {
+			for _, b := range []string{body, haikuBody} {
+				result, err := StripUnsupportedFieldsFromRawBody([]byte(b), provider, "")
+				if err != nil {
+					t.Fatalf("unexpected error for %s: %v", provider, err)
+				}
+				if providerUtils.JSONFieldExists(result, "safeguards") != (b == body) {
+					t.Errorf("unexpected safeguards model gate on %s, got: %s", provider, string(result))
+				}
+			}
+		}
+	})
+
 	t.Run("bedrock_strips_new_request_level_fields", func(t *testing.T) {
 		// Raw body with every new typed field. Targeting Bedrock: speed (no FastMode),
 		// inference_geo (no InferenceGeo), mcp_servers (no MCP), container.skills
@@ -4281,4 +4315,145 @@ func TestHandleAnthropicChatCompletionStreaming_PreservesEncodedPath(t *testing.
 	}
 	collectTruncationChunks(t, stream)
 	assertEncodedPathPreserved(t, rec.get())
+}
+
+// Automatic beta injection follows the strip gate and existing header policies.
+func TestSafeguardsBetaGatesAndOverrides(t *testing.T) {
+	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Bedrock, schemas.BedrockMantle, schemas.Vertex, schemas.Azure, schemas.DeepSeek} {
+		for _, model := range []string{"claude-opus-4-8", "claude-haiku-4-5"} {
+			for _, present := range []bool{false, true} {
+				ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+				req := &AnthropicMessageRequest{Model: model}
+				if present {
+					req.Safeguards = json.RawMessage(`{}`)
+				}
+				stripUnsupportedAnthropicFields(req, provider, model)
+				if err := AddMissingBetaHeadersToContext(ctx, req, provider); err != nil {
+					t.Fatal(err)
+				}
+				got := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), provider)
+				want := present && model == "claude-opus-4-8" && provider != schemas.DeepSeek
+				if slices.Contains(got, AnthropicDangerousToolUseBetaHeader) != want {
+					t.Fatalf("%s/%s present=%v: %v", provider, model, present, got)
+				}
+			}
+		}
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{AnthropicBetaHeader: {AnthropicDangerousToolUseBetaHeader, AnthropicCompactionBetaHeader}})
+	req := &AnthropicMessageRequest{Model: "claude-opus-4-8", Safeguards: json.RawMessage(`{}`)}
+	for range 2 {
+		if err := AddMissingBetaHeadersToContext(ctx, req, schemas.Bedrock); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), schemas.Bedrock)
+	if len(got) != 2 {
+		t.Fatalf("beta deduplication lost existing headers: %v", got)
+	}
+	got = FilterBetaHeadersForProvider(got, schemas.Bedrock, map[string]bool{AnthropicDangerousToolUseBetaHeaderPrefix: false})
+	if slices.Contains(got, AnthropicDangerousToolUseBetaHeader) || !slices.Contains(got, AnthropicCompactionBetaHeader) {
+		t.Fatalf("explicit override not respected: %v", got)
+	}
+}
+
+func TestSafeguardsStreamHandler(t *testing.T) {
+	const update = `{"type":"safeguards_update","safeguard_results":[{"id":"sg_1","verdict":"allow"}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(AnthropicBetaHeader) != AnthropicDangerousToolUseBetaHeader {
+			t.Errorf("missing beta on wire: %q", r.Header.Get(AnthropicBetaHeader))
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, frame := range []string{ptMsgStart(), update, `{"type":"future_unknown_event","safeguard_results":[]}`, ptMsgEnd()[0], ptMsgEnd()[1]} {
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", gjson.Get(frame, "type").String(), frame)
+		}
+	}))
+	defer server.Close()
+	for _, raw := range []bool{false, true} {
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+		body, buildErr := BuildAnthropicResponsesRequestBody(ctx, &schemas.BifrostResponsesRequest{
+			Provider: schemas.Anthropic, Model: "claude-opus-4-8", Input: makeSimpleInput("hi"),
+			Params: &schemas.ResponsesParameters{ExtraParams: map[string]interface{}{"safeguards": json.RawMessage(`{}`)}},
+		}, AnthropicRequestBuildConfig{Provider: schemas.Anthropic, IsStreaming: true})
+		if buildErr != nil {
+			t.Fatal(buildErr)
+		}
+		stream, err := HandleAnthropicResponsesStream(ctx, &fasthttp.Client{}, server.URL, body, nil, nil, 30, nil, false, raw, schemas.Anthropic, truncationPassthroughPostHook, nil, nil, truncationTestLogger{}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		updates := 0
+		for _, chunk := range collectTruncationChunks(t, stream) {
+			if chunk.BifrostError != nil {
+				t.Fatal(chunk.BifrostError)
+			}
+			response := chunk.BifrostResponsesStreamResponse
+			if response == nil {
+				continue
+			}
+			if response.Type == schemas.ResponsesStreamResponseTypeProviderRawEvent {
+				t.Fatal("unknown event forwarded")
+			}
+			if response.Type == schemas.ResponsesStreamResponseTypeSafeguardsUpdate {
+				updates++
+				if raw && response.ExtraFields.RawResponse != update {
+					t.Fatalf("raw frame lost: %v", response.ExtraFields.RawResponse)
+				}
+				out := ToAnthropicResponsesStreamResponse(ctx, response)
+				if len(out) != 1 || string(out[0].SafeguardResults) != `[{"id":"sg_1","verdict":"allow"}]` {
+					t.Fatalf("typed update lost: %#v", out)
+				}
+			}
+		}
+		if updates != 1 {
+			t.Fatalf("raw=%v: got %d updates", raw, updates)
+		}
+	}
+}
+
+func TestStripUnsupportedAnthropicFieldsSafeguards(t *testing.T) {
+	mk := func(model string) *AnthropicMessageRequest {
+		var req AnthropicMessageRequest
+		if err := sonic.Unmarshal([]byte(`{"model":"`+model+`","max_tokens":16,"messages":[{"role":"user","content":"hi"}],"safeguards":{"check":"auto_mode"}}`), &req); err != nil {
+			t.Fatalf("unmarshal request: %v", err)
+		}
+		return &req
+	}
+
+	req := mk("claude-opus-4-8")
+	stripUnsupportedAnthropicFields(req, schemas.Anthropic, "claude-opus-4-8")
+	out, err := sonic.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	if !gjson.GetBytes(out, "safeguards").Exists() {
+		t.Errorf("expected safeguards to be kept for Anthropic, got: %s", string(out))
+	}
+
+	// Anthropic direct is still model-gated: Haiku is outside the auto-mode model
+	// set, so the field is stripped rather than sent to a model that refuses it.
+	req = mk("claude-haiku-4-5")
+	stripUnsupportedAnthropicFields(req, schemas.Anthropic, "claude-haiku-4-5")
+	out, err = sonic.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	if gjson.GetBytes(out, "safeguards").Exists() {
+		t.Errorf("expected safeguards to be stripped for Anthropic on haiku, got: %s", string(out))
+	}
+
+	for _, provider := range []schemas.ModelProvider{schemas.Azure, schemas.Bedrock, schemas.BedrockMantle, schemas.Vertex} {
+		for _, model := range []string{"claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5"} {
+			req := mk(model)
+			stripUnsupportedAnthropicFields(req, provider, model)
+			out, err := sonic.Marshal(req)
+			if err != nil {
+				t.Fatalf("marshal request for %s/%s: %v", provider, model, err)
+			}
+			if gjson.GetBytes(out, "safeguards").Exists() != (model != "claude-haiku-4-5") {
+				t.Errorf("unexpected safeguards model gate on %s/%s, got: %s", provider, model, string(out))
+			}
+		}
+	}
 }
