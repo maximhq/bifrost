@@ -46,21 +46,19 @@ func validateConfidence(name string, c *float64) error {
 	return nil
 }
 
-// validateProbabilities rejects a probability map with unknown keys, out-of-range
-// values, or a total far from 1. A nil/empty map is allowed (probabilities are
-// optional). The generated schema cannot express an approximate sum, so that check
-// lives here.
-func validateProbabilities(name string, probs map[string]float64, allowed map[string]bool) error {
+// normalizeProbabilities rejects missing options, invalid values, or a total far
+// from 1. Small rounding errors are tolerated but never forwarded to callers.
+func normalizeProbabilities(name string, probs map[string]float64, allowed map[string]bool) (map[string]float64, error) {
 	if len(probs) == 0 {
-		return nil
+		return nil, nil
 	}
 	var sum float64
 	for k, v := range probs {
 		if allowed != nil && !allowed[k] {
-			return fmt.Errorf("probabilities for %q contain unknown key %q", name, k)
+			return nil, fmt.Errorf("probabilities for %q contain unknown key %q", name, k)
 		}
 		if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v > 1 {
-			return fmt.Errorf("probability for %q key %q is outside [0,1]: %v", name, k, v)
+			return nil, fmt.Errorf("probability for %q key %q is outside [0,1]: %v", name, k, v)
 		}
 		sum += v
 	}
@@ -69,13 +67,23 @@ func validateProbabilities(name string, probs map[string]float64, allowed map[st
 	// over a subset) is incomplete, not valid.
 	for k := range allowed {
 		if _, ok := probs[k]; !ok {
-			return fmt.Errorf("probabilities for %q are missing key %q; every option or level requires a probability", name, k)
+			return nil, fmt.Errorf("probabilities for %q are missing key %q; every option or level requires a probability", name, k)
 		}
 	}
 	if math.Abs(sum-1) > 0.05 {
-		return fmt.Errorf("probabilities for %q sum to %v, expected about 1", name, sum)
+		return nil, fmt.Errorf("probabilities for %q sum to %v, expected about 1", name, sum)
 	}
-	return nil
+	normalized := make(map[string]float64, len(probs))
+	if math.Abs(sum-1) <= 1e-12 {
+		for k, v := range probs {
+			normalized[k] = v
+		}
+		return normalized, nil
+	}
+	for k, v := range probs {
+		normalized[k] = v / sum
+	}
+	return normalized, nil
 }
 
 // Decision emulation lets any tool-capable chat model answer a decision request.
@@ -343,9 +351,9 @@ func BuildDecisionSchema(questions map[string]schemas.DecisionQuestion) (*schema
 			nested = map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"choice":        map[string]interface{}{"type": "string", "enum": opts, "description": desc + choiceOptionsText(opts, descs)},
+					"choice":        map[string]interface{}{"type": "string", "enum": opts, "description": desc + " Select an option with the highest probability." + choiceOptionsText(opts, descs)},
 					"confidence":    confidenceSchema(),
-					"probabilities": probabilitiesSchema("Required. Probability for each option; values must sum to about 1.", opts),
+					"probabilities": probabilitiesSchema("Required. Probability for each option; values must sum to 1.", opts),
 				},
 				"required":             []string{"choice", "confidence", "probabilities"},
 				"additionalProperties": false,
@@ -364,7 +372,7 @@ func BuildDecisionSchema(questions map[string]schemas.DecisionQuestion) (*schema
 					"value":      numberSchema(desc+" "+scoreLevels(q.Criteria), &zero, &maxLevel),
 					"confidence": confidenceSchema(),
 					"probabilities": probabilitiesSchema(
-						"Required. Probability for each level index (\"0\", \"1\", ...); values must sum to about 1.",
+						"Required. Probability for each level index (\"0\", \"1\", ...); values must sum to 1.",
 						scoreIndexKeys(len(scoreLevelsList)),
 					),
 				},
@@ -473,11 +481,17 @@ func ParseDecisionAnswers(argumentsJSON []byte, questions map[string]schemas.Dec
 			for _, o := range opts {
 				allowed[o] = true
 			}
-			if err := validateProbabilities(name, got.Probabilities, allowed); err != nil {
+			probabilities, err := normalizeProbabilities(name, got.Probabilities, allowed)
+			if err != nil {
 				return nil, err
 			}
+			for option, probability := range probabilities {
+				if probability > probabilities[*got.Choice] {
+					return nil, fmt.Errorf("choice answer %q for %q does not have the highest probability (option %q is higher)", *got.Choice, name, option)
+				}
+			}
 			answer.Value = *got.Choice
-			answer.Probabilities = got.Probabilities
+			answer.Probabilities = probabilities
 		case schemas.DecisionKindScore:
 			levels, err := scoreCriteriaLevels(q.Criteria)
 			if err != nil {
@@ -496,7 +510,8 @@ func ParseDecisionAnswers(argumentsJSON []byte, questions map[string]schemas.Dec
 			for i := range levels {
 				allowed[fmt.Sprintf("%d", i)] = true
 			}
-			if err := validateProbabilities(name, got.Probabilities, allowed); err != nil {
+			probabilities, err := normalizeProbabilities(name, got.Probabilities, allowed)
+			if err != nil {
 				return nil, err
 			}
 			// The native contract defines score as the probability-weighted
@@ -506,13 +521,13 @@ func ParseDecisionAnswers(argumentsJSON []byte, questions map[string]schemas.Dec
 			// above only for being numeric) cannot contradict its own
 			// probabilities. Bounded 0..len(levels)-1 by construction.
 			var derived float64
-			for key, p := range got.Probabilities {
+			for key, p := range probabilities {
 				index, _ := strconv.Atoi(key) // keys already validated against the "0".."n-1" set
 				derived += float64(index) * p
 			}
 			answer.Value = derived
 			answer.Legend = legend
-			answer.Probabilities = got.Probabilities
+			answer.Probabilities = probabilities
 		default:
 			return nil, fmt.Errorf("question %q has unsupported kind %q", name, q.Kind)
 		}

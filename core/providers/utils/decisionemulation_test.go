@@ -458,6 +458,49 @@ func TestParseDecisionAnswersDerivesScoreFromDistribution(t *testing.T) {
 	}
 }
 
+func TestParseDecisionAnswersChoiceMatchesHighestProbability(t *testing.T) {
+	questions := map[string]schemas.DecisionQuestion{
+		"route": {Kind: schemas.DecisionKindChoice, Criteria: map[string]string{"a": "Alpha", "b": "Beta"}},
+	}
+	wrong := `{"route":{"choice":"a","confidence":0.8,"probabilities":{"a":0.1,"b":0.9}}}`
+	if _, err := ParseDecisionAnswers([]byte(wrong), questions); err == nil || !strings.Contains(err.Error(), "highest probability") {
+		t.Fatalf("choice below another option must be rejected, got %v", err)
+	}
+	tied := `{"route":{"choice":"a","confidence":0.8,"probabilities":{"a":0.5,"b":0.5}}}`
+	if _, err := ParseDecisionAnswers([]byte(tied), questions); err != nil {
+		t.Fatalf("a choice tied for highest probability must be accepted: %v", err)
+	}
+}
+
+func TestParseDecisionAnswersNormalizesNearOneDistributions(t *testing.T) {
+	questions := map[string]schemas.DecisionQuestion{
+		"route":    {Kind: schemas.DecisionKindChoice, Criteria: map[string]string{"a": "Alpha", "b": "Beta"}},
+		"severity": {Kind: schemas.DecisionKindScore, Criteria: []string{"low", "medium", "high"}},
+	}
+	args := `{"route":{"choice":"a","confidence":0.8,"probabilities":{"a":0.8,"b":0.19}},"severity":{"value":2,"confidence":0.8,"probabilities":{"0":0,"1":0.05,"2":0.99}}}`
+	answers, err := ParseDecisionAnswers([]byte(args), questions)
+	if err != nil {
+		t.Fatalf("near-one distributions should be accepted: %v", err)
+	}
+	for _, name := range []string{"route", "severity"} {
+		var sum float64
+		for _, probability := range answers[name].Probabilities {
+			sum += probability
+		}
+		if math.Abs(sum-1) > 1e-9 {
+			t.Errorf("%s probabilities sum to %v, want 1", name, sum)
+		}
+	}
+	wantScore := (0.05 + 2*0.99) / 1.04
+	if score := answers["severity"].Value.(float64); math.Abs(score-wantScore) > 1e-9 {
+		t.Errorf("score = %v, want normalized expected value %v", score, wantScore)
+	}
+	tooFar := `{"route":{"choice":"a","confidence":0.8,"probabilities":{"a":0.8,"b":0.1}},"severity":{"value":2,"confidence":0.8,"probabilities":{"0":0,"1":0.05,"2":0.95}}}`
+	if _, err := ParseDecisionAnswers([]byte(tooFar), questions); err == nil || !strings.Contains(err.Error(), "sum") {
+		t.Fatalf("distribution far from one must be rejected, got %v", err)
+	}
+}
+
 func TestParseDecisionAnswersRejections(t *testing.T) {
 	q := mixedQuestions()
 	// Every fixture is valid EXCEPT for the one named defect, and each case
