@@ -709,6 +709,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 			StoreRawRequestResponse:  providerConfig.StoreRawRequestResponse,
 			CustomProviderConfig:     providerConfig.CustomProviderConfig,
 			OpenAIConfig:             providerConfig.OpenAIConfig,
+			MiniMaxConfig:            providerConfig.MiniMaxConfig,
 			PromptCache:              providerConfig.PromptCache,
 			ConfigHash:               providerConfig.ConfigHash,
 			Status:                   providerConfig.Status,
@@ -953,6 +954,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 	dbProvider.StoreRawRequestResponse = configCopy.StoreRawRequestResponse
 	dbProvider.CustomProviderConfig = configCopy.CustomProviderConfig
 	dbProvider.OpenAIConfig = configCopy.OpenAIConfig
+	dbProvider.MiniMaxConfig = configCopy.MiniMaxConfig
 	dbProvider.PromptCache = configCopy.PromptCache
 	dbProvider.ConfigHash = configCopy.ConfigHash
 
@@ -1140,6 +1142,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 		StoreRawRequestResponse:  configCopy.StoreRawRequestResponse,
 		CustomProviderConfig:     configCopy.CustomProviderConfig,
 		OpenAIConfig:             configCopy.OpenAIConfig,
+		MiniMaxConfig:            configCopy.MiniMaxConfig,
 		PromptCache:              configCopy.PromptCache,
 		ConfigHash:               configCopy.ConfigHash,
 	}
@@ -1315,6 +1318,7 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 			StoreRawRequestResponse:  dbProvider.StoreRawRequestResponse,
 			CustomProviderConfig:     dbProvider.CustomProviderConfig,
 			OpenAIConfig:             dbProvider.OpenAIConfig,
+			MiniMaxConfig:            dbProvider.MiniMaxConfig,
 			PromptCache:              dbProvider.PromptCache,
 			ConfigHash:               dbProvider.ConfigHash,
 			Status:                   dbProvider.Status,
@@ -1349,6 +1353,7 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 		StoreRawRequestResponse:  dbProvider.StoreRawRequestResponse,
 		CustomProviderConfig:     dbProvider.CustomProviderConfig,
 		OpenAIConfig:             dbProvider.OpenAIConfig,
+		MiniMaxConfig:            dbProvider.MiniMaxConfig,
 		PromptCache:              dbProvider.PromptCache,
 		ConfigHash:               dbProvider.ConfigHash,
 		Status:                   dbProvider.Status,

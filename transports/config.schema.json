@@ -421,6 +421,9 @@
         "mistral": {
           "$ref": "#/$defs/provider"
         },
+        "minimax": {
+          "$ref": "#/$defs/provider"
+        },
         "ollama": {
           "$ref": "#/$defs/provider_with_ollama_config"
         },
@@ -4446,6 +4449,19 @@
       },
       "additionalProperties": false
     },
+    "minimax_config": {
+      "type": "object",
+      "description": "MiniMax-specific provider settings",
+      "properties": {
+        "auth_type": {
+          "type": "string",
+          "enum": ["bearer", "x-key"],
+          "default": "bearer",
+          "description": "API-key authentication scheme. MiniMax official uses bearer; compatible gateways may use x-key."
+        }
+      },
+      "additionalProperties": false
+    },
     "openai_config": {
       "type": "object",
       "description": "OpenAI-specific provider settings",
@@ -5178,6 +5194,9 @@
         },
         "openai_config": {
           "$ref": "#/$defs/openai_config"
+        },
+        "minimax_config": {
+          "$ref": "#/$defs/minimax_config"
         },
         "prompt_cache": {
           "$ref": "#/$defs/prompt_cache"
@@ -8757,6 +8776,7 @@
             "gemini",
             "github-copilot",
             "openrouter",
+            "minimax",
             "elevenlabs",
             "huggingface",
             "nebius",

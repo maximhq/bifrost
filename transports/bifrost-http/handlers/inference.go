@@ -1400,24 +1400,48 @@ func prepareSpeechRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Speech
 // with a codec/rate prefix ("mp3_22050_32", "pcm_16000", "ulaw_8000"). Unknown
 // or empty formats fall back to mp3 (the API default).
 func speechAttachmentFilename(responseFormat string) string {
+	format := strings.ToLower(responseFormat)
 	ext := "mp3"
 	switch {
-	case strings.HasPrefix(responseFormat, "opus"):
-		ext = "opus"
-	case strings.HasPrefix(responseFormat, "aac"):
-		ext = "aac"
-	case strings.HasPrefix(responseFormat, "flac"):
-		ext = "flac"
-	case strings.HasPrefix(responseFormat, "wav"):
+	case strings.HasPrefix(format, "pcmu_wav"), strings.HasPrefix(format, "wav"):
 		ext = "wav"
-	case strings.HasPrefix(responseFormat, "pcm"):
-		ext = "pcm"
-	case strings.HasPrefix(responseFormat, "ulaw"):
+	case strings.HasPrefix(format, "pcmu_raw"), strings.HasPrefix(format, "ulaw"):
 		ext = "ulaw"
-	case strings.HasPrefix(responseFormat, "alaw"):
+	case strings.HasPrefix(format, "opus"):
+		ext = "opus"
+	case strings.HasPrefix(format, "aac"):
+		ext = "aac"
+	case strings.HasPrefix(format, "flac"):
+		ext = "flac"
+	case strings.HasPrefix(format, "pcm"):
+		ext = "pcm"
+	case strings.HasPrefix(format, "alaw"):
 		ext = "alaw"
 	}
 	return "speech." + ext
+}
+
+func shouldReturnSpeechJSON(provider schemas.ModelProvider, hasTimestamps bool, response *schemas.BifrostSpeechResponse) bool {
+	return (provider == schemas.Elevenlabs && hasTimestamps) || (response != nil && response.SubtitleFile != nil)
+}
+
+func speechContentType(responseFormat string) string {
+	format := strings.ToLower(responseFormat)
+	switch {
+	case strings.HasPrefix(format, "pcmu_wav"), strings.HasPrefix(format, "wav"):
+		return "audio/wav"
+	case strings.HasPrefix(format, "pcmu_raw"), strings.HasPrefix(format, "pcm"),
+		strings.HasPrefix(format, "ulaw"), strings.HasPrefix(format, "alaw"):
+		return "application/octet-stream"
+	case strings.HasPrefix(format, "flac"):
+		return "audio/flac"
+	case strings.HasPrefix(format, "opus"):
+		return "audio/ogg"
+	case strings.HasPrefix(format, "aac"):
+		return "audio/aac"
+	default:
+		return "audio/mpeg"
+	}
 }
 
 // speech handles POST /v1/audio/speech - Process speech completion requests.
@@ -1454,9 +1478,14 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Preserve the attachment header through the large-response shortcut; the
-	// normal binary path sets this explicitly after the stream check.
-	if !(bifrostSpeechReq.Provider == schemas.Elevenlabs && req.WithTimestamps != nil && *req.WithTimestamps) {
+	// When with_timestamps is true, ElevenLabs returns base64 encoded audio.
+	// MiniMax subtitle responses are also JSON so the metadata URL is not lost.
+	hasTimestamps := req.WithTimestamps != nil && *req.WithTimestamps
+	returnJSON := shouldReturnSpeechJSON(bifrostSpeechReq.Provider, hasTimestamps, resp)
+
+	// Preserve the attachment header through the large-response shortcut only for
+	// binary audio. JSON responses must not be downloaded as speech.<format>.
+	if !returnJSON {
 		bifrostCtx.SetValue(schemas.BifrostContextKeyLargeResponseContentDisposition, "attachment; filename="+attachmentFilename)
 	}
 
@@ -1468,11 +1497,8 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Send successful response
-	// When with_timestamps is true, Elevenlabs returns base64 encoded audio
-	hasTimestamps := req.WithTimestamps != nil && *req.WithTimestamps
-
-	if bifrostSpeechReq.Provider == schemas.Elevenlabs && hasTimestamps {
+	// Send successful response.
+	if returnJSON {
 		ctx.Response.Header.Set("Content-Type", "application/json")
 		SendJSON(ctx, resp)
 		return
@@ -1483,7 +1509,7 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	ctx.Response.Header.Set("Content-Type", "audio/mpeg")
+	ctx.Response.Header.Set("Content-Type", speechContentType(req.ResponseFormat))
 	ctx.Response.Header.Set("Content-Disposition", "attachment; filename="+attachmentFilename)
 	ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(resp.Audio)))
 	ctx.Response.SetBody(resp.Audio)
