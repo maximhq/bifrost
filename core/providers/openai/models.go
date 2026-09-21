@@ -34,10 +34,14 @@ func (response *OpenAIListModelsResponse) ToBifrostListModelsResponse(providerKe
 	for _, model := range response.Data {
 		for _, result := range pipeline.FilterModel(model.ID) {
 			entry := schemas.Model{
-				ID:            string(providerKey) + "/" + result.ResolvedID,
-				Created:       model.Created,
-				OwnedBy:       schemas.Ptr(model.OwnedBy),
-				ContextLength: model.ContextWindow,
+				ID:                       string(providerKey) + "/" + result.ResolvedID,
+				Name:                     model.DisplayName,
+				Description:              model.Description,
+				Created:                  model.Created,
+				OwnedBy:                  schemas.Ptr(model.OwnedBy),
+				ContextLength:            model.ContextWindow,
+				DefaultReasoningLevel:    model.DefaultReasoningLevel,
+				SupportedReasoningLevels: append([]byte(nil), model.SupportedReasoningLevels...),
 			}
 			if result.AliasValue != "" {
 				entry.Alias = schemas.Ptr(result.AliasValue)
@@ -63,8 +67,12 @@ func ToOpenAIListModelsResponse(response *schemas.BifrostListModelsResponse) *Op
 	}
 	for _, model := range response.Data {
 		openaiModel := OpenAIModel{
-			ID:     model.ID,
-			Object: "model",
+			ID:                       model.ID,
+			Object:                   "model",
+			DisplayName:              model.Name,
+			Description:              model.Description,
+			DefaultReasoningLevel:    model.DefaultReasoningLevel,
+			SupportedReasoningLevels: append([]byte(nil), model.SupportedReasoningLevels...),
 		}
 		if model.Created != nil {
 			openaiModel.Created = model.Created
