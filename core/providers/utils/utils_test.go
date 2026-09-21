@@ -19,6 +19,34 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// TestUnsupportedOperationRoutingMetadata preserves current and legacy error identities.
+func TestUnsupportedOperationRoutingMetadata(t *testing.T) {
+	for _, provider := range []schemas.ModelProvider{schemas.Zro, "custom-zro", schemas.OpenAI} {
+		t.Run(string(provider), func(t *testing.T) {
+			err := NewUnsupportedOperationError(schemas.TextCompletionRequest, provider)
+			if err.ExtraFields.RoutingInfo.Provider != provider {
+				t.Fatalf("routing provider = %q, want %q", err.ExtraFields.RoutingInfo.Provider, provider)
+			}
+			if err.ExtraFields.RequestType != schemas.TextCompletionRequest || err.Error.Code == nil || *err.Error.Code != "unsupported_operation" {
+				t.Fatal("unsupported-operation contract changed")
+			}
+			data, marshalErr := json.Marshal(err.ExtraFields)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			var wire struct {
+				Provider schemas.ModelProvider `json:"provider"`
+			}
+			if unmarshalErr := json.Unmarshal(data, &wire); unmarshalErr != nil {
+				t.Fatal(unmarshalErr)
+			}
+			if wire.Provider != provider {
+				t.Fatal("legacy serialized provider identity was lost")
+			}
+		})
+	}
+}
+
 func TestRewriteJSONModelValue(t *testing.T) {
 	in := []byte(`{"model":"openai/gpt-5","messages":[{"role":"user","content":"x"}]}`)
 	out, changed := rewriteJSONModelValue(in, "openai/gpt-5", "gpt-5")
