@@ -3429,8 +3429,13 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 		switch keyStr {
 		case "authorization":
 			callerAuth = string(value)
+		// accept-encoding is deliberately NOT dropped here: the provider narrows it to
+		// the codings Bifrost can decode (PinAcceptEncodingForPassthrough), which is the
+		// same treatment the non-passthrough OAuth path already gets. Dropping it made
+		// every passthrough request ask the upstream for identity, costing bandwidth on
+		// the gateway-to-provider hop for no protocol reason.
 		case "api-key", "x-api-key", "x-goog-api-key",
-			"host", "connection", "transfer-encoding", "cookie", "set-cookie", "proxy-authorization", "accept-encoding":
+			"host", "connection", "transfer-encoding", "cookie", "set-cookie", "proxy-authorization":
 		default:
 			if strings.HasPrefix(keyStr, "x-bf-") {
 				return true // drop internal gateway headers

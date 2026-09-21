@@ -1189,6 +1189,36 @@ func setPassthroughHeaders(ctx context.Context, req *fasthttp.Request, provider 
 	}
 }
 
+// PinAcceptEncodingForPassthrough narrows a passthrough caller's Accept-Encoding to the
+// codings Bifrost can actually decode, mirroring what setPassthroughHeaders already does
+// for the non-passthrough OAuth path. Passthrough sets SafeHeaders on the upstream request
+// verbatim, so without this a caller advertising br or zstd on a streaming request would
+// get a response DecompressStreamBody cannot decode and the SSE parser would see raw
+// compressed bytes.
+//
+// Narrowing must never widen what the upstream may send: an absent Accept-Encoding means
+// any coding is acceptable (RFC 9110 section 12.5.3), so an empty intersection pins
+// identity rather than deleting the header.
+func PinAcceptEncodingForPassthrough(safeHeaders map[string]string, streaming bool) {
+	if safeHeaders == nil {
+		return
+	}
+	supported := supportedBufferedContentEncodings
+	if streaming {
+		supported = supportedStreamingContentEncodings
+	}
+	for k, v := range safeHeaders {
+		if !strings.EqualFold(k, "accept-encoding") {
+			continue
+		}
+		if filtered := filterSupportedAcceptEncodings([]string{v}, supported); len(filtered) > 0 {
+			safeHeaders[k] = strings.Join(filtered, ", ")
+		} else {
+			safeHeaders[k] = "identity"
+		}
+	}
+}
+
 // StripCallerAuthForInsecureURL removes a forwarded caller Authorization header from
 // passthrough safe headers when the resolved upstream URL is neither HTTPS nor a
 // loopback address (RFC 6750 section 5.3; loopback is exempt per the RFC 8252
