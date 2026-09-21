@@ -39,6 +39,13 @@ func TestRefineModelForProvider(t *testing.T) {
 		{"own prefix on non-nested provider is stripped", schemas.OpenAI, "openai/gpt-oss-120b", "gpt-oss-120b"},
 		{"foreign prefix on non-nested provider unchanged", schemas.OpenAI, "anthropic/claude-opus-4-6", "anthropic/claude-opus-4-6"},
 		{"non-nested provider bare unchanged", schemas.Anthropic, "claude-opus-4-6", "claude-opus-4-6"},
+		{"databricks short name gains the system.ai prefix", schemas.Databricks, "claude-opus-5", "system.ai.claude-opus-5"},
+		{"databricks short name with a version dot gains the prefix", schemas.Databricks, "gpt-5.5", "system.ai.gpt-5.5"},
+		{"databricks system.ai name is unchanged", schemas.Databricks, "system.ai.gpt-5.5", "system.ai.gpt-5.5"},
+		{"databricks unity catalog fqn is unchanged", schemas.Databricks, "main.default.my-service", "main.default.my-service"},
+		{"databricks pay-per-token endpoint is unchanged", schemas.Databricks, "databricks-claude-sonnet-4-5", "databricks-claude-sonnet-4-5"},
+		{"databricks own-prefixed short name is stripped and refined", schemas.Databricks, "databricks/claude-opus-5", "system.ai.claude-opus-5"},
+		{"databricks refinement is idempotent", schemas.Databricks, "system.ai.claude-opus-5", "system.ai.claude-opus-5"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
@@ -111,6 +113,12 @@ func (r *BedrockInvokeRequest) UnmarshalJSON(data []byte) error {
 					}
 					r.Messages = append(r.Messages, msg)
 				}
+				// The standard path above translates cache_control into cache
+				// points; this one has to as well. A single message whose
+				// content is a bare string diverts the whole request here, so
+				// skipping it dropped cache_control from every other message in
+				// the same request too.
+				r.Messages = applyMessageContentCacheControl(r.Messages, aux.Messages)
 			}
 		}
 	}
@@ -222,6 +230,35 @@ func (b *BedrockContentBlock) UnmarshalJSON(data []byte) error {
 		if aux.IsError != nil && *aux.IsError {
 			b.ToolResult.Status = schemas.Ptr("error")
 		}
+	case "server_tool_use":
+		// Only tool search is carried. Every other Anthropic server tool is either
+		// Converse-representable or unsupported on this ingress, and reshaping one
+		// here would be a silent behaviour change well beyond #7155.
+		if aux.ID == nil || aux.Name == nil || !strings.HasPrefix(*aux.Name, "tool_search_tool_") {
+			return nil
+		}
+		b.AnthropicToolSearchUse = &BedrockAnthropicToolSearchUse{ID: *aux.ID, Name: *aux.Name, Input: aux.Input}
+	case "tool_search_tool_result":
+		if aux.ToolUseID == nil {
+			return nil
+		}
+		res := &BedrockAnthropicToolSearchResult{ToolUseID: *aux.ToolUseID}
+		// Anthropic nests tool_references inside the content object
+		// ({"type":"tool_search_tool_search_result","tool_references":[...]}); accept the
+		// flat spelling too, mirroring AnthropicContentBlock.DiscoveredToolReferences.
+		for _, path := range []string{"content.tool_references", "tool_references"} {
+			refs := gjson.GetBytes(data, path)
+			if !refs.Exists() {
+				continue
+			}
+			for _, ref := range refs.Array() {
+				if name := ref.Get("tool_name"); name.Exists() {
+					res.ToolReferences = append(res.ToolReferences, name.String())
+				}
+			}
+			break
+		}
+		b.AnthropicToolSearchResult = res
 	case "thinking":
 		if aux.Thinking == nil {
 			return nil
@@ -1014,13 +1051,35 @@ func (r *BedrockInvokeRequest) convertAnthropicTools() *BedrockToolConfig {
 			continue
 		}
 
-		// tool_search_tool_* is a server tool for Anthropic's tool-search-tool beta,
-		// not an invocable function — and classic Bedrock can't support tool search
-		// at all (AWS restricts it to InvokeModel/InvokeModelWithResponseStream,
-		// never Converse; see ProviderFeatures[schemas.Bedrock].ToolSearch in the
-		// anthropic package). Skip it here rather than building a broken,
-		// schema-less "function" tool out of it.
+		// tool_search_tool_* is a server tool, not an invocable function, and
+		// Converse has no slot for it: "On Amazon Bedrock, server-side tool search
+		// is available only through the InvokeModel API, not the Converse API."
+		// (https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool)
+		//
+		// Carry it on an ingress-only marker rather than dropping it. The egress
+		// predicate (responsesUsesAnthropicInvokePath) decides InvokeModel vs
+		// Converse from the neutral request, and this conversion is what builds
+		// that request — so dropping the tool here left the predicate blind and the
+		// feature silently no-op on this ingress (#7155). Building an invocable,
+		// schema-less "function" tool out of it would be wrong too.
+		//
+		// Gate on a recognized variant, not the bare prefix. schemas'
+		// normalizeResponsesToolType makes the same distinction deliberately, so that an
+		// unrecognized tool_search sibling "should reach unknown-tool handling instead of
+		// silently becoming a variant-less tool_search". A marker built for an unknown
+		// variant would resolve to no name, yet toolNeedsAnthropicInvokePath still matches
+		// the canonical "tool_search" prefix — so it would select InvokeModel and be sent
+		// to AWS as though Bifrost supported it. An unrecognized variant keeps the prior
+		// skip instead: it is not forwarded, and it never routes.
 		if typeStr, ok := toolMap["type"].(string); ok && strings.HasPrefix(typeStr, "tool_search_tool_") {
+			if schemas.ToolSearchVariantName(typeStr) == "" {
+				continue
+			}
+			marker := &BedrockAnthropicToolSearch{Type: typeStr}
+			if name, ok := toolMap["name"].(string); ok {
+				marker.Name = name
+			}
+			bedrockTools = append(bedrockTools, BedrockTool{AnthropicToolSearch: marker})
 			continue
 		}
 
@@ -1035,6 +1094,9 @@ func (r *BedrockInvokeRequest) convertAnthropicTools() *BedrockToolConfig {
 			inputSchemaBytes, _ := providerUtils.MarshalSorted(inputSchema)
 			spec.InputSchema = BedrockToolInputSchema{JSON: json.RawMessage(inputSchemaBytes)}
 		}
+		if deferLoading, ok := toolMap["defer_loading"].(bool); ok {
+			spec.DeferLoading = new(deferLoading)
+		}
 
 		bedrockTools = append(bedrockTools, BedrockTool{ToolSpec: spec})
 
@@ -1043,7 +1105,12 @@ func (r *BedrockInvokeRequest) convertAnthropicTools() *BedrockToolConfig {
 		// (BedrockConverseRequest.ToBifrostResponsesRequest) already knows how to read this —
 		// see responses.go's tool.CachePoint handling — including the Nova-family exclusion,
 		// so no extra gating is needed here.
-		if cacheControl, ok := toolMap["cache_control"].(map[string]interface{}); ok {
+		//
+		// A deferred tool is the exception: "A tool with defer_loading: true can't
+		// also carry cache_control: the API returns a 400." Honour the combination
+		// the client sent rather than manufacturing a breakpoint that guarantees one.
+		if cacheControl, ok := toolMap["cache_control"].(map[string]interface{}); ok &&
+			(spec.DeferLoading == nil || !*spec.DeferLoading) {
 			bedrockTools = append(bedrockTools, BedrockTool{CachePoint: newBedrockCachePoint(cacheControlTTL(cacheControl))})
 		}
 	}
@@ -1316,6 +1383,58 @@ func toBedrockInvokeAnthropicResponse(resp *schemas.BifrostResponsesResponse, mo
 				}
 			}
 		}
+		// Server-side tool search replays as the server_tool_use + tool_search_tool_result
+		// pair Anthropic sent, never as a client tool_use. The caller must not return a
+		// tool_result for a srvtoolu_ id — "Never return a tool_result for its
+		// srvtoolu_... ID" — and must echo both blocks back unchanged on the next turn.
+		// (https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool)
+		//
+		// This runs before the generic ResponsesToolMessage branch below, which would
+		// otherwise emit the search as an invocable tool_use.
+		if item.Type != nil && *item.Type == schemas.ResponsesMessageTypeToolSearchCall &&
+			item.ResponsesToolMessage != nil {
+			ts := item.ResponsesToolMessage
+			// Preserve the query the model searched with. Anthropic requires this block
+			// to be echoed back unchanged on the next turn, so rebuilding input as {}
+			// would silently rewrite it. Same parse as the generic tool branch below;
+			// {} remains the fallback when no arguments were captured.
+			var searchInput interface{} = map[string]interface{}{}
+			if ts.Arguments != nil && *ts.Arguments != "" {
+				var parsed interface{}
+				if err := sonic.UnmarshalString(*ts.Arguments, &parsed); err == nil {
+					searchInput = parsed
+				} else {
+					searchInput = *ts.Arguments
+				}
+			}
+			use := BedrockInvokeMessagesContentBlock{Type: "server_tool_use", Input: searchInput}
+			if ts.CallID != nil {
+				use.ID = *ts.CallID
+			}
+			if ts.Name != nil {
+				use.Name = *ts.Name
+			}
+			result.Content = append(result.Content, use)
+
+			refs := []BedrockInvokeToolReference{}
+			if ts.ResponsesToolSearchCall != nil {
+				for _, name := range ts.ResponsesToolSearchCall.ToolReferences {
+					refs = append(refs, BedrockInvokeToolReference{Type: "tool_reference", ToolName: name})
+				}
+			}
+			res := BedrockInvokeMessagesContentBlock{
+				Type: "tool_search_tool_result",
+				Content: &BedrockInvokeToolSearchResult{
+					Type:           "tool_search_tool_search_result",
+					ToolReferences: refs,
+				},
+			}
+			if ts.CallID != nil {
+				res.ToolUseID = *ts.CallID
+			}
+			result.Content = append(result.Content, res)
+			continue
+		}
 		// Tool use content
 		if item.ResponsesToolMessage != nil {
 			var input interface{}
@@ -1343,8 +1462,8 @@ func toBedrockInvokeAnthropicResponse(resp *schemas.BifrostResponsesResponse, mo
 		// Reasoning content
 		if item.ResponsesReasoning != nil {
 			// Bedrock-origin reasoning lives in Content.ContentBlocks (see
-			// convertSingleBedrockMessageToBifrostMessages) — ResponsesReasoning.Summary
-			// is OpenAI Responses-API shape and is always empty for Bedrock. Fall back
+			// convertSingleBedrockMessageToBifrostMessages); the streaming path instead
+			// closes its reasoning items with a Summary. Fall back
 			// to Summary whenever ContentBlocks yields no usable reasoning block, not
 			// merely when ContentBlocks is empty — a non-empty ContentBlocks containing
 			// no reasoning-type block would otherwise silently lose the Summary data.
@@ -1370,12 +1489,21 @@ func toBedrockInvokeAnthropicResponse(resp *schemas.BifrostResponsesResponse, mo
 				}
 			}
 			if !emittedFromContentBlocks {
+				// The signature signs the first summary entry only, matching the sibling
+				// Converse converter. An unsigned thinking block is rejected on replay, so
+				// it has to travel with the text rather than being left behind here.
+				signature := reasoningSignatureForBedrock(item.ResponsesReasoning.EncryptedContent)
 				for _, summary := range item.ResponsesReasoning.Summary {
 					if summary.Text != "" {
-						result.Content = append(result.Content, BedrockInvokeMessagesContentBlock{
+						blk := BedrockInvokeMessagesContentBlock{
 							Type:     "thinking",
 							Thinking: summary.Text,
-						})
+						}
+						if signature != nil {
+							blk.Signature = *signature
+							signature = nil
+						}
+						result.Content = append(result.Content, blk)
 					}
 				}
 			}
@@ -1500,7 +1628,7 @@ func ToBedrockInvokeMessagesStreamResponse(ctx *schemas.BifrostContext, resp *sc
 	// For Anthropic models (and default): serialize as Anthropic Messages API SSE events,
 	// then wrap in InvokeModelRawChunks. Some Bifrost events map to multiple Anthropic events
 	// (e.g., Completed → message_delta + message_stop).
-	rawChunks, err := toAnthropicInvokeStreamBytes(resp)
+	rawChunks, err := toAnthropicInvokeStreamBytes(ctx, resp)
 	if err != nil {
 		return "", nil, err
 	}
@@ -1515,11 +1643,102 @@ func ToBedrockInvokeMessagesStreamResponse(ctx *schemas.BifrostContext, resp *sc
 	return "", bedrockEvent, nil
 }
 
+type bedrockInvokeStreamStateKeyType struct{}
+
+var bedrockInvokeStreamStateKey = bedrockInvokeStreamStateKeyType{}
+
+// bedrockInvokeStreamState remembers the content-block index each output item opened its
+// content_block_start at, so the matching content_block_stop closes that same block.
+//
+// The neutral stream collapses Anthropic's server_tool_use + tool_search_tool_result pair
+// into a single tool_search_call item: output_item.added carries the server_tool_use
+// index, while output_item.done is emitted on the result block's stop and carries the
+// index after it. Copying each event's ContentIndex straight through therefore opens
+// block N and closes block N+1, leaving N open for the rest of the stream. The Anthropic
+// egress keeps the same bookkeeping for the same reason (blockIndexFor / allocBlockIndex
+// in providers/anthropic/responses.go).
+//
+// Only the pointer lives on the context: the map is bounded by the number of content
+// blocks in the stream rather than by its content, and it is released with the request.
+type bedrockInvokeStreamState struct {
+	mu           sync.Mutex
+	openedBlocks map[string]int // item key -> content index its content_block_start used
+}
+
+func getOrCreateBedrockInvokeStreamState(ctx *schemas.BifrostContext) *bedrockInvokeStreamState {
+	if ctx == nil {
+		return nil
+	}
+	if state, ok := ctx.Value(bedrockInvokeStreamStateKey).(*bedrockInvokeStreamState); ok && state != nil {
+		return state
+	}
+	state := &bedrockInvokeStreamState{openedBlocks: make(map[string]int)}
+	ctx.SetValue(bedrockInvokeStreamStateKey, state)
+	return state
+}
+
+// lookupBedrockInvokeStreamState returns the stream state without creating one, so a
+// stream that never opened a tracked block allocates nothing.
+func lookupBedrockInvokeStreamState(ctx *schemas.BifrostContext) *bedrockInvokeStreamState {
+	if ctx == nil {
+		return nil
+	}
+	state, _ := ctx.Value(bedrockInvokeStreamStateKey).(*bedrockInvokeStreamState)
+	return state
+}
+
+func (s *bedrockInvokeStreamState) rememberBlockIndex(key string, index int) {
+	if s == nil || key == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.openedBlocks[key] = index
+}
+
+// takeBlockIndex returns the index the item opened at and forgets it, so an id reused
+// after its block closed cannot close that block a second time.
+func (s *bedrockInvokeStreamState) takeBlockIndex(key string) (int, bool) {
+	if s == nil || key == "" {
+		return 0, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	index, ok := s.openedBlocks[key]
+	if ok {
+		delete(s.openedBlocks, key)
+	}
+	return index, ok
+}
+
+// bedrockInvokeStreamItemKey identifies a stream item across its added/done pair. The
+// srvtoolu_ id is carried by both events for a tool search; OutputIndex is the fallback
+// for items that carry no id.
+func bedrockInvokeStreamItemKey(resp *schemas.BifrostResponsesStreamResponse) string {
+	if resp == nil {
+		return ""
+	}
+	if resp.Item != nil {
+		if resp.Item.ID != nil && *resp.Item.ID != "" {
+			return "id:" + *resp.Item.ID
+		}
+		if resp.Item.ResponsesToolMessage != nil &&
+			resp.Item.ResponsesToolMessage.CallID != nil &&
+			*resp.Item.ResponsesToolMessage.CallID != "" {
+			return "call:" + *resp.Item.ResponsesToolMessage.CallID
+		}
+	}
+	if resp.OutputIndex != nil {
+		return "oi:" + strconv.Itoa(*resp.OutputIndex)
+	}
+	return ""
+}
+
 // toAnthropicInvokeStreamBytes converts a Bifrost stream event into raw bytes representing
 // the Anthropic Messages API streaming event JSON, suitable for wrapping in InvokeModelRawChunks.
 // Returns a slice of byte slices since some Bifrost events map to multiple Anthropic events
 // (e.g., Completed → message_delta + message_stop).
-func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) ([][]byte, error) {
+func toAnthropicInvokeStreamBytes(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) ([][]byte, error) {
 	var event interface{}
 
 	switch resp.Type {
@@ -1583,8 +1802,24 @@ func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) 
 			if resp.ContentIndex != nil {
 				idx = *resp.ContentIndex
 			}
+			// A tool_search_call is Anthropic's server-side search, not a client tool
+			// call. Emitting it as tool_use makes the caller execute a srvtoolu_ id and
+			// return a tool_result for it, which the API rejects on the next turn:
+			// "Never return a tool_result for its srvtoolu_... ID."
+			// (https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool)
+			//
+			// The paired tool_search_tool_result block is deliberately NOT re-emitted
+			// here. The neutral stream collapses Anthropic's two blocks into a single
+			// tool_search_call item, so the caller sees the query block alone; the
+			// non-streaming path emits the full pair. The stop for this block is
+			// realigned onto the index opened here (see bedrockInvokeStreamState), so
+			// dropping the result block does not leave an unclosed block behind.
+			blockType := "tool_use"
+			if resp.Item.Type != nil && *resp.Item.Type == schemas.ResponsesMessageTypeToolSearchCall {
+				blockType = "server_tool_use"
+			}
 			block := map[string]interface{}{
-				"type":  "tool_use",
+				"type":  blockType,
 				"id":    "",
 				"name":  "",
 				"input": map[string]interface{}{},
@@ -1600,6 +1835,9 @@ func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) 
 				"index":         idx,
 				"content_block": block,
 			}
+			// Remember where this item opened so its output_item.done closes this block
+			// and not whichever index the neutral stream happens to carry by then.
+			getOrCreateBedrockInvokeStreamState(ctx).rememberBlockIndex(bedrockInvokeStreamItemKey(resp), idx)
 		} else {
 			// Skip — content_block_start is emitted on ContentPartAdded where we know the block type
 			return nil, nil
@@ -1702,6 +1940,11 @@ func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) 
 		idx := 0
 		if resp.ContentIndex != nil {
 			idx = *resp.ContentIndex
+		}
+		// A tool_search_call's done event carries the tool_search_tool_result index, one
+		// past the server_tool_use its added event opened, so close the opened block.
+		if opened, ok := lookupBedrockInvokeStreamState(ctx).takeBlockIndex(bedrockInvokeStreamItemKey(resp)); ok {
+			idx = opened
 		}
 		event = map[string]interface{}{
 			"type":  "content_block_stop",

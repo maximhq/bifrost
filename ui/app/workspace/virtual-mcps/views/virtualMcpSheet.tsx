@@ -27,7 +27,6 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Loader2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import VirtualMCPAccessTab from "./virtualMcpAccessTab";
-import VirtualMCPConnectTab from "./virtualMcpConnectTab";
 import VirtualMCPGeneralTab from "./virtualMcpGeneralTab";
 import VirtualMcpToolsEditor from "./virtualMcpToolsEditor";
 
@@ -206,9 +205,6 @@ export default function VirtualMCPSheet({ target, onClose, hasPrev = false, hasN
 							<TabsTrigger value="access" data-testid="virtual-mcp-tab-access">
 								Access
 							</TabsTrigger>
-							<TabsTrigger value="connect" data-testid="virtual-mcp-tab-connect">
-								Connect
-							</TabsTrigger>
 						</TabsList>
 
 						<div className="grow overflow-y-auto px-4 py-5 md:px-8">
@@ -235,14 +231,6 @@ export default function VirtualMCPSheet({ target, onClose, hasPrev = false, hasN
 									onChange={setAssignedVkIds}
 									isCreate={isCreate}
 									active={tab === "access"}
-								/>
-							</TabsContent>
-							<TabsContent value="connect" className="mt-0">
-								<VirtualMCPConnectTab
-									slug={existing?.endpoint_slug ?? ""}
-									enabled={enabled}
-									isCreate={isCreate}
-									active={tab === "connect"}
 								/>
 							</TabsContent>
 						</div>

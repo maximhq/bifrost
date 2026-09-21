@@ -324,3 +324,142 @@ func TestResponsesToolMarshalUnmarshalRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+// =============================================================================
+// image_generation_call — OpenAI sends `action` as a bare string, not an object
+// =============================================================================
+
+// TestResponsesToolMessageBareStringAction locks in the fix for the
+// image_generation_call decode failure. OpenAI emits the completed item as
+// {"type":"image_generation_call","action":"generate","result":"<base64>"},
+// but ResponsesToolMessageActionStruct.UnmarshalJSON opened by peeking at
+// `.type`, which cannot be read out of a JSON string. Decoding failed with
+// "failed to peek at type field", which killed the whole non-streaming
+// response and silently dropped the two stream events carrying the image
+// (response.output_item.done and response.completed) — leaving the stream with
+// no terminal event and surfacing as a bogus "provider closed the stream"
+// truncation error.
+func TestResponsesToolMessageBareStringAction(t *testing.T) {
+	const event = `{"type":"response.output_item.done","output_index":0,"sequence_number":6,` +
+		`"item":{"id":"ig_1","type":"image_generation_call","status":"completed",` +
+		`"action":"generate","result":"iVBORw0KGgoAAAANSUhEUg=="}}`
+
+	var stream BifrostResponsesStreamResponse
+	require.NoError(t, Unmarshal([]byte(event), &stream),
+		"a bare-string action must not break the item decode")
+
+	require.NotNil(t, stream.Item)
+	require.NotNil(t, stream.Item.ResponsesToolMessage)
+	require.NotNil(t, stream.Item.ResponsesToolMessage.Action)
+	require.NotNil(t, stream.Item.ResponsesToolMessage.Action.ResponsesToolCallActionStr)
+	assert.Equal(t, "generate", *stream.Item.ResponsesToolMessage.Action.ResponsesToolCallActionStr)
+
+	require.NotNil(t, stream.Item.ResponsesToolMessage.ResponsesImageGenerationCall)
+	assert.Equal(t, "iVBORw0KGgoAAAANSUhEUg==",
+		stream.Item.ResponsesToolMessage.ResponsesImageGenerationCall.Result,
+		"the base64 image must survive the decode")
+
+	out, err := MarshalSorted(stream.Item)
+	require.NoError(t, err)
+	assert.JSONEq(t,
+		`{"id":"ig_1","type":"image_generation_call","status":"completed",`+
+			`"action":"generate","result":"iVBORw0KGgoAAAANSUhEUg=="}`,
+		string(out),
+		"action must be re-emitted verbatim for drop-in clients")
+}
+
+// TestResponsesToolMessageObjectActionsUnchanged guards the object variants of
+// the action union against the string probe added ahead of the type peek.
+func TestResponsesToolMessageObjectActionsUnchanged(t *testing.T) {
+	tests := []struct {
+		name   string
+		action string
+		assert func(t *testing.T, a *ResponsesToolMessageActionStruct)
+	}{
+		{
+			name:   "web search action",
+			action: `{"type":"search","query":"sunset"}`,
+			assert: func(t *testing.T, a *ResponsesToolMessageActionStruct) {
+				require.NotNil(t, a.ResponsesWebSearchToolCallAction)
+			},
+		},
+		{
+			name:   "computer use action",
+			action: `{"type":"click","button":"left","x":10,"y":20}`,
+			assert: func(t *testing.T, a *ResponsesToolMessageActionStruct) {
+				require.NotNil(t, a.ResponsesComputerToolCallAction)
+			},
+		},
+		{
+			name:   "local shell action",
+			action: `{"type":"exec","command":["ls"]}`,
+			assert: func(t *testing.T, a *ResponsesToolMessageActionStruct) {
+				require.NotNil(t, a.ResponsesLocalShellToolCallAction)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var action ResponsesToolMessageActionStruct
+			require.NoError(t, Unmarshal([]byte(tt.action), &action))
+			assert.Nil(t, action.ResponsesToolCallActionStr,
+				"an object action must not be captured by the string probe")
+			tt.assert(t, &action)
+		})
+	}
+}
+
+// TestResponsesImageGenerationCallSettings covers the rest of the completed
+// image_generation_call item. ResponsesImageGenerationCall modelled only
+// `result`, so the settings OpenAI echoes back alongside the base64 image were
+// dropped from the item Bifrost re-emits on the native /v1 path.
+func TestResponsesImageGenerationCallSettings(t *testing.T) {
+	const item = `{"id":"ig_1","type":"image_generation_call","status":"completed",` +
+		`"action":"generate","background":"opaque","output_format":"png","quality":"low",` +
+		`"size":"1024x1024","revised_prompt":"a sunset over mountains","result":"iVBORw0KGgo="}`
+
+	var msg ResponsesMessage
+	require.NoError(t, Unmarshal([]byte(item), &msg))
+
+	require.NotNil(t, msg.ResponsesToolMessage)
+	call := msg.ResponsesToolMessage.ResponsesImageGenerationCall
+	require.NotNil(t, call)
+
+	assert.Equal(t, "iVBORw0KGgo=", call.Result)
+	for name, got := range map[string]*string{
+		"background":     call.Background,
+		"output_format":  call.OutputFormat,
+		"quality":        call.Quality,
+		"size":           call.Size,
+		"revised_prompt": call.RevisedPrompt,
+	} {
+		require.NotNil(t, got, "%s must survive the decode", name)
+	}
+	assert.Equal(t, "opaque", *call.Background)
+	assert.Equal(t, "png", *call.OutputFormat)
+	assert.Equal(t, "low", *call.Quality)
+	assert.Equal(t, "1024x1024", *call.Size)
+	assert.Equal(t, "a sunset over mountains", *call.RevisedPrompt)
+
+	out, err := MarshalSorted(msg)
+	require.NoError(t, err)
+	assert.JSONEq(t, item, string(out), "the completed item must round-trip unchanged")
+}
+
+// TestResponsesToolImageGenerationAction covers `action` on the image_generation
+// tool definition, which selects generate/edit/auto for the tool's calls.
+func TestResponsesToolImageGenerationAction(t *testing.T) {
+	const def = `{"type":"image_generation","action":"edit","quality":"high","size":"1024x1536"}`
+
+	var tool ResponsesTool
+	require.NoError(t, Unmarshal([]byte(def), &tool))
+
+	require.NotNil(t, tool.ResponsesToolImageGeneration)
+	require.NotNil(t, tool.ResponsesToolImageGeneration.Action)
+	assert.Equal(t, "edit", *tool.ResponsesToolImageGeneration.Action)
+
+	out, err := MarshalSorted(tool)
+	require.NoError(t, err)
+	assert.JSONEq(t, def, string(out))
+}

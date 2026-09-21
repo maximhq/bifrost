@@ -1266,6 +1266,84 @@ func TestGetVirtualKeysPaginated_AssignmentFilters(t *testing.T) {
 	}
 }
 
+// TestGetVirtualKeysPaginated_Search covers the fields a search term matches. The
+// search box is the only free-text affordance on the virtual keys page, so it
+// matches everything the "Assigned To" column can display - the key's own name,
+// its team, and its customer - rather than the name alone. (The assigned user is
+// the enterprise store's addition; the link table does not exist here.)
+func TestGetVirtualKeysPaginated_Search(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.CreateCustomer(ctx, &tables.TableCustomer{ID: "cust-1", Name: "Acme Corp"}))
+	require.NoError(t, store.CreateTeam(ctx, &tables.TableTeam{ID: "team-1", Name: "Platform Squad"}))
+
+	custID, teamID := "cust-1", "team-1"
+	seed := []*tables.TableVirtualKey{
+		{ID: "vk-cust", Name: "billing key", Value: *schemas.NewSecretVar("vk-cust-val"), IsActive: schemas.Ptr(true), CustomerID: &custID},
+		{ID: "vk-team", Name: "ingest key", Value: *schemas.NewSecretVar("vk-team-val"), IsActive: schemas.Ptr(true), TeamID: &teamID},
+		{ID: "vk-none", Name: "Platform scratch", Value: *schemas.NewSecretVar("vk-none-val"), IsActive: schemas.Ptr(true)},
+	}
+	for _, vk := range seed {
+		require.NoError(t, store.CreateVirtualKey(ctx, vk))
+	}
+
+	tests := []struct {
+		name    string
+		search  string
+		wantIDs []string
+	}{
+		{name: "matches the key name", search: "billing", wantIDs: []string{"vk-cust"}},
+		{name: "matches the key name case-insensitively", search: "BILLING", wantIDs: []string{"vk-cust"}},
+		{name: "matches the customer name", search: "acme", wantIDs: []string{"vk-cust"}},
+		{name: "matches the team name", search: "squad", wantIDs: []string{"vk-team"}},
+		{
+			// One term can hit a key by its own name and another by its team, and
+			// both belong in the results.
+			name:    "unions matches across fields",
+			search:  "platform",
+			wantIDs: []string{"vk-none", "vk-team"},
+		},
+		{name: "matches nothing when no field contains the term", search: "nonexistent", wantIDs: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vks, totalCount, err := store.GetVirtualKeysPaginated(ctx, VirtualKeyQueryParams{Search: tt.search})
+			require.NoError(t, err)
+
+			gotIDs := make([]string, 0, len(vks))
+			for _, vk := range vks {
+				gotIDs = append(gotIDs, vk.ID)
+			}
+			sort.Strings(gotIDs)
+			assert.Equal(t, tt.wantIDs, nonEmptyIDs(gotIDs))
+			assert.Equal(t, int64(len(tt.wantIDs)), totalCount)
+		})
+	}
+}
+
+// A search must not widen an assignment filter: the two narrow together.
+func TestGetVirtualKeysPaginated_SearchWithAssignmentFilter(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.CreateTeam(ctx, &tables.TableTeam{ID: "team-1", Name: "Platform Squad"}))
+	teamID := "team-1"
+	require.NoError(t, store.CreateVirtualKey(ctx, &tables.TableVirtualKey{
+		ID: "vk-team", Name: "ingest key", Value: *schemas.NewSecretVar("vk-team-val"), IsActive: schemas.Ptr(true), TeamID: &teamID,
+	}))
+	require.NoError(t, store.CreateVirtualKey(ctx, &tables.TableVirtualKey{
+		ID: "vk-none", Name: "ingest scratch", Value: *schemas.NewSecretVar("vk-none-val"), IsActive: schemas.Ptr(true),
+	}))
+
+	vks, totalCount, err := store.GetVirtualKeysPaginated(ctx, VirtualKeyQueryParams{Search: "ingest", TeamID: "team-1"})
+	require.NoError(t, err)
+	require.Len(t, vks, 1)
+	assert.Equal(t, "vk-team", vks[0].ID)
+	assert.Equal(t, int64(1), totalCount)
+}
+
 // nonEmptyIDs normalizes an empty slice to nil so table cases can express
 // "matches nothing" as a nil wantIDs.
 func nonEmptyIDs(ids []string) []string {
@@ -3348,6 +3426,69 @@ func TestUpsertModelPricesBatch_MegapixelImageTierColumns_SurviveResync(t *testi
 	assert.InDelta(t, 0.05, *row.OutputCostPerImageAbove16Megapixels, 1e-9) // survived resync with the updated value
 	assert.InDelta(t, 0.06, *row.OutputCostPerImageAbove32Megapixels, 1e-9)
 	assert.InDelta(t, 0.12, *row.OutputCostPerImageAbove64Megapixels, 1e-9)
+}
+
+func TestUpsertModelPricesBatch_TimeOfDayColumns_SurviveResync(t *testing.T) {
+	// Same pricingSyncUpdateColumns regression as the megapixel test above, for
+	// the peak/off-peak columns. peak_hours additionally exercises the
+	// serializer:json round-trip, which the plain *float64 columns do not.
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+
+	ctx := context.Background()
+	cost := func(f float64) *float64 { return &f }
+
+	pricing := []tables.TableModelPricing{
+		{
+			Model:                 "deepseek-v4-flash",
+			Provider:              "deepseek",
+			Mode:                  "chat",
+			InputCostPerToken:     cost(0.00000044),
+			OutputCostPerToken:    cost(0.00000132),
+			OffPeakCostMultiplier: cost(0.5),
+			PeakHours: &tables.PeakHoursSchedule{
+				Timezone: "UTC",
+				Windows: []tables.PeakHoursWindow{
+					{Days: []int{1, 2, 3, 4, 5}, Start: "01:00", End: "04:00"},
+					{Days: []int{1, 2, 3, 4, 5}, Start: "06:00", End: "10:00"},
+				},
+			},
+		},
+	}
+
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	// Re-upsert the same row (the next scheduled datasheet sync) with BOTH
+	// columns changed, to exercise the ON CONFLICT update path. peak_hours has
+	// to change too: leaving it identical would let the row keep the value the
+	// first insert wrote, so the assertions below would still pass even if
+	// peak_hours were missing from pricingSyncUpdateColumns, which is the exact
+	// regression this test exists to catch.
+	pricing[0].OffPeakCostMultiplier = cost(0.6)
+	pricing[0].PeakHours = &tables.PeakHoursSchedule{
+		Timezone: "Asia/Shanghai",
+		Windows: []tables.PeakHoursWindow{
+			{Days: []int{1, 2, 3, 4, 5}, Start: "02:00", End: "05:00"},
+		},
+	}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+
+	row := got[0]
+	require.NotNil(t, row.OffPeakCostMultiplier)
+	assert.InDelta(t, 0.6, *row.OffPeakCostMultiplier, 1e-9) // survived resync with the updated value
+
+	// Every field below differs from the first insert, so a peak_hours column
+	// that never got updated fails here rather than passing by coincidence.
+	require.NotNil(t, row.PeakHours)
+	assert.Equal(t, "Asia/Shanghai", row.PeakHours.Timezone)
+	require.Len(t, row.PeakHours.Windows, 1)
+	assert.Equal(t, []int{1, 2, 3, 4, 5}, row.PeakHours.Windows[0].Days)
+	assert.Equal(t, "02:00", row.PeakHours.Windows[0].Start)
+	assert.Equal(t, "05:00", row.PeakHours.Windows[0].End)
 }
 
 func TestUpsertModelParametersBatch_SQLite(t *testing.T) {

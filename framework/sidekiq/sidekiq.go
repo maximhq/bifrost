@@ -3,6 +3,7 @@ package sidekiq
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -477,4 +478,23 @@ func (r *Runner) dispatchOnce() {
 func (r *Runner) Shutdown() {
 	r.cancel()
 	r.wg.Wait()
+}
+
+// IsDuplicateJobError reports whether err is a primary-key collision on the job
+// row, i.e. another node enqueued the same deterministic job ID first. Producers
+// that derive the ID from the work itself (an archive window, a scheduled
+// rotation) treat this as "someone else owns it", not as a failure. Matching on
+// message text is the only option: the store surfaces the driver's error
+// verbatim and defines no sentinel for it.
+func IsDuplicateJobError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unique constraint") ||
+		strings.Contains(msg, "unique index") ||
+		strings.Contains(msg, "unique_violation") ||
+		strings.Contains(msg, "duplicate key") ||
+		strings.Contains(msg, "duplicate entry") ||
+		strings.Contains(msg, "duplicated key")
 }

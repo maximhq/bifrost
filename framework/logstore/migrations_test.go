@@ -49,6 +49,25 @@ func TestMigrationAddMCPPluginLogsColumn(t *testing.T) {
 	assert.Equal(t, int64(1), count)
 }
 
+// TestMigrationAddSessionIDColumn verifies that the session lookup
+// column is additive, indexed, and preserves pre-existing request logs.
+func TestMigrationAddSessionIDColumn(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("CREATE TABLE logs (id TEXT PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("INSERT INTO logs (id) VALUES (?)", "existing-log").Error)
+
+	ctx := context.Background()
+	require.NoError(t, migrationAddSessionIDColumn(ctx, db, testLogger{}))
+	require.True(t, db.Migrator().HasColumn(&Log{}, "SessionID"))
+	require.True(t, db.Migrator().HasIndex(&Log{}, "idx_logs_session_id"))
+	require.NoError(t, migrationAddSessionIDColumn(ctx, db, testLogger{}))
+
+	var count int64
+	require.NoError(t, db.Table("logs").Where("id = ?", "existing-log").Count(&count).Error)
+	assert.Equal(t, int64(1), count)
+}
+
 // pgTestSchema is this package's dedicated Postgres schema. Test packages
 // (configstore, configstore/tables, logstore) run in parallel against the same
 // database, so each one works in its own schema to avoid clobbering the
@@ -507,4 +526,43 @@ func TestPerformanceIndexesCoverProjectIDs(t *testing.T) {
 	}
 	assert.Equal(t, "logs", tables["idx_logs_project_id"])
 	assert.Equal(t, "mcp_tool_logs", tables["idx_mcp_logs_project_id"])
+}
+
+// TestMigrationAddMCPGovernanceSnapshots verifies the attribution columns are
+// additive, idempotent, and leave rows written before them intact — those rows
+// keep their bare ids, which is the accepted cost of not rewriting history.
+func TestMigrationAddMCPGovernanceSnapshots(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("CREATE TABLE mcp_tool_logs (id TEXT PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("INSERT INTO mcp_tool_logs (id) VALUES (?)", "mcp-existing").Error)
+
+	ctx := context.Background()
+	require.NoError(t, migrationAddMCPGovernanceSnapshots(ctx, db, testLogger{}))
+	for _, field := range []string{
+		"UserName", "TeamName", "CustomerName", "BusinessUnitName",
+		"TeamIDs", "TeamNames", "CustomerIDs", "CustomerNames",
+		"BusinessUnitIDs", "BusinessUnitNames", "BudgetIDs", "RateLimitIDs",
+	} {
+		require.True(t, db.Migrator().HasColumn(&MCPToolLog{}, field), "missing column for %s", field)
+	}
+	require.NoError(t, migrationAddMCPGovernanceSnapshots(ctx, db, testLogger{}))
+
+	var count int64
+	require.NoError(t, db.Table("mcp_tool_logs").Where("id = ?", "mcp-existing").Count(&count).Error)
+	assert.Equal(t, int64(1), count)
+}
+
+// TestMCPGovernanceSnapshotsMigrationIsRegistered keeps the migration reachable:
+// an unregistered step leaves the columns missing on every real deployment while
+// every unit test that calls it directly still passes.
+func TestMCPGovernanceSnapshotsMigrationIsRegistered(t *testing.T) {
+	for _, step := range logstoreMigrationSteps {
+		for _, id := range step.IDs {
+			if id == "mcp_tool_logs_add_governance_snapshots" {
+				return
+			}
+		}
+	}
+	t.Fatal("mcp_tool_logs_add_governance_snapshots is not registered in logstoreMigrationSteps")
 }

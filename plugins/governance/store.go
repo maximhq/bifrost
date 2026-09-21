@@ -709,6 +709,29 @@ func (gs *LocalGovernanceStore) BumpRateLimitUsage(ctx context.Context, rateLimi
 	}
 }
 
+// BumpBudgetUsageBy atomically adds an arbitrary delta without applying a
+// window reset. The CAS retry preserves concurrent request increments.
+func (gs *LocalGovernanceStore) BumpBudgetUsageBy(_ context.Context, budgetID string, delta float64) error {
+	if delta == 0 {
+		return nil
+	}
+	for {
+		raw, exists := gs.budgets.Load(budgetID)
+		if !exists || raw == nil {
+			return nil
+		}
+		old, ok := raw.(*configstoreTables.TableBudget)
+		if !ok || old == nil {
+			return nil
+		}
+		clone := *old
+		clone.CurrentUsage = max(clone.CurrentUsage+delta, 0)
+		if gs.budgets.CompareAndSwap(budgetID, raw, &clone) {
+			return nil
+		}
+	}
+}
+
 // BumpRateLimitUsageBy atomically adds arbitrary token and request deltas to the
 // rate limit identified by rateLimitID. Unlike BumpRateLimitUsage (which adds a
 // token count and a single request), this adds caller-supplied counts on both
@@ -1457,6 +1480,13 @@ func (gs *LocalGovernanceStore) virtualMCPByID(id uint) *configstoreTables.Table
 		return v.(*configstoreTables.TableVirtualMCP)
 	}
 	return nil
+}
+
+// GetVirtualMCPFromCache returns the live cached Virtual MCP definition for id, or nil. Enterprise
+// access-profile / project resolution uses this so it serves the current definition (Enabled and
+// tool specs) rather than a snapshot captured at propagate time, which goes stale on a vMCP edit.
+func (gs *LocalGovernanceStore) GetVirtualMCPFromCache(id uint) *configstoreTables.TableVirtualMCP {
+	return gs.virtualMCPByID(id)
 }
 
 // assignedVirtualMCPIDs returns a VK's assigned Virtual MCP IDs, or nil if none.
@@ -3480,9 +3510,9 @@ func (gs *LocalGovernanceStore) CollectModelScopedGovernanceIDs(ctx context.Cont
 }
 
 // ScopedID names a (scope, scope_id) pair for a model-config lookup, and the holder kind its
-// per-model limits are attributed to when used to resolve request-time enforcement scopes (see
-// modelConfigScopesFor). Left empty by a caller that only wants CollectModelScopedGovernanceIDs's
-// budget/rate-limit IDs, since that path never attributes a limit to a holder.
+// per-model limits are attributed to when the scope is enforced by name (see ScopedModelLimits).
+// Left empty by a caller that only wants CollectModelScopedGovernanceIDs's budget/rate-limit IDs,
+// since that path never attributes a limit to a holder.
 type ScopedID struct {
 	Scope   string
 	ScopeID string
@@ -3496,8 +3526,9 @@ type ScopedID struct {
 // virtual_key set without this package needing to know their scope semantics.
 // Must be fast and non-blocking (in-memory only) — called on every request.
 //
-// When used to resolve request-time enforcement scopes (modelConfigScopesFor), each ScopedID's Kind
-// is what a refusal names as the holder of the limit that ran out — see ScopedID.
+// modelConfigScopesFor does not consult these resolvers: a caller wanting one of these scopes
+// enforced passes it to ScopedModelLimits / ProviderScopedModelLimitsInScope, where the ScopedID's
+// Kind is what a refusal names as the holder of the limit that ran out — see ScopedID.
 type ExtraScopedIDsResolver func(ctx context.Context, virtualKeyID, userID string) []ScopedID
 
 var (
@@ -4690,17 +4721,35 @@ func (gs *LocalGovernanceStore) GlobalProviderLimits(ctx context.Context, provid
 // provider, exact pair and all-models-on-the-provider, in the scope the permit selects (the
 // deployment's own for nil, the holder's otherwise).
 //
-// The provider-less tiers are deliberately absent, and this method rather than
-// ProviderAndModelLimits is what routing asks so they stay absent: a limit covering every provider
+// The provider-less tiers are deliberately absent, and this method rather than GlobalModelLimits
+// or PermitModelLimits is what routing asks so they stay absent: a limit covering every provider
 // answers the same for every candidate, so it can only exclude all of them at once, which is a
 // refusal for the funnel to state with a reason rather than load balancing quietly running out of
 // options.
-//
-// The walk is collectModelConfigsFor's, filtered rather than reimplemented, so which configs cover
-// a pair has exactly one answer and routing's subset of it cannot drift from the funnel's.
 func (gs *LocalGovernanceStore) ProviderScopedModelLimits(ctx context.Context, permit schemas.Permit, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
+	return gs.providerScopedModelLimitsInScopes(ctx, modelConfigScopesFor(permit), provider, model)
+}
+
+// ProviderScopedModelLimitsInScope is ProviderScopedModelLimits over one named scope, attributed to
+// the given holder kind: the routing-side counterpart of ScopedModelLimits, and there for the same
+// reason. A store layered on this one may impose per-model limits on the caller themselves, under
+// a scope no permit stands for, and a provider-scoped one of those prices the caller out of that
+// provider exactly as a permit's would. Load balancing has to ask about it the same way, or it
+// routes to a provider the funnel then refuses.
+func (gs *LocalGovernanceStore) ProviderScopedModelLimitsInScope(ctx context.Context, scope, scopeID string, kind grant.LimitHolderKind, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
+	if scope == "" || scopeID == "" {
+		return nil, nil
+	}
+	return gs.providerScopedModelLimitsInScopes(ctx, []limitScope{{name: scope, id: scopeID, kind: kind}}, provider, model)
+}
+
+// providerScopedModelLimitsInScopes is modelLimitsInScopes narrowed to the configs that name the
+// provider. The walk is collectModelConfigsFor's, filtered rather than reimplemented, so which
+// configs cover a pair has exactly one answer and routing's subset of it cannot drift from the
+// funnel's.
+func (gs *LocalGovernanceStore) providerScopedModelLimitsInScopes(ctx context.Context, scopes []limitScope, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
 	providerName := string(provider)
-	for _, scope := range modelConfigScopesFor(permit) {
+	for _, scope := range scopes {
 		for _, mc := range gs.collectModelConfigsFor(ctx, scope.name, scope.id, model, &providerName) {
 			if mc == nil || mc.Provider == nil {
 				continue

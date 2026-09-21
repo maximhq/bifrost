@@ -1039,6 +1039,39 @@ func TestSemanticClassifierRearmsForProviderOnlyWhenFailed(t *testing.T) {
 	assert.Equal(t, revisionBefore, revisionAfter, "a ready classifier must not re-embed on a provider change")
 }
 
+// TestSemanticClassifierRetryWarmupRetriesOnlyFailedState verifies an operator
+// retry shares the existing revision-safe recovery path without duplicating a
+// healthy or in-flight warmup.
+func TestSemanticClassifierRetryWarmupRetriesOnlyFailedState(t *testing.T) {
+	classifier := NewSemanticClassifier(context.Background(), bifrost.NewDefaultLogger(schemas.LogLevelError))
+	t.Cleanup(func() {
+		require.NoError(t, classifier.Close())
+	})
+
+	var serving atomic.Bool
+	classifier.SetEmbeddingFunc(func(_ context.Context, _ *SemanticConfig, _ string) ([]float32, error) {
+		if !serving.Load() {
+			return nil, errors.New("synthetic provider failure")
+		}
+		return []float32{1, 0}, nil
+	})
+	config := testSemanticClassifierConfig(configstore.ComplexitySemanticVectorStoreEmbedded)
+	classifier.Configure(&config)
+	require.Eventually(t, func() bool {
+		return classifier.Status().State == SemanticStatusFailed
+	}, time.Second, 10*time.Millisecond)
+
+	serving.Store(true)
+	_, retried := classifier.RetryWarmup()
+	require.True(t, retried)
+	require.Eventually(t, func() bool {
+		return classifier.Status().State == SemanticStatusReady
+	}, time.Second, 10*time.Millisecond)
+
+	_, retried = classifier.RetryWarmup()
+	require.False(t, retried, "a ready classifier must not schedule another warmup")
+}
+
 // TestSemanticClassifierEmbedsOnlyNewPhrasesOnTierEdit pins the cost model of
 // editing a tier list. Generations stay content-addressed, so adding one phrase
 // still mints a new fingerprint and writes every exemplar into a fresh

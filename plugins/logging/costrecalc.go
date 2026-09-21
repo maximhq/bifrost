@@ -43,8 +43,10 @@ type CostRecalcJobMeta struct {
 	// one — the (timestamp ASC, id ASC) ordering keeps the offset stable.
 	CursorOffset int `json:"cursor_offset,omitempty"`
 	// Total is the number of in-scope rows counted at enqueue, for a determinate
-	// progress bar. Processed can drift slightly if the underlying rows change between
-	// the enqueue-time count and the walk; treat progress as approximate.
+	// progress bar. Treat it as approximate and never as the length of the walk.
+	// It drifts when rows change between the enqueue-time count and the walk, and
+	// on a full recalculation (MissingCostOnly false) it can come from a stale
+	// materialized view; see CountRecalcTargets.
 	Total     int64 `json:"total"`
 	Processed int   `json:"processed"`
 	Updated   int   `json:"updated"`
@@ -73,11 +75,19 @@ func stoppedEarlyMessage(meta *CostRecalcJobMeta) string {
 
 // CountRecalcTargets returns how many logs fall in scope for a cost recalculation
 // with the given filters. missingCostOnly narrows to rows that currently have no
-// cost. It counts via the same raw-table SearchLogs path the worker walks (which
-// honors MissingCostOnly), so the number matches the job's Total exactly — unlike
-// the stats endpoint, which can fall back to hourly matviews that cannot filter on
-// per-row missing cost. The caller must have already resolved any period into
+// cost. The caller must have already resolved any period into
 // filters.StartTime/EndTime.
+//
+// How exact the count is depends on the scope. With missingCostOnly set, no
+// materialized view can express a per-row missing-cost filter, so SearchLogs
+// counts off the raw table and the number matches the job's Total exactly.
+// Without it, SearchLogs is free to take its count from mv_logs_hourly on a
+// matview-eligible window, and that view lags the raw table by its refresh
+// interval; rows written or deleted since the last refresh are counted wrong.
+// The result is a progress denominator only, never a bound on the walk: the
+// worker pages the raw table until it runs out of rows, so a stale Total shows
+// up as a progress bar that overshoots or finishes early, not as rows skipped
+// or repriced twice.
 func (p *LoggerPlugin) CountRecalcTargets(ctx context.Context, filters logstore.SearchFilters, missingCostOnly bool) (int64, error) {
 	countFilters := filters
 	countFilters.MissingCostOnly = missingCostOnly

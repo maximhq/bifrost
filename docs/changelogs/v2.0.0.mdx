@@ -22,8 +22,12 @@ v2.0.0 is the first stable release on the 2.0 line. This changelog rolls up `2.0
 </Note>
 
 <Warning>
-**Breaking changes.** Read the [v2.0.0 migration guide](https://docs.getbifrost.ai/migration-guides/v2.0.0) before upgrading.
+**Breaking changes.** Read the [v2.0.0 migration guide](https://docs.getbifrost.ai/migration-guides/v2.0.0) before upgrading. This includes migrating dashboards, alerts, and queries from removed legacy observability attribute aliases to their canonical `bifrost.*` or OpenTelemetry semantic-convention keys.
 </Warning>
+
+## ⚠️ Known Limitations
+
+- **Runware Video API costing** - Runware video jobs complete asynchronously, and the provider-reported inference cost becomes available only on a later retrieve response. v2.0.0 does not attribute that cost back to the original generation log, while retrieve polls are intentionally non-billable to avoid charging the same job more than once. As a result, Runware Video API operations are logged without their inference cost even though a completed retrieve response can contain `usage.cost.total_cost`.
 
 ## ✨ Features
 

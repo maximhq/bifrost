@@ -51,6 +51,7 @@ logout:
     # dashboard additionally calls it with its HTTPOnly session cookie.
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
       - SessionCookieAuth: []
     responses:
       '200':
@@ -100,6 +101,7 @@ ws-ticket:
     # opening a WebSocket connection.
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
       - SessionCookieAuth: []
     responses:
       '200':

@@ -1,0 +1,11 @@
+{
+  "name": "csv-parse-compat",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Adapts csv-parse 7's callback API to the csv-parse 4 API used by Newman",
+  "main": "index.js",
+  "license": "MIT",
+  "dependencies": {
+    "csv-parse7": "npm:csv-parse@7.0.2"
+  }
+}

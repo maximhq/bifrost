@@ -126,9 +126,9 @@ func verifyMCPJWT(ctx *fasthttp.RequestCtx, rawToken string, store *lib.Config, 
 // mirroring what header auth sets today so everything downstream (governance,
 // per-user upstream OAuth, tool-group filtering) works unchanged.
 //
-// bf_mode=user    → BifrostContextKeyUserID
-// bf_mode=vk      → BifrostContextKeyVirtualKey (governance derives the VK row ID from it)
-// bf_mode=session → BifrostContextKeyMCPSessionID
+// bf_mode=user    → BifrostContextKeyUserID; the user is recorded on the grant
+// bf_mode=vk      → BifrostContextKeyVirtualKey; the key is recorded on the grant as the credential
+// bf_mode=session → BifrostContextKeyMCPSessionID; nothing is recorded on the grant
 func injectJWTContext(bifrostCtx *schemas.BifrostContext, claims *jwtMCPClaims, vk *configtables.TableVirtualKey) error {
 	sub := claims.Subject
 	if sub == "" {
@@ -136,7 +136,11 @@ func injectJWTContext(bifrostCtx *schemas.BifrostContext, claims *jwtMCPClaims, 
 	}
 	switch schemas.MCPAuthMode(claims.BfMode) {
 	case schemas.MCPAuthModeUser:
+		// The token names the user directly: the request is attributed to the user and goes by
+		// the token that authenticated it.
 		bifrostCtx.SetValue(schemas.BifrostContextKeyUserID, sub)
+		lib.RecordCredential(bifrostCtx, grant.NewCredential(grant.CredentialMCPToken, sub))
+		lib.RecordUser(bifrostCtx, &schemas.UserRef{ID: sub})
 	case schemas.MCPAuthModeVK:
 		if vk == nil {
 			return fmt.Errorf("VK not provided for vk-mode JWT injection")
@@ -146,17 +150,16 @@ func injectJWTContext(bifrostCtx *schemas.BifrostContext, claims *jwtMCPClaims, 
 		// path before the per-user credential resolver needs it — the same way the
 		// x-bf-vk header path does, which never stamps the row ID at ingress either.
 		bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, vk.Value.GetValue())
+		// The token stands for the key it names: the request goes by that key, settled as a key
+		// presented in a header is, which is what governance resolves a key's permit from.
+		lib.RecordCredential(bifrostCtx, grant.NewCredential(grant.CredentialVirtualKey, vk.Value.GetValue()))
 	case schemas.MCPAuthModeSession:
+		// A session token carries no verified identity. Nothing is recorded on the grant, so the
+		// request is admitted as one that presented nothing: anonymous, and refused by
+		// authenticate whenever authentication is enforced.
 		bifrostCtx.SetValue(schemas.BifrostContextKeyMCPSessionID, sub)
 	default:
 		return fmt.Errorf("unknown bf_mode %q in JWT", claims.BfMode)
-	}
-	// Whatever the token stood for, the request authenticated by the token: the key or user it
-	// names is what resolution attributes the request to, not what it presented. A user-mode token
-	// names the user directly, so that much is recorded here.
-	lib.RecordCredential(bifrostCtx, grant.NewCredential(grant.CredentialMCPToken, sub))
-	if schemas.MCPAuthMode(claims.BfMode) == schemas.MCPAuthModeUser {
-		lib.RecordUser(bifrostCtx, &schemas.UserRef{ID: sub})
 	}
 	return nil
 }

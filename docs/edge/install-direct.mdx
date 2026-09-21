@@ -1,0 +1,114 @@
+---
+title: "Install Edge directly"
+description: "Download and install Bifrost Edge on an individual macOS, Windows, or Linux device."
+icon: "download"
+---
+
+Use direct installation for a pilot, a test device, or a device that is not managed through MDM. The user or installer needs local administrator privileges to install the system service and establish certificate trust.
+
+## 1. Download the package
+
+Use the organization-specific Edge download location provided during onboarding. Select the package that matches the device:
+
+| Operating system | Architecture | Package |
+| --- | --- | --- |
+| macOS | Apple Silicon (`arm64`) | `macos-arm64.pkg` |
+| Windows | x64 | `windows-amd64.msi` |
+| Windows | ARM64 | `windows-arm64.msi` |
+| Debian or Ubuntu | x64 | `linux-amd64.deb` |
+| Debian or Ubuntu | ARM64 | `linux-arm64.deb` |
+| RHEL or Fedora | x64 | `linux-amd64.rpm` |
+| RHEL or Fedora | ARM64 | `linux-arm64.rpm` |
+
+macOS Intel devices are not a supported Edge target.
+
+## 2. Choose how the device receives the Bifrost URL
+
+The agent needs the HTTPS URL of your Bifrost deployment. For a direct installation, use either method below.
+
+<Tabs>
+  <Tab title="Enter it from the tray">
+    Install the package without a managed `config.json`. The tray initially reports that configuration is required. Select **Sign in**, enter the Bifrost deployment URL when prompted, and let the agent apply the configuration. Select **Sign in** again after the configuration has been applied.
+  </Tab>
+  <Tab title="Create config.json first">
+    Create this file before or after installing the package:
+
+    ```json
+    {
+      "base_url": "https://<your-bifrost-host>"
+    }
+    ```
+
+    Put it at the platform's managed path:
+
+    | Operating system | Path |
+    | --- | --- |
+    | macOS | `/Library/Application Support/Bifrost Edge/config.json` |
+    | Windows | `%ProgramData%\BifrostEdge\config.json` |
+    | Linux | `/etc/bifrost-edge/config.json` |
+
+    The agent watches for this file and applies a new or changed base URL without requiring the package to be reinstalled.
+  </Tab>
+</Tabs>
+
+<Warning>
+  Use the externally reachable HTTPS origin for Bifrost, without an API path. Edge upgrades non-loopback `http://` service URLs to HTTPS.
+</Warning>
+
+## 3. Install the package
+
+<Tabs>
+  <Tab title="macOS">
+    Open `macos-arm64.pkg` and complete the Installer prompts, or install it from Terminal:
+
+    ```bash
+    sudo installer -pkg macos-arm64.pkg -target /
+    ```
+
+    The package installs a privileged background service and a menu-bar agent for the signed-in user.
+  </Tab>
+  <Tab title="Windows">
+    Run the MSI from an elevated PowerShell. Use the ARM64 filename on an ARM device.
+
+    ```powershell
+    msiexec /i windows-amd64.msi /qn
+    ```
+
+    The installer registers and starts the `BifrostEdge` Windows service and installs the tray application.
+  </Tab>
+  <Tab title="Debian / Ubuntu">
+    Use the ARM64 filename on an ARM device.
+
+    ```bash
+    sudo apt install ./linux-amd64.deb
+    ```
+  </Tab>
+  <Tab title="RHEL / Fedora">
+    Use the ARM64 filename on an ARM device.
+
+    ```bash
+    sudo dnf install ./linux-amd64.rpm
+    ```
+  </Tab>
+</Tabs>
+
+## 4. Sign in and establish certificate trust
+
+Open the Edge tray or menu-bar icon and select **Sign in**.
+
+- With an IdP, Edge opens the Bifrost sign-in flow in the default browser and returns the completed session to the local agent.
+- Without an IdP, the tray can offer **Use Virtual Key** when virtual-key sign-in is enabled in Edge Settings.
+
+Certificate behavior differs by platform:
+
+| Platform | Direct-install behavior |
+| --- | --- |
+| macOS | After the CA is received, the tray asks for consent and then opens the macOS administrator authorization prompt. Until approved, Edge passes traffic through without inspecting it. |
+| Windows | The elevated agent installs the CA into the Windows Root certificate store. No separate user action is required. |
+| Linux | The agent installs the CA into the system trust anchors. It also uses `certutil` for browser NSS databases; install `libnss3-tools` on Debian/Ubuntu or `nss-tools` on RHEL/Fedora if it is not present. |
+
+<Warning>
+  After the active CA is installed and trusted, restart the computer before testing Edge. A full computer restart is required for the CA certificate change to take effect. Repeat this step whenever the active CA is replaced.
+</Warning>
+
+Continue to [Sign in and verify](/edge/sign-in-and-verify).

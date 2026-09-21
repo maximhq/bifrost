@@ -270,6 +270,10 @@ func (provider *RunwayProvider) pollRunwayTask(ctx *schemas.BifrostContext, key 
 
 // retrieveRunwayTask fetches the current state of a Runway task.
 func (provider *RunwayProvider) retrieveRunwayTask(ctx *schemas.BifrostContext, key schemas.Key, taskID string, sendBackRawResponse bool) (*RunwayTaskDetailsResponse, interface{}, *schemas.BifrostError) {
+	escapedTaskID, idErr := providerUtils.EscapeResourceID(taskID, "video_id")
+	if idErr != nil {
+		return nil, nil, idErr
+	}
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
@@ -277,7 +281,7 @@ func (provider *RunwayProvider) retrieveRunwayTask(ctx *schemas.BifrostContext, 
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/tasks/"+taskID))
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/tasks/"+escapedTaskID))
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.Set("X-Runway-Version", "2024-11-06")
 	if key.Value.GetValue() != "" {
@@ -448,6 +452,10 @@ func (provider *RunwayProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 func (provider *RunwayProvider) VideoRetrieve(ctx *schemas.BifrostContext, key schemas.Key, bifrostReq *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 	taskID := providerUtils.StripVideoIDProviderSuffix(bifrostReq.ID, providerName)
+	escapedTaskID, idErr := providerUtils.EscapeResourceID(taskID, "video_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
@@ -462,7 +470,7 @@ func (provider *RunwayProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Set request URI and headers
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/tasks/"+taskID))
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/tasks/"+escapedTaskID))
 	req.Header.SetMethod("GET")
 	req.Header.Set("X-Runway-Version", "2024-11-06")
 	if key.Value.GetValue() != "" {
@@ -602,6 +610,10 @@ func (provider *RunwayProvider) VideoDelete(ctx *schemas.BifrostContext, key sch
 	}
 
 	taskID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
+	escapedTaskID, idErr := providerUtils.EscapeResourceID(taskID, "video_id")
+	if idErr != nil {
+		return nil, idErr
+	}
 
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
@@ -614,7 +626,7 @@ func (provider *RunwayProvider) VideoDelete(ctx *schemas.BifrostContext, key sch
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/tasks/"+taskID))
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/tasks/"+escapedTaskID))
 	req.Header.SetMethod(http.MethodDelete)
 	req.Header.Set("X-Runway-Version", "2024-11-06")
 	if key.Value.GetValue() != "" {

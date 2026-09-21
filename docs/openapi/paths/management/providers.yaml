@@ -7,6 +7,7 @@ providers:
       - Providers
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -31,6 +32,7 @@ providers:
             $ref: '../../schemas/management/providers.yaml#/AddProviderRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Provider added successfully
@@ -65,6 +67,7 @@ providers-by-name:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -106,6 +109,7 @@ providers-by-name:
             $ref: '../../schemas/management/providers.yaml#/UpdateProviderRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Provider updated successfully
@@ -133,6 +137,7 @@ providers-by-name:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Provider deleted successfully
@@ -167,6 +172,7 @@ provider-keys:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -209,6 +215,7 @@ provider-keys:
             $ref: '../../schemas/management/providers.yaml#/Key'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Key created successfully
@@ -255,6 +262,7 @@ provider-key-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -303,6 +311,7 @@ provider-key-by-id:
             $ref: '../../schemas/management/providers.yaml#/Key'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Key updated successfully
@@ -342,6 +351,7 @@ provider-key-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Key deleted successfully
@@ -369,6 +379,7 @@ keys:
       - Providers
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -423,6 +434,7 @@ models:
           default: false
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -475,6 +487,7 @@ models-details:
           default: false
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -499,6 +512,7 @@ models-parameters:
       - Providers
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     parameters:
       - name: model
         in: query
@@ -544,6 +558,7 @@ models-base:
           type: integer
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response

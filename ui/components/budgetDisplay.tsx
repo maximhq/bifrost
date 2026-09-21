@@ -6,9 +6,12 @@ import { cn } from "@/lib/utils";
 import { formatCurrency, getEffectiveBudgetLimit, hasActiveBudgetOverride } from "@/lib/utils/governance";
 
 interface BudgetDisplayProps {
-	budgets: Budget[] | null | undefined;
+	/** A line may carry a label naming what the budget is on, for tables where lines on the same window differ by scope. */
+	budgets: (Budget & { label?: string })[] | null | undefined;
 	/** When true, alignable durations (day/week/month/quarter/year) get a "(calendar)" suffix. */
 	calendarAligned?: boolean;
+	/** Draw at most this many lines; the rest collapse into a "+x more" line whose tooltip names them. */
+	maxVisible?: number;
 }
 
 const formatResetDuration = (duration?: string | null, calendarAligned?: boolean) => {
@@ -22,14 +25,17 @@ const formatResetDuration = (duration?: string | null, calendarAligned?: boolean
  * color-coded progress bar (emerald < 80% < amber < exhausted = red), and a tooltip with
  * the exact current/max spend. Mirrors RateLimitDisplay for visual consistency across tables.
  */
-export function BudgetDisplay({ budgets, calendarAligned }: BudgetDisplayProps) {
+export function BudgetDisplay({ budgets, calendarAligned, maxVisible }: BudgetDisplayProps) {
 	if (!budgets || budgets.length === 0) {
 		return <span className="text-muted-foreground text-sm">-</span>;
 	}
 
+	const shown = maxVisible != null ? budgets.slice(0, maxVisible) : budgets;
+	const hidden = maxVisible != null ? budgets.slice(maxVisible) : [];
+
 	return (
 		<div className="min-w-[160px] space-y-2.5">
-			{budgets.map((b, idx) => {
+			{shown.map((b, idx) => {
 				const effectiveMaxLimit = getEffectiveBudgetLimit(b);
 				const hasOverride = hasActiveBudgetOverride(b);
 				const pct = effectiveMaxLimit > 0 ? Math.min((b.current_usage / effectiveMaxLimit) * 100, 100) : 0;
@@ -41,8 +47,9 @@ export function BudgetDisplay({ budgets, calendarAligned }: BudgetDisplayProps) 
 						<TooltipTrigger asChild>
 							<div className="space-y-1.5">
 								<div className="flex items-center justify-between gap-4">
-									<span className="font-medium">
+									<span className="font-medium text-xs">
 										{formatCurrency(effectiveMaxLimit)}
+										{b.label ? <span className="text-muted-foreground ml-1 text-xs font-normal">{b.label}</span> : null}
 										{hasOverride ? <span className="text-muted-foreground ml-1 text-[10px]">override</span> : null}
 									</span>
 									<span className="text-muted-foreground text-xs">
@@ -58,20 +65,38 @@ export function BudgetDisplay({ budgets, calendarAligned }: BudgetDisplayProps) 
 								{formatCurrency(b.current_usage)} / {formatCurrency(effectiveMaxLimit)}
 							</p>
 							{hasOverride ? (
-								<p className="text-primary-foreground/80 text-xs">
+								<p className="text-muted-foreground mt-1 text-xs">
 									Base {formatCurrency(b.max_limit)} + {formatCurrency(b.override_amount ?? 0)} override
 								</p>
 							) : null}
 							{b.reset_duration ? (
-								<p className="text-primary-foreground/80 text-xs">
-								Resets {formatResetDuration(b.reset_duration, calendarAligned)}
-								{fiscalQuarterNote(b.reset_duration, b.reset_config)}
-							</p>
+								<p className="text-muted-foreground mt-1 text-xs">
+									Resets {formatResetDuration(b.reset_duration, calendarAligned)}
+									{fiscalQuarterNote(b.reset_duration, b.reset_config)}
+								</p>
 							) : null}
 						</TooltipContent>
 					</Tooltip>
 				);
 			})}
+			{hidden.length > 0 ? (
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<button type="button" className="text-muted-foreground block cursor-help text-left text-xs">
+							+{hidden.length} more
+						</button>
+					</TooltipTrigger>
+					<TooltipContent>
+						{hidden.map((b, idx) => (
+							<p key={b.id ?? idx} className="text-xs">
+								{formatCurrency(b.current_usage)} / {formatCurrency(getEffectiveBudgetLimit(b))}
+								{b.label ? ` · ${b.label}` : ""}
+								{b.reset_duration ? ` · ${formatResetDuration(b.reset_duration, calendarAligned)}` : ""}
+							</p>
+						))}
+					</TooltipContent>
+				</Tooltip>
+			) : null}
 		</div>
 	);
 }

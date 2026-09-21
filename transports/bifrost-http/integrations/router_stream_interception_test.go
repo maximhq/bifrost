@@ -2,6 +2,7 @@ package integrations
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"strings"
@@ -70,7 +71,7 @@ func runHandleStreamingWithInterceptor(t *testing.T, config RouteConfig, interce
 		mockHandlerStore: &mockHandlerStore{},
 		interceptor:      &stubChunkInterceptor{err: interceptErr},
 	}
-	router := NewGenericRouter(nil, handlerStore, nil, nil, bifrost.NewNoOpLogger())
+	router := NewGenericRouter(nil, handlerStore, nil, nil, nil, bifrost.NewNoOpLogger())
 	ctx := &fasthttp.RequestCtx{}
 	cancelCalled := false
 	router.handleStreaming(ctx, nil, config, stream, func() {
@@ -196,5 +197,36 @@ func Test_handleStreamingPlainInterceptionErrorKeepsFlatFormat(t *testing.T) {
 
 	assert.Contains(t, body, "event: error\ndata: ")
 	assert.Contains(t, body, `{"error":"failed to intercept chunk with plugin test-plugin: plugin exploded"}`)
+	assert.True(t, cancelCalled)
+}
+
+// A route configuration bug must produce a stream error instead of calling a
+// nil converter and crashing the process.
+func Test_handleStreamingMissingSpeechConverterReturnsError(t *testing.T) {
+	stream := make(chan *schemas.BifrostStreamChunk, 1)
+	stream <- &schemas.BifrostStreamChunk{
+		BifrostSpeechStreamResponse: &schemas.BifrostSpeechStreamResponse{
+			Type:  schemas.SpeechStreamResponseTypeDelta,
+			Audio: []byte{0x01, 0x02},
+		},
+	}
+	close(stream)
+
+	config := RouteConfig{
+		StreamConfig: &StreamConfig{
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return map[string]string{"message": err.Error.Message}
+			},
+		},
+	}
+	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+	ctx := &fasthttp.RequestCtx{}
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	cancelCalled := false
+	router.handleStreaming(ctx, bifrostCtx, config, stream, func() { cancelCalled = true })
+
+	body, err := io.ReadAll(ctx.Response.BodyStream())
+	require.NoError(t, err)
+	assert.Contains(t, string(body), lib.ClientSafeInternalErrorMessage)
 	assert.True(t, cancelCalled)
 }

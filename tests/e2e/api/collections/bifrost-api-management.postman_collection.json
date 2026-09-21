@@ -88,7 +88,7 @@
           "}",
           "",
           "// Handle MCP client errors (client not found after Add failed)",
-          "var mcpClientRequests = ['Add MCP Client', 'Reconnect MCP Client', 'Update MCP Client', 'Delete MCP Client'];",
+          "var mcpClientRequests = ['Add MCP Client', 'Reconnect MCP Client', 'Update MCP Client', 'Delete MCP Client', 'Create MCP Client (vMCP setup)', 'Delete MCP Client (vMCP cleanup)'];",
           "if (mcpClientRequests.indexOf(requestName) !== -1) {",
           "  if (code === 404) {",
           "    pass = true;",
@@ -1574,7 +1574,7 @@
           "  'List Prompt Versions (Coverage Probe)': ['versions'],",
           "  'List Prompt Sessions (Coverage Probe)': ['sessions'],",
           "  'Issue WS Ticket (Coverage Probe)': ['ticket'],",
-          "  'Get Virtual Key Quota': ['virtual_key_name', 'is_active', 'budgets', 'rate_limit', 'provider_configs', 'model_configs'],",
+          "  'Get Virtual Key Quota': ['virtual_key_name', 'is_active', 'budgets', 'rate_limit', 'rate_limits', 'provider_configs', 'model_configs'],",
           "  'Update Metadata (Coverage Probe)': ['success'],",
           "  'List Feature Flags (Coverage Probe)': ['flags'],",
           "  'Update Feature Flag (Coverage Probe)': ['id', 'enabled', 'source', 'locked', 'enterprise_only', 'registered', 'updated_at'],",
@@ -1944,6 +1944,46 @@
     },
     {
       "key": "vk_budget_max_limit",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vmcp_client_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vmcp_vk_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vmcp_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vmcp_name",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vmcp_slug",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vmcp_client_slug",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vmcp_derived_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vmcp_derived_name",
       "value": "",
       "type": "string"
     }
@@ -3316,7 +3356,7 @@
                   "if (pm.response.code >= 200 && pm.response.code < 300) {",
                   "  var body = pm.response.json();",
                   "  pm.test('Quota response contains all fields with seeded data', function () {",
-                  "    pm.expect(body).to.have.all.keys('virtual_key_name', 'is_active', 'budgets', 'rate_limit', 'provider_configs', 'model_configs');",
+                  "    pm.expect(body).to.have.all.keys('virtual_key_name', 'is_active', 'budgets', 'rate_limit', 'rate_limits', 'provider_configs', 'model_configs');",
                   "    pm.expect(body.virtual_key_name).to.equal(pm.collectionVariables.get('vk_expected_name'));",
                   "    pm.expect(body.is_active).to.equal(true);",
                   "    pm.expect(body.budgets).to.be.an('array').with.length.greaterThan(0);",
@@ -3740,6 +3780,927 @@
               ]
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "Governance - VK Regex Entries",
+      "description": "regex: entries in the existing model lists (allowed_models / blacklisted_models on a VK provider config, models / blacklisted_models on a provider key): the text after the prefix is an RE2 pattern matched case-insensitively as a full match against the model name, next to exact names in the same list. Sections: write-time validation (400 on an unparsable pattern or regex:* on VK and provider-key endpoints), a base VK exercised on /v1/models plus real completions (family allowed, preview blocked, other family denied), a PUT that mixes an exact name with a regex entry, and a provider-key round-trip.",
+      "item": [
+        {
+          "name": "Create VK with an unparsable regex entry is rejected (Coverage Probe)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = {",
+                  "  name: \"VK Regex Invalid \" + Date.now(),",
+                  "  is_active: true,",
+                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"regex:(\"], \"blacklisted_models\": []}]",
+                  "};",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Create VK with an unparsable regex entry is rejected is refused with 400\", function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(400);",
+                  "});",
+                  "pm.test('The refusal names the regex entry', function () {",
+                  "  pm.expect(pm.response.text()).to.include('regex');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Create VK with regex:* is rejected (Coverage Probe)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = {",
+                  "  name: \"VK Regex Wildcard \" + Date.now(),",
+                  "  is_active: true,",
+                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"regex:*\"], \"blacklisted_models\": []}]",
+                  "};",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Create VK with regex:* is rejected is refused with 400\", function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(400);",
+                  "});",
+                  "pm.test('The refusal names the regex entry', function () {",
+                  "  pm.expect(pm.response.text()).to.include('regex');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Create VK with an unparsable regex entry in blacklisted_models is rejected (Coverage Probe)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = {",
+                  "  name: \"VK Regex Invalid Block \" + Date.now(),",
+                  "  is_active: true,",
+                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"*\"], \"blacklisted_models\": [\"regex:(\"]}]",
+                  "};",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Create VK with an unparsable regex entry in blacklisted_models is rejected is refused with 400\", function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(400);",
+                  "});",
+                  "pm.test('The refusal names the regex entry', function () {",
+                  "  pm.expect(pm.response.text()).to.include('regex');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Base: create VK (regex allow for the gpt-4 family, regex block for previews)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "['vkregex_id', 'vkregex_value'].forEach(function (k) { pm.collectionVariables.unset(k); });",
+                  "var body = {",
+                  "  name: \"VK Regex Model Lists \" + Date.now(),",
+                  "  is_active: true,",
+                  "  provider_configs: [{\"provider\": \"openai\", \"weight\": 1, \"key_ids\": [\"*\"], \"allowed_models\": [\"regex:^gpt-4.*\"], \"blacklisted_models\": [\"regex:.*-preview$\"]}]",
+                  "};",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Create VK returns 2xx', function () { pm.expect(code, 'body: ' + pm.response.text()).to.be.within(200, 299); });",
+                  "if (code >= 200 && code <= 299) {",
+                  "  var json = pm.response.json();",
+                  "  var vk = json.virtual_key || json;",
+                  "  if (vk && vk.id) pm.collectionVariables.set('vkregex_id', vk.id);",
+                  "  if (vk && vk.value) pm.collectionVariables.set('vkregex_value', vk.value);",
+                  "  var pc = ((vk && vk.provider_configs) || [])[0] || {};",
+                  "  pm.test('The VK echoes the regex entries verbatim', function () {",
+                  "    pm.expect(pc.allowed_models || []).to.include('regex:^gpt-4.*');",
+                  "    pm.expect(pc.blacklisted_models || []).to.include('regex:.*-preview$');",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Base: /v1/models honours the regex entries",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A failed create leaves its id unset; skip rather than fire at a placeholder",
+                  "// path, which would 404 and read as a different failure.",
+                  "if ((!pm.collectionVariables.get('vkregex_value')) && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('GET /v1/models with VK returns 200', function () { pm.response.to.have.status(200); });",
+                  "var body = pm.response.json();",
+                  "var entries = ((body && body.data) || []).map(function (m) {",
+                  "  var id = String((m && m.id) || '');",
+                  "  var slash = id.indexOf('/');",
+                  "  return slash >= 0 ? { provider: id.slice(0, slash), name: id.slice(slash + 1) } : { provider: '', name: id };",
+                  "});",
+                  "pm.test('Regex-scoped VK lists at least one model', function () { pm.expect(entries.length).to.be.above(0); });",
+                  "pm.test('Only the openai provider is listed', function () {",
+                  "  var others = entries.filter(function (e) { return e.provider !== 'openai'; }).map(function (e) { return e.provider + '/' + e.name; });",
+                  "  pm.expect(others, 'leaked: ' + JSON.stringify(others)).to.eql([]);",
+                  "});",
+                  "pm.test('Every listed model matches the allow regex ^gpt-4.*', function () {",
+                  "  var off = entries.filter(function (e) { return !/^gpt-4/i.test(e.name); }).map(function (e) { return e.name; });",
+                  "  pm.expect(off, 'outside the allow regex: ' + JSON.stringify(off)).to.eql([]);",
+                  "});",
+                  "pm.test('No listed model matches the block regex .*-preview$', function () {",
+                  "  var blocked = entries.filter(function (e) { return /-preview$/i.test(e.name); }).map(function (e) { return e.name; });",
+                  "  pm.expect(blocked, 'block regex leaked: ' + JSON.stringify(blocked)).to.eql([]);",
+                  "});",
+                  "pm.test('Regex entries are never listed as models', function () {",
+                  "  var pseudo = entries.filter(function (e) { return e.name.indexOf('regex:') === 0; }).map(function (e) { return e.name; });",
+                  "  pm.expect(pseudo, 'pseudo-models: ' + JSON.stringify(pseudo)).to.eql([]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vkregex_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/models",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Base: chat gpt-4o-mini is not blocked (Coverage Probe)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A failed create leaves its id unset; skip rather than fire at a placeholder",
+                  "// path, which would 404 and read as a different failure.",
+                  "if ((!pm.collectionVariables.get('vkregex_value')) && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// gpt-4o-mini matches ^gpt-4.* and not .*-preview$, so governance admits it.",
+                  "pm.test(\"gpt-4o-mini is not blocked\", function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.not.equal(403);",
+                  "});",
+                  "pm.test('The response carries no model block', function () {",
+                  "  pm.expect(pm.response.text()).to.not.include('model_blocked');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vkregex_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai/gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Base: chat gpt-3.5-turbo is denied (Coverage Probe)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A failed create leaves its id unset; skip rather than fire at a placeholder",
+                  "// path, which would 404 and read as a different failure.",
+                  "if ((!pm.collectionVariables.get('vkregex_value')) && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"gpt-3.5-turbo is refused with 403\", function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(403);",
+                  "});",
+                  "pm.test('Rejection is a model block', function () {",
+                  "  pm.expect(pm.response.text()).to.include('model_blocked');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vkregex_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai/gpt-3.5-turbo\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Base: chat gpt-4o-preview is denied (Coverage Probe)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A failed create leaves its id unset; skip rather than fire at a placeholder",
+                  "// path, which would 404 and read as a different failure.",
+                  "if ((!pm.collectionVariables.get('vkregex_value')) && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"gpt-4o-preview is refused with 403\", function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(403);",
+                  "});",
+                  "pm.test('Rejection is a model block', function () {",
+                  "  pm.expect(pm.response.text()).to.include('model_blocked');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vkregex_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai/gpt-4o-preview\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Update: PUT VK mixes an exact name with a regex entry",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A failed create leaves its id unset; skip rather than fire at a placeholder",
+                  "// path, which would 404 and read as a different failure.",
+                  "if ((!pm.collectionVariables.get('vkregex_id')) && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('PUT VK returns 2xx', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vkregex_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vkregex_id}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider_configs\": [\n    {\n      \"provider\": \"openai\",\n      \"weight\": 1,\n      \"key_ids\": [\n        \"*\"\n      ],\n      \"allowed_models\": [\n        \"gpt-4o\",\n        \"regex:^claude-3-.*\"\n      ],\n      \"blacklisted_models\": []\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Update: GET VK round-trips the mixed list",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A failed create leaves its id unset; skip rather than fire at a placeholder",
+                  "// path, which would 404 and read as a different failure.",
+                  "if ((!pm.collectionVariables.get('vkregex_id')) && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('GET VK returns 200', function () { pm.response.to.have.status(200); });",
+                  "var json = pm.response.json();",
+                  "var vk = json.virtual_key || json;",
+                  "var pc = ((vk && vk.provider_configs) || [])[0] || {};",
+                  "pm.test('Both entries come back verbatim', function () {",
+                  "  pm.expect(pc.allowed_models || []).to.include('gpt-4o');",
+                  "  pm.expect(pc.allowed_models || []).to.include('regex:^claude-3-.*');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vkregex_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vkregex_id}}"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Update: PUT VK with an unparsable regex entry is rejected (Coverage Probe)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A failed create leaves its id unset; skip rather than fire at a placeholder",
+                  "// path, which would 404 and read as a different failure.",
+                  "if ((!pm.collectionVariables.get('vkregex_id')) && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('PUT VK with an unparsable regex entry is refused with 400', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(400); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vkregex_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vkregex_id}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider_configs\": [\n    {\n      \"provider\": \"openai\",\n      \"weight\": 1,\n      \"key_ids\": [\n        \"*\"\n      ],\n      \"allowed_models\": [\n        \"regex:(\"\n      ],\n      \"blacklisted_models\": []\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Base: delete VK",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A failed create leaves its id unset; skip rather than fire at a placeholder",
+                  "// path, which would 404 and read as a different failure.",
+                  "if ((!pm.collectionVariables.get('vkregex_id')) && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Delete VK returns 2xx', function () { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vkregex_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vkregex_id}}"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Provider key: create key with an unparsable regex entry in models is rejected (Coverage Probe)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The key never persists: validation refuses it before the store is touched.",
+                  "var body = {\"models\": [\"regex:(\"]};",
+                  "body.name = 'regex-probe-' + Date.now();",
+                  "body.value = 'sk-regex-probe-never-stored';",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Key with an unparsable regex entry in models is refused with 400\", function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(400);",
+                  "});",
+                  "pm.test('The refusal names the field', function () {",
+                  "  pm.expect(pm.response.text()).to.include(\"Invalid models\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/openai/keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "openai",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Provider key: create key with regex entries",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('pkregex_id');",
+                  "var body = {\"models\": [\"regex:^gpt-4.*\"], \"blacklisted_models\": [\"regex:.*-preview$\"], \"weight\": 1};",
+                  "body.name = 'regex-key-' + Date.now();",
+                  "body.value = 'sk-regex-key-' + Date.now();",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Create key returns 2xx', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });",
+                  "if (pm.response.code < 300) {",
+                  "  var json = pm.response.json();",
+                  "  var key = json.key || json;",
+                  "  if (key && key.id) pm.collectionVariables.set('pkregex_id', key.id);",
+                  "  pm.test('The key echoes the regex entries verbatim', function () {",
+                  "    pm.expect(key.models || []).to.include('regex:^gpt-4.*');",
+                  "    pm.expect(key.blacklisted_models || []).to.include('regex:.*-preview$');",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/openai/keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "openai",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Provider key: delete key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A failed create leaves its id unset; skip rather than fire at a placeholder",
+                  "// path, which would 404 and read as a different failure.",
+                  "if ((!pm.collectionVariables.get('pkregex_id')) && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Delete key returns 2xx', function () { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers/openai/keys/{{pkregex_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "openai",
+                "keys",
+                "{{pkregex_id}}"
+              ]
+            }
+          },
+          "response": []
         }
       ]
     },
@@ -4413,6 +5374,977 @@
                 "{{mcp_client_id}}"
               ]
             }
+          }
+        }
+      ],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// #6757 SSRF/auth gate: registering a loopback MCP client (http://localhost:3001/)",
+              "// requires a genuine admin, so this folder runs only in the authenticated pass.",
+              "// Skip it in the unauthenticated pass (no admin_auth_header); no 403 is tolerated.",
+              "if (!pm.variables.get('admin_auth_header') && !pm.environment.get('admin_auth_header')) {",
+              "  if (typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Virtual MCPs",
+      "item": [
+        {
+          "name": "Create MCP Client (vMCP setup)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/client",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('vmcp_client_id', 'vmcp_client_' + Date.now());",
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  client_id: pm.collectionVariables.get('vmcp_client_id'),",
+                  "  name: 'VMCPToolClient' + Date.now(),",
+                  "  connection_type: 'http',",
+                  "  connection_string: { value: 'http://localhost:3001/', env_var: '', from_env: false },",
+                  "  auth_type: 'none',",
+                  "  is_ping_available: false,",
+                  "  needs_session_stickiness: true",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The server must know this client for the vMCP tool-spec validation below to pass.",
+                  "// If the test MCP server on :3001 is down, Add returns 4xx and the global status",
+                  "// allowlist tolerates it (this name is registered there).",
+                  "var b = null; try { b = pm.response.json(); } catch (e) {}",
+                  "if (pm.response.code >= 200 && pm.response.code < 300 && b) {",
+                  "  pm.test('vMCP setup client connected', function () { pm.expect(String(b.message)).to.match(/connected/i); });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create Virtual Key (vMCP setup)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.request.body.raw = JSON.stringify({ name: 'vMCP Test VK ' + Date.now(), is_active: true });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "var b = null; try { b = pm.response.json(); } catch (e) {}",
+                  "if ((code === 200 || code === 201) && b) {",
+                  "  if (b.virtual_key && b.virtual_key.id) pm.collectionVariables.set('vmcp_vk_id', b.virtual_key.id);",
+                  "  pm.test('vMCP setup VK created', function () { pm.expect(b.virtual_key).to.be.an('object'); pm.expect(b.virtual_key.id).to.be.ok; });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List MCP Clients (capture slug)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/clients",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "clients"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Capture the setup client's server-derived endpoint_slug so the collision test",
+                  "// below can prove the /mcp/<slug> namespace is shared with direct MCP clients.",
+                  "var b = null; try { b = pm.response.json(); } catch (e) {}",
+                  "var list = (b && b.clients) || [];",
+                  "var mine = list.filter(function (c) { return c.config && c.config.client_id === pm.collectionVariables.get('vmcp_client_id'); })[0];",
+                  "if (mine && mine.config && mine.config.endpoint_slug) pm.collectionVariables.set('vmcp_client_slug', mine.config.endpoint_slug);",
+                  "pm.test('setup MCP client has a derived endpoint_slug', function () {",
+                  "  pm.expect(mine, 'setup client present in list').to.be.an('object');",
+                  "  pm.expect(mine.config.endpoint_slug, 'endpoint_slug').to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create Virtual MCP",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var stamp = Date.now();",
+                  "pm.collectionVariables.set('vmcp_name', 'vMCP E2E ' + stamp);",
+                  "pm.collectionVariables.set('vmcp_slug', 'vmcp-e2e-' + stamp);",
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  name: pm.collectionVariables.get('vmcp_name'),",
+                  "  endpoint_slug: pm.collectionVariables.get('vmcp_slug'),",
+                  "  description: 'Created by the API management e2e suite',",
+                  "  enabled: true,",
+                  "  tools: [ { mcp_client_id: pm.collectionVariables.get('vmcp_client_id'), tool_names: ['*'] } ]",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Create Virtual MCP returns 201', function () { pm.expect(pm.response.code).to.equal(201); });",
+                  "var b = null; try { b = pm.response.json(); } catch (e) {}",
+                  "var v = b && b.virtual_mcp;",
+                  "pm.test('Create Virtual MCP response shape', function () {",
+                  "  pm.expect(v).to.be.an('object');",
+                  "  pm.expect(v.id).to.be.a('number');",
+                  "  pm.expect(v.name).to.equal(pm.collectionVariables.get('vmcp_name'));",
+                  "  pm.expect(v.endpoint_slug).to.equal(pm.collectionVariables.get('vmcp_slug'));",
+                  "  pm.expect(v.enabled).to.equal(true);",
+                  "  pm.expect(v.tools).to.be.an('array').with.length.greaterThan(0);",
+                  "  pm.expect(v.tools[0].mcp_client_id).to.equal(pm.collectionVariables.get('vmcp_client_id'));",
+                  "  pm.expect(v.tools[0].tool_names).to.eql(['*']);",
+                  "  pm.expect(v.virtual_key_ids).to.be.an('array');",
+                  "});",
+                  "if (v && v.id !== undefined) pm.collectionVariables.set('vmcp_id', v.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create Virtual MCP (Derived Slug)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No endpoint_slug: the server derives it from the name (Slugify: lowercase, non-alnum",
+                  "// collapses to '-'). Keep the name alphanumeric so the derived slug is just its lowercase.",
+                  "var stamp = Date.now();",
+                  "pm.collectionVariables.set('vmcp_derived_name', 'vMCPDerived' + stamp);",
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  name: pm.collectionVariables.get('vmcp_derived_name'),",
+                  "  tools: [ { mcp_client_id: pm.collectionVariables.get('vmcp_client_id'), tool_names: ['query', 'get_page'] } ]",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Create Virtual MCP (Derived Slug) returns 201', function () { pm.expect(pm.response.code).to.equal(201); });",
+                  "var b = null; try { b = pm.response.json(); } catch (e) {}",
+                  "var v = b && b.virtual_mcp;",
+                  "pm.test('endpoint_slug is derived from the name, tool_names round-trip', function () {",
+                  "  pm.expect(v).to.be.an('object');",
+                  "  pm.expect(v.endpoint_slug).to.equal(pm.collectionVariables.get('vmcp_derived_name').toLowerCase());",
+                  "  pm.expect(v.enabled).to.equal(true);",
+                  "  pm.expect(v.tools[0].tool_names).to.eql(['query', 'get_page']);",
+                  "});",
+                  "if (v && v.id !== undefined) pm.collectionVariables.set('vmcp_derived_id', v.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Virtual MCP",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps/{{vmcp_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps",
+                "{{vmcp_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Get Virtual MCP returns the created vMCP', function () {",
+                  "  pm.expect(pm.response.code).to.equal(200);",
+                  "  var v = pm.response.json().virtual_mcp;",
+                  "  pm.expect(v.id).to.equal(Number(pm.collectionVariables.get('vmcp_id')));",
+                  "  pm.expect(v.endpoint_slug).to.equal(pm.collectionVariables.get('vmcp_slug'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Virtual MCPs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps?limit=100&offset=0",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "100"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('List Virtual MCPs envelope', function () {",
+                  "  pm.expect(pm.response.code).to.equal(200);",
+                  "  var b = pm.response.json();",
+                  "  pm.expect(b.virtual_mcps).to.be.an('array');",
+                  "  pm.expect(b.count).to.be.a('number');",
+                  "  pm.expect(b.total_count).to.be.a('number');",
+                  "  pm.expect(b.limit).to.be.a('number');",
+                  "  pm.expect(b.offset).to.be.a('number');",
+                  "  var id = Number(pm.collectionVariables.get('vmcp_id'));",
+                  "  pm.expect(b.virtual_mcps.map(function (x) { return x.id; })).to.include(id);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Virtual MCP",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps/{{vmcp_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps",
+                "{{vmcp_id}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"description\":\"Updated by the e2e suite\",\"enabled\":false}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Update Virtual MCP applies changes, keeps slug', function () {",
+                  "  pm.expect(pm.response.code).to.equal(200);",
+                  "  var v = pm.response.json().virtual_mcp;",
+                  "  pm.expect(v.enabled).to.equal(false);",
+                  "  pm.expect(v.description).to.equal('Updated by the e2e suite');",
+                  "  pm.expect(v.endpoint_slug).to.equal(pm.collectionVariables.get('vmcp_slug'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create Virtual MCP Duplicate Slug (Coverage Probe)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  name: 'vMCP Dup ' + Date.now(),",
+                  "  endpoint_slug: pm.collectionVariables.get('vmcp_slug'),",
+                  "  tools: [ { mcp_client_id: pm.collectionVariables.get('vmcp_client_id'), tool_names: ['*'] } ]",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Duplicate endpoint_slug is rejected with 409', function () {",
+                  "  pm.expect(pm.response.code).to.equal(409);",
+                  "  var b = pm.response.json();",
+                  "  pm.expect(b.error && b.error.message, 'error message').to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create Virtual MCP Slug Collides With MCP Client (Coverage Probe)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The /mcp/<slug> namespace is shared: a vMCP cannot claim a slug already used by a direct MCP client.",
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  name: 'vMCP Client Slug Clash ' + Date.now(),",
+                  "  endpoint_slug: pm.collectionVariables.get('vmcp_client_slug'),",
+                  "  tools: [ { mcp_client_id: pm.collectionVariables.get('vmcp_client_id'), tool_names: ['*'] } ]",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Slug already used by a direct MCP client is rejected with 409', function () {",
+                  "  pm.expect(pm.response.code).to.equal(409);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create Virtual MCP Missing Name (Coverage Probe)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"tools\":[]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Missing name is rejected with 400', function () {",
+                  "  pm.expect(pm.response.code).to.equal(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create Virtual MCP Unknown Client (Coverage Probe)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"vMCP Bad Client\",\"tools\":[{\"mcp_client_id\":\"does-not-exist\",\"tool_names\":[\"*\"]}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Unknown mcp_client_id is rejected with 400', function () {",
+                  "  pm.expect(pm.response.code).to.equal(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Virtual MCP Not Found (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps/99999999",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps",
+                "99999999"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Get on a missing id returns 404', function () {",
+                  "  pm.expect(pm.response.code).to.equal(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Virtual MCP Invalid Id (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps/not-a-number",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps",
+                "not-a-number"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Get on a non-numeric id returns 400', function () {",
+                  "  pm.expect(pm.response.code).to.equal(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Virtual MCP Not Found (Coverage Probe)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps/99999999",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps",
+                "99999999"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"description\":\"nope\"}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Update on a missing id returns 404', function () {",
+                  "  pm.expect(pm.response.code).to.equal(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Delete Virtual MCP Not Found (Coverage Probe)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps/99999999",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps",
+                "99999999"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Delete on a missing id returns 404', function () {",
+                  "  pm.expect(pm.response.code).to.equal(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Attach Virtual Key to Virtual MCP",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps/{{vmcp_id}}/virtual-keys/{{vmcp_vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps",
+                "{{vmcp_id}}",
+                "virtual-keys",
+                "{{vmcp_vk_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Attach VK succeeds', function () {",
+                  "  pm.expect(pm.response.code).to.equal(200);",
+                  "  pm.expect(pm.response.json().success).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Virtual MCP After Attach",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps/{{vmcp_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps",
+                "{{vmcp_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Attached VK appears in virtual_key_ids', function () {",
+                  "  pm.expect(pm.response.code).to.equal(200);",
+                  "  var v = pm.response.json().virtual_mcp;",
+                  "  pm.expect(v.virtual_key_ids).to.include(pm.collectionVariables.get('vmcp_vk_id'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Detach Virtual Key from Virtual MCP",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps/{{vmcp_id}}/virtual-keys/{{vmcp_vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps",
+                "{{vmcp_id}}",
+                "virtual-keys",
+                "{{vmcp_vk_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Detach VK succeeds', function () {",
+                  "  pm.expect(pm.response.code).to.equal(200);",
+                  "  pm.expect(pm.response.json().success).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Delete Virtual MCP",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps/{{vmcp_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps",
+                "{{vmcp_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Delete Virtual MCP succeeds', function () {",
+                  "  pm.expect(pm.response.code).to.equal(200);",
+                  "  pm.expect(pm.response.json().success).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Delete Virtual MCP (Derived Slug cleanup)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/virtual-mcps/{{vmcp_derived_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "virtual-mcps",
+                "{{vmcp_derived_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete Virtual Key (vMCP cleanup)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vmcp_vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vmcp_vk_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete MCP Client (vMCP cleanup)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/client/{{vmcp_client_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{vmcp_client_id}}"
+              ]
+            }
+          }
+        }
+      ],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// #6757 SSRF/auth gate: registering a loopback MCP client (http://localhost:3001/)",
+              "// requires a genuine admin, so this folder runs only in the authenticated pass.",
+              "// Skip it in the unauthenticated pass (no admin_auth_header); no 403 is tolerated.",
+              "if (!pm.variables.get('admin_auth_header') && !pm.environment.get('admin_auth_header')) {",
+              "  if (typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+              "}"
+            ]
           }
         }
       ]

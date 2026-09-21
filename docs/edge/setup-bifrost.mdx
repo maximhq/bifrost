@@ -1,0 +1,79 @@
+---
+title: "Prepare Bifrost"
+description: "Configure identity, roles, access profiles, and users before installing Bifrost Edge."
+icon: "users-gear"
+---
+
+Prepare identity and policy before installing Edge. This ensures that a user can sign in and that Bifrost has an active virtual key and policy to apply to the user's AI traffic.
+
+## 1. Confirm the Edge entitlement
+
+Edge enforces the device limit in the Bifrost license when a new device signs in. Confirm that the deployment has an Edge entitlement and an available device seat before starting the rollout.
+
+If the limit has been reached, the agent reports **Device limit reached - contact your admin** and the new device cannot complete sign-in.
+
+## 2. Choose the identity path
+
+<Tabs>
+  <Tab title="Identity provider">
+    Use this path when users should sign in with your organization's identity provider and traffic should be attributed to an individual Bifrost user.
+
+    Configure and enable a supported provider under **Governance → User Provisioning**. Use [User Provisioning](/enterprise/user-provisioning) and the provider-specific setup guide for the required issuer, application, redirect URI, and claim configuration.
+
+    Verify the provider before continuing. Edge sign-in is unavailable when Bifrost does not have an identity provider configured.
+  </Tab>
+  <Tab title="Virtual key">
+    Use this path only when the user will enter an existing Bifrost virtual key instead of signing in through an identity provider.
+
+    In **Edge Control → Edge Settings**, keep **Allow virtual key sign-in** enabled. The agent validates the entered key with Bifrost before storing it. An unknown or revoked key is rejected.
+
+    Policies and attribution follow the virtual key. There is no IdP user session in this mode.
+  </Tab>
+</Tabs>
+
+The remaining steps on this page apply to the identity-provider path.
+
+## 3. Prepare roles
+
+Under **Governance → Roles & Permissions**, use an existing role or create the roles your Edge users should receive. If roles are assigned from IdP claims, configure the corresponding attribute-to-role mappings in User Provisioning.
+
+See [Role-Based Access Control](/enterprise/rbac) for role creation, permissions, and IdP mapping behavior.
+
+## 4. Create and attach an access profile
+
+An access profile defines the provider, model, budget, rate-limit, and MCP access that Bifrost materializes for eligible users.
+
+<Steps>
+  <Step title="Create the profile">
+    Go to **Governance & Access Control → Access Profiles**, create a profile, and configure the providers and models the intended Edge users may use.
+  </Step>
+  <Step title="Attach the profile to a role">
+    Attach the profile to the role your Edge users receive. Set it as the role default if users who gain that role should receive the profile automatically.
+  </Step>
+  <Step title="Apply it to existing users when needed">
+    When attaching the profile, use **Apply to existing users with this role** if those users should be provisioned immediately.
+  </Step>
+</Steps>
+
+When a user becomes eligible for the profile, Bifrost creates a per-user copy and issues a profile-managed virtual key. See [Access Profiles](/enterprise/access-profiles) for the complete assignment and propagation behavior.
+
+<Note>
+  An access profile attached to a role is the standard way to issue governed virtual keys at scale. Edge can also resolve an active virtual key assigned directly to the user, through one of the user's teams, or through a team in the user's business unit.
+</Note>
+
+## 5. Provision the Edge users
+
+Provision the people who will use Edge before deploying the agent to them. Bifrost supports bulk import and inbound SCIM provisioning; the available method depends on the configured identity provider.
+
+For each user, verify:
+
+- The user exists in Bifrost.
+- The expected role is assigned.
+- The intended access profile is assigned, or another active virtual-key assignment is available.
+- The resulting virtual key is active and permits the providers and models needed.
+
+## Checkpoint
+
+You are ready to configure Edge when the identity provider verifies successfully and a pilot user has the intended role, policy, and active key.
+
+Continue to [Configure Edge](/edge/setup-edge-control).

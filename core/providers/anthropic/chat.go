@@ -50,7 +50,7 @@ func leadingAnthropicReasoningBlockCount(blocks []AnthropicContentBlock) int {
 // (schemas.ChatTool with non-nil Function) into an AnthropicTool.
 // Factored out from ToAnthropicChatRequest's tool loop so the loop can branch
 // cleanly between function and server-tool shapes.
-func convertFunctionToolToAnthropic(tool schemas.ChatTool) AnthropicTool {
+func convertFunctionToolToAnthropic(tool schemas.ChatTool) (AnthropicTool, error) {
 	anthropicTool := AnthropicTool{
 		Name: tool.Function.Name,
 	}
@@ -64,6 +64,11 @@ func convertFunctionToolToAnthropic(tool schemas.ChatTool) AnthropicTool {
 	}
 
 	if anthropicTool.InputSchema != nil {
+		var err error
+		anthropicTool.InputSchema, err = normalizeAnthropicToolInputSchema(anthropicTool.InputSchema)
+		if err != nil {
+			return AnthropicTool{}, err
+		}
 		anthropicTool.InputSchema = anthropicTool.InputSchema.Normalized()
 	}
 
@@ -92,7 +97,7 @@ func convertFunctionToolToAnthropic(tool schemas.ChatTool) AnthropicTool {
 	if tool.Function.Strict != nil {
 		anthropicTool.Strict = tool.Function.Strict
 	}
-	return anthropicTool
+	return anthropicTool, nil
 }
 
 // convertServerToolToAnthropic reconstructs an AnthropicTool from the
@@ -353,6 +358,10 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 	// capModel is the canonical model string used only for capability/version
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
 	caps := schemas.ResolveModelCaps(bifrostReq.Provider, capModel)
+	// Fable 5.1+ rejects tool_choice "any"/"tool" outright, so every forced
+	// choice below — the caller's and the synthetic structured-output pin — is
+	// dropped and the model answers under the default "auto".
+	forcedToolChoiceSupported := caps.SupportsForcedToolChoice(schemas.DefaultSupportsForcedToolChoice(capModel))
 
 	// Convert parameters
 	if bifrostReq.Params != nil {
@@ -590,7 +599,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 						(reasoningParams.MaxTokens != nil ||
 							(reasoningParams.Effort != nil && *reasoningParams.Effort != "none"))) ||
 						promotedThinking != nil
-					if !thinkingEnabled {
+					if !thinkingEnabled && forcedToolChoiceSupported {
 						anthropicReq.ToolChoice = &AnthropicToolChoice{
 							Type: "tool",
 							Name: responseFormatTool.Name,
@@ -627,7 +636,11 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			tools := make([]AnthropicTool, 0, len(filtered))
 			for _, tool := range filtered {
 				if tool.Function != nil {
-					tools = append(tools, convertFunctionToolToAnthropic(tool))
+					converted, err := convertFunctionToolToAnthropic(tool)
+					if err != nil {
+						return nil, err
+					}
+					tools = append(tools, converted)
 					continue
 				}
 				// Non-function tool: attempt server-tool reconstruction.
@@ -642,8 +655,10 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			}
 		}
 
+		forcedToolChoiceRejected := !forcedToolChoiceSupported && bifrostReq.Params.ToolChoice.IsForced()
+
 		// Convert tool choice
-		if bifrostReq.Params.ToolChoice != nil {
+		if bifrostReq.Params.ToolChoice != nil && !forcedToolChoiceRejected {
 			toolChoice := &AnthropicToolChoice{}
 			if bifrostReq.Params.ToolChoice.ChatToolChoiceStr != nil {
 				switch schemas.ChatToolChoiceType(*bifrostReq.Params.ToolChoice.ChatToolChoiceStr) {
@@ -790,9 +805,12 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		DefaultSupportsMidConversationSystem(caps.Provider(), caps.Model()))
 	// See the same gate in ConvertBifrostMessagesToAnthropicMessages: when the native
 	// role:"system" form isn't available, inline as a user turn instead of hoisting into the
-	// top-level system block, which would invalidate the cached prefix behind it. Anthropic
-	// model family only — these call sites also serve DeepSeek/Fireworks/SGL, which keep hoisting.
-	inlineMidConvSystem := schemas.IsAnthropicModelFamily(ctx, capModel)
+	// top-level system block, which would invalidate the cached prefix behind it. Every family:
+	// these call sites also serve DeepSeek/Fireworks/SGL over the Anthropic wire shape, and
+	// DeepSeek's context cache is automatic and prefix-based (a request must fully match a
+	// cached prefix unit, api-docs.deepseek.com/guides/kv_cache), so hoisting collapses it the
+	// same way. The <system-reminder> envelope is plain text those models read fine.
+	inlineMidConvSystem := true
 
 	i := 0
 	for i < len(messages) {

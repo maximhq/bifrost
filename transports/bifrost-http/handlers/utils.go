@@ -213,7 +213,7 @@ func SendBifrostError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError
 	}
 
 	if bifrostErr.StatusCode != nil {
-		ctx.SetStatusCode(*bifrostErr.StatusCode)
+		ctx.SetStatusCode(lib.NormalizeJSONErrorStatus(*bifrostErr.StatusCode))
 	} else if !bifrostErr.IsBifrostError {
 		ctx.SetStatusCode(fasthttp.StatusBadRequest)
 	} else {

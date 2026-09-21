@@ -63,13 +63,14 @@ func (c *TableOauthConfig) BeforeSave(tx *gorm.DB) error {
 		c.Status = "pending"
 	}
 
-	if encrypt.IsEnabled() {
-		if c.ClientSecret != nil && !c.ClientSecret.IsFromSecret() && c.ClientSecret.Val != "" {
-			if err := encryptString(&c.ClientSecret.Val); err != nil {
-				return fmt.Errorf("failed to encrypt oauth client secret: %w", err)
-			}
-			c.EncryptionStatus = EncryptionStatusEncrypted
+	// Stamp the status whenever a secret is present, not only when it was ciphered:
+	// encryptSecretVar leaves env/vault refs alone, and leaving such a row
+	// 'plain_text' makes the startup backfill re-select it forever.
+	if encrypt.IsEnabled() && c.ClientSecret.IsSet() {
+		if err := encryptSecretVar(c.ClientSecret); err != nil {
+			return fmt.Errorf("failed to encrypt oauth client secret: %w", err)
 		}
+		c.EncryptionStatus = EncryptionStatusEncrypted
 	}
 	return nil
 }

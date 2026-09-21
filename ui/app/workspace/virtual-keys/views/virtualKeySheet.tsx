@@ -24,8 +24,7 @@ import { Label } from "@/components/ui/label";
 import MultiBudgetLines from "@/components/ui/multibudgets";
 import { MultiSelect } from "@/components/ui/multiSelect";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
-import { ProviderConfigCard } from "@/components/ui/providerConfigCard";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ProviderConfigsEditor } from "@/components/ui/providerConfigsEditor";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
@@ -34,7 +33,6 @@ import { Textarea } from "@/components/ui/textarea";
 import Toggle from "@/components/ui/toggle";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { resetDurationOptions, supportsCalendarAlignment } from "@/lib/constants/governance";
-import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { getUserPicker } from "@/lib/registries/userPicker";
 import {
@@ -53,7 +51,6 @@ import {
 } from "@/lib/store";
 import { VirtualMcpAssignmentsEditor } from "@/components/mcp/virtualMcpAssignmentsEditor";
 import { diffVmcpAssignments, vmcpAssignmentsDirty } from "./virtualKeySheet.utils";
-import { KnownProvider } from "@/lib/types/config";
 import { BudgetOverrideRequest, CreateVirtualKeyRequest, UpdateVirtualKeyRequest, VirtualKey } from "@/lib/types/governance";
 import {
 	type BudgetComparisonEntry,
@@ -71,7 +68,7 @@ import { useAttachVirtualKeyUsersMutation, useDetachVirtualKeyUserMutation } fro
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useNavigate } from "@tanstack/react-router";
 import { formatDistanceToNow } from "date-fns";
-import { Info, Lock, RotateCcw, Users } from "lucide-react";
+import { Lock, RotateCcw, Users } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 // Side-effect import: registers the enterprise user picker so "Assign to User"
 // becomes available. Resolves to an empty module on OSS builds.
@@ -305,18 +302,20 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 
 	const hasCreateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Create);
 	const hasUpdateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Update);
+	const hasCreateStandalone = useRbac(RbacResource.VirtualKeys, RbacOperation.CreateStandalone);
 	const canSubmit = isEditing ? hasUpdateAccess : hasCreateAccess;
 
 	// Detect AP-managed status via the managing profile's virtual_key_ids, not just by the presence
 	// of assignees — directly-attached users don't imply an access-profile relation.
 	const { assignedUsers, isManagedByProfile: isManagedByProfileHook, managingProfile } = useVirtualKeyUsage(virtualKey);
-	// On create, check whether the user's access profile will govern the new VK. If so,
-	// lock the governance fields up front — the server applies the profile regardless.
+	// On create, the VK is governed unless the role grants CreateStandalone (the freedom to
+	// create ungoverned keys); the profile that will apply comes from vkCreationPolicy. If
+	// governed, lock the governance fields up front — the server applies the profile regardless.
 	const { data: vkCreationPolicy } = useGetMyVKCreationPolicyQuery(undefined, {
 		skip: isEditing,
 		refetchOnMountOrArgChange: true,
 	});
-	const willBeGovernedOnCreate = !isEditing && !!vkCreationPolicy?.governed;
+	const willBeGovernedOnCreate = !isEditing && !hasCreateStandalone;
 	const isManagedByProfile = (isEditing && isManagedByProfileHook) || willBeGovernedOnCreate;
 	// User assignment is enterprise-only: OSS registers no picker, so the option stays hidden.
 	const UserPicker = getUserPicker();
@@ -342,8 +341,8 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 	};
 
 	// RTK Query hooks
-	const { data: providersData, error: providersError } = useGetProvidersQuery();
-	const { data: keysData, error: keysError } = useGetAllKeysQuery();
+	const { error: providersError } = useGetProvidersQuery();
+	const { error: keysError } = useGetAllKeysQuery();
 	const [createVirtualKey, { isLoading: isCreating }] = useCreateVirtualKeyMutation();
 	const [updateVirtualKey, { isLoading: isUpdating }] = useUpdateVirtualKeyMutation();
 	const [rotateVirtualKey, { isLoading: isRotating }] = useRotateVirtualKeyMutation();
@@ -426,9 +425,6 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 		await removeBudgetOverride({ vkId: virtualKey.id, budgetId }).unwrap();
 	};
 
-	const availableKeys = keysData || [];
-	const availableProviders = providersData || [];
-
 	// Form setup
 	const form = useForm<z.input<typeof formSchema>, unknown, FormData>({
 		resolver: zodResolver(formSchema),
@@ -451,11 +447,11 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 					})),
 					rate_limit: config.rate_limit
 						? {
-								token_max_limit: config.rate_limit.token_max_limit ?? undefined,
-								token_reset_duration: config.rate_limit.token_reset_duration,
-								request_max_limit: config.rate_limit.request_max_limit ?? undefined,
-								request_reset_duration: config.rate_limit.request_reset_duration,
-							}
+							token_max_limit: config.rate_limit.token_max_limit ?? undefined,
+							token_reset_duration: config.rate_limit.token_reset_duration,
+							request_max_limit: config.rate_limit.request_max_limit ?? undefined,
+							request_reset_duration: config.rate_limit.request_reset_duration,
+						}
 						: undefined,
 					model_budgets: config.model_budgets?.map((mb) => ({
 						model_name: mb.model_name,
@@ -467,11 +463,11 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 						})),
 						rate_limit: mb.rate_limit
 							? {
-									token_max_limit: mb.rate_limit.token_max_limit ?? undefined,
-									token_reset_duration: mb.rate_limit.token_reset_duration,
-									request_max_limit: mb.rate_limit.request_max_limit ?? undefined,
-									request_reset_duration: mb.rate_limit.request_reset_duration,
-								}
+								token_max_limit: mb.rate_limit.token_max_limit ?? undefined,
+								token_reset_duration: mb.rate_limit.token_reset_duration,
+								request_max_limit: mb.rate_limit.request_max_limit ?? undefined,
+								request_reset_duration: mb.rate_limit.request_reset_duration,
+							}
 							: undefined,
 					})),
 				})) || [],
@@ -490,18 +486,18 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 			isActive: virtualKey?.is_active ?? true,
 			expiresAt: virtualKey?.expires_at
 				? (() => {
-						const d = new Date(virtualKey.expires_at);
-						return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
-					})()
+					const d = new Date(virtualKey.expires_at);
+					return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+				})()
 				: null,
 			budgets:
 				virtualKey?.budgets && virtualKey.budgets.length > 0
 					? virtualKey.budgets.map((b) => ({
-							id: b.id,
-							max_limit: b.max_limit,
-							reset_duration: b.reset_duration ?? "1M",
-							reset_config: b.reset_config,
-						}))
+						id: b.id,
+						max_limit: b.max_limit,
+						reset_duration: b.reset_duration ?? "1M",
+						reset_config: b.reset_config,
+					}))
 					: [],
 			budgetCalendarAligned: virtualKey?.calendar_aligned ?? false,
 			tokenMaxLimit: virtualKey?.rate_limit?.token_max_limit ?? undefined,
@@ -556,9 +552,6 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 		form.setValue("userId", assignedUserId);
 	}, [assignedUserId, isEditing, form]);
 
-	// Provider configuration state
-	const [selectedProvider, setSelectedProvider] = useState<string>("");
-
 	// Get current provider configs from form
 	const providerConfigs = form.watch("providerConfigs") || [];
 
@@ -588,76 +581,6 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 			watchedRequestMaxLimit !== null &&
 			supportsCalendarAlignment(watchedRequestResetDuration || "1h"));
 	const showCalendarAlignToggle = hasAnyAlignableBudget || hasAnyAlignableRateLimit;
-
-	// Build a default provider config row (all models, all keys, no limits)
-	const makeDefaultProviderConfig = (provider: string) => ({
-		provider: provider,
-		weight: undefined as number | undefined, // undefined = excluded from weighted routing until user sets a weight
-		allowed_models: ["*"],
-		blacklisted_models: [] as string[],
-		key_ids: ["*"],
-	});
-
-	// A row is "untouched" if it still carries only the auto-added defaults (no budget/limit/restriction).
-	// Turning "Allow all providers" off keeps customized rows and drops these.
-	const isDefaultProviderConfig = (config: (typeof providerConfigs)[number]) =>
-		(config.allowed_models || []).length === 1 &&
-		config.allowed_models?.[0] === "*" &&
-		(config.blacklisted_models || []).length === 0 &&
-		(config.key_ids || []).length === 1 &&
-		config.key_ids?.[0] === "*" &&
-		(config.budgets || []).length === 0 &&
-		!config.rate_limit &&
-		(config.model_budgets || []).length === 0 &&
-		config.weight === undefined;
-
-	// Handle adding a new provider configuration
-	const handleAddProvider = (provider: string) => {
-		const existingConfig = providerConfigs.find((config) => config.provider === provider);
-		if (existingConfig) {
-			toast.error("This provider is already configured");
-			return;
-		}
-
-		form.setValue("providerConfigs", [...providerConfigs, makeDefaultProviderConfig(provider)], {
-			shouldDirty: true,
-		});
-	};
-
-	// Handle removing a provider configuration
-	const handleRemoveProvider = (index: number) => {
-		// Removing a provider while "Allow all providers" is on means "all except this one":
-		// turn the flag off so the remaining rows become the explicit allowlist.
-		if (form.getValues("allowAllProviders")) {
-			form.setValue("allowAllProviders", false, { shouldDirty: true });
-		}
-		const updatedConfigs = (form.getValues("providerConfigs") || []).filter((_, i) => i !== index);
-		form.setValue("providerConfigs", updatedConfigs, { shouldDirty: true });
-	};
-
-	// Handle the "Allow all providers" toggle. When turned on, every configured provider is
-	// materialized as a row (via the effect below) so budgets/limits can be set or a provider
-	// excluded. When turned off, untouched default rows are dropped and customized ones kept.
-	const handleAllowAllProvidersChange = (checked: boolean) => {
-		form.setValue("allowAllProviders", checked, { shouldDirty: true });
-		if (!checked) {
-			const kept = (form.getValues("providerConfigs") || []).filter((config) => !isDefaultProviderConfig(config));
-			form.setValue("providerConfigs", kept, { shouldDirty: true });
-		}
-	};
-
-	// While "Allow all providers" is on, keep a row for every configured provider so they are
-	// visible and can be given budgets or excluded. Providers added later show up here too.
-	// Reads current configs via getValues (not a dep) so this converges in one pass without looping.
-	useEffect(() => {
-		if (!allowAllProviders || availableProviders.length === 0) return;
-		const current = form.getValues("providerConfigs") || [];
-		const missing = availableProviders.filter((p) => p.name && !current.some((c) => c.provider === p.name));
-		if (missing.length === 0) return;
-		const additions = missing.map((p) => makeDefaultProviderConfig(p.name));
-		form.setValue("providerConfigs", [...current, ...additions], { shouldDirty: false });
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [allowAllProviders, availableProviders]);
 
 	// Handle adding a new MCP client configuration
 	const handleAddMCPClient = (mcpClientName: string) => {
@@ -1197,7 +1120,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 													the key itself carries only a name and a description.
 												</>
 											) : (
-												<>
+												<p>
 													This virtual key will be managed by your access profile
 													{vkCreationPolicy?.profile_name ? (
 														<>
@@ -1207,7 +1130,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 													) : null}
 													. Set a name and description; providers, budgets, rate limits, and MCP access are applied from the profile on
 													creation.
-												</>
+												</p>
 											)}
 										</AlertDescription>
 									</Alert>
@@ -1274,230 +1197,59 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 										/>
 									</div>
 									{/* Provider Configurations */}
-									<div className="space-y-2">
-										<div className="flex items-center gap-2">
-											<Label className="text-sm font-medium">Provider Configurations</Label>
-											<TooltipProvider>
-												<Tooltip>
-													<TooltipTrigger asChild>
-														<span>
-															<Info className="text-muted-foreground h-3 w-3" />
-														</span>
-													</TooltipTrigger>
-													<TooltipContent className="max-w-sm">
-														<p>
-															Configure which providers this virtual key can use and their specific settings. Leave empty to block all
-															providers. Add providers to allow them.
-														</p>
-													</TooltipContent>
-												</Tooltip>
-											</TooltipProvider>
-										</div>
-
-										{/* Allow all providers */}
-										<FormField
-											control={form.control}
-											name="allowAllProviders"
-											render={({ field }) => (
-												<FormItem>
-													<div className="flex w-full items-center justify-between gap-2 py-2 text-sm">
-														<div className="flex items-center gap-1.5">
-															<span>Allow all providers</span>
-															<TooltipProvider>
-																<Tooltip>
-																	<TooltipTrigger asChild>
-																		<span>
-																			<Info className="text-muted-foreground h-3 w-3" />
-																		</span>
-																	</TooltipTrigger>
-																	<TooltipContent className="max-w-sm">
-																		<p>
-																			Grant access to every provider, including ones added later. Set budgets or limits on specific
-																			providers below, or remove a provider to allow all except that one.
-																		</p>
-																	</TooltipContent>
-																</Tooltip>
-															</TooltipProvider>
-														</div>
-														<Switch
-															checked={field.value}
-															onCheckedChange={handleAllowAllProvidersChange}
-															data-testid="vk-allow-all-providers-toggle"
-														/>
-													</div>
-												</FormItem>
-											)}
-										/>
-
-										{/* Add Provider Dropdown */}
-										<div className="flex gap-2">
-											<Select
-												value={selectedProvider}
-												onValueChange={(provider) => {
-													if (provider === "__manage_providers__") {
-														navigate({ to: "/workspace/providers" });
-														setSelectedProvider("");
-														return;
-													}
-													handleAddProvider(provider);
-													setSelectedProvider(""); // Reset to placeholder state
-												}}
-											>
-												<SelectTrigger className="flex-1" data-testid="vk-provider-select">
-													<SelectValue placeholder="Select a provider to add" />
-												</SelectTrigger>
-												<SelectContent>
-													{(() => {
-														// Filter out already configured providers
-														const unconfiguredProviders = availableProviders.filter(
-															(provider) => !providerConfigs.some((config) => config.provider === provider.name),
-														);
-
-														if (unconfiguredProviders.length === 0) {
-															return (
-																<SelectItem
-																	value="__manage_providers__"
-																	className="text-muted-foreground hover:text-foreground"
-																	data-testid="vk-provider-config-link"
-																>
-																	<span>
-																		No providers left to configure. <span className="text-primary font-medium underline">Click to add</span>
-																	</span>
-																</SelectItem>
-															);
-														}
-
-														// Separate base providers and custom providers
-														const baseProviders = unconfiguredProviders.filter((provider) => !provider.custom_provider_config);
-														const customProviders = unconfiguredProviders.filter((provider) => provider.custom_provider_config);
-
-														return (
-															<>
-																{/* Base providers first */}
-																{baseProviders
-																	.filter((p) => p.name)
-																	.map((provider, index) => (
-																		<SelectItem key={`base-${index}`} value={provider.name}>
-																			<RenderProviderIcon provider={provider.name as KnownProvider} size="sm" className="h-4 w-4" />
-																			{ProviderLabels[provider.name as ProviderName]}
-																		</SelectItem>
-																	))}
-
-																{/* Custom providers second */}
-																{customProviders
-																	.filter((p) => p.name)
-																	.map((provider, index) => (
-																		<SelectItem key={`custom-${index}`} value={provider.name}>
-																			<RenderProviderIcon
-																				provider={provider.custom_provider_config?.base_provider_type || (provider.name as KnownProvider)}
-																				size="sm"
-																				className="h-4 w-4"
-																			/>
-																			{provider.name}
-																		</SelectItem>
-																	))}
-															</>
-														);
-													})()}
-												</SelectContent>
-											</Select>
-										</div>
-
-										{/* Provider Configurations Table */}
-										{providerConfigs.length > 0 && (
-											<div className="space-y-2.5">
-												{providerConfigs.map((config, index) => {
-													const providerConfig = availableProviders.find((provider) => provider.name === config.provider);
-													const providerLabel = providerConfig?.custom_provider_config
-														? providerConfig.name
-														: ProviderLabels[config.provider as ProviderName] || config.provider;
-													const iconProvider = (providerConfig?.custom_provider_config?.base_provider_type ||
-														config.provider) as ProviderIconType;
-													const providerKeys = availableKeys.filter((key) => key.provider === config.provider);
-													return (
-														<ProviderConfigCard
-															key={config.provider}
-															index={index}
-															testIdPrefix="vk"
-															providerLabel={providerLabel}
-															iconProvider={iconProvider}
-															providerKeys={providerKeys}
-															showModelBudgets
-															onRemove={() => handleRemoveProvider(index)}
-															value={{
-																providerName: config.provider,
-																allowedModels: config.allowed_models || [],
-																blacklistedModels: config.blacklisted_models || [],
-																weight: config.weight,
-																keyIds: config.key_ids || [],
-																budgets: config.budgets || [],
-																rateLimit: config.rate_limit ?? null,
-																modelBudgets: (config.model_budgets || []).map((mb) => ({
-																	model_name: mb.model_name,
-																	budgets: mb.budgets || [],
-																	rate_limit: mb.rate_limit,
-																})),
-															}}
-															onChange={(next) => {
-																const updated = [...providerConfigs];
-																updated[index] = {
-																	...config,
-																	allowed_models: next.allowedModels,
-																	blacklisted_models: next.blacklistedModels,
-																	weight: next.weight ?? undefined,
-																	key_ids: next.keyIds,
-																	budgets: next.budgets.map((l) => ({
-																		id: l.id,
-																		max_limit: l.max_limit,
-																		reset_duration: l.reset_duration,
-																		reset_config: l.reset_config,
-																	})),
-																	rate_limit: next.rateLimit ?? undefined,
-																	model_budgets: next.modelBudgets,
-																};
-																form.setValue("providerConfigs", updated, {
-																	shouldDirty: true,
-																});
-															}}
-														/>
-													);
-												})}
-											</div>
-										)}
-										{/* Display validation errors for provider configurations */}
-										{form.formState.errors.providerConfigs && (
-											<div className="text-destructive text-sm">{form.formState.errors.providerConfigs.message}</div>
-										)}
-									</div>
+									<ProviderConfigsEditor
+										testIdPrefix="vk"
+										value={providerConfigs.map((config) => ({
+											providerName: config.provider,
+											allowedModels: config.allowed_models || [],
+											blacklistedModels: config.blacklisted_models || [],
+											weight: config.weight,
+											keyIds: config.key_ids || [],
+											budgets: config.budgets || [],
+											rateLimit: config.rate_limit ?? null,
+											modelBudgets: (config.model_budgets || []).map((mb) => ({
+												model_name: mb.model_name,
+												budgets: mb.budgets || [],
+												rate_limit: mb.rate_limit,
+											})),
+										}))}
+										onChange={(entries) =>
+											form.setValue(
+												"providerConfigs",
+												entries.map((entry) => ({
+													provider: entry.providerName,
+													allowed_models: entry.allowedModels,
+													blacklisted_models: entry.blacklistedModels,
+													weight: entry.weight ?? undefined,
+													key_ids: entry.keyIds,
+													budgets: (entry.budgets || []).map((l) => ({
+														id: l.id,
+														max_limit: l.max_limit,
+														reset_duration: l.reset_duration,
+														reset_config: l.reset_config,
+													})),
+													rate_limit: entry.rateLimit ?? undefined,
+													model_budgets: entry.modelBudgets,
+												})),
+												{ shouldDirty: true },
+											)
+										}
+										allowAllProviders={allowAllProviders}
+										onAllowAllProvidersChange={(checked) => form.setValue("allowAllProviders", checked, { shouldDirty: true })}
+										onManageProviders={() => navigate({ to: "/workspace/providers" })}
+										error={form.formState.errors.providerConfigs?.message}
+									/>
 									{/* MCP Server Configurations */}
 									<MCPClientConfigsEditor
 										value={mcpConfigs}
 										onChange={(next) => form.setValue("mcpConfigs", next, { shouldDirty: true })}
 										showDefaultsNote
 									/>
-									{/* Virtual MCP assignments: attach this key to Virtual MCPs (reconciled on Save).
-									    For an existing key the editor stays gated until its detail (the assignment baseline)
-									    loads, so an early edit can't be discarded and a failed load can't hide assignments. */}
-									{isEditing && isVkDetailLoading ? (
-										<div className="mt-6 space-y-2">
-											<Label className="text-sm font-medium">Virtual MCP Server Configurations</Label>
-											<div className="text-muted-foreground text-sm">Loading assigned Virtual MCPs...</div>
-										</div>
-									) : isEditing && isVkDetailError ? (
-										<div className="mt-6 space-y-2">
-											<Label className="text-sm font-medium">Virtual MCP Server Configurations</Label>
-											<Alert variant="destructive">
-												<AlertDescription className="flex items-center justify-between gap-2">
-													<span>Could not load assigned Virtual MCPs.</span>
-													<Button type="button" variant="outline" size="sm" onClick={() => refetchVkDetail()}>
-														Retry
-													</Button>
-												</AlertDescription>
-											</Alert>
-										</div>
-									) : (
-										<VirtualMcpAssignmentsEditor value={assignedVmcpIds} onChange={setAssignedVmcpIds} />
-									)}
+									{/* Virtual MCP assignments: attach this key to Virtual MCPs (reconciled on Save). Renders
+									    inline like the MCP server editor above; assignedVmcpIds fills in from the VK detail
+									    (its assignment baseline) once it loads, and vmcpDetailReady keeps Save from acting on a
+									    diff before that baseline is in. */}
+									<VirtualMcpAssignmentsEditor value={assignedVmcpIds} onChange={setAssignedVmcpIds} />
 									<DottedSeparator className="mt-6 mb-5" />
 									{/* Budget Configuration */}
 									<div className="space-y-4">
@@ -1779,9 +1531,9 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 																fallbackOption={
 																	field.value
 																		? {
-																				value: field.value,
-																				label: field.value === virtualKey?.team_id ? (virtualKey?.team?.name ?? field.value) : field.value,
-																			}
+																			value: field.value,
+																			label: field.value === virtualKey?.team_id ? (virtualKey?.team?.name ?? field.value) : field.value,
+																		}
 																		: null
 																}
 																disabled={isTeamLocked}
@@ -1809,12 +1561,12 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 																fallbackOption={
 																	field.value
 																		? {
-																				value: field.value,
-																				label:
-																					field.value === virtualKey?.customer_id
-																						? (virtualKey?.customer?.name ?? field.value)
-																						: field.value,
-																			}
+																			value: field.value,
+																			label:
+																				field.value === virtualKey?.customer_id
+																					? (virtualKey?.customer?.name ?? field.value)
+																					: field.value,
+																		}
 																		: null
 																}
 																triggerClassName="h-9"
@@ -1843,9 +1595,9 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 																fallbackOption={
 																	field.value
 																		? {
-																				value: field.value,
-																				label: field.value === assignedUserId ? assignedUserLabel : field.value,
-																			}
+																			value: field.value,
+																			label: field.value === assignedUserId ? assignedUserLabel : field.value,
+																		}
 																		: null
 																}
 																triggerClassName="h-9"

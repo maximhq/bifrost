@@ -1376,6 +1376,50 @@ func TestToAnthropicChatRequest_StructuredOutput_ToolConversion_NoThinking(t *te
 	}
 }
 
+// TestToAnthropicChatRequest_StructuredOutput_Fable51_NoForcedToolChoice mirrors the
+// thinking-enabled case for Fable 5.1 / Mythos 5.1: the synthetic tool is still
+// added, but the pin is not, because those models reject tool_choice "tool" and
+// "any" with a 400. With only the bf_so_* tool bound the model reaches it under
+// the default "auto".
+func TestToAnthropicChatRequest_StructuredOutput_Fable51_NoForcedToolChoice(t *testing.T) {
+	for _, provider := range toolConversionProviders {
+		for _, model := range []string{"claude-fable-5-1", "claude-mythos-5-1"} {
+			t.Run(string(provider)+"/"+model, func(t *testing.T) {
+				rf := makeSOResponseFormat("my_schema")
+				bifrostReq := &schemas.BifrostChatRequest{
+					Provider: provider,
+					Model:    model,
+					Input: []schemas.ChatMessage{
+						{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
+					},
+					Params: &schemas.ChatParameters{ResponseFormat: &rf},
+				}
+
+				ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+				defer cancel()
+				result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+
+				var soTool *AnthropicTool
+				for i := range result.Tools {
+					if strings.HasPrefix(result.Tools[i].Name, "bf_so_") {
+						soTool = &result.Tools[i]
+						break
+					}
+				}
+				if soTool == nil {
+					t.Fatalf("expected the synthetic bf_so_* tool to still be added for %s/%s", provider, model)
+				}
+				if result.ToolChoice != nil {
+					t.Errorf("expected no forced ToolChoice for %s/%s, got %+v", provider, model, result.ToolChoice)
+				}
+			})
+		}
+	}
+}
+
 // TestToAnthropicChatRequest_StructuredOutput_ToolConversion_ThinkingEffort verifies that when
 // response_format=json_schema + reasoning_effort='medium' is sent to a tool-conversion provider,
 // Bifrost still adds the synthetic tool but does NOT set tool_choice (to avoid Anthropic's
@@ -2318,4 +2362,74 @@ func TestToAnthropicChatRequest_ThinkingPassthroughUnchanged(t *testing.T) {
 	if raw["type"] != "enabled" || raw["budget_tokens"] != float64(2048) {
 		t.Errorf("passthrough thinking was rewritten: got %#v, want type=enabled budget_tokens=2048", raw)
 	}
+}
+
+// TestToAnthropicChatRequest_MidConversationSystem_InlinesForNonAnthropicFamily removes the
+// Anthropic-family gate from the inline fallback. DeepSeek, Fireworks and SGL serve the Anthropic
+// wire shape too, and DeepSeek's context cache is automatic and prefix-based ("a subsequent
+// request must fully match a cached prefix unit", api-docs.deepseek.com/guides/kv_cache), so
+// hoisting a mid-conversation reminder into top-level `system` collapses their cache exactly as
+// it did for Claude. The reminder must inline as a user turn for every family.
+func TestToAnthropicChatRequest_MidConversationSystem_InlinesForNonAnthropicFamily(t *testing.T) {
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.DeepSeek,
+		Model:    "deepseek-chat",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Initial system.")}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
+			{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hi!")}},
+			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Mid-conv instruction.")}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Continue")}},
+		},
+		Params: &schemas.ChatParameters{MaxCompletionTokens: schemas.Ptr(1024)},
+	}
+
+	result, err := ToAnthropicChatRequest(&schemas.BifrostContext{}, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.System == nil {
+		t.Fatal("expected the leading system prompt to remain in top-level System")
+	}
+	if got := textBlocks(result.System); len(got) != 1 || got[0] != "Initial system." {
+		t.Errorf("top-level System = %v, want exactly [\"Initial system.\"] (mid-conversation content must not be hoisted for non-Anthropic families either)", got)
+	}
+	assertInlinedReminder(t, result, "Mid-conv instruction.")
+}
+
+// TestToAnthropicResponsesRequest_MidConversationSystem_InlinesForNonAnthropicFamily is the
+// Responses-path twin of the test above; ConvertBifrostMessagesToAnthropicMessages carries its own
+// copy of the family gate.
+func TestToAnthropicResponsesRequest_MidConversationSystem_InlinesForNonAnthropicFamily(t *testing.T) {
+	msg := func(role schemas.ResponsesMessageRoleType, text string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(role),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr(text)},
+		}
+	}
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.DeepSeek,
+		Model:    "deepseek-chat",
+		Input: []schemas.ResponsesMessage{
+			msg(schemas.ResponsesInputMessageRoleSystem, "Initial system."),
+			msg(schemas.ResponsesInputMessageRoleUser, "Hello"),
+			msg(schemas.ResponsesInputMessageRoleAssistant, "Hi!"),
+			msg(schemas.ResponsesInputMessageRoleSystem, "Mid-conv instruction."),
+			msg(schemas.ResponsesInputMessageRoleUser, "Continue"),
+		},
+		Params: &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(1024)},
+	}
+
+	result, err := ToAnthropicResponsesRequest(&schemas.BifrostContext{}, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.System == nil {
+		t.Fatal("expected the leading system prompt to remain in top-level System")
+	}
+	if got := textBlocks(result.System); len(got) != 1 || got[0] != "Initial system." {
+		t.Errorf("top-level System = %v, want exactly [\"Initial system.\"] (mid-conversation content must not be hoisted for non-Anthropic families either)", got)
+	}
+	assertInlinedReminder(t, result, "Mid-conv instruction.")
 }

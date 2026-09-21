@@ -9,6 +9,7 @@ folders:
       - Prompt Repository
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -38,6 +39,7 @@ folders:
             $ref: '../../schemas/management/prompts.yaml#/CreateFolderRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Folder created
@@ -68,6 +70,7 @@ folders-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -107,6 +110,7 @@ folders-by-id:
             $ref: '../../schemas/management/prompts.yaml#/UpdateFolderRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Folder updated
@@ -142,6 +146,7 @@ folders-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Folder deleted
@@ -173,6 +178,7 @@ prompts:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -202,6 +208,7 @@ prompts:
             $ref: '../../schemas/management/prompts.yaml#/CreatePromptRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Prompt created
@@ -232,6 +239,7 @@ prompts-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -271,6 +279,7 @@ prompts-by-id:
             $ref: '../../schemas/management/prompts.yaml#/UpdatePromptRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Prompt updated
@@ -300,6 +309,7 @@ prompts-by-id:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Prompt deleted
@@ -332,6 +342,7 @@ prompt-versions:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -368,6 +379,7 @@ prompt-versions:
             $ref: '../../schemas/management/prompts.yaml#/CreateVersionRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Version created
@@ -399,6 +411,7 @@ versions-by-id:
           type: integer
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -433,6 +446,7 @@ versions-by-id:
           type: integer
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Version deleted
@@ -465,6 +479,7 @@ prompt-sessions:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -501,6 +516,7 @@ prompt-sessions:
             $ref: '../../schemas/management/prompts.yaml#/CreateSessionRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Session created
@@ -532,6 +548,7 @@ sessions-by-id:
           type: integer
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -572,6 +589,7 @@ sessions-by-id:
             $ref: '../../schemas/management/prompts.yaml#/UpdateSessionRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Session updated
@@ -602,6 +620,7 @@ sessions-by-id:
           type: integer
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Session deleted
@@ -640,6 +659,7 @@ sessions-rename:
             $ref: '../../schemas/management/prompts.yaml#/RenameSessionRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Session renamed
@@ -677,6 +697,7 @@ sessions-commit:
             $ref: '../../schemas/management/prompts.yaml#/CommitSessionRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Version created from session

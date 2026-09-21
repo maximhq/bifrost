@@ -19,6 +19,8 @@ Fetch a GitHub issue, analyze the report, search the codebase for relevant code,
    red output from the applicable Makefile recipe, pasted verbatim, BEFORE asking to
    implement
 8. Full Presentation (Step 6 template)
+9. Regression Tests to Add (from Steps 5a and 5g) -- the harness case(s) and unit tests
+   that will pin the change; required for every issue type, not just bugs
 
 If any section is missing, go back and complete it before presenting the report.
 
@@ -38,7 +40,8 @@ written and shown to be red. The gate is "may I write the fix?"
 2. **Classify the issue** -- Determine type (bug, feature, docs) and affected areas
 3. **Search the codebase and research docs** -- Find relevant code, then research the libraries it depends on via Context7 and WebSearch
 4. **Analyze impact** -- Cross-reference codebase findings with documentation to identify side effects, dependencies, and breaking changes
-5. **Suggest tests** -- If changes touch `core/`, recommend specific LLM and MCP test additions
+5. **Plan the required regression tests** -- unit tests wherever possible, plus a provider-harness
+   case for any wire-visible change; specific LLM and MCP test additions where `core/` is touched
 5b. **Scope the reruns** -- Use coverage to determine which existing tests exercise the lines
     you plan to change, and tier them by necessity
 5c. **Go red (Bug issues)** -- Write the regression test(s) and run them to confirm failure for
@@ -325,14 +328,19 @@ Classify the change:
 - **Minor breaking** -- New required parameter with default, deprecation
 - **Major breaking** -- Changed API signature, removed field, behavioral change
 
-## Step 5: Test Recommendations
+## Step 5: Required Regression Tests
 
-### 5a. General Test Guidance
+### 5a. Regression Tests Are Required, Not Suggested
 
-For ANY code change, identify:
-- Existing tests that need updating
-- New test cases that should be added
-- Edge cases to cover
+Every fix and every change ships with regression tests (AGENTS.md "Testing" section).
+The plan MUST name the tests that will be added, not merely recommend them:
+- Unit tests wherever possible, added to the existing test file per convention
+- A provider-harness case for any wire-visible change (Step 5g)
+- Existing tests that need updating, and edge cases to cover
+
+Skipping any of these requires an explicit exemption statement in the report, using
+AGENTS.md's exemptions: no wire-visible effect AND no testable behavior change
+(comments, internal renames, log lines).
 
 ### 5b. LLM Tests (when changes touch `core/` or `core/providers/`)
 
@@ -543,6 +551,29 @@ fails.
 Creating test files is the one write action permitted before plan approval, because the test
 is itself the evidence. Do not touch any non-test source file at this stage.
 
+### 5g. Harness Regression Case (mandatory for wire-visible changes)
+
+Every fix whose behavior a client can observe on the wire -- under `core/`, `framework/`,
+`transports/bifrost-http/`, or `plugins/` -- adds a regression case to
+`tests/e2e/api/collections/provider-harness.json`, following the conventions in
+`.claude/skills/harness-test-writer/SKILL.md` (folder naming, PROVIDER_KEYWORDS-compatible
+case names, infra guard on 401/403/429/5xx, minimal cheap request bodies). This applies to
+every issue type -- bug, feature, refactor -- not only bugs.
+
+- For Bug issues the case pins the pre-fix failure signature: expected red before the fix,
+  green after -- the same discipline as the Go test in Step 5f.
+- Validate structurally while developing; no live paid run is needed at this stage:
+  ```bash
+  node tests/e2e/api/runners/augment-provider-harness.mjs --source tests/e2e/api/collections/provider-harness.json --out tmp/harness-augmented.json
+  node tests/e2e/api/runners/filter-collection.mjs --source tmp/harness-augmented.json --out tmp/filtered.json --feature "<keyword>"
+  ```
+- Insert surgically (a script that splices the new object in, never a whole-file
+  reserialize) -- the collection is ~50k lines and a reformat buries the change.
+- The report must name the folder/case name, the request shape, and the assertion.
+
+If the change is exempt (no wire-visible effect, or behaviour no HTTP request can reach),
+say so explicitly in the report instead of silently omitting the case.
+
 ## Step 6: Present Findings
 
 Present everything to the user in this structured format:
@@ -617,6 +648,18 @@ Copy the research table from Step 3e here. If you skipped Step 3e, go back and d
 | Test | File | What It Covers |
 |------|------|---------------|
 | `TestNewScenario` | `<path>` | <scenario description> |
+
+### Regression Tests to Add
+
+<Required for every issue type, from Steps 5a and 5g. Unit tests wherever possible plus a
+harness case for any wire-visible change.>
+
+| Test / Case | Type | File or Collection Folder | What It Pins |
+|-------------|------|---------------------------|--------------|
+| `<name>` | unit / harness / MCP / E2E | `<path or harness folder>` | <behavior pinned> |
+
+<If the change is exempt (no wire-visible effect AND no testable behavior change), state
+the exemption explicitly here instead of omitting the section.>
 
 ### TDD: Failing Tests (Red)
 
@@ -699,6 +742,9 @@ approval gate. Step 7 therefore starts at the fix, not the test:
 4. Run the Tier 1 and Tier 2 reruns from the Regression Rerun Scope. Report every result,
    including any pre-existing failure unrelated to this change -- say so explicitly rather
    than omitting it.
+5. The harness regression case from Step 5g follows the same red/green expectation as the
+   Go test: it asserts the pre-fix failure signature is gone and the happy path succeeds.
+   Validate it structurally (augment + filter scripts); the live run happens in Step 7d.
 
 Do not modify the test while implementing the fix. If the test needs to change to pass, the
 diagnosis was wrong: stop and tell the user rather than editing the test to match the code.
@@ -717,8 +763,13 @@ already completed and the first pending task is the fix. Do not re-write or modi
 2. Change 1: <description> -- pending
 3. Change 2: <description> -- pending
 4. Update existing test: <description> -- pending
-5. Verify all tests pass -- pending
+5. Add unit regression tests: <description> -- pending
+6. Add harness regression case + structural validation: <description> -- pending
+7. Verify all tests pass -- pending
 ```
+Items 5 and 6 are mandatory for every issue type unless the change is exempt per Steps 5a/5g
+(state the exemption in the report instead of dropping the item). For Bug issues the unit red
+test from Step 5f may already cover item 5; the harness case is still its own item.
 For Feature and Docs issues, omit item 1 entirely: Step 5f is skipped for those, and the new
 tests from the Test Plan are added after the implementation, as their own pending items.
 
@@ -754,15 +805,78 @@ Once all approved changes are applied:
    # For MCP changes
    make test-mcp PATTERN=<relevant_test>
 
-   # For framework changes
+   # For framework changes (wire-visible framework changes also need the Step 5g
+   # harness case and the scoped harness run below)
    cd framework && go test ./...
 
    # For UI changes
    make run-e2e FLOW=<feature>
    ```
 
-2. Report results to the user, including the red-then-green transcript/summary for Bug issues (what failed before, what passes now)
-3. If tests fail, investigate and propose fixes (with approval)
+2. Run the provider harness (mandatory for every non-exempt wire-visible change, always scoped;
+   the exemptions are AGENTS.md's: no wire-visible effect, or behaviour no HTTP request can
+   reach, and an exempt change must say so in the report). It is a paid live sweep
+   against real provider accounts: the unfiltered collection is ~1,900 requests. The scope keeps
+   the run small, and `HARNESS_MAX_REQUESTS` (below) is an optional ceiling on top of that. Start
+   the server against the shared integration config with `make dev
+   APP_DIR=$(pwd)/tests/integrations/python` (that is `tests/integrations/python/config.json`,
+   which the harness target already defaults to), and scope the run to the change with `PROVIDER`
+   and `FEATURE`, or `SMOKE=1` for a cross-cutting change. Never run the unscoped sweep, and never
+   widen the scope beyond the change, without a separate explicit yes from the user that names
+   the scope.
+
+   Before launching, resolve the exact request count for the chosen scope (the same filter the
+   recipe applies) and put the command, the scope, and that count in the plan the user approves:
+   ```bash
+   node tests/e2e/api/runners/augment-provider-harness.mjs --source tests/e2e/api/collections/provider-harness.json --out tmp/harness-augmented.json
+   # PROVIDER/FEATURE scope: one pass
+   node tests/e2e/api/runners/filter-collection.mjs --source tmp/harness-augmented.json --out tmp/harness-preflight.json --provider <provider> --feature "<keyword>"
+   # SMOKE=1: the recipe runs a parallel main pass plus a deferred cache-parity pass, so count both
+   node tests/e2e/api/runners/filter-collection.mjs --source tmp/harness-augmented.json --out tmp/harness-smoke-main.json --smoke tests/e2e/api/collections/smoke-manifest.json --exclude-feature-any cache-parity
+   node tests/e2e/api/runners/filter-collection.mjs --source tmp/harness-augmented.json --out tmp/harness-smoke-cache.json --smoke tests/e2e/api/collections/smoke-manifest.json --feature-any cache-parity
+   # stderr of each command ends with: [filter-collection] wrote ... with N requests after filter
+   ```
+   State N for a scoped run, or N_main + N_cache for SMOKE=1, in the plan. Confirm the new
+   harness case from Step 5g appears in the filtered preflight output; if the filter drops
+   it, fix the case's folder/case naming keywords before launching. When SMOKE=1 is
+   combined with PROVIDER, FEATURE or FOLDER, apply the same filters to both smoke commands.
+   The preflight is an estimate: the main pass forks one newman per provider and a producer
+   shared by several forks runs once per fork, so the live total can exceed the preflight sum
+   (observed: 102 preflight, 122 live for SMOKE=1). `HARNESS_MAX_REQUESTS` is the optional
+   enforced bound: add it with the ceiling the user approved when a run is broad enough that the
+   cost is worth capping; a `PROVIDER=` + `FEATURE=` scoped run is usually small enough not to
+   need it. Left unset, the recipe skips the budget check and the run proceeds (Makefile:2177).
+   When it is set, the recipe checks
+   every newman launch against its exact filtered count before it starts (main shards, 429
+   replays, the cache-parity pass, sequential mode); a launch that would cross the cap is
+   refused and the run exits 3, so the live total can never exceed the approved number. The
+   stream-cancellation probes are never sent under a cap because their count is not known up
+   front; if they are wanted, run them as a separately approved `SKIP_STREAM_CANCEL=` run
+   without the cap. After the run, quote the provider table's Total column as the actual.
+
+   Port 8080 is a blocking precondition. The recipe reuses any server whose `/health` answers
+   and then never starts the `APP_DIR` one, so a stale listener silently tests old code. Run
+   `lsof -nP -iTCP:8080 -sTCP:LISTEN` first: if it reports a listener you did not start on the
+   current working tree in this session, stop, ask the user to shut it down (never kill a
+   process you did not start), and recheck; do not run the target while `lsof` still reports
+   it. The one acceptable listener is Bifrost you started yourself from the code under test,
+   which is also the reliable way to run it, because a cold `make dev` from this config can
+   take longer than the recipe's 60s health wait:
+   ```bash
+   make dev APP_DIR=$(pwd)/tests/integrations/python   # in the background; wait for /health = 200
+   ```
+   ```bash
+   make run-provider-harness-test PROVIDER=<provider> FEATURE="<keyword>"
+   # cross-cutting change: the curated smoke set instead
+   make run-provider-harness-test SMOKE=1
+   ```
+   Report the provider status table and `tmp/harness-failures.md` findings, and state exactly
+   which scope ran. See AGENTS.md "Every wire-visible change ships with a provider-harness
+   case" and "Every non-exempt wire-visible fix ends with unit tests, then a harness command
+   handed to the user".
+
+3. Report results to the user, including the red-then-green transcript/summary for Bug issues (what failed before, what passes now)
+4. If tests fail, investigate and propose fixes (with approval)
 
 ## Error Handling
 

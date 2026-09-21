@@ -137,9 +137,12 @@ type ServerCallbacks interface {
 	ReloadComplexityAnalyzerConfig(ctx context.Context, config *complexity.AnalyzerConfig) error
 	ValidateComplexityAnalyzerConfig(ctx context.Context, config *complexity.AnalyzerConfig) error
 	GetComplexitySemanticStatus(ctx context.Context) (complexity.SemanticStatusInfo, error)
+	RetryComplexitySemanticWarmup(ctx context.Context) (complexity.SemanticStatusInfo, bool, error)
 	GetComplexityLLMStatus(ctx context.Context) (complexity.LLMStatusInfo, error)
 	ListComplexityGenerations(ctx context.Context) ([]complexity.GenerationInfo, error)
 	DeleteComplexityGeneration(ctx context.Context, namespace string) error
+	// Prompt repository related callbacks
+	ReloadPromptCache(ctx context.Context) error
 	// Webhook related callbacks
 	ReloadWebhookEndpoint(ctx context.Context, id string) error
 	RemoveWebhookEndpoint(ctx context.Context, id string) error
@@ -190,6 +193,8 @@ type ServerCallbacks interface {
 	// for the listing routes that run outside the request pipeline and so cannot wait for a hook
 	// to resolve it.
 	ResolveAccess(ctx *schemas.BifrostContext) (schemas.Access, error)
+	// The models listing narrows its provider fan-out to what the request may reach.
+	NarrowListModelsProviders(bifrostCtx *schemas.BifrostContext)
 }
 
 // GovernanceRouteOverridesProvider lets downstream editions replace selected OSS governance route families.
@@ -262,6 +267,10 @@ type BifrostHTTPServer struct {
 	// access-profile-managed VKs). Optional; wired at server init when available,
 	// otherwise left nil so the quota endpoint reads the VK's own budget rows.
 	ExternalQuotaBudgetResolver handlers.ExternalQuotaBudgetResolver
+	// VirtualKeyAssigneeResolver supplies the user each VK is assigned to, batched
+	// per page. Optional; wired at server init when available, otherwise left nil
+	// so the VK read paths report no assignee (OSS has no user directory).
+	VirtualKeyAssigneeResolver handlers.VirtualKeyAssigneeResolver
 
 	SidekiqRunner         *sidekiq.Runner
 	SidekiqDispatcherStop func()
@@ -534,6 +543,27 @@ func (s *BifrostHTTPServer) getPromptsPluginName() string {
 		return name
 	}
 	return prompts.PluginName
+}
+
+// promptCacheReloadable is the prompts plugin's cache refresh entry point.
+type promptCacheReloadable interface {
+	Reload(ctx context.Context) error
+}
+
+// ReloadPromptCache rebuilds the prompts plugin's in-memory index; no-op when the plugin is not loaded.
+func (s *BifrostHTTPServer) ReloadPromptCache(ctx context.Context) error {
+	name := s.getPromptsPluginName()
+	plugin, err := lib.FindPluginAs[schemas.BasePlugin](s.Config, name)
+	if err != nil || plugin == nil {
+		return nil
+	}
+	reloader, ok := plugin.(promptCacheReloadable)
+	if !ok {
+		// A plugin registered under this name that cannot reload leaves the cache stale silently.
+		logger.Warn("plugin %s does not support prompt cache reload", name)
+		return nil
+	}
+	return reloader.Reload(ctx)
 }
 
 // getGovernancePlugin safely retrieves the governance plugin with proper locking.
@@ -1149,6 +1179,17 @@ func (s *BifrostHTTPServer) GetComplexitySemanticStatus(_ context.Context) (comp
 	return routingPlugin.ComplexitySemanticStatus(), nil
 }
 
+// RetryComplexitySemanticWarmup restarts a failed semantic warmup using its
+// saved configuration and reports whether the classifier accepted the retry.
+func (s *BifrostHTTPServer) RetryComplexitySemanticWarmup(_ context.Context) (complexity.SemanticStatusInfo, bool, error) {
+	routingPlugin, err := s.getRoutingPlugin()
+	if err != nil {
+		return complexity.SemanticStatusInfo{}, false, fmt.Errorf("routing plugin not found: %w", err)
+	}
+	status, retried := routingPlugin.RetryComplexitySemanticWarmup()
+	return status, retried, nil
+}
+
 // ListComplexityGenerations reports the exemplar generations held in the
 // configured vector store.
 func (s *BifrostHTTPServer) ListComplexityGenerations(ctx context.Context) ([]complexity.GenerationInfo, error) {
@@ -1489,6 +1530,28 @@ func (s *BifrostHTTPServer) ResolveAccess(ctx *schemas.BifrostContext) (schemas.
 		return nil, nil
 	}
 	return governancePlugin.ResolveAccess(ctx)
+}
+
+// NarrowListModelsProviders implements AccessResolver, so the native models route and the
+// integration ones narrow their fan-out by one rule rather than each carrying a copy of it.
+//
+// A request with nothing resolved keeps the fan-out it already had rather than being narrowed to
+// nothing, and so does a request nothing settled who it is: publishing an empty list here would
+// mean "no provider may serve this", turning an unrestricted listing into one that lists nothing.
+func (s *BifrostHTTPServer) NarrowListModelsProviders(ctx *schemas.BifrostContext) {
+	if ctx == nil {
+		return
+	}
+	access, err := s.ResolveAccess(ctx)
+	if err != nil || access == nil {
+		return
+	}
+	granted := access.GrantedProvidersForModel("")
+	providers := make([]schemas.ModelProvider, 0, len(granted))
+	for _, provider := range granted {
+		providers = append(providers, schemas.ModelProvider(provider))
+	}
+	ctx.SetValue(schemas.BifrostContextKeyAvailableProviders, providers)
 }
 
 // AdmitMCPGatewayRequest runs a /mcp request through the governance funnel before any tool is listed
@@ -2260,7 +2323,7 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 	realtimeClientSecretsHandler := handlers.NewRealtimeClientSecretsHandler(s.Client, s.Config)
 
 	inferenceHandler := handlers.NewInferenceHandler(s, s.Client, s.Config)
-	s.IntegrationHandler = handlers.NewIntegrationHandler(s.Client, s.Config, wsResponsesHandler, wsRealtimeHandler, webrtcRealtimeHandler, realtimeClientSecretsHandler)
+	s.IntegrationHandler = handlers.NewIntegrationHandler(s.Client, s.Config, s, wsResponsesHandler, wsRealtimeHandler, webrtcRealtimeHandler, realtimeClientSecretsHandler)
 	mcpInferenceHandler := handlers.NewMCPInferenceHandler(s.Client, s.Config)
 	// Serve by-ID virtual key lookups on the /mcp JWT auth path from the
 	// governance in-memory store (avoiding a per-request DB read). Best-effort:
@@ -2316,7 +2379,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	}
 	governancePlugin, _ := lib.FindPluginAs[schemas.LLMPlugin](s.Config, governancePluginName)
 	if governancePlugin != nil {
-		governanceHandler, err = handlers.NewGovernanceHandler(callbacks, s.Config.ConfigStore, govLogManager, s.ExternalQuotaBudgetResolver)
+		governanceHandler, err = handlers.NewGovernanceHandler(callbacks, s.Config.ConfigStore, govLogManager, s.ExternalQuotaBudgetResolver, s.VirtualKeyAssigneeResolver)
 		if err != nil {
 			return fmt.Errorf("failed to initialize governance handler: %v", err)
 		}
@@ -2344,10 +2407,6 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		}
 		return p
 	})
-	var promptsReloader handlers.PromptCacheReloader
-	if promptsPlugin, err := lib.FindPluginAs[handlers.PromptCacheReloader](s.Config, s.getPromptsPluginName()); err == nil && promptsPlugin != nil {
-		promptsReloader = promptsPlugin
-	}
 	// Websocket handler needs to go below UI handler
 	logger.Debug("initializing websocket server")
 	if s.WebSocketHandler == nil {
@@ -2378,7 +2437,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	configHandler := handlers.NewConfigHandler(callbacks, s.Config)
 	pluginsHandler := handlers.NewPluginsHandler(callbacks, s.Config.ConfigStore)
 	sessionHandler := handlers.NewSessionHandler(s.Config.ConfigStore, s.WSTicketStore)
-	promptsHandler := handlers.NewPromptsHandler(s.Config.ConfigStore, promptsReloader)
+	promptsHandler := handlers.NewPromptsHandler(s.Config.ConfigStore, callbacks)
 	featureFlagsHandler := handlers.NewFeatureFlagsHandler(s.Config.FeatureFlags, s.Config.ConfigStore)
 	// Going ahead with API handlers
 	oauth2DiscoveryHandler := handlers.NewOAuth2DiscoveryHandler(s.Config)
@@ -2903,6 +2962,8 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	tracer.SetObservabilityPlugins(observabilityPlugins, s.CollectObservabilityLimits())
 	s.Client.SetTracer(tracer)
 	s.TracingMiddleware = handlers.NewTracingMiddleware(tracer)
+	// Wire the settlement tracer now that it exists (WireBatchAccountingSweeper ran earlier, before it did).
+	s.setSettlementTracer()
 	// TransportInterceptor runs AFTER the auth middlewares so HTTPTransportPreHook observes an
 	// authenticated request, and inside TracingMiddleware so the tracing defer runs AFTER
 	// transport post-hooks (capturing HTTPTransportPostHook plugin logs).

@@ -51,6 +51,7 @@ type TableClientConfig struct {
 	RequiredHeadersJSON                   string                         `gorm:"type:text" json:"-"`                                              // JSON serialized []string
 	LoggingHeadersJSON                    string                         `gorm:"type:text" json:"-"`                                              // JSON serialized []string
 	HideDeletedVirtualKeysInFilters       bool                           `gorm:"default:false" json:"hide_deleted_virtual_keys_in_filters"`       // Hide deleted virtual keys in logs filter dropdowns
+	HiddenRequestTypesJSON                string                         `gorm:"type:text" json:"-"`                                              // JSON serialized []string of request types hidden from log reads
 	RoutingChainMaxDepth                  int                            `gorm:"default:10" json:"routing_chain_max_depth"`                       // Maximum depth for routing rule chain evaluation (default: 10)
 	MCPExternalClientURL                  string                         `gorm:"type:varchar(512)" json:"mcp_external_client_url,omitempty"`      // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers
 	WhitelistedRoutesJSON                 string                         `gorm:"type:text" json:"-"`                                              // JSON serialized []string
@@ -92,6 +93,7 @@ type TableClientConfig struct {
 	AllowedHeaders     []string                  `gorm:"-" json:"allowed_headers,omitempty"`
 	RequiredHeaders    []string                  `gorm:"-" json:"required_headers,omitempty"`
 	LoggingHeaders     []string                  `gorm:"-" json:"logging_headers,omitempty"`
+	HiddenRequestTypes []string                  `gorm:"-" json:"hidden_request_types,omitempty"`
 	WhitelistedRoutes  []string                  `gorm:"-" json:"whitelisted_routes,omitempty"`
 	HeaderFilterConfig *GlobalHeaderFilterConfig `gorm:"-" json:"header_filter_config,omitempty"`
 	Metadata           map[string]any            `gorm:"-" json:"metadata,omitempty"`
@@ -181,6 +183,16 @@ func (cc *TableClientConfig) BeforeSave(tx *gorm.DB) error {
 		cc.LoggingHeadersJSON = "[]"
 	}
 
+	if cc.HiddenRequestTypes != nil {
+		data, err := json.Marshal(cc.HiddenRequestTypes)
+		if err != nil {
+			return err
+		}
+		cc.HiddenRequestTypesJSON = string(data)
+	} else {
+		cc.HiddenRequestTypesJSON = "[]"
+	}
+
 	if cc.HeaderFilterConfig != nil {
 		data, err := json.Marshal(cc.HeaderFilterConfig)
 		if err != nil {
@@ -260,6 +272,12 @@ func (cc *TableClientConfig) AfterFind(tx *gorm.DB) error {
 
 	if cc.LoggingHeadersJSON != "" {
 		if err := json.Unmarshal([]byte(cc.LoggingHeadersJSON), &cc.LoggingHeaders); err != nil {
+			return err
+		}
+	}
+
+	if cc.HiddenRequestTypesJSON != "" {
+		if err := json.Unmarshal([]byte(cc.HiddenRequestTypesJSON), &cc.HiddenRequestTypes); err != nil {
 			return err
 		}
 	}

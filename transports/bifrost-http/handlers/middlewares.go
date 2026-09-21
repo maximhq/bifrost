@@ -30,6 +30,9 @@ import (
 var loggingSkipPaths = []string{"/health", "/_next", "/api/dev/"}
 var realtimeTransportPaths = buildRealtimeTransportPathSet()
 
+// apiPathPrefix is the route prefix whose responses must never be served from a shared cache.
+const apiPathPrefix = "/api/"
+
 // SecurityHeadersMiddleware sets security-related HTTP headers on every response.
 // This should wrap the outermost handler so all responses (API, UI, errors) include these headers.
 func SecurityHeadersMiddleware() schemas.BifrostHTTPMiddleware {
@@ -43,6 +46,10 @@ func SecurityHeadersMiddleware() schemas.BifrostHTTPMiddleware {
 			// Only set HSTS when serving over HTTPS (detected via reverse proxy header or direct TLS)
 			if string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" || ctx.IsTLS() {
 				ctx.Response.Header.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+			}
+			// Keep CDNs from caching API responses; handlers may override.
+			if strings.HasPrefix(string(ctx.Path()), apiPathPrefix) {
+				ctx.Response.Header.Set("Cache-Control", "no-store")
 			}
 			next(ctx)
 		}
@@ -1094,6 +1101,9 @@ func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
 	systemWhitelistedRoutes := []string{
 		"/api/session/is-auth-enabled",
 		"/api/session/login",
+		// Idempotent: the handler clears the cookie and returns 200 whether or
+		// not a session token is present, so a repeat logout must not 401 here.
+		"/api/session/logout",
 		"/api/oauth/callback",
 		"/health",
 		"/login",

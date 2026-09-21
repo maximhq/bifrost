@@ -350,7 +350,9 @@ function EndpointCell({ slug, baseUrl }: { slug: string; baseUrl: string }) {
 			data-testid={`virtual-mcp-endpoint-copy-${slug}`}
 		>
 			/mcp/{slug}
-			{copied ? <Check className="size-3.5 shrink-0" /> : <Copy className="size-3.5 shrink-0" />}
+			<span className="opacity-0 transition-opacity group-hover:opacity-100">
+				{copied ? <Check className="size-3.5 shrink-0" /> : <Copy className="size-3.5 shrink-0" />}
+			</span>
 		</button>
 	);
 }

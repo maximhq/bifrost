@@ -1099,6 +1099,10 @@ func (m *MockConfigStore) GetVirtualMCPByID(ctx context.Context, id uint) (*tabl
 	return nil, nil
 }
 
+func (m *MockConfigStore) GetVirtualMCPByName(ctx context.Context, name string) (*tables.TableVirtualMCP, error) {
+	return nil, configstore.ErrNotFound
+}
+
 func (m *MockConfigStore) GetVirtualMCPsPaginated(ctx context.Context, params configstore.VirtualMCPsQueryParams) ([]tables.TableVirtualMCP, int64, error) {
 	return nil, 0, nil
 }
@@ -15815,7 +15819,7 @@ func TestUpdateGovernanceConfigInStore_RejectsSharedGovernanceIDs(t *testing.T) 
 			nil, nil, // customers
 			nil, nil, // teams
 			nil, nil, // virtual keys
-			nil, nil, // routing rules
+			nil, nil, nil, // routing rules (add, update, delete)
 			nil, nil, // pricing overrides
 			modelAdds, modelUpdates,
 			providerAdds, providerUpdates,
@@ -16204,6 +16208,7 @@ func TestGenerateMCPClientHash_RuntimeVsMigrationParity(t *testing.T) {
 		mcpToSave := tables.TableMCPClient{
 			ClientID:       uuid.New().String(),
 			Name:           "Test MCP StdioConfig " + uuid.New().String(),
+			EndpointSlug:   "stdio-" + uuid.New().String(),
 			ConnectionType: "stdio",
 			StdioConfig:    stdioConfig,
 			ToolsToExecute: []string{},
@@ -16251,6 +16256,7 @@ func TestGenerateMCPClientHash_RuntimeVsMigrationParity(t *testing.T) {
 		mcpToSave := tables.TableMCPClient{
 			ClientID:         uuid.New().String(),
 			Name:             "Test MCP Tools " + uuid.New().String(),
+			EndpointSlug:     "tools-" + uuid.New().String(),
 			ConnectionType:   "sse",
 			ConnectionString: schemas.NewSecretVar(connStr),
 			ToolsToExecute:   tools,
@@ -16285,6 +16291,7 @@ func TestGenerateMCPClientHash_RuntimeVsMigrationParity(t *testing.T) {
 		mcpToSave := tables.TableMCPClient{
 			ClientID:         uuid.New().String(),
 			Name:             "Test MCP Headers " + uuid.New().String(),
+			EndpointSlug:     "headers-" + uuid.New().String(),
 			ConnectionType:   "sse",
 			ConnectionString: schemas.NewSecretVar(connStr),
 			ToolsToExecute:   []string{},
@@ -16321,6 +16328,7 @@ func TestGenerateMCPClientHash_RuntimeVsMigrationParity(t *testing.T) {
 		mcpToSave := tables.TableMCPClient{
 			ClientID:       uuid.New().String(),
 			Name:           "Test MCP AllFields " + uuid.New().String(),
+			EndpointSlug:   "allfields-" + uuid.New().String(),
 			ConnectionType: "stdio",
 			StdioConfig:    stdioConfig,
 			ToolsToExecute: tools,
@@ -16348,6 +16356,7 @@ func TestGenerateMCPClientHash_RuntimeVsMigrationParity(t *testing.T) {
 		mcpToSave := tables.TableMCPClient{
 			ClientID:         uuid.New().String(),
 			Name:             "Test MCP TxFind " + uuid.New().String(),
+			EndpointSlug:     "txfind-" + uuid.New().String(),
 			ConnectionType:   "sse",
 			ConnectionString: schemas.NewSecretVar(connStr),
 			ToolsToExecute:   tools,
@@ -18932,7 +18941,7 @@ var excludedSchemaFields = map[string]map[string]bool{
 		"business_unit_id": true, // Enterprise feature; not in OSS TableTeam
 	},
 	"governance.virtual_keys": {
-		"access_profile_id": true, // Enterprise access-profile assignment; not on OSS TableVirtualKey
+		"access_profile_id": true, // Stale: direct access-profile assignment reverted in v1.5.9 (#3669/#3670); kept deprecated in schema for backward-compatible validation
 	},
 	"governance.virtual_keys.provider_configs": {
 		"keys":    true, // Complex nested type, validated separately
@@ -22321,4 +22330,166 @@ func TestUpdateClientConfig_PersistsExplicitZeroToolSyncInterval(t *testing.T) {
 	persisted, err := store.GetClientConfig(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, 0, persisted.MCPToolSyncInterval)
+}
+
+// TestGetMCPClientBySlugSkipsDisabled pins that a disabled MCP client's endpoint slug does not
+// resolve, so /mcp/<slug> is not served (admit returns 403) for a disabled direct client.
+func TestGetMCPClientBySlugSkipsDisabled(t *testing.T) {
+	c := &Config{
+		MCPConfig: &schemas.MCPConfig{
+			ClientConfigs: []*schemas.MCPClientConfig{
+				{ID: "enabled-id", Name: "Enabled", EndpointSlug: "live-slug"},
+				{ID: "disabled-id", Name: "Disabled", EndpointSlug: "dead-slug", Disabled: true},
+			},
+		},
+	}
+
+	id, name, ok := c.GetMCPClientBySlug("live-slug")
+	require.True(t, ok)
+	require.Equal(t, "enabled-id", id)
+	require.Equal(t, "Enabled", name)
+
+	_, _, ok = c.GetMCPClientBySlug("dead-slug")
+	require.False(t, ok, "a disabled client's slug must not resolve")
+}
+
+// TestReconcileVirtualMCPsConfig covers the config.json → store reconciliation for
+// mcp.virtual_mcps: create (with explicit slug + name-resolved tool client + VK attach),
+// idempotent no-op on unchanged hash, update on change, and prune of absent entries.
+func TestReconcileVirtualMCPsConfig(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, createTempDir(t))
+
+	// Source MCP client (resolved by name) and a VK to attach to.
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID: "client-1", Name: "github", ConnectionType: schemas.MCPConnectionTypeHTTP,
+	}))
+	require.NoError(t, store.CreateVirtualKey(ctx, &tables.TableVirtualKey{
+		ID: "vk-1", Name: "test-vk", Value: *schemas.NewSecretVar("vk_test123"), IsActive: schemas.Ptr(true),
+	}))
+
+	fileVMCPs := []schemas.VirtualMCPConfig{
+		{
+			Name:         "Platform Tools",
+			EndpointSlug: "platform-tools",
+			Enabled:      schemas.Ptr(true),
+			Tools: []schemas.MCPToolSpecConfig{
+				{MCPClientName: "github", ToolNames: []string{"create_pull_request"}},
+			},
+			VirtualKeyIDs: []string{"vk-1"},
+		},
+	}
+
+	// Create.
+	require.NoError(t, reconcileVirtualMCPsConfig(ctx, store, fileVMCPs, true))
+
+	vmcps, _, err := store.GetVirtualMCPsPaginated(ctx, configstore.VirtualMCPsQueryParams{Limit: 100})
+	require.NoError(t, err)
+	require.Len(t, vmcps, 1)
+	created := vmcps[0]
+	require.Equal(t, "Platform Tools", created.Name)
+	require.Equal(t, "platform-tools", created.EndpointSlug)
+	require.True(t, created.Enabled)
+	require.Len(t, created.ParsedTools, 1)
+	require.Equal(t, "client-1", created.ParsedTools[0].MCPClientID, "tool client name should resolve to client ID")
+	require.NotEmpty(t, created.ConfigHash)
+
+	vkIDs, err := store.GetVirtualKeyIDsForVirtualMCP(ctx, created.ID)
+	require.NoError(t, err)
+	require.Equal(t, []string{"vk-1"}, vkIDs)
+
+	// Idempotent: unchanged file, hash matches, no error and slug unchanged.
+	require.NoError(t, reconcileVirtualMCPsConfig(ctx, store, fileVMCPs, false))
+	after, _, err := store.GetVirtualMCPsPaginated(ctx, configstore.VirtualMCPsQueryParams{Limit: 100})
+	require.NoError(t, err)
+	require.Len(t, after, 1)
+	require.Equal(t, created.ConfigHash, after[0].ConfigHash)
+
+	// Update: disable it and detach the VK.
+	fileVMCPs[0].Enabled = schemas.Ptr(false)
+	fileVMCPs[0].VirtualKeyIDs = nil
+	require.NoError(t, reconcileVirtualMCPsConfig(ctx, store, fileVMCPs, true))
+	updated, err := store.GetVirtualMCPByID(ctx, created.ID)
+	require.NoError(t, err)
+	require.False(t, updated.Enabled)
+	require.Equal(t, "platform-tools", updated.EndpointSlug, "endpoint_slug is immutable across updates")
+	vkIDs, err = store.GetVirtualKeyIDsForVirtualMCP(ctx, created.ID)
+	require.NoError(t, err)
+	require.Empty(t, vkIDs)
+
+	// Prune: absent from file removes it.
+	require.NoError(t, pruneVirtualMCPsConfigToFile(ctx, store, nil))
+	remaining, _, err := store.GetVirtualMCPsPaginated(ctx, configstore.VirtualMCPsQueryParams{Limit: 100})
+	require.NoError(t, err)
+	require.Empty(t, remaining)
+}
+
+// TestReconcileVirtualMCPsConfig_DerivesSlugFromName verifies an omitted endpoint_slug is
+// derived from the name.
+func TestReconcileVirtualMCPsConfig_DerivesSlugFromName(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, createTempDir(t))
+
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID: "client-1", Name: "github", ConnectionType: schemas.MCPConnectionTypeHTTP,
+	}))
+
+	require.NoError(t, reconcileVirtualMCPsConfig(ctx, store, []schemas.VirtualMCPConfig{
+		{
+			Name:  "My Tools",
+			Tools: []schemas.MCPToolSpecConfig{{MCPClientID: "client-1", ToolNames: []string{"*"}}},
+		},
+	}, true))
+
+	vmcps, _, err := store.GetVirtualMCPsPaginated(ctx, configstore.VirtualMCPsQueryParams{Limit: 100})
+	require.NoError(t, err)
+	require.Len(t, vmcps, 1)
+	require.Equal(t, "my-tools", vmcps[0].EndpointSlug)
+}
+
+// TestGenerateVirtualMCPHash_StableOrdering verifies the hash is independent of tool,
+// tool-name, and virtual-key-id declaration order, so reconcile treats reordered configs
+// as unchanged.
+func TestGenerateVirtualMCPHash_StableOrdering(t *testing.T) {
+	desc := "bundle"
+	tools1 := []configstoreTables.MCPToolSpec{
+		{MCPClientID: "a", ToolNames: []string{"t2", "t1"}},
+		{MCPClientID: "b", ToolNames: []string{"t3"}},
+	}
+	tools2 := []configstoreTables.MCPToolSpec{
+		{MCPClientID: "b", ToolNames: []string{"t3"}},
+		{MCPClientID: "a", ToolNames: []string{"t1", "t2"}},
+	}
+	h1 := GenerateVirtualMCPHash("vmcp", &desc, true, tools1, []string{"vk-2", "vk-1"})
+	h2 := GenerateVirtualMCPHash("vmcp", &desc, true, tools2, []string{"vk-1", "vk-2"})
+	require.Equal(t, h1, h2, "hash must be stable across ordering")
+
+	// A material change (enabled) must change the hash.
+	require.NotEqual(t, h1, GenerateVirtualMCPHash("vmcp", &desc, false, tools1, []string{"vk-1", "vk-2"}))
+}
+
+// TestReconcileVirtualMCPsConfig_DedupeNameAndID verifies duplicate names are rejected even when
+// the entries carry different IDs (not just repeated IDs), so a second write never races the DB's
+// unique-name constraint.
+func TestReconcileVirtualMCPsConfig_DedupeNameAndID(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, createTempDir(t))
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID: "client-1", Name: "github", ConnectionType: schemas.MCPConnectionTypeHTTP,
+	}))
+
+	tool := []schemas.MCPToolSpecConfig{{MCPClientID: "client-1", ToolNames: []string{"*"}}}
+	// Same name, different ID-ness: the second must be skipped by name, not slip through on the ID key.
+	require.NoError(t, reconcileVirtualMCPsConfig(ctx, store, []schemas.VirtualMCPConfig{
+		{Name: "Dup", Tools: tool},
+		{Name: "Dup", ID: 5, Tools: tool},
+	}, true))
+
+	vmcps, _, err := store.GetVirtualMCPsPaginated(ctx, configstore.VirtualMCPsQueryParams{Limit: 100})
+	require.NoError(t, err)
+	require.Len(t, vmcps, 1, "duplicate name with a different ID must be deduped")
+	require.Equal(t, "Dup", vmcps[0].Name)
 }

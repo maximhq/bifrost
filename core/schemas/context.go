@@ -23,6 +23,7 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeyDirectKey:               {},
 	BifrostContextKeyRequestID:               {},
 	BifrostContextKeyFallbackRequestID:       {},
+	BifrostContextKeyBillingNonce:            {},
 	BifrostContextKeySelectedKeyID:           {},
 	BifrostContextKeySelectedKeyName:         {},
 	BifrostContextKeyNumberOfRetries:         {},

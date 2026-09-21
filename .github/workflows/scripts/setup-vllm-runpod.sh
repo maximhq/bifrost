@@ -89,7 +89,11 @@ create_vllm_pod() {
 
   echo "🚀 Creating ${name_suffix} vLLM pod ($model on $GPU_TYPE_ID, auto-terminates at ${TERMINATE_AFTER} as a backstop)..." >&2
   local create_output
-  create_output=$(runpodctl "${create_args[@]}")
+  if ! create_output=$(runpodctl "${create_args[@]}"); then
+    echo "$create_output" >&2
+    echo "::error::Failed to create the ${name_suffix} vLLM pod; see RunPod error above" >&2
+    return 1
+  fi
   echo "$create_output" >&2
 
   local pod_id
@@ -131,6 +135,8 @@ POD_ID=$(create_vllm_pod \
   "${VLLM_ENABLE_THINKING:-false}" \
   "${VLLM_MAX_MODEL_LEN:-32768}" \
   "${RUNPOD_NETWORK_VOLUME_ID:-}")
+# Make the first pod available to teardown even if the second creation fails.
+echo "RUNPOD_POD_ID=${POD_ID}" >> "$GITHUB_ENV"
 
 # --- Reasoning pod: Reasoning scenario only (thinking on) ---
 REASONING_MODEL_NAME="${VLLM_REASONING_MODEL_NAME:-QuantTrio/GLM-4.7-Flash-AWQ}"
@@ -144,6 +150,7 @@ REASONING_POD_ID=$(create_vllm_pod \
   "${VLLM_REASONING_ENABLE_THINKING:-true}" \
   "${VLLM_REASONING_MAX_MODEL_LEN:-131072}" \
   "${RUNPOD_REASONING_NETWORK_VOLUME_ID:-}")
+echo "RUNPOD_REASONING_POD_ID=${REASONING_POD_ID}" >> "$GITHUB_ENV"
 
 VLLM_BASE_URL="https://${POD_ID}-${API_PORT}.proxy.runpod.net"
 VLLM_REASONING_BASE_URL="https://${REASONING_POD_ID}-${API_PORT}.proxy.runpod.net"
@@ -152,12 +159,10 @@ echo "Reasoning pod: ${REASONING_POD_ID} -> ${VLLM_REASONING_BASE_URL}"
 
 # Persist for later steps in this job (test run + teardown).
 {
-  echo "RUNPOD_POD_ID=${POD_ID}"
   echo "VLLM_BASE_URL=${VLLM_BASE_URL}"
   echo "VLLM_API_KEY=${VLLM_API_KEY}"
   echo "VLLM_CHAT_MODEL=${DEFAULT_MODEL_NAME}"
   echo "VLLM_TEXT_MODEL=${DEFAULT_MODEL_NAME}"
-  echo "RUNPOD_REASONING_POD_ID=${REASONING_POD_ID}"
   echo "VLLM_REASONING_BASE_URL=${VLLM_REASONING_BASE_URL}"
   echo "VLLM_REASONING_MODEL=${REASONING_MODEL_NAME}"
 } >> "$GITHUB_ENV"

@@ -419,6 +419,11 @@ func buildAggregateLog(req JobRequest, settlement *Settlement, out *Outcome, now
 	if settlement.ApplyDebug != nil {
 		settlement.ApplyDebug(entry)
 	}
+	// The parent now points at the request that created the job, so record which
+	// request actually settled it here instead. Empty means the sweeper did.
+	if entry.VideoDebugParsed != nil && req.BaseLog != nil {
+		entry.VideoDebugParsed.SettledByRequestID = req.BaseLog.ID
+	}
 	// Attribution must not depend on who happens to settle the job first. The
 	// sweeper reaches here with only the job; an inline call reaches here with the
 	// caller's log entry too — and copying that wholesale meant the same job billed
@@ -438,8 +443,19 @@ func buildAggregateLog(req JobRequest, settlement *Settlement, out *Outcome, now
 			applyLogDenormalizations(entry, req.SourceLog)
 		}
 		applyJobAttribution(entry, req.Job)
-		// Provenance, not attribution: which request triggered this settlement.
-		if req.BaseLog != nil && req.BaseLog.ID != "" {
+		// Nest under the request that CREATED the job, not the one that settled it.
+		// BaseLog is whoever triggered settlement — a poll, a /results fetch — and it
+		// is nil on the sweeper path entirely, so the same job landed in a different
+		// place depending on who got there first, and a sweeper-settled job floated as
+		// its own root. SourceLogID is written once on insert and never updated, so it
+		// is the one anchor that does not move.
+		//
+		// This is what puts the settled cost on the creating row: the list rolls a
+		// row's children up into children_cost, so the generation shows what it spent
+		// without the settlement having to write back to it.
+		if req.Job.SourceLogID != nil && *req.Job.SourceLogID != "" {
+			entry.ParentRequestID = req.Job.SourceLogID
+		} else if req.BaseLog != nil && req.BaseLog.ID != "" {
 			entry.ParentRequestID = &req.BaseLog.ID
 		}
 		return entry

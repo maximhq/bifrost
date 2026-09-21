@@ -429,6 +429,7 @@ export interface LLMUsage {
 	prompt_tokens: number;
 	completion_tokens: number;
 	total_tokens: number;
+	audio_seconds?: number;
 	prompt_tokens_details?: TokenDetails;
 	completion_tokens_details?: CompletionTokensDetails;
 }
@@ -588,6 +589,16 @@ export interface BifrostError {
 	is_bifrost_error: boolean;
 	status_code?: number;
 	error: ErrorField;
+	extra_fields?: BifrostErrorExtraFields;
+}
+
+// Subset of Go's schemas.BifrostErrorExtraFields that the UI reads. raw_response holds the
+// provider's error body as received, which is the only place the reason survives when the
+// provider's error shape does not match what its parser expected.
+export interface BifrostErrorExtraFields {
+	raw_response?: unknown;
+	raw_request?: unknown;
+	latency?: number;
 }
 
 // Citation and Annotation types
@@ -690,6 +701,7 @@ export interface LogEntry {
 	complexity_tier?: string; // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); absent when no routing rule referenced complexity_tier
 	complexity_mechanism?: string; // How the complexity tier was classified ("semantic", "llm", "session", "skipped"); absent when no routing rule referenced complexity_tier
 	complexity_score?: number; // Classifier score: the semantic classifier's similarity to the nearest reference phrase
+	session_id?: string; // Raw opaque session ID resolved by Bifrost for key stickiness and request correlation
 	routing_engine_logs?: string; // Human-readable routing decision logs
 	plugin_logs?: string; // JSON string of plugin execution logs grouped by plugin name
 	selected_key?: DBKey;
@@ -722,6 +734,7 @@ export interface LogEntry {
 	list_models_output?: Model[];
 	tools?: Tool[];
 	tool_calls?: ToolCall[];
+	tool_call_names?: string[]; // Distinct function names the response called; kept on the row even when content is offloaded
 	latency?: number;
 	upstream_latency?: number; // provider socket time across all attempts, ms
 	overhead_latency?: number; // Bifrost overhead (total minus upstream), ms
@@ -777,8 +790,10 @@ export interface LogFilters {
 	routing_engine_used?: string[]; // For filtering by routing engine (routing-rule, governance, loadbalancing)
 	status?: string[];
 	stop_reasons?: string[]; // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
+	tool_call_names?: string[]; // Requests whose response called any of these function names
 	complexity_tiers?: string[]; // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
 	complexity_mechanisms?: string[]; // For filtering by complexity decision mechanism (semantic, llm, session, skipped)
+	session_id?: string; // Exact session ID used for key stickiness and request correlation
 	objects?: string[]; // For filtering by request type (chat.completion, text.completion, embedding)
 	start_time?: string; // RFC3339 format
 	end_time?: string; // RFC3339 format
@@ -1318,6 +1333,30 @@ export interface WebSocketLogMessage {
 
 // MCP Tool Log Entry - represents a single MCP tool execution
 export interface MCPToolLogEntry {
+	request_id?: string;
+	user_id?: string | null;
+	user_name?: string | null;
+	team_id?: string | null;
+	team_name?: string | null;
+	customer_id?: string | null;
+	customer_name?: string | null;
+	business_unit_id?: string | null;
+	business_unit_name?: string | null;
+	// Index-aligned with their ids: team_names[i] names team_ids[i].
+	team_ids?: string[];
+	team_names?: string[];
+	customer_ids?: string[];
+	customer_names?: string[];
+	business_unit_ids?: string[];
+	business_unit_names?: string[];
+	budget_ids?: string[];
+	rate_limit_ids?: string[];
+	project_id?: string | null;
+	project_name?: string | null;
+	device_id?: string;
+	app_key?: string;
+	decision?: string;
+	source?: string;
 	id: string;
 	llm_request_id?: string; // Links to the LLM request that triggered this tool call
 	timestamp: string; // ISO string format
@@ -1342,6 +1381,13 @@ export interface MCPToolLogEntry {
 
 // MCP Tool Log Filters
 export interface MCPToolLogFilters {
+	user_ids?: string[];
+	team_ids?: string[];
+	customer_ids?: string[];
+	business_unit_ids?: string[];
+	project_ids?: string[];
+	device_ids?: string[];
+
 	tool_names?: string[];
 	server_labels?: string[];
 	status?: string[];

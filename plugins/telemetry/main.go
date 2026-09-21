@@ -18,6 +18,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/overhead"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -83,13 +84,15 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 		BasicAuth      *basicAuthStorage `json:"basic_auth,omitempty"`
 	}
 	type configStorage struct {
-		CustomLabels   []string            `json:"custom_labels,omitempty"`
-		MetricsEnabled *bool               `json:"metrics_enabled,omitempty"`
-		PushGateway    *pushGatewayStorage `json:"push_gateway,omitempty"`
+		CustomLabels             []string            `json:"custom_labels,omitempty"`
+		MetricsEnabled           *bool               `json:"metrics_enabled,omitempty"`
+		OverheadBreakdownEnabled *bool               `json:"overhead_breakdown_enabled,omitempty"`
+		PushGateway              *pushGatewayStorage `json:"push_gateway,omitempty"`
 	}
 	storage := configStorage{
-		CustomLabels:   c.CustomLabels,
-		MetricsEnabled: c.MetricsEnabled,
+		CustomLabels:             c.CustomLabels,
+		MetricsEnabled:           c.MetricsEnabled,
+		OverheadBreakdownEnabled: c.OverheadBreakdownEnabled,
 	}
 	if c.PushGateway != nil {
 		pgw := &pushGatewayStorage{
@@ -167,6 +170,7 @@ type PrometheusPlugin struct {
 	UpstreamRequestsTotal          *prometheus.CounterVec
 	UpstreamLatencySeconds         *prometheus.HistogramVec
 	OverheadLatencyMicros          *prometheus.HistogramVec
+	OverheadComponentMicros        *prometheus.HistogramVec
 	SuccessRequestsTotal           *prometheus.CounterVec
 	ErrorRequestsTotal             *prometheus.CounterVec
 	InputTokensTotal               *prometheus.CounterVec
@@ -205,6 +209,22 @@ type PrometheusPlugin struct {
 
 	// MetricsEnabled gates the /metrics scrape endpoint.
 	metricsEnabled atomic.Bool
+
+	// gates bifrost_overhead_component_microseconds. Off by default.
+	overheadBreakdownEnabled atomic.Bool
+	userLabelsEnabled        atomic.Bool
+	// PostLLMHook-resolved labels handed to Inject, keyed by trace ID (values are
+	// *pendingOverheadEntry). Inject drains them; sweepPendingOverheadLabels bounds it.
+	pendingOverheadLabels sync.Map
+	overheadSweepTicker   *time.Ticker
+	overheadSweepStop     chan struct{}
+	overheadSweepWG       sync.WaitGroup
+	overheadSweepOnce     sync.Once // Cleanup runs once; the plugin is registered under multiple types
+}
+
+type pendingOverheadEntry struct {
+	labels    []string
+	createdAt time.Time // for the sweeper's staleness check
 }
 
 type Config struct {
@@ -213,6 +233,12 @@ type Config struct {
 	PushGateway  *PushGatewayConfig `json:"push_gateway"`
 	// MetricsEnabled controls whether the /metrics scrape endpoint is served.
 	MetricsEnabled *bool `json:"metrics_enabled,omitempty"`
+	// Exports bifrost_overhead_component_microseconds. Off by default. Needs tracing on
+	// (the breakdown comes from completed trace spans).
+	OverheadBreakdownEnabled *bool `json:"overhead_breakdown_enabled,omitempty"`
+	// Adds user_id and user_name labels. Off by default: unbounded values
+	// multiply series, and Prometheus cannot drop a label afterwards.
+	UserLabelsEnabled *bool `json:"user_labels_enabled,omitempty"`
 }
 
 // Keep in sync with plugins/otel/metrics.go's identical arrays so the Prometheus
@@ -261,6 +287,10 @@ var (
 )
 
 // Init creates a new PrometheusPlugin with initialized metrics.
+// userLabelNames are appended to defaultBifrostLabelNames when
+// user_labels_enabled is set.
+var userLabelNames = []string{"user_id", "user_name"}
+
 // defaultBifrostLabelNames is the canonical set of Prometheus labels attached to
 // bifrost.* metrics. It is a package var (not an Init local) so the connector-
 // parity conformance test can assert it against the shared enrichment registry
@@ -354,6 +384,11 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 
 	defaultHTTPLabels := []string{"path", "method", "status"}
 	defaultBifrostLabels := append([]string(nil), defaultBifrostLabelNames...)
+	userLabelsEnabled := config.UserLabelsEnabled != nil && *config.UserLabelsEnabled
+	if userLabelsEnabled {
+		defaultBifrostLabels = append(defaultBifrostLabels, userLabelNames...)
+		logger.Warn("telemetry plugin: user_labels_enabled multiplies metric series by end-user count; monitor Prometheus memory")
+	}
 
 	var filteredCustomLabels []string
 	if len(config.CustomLabels) > 0 {
@@ -436,6 +471,23 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		append(defaultBifrostLabels, filteredCustomLabels...),
 	)
 
+	// Same overhead as above, split by overhead_component (the UI's categories; see
+	// framework/overhead). Same base labels + buckets, so the components sum to
+	// bifrost_overhead_latency_microseconds per label set. Observed only when enabled
+	// and the request is traced.
+	overheadComponentLabels := make([]string, 0, len(defaultBifrostLabels)+len(filteredCustomLabels)+1)
+	overheadComponentLabels = append(overheadComponentLabels, defaultBifrostLabels...)
+	overheadComponentLabels = append(overheadComponentLabels, filteredCustomLabels...)
+	overheadComponentLabels = append(overheadComponentLabels, "overhead_component")
+	bifrostOverheadComponentMicros := factory.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "bifrost_overhead_component_microseconds",
+			Help:    "Bifrost overhead latency broken down by internal component (overhead_component label), in microseconds. Off by default; enable with overhead_breakdown_enabled. Requires tracing to be active.",
+			Buckets: overheadLatencyBuckets,
+		},
+		overheadComponentLabels,
+	)
+
 	bifrostSuccessRequestsTotal := factory.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "bifrost_success_requests_total",
@@ -444,12 +496,15 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		append(defaultBifrostLabels, filteredCustomLabels...),
 	)
 
+	// error_type is the normalized reason, status_code the raw fact it came from.
+	// Cardinality is bounded: error_type is near-determined by status_code for
+	// upstream failures, so it splits few series that were not already split.
 	bifrostErrorRequestsTotal := factory.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "bifrost_error_requests_total",
-			Help: "Total number of error requests forwarded to upstream providers by Bifrost.",
+			Help: "Total number of failed requests, by raw status_code and normalized error_type.",
 		},
-		append(append(defaultBifrostLabels, "status_code"), filteredCustomLabels...),
+		append(append(defaultBifrostLabels, "status_code", "error_type"), filteredCustomLabels...),
 	)
 
 	bifrostInputTokensTotal := factory.NewCounterVec(
@@ -644,6 +699,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		UpstreamRequestsTotal:          bifrostUpstreamRequestsTotal,
 		UpstreamLatencySeconds:         bifrostUpstreamLatencySeconds,
 		OverheadLatencyMicros:          bifrostOverheadLatencyMicros,
+		OverheadComponentMicros:        bifrostOverheadComponentMicros,
 		SuccessRequestsTotal:           bifrostSuccessRequestsTotal,
 		ErrorRequestsTotal:             bifrostErrorRequestsTotal,
 		InputTokensTotal:               bifrostInputTokensTotal,
@@ -679,6 +735,20 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 	}
 	plugin.metricsEnabled.Store(metricsEnabled)
 
+	// Opt-in: the per-component histogram multiplies overhead cardinality by component count.
+	if config.OverheadBreakdownEnabled != nil {
+		plugin.overheadBreakdownEnabled.Store(*config.OverheadBreakdownEnabled)
+	}
+	// Must match the label set built above, or Prometheus rejects every observation.
+	plugin.userLabelsEnabled.Store(userLabelsEnabled)
+	// Sweep the label handoff only when the breakdown is on (otherwise the map stays empty).
+	if plugin.overheadBreakdownEnabled.Load() {
+		plugin.overheadSweepStop = make(chan struct{})
+		plugin.overheadSweepTicker = time.NewTicker(time.Minute)
+		plugin.overheadSweepWG.Add(1)
+		go plugin.sweepPendingOverheadLabels()
+	}
+
 	// Start push gateway if configured
 	if config.PushGateway != nil && config.PushGateway.Enabled && config.PushGateway.PushGatewayURL.IsSet() {
 		if err := plugin.EnablePushGateway(config.PushGateway); err != nil {
@@ -693,6 +763,17 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 // metrics on this instance. Safe to call from request-handling goroutines.
 func (p *PrometheusPlugin) IsMetricsEnabled() bool {
 	return p.metricsEnabled.Load()
+}
+
+// IsOverheadBreakdownEnabled reports whether bifrost_overhead_component_microseconds is observed.
+func (p *PrometheusPlugin) IsOverheadBreakdownEnabled() bool {
+	return p.overheadBreakdownEnabled.Load()
+}
+
+// ConsumesOverheadSpans opts into the internal breakdown spans (schemas.OverheadSpanConsumer)
+// when enabled, so Inject can decompose overhead. When off, we take the stripped trace.
+func (p *PrometheusPlugin) ConsumesOverheadSpans() bool {
+	return p.overheadBreakdownEnabled.Load()
 }
 
 func (p *PrometheusPlugin) GetRegistry() *prometheus.Registry {
@@ -795,6 +876,66 @@ func (p *PrometheusPlugin) recordOverhead(ctx *schemas.BifrostContext, total tim
 	}
 	if overhead, ok := schemas.CalculateOverhead(ctx, total); ok {
 		p.OverheadLatencyMicros.WithLabelValues(labels...).Observe(float64(overhead) / float64(time.Microsecond))
+	}
+}
+
+// Inject (schemas.ObservabilityPlugin) records the per-component overhead histogram from
+// the completed trace, using labels PostLLMHook stashed in pendingOverheadLabels (so it
+// shares the scalar metric's labels plus overhead_component). The breakdown needs the
+// finalized span tree, which only exists here; the scalar overhead is recorded in HTTPTransportPostHook.
+func (p *PrometheusPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
+	if trace == nil {
+		return nil
+	}
+	// Always drain the handoff entry so a toggle flip mid-request can't leak it.
+	joinKey := trace.InternalID
+	if joinKey == "" {
+		joinKey = trace.TraceID
+	}
+	labelsVal, ok := p.pendingOverheadLabels.LoadAndDelete(joinKey)
+	if !ok || !p.overheadBreakdownEnabled.Load() {
+		return nil
+	}
+	entry, ok := labelsVal.(*pendingOverheadEntry)
+	if !ok || len(entry.labels) == 0 {
+		return nil
+	}
+	baseLabels := entry.labels
+	components := overhead.ComputeForMetrics(trace)
+	if len(components) == 0 {
+		return nil
+	}
+	for component, micros := range components {
+		labels := make([]string, 0, len(baseLabels)+1)
+		labels = append(labels, baseLabels...)
+		labels = append(labels, component)
+		p.OverheadComponentMicros.WithLabelValues(labels...).Observe(micros)
+	}
+	return nil
+}
+
+// Compile-time check that PrometheusPlugin implements ObservabilityPlugin, so
+// CollectObservabilityPlugins picks it up and the tracer delivers completed traces.
+var _ schemas.ObservabilityPlugin = (*PrometheusPlugin)(nil)
+
+// sweepPendingOverheadLabels evicts entries Inject never drained (the tracer drops a trace
+// when this plugin's inject semaphore is saturated), which would otherwise grow the map unbounded.
+func (p *PrometheusPlugin) sweepPendingOverheadLabels() {
+	defer p.overheadSweepWG.Done()
+	const ttl = 5 * time.Minute
+	for {
+		select {
+		case <-p.overheadSweepTicker.C:
+			cutoff := time.Now().Add(-ttl)
+			p.pendingOverheadLabels.Range(func(k, v any) bool {
+				if e, ok := v.(*pendingOverheadEntry); ok && e.createdAt.Before(cutoff) {
+					p.pendingOverheadLabels.Delete(k)
+				}
+				return true
+			})
+		case <-p.overheadSweepStop:
+			return
+		}
 	}
 }
 
@@ -1080,8 +1221,12 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		"customer_name":        customerName,
 		"business_unit_id":     businessUnitID,
 		"business_unit_name":   businessUnitName,
-		"project_id":          projectID,
-		"project_name":        projectName,
+		"project_id":           projectID,
+		"project_name":         projectName,
+	}
+	if p.userLabelsEnabled.Load() {
+		labelValues["user_id"] = bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
+		labelValues["user_name"] = bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserName)
 	}
 
 	// Get all custom prometheus labels from context BEFORE the goroutine.
@@ -1109,6 +1254,13 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// final attempt's labels win.
 	if isStreamFinal {
 		ctx.SetValue(overheadLabelsKey, slices.Clone(promLabelValues))
+		// Hand these labels to Inject (keyed by trace ID) for the breakdown histogram.
+		// Only when enabled and traced, so nothing is stored (or leaks) otherwise.
+		if p.overheadBreakdownEnabled.Load() {
+			if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
+				p.pendingOverheadLabels.Store(traceID, &pendingOverheadEntry{labels: slices.Clone(promLabelValues), createdAt: time.Now()})
+			}
+		}
 	}
 
 	// Calculate cost and record metrics in a separate goroutine to avoid blocking the main thread
@@ -1187,9 +1339,14 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 			if bifrostErr.StatusCode != nil {
 				statusCode = strconv.Itoa(*bifrostErr.StatusCode)
 			}
-			errorPromLabelValues := make([]string, 0, len(promLabelValues)+1)
+			// Same requestType that fills the `method` label, so verdict and labels
+			// cannot disagree. Never empty: bifrostErr is non-nil in this branch.
+			errorType := schemas.ClassifyErrorType(bifrostErr, requestType)
+
+			errorPromLabelValues := make([]string, 0, len(promLabelValues)+2)
 			errorPromLabelValues = append(errorPromLabelValues, promLabelValues[:len(p.defaultBifrostLabels)]...) // all default labels
 			errorPromLabelValues = append(errorPromLabelValues, statusCode)                                       // status_code
+			errorPromLabelValues = append(errorPromLabelValues, string(errorType))                                // error_type
 			errorPromLabelValues = append(errorPromLabelValues, promLabelValues[len(p.defaultBifrostLabels):]...) // then custom labels
 
 			p.ErrorRequestsTotal.WithLabelValues(errorPromLabelValues...).Inc()
@@ -1489,5 +1646,12 @@ func (p *PrometheusPlugin) doPush() {
 
 func (p *PrometheusPlugin) Cleanup() error {
 	p.DisablePushGateway()
+	if p.overheadSweepTicker != nil {
+		p.overheadSweepOnce.Do(func() {
+			p.overheadSweepTicker.Stop()
+			close(p.overheadSweepStop)
+			p.overheadSweepWG.Wait()
+		})
+	}
 	return nil
 }

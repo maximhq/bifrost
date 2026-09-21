@@ -241,7 +241,13 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 			return gemini.ToGeminiError(err)
 		},
 		StreamConfig: &StreamConfig{
-			HeartbeatFraming: lib.SSEHeartbeatDelimitedCommentBlock,
+			// No SSE heartbeat on this route. The official google-genai Python SDK (and
+			// LangChain's ChatGoogleGenerativeAI on top of it) json.loads every stream line
+			// that is not "data:" or blank, so a comment line in either framing aborts the
+			// stream with UnknownApiResponseError. The delimited block from PR 6252 only
+			// satisfied the JavaScript SDK. Disconnect detection here is therefore reactive
+			// only, the same trade-off the Bedrock route makes.
+			HeartbeatFraming: lib.SSEHeartbeatNone,
 			ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
 				// Store state in context so it persists across chunks of the same stream
 				const stateKey = "gemini_stream_state"
@@ -259,6 +265,9 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 					return "", nil, nil
 				}
 				return "", geminiResponse, nil
+			},
+			SpeechStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostSpeechStreamResponse) (string, interface{}, error) {
+				return "", gemini.ToGeminiSpeechStreamResponse(resp), nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return gemini.ToGeminiError(err)
@@ -1366,7 +1375,7 @@ func CreateGenAICachedContentRouteConfigs(pathPrefix string, handlerStore lib.Ha
 }
 
 // NewGenAIRouter creates a new GenAIRouter with the given bifrost client.
-func NewGenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *GenAIRouter {
+func NewGenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *GenAIRouter {
 	routes := CreateGenAIRouteConfigs("/genai")
 	routes = append(routes, CreateGenAIFileRouteConfigs("/genai", handlerStore)...)
 	routes = append(routes, CreateGenAIBatchRouteConfigs("/genai", handlerStore)...)
@@ -1374,7 +1383,7 @@ func NewGenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logg
 	routes = append(routes, CreateGenAICachedContentRouteConfigs("/genai", handlerStore)...)
 
 	return &GenAIRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, routes, nil, logger),
+		GenericRouter: NewGenericRouter(client, handlerStore, accessResolver, routes, nil, logger),
 	}
 }
 
@@ -1952,15 +1961,19 @@ func isImageGenerationRequest(req *gemini.GeminiGenerationRequest) bool {
 // isImageEditRequest checks if the request is for image edit
 // Image edit is detected by:
 // 1. Model is an Imagen model and has reference images
-// 2. Inline image data present in the first content part and response modalities contain IMAGE
+// 2. Inline image data present in any content part and response modalities contain IMAGE
 func isImageEditRequest(req *gemini.GeminiGenerationRequest) bool {
 	if schemas.IsImagenModel(req.Model) && len(req.Instances) > 0 && req.Instances[0].ReferenceImages != nil {
 		return true
 	}
 
-	if len(req.Contents) > 0 && len(req.Contents[0].Parts) > 0 && req.Contents[0].Parts[0].InlineData != nil && strings.Contains(req.Contents[0].Parts[0].InlineData.MIMEType, "image") {
-		for _, modality := range req.GenerationConfig.ResponseModalities {
-			if modality == gemini.ModalityImage {
+	if !slices.Contains(req.GenerationConfig.ResponseModalities, gemini.ModalityImage) {
+		return false
+	}
+
+	for _, content := range req.Contents {
+		for _, part := range content.Parts {
+			if part != nil && part.InlineData != nil && strings.Contains(part.InlineData.MIMEType, "image") {
 				return true
 			}
 		}

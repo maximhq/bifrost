@@ -235,7 +235,7 @@ Each row corresponds to one trace — one full LLM request lifecycle. The column
 
 </Accordion>
 
-<Accordion title="Governance attribution (14 columns)">
+<Accordion title="Governance attribution (16 columns)">
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -246,6 +246,7 @@ Each row corresponds to one trace — one full LLM request lifecycle. The column
 | `customer_id` / `customer_name` | `STRING` | Customer. |
 | `business_unit_id` / `business_unit_name` | `STRING` | Business unit. |
 | `user_id` / `user_name` | `STRING` | User. |
+| `project_id` / `project_name` | `STRING` | Project the request was scoped to. Not to be confused with the `project_id` in this plugin's own config, which is the GCP project holding the dataset. |
 
 </Accordion>
 

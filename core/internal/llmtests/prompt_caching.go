@@ -455,12 +455,73 @@ func RunPromptCachingToolBlocksTest(t *testing.T, client *bifrost.Bifrost, ctx c
 			require.GreaterOrEqual(t, cacheControlCount, 3,
 				"Expected at least 3 cache_control markers (system + tool_use + tool_result), got %d", cacheControlCount)
 
+		case schemas.OpenRouter:
+			// OpenRouter does not expose per-block cache_control through /v1/responses.
+			// Bifrost converts a marked input_text block into prompt_cache_breakpoint,
+			// which OpenRouter turns back into an Anthropic breakpoint (#6290).
+			// This scenario marks three places: the system input_text block, the
+			// function_call message, and the function_call_output message. Only the
+			// first has a Responses representation, so exactly one breakpoint should
+			// reach the wire and no cache_control should survive at all.
+			cacheControlCount := strings.Count(rawStr, `"cache_control"`)
+			breakpointCount := strings.Count(rawStr, `"prompt_cache_breakpoint"`)
+			t.Logf("  OpenRouter: found %d cache_control markers, %d prompt_cache_breakpoint markers in raw request",
+				cacheControlCount, breakpointCount)
+
+			require.Equal(t, 0, cacheControlCount,
+				"OpenRouter Responses does not accept per-block cache_control; it must be translated, not forwarded (got %d)", cacheControlCount)
+			require.Equal(t, 1, breakpointCount,
+				"Expected exactly 1 prompt_cache_breakpoint (system input_text only; message-level markers on function_call/function_call_output have no Responses representation), got %d", breakpointCount)
+
 		default:
-			t.Logf("  Provider %s: skipping raw request cache marker validation (not Anthropic/Bedrock/Vertex)", testConfig.Provider)
+			t.Logf("  Provider %s: skipping raw request cache marker validation (not Anthropic/Bedrock/Vertex/OpenRouter)", testConfig.Provider)
 		}
 
 		t.Logf("  Prompt caching tool blocks test completed!")
 	})
+}
+
+// cacheReadPolicy describes how strictly a provider's per-turn cache reads are
+// asserted in the multi-turn prompt-caching scenarios. Providers differ in how
+// much of a growing request stays cacheable, so the rules live here rather than
+// inline, where a provider silently falling into the generic branch is easy to
+// miss.
+type cacheReadPolicy struct {
+	// aggregateOnly reports that per-turn reads are only counted towards an
+	// aggregate hit rate checked after every turn, never asserted per turn.
+	aggregateOnly bool
+	// minReadPercentage is the per-turn floor on cache_read/input_tokens. Zero
+	// means only a non-zero cache read is required.
+	minReadPercentage float64
+	// requireStableRead reports that cache_read must stay within half of the
+	// previous turn's value as the conversation grows.
+	requireStableRead bool
+}
+
+// cacheReadPolicyFor returns the cache-read rules for a provider.
+func cacheReadPolicyFor(provider schemas.ModelProvider) cacheReadPolicy {
+	switch provider {
+	case schemas.OpenAI:
+		// Automatic best-effort caching: individual turns may miss due to
+		// server-side load or cache eviction, so only the aggregate is asserted.
+		return cacheReadPolicy{aggregateOnly: true}
+	case schemas.OpenRouter:
+		// OpenRouter converts only input_text blocks into
+		// prompt_cache_breakpoint, so the per-turn checkpoint these scenarios
+		// move around survives on a user turn but not on a function_call
+		// (marked at message level) or an assistant turn (output_text). The
+		// surviving set therefore oscillates between the system breakpoint
+		// alone and system plus one, and the cached prefix collapses and
+		// regrows with it. Both a percentage floor and a turn-over-turn halving
+		// check would read that as a prefix mismatch when it is the documented
+		// conversion rule. Assert caching happened at all.
+		// See TestApplyOpenRouterCacheBreakpoints_OnlyInputTextConverts.
+		return cacheReadPolicy{}
+	default:
+		// Explicit caching providers (Anthropic, Vertex, Bedrock) keep a stable
+		// cacheable prefix, so most of a growing request should be a cache read.
+		return cacheReadPolicy{minReadPercentage: 0.50, requireStableRead: true}
+	}
 }
 
 // RunPromptCachingMultipleToolCallsTest verifies prompt caching across a 10-turn
@@ -834,31 +895,34 @@ func RunPromptCachingMultipleToolCallsTest(t *testing.T, client *bifrost.Bifrost
 					t.Logf("  %s: cache_read=%.2f%%, total_cached=%.2f%%",
 						turnName, readPercentage*100, totalCachedPercentage*100)
 
-					switch testConfig.Provider {
-					case schemas.OpenAI:
+					policy := cacheReadPolicyFor(testConfig.Provider)
+
+					if policy.aggregateOnly {
 						// OpenAI uses automatic best-effort caching — individual turns may
 						// miss due to server-side load or cache eviction. Track hits for
 						// aggregate validation after all turns complete.
 						if totalCachedPercentage >= 0.50 {
 							turnsWithCacheHit++
 						}
-					default:
-						// Explicit caching providers (Anthropic, Vertex, Bedrock):
-						// cache_read > 0 proves prefix reuse is working.
+					} else {
+						// Explicit caching providers: cache_read > 0 proves prefix reuse
+						// is working.
 						require.Greater(t, cacheRead, 0,
 							"%s should reuse an existing prefix; got cache_read=0 and cache_write=%d",
 							turnName, cacheWrite)
-						require.GreaterOrEqual(t, readPercentage, 0.50,
-							"%s should have >= 50%% cache reads (got %.2f%%). "+
-								"If this fails, tool_use input key ordering may be broken — "+
-								"the cache prefix diverges at the first tool_use block. "+
-								"cache_read=%d, cache_write=%d, input_tokens=%d",
-							turnName, readPercentage*100, cacheRead, cacheWrite, inputTokens)
+						if policy.minReadPercentage > 0 {
+							require.GreaterOrEqual(t, readPercentage, policy.minReadPercentage,
+								"%s should have >= %.0f%%%% cache reads (got %.2f%%%%). "+
+									"If this fails, tool_use input key ordering may be broken — "+
+									"the cache prefix diverges at the first tool_use block. "+
+									"cache_read=%d, cache_write=%d, input_tokens=%d",
+								turnName, policy.minReadPercentage*100, readPercentage*100,
+								cacheRead, cacheWrite, inputTokens)
+						}
 					}
 
 					// cache_read should grow (or stay comparable) as conversation grows
-					// (skip for OpenAI where individual turns may miss)
-					if testConfig.Provider != schemas.OpenAI && i >= 2 && prevCacheRead > 0 {
+					if policy.requireStableRead && i >= 2 && prevCacheRead > 0 {
 						// Allow some variance but cache_read should not dramatically drop
 						assert.GreaterOrEqual(t, cacheRead, prevCacheRead/2,
 							"%s: cache_read dropped significantly from previous turn (%d -> %d), "+
@@ -870,7 +934,7 @@ func RunPromptCachingMultipleToolCallsTest(t *testing.T, client *bifrost.Bifrost
 				if i == 0 {
 					rawReq := response.ExtraFields.RawRequest
 					switch testConfig.Provider {
-					case schemas.Anthropic, schemas.Vertex, schemas.Bedrock:
+					case schemas.Anthropic, schemas.Vertex, schemas.Bedrock, schemas.OpenRouter:
 						require.NotNil(t, rawReq,
 							"Raw request should be present for %s prompt-caching validation",
 							testConfig.Provider)
@@ -908,6 +972,22 @@ func RunPromptCachingMultipleToolCallsTest(t *testing.T, client *bifrost.Bifrost
 						t.Logf("  Bedrock: found %d cachePoint blocks", cachePointCount)
 						require.GreaterOrEqual(t, cachePointCount, 2,
 							"Expected at least 2 cachePoint blocks (system + last tool_use), got %d", cachePointCount)
+
+					case schemas.OpenRouter:
+						// See the OpenRouter case in RunPromptCachingToolBlocksTest (#6290).
+						// The per-turn cache checkpoint lands on a function_call, an input_text
+						// block, or an output_text block depending on where the walk stops, and
+						// only input_text converts - so the breakpoint count varies by turn. The
+						// system input_text block is always marked, so assert at least one.
+						// cache_control must never survive on this route.
+						ccCount := strings.Count(rawStr, `"cache_control"`)
+						bpCount := strings.Count(rawStr, `"prompt_cache_breakpoint"`)
+						t.Logf("  OpenRouter: found %d cache_control markers, %d prompt_cache_breakpoint markers", ccCount, bpCount)
+
+						require.Equal(t, 0, ccCount,
+							"OpenRouter Responses does not accept per-block cache_control; it must be translated, not forwarded (got %d)", ccCount)
+						require.GreaterOrEqual(t, bpCount, 1,
+							"Expected at least 1 prompt_cache_breakpoint (system input_text block), got %d", bpCount)
 						}
 					}
 				}

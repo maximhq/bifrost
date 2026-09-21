@@ -150,6 +150,14 @@ jq --arg host "$POSTGRES_HOST" --arg port "$POSTGRES_PORT" --arg user "$POSTGRES
      "logs_store":   {"enabled": true, "type": "postgres", "config": {"host": $host, "port": $port, "user": $user, "password": $pass, "db_name": $db, "ssl_mode": $ssl}}
    }' "$SOURCE_CONFIG" > "$MERGED_CONFIG"
 
+# The authenticated newman pass needs a first admin account. Creating it is the one
+# config write the server accepts unauthenticated, and it demands a bootstrap token
+# the server resolves at boot from BIFROST_SETUP_TOKEN. Export it here so both the
+# server process and the runner (which reads BIFROST_E2E_SETUP_TOKEN) share it;
+# without it set-auth-config skips the auth pass and the MCP/vMCP tests run nowhere.
+export BIFROST_SETUP_TOKEN="${BIFROST_SETUP_TOKEN:-bifrost-e2e-setup-token}"
+export BIFROST_E2E_SETUP_TOKEN="$BIFROST_SETUP_TOKEN"
+
 echo "🚀 Starting bifrost-http on port $PORT..."
 "$BIFROST_BINARY" --app-dir "$TEMP_DIR" --port "$PORT" --log-level debug > "$SERVER_LOG" 2>&1 &
 BIFROST_PID=$!

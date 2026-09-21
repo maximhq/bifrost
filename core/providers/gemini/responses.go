@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strconv"
@@ -150,7 +151,7 @@ func ToGeminiResponsesRequestWithImageURLSchemes(ctx *schemas.BifrostContext, bi
 		if err != nil {
 			return nil, err
 		}
-		geminiReq.ExtraParams = bifrostReq.Params.ExtraParams
+		geminiReq.ExtraParams = responsesExtraParamsWithoutGenerationConfigKeys(bifrostReq.Params.ExtraParams)
 		includeServerSideToolInvocations := bifrostReq.Params.IncludeServerSideToolInvocations != nil && *bifrostReq.Params.IncludeServerSideToolInvocations
 		// Handle tool-related parameters
 		if len(bifrostReq.Params.Tools) > 0 {
@@ -985,11 +986,19 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 		}
 
 	case schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta:
-		if bifrostResp.Delta != nil && *bifrostResp.Delta != "" {
-			candidate.Content.Parts = append(candidate.Content.Parts, &Part{
-				Text:    *bifrostResp.Delta,
-				Thought: true,
-			})
+		// A reasoning delta carries text, a replay signature, or both -- Anthropic and
+		// Bedrock send the signature on an event of its own, with no text.
+		signature := thoughtSignatureFromEncryptedContent(bifrostResp.Signature)
+		hasText := bifrostResp.Delta != nil && *bifrostResp.Delta != ""
+		if hasText || signature != nil {
+			// Text and signature go on ONE part: reuniting them reproduces Gemini's own
+			// part rather than splitting one thought in two. A signature with no text is
+			// the documented signature-only shape (see TestSignatureOnlyPartKeepsEmptyText).
+			thoughtPart := &Part{Thought: true, ThoughtSignature: signature}
+			if hasText {
+				thoughtPart.Text = *bifrostResp.Delta
+			}
+			candidate.Content.Parts = append(candidate.Content.Parts, thoughtPart)
 		}
 
 	case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta:
@@ -1659,6 +1668,19 @@ func processGeminiThoughtPart(part *Part, state *GeminiResponsesStreamState, seq
 	itemID := state.generateItemID("reasoning", outputIndex)
 	state.ItemIDs[outputIndex] = itemID
 
+	// Gemini hands over each thought part whole, so this item holds one summary block, at
+	// index 0. summary_index is required on every reasoning_summary_* event.
+	summaryIndex := 0
+	thoughtText := part.Text
+
+	// Gemini 3 puts a thoughtSignature on the thought part itself and requires it back on
+	// replay -- there is a finish reason for its absence -- so it has to travel with the
+	// text rather than being dropped, exactly as the non-streaming converter carries it.
+	var thoughtSignature *string
+	if len(part.ThoughtSignature) > 0 {
+		thoughtSignature = schemas.Ptr(base64.StdEncoding.EncodeToString(part.ThoughtSignature))
+	}
+
 	// Emit output_item.added for reasoning
 	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 		Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
@@ -1669,6 +1691,9 @@ func processGeminiThoughtPart(part *Part, state *GeminiResponsesStreamState, seq
 			ID:   &itemID,
 			Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
 			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+			ResponsesReasoning: &schemas.ResponsesReasoning{
+				Summary: []schemas.ResponsesReasoningSummary{},
+			},
 		},
 	})
 
@@ -1678,38 +1703,63 @@ func processGeminiThoughtPart(part *Part, state *GeminiResponsesStreamState, seq
 		SequenceNumber: sequenceNumber + len(responses),
 		OutputIndex:    &outputIndex,
 		ItemID:         &itemID,
+		SummaryIndex:   &summaryIndex,
+		Part: &schemas.ResponsesMessageContentBlock{
+			Type: schemas.ResponsesOutputMessageContentTypeSummaryText,
+			Text: schemas.Ptr(""),
+		},
 	})
 
 	// Emit reasoning summary text delta with the thought content
-	if part.Text != "" {
-		text := part.Text
+	if thoughtText != "" {
+		text := thoughtText
 		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 			Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta,
 			SequenceNumber: sequenceNumber + len(responses),
 			OutputIndex:    &outputIndex,
 			ItemID:         &itemID,
+			SummaryIndex:   &summaryIndex,
 			Delta:          &text,
+			Signature:      thoughtSignature,
 		})
 	}
 
-	// Emit reasoning summary text done
+	// Emit reasoning summary text done, carrying the summary text in full
+	doneText := thoughtText
 	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 		Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDone,
 		SequenceNumber: sequenceNumber + len(responses),
 		OutputIndex:    &outputIndex,
 		ItemID:         &itemID,
+		SummaryIndex:   &summaryIndex,
+		Text:           &doneText,
 	})
 
 	// Emit reasoning summary part done
+	partText := thoughtText
 	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 		Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryPartDone,
 		SequenceNumber: sequenceNumber + len(responses),
 		OutputIndex:    &outputIndex,
 		ItemID:         &itemID,
+		SummaryIndex:   &summaryIndex,
+		Part: &schemas.ResponsesMessageContentBlock{
+			Type: schemas.ResponsesOutputMessageContentTypeSummaryText,
+			Text: &partText,
+		},
 	})
 
-	// Emit output_item.done for reasoning
+	// Emit output_item.done for reasoning. The summary block the events above described
+	// rides on the item too -- it is what summary_index resolves against, and the only
+	// place the thought text reaches response.completed's output.
 	statusCompleted := "completed"
+	itemSummary := []schemas.ResponsesReasoningSummary{}
+	if thoughtText != "" {
+		itemSummary = append(itemSummary, schemas.ResponsesReasoningSummary{
+			Type: schemas.ResponsesReasoningContentBlockTypeSummaryText,
+			Text: thoughtText,
+		})
+	}
 	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 		Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
 		SequenceNumber: sequenceNumber + len(responses),
@@ -1721,7 +1771,8 @@ func processGeminiThoughtPart(part *Part, state *GeminiResponsesStreamState, seq
 			Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
 			Status: &statusCompleted,
 			ResponsesReasoning: &schemas.ResponsesReasoning{
-				Summary: []schemas.ResponsesReasoningSummary{},
+				Summary:          itemSummary,
+				EncryptedContent: thoughtSignature,
 			},
 		},
 	})
@@ -2660,6 +2711,7 @@ func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.Resp
 						case p.FileData != nil:
 							block = convertGeminiFileDataToContentBlock(p.FileData)
 						}
+						applyGeminiPartMediaResolution(block, p.MediaResolution)
 						if block != nil {
 							blocks = append(blocks, *block)
 						}
@@ -2730,6 +2782,7 @@ func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.Resp
 			case part.InlineData != nil:
 				// Handle inline data (images, audio, files)
 				block := convertGeminiInlineDataToContentBlock(part.InlineData)
+				applyGeminiPartMediaResolution(block, part.MediaResolution)
 				if block != nil {
 					msg := schemas.ResponsesMessage{
 						Role: role,
@@ -2744,6 +2797,7 @@ func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.Resp
 			case part.FileData != nil:
 				// Handle file data (URI-based)
 				block := convertGeminiFileDataToContentBlock(part.FileData)
+				applyGeminiPartMediaResolution(block, part.MediaResolution)
 				if block != nil {
 					msg := schemas.ResponsesMessage{
 						Role: role,
@@ -2759,6 +2813,21 @@ func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.Resp
 	}
 
 	return messages
+}
+
+// applyGeminiPartMediaResolution copies a part's per-part media resolution onto the content
+// block that part became. Only inlineData/fileData parts carry one: it describes how the input
+// media is tokenized, so a text, thought or functionCall part has nothing to resolve. Callers
+// therefore stamp only the media branches, mirroring the outbound guard in
+// convertContentBlockToGeminiPart.
+func applyGeminiPartMediaResolution(block *schemas.ResponsesMessageContentBlock, mr *PartMediaResolution) {
+	if block == nil || mr == nil {
+		return
+	}
+	block.MediaResolution = &schemas.MediaResolution{Level: mr.Level}
+	if mr.NumTokens != nil {
+		block.MediaResolution.NumTokens = new(*mr.NumTokens)
+	}
 }
 
 // convertGeminiInlineDataToContentBlock converts Gemini inline data (blob) to content block
@@ -3891,41 +3960,66 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 		}
 	}
 
+	// Read-only: the request's ExtraParams are shared across retry and fallback
+	// attempts, and this conversion runs once per attempt. Deleting consumed keys
+	// here made the second attempt lose mediaResolution, topK, penalties and stop
+	// sequences. The consumed keys are filtered out when the outbound ExtraParams
+	// are built (see responsesExtraParamsWithoutGenerationConfigKeys).
 	if params.ExtraParams != nil {
 		if topK, ok := params.ExtraParams["top_k"]; ok {
-			delete(params.ExtraParams, "top_k")
 			if val, success := schemas.SafeExtractInt(topK); success {
 				config.TopK = schemas.Ptr(val)
 			}
 		}
 		if frequencyPenalty, ok := params.ExtraParams["frequency_penalty"]; ok {
-			delete(params.ExtraParams, "frequency_penalty")
 			if val, success := schemas.SafeExtractFloat64(frequencyPenalty); success {
 				config.FrequencyPenalty = schemas.Ptr(val)
 			}
 		}
 		if presencePenalty, ok := params.ExtraParams["presence_penalty"]; ok {
-			delete(params.ExtraParams, "presence_penalty")
 			if val, success := schemas.SafeExtractFloat64(presencePenalty); success {
 				config.PresencePenalty = schemas.Ptr(val)
 			}
 		}
 		if stopSequences, ok := params.ExtraParams["stop_sequences"]; ok {
-			delete(params.ExtraParams, "stop_sequences")
 			if val, success := schemas.SafeExtractStringSlice(stopSequences); success {
 				config.StopSequences = val
 			}
 		}
 		if mediaResolution, ok := params.ExtraParams["media_resolution"]; ok {
-			delete(params.ExtraParams, "media_resolution")
 			if val, success := schemas.SafeExtractString(mediaResolution); success {
 				config.MediaResolution = val
 			}
 		}
-
 	}
 
 	return config, nil
+}
+
+// responsesGenerationConfigExtraParamKeys lists the ExtraParams keys that
+// convertParamsToGenerationConfigResponses maps into generationConfig. They must
+// not also be merged verbatim into the wire body: Gemini rejects unknown
+// snake_case top-level fields.
+var responsesGenerationConfigExtraParamKeys = []string{
+	"top_k",
+	"frequency_penalty",
+	"presence_penalty",
+	"stop_sequences",
+	"media_resolution",
+}
+
+// responsesExtraParamsWithoutGenerationConfigKeys returns the ExtraParams to
+// forward on the wire, without the keys already mapped into generationConfig.
+// It always returns a copy (nil stays nil): the caller later removes
+// safety_settings and cached_content from the outbound map, and aliasing the
+// source map would drop those keys from the Bifrost request for the next
+// retry/fallback attempt.
+func responsesExtraParamsWithoutGenerationConfigKeys(extraParams map[string]interface{}) map[string]interface{} {
+	filtered := maps.Clone(extraParams)
+	maps.DeleteFunc(filtered, func(key string, _ interface{}) bool {
+		return slices.Contains(responsesGenerationConfigExtraParamKeys, key)
+	})
+	return filtered
 }
 
 // modelSupportsToolCombination reports whether a model can accept built-in tools (Google
@@ -4685,8 +4779,31 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 	return contents, systemInstruction, nil
 }
 
-// convertContentBlockToGeminiPart converts a content block to Gemini part
+// convertContentBlockToGeminiPart converts a content block to Gemini part, re-attaching any
+// per-part media resolution the block carries.
 func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock, allowedImageURLSchemes ...string) (*Part, error) {
+	part, err := buildGeminiPartFromContentBlock(block, allowedImageURLSchemes...)
+	if err != nil || part == nil {
+		return part, err
+	}
+
+	// Only a media part can carry a resolution. The text, reasoning, refusal and compaction
+	// branches below all produce text-only parts, and Gemini rejects mediaResolution there, so
+	// the guard is on what the part became rather than on the block type it came from.
+	// The value is rebuilt rather than aliased: the same Bifrost request is converted once per
+	// retry and per fallback attempt, so no attempt may hand a later one a shared pointer.
+	if block.MediaResolution != nil && (part.InlineData != nil || part.FileData != nil) {
+		part.MediaResolution = &PartMediaResolution{Level: block.MediaResolution.Level}
+		if n := block.MediaResolution.NumTokens; n != nil {
+			part.MediaResolution.NumTokens = new(*n)
+		}
+	}
+
+	return part, nil
+}
+
+// buildGeminiPartFromContentBlock maps a content block onto the matching Gemini part shape.
+func buildGeminiPartFromContentBlock(block schemas.ResponsesMessageContentBlock, allowedImageURLSchemes ...string) (*Part, error) {
 	if len(allowedImageURLSchemes) == 0 {
 		allowedImageURLSchemes = defaultGeminiImageURLSchemes
 	}

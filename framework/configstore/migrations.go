@@ -490,6 +490,11 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_mcp_client_endpoint_slug"}, run: migrationAddMCPClientEndpointSlug},
 	{IDs: []string{"add_allow_all_providers_to_virtual_key"}, run: migrationAddAllowAllProvidersToVirtualKey},
 	{IDs: []string{"backfill_vk_allow_all_providers_hash"}, run: migrationBackfillVirtualKeyAllowAllProvidersHash},
+	{IDs: []string{"add_prompt_cache_json_column"}, run: migrationAddPromptCacheJSONColumn},
+	{IDs: []string{"add_hidden_request_types_json_column"}, run: migrationAddHiddenRequestTypesJSONColumn},
+	{IDs: []string{"add_use_openai_endpoints_column"}, run: migrationAddUseOpenAIEndpointsColumn},
+	{IDs: []string{"add_time_of_day_pricing_columns"}, run: migrationAddTimeOfDayPricingColumns},
+	{IDs: []string{"migrate_vk_standalone_limits_to_model_configs"}, run: migrationMigrateVKStandaloneLimitsToModelConfigs},
 }
 
 // videoResolutionPricingColumns are the resolution-banded video output rate columns.
@@ -7446,6 +7451,39 @@ func migrationAddOpenAIConfigJSONColumn(ctx context.Context, db *gorm.DB, logger
 	return nil
 }
 
+// migrationAddPromptCacheJSONColumn adds the prompt_cache_json column to the provider
+// table, backing ProviderConfig.PromptCache.
+//
+// Provider config is stored as one text column per sub-struct rather than a single
+// JSON blob, so a new config struct needs its own column. Without this the field
+// round-trips through the API and the UI but is dropped at the database boundary.
+func migrationAddPromptCacheJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_prompt_cache_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableProvider{}, "PromptCacheJSON"); err != nil {
+				return err
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableProvider{}, "prompt_cache_json"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running add_prompt_cache_json_column migration: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddPromptVariablesColumns adds variables_json column to prompt_sessions and prompt_versions
 func migrationAddPromptVariablesColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_prompt_variables_columns"
@@ -13428,3 +13466,309 @@ func migrationAddGithubCopilotConfigColumns(ctx context.Context, db *gorm.DB, lo
 func rollbackGithubCopilotConfigColumns(*gorm.DB) error {
 	return fmt.Errorf("add_github_copilot_config_columns is non-rollbackable: dropping the github_copilot_* columns would permanently delete every stored GitHub App private key, which GitHub only issues once and cannot re-supply; the columns are additive and older binaries safely ignore them")
 }
+
+// migrationAddHiddenRequestTypesJSONColumn adds the hidden_request_types_json column to
+// config_client so hidden request types can be edited from the UI as well as config.json.
+// Existing rows get an empty list; a value in config.json's client section reconciles in on boot.
+func migrationAddHiddenRequestTypesJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_hidden_request_types_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "HiddenRequestTypesJSON"); err != nil {
+				return fmt.Errorf("failed to add hidden_request_types_json column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "hidden_request_types_json"); err != nil {
+				return fmt.Errorf("failed to drop hidden_request_types_json column: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddUseOpenAIEndpointsColumn adds the use_openai_endpoints column to the config_keys table.
+func migrationAddUseOpenAIEndpointsColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_use_openai_endpoints_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableKey{}, "use_openai_endpoints"); err != nil {
+				return fmt.Errorf("failed to add use_openai_endpoints column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "use_openai_endpoints"); err != nil {
+				return fmt.Errorf("failed to drop use_openai_endpoints column: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("failed to run migration %s: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddTimeOfDayPricingColumns adds the peak/off-peak pricing columns to
+// governance_model_pricing. Providers such as DeepSeek bill the same model at
+// two different rates depending on the time of day; off_peak_cost_multiplier
+// scales usage-based charges outside the windows declared in peak_hours.
+func migrationAddTimeOfDayPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_time_of_day_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{
+		"off_peak_cost_multiplier",
+		"peak_hours",
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationMigrateVKStandaloneLimitsToModelConfigs cleans up the bad state
+// produced by the config.json standalone-limits flow when combined with UI edits:
+//
+//  1. Standalone budgets (virtual_key_id set, model_config_id nil) owned by a VK
+//     are re-pointed into the VK's top-level model config (scope=virtual_key,
+//     model_name=*), creating that model config if it doesn't exist yet. Usage
+//     (current_usage, last_reset) is preserved — only the ownership FK moves.
+//
+//  2. Orphaned duplicate rate limit rows created by the UI (UUID IDs, referenced
+//     by a VK-scoped model config) are deleted and the model config is re-pointed
+//     to the original config.json-created rate limit (the one still on vk.rate_limit_id),
+//     preserving its usage counters. The VK's rate_limit_id column is then cleared
+//     since ownership now lives on the model config.
+func migrationMigrateVKStandaloneLimitsToModelConfigs(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "migrate_vk_standalone_limits_to_model_configs"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			// --- Part 1: adopt standalone VK budgets into VK-scoped model configs ---
+
+			// Find all budgets owned directly by a VK (old config.json flow).
+			type standaloneVKBudget struct {
+				ID           string
+				VirtualKeyID string
+				MaxLimit     float64
+				ResetDuration string
+				CurrentUsage float64
+				LastReset    time.Time
+				ConfigHash   string
+			}
+			var standaloneBudgets []standaloneVKBudget
+			if err := tx.Raw(`
+				SELECT id, virtual_key_id, max_limit, reset_duration, current_usage, last_reset, config_hash
+				FROM governance_budgets
+				WHERE virtual_key_id IS NOT NULL AND model_config_id IS NULL
+			`).Scan(&standaloneBudgets).Error; err != nil {
+				return fmt.Errorf("failed to query standalone VK budgets: %w", err)
+			}
+
+			// Group by VK ID.
+			budgetsByVK := make(map[string][]standaloneVKBudget)
+			for _, b := range standaloneBudgets {
+				budgetsByVK[b.VirtualKeyID] = append(budgetsByVK[b.VirtualKeyID], b)
+			}
+
+			for vkID, budgets := range budgetsByVK {
+				// Look up whether this VK has a direct rate_limit_id that also needs moving.
+				var vkRateLimitID *string
+				if err := tx.Raw(`SELECT rate_limit_id FROM governance_virtual_keys WHERE id = ?`, vkID).Scan(&vkRateLimitID).Error; err != nil {
+					return fmt.Errorf("failed to query VK %s rate_limit_id: %w", vkID, err)
+				}
+
+				// Find or create the VK's top-level model config (scope=virtual_key, model_name=*).
+				var mcID string
+				err := tx.Raw(`
+					SELECT id FROM governance_model_configs
+					WHERE scope = 'virtual_key' AND scope_id = ? AND model_name = '*' AND provider IS NULL
+					LIMIT 1
+				`, vkID).Scan(&mcID).Error
+				if err != nil {
+					return fmt.Errorf("failed to query model config for VK %s: %w", vkID, err)
+				}
+
+				if mcID == "" {
+					mcID = uuid.NewString()
+					now := time.Now()
+					if err := tx.Exec(`
+						INSERT INTO governance_model_configs (id, model_name, scope, scope_id, created_at, updated_at)
+						VALUES (?, '*', 'virtual_key', ?, ?, ?)
+					`, mcID, vkID, now, now).Error; err != nil {
+						return fmt.Errorf("failed to create model config for VK %s: %w", vkID, err)
+					}
+					logger.Info("[configstore] %s: created model config %s for VK %s", migrationName, mcID, vkID)
+				}
+
+				// If the VK has a rate limit not yet on the MC, move it now so Part 3's
+				// NOT EXISTS doesn't skip this VK (Part 3 excludes VKs that already have an MC).
+				if vkRateLimitID != nil {
+					res := tx.Exec(`
+						UPDATE governance_model_configs SET rate_limit_id = ? WHERE id = ? AND rate_limit_id IS NULL
+					`, *vkRateLimitID, mcID)
+					if res.Error != nil {
+						return fmt.Errorf("failed to set rate_limit_id on model config %s: %w", mcID, res.Error)
+					}
+					// Only drop the VK reference when the model config took ownership.
+					// Otherwise leave it so Part 2 can pick the canonical row and delete the duplicate.
+					if res.RowsAffected > 0 {
+						if err := tx.Exec(`UPDATE governance_virtual_keys SET rate_limit_id = NULL WHERE id = ?`, vkID).Error; err != nil {
+							return fmt.Errorf("failed to clear VK %s rate_limit_id: %w", vkID, err)
+						}
+						logger.Info("[configstore] %s: moved rate limit %s from VK %s onto model config %s", migrationName, *vkRateLimitID, vkID, mcID)
+					}
+				}
+
+				// Re-point each budget's ownership from virtual_key_id to model_config_id.
+				ids := make([]string, len(budgets))
+				for i, b := range budgets {
+					ids[i] = b.ID
+				}
+				if err := tx.Exec(`
+					UPDATE governance_budgets
+					SET model_config_id = ?, virtual_key_id = NULL
+					WHERE id IN ? AND virtual_key_id = ?
+				`, mcID, ids, vkID).Error; err != nil {
+					return fmt.Errorf("failed to re-point budgets for VK %s: %w", vkID, err)
+				}
+				logger.Info("[configstore] %s: re-pointed %d budget(s) for VK %s into model config %s", migrationName, len(ids), vkID, mcID)
+			}
+
+			// --- Part 2: deduplicate rate limit rows ---
+			// Find VK-scoped model configs that have a rate_limit_id, where the owning
+			// VK also has a different rate_limit_id set directly (the config.json row).
+			type dupRateLimit struct {
+				MCID          string
+				MCRateLimitID string
+				VKID          string
+				VKRateLimitID string
+			}
+			var dups []dupRateLimit
+			if err := tx.Raw(`
+				SELECT mc.id AS mc_id, mc.rate_limit_id AS mc_rate_limit_id,
+				       vk.id AS vk_id, vk.rate_limit_id AS vk_rate_limit_id
+				FROM governance_model_configs mc
+				JOIN governance_virtual_keys vk ON vk.id = mc.scope_id
+				WHERE mc.scope = 'virtual_key'
+				  AND mc.model_name = '*'
+				  AND mc.provider IS NULL
+				  AND mc.rate_limit_id IS NOT NULL
+				  AND vk.rate_limit_id IS NOT NULL
+				  AND mc.rate_limit_id != vk.rate_limit_id
+			`).Scan(&dups).Error; err != nil {
+				return fmt.Errorf("failed to query duplicate rate limits: %w", err)
+			}
+
+			for _, d := range dups {
+				// Re-point the model config to the canonical config.json row (vk.rate_limit_id),
+				// preserving its usage. The UUID row (mc.rate_limit_id) is the orphan to delete.
+				orphanID := d.MCRateLimitID
+				canonicalID := d.VKRateLimitID
+
+				if err := tx.Exec(`
+					UPDATE governance_model_configs SET rate_limit_id = ? WHERE id = ?
+				`, canonicalID, d.MCID).Error; err != nil {
+					return fmt.Errorf("failed to re-point model config %s to canonical rate limit: %w", d.MCID, err)
+				}
+
+				// Delete the orphaned UUID rate limit row.
+				if err := tx.Exec(`DELETE FROM governance_rate_limits WHERE id = ?`, orphanID).Error; err != nil {
+					return fmt.Errorf("failed to delete orphaned rate limit %s: %w", orphanID, err)
+				}
+				logger.Info("[configstore] %s: VK %s — replaced orphan rate limit %s with canonical %s", migrationName, d.VKID, orphanID, canonicalID)
+
+				// Clear vk.rate_limit_id — ownership now lives on the model config.
+				if err := tx.Exec(`UPDATE governance_virtual_keys SET rate_limit_id = NULL WHERE id = ?`, d.VKID).Error; err != nil {
+					return fmt.Errorf("failed to clear VK %s rate_limit_id: %w", d.VKID, err)
+				}
+			}
+
+			// For VKs that only have rate_limit_id set directly (no model config yet
+			// and no duplicate), move the reference onto a model config so future UI
+			// edits use the single-row path.
+			type vkOnlyRL struct {
+				VKID          string
+				VKRateLimitID string
+			}
+			var vkOnlyRLs []vkOnlyRL
+			if err := tx.Raw(`
+				SELECT vk.id AS vk_id, vk.rate_limit_id AS vk_rate_limit_id
+				FROM governance_virtual_keys vk
+				WHERE vk.rate_limit_id IS NOT NULL
+				  AND NOT EXISTS (
+					SELECT 1 FROM governance_model_configs mc
+					WHERE mc.scope = 'virtual_key' AND mc.scope_id = vk.id
+					  AND mc.model_name = '*' AND mc.provider IS NULL
+				  )
+			`).Scan(&vkOnlyRLs).Error; err != nil {
+				return fmt.Errorf("failed to query VKs with standalone rate limits: %w", err)
+			}
+
+			for _, v := range vkOnlyRLs {
+				mcID := uuid.NewString()
+				now := time.Now()
+				if err := tx.Exec(`
+					INSERT INTO governance_model_configs (id, model_name, scope, scope_id, rate_limit_id, created_at, updated_at)
+					VALUES (?, '*', 'virtual_key', ?, ?, ?, ?)
+				`, mcID, v.VKID, v.VKRateLimitID, now, now).Error; err != nil {
+					return fmt.Errorf("failed to create model config for VK %s: %w", v.VKID, err)
+				}
+				if err := tx.Exec(`UPDATE governance_virtual_keys SET rate_limit_id = NULL WHERE id = ?`, v.VKID).Error; err != nil {
+					return fmt.Errorf("failed to clear VK %s rate_limit_id: %w", v.VKID, err)
+				}
+				logger.Info("[configstore] %s: moved rate limit %s from VK %s into new model config %s", migrationName, v.VKRateLimitID, v.VKID, mcID)
+			}
+
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+

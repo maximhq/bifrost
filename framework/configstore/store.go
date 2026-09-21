@@ -400,6 +400,9 @@ type ConfigStore interface {
 	// its uniqueness; UpdateVirtualMCP never changes the slug (immutable after creation).
 	CreateVirtualMCP(ctx context.Context, def *tables.TableVirtualMCP) error
 	GetVirtualMCPByID(ctx context.Context, id uint) (*tables.TableVirtualMCP, error)
+	// GetVirtualMCPByName resolves the unique name a declaration refers to. Returns ErrNotFound
+	// when nothing matches.
+	GetVirtualMCPByName(ctx context.Context, name string) (*tables.TableVirtualMCP, error)
 	GetVirtualMCPsPaginated(ctx context.Context, params VirtualMCPsQueryParams) ([]tables.TableVirtualMCP, int64, error)
 	UpdateVirtualMCP(ctx context.Context, def *tables.TableVirtualMCP) error
 	DeleteVirtualMCP(ctx context.Context, id uint) error

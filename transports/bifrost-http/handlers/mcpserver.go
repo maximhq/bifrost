@@ -605,14 +605,27 @@ func (h *MCPServerHandler) discoveryEnabled() bool {
 // by governance, from the grant it resolves for it, so both paths refuse it the same way.
 //
 // Authentication priority:
-//  1. JWT Bearer token (when MCPServerAuthMode is both or oauth)
-//  2. Header credentials, or an identity an upstream auth layer stamped (headers or both)
-//  3. Anonymous access (when EnforceAuthOnInference is false)
+//  1. An identity an upstream auth layer already authenticated (headers or both)
+//  2. JWT Bearer token (when MCPServerAuthMode is both or oauth)
+//  3. Header credentials (headers or both)
+//  4. Anonymous access (when EnforceAuthOnInference is false)
 //
 // When MCPServerAuthMode is oauth (strict), header credentials are rejected.
 func (h *MCPServerHandler) authenticate(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext) error {
 	enforceAuth, authMode := h.authSettings()
 	discoveryEnabled := authMode == tables.MCPServerAuthModeBoth || authMode == tables.MCPServerAuthModeOAuth
+
+	// --- Identity an upstream auth layer already authenticated ---
+	// An upstream auth layer that verified the request's bearer against its own identity
+	// provider stamps the user it names, and converting the request copied that onto
+	// bifrostCtx. Such a bearer is a JWT this server never issued, so the JWT path below
+	// would refuse it on the key id; the stamped user is the settled identity, and
+	// governance resolves what it may reach. Accepted wherever header credentials are:
+	// oauth strict mode admits only tokens this server issued and is excluded.
+	if authMode != tables.MCPServerAuthModeOAuth &&
+		bifrost.GetStringFromContext(bifrostCtx, schemas.BifrostContextKeyUserID) != "" {
+		return nil
+	}
 
 	// --- JWT path ---
 	if rawJWT := extractBearerJWT(ctx); rawJWT != "" && discoveryEnabled {

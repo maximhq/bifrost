@@ -49,6 +49,9 @@ type RoutingManager interface {
 	// semantic complexity routing so configuration clients can distinguish
 	// saved from ready.
 	GetComplexitySemanticStatus(ctx context.Context) (complexity.SemanticStatusInfo, error)
+	// RetryComplexitySemanticWarmup restarts a failed semantic warmup using the
+	// saved analyzer configuration. It returns false when no retry was started.
+	RetryComplexitySemanticWarmup(ctx context.Context) (complexity.SemanticStatusInfo, bool, error)
 	// GetComplexityLLMStatus returns the llm fallback classifier's readiness.
 	GetComplexityLLMStatus(ctx context.Context) (complexity.LLMStatusInfo, error)
 	// ListComplexityGenerations reports the exemplar generations the vector
@@ -120,6 +123,7 @@ func (h *RoutingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	register(fasthttp.MethodPost, "/api/routing/complexity-analyzer-config/reset", "/api/governance/complexity-analyzer-config/reset", h.resetComplexityAnalyzerConfig)
 	// Status never shipped under /api/governance, so it has no legacy alias.
 	r.Handle(fasthttp.MethodGet, "/api/routing/complexity-analyzer-status", lib.ChainMiddlewares(h.getComplexitySemanticStatus, middlewares...))
+	r.Handle(fasthttp.MethodPost, "/api/routing/complexity-analyzer-status/retry", lib.ChainMiddlewares(h.retryComplexitySemanticWarmup, middlewares...))
 	r.Handle(fasthttp.MethodGet, "/api/routing/complexity-analyzer-generations", lib.ChainMiddlewares(h.listComplexityGenerations, middlewares...))
 	r.Handle(fasthttp.MethodDelete, "/api/routing/complexity-analyzer-generations/{namespace}", lib.ChainMiddlewares(h.deleteComplexityGeneration, middlewares...))
 }
@@ -428,6 +432,21 @@ func (h *RoutingHandler) getComplexitySemanticStatus(ctx *fasthttp.RequestCtx) {
 		response.LLMDefaultPrompt = complexity.DefaultLLMClassifierGuidance()
 	}
 	SendJSON(ctx, response)
+}
+
+// retryComplexitySemanticWarmup restarts a failed semantic warmup without
+// changing the saved analyzer configuration.
+func (h *RoutingHandler) retryComplexitySemanticWarmup(ctx *fasthttp.RequestCtx) {
+	status, retried, err := h.routingManager.RetryComplexitySemanticWarmup(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, fmt.Sprintf("failed to retry semantic complexity warmup: %v", err))
+		return
+	}
+	if !retried {
+		SendError(ctx, fasthttp.StatusConflict, "semantic complexity warmup can only be retried after a failure")
+		return
+	}
+	SendJSONWithStatus(ctx, complexityStatusResponse{SemanticStatusInfo: status}, fasthttp.StatusAccepted)
 }
 
 // getRoutingRules retrieves all routing rules with optional filtering from database

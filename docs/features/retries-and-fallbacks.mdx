@@ -28,6 +28,33 @@ When a request fails with a retryable error, Bifrost:
 3. On **transient server failures** (`5xx`, DNS, connection refused): reuse the same key and wait using **exponential backoff with jitter** before the next attempt.
 4. Continues until the request succeeds, `max_retries` is exhausted, or every key is permanently dead (in which case Bifrost returns `502 upstream_credentials_exhausted` rather than the raw `4xx`, to make it clear the caller's Bifrost API key is fine — the configured provider credentials are not).
 
+### Azure streaming errors before output
+
+Azure Chat Completions and Responses streams can emit startup metadata before
+reporting an error inside an HTTP `200` response. Bifrost buffers recognized
+startup events so these errors can reach the existing retry and fallback logic.
+
+- **Chat Completions:** empty-choice annotations, empty deltas, and assistant-role chunks.
+- **Responses:** empty `response.created`, `response.in_progress`, `response.queued`,
+  and ping events, plus empty assistant-message and output-text-part startup events.
+
+For example, an annotation followed by an assistant-role chunk and a rate-limit
+error can trigger recovery. The error does not need to occur at a particular
+chunk number. Retry eligibility, retry budgets, and fallback permissions still apply.
+
+When output arrives, Bifrost replays the successful attempt's buffered events in
+order and continues streaming. Buffered events from failed attempts are discarded.
+Text, reasoning, tool activity, other output, terminal results, and unrecognized
+events end startup buffering. Errors after that boundary remain stream errors.
+A `content_filter` finish reason remains a terminal response.
+
+Buffering also ends when startup metadata reaches 64 chunks or 256 KiB of
+serialized data. Existing request deadlines and stream idle timeouts still apply.
+Raw streaming passthrough and Responses retrieval/resumption are excluded.
+
+See Microsoft's [Azure streaming examples](https://learn.microsoft.com/en-us/azure/foundry/openai/concepts/content-streaming)
+and [Responses event reference](https://learn.microsoft.com/en-us/rest/api/microsoft-foundry/azureopenai/responses).
+
 ### Backoff formula
 
 Backoff applies to **same-key retries** (transient server 5xx / network errors) and to **`429` rate-limit rotations** (since account-level quotas can be shared across keys). It is skipped only when rotating away from a **permanent per-key failure** (`401`/`402`/`403`) to a genuinely different credential — a dead key gains nothing from waiting.

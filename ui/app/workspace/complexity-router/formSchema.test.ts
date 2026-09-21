@@ -1,5 +1,19 @@
 import { describe, expect, test } from "vitest";
-import { analyzerConfigSchema, countCanonicalSemanticPhrases, DEFAULT_FORM_VALUES } from "./formSchema";
+import { analyzerConfigSchema, countCanonicalSemanticPhrases, DEFAULT_FORM_VALUES, shouldSeedLLMPrompt } from "./formSchema";
+
+describe("fallback prompt initialization", () => {
+	test("initializes an untouched empty prompt", () => {
+		expect(shouldSeedLLMPrompt(true, "default", "", false)).toBe(true);
+	});
+	test("does not refill an intentionally cleared prompt, including a late default response", () => {
+		expect(shouldSeedLLMPrompt(true, "default", "", true)).toBe(false);
+	});
+	test("does not replace custom text or initialize a disabled fallback", () => {
+		expect(shouldSeedLLMPrompt(true, "default", "custom", false)).toBe(false);
+		expect(shouldSeedLLMPrompt(false, "default", "", false)).toBe(false);
+		expect(shouldSeedLLMPrompt(true, "", "", false)).toBe(false);
+	});
+});
 
 function phraseList(prefix: string, count: number): string[] {
 	return Array.from({ length: count }, (_, index) => `${prefix}-${index}`);

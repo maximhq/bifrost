@@ -1,3 +1,4 @@
+import { StartTruncatedLabel } from "@/components/ui/truncatedLabel";
 import type { ProviderLatencyHistogramResponse } from "@/lib/types/logs";
 import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -9,6 +10,7 @@ import {
 	getModelColor,
 	LATENCY_COLORS,
 } from "../../utils/chartUtils";
+import { barShape } from "./barShape";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 
@@ -37,7 +39,7 @@ function AllProvidersTooltip({ active, payload, displayProviders: providers }: a
 						<div key={provider} className="flex items-center justify-between gap-4">
 							<span className="flex items-center gap-1.5">
 								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: getModelColor(idx) }} />
-								<span className="max-w-[120px] truncate text-zinc-600 dark:text-zinc-400">{provider}</span>
+								<StartTruncatedLabel className="max-w-[220px] text-zinc-600 dark:text-zinc-400">{provider}</StartTruncatedLabel>
 							</span>
 							<span className="font-medium">{formatLatency(stats.avg_latency)}</span>
 						</div>
@@ -177,7 +179,7 @@ function ProviderLatencyChartImpl({ data, chartType, startTime, endTime, selecte
 									fill={LATENCY_COLORS.avg}
 									fillOpacity={0.9}
 									barSize={8}
-									radius={[2, 2, 0, 0]}
+									shape={barShape}
 								/>
 								<Bar
 									isAnimationActive={false}
@@ -185,7 +187,7 @@ function ProviderLatencyChartImpl({ data, chartType, startTime, endTime, selecte
 									fill={LATENCY_COLORS.p90}
 									fillOpacity={0.9}
 									barSize={8}
-									radius={[2, 2, 0, 0]}
+									shape={barShape}
 								/>
 								<Bar
 									isAnimationActive={false}
@@ -193,7 +195,7 @@ function ProviderLatencyChartImpl({ data, chartType, startTime, endTime, selecte
 									fill={LATENCY_COLORS.p95}
 									fillOpacity={0.9}
 									barSize={8}
-									radius={[2, 2, 0, 0]}
+									shape={barShape}
 								/>
 								<Bar
 									isAnimationActive={false}
@@ -201,7 +203,7 @@ function ProviderLatencyChartImpl({ data, chartType, startTime, endTime, selecte
 									fill={LATENCY_COLORS.p99}
 									fillOpacity={0.9}
 									barSize={8}
-									radius={[2, 2, 0, 0]}
+									shape={barShape}
 								/>
 							</>
 						) : (
@@ -218,7 +220,7 @@ function ProviderLatencyChartImpl({ data, chartType, startTime, endTime, selecte
 										isAnimationActive={false}
 										fillOpacity={0.9}
 										barSize={8}
-										radius={[2, 2, 0, 0]}
+										shape={barShape}
 									/>
 								))}
 							</>

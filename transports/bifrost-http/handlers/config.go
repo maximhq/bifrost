@@ -658,6 +658,10 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// Toggle whether deleted virtual keys should appear in logs filter data.
 	updatedConfig.HideDeletedVirtualKeysInFilters = payload.ClientConfig.HideDeletedVirtualKeysInFilters
 
+	// Request types hidden from log reads. No restart needed: the log routes read the
+	// live client config on every request, and the filter-data cache keys on the list.
+	updatedConfig.HiddenRequestTypes = lib.NormalizeHiddenRequestTypes(payload.ClientConfig.HiddenRequestTypes)
+
 	// Toggle allowing per-request override for content storage and raw request/response storage
 	updatedConfig.AllowPerRequestContentStorageOverride = payload.ClientConfig.AllowPerRequestContentStorageOverride
 

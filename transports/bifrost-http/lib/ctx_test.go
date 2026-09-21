@@ -2,8 +2,11 @@ package lib
 
 import (
 	"context"
+	"errors"
+	"net"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -321,6 +324,69 @@ func TestConvertToBifrostContext_EmptyBaggageSessionIDIgnored(t *testing.T) {
 
 	if got := bifrostCtx.Value(schemas.BifrostContextKeyParentRequestID); got != nil {
 		t.Fatalf("parent request id should be unset, got %#v", got)
+	}
+}
+
+// TestConvertToBifrostContext_BillingNonceIsMintedInternally verifies the
+// billing nonce exists, is not the (caller-forgeable) request ID, and cannot
+// be influenced by any inbound header. Governance keys its billing-idempotency
+// claim on this nonce, so a caller replaying a chosen x-request-id across
+// independent requests must still produce distinct billing keys.
+func TestConvertToBifrostContext_BillingNonceIsMintedInternally(t *testing.T) {
+	mkCtx := func() *fasthttp.RequestCtx {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.Set("x-request-id", "attacker-chosen-id")
+		// A caller must not be able to pin the nonce through header-derived paths.
+		ctx.Request.Header.Set("bifrost-billing-nonce", "forged-nonce")
+		ctx.Request.Header.Set("x-bf-dim-bifrost-billing-nonce", "forged-nonce")
+		return ctx
+	}
+
+	bifrostCtx1, cancel1 := ConvertToBifrostContext(mkCtx(), testHandlerStore{})
+	defer cancel1()
+	bifrostCtx2, cancel2 := ConvertToBifrostContext(mkCtx(), testHandlerStore{})
+	defer cancel2()
+
+	nonce1, ok := bifrostCtx1.Value(schemas.BifrostContextKeyBillingNonce).(string)
+	if !ok || nonce1 == "" {
+		t.Fatal("expected a billing nonce on the converted context")
+	}
+	if nonce1 == "forged-nonce" {
+		t.Fatal("billing nonce must not be settable from inbound headers")
+	}
+	if nonce1 == "attacker-chosen-id" {
+		t.Fatal("billing nonce must not equal the caller-supplied request id")
+	}
+	nonce2, _ := bifrostCtx2.Value(schemas.BifrostContextKeyBillingNonce).(string)
+	if nonce1 == nonce2 {
+		t.Fatalf("two independent requests sharing an x-request-id must get distinct billing nonces, both got %q", nonce1)
+	}
+	// The request-id itself keeps its correlation semantics.
+	if got, _ := bifrostCtx1.Value(schemas.BifrostContextKeyRequestID).(string); got != "attacker-chosen-id" {
+		t.Fatalf("request-id = %q, want the inbound x-request-id", got)
+	}
+}
+
+// TestConvertToBifrostContext_BillingNoncePreservedOnSharedContext verifies
+// that when a BifrostContext is already shared on the fasthttp context (the
+// large-payload/transport-hook path), a second conversion keeps the existing
+// nonce: both terminal settlement paths of one physical call must read the
+// same value to dedupe against each other.
+func TestConvertToBifrostContext_BillingNoncePreservedOnSharedContext(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+
+	bifrostCtx1, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+	defer cancel()
+	nonce1, _ := bifrostCtx1.Value(schemas.BifrostContextKeyBillingNonce).(string)
+	if nonce1 == "" {
+		t.Fatal("expected a billing nonce on first conversion")
+	}
+
+	bifrostCtx2, cancel2 := ConvertToBifrostContext(ctx, testHandlerStore{})
+	defer cancel2()
+	nonce2, _ := bifrostCtx2.Value(schemas.BifrostContextKeyBillingNonce).(string)
+	if nonce2 != nonce1 {
+		t.Fatalf("nonce changed across conversions of one request: %q then %q", nonce1, nonce2)
 	}
 }
 
@@ -938,5 +1004,140 @@ func TestSessionIDResolutionIsConsistent(t *testing.T) {
 		if fromMiddleware != fromContext {
 			t.Fatalf("headers %v: middleware resolved %q but context resolved %q", headers, fromMiddleware, fromContext)
 		}
+	}
+}
+
+// serveOneConnection runs fasthttp on a real loopback socket for a single
+// accepted connection and returns the client end. Real TCP is required here:
+// client-disconnect detection peeks at the socket, which net.Pipe and
+// fasthttputil.PipeConns cannot offer.
+func serveOneConnection(t *testing.T, handler fasthttp.RequestHandler) net.Conn {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		_ = fasthttp.ServeConn(conn, handler)
+	}()
+	client, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { client.Close() })
+	return client
+}
+
+const chatCompletionRawRequest = "POST /v1/chat/completions HTTP/1.1\r\nHost: bifrost\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}"
+
+var errBifrostContextStillLive = errors.New("bifrost context still live")
+
+// assertDisconnectOutcome checks what a handler saw after the client closed its
+// socket against the documented behaviour of this platform: the context is
+// cancelled where the socket can be peeked, and stays live where it cannot.
+func assertDisconnectOutcome(t *testing.T, err error) {
+	t.Helper()
+	if clientDisconnectPeekSupported {
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("bifrost context 3s after the client closed its socket: %v, want context.Canceled (issue #7035)", err)
+		}
+		return
+	}
+	if !errors.Is(err, errBifrostContextStillLive) {
+		t.Fatalf("bifrost context after the client closed its socket: %v, want it still live on a platform without socket peeking", err)
+	}
+}
+
+// Regression test for https://github.com/maximhq/bifrost/issues/7035. A client
+// that closes its socket while the handler is still waiting on core (silent
+// upstream, retry backoff) must cancel the request context, so core stops
+// retrying the upstream on behalf of nobody. fasthttp's RequestCtx.Done only
+// fires on server shutdown, so the transport has to watch the socket itself.
+func TestConvertToBifrostContextCancelsWhenClientDisconnects(t *testing.T) {
+	outcome := make(chan error, 1)
+	client := serveOneConnection(t, func(ctx *fasthttp.RequestCtx) {
+		bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+		defer cancel()
+		select {
+		case <-bifrostCtx.Done():
+			outcome <- bifrostCtx.Err()
+		case <-time.After(3 * time.Second):
+			outcome <- errBifrostContextStillLive
+		}
+	})
+	if _, err := client.Write([]byte(chatCompletionRawRequest)); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	client.Close()
+
+	select {
+	case err := <-outcome:
+		assertDisconnectOutcome(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler never reported an outcome")
+	}
+}
+
+// A connected, idle client must not be mistaken for a disconnected one.
+func TestConvertToBifrostContextStaysAliveWhileClientConnected(t *testing.T) {
+	outcome := make(chan error, 1)
+	client := serveOneConnection(t, func(ctx *fasthttp.RequestCtx) {
+		bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+		defer cancel()
+		select {
+		case <-bifrostCtx.Done():
+			outcome <- bifrostCtx.Err()
+		case <-time.After(1 * time.Second):
+			outcome <- errBifrostContextStillLive
+		}
+	})
+	if _, err := client.Write([]byte(chatCompletionRawRequest)); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	select {
+	case err := <-outcome:
+		if !errors.Is(err, errBifrostContextStillLive) {
+			t.Fatalf("bifrost context was cancelled while the client was still connected: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler never reported an outcome")
+	}
+}
+
+// The enterprise large-payload hook seeds the shared BifrostContext on the
+// request before the handler converts it. ConvertToBifrostContext then promotes
+// that context with a cancel func, and the client socket must be watched on
+// that path too, otherwise those deployments never see a disconnect.
+func TestConvertToBifrostContextCancelsSeededContextWhenClientDisconnects(t *testing.T) {
+	outcome := make(chan error, 1)
+	client := serveOneConnection(t, func(ctx *fasthttp.RequestCtx) {
+		seeded := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+		ctx.SetUserValue(FastHTTPUserValueBifrostContext, seeded)
+		bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+		defer cancel()
+		select {
+		case <-bifrostCtx.Done():
+			outcome <- bifrostCtx.Err()
+		case <-time.After(3 * time.Second):
+			outcome <- errBifrostContextStillLive
+		}
+	})
+	if _, err := client.Write([]byte(chatCompletionRawRequest)); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	client.Close()
+
+	select {
+	case err := <-outcome:
+		assertDisconnectOutcome(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler never reported an outcome")
 	}
 }

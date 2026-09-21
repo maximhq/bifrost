@@ -97,6 +97,7 @@ var filterDataMatViewBackedDims = map[string]struct{}{
 	filterDimRoutingRules:   {},
 	filterDimRoutingEngines: {},
 	filterDimStopReasons:    {},
+	filterDimToolCallNames:  {},
 	filterDimTeams:          {},
 	filterDimCustomers:      {},
 	filterDimUsers:          {},
@@ -182,6 +183,7 @@ const (
 	filterDimRoutingRules   = "routing_rules"
 	filterDimRoutingEngines = "routing_engines"
 	filterDimStopReasons    = "stop_reasons"
+	filterDimToolCallNames  = "tool_call_names"
 	filterDimApps           = "apps"
 	filterDimUserAgents     = "user_agents"
 	filterDimTeams          = "teams"
@@ -203,7 +205,7 @@ const (
 
 var allFilterDimensions = []string{
 	filterDimModels, filterDimAliases, filterDimSelectedKeys, filterDimVirtualKeys,
-	filterDimRoutingRules, filterDimRoutingEngines, filterDimStopReasons, filterDimApps,
+	filterDimRoutingRules, filterDimRoutingEngines, filterDimStopReasons, filterDimToolCallNames, filterDimApps,
 	filterDimUserAgents, filterDimTeams, filterDimCustomers, filterDimUsers,
 	filterDimBusinessUnits, filterDimProjects, filterDimMetadataKeys,
 }
@@ -299,22 +301,22 @@ func (c *filterDataCache) load(key string) (*filterDataCacheEntry, map[string]in
 	return entry, nil, false
 }
 
+// store publishes a completed filter-data cache result.
 func (c *filterDataCache) store(entry *filterDataCacheEntry, payload map[string]interface{}) {
 	entry.payload = payload
 	entry.expiresAt = time.Now().Add(filterDataCacheTTL)
 	entry.mu.Unlock()
 }
 
+// release releases a filter-data cache entry after a fetch attempt.
 func (c *filterDataCache) release(entry *filterDataCacheEntry) {
 	entry.mu.Unlock()
 }
 
+// parseParentRequestIDFilter reads the parent request ID filter from the request.
 func parseParentRequestIDFilter(ctx *fasthttp.RequestCtx) string {
 	if parentRequestID := string(ctx.QueryArgs().Peek("parent_request_id")); strings.TrimSpace(parentRequestID) != "" {
 		return parentRequestID
-	}
-	if sessionID := string(ctx.QueryArgs().Peek("session_id")); strings.TrimSpace(sessionID) != "" {
-		return sessionID
 	}
 	return ""
 }
@@ -360,6 +362,7 @@ func (h *LoggingHandler) SetMCPLogRedactionMappingResolver(resolver MCPLogRedact
 	h.mcpLogRedactionMappingResolver = resolver
 }
 
+// shouldHideDeletedVirtualKeysInFilters reads the configured deleted-key visibility policy.
 func (h *LoggingHandler) shouldHideDeletedVirtualKeysInFilters() bool {
 	if h == nil || h.config == nil {
 		return false
@@ -370,34 +373,34 @@ func (h *LoggingHandler) shouldHideDeletedVirtualKeysInFilters() bool {
 // RegisterRoutes registers all logging-related routes
 func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	// LLM Log retrieval with filtering, search, and pagination
-	r.GET("/api/logs", lib.ChainMiddlewares(h.getLogs, middlewares...))
-	r.GET("/api/logs/sessions/{session_id}/summary", lib.ChainMiddlewares(h.getLogSessionSummaryByID, middlewares...))
-	r.GET("/api/logs/sessions/{session_id}", lib.ChainMiddlewares(h.getLogSessionByID, middlewares...))
+	r.GET("/api/logs", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogs), middlewares...))
+	r.GET("/api/logs/sessions/{session_id}/summary", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogSessionSummaryByID), middlewares...))
+	r.GET("/api/logs/sessions/{session_id}", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogSessionByID), middlewares...))
 	r.GET("/api/logs/user-agent-mappings", lib.ChainMiddlewares(h.listUserAgentMappings, middlewares...))
 	r.POST("/api/logs/user-agent-mappings", lib.ChainMiddlewares(h.createUserAgentMapping, middlewares...))
 	r.PUT("/api/logs/user-agent-mappings/{id}", lib.ChainMiddlewares(h.updateUserAgentMapping, middlewares...))
 	r.DELETE("/api/logs/user-agent-mappings/{id}", lib.ChainMiddlewares(h.deleteUserAgentMapping, middlewares...))
-	r.GET("/api/logs/{id}", lib.ChainMiddlewares(h.getLogByID, middlewares...))
-	r.GET("/api/logs/stats", lib.ChainMiddlewares(h.getLogsStats, middlewares...))
-	r.GET("/api/logs/histogram", lib.ChainMiddlewares(h.getLogsHistogram, middlewares...))
-	r.GET("/api/logs/histogram/tokens", lib.ChainMiddlewares(h.getLogsTokenHistogram, middlewares...))
-	r.GET("/api/logs/histogram/cost", lib.ChainMiddlewares(h.getLogsCostHistogram, middlewares...))
-	r.GET("/api/logs/histogram/models", lib.ChainMiddlewares(h.getLogsModelHistogram, middlewares...))
-	r.GET("/api/logs/histogram/latency", lib.ChainMiddlewares(h.getLogsLatencyHistogram, middlewares...))
-	r.GET("/api/logs/histogram/cost/by-provider", lib.ChainMiddlewares(h.getLogsProviderCostHistogram, middlewares...))
-	r.GET("/api/logs/histogram/tokens/by-provider", lib.ChainMiddlewares(h.getLogsProviderTokenHistogram, middlewares...))
-	r.GET("/api/logs/histogram/latency/by-provider", lib.ChainMiddlewares(h.getLogsProviderLatencyHistogram, middlewares...))
-	r.GET("/api/logs/histogram/throughput", lib.ChainMiddlewares(h.getLogsThroughputHistogram, middlewares...))
-	r.GET("/api/logs/histogram/throughput/by-provider", lib.ChainMiddlewares(h.getLogsProviderThroughputHistogram, middlewares...))
-	r.GET("/api/logs/histogram/cost/by-dimension", lib.ChainMiddlewares(h.getLogsDimensionCostHistogram, middlewares...))
-	r.GET("/api/logs/histogram/tokens/by-dimension", lib.ChainMiddlewares(h.getLogsDimensionTokenHistogram, middlewares...))
-	r.GET("/api/logs/histogram/latency/by-dimension", lib.ChainMiddlewares(h.getLogsDimensionLatencyHistogram, middlewares...))
+	r.GET("/api/logs/{id}", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogByID), middlewares...))
+	r.GET("/api/logs/stats", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsStats), middlewares...))
+	r.GET("/api/logs/histogram", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsHistogram), middlewares...))
+	r.GET("/api/logs/histogram/tokens", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsTokenHistogram), middlewares...))
+	r.GET("/api/logs/histogram/cost", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsCostHistogram), middlewares...))
+	r.GET("/api/logs/histogram/models", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsModelHistogram), middlewares...))
+	r.GET("/api/logs/histogram/latency", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsLatencyHistogram), middlewares...))
+	r.GET("/api/logs/histogram/cost/by-provider", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsProviderCostHistogram), middlewares...))
+	r.GET("/api/logs/histogram/tokens/by-provider", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsProviderTokenHistogram), middlewares...))
+	r.GET("/api/logs/histogram/latency/by-provider", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsProviderLatencyHistogram), middlewares...))
+	r.GET("/api/logs/histogram/throughput", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsThroughputHistogram), middlewares...))
+	r.GET("/api/logs/histogram/throughput/by-provider", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsProviderThroughputHistogram), middlewares...))
+	r.GET("/api/logs/histogram/cost/by-dimension", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsDimensionCostHistogram), middlewares...))
+	r.GET("/api/logs/histogram/tokens/by-dimension", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsDimensionTokenHistogram), middlewares...))
+	r.GET("/api/logs/histogram/latency/by-dimension", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsDimensionLatencyHistogram), middlewares...))
 	r.GET("/api/logs/dropped", lib.ChainMiddlewares(h.getDroppedRequests, middlewares...))
-	r.GET("/api/logs/filterdata", lib.ChainMiddlewares(h.getAvailableFilterData, middlewares...))
-	r.GET("/api/logs/rankings", lib.ChainMiddlewares(h.getModelRankings, middlewares...))
-	r.GET("/api/logs/rankings/by-dimension", lib.ChainMiddlewares(h.getDimensionRankings, middlewares...))
+	r.GET("/api/logs/filterdata", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getAvailableFilterData), middlewares...))
+	r.GET("/api/logs/rankings", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getModelRankings), middlewares...))
+	r.GET("/api/logs/rankings/by-dimension", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getDimensionRankings), middlewares...))
 	// Consolidated, public-facing dashboard payload (all of the above in one call)
-	r.GET("/api/logs/dashboard", lib.ChainMiddlewares(h.getDashboard, middlewares...))
+	r.GET("/api/logs/dashboard", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getDashboard), middlewares...))
 	r.DELETE("/api/logs", lib.ChainMiddlewares(h.deleteLogs, middlewares...))
 	r.POST("/api/logs/recalculate-cost", lib.ChainMiddlewares(h.recalculateLogCosts, middlewares...))
 	r.GET("/api/logs/recalculate-cost/status", lib.ChainMiddlewares(h.getRecalculateCostStatus, middlewares...))
@@ -414,6 +417,7 @@ func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	r.DELETE("/api/mcp-logs", lib.ChainMiddlewares(h.deleteMCPLogs, middlewares...))
 }
 
+// listUserAgentMappings returns configured client identification mappings.
 func (h *LoggingHandler) listUserAgentMappings(ctx *fasthttp.RequestCtx) {
 	mappings, err := h.logManager.ListUserAgentMappings(ctx)
 	if err != nil {
@@ -423,6 +427,7 @@ func (h *LoggingHandler) listUserAgentMappings(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, map[string]any{"mappings": mappings})
 }
 
+// createUserAgentMapping validates and creates a client identification mapping.
 func (h *LoggingHandler) createUserAgentMapping(ctx *fasthttp.RequestCtx) {
 	var mapping logstore.UserAgentMapping
 	if err := sonic.Unmarshal(ctx.PostBody(), &mapping); err != nil {
@@ -441,6 +446,7 @@ func (h *LoggingHandler) createUserAgentMapping(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, created)
 }
 
+// updateUserAgentMapping updates an identified client mapping after request validation.
 func (h *LoggingHandler) updateUserAgentMapping(ctx *fasthttp.RequestCtx) {
 	id, ok := ctx.UserValue("id").(string)
 	if !ok || strings.TrimSpace(id) == "" {
@@ -468,6 +474,7 @@ func (h *LoggingHandler) updateUserAgentMapping(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, updated)
 }
 
+// deleteUserAgentMapping deletes an identified client mapping and reports missing records.
 func (h *LoggingHandler) deleteUserAgentMapping(ctx *fasthttp.RequestCtx) {
 	id, ok := ctx.UserValue("id").(string)
 	if !ok || strings.TrimSpace(id) == "" {
@@ -660,11 +667,15 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	if stopReasons := string(ctx.QueryArgs().Peek("stop_reasons")); stopReasons != "" {
 		filters.StopReasons = parseCommaSeparated(stopReasons)
 	}
+	parseToolCallNamesFilter(ctx, filters)
 	if userAgents := string(ctx.QueryArgs().Peek("user_agents")); userAgents != "" {
 		filters.UserAgents = parseStringArrayParam(userAgents)
 	}
 	if apps := string(ctx.QueryArgs().Peek("apps")); apps != "" {
 		filters.Apps = parseStringArrayParam(apps)
+	}
+	if sessionID := strings.TrimSpace(string(ctx.QueryArgs().Peek("session_id"))); sessionID != "" {
+		filters.SessionID = sessionID
 	}
 	parseComplexityFilters(ctx, filters)
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
@@ -928,11 +939,15 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 	if stopReasons := string(ctx.QueryArgs().Peek("stop_reasons")); stopReasons != "" {
 		filters.StopReasons = parseCommaSeparated(stopReasons)
 	}
+	parseToolCallNamesFilter(ctx, filters)
 	if userAgents := string(ctx.QueryArgs().Peek("user_agents")); userAgents != "" {
 		filters.UserAgents = parseStringArrayParam(userAgents)
 	}
 	if apps := string(ctx.QueryArgs().Peek("apps")); apps != "" {
 		filters.Apps = parseStringArrayParam(apps)
+	}
+	if sessionID := strings.TrimSpace(string(ctx.QueryArgs().Peek("session_id"))); sessionID != "" {
+		filters.SessionID = sessionID
 	}
 	parseComplexityFilters(ctx, filters)
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
@@ -1128,6 +1143,15 @@ func parseComplexityFilters(ctx *fasthttp.RequestCtx, filters *logstore.SearchFi
 	}
 }
 
+// parseToolCallNamesFilter reads the comma-separated tool_call_names query
+// param into filters. Shared by every handler that honours log filters so the
+// list, stats, histogram and ranking endpoints stay in sync.
+func parseToolCallNamesFilter(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters) {
+	if names := string(ctx.QueryArgs().Peek("tool_call_names")); names != "" {
+		filters.ToolCallNames = parseCommaSeparated(names)
+	}
+}
+
 // parseHistogramFilters extracts common filter parameters from query args
 func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	filters := &logstore.SearchFilters{}
@@ -1180,11 +1204,15 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	if stopReasons := string(ctx.QueryArgs().Peek("stop_reasons")); stopReasons != "" {
 		filters.StopReasons = parseCommaSeparated(stopReasons)
 	}
+	parseToolCallNamesFilter(ctx, filters)
 	if userAgents := string(ctx.QueryArgs().Peek("user_agents")); userAgents != "" {
 		filters.UserAgents = parseStringArrayParam(userAgents)
 	}
 	if apps := string(ctx.QueryArgs().Peek("apps")); apps != "" {
 		filters.Apps = parseStringArrayParam(apps)
+	}
+	if sessionID := strings.TrimSpace(string(ctx.QueryArgs().Peek("session_id"))); sessionID != "" {
+		filters.SessionID = sessionID
 	}
 	parseComplexityFilters(ctx, filters)
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
@@ -1518,6 +1546,7 @@ func (h *LoggingHandler) getModelRankings(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, result)
 }
 
+// getDimensionRankings validates and serves rankings for the requested attribution dimension.
 func (h *LoggingHandler) getDimensionRankings(ctx *fasthttp.RequestCtx) {
 	dim := logstore.RankingDimension(string(ctx.QueryArgs().Peek("dimension")))
 	if dim == "" {
@@ -1763,11 +1792,14 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	dims := parseFilterDimensions(string(ctx.QueryArgs().Peek("dimensions")), allFilterDimensions)
 	want := dimSet(dims)
 	query := strings.TrimSpace(string(ctx.QueryArgs().Peek("q")))
-	useCache := shouldUseFilterDataCache(ctx, query) && h.shouldCacheFilterDimensions(dims)
+	hiddenTypes := logstore.HiddenRequestTypesFromContext(ctx)
+	// Hidden types require raw-table dropdown queries even on PostgreSQL, so
+	// cache those responses and partition them by the configured visibility.
+	useCache := shouldUseFilterDataCache(ctx, query) && (len(hiddenTypes) > 0 || h.shouldCacheFilterDimensions(dims))
 
 	var entry *filterDataCacheEntry
 	if useCache {
-		cacheKey := fmt.Sprintf("who=%s|hide_deleted=%v|dims=%s", filterDataCacheIdentity(ctx), hideDeletedVirtualKeys, strings.Join(dims, ","))
+		cacheKey := fmt.Sprintf("who=%s|hide_deleted=%v|dims=%s|hidden=%q", filterDataCacheIdentity(ctx), hideDeletedVirtualKeys, strings.Join(dims, ","), hiddenTypes)
 		var cached map[string]interface{}
 		var ok bool
 		entry, cached, ok = h.filterDataCache.load(cacheKey)
@@ -1791,6 +1823,7 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 		routingRules   []logging.KeyPair
 		routingEngines []string
 		stopReasons    []string
+		toolCallNames  []string
 		apps           []string
 		userAgents     []string
 		teams          []logging.KeyPair
@@ -1887,6 +1920,18 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 			}
 			mu.Lock()
 			stopReasons = result
+			mu.Unlock()
+			return nil
+		})
+	}
+	if _, ok := want[filterDimToolCallNames]; ok {
+		g.Go(func() error {
+			result, err := h.logManager.GetAvailableToolCallNames(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			toolCallNames = result
 			mu.Unlock()
 			return nil
 		})
@@ -2108,6 +2153,9 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	}
 	if _, ok := want[filterDimStopReasons]; ok {
 		payload[filterDimStopReasons] = stopReasons
+	}
+	if _, ok := want[filterDimToolCallNames]; ok {
+		payload[filterDimToolCallNames] = toolCallNames
 	}
 	if _, ok := want[filterDimApps]; ok {
 		payload[filterDimApps] = apps
@@ -2381,6 +2429,7 @@ func recalcJobStatusFromRow(job *tables.TableSidekiqJob) recalcJobStatus {
 
 // Helper functions
 
+// findRedactedKey matches a redacted provider key or returns a deleted-key placeholder.
 func findRedactedKey(redactedKeys []schemas.Key, id string, name string) *schemas.Key {
 	if len(redactedKeys) == 0 {
 		return &schemas.Key{
@@ -2411,6 +2460,7 @@ func findRedactedKey(redactedKeys []schemas.Key, id string, name string) *schema
 	}
 }
 
+// findRedactedVirtualKey matches a redacted virtual key or returns a deleted-key placeholder.
 func findRedactedVirtualKey(redactedVirtualKeys []tables.TableVirtualKey, id string, name string) *tables.TableVirtualKey {
 	if len(redactedVirtualKeys) == 0 {
 		return &tables.TableVirtualKey{
@@ -2441,6 +2491,7 @@ func findRedactedVirtualKey(redactedVirtualKeys []tables.TableVirtualKey, id str
 	}
 }
 
+// findRedactedRoutingRule matches a redacted routing rule or returns a deleted-rule placeholder.
 func findRedactedRoutingRule(redactedRoutingRules []tables.TableRoutingRule, id string, name string) *tables.TableRoutingRule {
 	if len(redactedRoutingRules) == 0 {
 		return &tables.TableRoutingRule{
@@ -2546,6 +2597,13 @@ type recalculateCostFilters struct {
 // Returns an error if any required parsing fails (e.g., invalid time format, invalid number format).
 func parseMCPFiltersAndPagination(ctx *fasthttp.RequestCtx) (*logstore.MCPToolLogSearchFilters, *logstore.PaginationOptions, error) {
 	filters := &logstore.MCPToolLogSearchFilters{}
+	filters.UserIDs = parseCommaSeparated(string(ctx.QueryArgs().Peek("user_ids")))
+	filters.TeamIDs = parseCommaSeparated(string(ctx.QueryArgs().Peek("team_ids")))
+	filters.CustomerIDs = parseCommaSeparated(string(ctx.QueryArgs().Peek("customer_ids")))
+	filters.BusinessUnitIDs = parseCommaSeparated(string(ctx.QueryArgs().Peek("business_unit_ids")))
+	filters.ProjectIDs = parseCommaSeparated(string(ctx.QueryArgs().Peek("project_ids")))
+	filters.DeviceIDs = parseCommaSeparated(string(ctx.QueryArgs().Peek("device_ids")))
+
 	pagination := &logstore.PaginationOptions{}
 
 	// Extract filters from query parameters
@@ -2673,6 +2731,12 @@ func parseMCPFiltersAndPagination(ctx *fasthttp.RequestCtx) (*logstore.MCPToolLo
 // Returns an error if any required parsing fails.
 func parseMCPFilters(ctx *fasthttp.RequestCtx) (*logstore.MCPToolLogSearchFilters, error) {
 	filters := &logstore.MCPToolLogSearchFilters{}
+	filters.UserIDs = parseCommaSeparated(string(ctx.QueryArgs().Peek("user_ids")))
+	filters.TeamIDs = parseCommaSeparated(string(ctx.QueryArgs().Peek("team_ids")))
+	filters.CustomerIDs = parseCommaSeparated(string(ctx.QueryArgs().Peek("customer_ids")))
+	filters.BusinessUnitIDs = parseCommaSeparated(string(ctx.QueryArgs().Peek("business_unit_ids")))
+	filters.ProjectIDs = parseCommaSeparated(string(ctx.QueryArgs().Peek("project_ids")))
+	filters.DeviceIDs = parseCommaSeparated(string(ctx.QueryArgs().Peek("device_ids")))
 
 	// Extract filters from query parameters
 	if toolNames := string(ctx.QueryArgs().Peek("tool_names")); toolNames != "" {

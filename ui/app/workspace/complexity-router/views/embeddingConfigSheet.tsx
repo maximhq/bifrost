@@ -114,9 +114,9 @@ export default function EmbeddingConfigSheet({
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
 			<SheetContent className="flex flex-col p-0" data-testid="complexity-router-embedding-sheet">
-				<SheetHeader className="flex flex-col items-start gap-1 px-6 py-4" headerClassName="bg-card z-10 mb-0 border-b">
+				<SheetHeader className="flex flex-col items-start gap-1 py-4" headerClassName="bg-card z-10 mb-0 border-b px-4 md:px-6">
 					<SheetTitle>Embedding configuration</SheetTitle>
-					<SheetDescription className="text-xs">
+					<SheetDescription>
 						The model that embeds requests and reference phrases. API keys are inherited from the provider&apos;s main configuration.
 					</SheetDescription>
 				</SheetHeader>
@@ -300,7 +300,7 @@ export default function EmbeddingConfigSheet({
 								<div className="space-y-2">
 									<FieldLabel
 										htmlFor="semantic-timeout"
-										tooltip="Ceiling on the embedding call, which runs inline on the request path. Exceeding it skips complexity tier based routing for that request."
+										tooltip="Maximum wait for the embedding call, including provider queue and response time. On timeout, the configured fallback applies."
 									>
 										Embedding timeout (ms)
 									</FieldLabel>

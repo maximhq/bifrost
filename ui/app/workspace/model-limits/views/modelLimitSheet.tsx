@@ -345,7 +345,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 						{scopeEntry?.ManagedByComponent ? (
 							<div className="space-y-1">
 								<Label className="text-muted-foreground text-xs font-normal">Managed By</Label>
-								<scopeEntry.ManagedByComponent modelConfig={modelConfig} />
+								<scopeEntry.ManagedByComponent modelConfig={modelConfig} labelled />
 							</div>
 						) : null}
 
@@ -381,7 +381,9 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 											<p className="text-sm font-medium">
 												{modelConfig.rate_limit.token_current_usage.toLocaleString()} /{" "}
 												{modelConfig.rate_limit.token_max_limit.toLocaleString()} (
-												{resetDurationLabels[modelConfig.rate_limit.token_reset_duration || "1h"] || modelConfig.rate_limit.token_reset_duration})
+												{resetDurationLabels[modelConfig.rate_limit.token_reset_duration || "1h"] ||
+													modelConfig.rate_limit.token_reset_duration}
+												)
 											</p>
 										</div>
 									) : null}

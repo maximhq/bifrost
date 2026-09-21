@@ -1345,3 +1345,32 @@ func TestStartSSEHeartbeatCallsOnDisconnectAfterClose(t *testing.T) {
 		t.Errorf("onDisconnect calls = %d, want exactly 1", got)
 	}
 }
+
+// TestSSEStreamReaderSendHeartbeatNone verifies the SSEHeartbeatNone framing writes nothing
+// to the wire while keeping StartSSEHeartbeat's return-value contract: true while the reader
+// is open, false once the client has gone. Routes whose official decoder rejects any SSE
+// comment line (google-genai Python) select it to opt out of the heartbeat entirely.
+func TestSSEStreamReaderSendHeartbeatNone(t *testing.T) {
+	r := NewSSEStreamReader()
+	go func() {
+		if !r.SendHeartbeatWithFraming(SSEHeartbeatNone) {
+			t.Error("SendHeartbeatWithFraming(SSEHeartbeatNone) on an open reader = false, want true")
+		}
+		r.SendEvent("", []byte(`{"ok":true}`))
+		r.Done()
+	}()
+
+	got, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "data: {\"ok\":true}\n\n"; string(got) != want {
+		t.Errorf("stream = %q, want only the event %q (no heartbeat bytes)", got, want)
+	}
+
+	closed := NewSSEStreamReader()
+	closed.Close()
+	if closed.SendHeartbeatWithFraming(SSEHeartbeatNone) {
+		t.Error("SendHeartbeatWithFraming(SSEHeartbeatNone) after Close = true, want false (disconnect must still be reported)")
+	}
+}

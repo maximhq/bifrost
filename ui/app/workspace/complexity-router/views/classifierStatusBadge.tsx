@@ -3,8 +3,8 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { SEMANTIC_STATUS_LABELS, SemanticStatusInfo } from "@/lib/types/complexityRouter";
 import { cn } from "@/lib/utils";
-import type { VariantProps } from "class-variance-authority";
 import { Link } from "@tanstack/react-router";
+import type { VariantProps } from "class-variance-authority";
 import { ArrowRight, CircleAlert, CircleCheck, CircleDashed, LoaderCircle, RefreshCw } from "lucide-react";
 import type { ReactNode } from "react";
 import { semanticWarmupFailureMessage, semanticWarmupImpactMessage } from "./classifierStatusBadge.utils";
@@ -71,8 +71,11 @@ export function ClassifierStatusBadge({
 	statusUnavailable,
 	statusRefreshFailed,
 	isRetryingStatus,
+	canRetryWarmup,
+	isRetryingWarmup,
 	onConfigure,
 	onRetryStatus,
+	onRetryWarmup,
 }: {
 	status: SemanticStatusInfo | undefined;
 	isLoading: boolean;
@@ -83,8 +86,11 @@ export function ClassifierStatusBadge({
 	statusUnavailable: boolean;
 	statusRefreshFailed: boolean;
 	isRetryingStatus: boolean;
+	canRetryWarmup: boolean;
+	isRetryingWarmup: boolean;
 	onConfigure: () => void;
 	onRetryStatus: () => void;
+	onRetryWarmup: () => void;
 }) {
 	const state: ClassifierState = isNotConfigured
 		? "not-configured"
@@ -127,7 +133,7 @@ export function ClassifierStatusBadge({
 				</button>
 			</PopoverTrigger>
 
-			<PopoverContent align="end" className="w-80 space-y-2.5 p-3 text-xs leading-relaxed" data-testid="complexity-router-semantic-status">
+			<PopoverContent align="end" className="w-80 space-y-2.5 p-3 text-xs leading-relaxed z-0" data-testid="complexity-router-semantic-status">
 				<p className="text-muted-foreground">{summary}</p>
 
 				{status?.serving_previous && state === "warming" && (
@@ -156,6 +162,13 @@ export function ClassifierStatusBadge({
 					<p className={status.serving_previous ? "text-amber-700 dark:text-amber-400" : "text-destructive"}>
 						{semanticWarmupImpactMessage(status)}
 					</p>
+				)}
+
+				{state === "failed" && canRetryWarmup && !hasUnsavedChanges && (
+					<Button type="button" variant="outline" size="sm" className="w-full" onClick={onRetryWarmup} disabled={isRetryingWarmup}>
+						<RefreshCw className={cn("size-3.5", isRetryingWarmup && "animate-spin")} />
+						Retry warmup
+					</Button>
 				)}
 
 				{state === "unavailable" && (

@@ -15,6 +15,15 @@ const (
 	ReasoningEffortMax     = "max"
 )
 
+// Reasoning context modes: which earlier-turn reasoning items are rendered back
+// to the model. "auto" and "current_turn" are accepted by every OpenAI reasoning
+// model; "all_turns" only by the families that persist reasoning across turns.
+const (
+	ReasoningContextAuto        = "auto"
+	ReasoningContextCurrentTurn = "current_turn"
+	ReasoningContextAllTurns    = "all_turns"
+)
+
 // DefaultReasoningBudgetMin is the floor used for models that take a token
 // budget but publish no explicit minimum.
 const DefaultReasoningBudgetMin = 1024
@@ -95,6 +104,28 @@ func (c ModelCaps) SupportsReasoningContentBlocks(fallback bool) bool {
 		return *c.record.SupportsReasoningContentBlocks
 	}
 	return fallback
+}
+
+// baseReasoningContexts are accepted by every OpenAI reasoning model, and
+// answer when neither the row nor the caller publishes a list.
+var baseReasoningContexts = []string{ReasoningContextAuto, ReasoningContextCurrentTurn}
+
+// SupportedReasoningContexts returns the reasoning.context values the model
+// accepts. Prefers the row's list, then the caller's name-based fallback, then
+// the base set. OpenAI documents "all_turns" as the GPT-5.6 default with
+// earlier models defaulting to "current_turn"
+// (https://developers.openai.com/api/docs/guides/reasoning); a model that
+// rejects a value answers 400 "Supported values are: 'auto' and
+// 'current_turn'", so a request value outside the list has to be dropped
+// before dispatch.
+func (c ModelCaps) SupportedReasoningContexts(fallback []string) []string {
+	if c.record != nil && len(c.record.SupportedReasoningContexts) > 0 {
+		return c.record.SupportedReasoningContexts
+	}
+	if len(fallback) > 0 {
+		return fallback
+	}
+	return slices.Clone(baseReasoningContexts)
 }
 
 // SupportsReasoningEffort reports whether the model takes a categorical effort

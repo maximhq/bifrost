@@ -719,3 +719,23 @@ func TestReplace_AtomicSnapshot(t *testing.T) {
 	default:
 	}
 }
+
+func TestRegexEntries_AggregateKeepsExactNamesNextToRegex(t *testing.T) {
+	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: {
+			{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"regex:^gpt-4.*"}},
+			{ID: "k2", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o"}},
+		},
+	})
+	got := s.AllowedFor(schemas.OpenAI)
+	sort.Strings(got)
+	if !slices.Equal(got, schemas.WhiteList{"gpt-4o", "regex:^gpt-4.*"}) {
+		t.Errorf("AllowedFor = %v, want the exact name kept next to the regex entry", got)
+	}
+	if !s.IsAllowed(schemas.OpenAI, "gpt-4o-mini") {
+		t.Error("IsAllowed(gpt-4o-mini) = false; want true via the regex entry")
+	}
+	if s.IsAllowed(schemas.OpenAI, "gpt-3.5-turbo") {
+		t.Error("IsAllowed(gpt-3.5-turbo) = true; want false")
+	}
+}

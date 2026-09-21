@@ -1,3 +1,4 @@
+import { StartTruncatedLabel } from "@/components/ui/truncatedLabel";
 import type { ProviderThroughputHistogramResponse } from "@/lib/types/logs";
 import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -9,6 +10,7 @@ import {
 	getModelColor,
 	THROUGHPUT_COLOR,
 } from "../../utils/chartUtils";
+import { barShape } from "./barShape";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 
@@ -37,7 +39,7 @@ function AllProvidersTooltip({ active, payload, displayProviders: providers }: a
 						<div key={provider} className="flex items-center justify-between gap-4">
 							<span className="flex items-center gap-1.5">
 								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: getModelColor(idx) }} />
-								<span className="max-w-[120px] truncate text-zinc-600 dark:text-zinc-400">{provider}</span>
+								<StartTruncatedLabel className="max-w-[220px] text-zinc-600 dark:text-zinc-400">{provider}</StartTruncatedLabel>
 							</span>
 							<span className="font-medium">{formatTokensPerSecond(stats.tokens_per_second)}</span>
 						</div>
@@ -157,7 +159,7 @@ function ProviderThroughputChartImpl({ data, chartType, startTime, endTime, sele
 									fill={THROUGHPUT_COLOR}
 									fillOpacity={0.9}
 									barSize={8}
-									radius={[2, 2, 0, 0]}
+									shape={barShape}
 								/>
 							</>
 						) : (
@@ -174,7 +176,7 @@ function ProviderThroughputChartImpl({ data, chartType, startTime, endTime, sele
 										isAnimationActive={false}
 										fillOpacity={0.9}
 										barSize={8}
-										radius={[2, 2, 0, 0]}
+										shape={barShape}
 									/>
 								))}
 							</>

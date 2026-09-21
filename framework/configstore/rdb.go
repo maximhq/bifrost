@@ -154,6 +154,7 @@ func schemaKeyFromTableKey(dbKey tables.TableKey) schemas.Key {
 		Enabled:                dbKey.Enabled,
 		UseForBatchAPI:         dbKey.UseForBatchAPI,
 		UseAnthropicEndpoints:  dbKey.UseAnthropicEndpoints,
+		UseOpenAIEndpoints:     dbKey.UseOpenAIEndpoints,
 		AzureKeyConfig:         dbKey.AzureKeyConfig,
 		VertexKeyConfig:        dbKey.VertexKeyConfig,
 		BedrockKeyConfig:       dbKey.BedrockKeyConfig,
@@ -185,6 +186,7 @@ func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tabl
 		Enabled:                key.Enabled,
 		UseForBatchAPI:         key.UseForBatchAPI,
 		UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
+		UseOpenAIEndpoints:     key.UseOpenAIEndpoints,
 		AzureKeyConfig:         key.AzureKeyConfig,
 		VertexKeyConfig:        key.VertexKeyConfig,
 		BedrockKeyConfig:       key.BedrockKeyConfig,
@@ -293,6 +295,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		LoggingHeaders:                        config.LoggingHeaders,
 		WhitelistedRoutes:                     config.WhitelistedRoutes,
 		HideDeletedVirtualKeysInFilters:       config.HideDeletedVirtualKeysInFilters,
+		HiddenRequestTypes:                    config.HiddenRequestTypes,
 		RoutingChainMaxDepth:                  config.RoutingChainMaxDepth,
 		MCPExternalClientURL:                  mcpExternalURLToString(config.MCPExternalClientURL),
 		HeaderFilterConfig:                    config.HeaderFilterConfig,
@@ -579,6 +582,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		LoggingHeaders:                        dbConfig.LoggingHeaders,
 		WhitelistedRoutes:                     dbConfig.WhitelistedRoutes,
 		HideDeletedVirtualKeysInFilters:       dbConfig.HideDeletedVirtualKeysInFilters,
+		HiddenRequestTypes:                    dbConfig.HiddenRequestTypes,
 		RoutingChainMaxDepth:                  dbConfig.RoutingChainMaxDepth,
 		MCPExternalClientURL:                  schemas.NewSecretVar(dbConfig.MCPExternalClientURL),
 		HeaderFilterConfig:                    dbConfig.HeaderFilterConfig,
@@ -705,6 +709,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 			StoreRawRequestResponse:  providerConfig.StoreRawRequestResponse,
 			CustomProviderConfig:     providerConfig.CustomProviderConfig,
 			OpenAIConfig:             providerConfig.OpenAIConfig,
+			PromptCache:              providerConfig.PromptCache,
 			ConfigHash:               providerConfig.ConfigHash,
 			Status:                   providerConfig.Status,
 			Description:              providerConfig.Description,
@@ -754,6 +759,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				Enabled:                key.Enabled,
 				UseForBatchAPI:         key.UseForBatchAPI,
 				UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
+				UseOpenAIEndpoints:     key.UseOpenAIEndpoints,
 				AzureKeyConfig:         key.AzureKeyConfig,
 				VertexKeyConfig:        key.VertexKeyConfig,
 				BedrockKeyConfig:       key.BedrockKeyConfig,
@@ -947,6 +953,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 	dbProvider.StoreRawRequestResponse = configCopy.StoreRawRequestResponse
 	dbProvider.CustomProviderConfig = configCopy.CustomProviderConfig
 	dbProvider.OpenAIConfig = configCopy.OpenAIConfig
+	dbProvider.PromptCache = configCopy.PromptCache
 	dbProvider.ConfigHash = configCopy.ConfigHash
 
 	// Save the updated provider
@@ -997,6 +1004,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			Enabled:                key.Enabled,
 			UseForBatchAPI:         key.UseForBatchAPI,
 			UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
+			UseOpenAIEndpoints:     key.UseOpenAIEndpoints,
 			AzureKeyConfig:         key.AzureKeyConfig,
 			VertexKeyConfig:        key.VertexKeyConfig,
 			BedrockKeyConfig:       key.BedrockKeyConfig,
@@ -1132,6 +1140,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 		StoreRawRequestResponse:  configCopy.StoreRawRequestResponse,
 		CustomProviderConfig:     configCopy.CustomProviderConfig,
 		OpenAIConfig:             configCopy.OpenAIConfig,
+		PromptCache:              configCopy.PromptCache,
 		ConfigHash:               configCopy.ConfigHash,
 	}
 	// Create the provider
@@ -1152,6 +1161,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 			Enabled:                key.Enabled,
 			UseForBatchAPI:         key.UseForBatchAPI,
 			UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
+			UseOpenAIEndpoints:     key.UseOpenAIEndpoints,
 			AzureKeyConfig:         key.AzureKeyConfig,
 			VertexKeyConfig:        key.VertexKeyConfig,
 			BedrockKeyConfig:       key.BedrockKeyConfig,
@@ -1305,6 +1315,7 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 			StoreRawRequestResponse:  dbProvider.StoreRawRequestResponse,
 			CustomProviderConfig:     dbProvider.CustomProviderConfig,
 			OpenAIConfig:             dbProvider.OpenAIConfig,
+			PromptCache:              dbProvider.PromptCache,
 			ConfigHash:               dbProvider.ConfigHash,
 			Status:                   dbProvider.Status,
 			Description:              dbProvider.Description,
@@ -1338,6 +1349,7 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 		StoreRawRequestResponse:  dbProvider.StoreRawRequestResponse,
 		CustomProviderConfig:     dbProvider.CustomProviderConfig,
 		OpenAIConfig:             dbProvider.OpenAIConfig,
+		PromptCache:              dbProvider.PromptCache,
 		ConfigHash:               dbProvider.ConfigHash,
 		Status:                   dbProvider.Status,
 		Description:              dbProvider.Description,
@@ -2890,6 +2902,9 @@ var pricingSyncUpdateColumns = []string{
 	// Costs - OCR
 	"ocr_cost_per_page",
 	"annotation_cost_per_page",
+	// Costs - Time of day
+	"off_peak_cost_multiplier",
+	"peak_hours",
 }
 
 // UpsertModelPrices creates or updates a model pricing record in the database.
@@ -3362,6 +3377,7 @@ func (s *RDBConfigStore) UpdatePlugin(ctx context.Context, plugin *tables.TableP
 		if plugin.Version == 0 {
 			plugin.Version = existing.Version
 		}
+		plugin.CreatedAt = existing.CreatedAt
 		if err := txDB.WithContext(ctx).Delete(&existing).Error; err != nil {
 			if localTx {
 				txDB.Rollback()
@@ -3622,6 +3638,39 @@ func (s *RDBConfigStore) getGovernanceConfigVirtualKeys(ctx context.Context) ([]
 	}
 }
 
+// VirtualKeySearchTerm normalizes a raw search string into the LIKE pattern the
+// virtual key search clauses match against. Exported so downstream stores build
+// their extra clauses against exactly the same pattern.
+func VirtualKeySearchTerm(search string) string {
+	return "%" + strings.ToLower(search) + "%"
+}
+
+// VirtualKeySearchConditions builds the OR group that a virtual key search
+// narrows on: the key's own name, its team's name, or its customer's name - i.e.
+// everything the "Assigned To" column can display in OSS, so anything visible on
+// screen is also findable.
+//
+// It returns the condition rather than applying it so downstream stores can OR in
+// clauses of their own (enterprise adds the assigned user, whose link table it
+// alone knows about) without restating these three.
+//
+// Subqueries rather than joins: a join against teams/customers would multiply
+// rows and collide with the budget_spent sort join. The subqueries go through
+// Model() so GORM's soft-delete scope applies and a deleted team cannot
+// resurrect its keys into the results.
+func VirtualKeySearchConditions(db *gorm.DB, search string) *gorm.DB {
+	term := VirtualKeySearchTerm(search)
+	teamIDs := db.Model(&tables.TableTeam{}).
+		Select("id").
+		Where("LOWER(name) LIKE ?", term)
+	customerIDs := db.Model(&tables.TableCustomer{}).
+		Select("id").
+		Where("LOWER(name) LIKE ?", term)
+	return db.Where("LOWER(governance_virtual_keys.name) LIKE ?", term).
+		Or("governance_virtual_keys.team_id IN (?)", teamIDs).
+		Or("governance_virtual_keys.customer_id IN (?)", customerIDs)
+}
+
 // GetVirtualKeysPaginated retrieves virtual keys with pagination, filtering, and search support.
 func (s *RDBConfigStore) GetVirtualKeysPaginated(ctx context.Context, params VirtualKeyQueryParams) ([]tables.TableVirtualKey, int64, error) {
 	// Build base query with filters
@@ -3652,8 +3701,7 @@ func (s *RDBConfigStore) GetVirtualKeysPaginated(ctx context.Context, params Vir
 		baseQuery = baseQuery.Where("("+strings.Join(assignmentClauses, " OR ")+")", assignmentArgs...)
 	}
 	if params.Search != "" {
-		search := "%" + strings.ToLower(params.Search) + "%"
-		baseQuery = baseQuery.Where("LOWER(name) LIKE ?", search)
+		baseQuery = baseQuery.Where(VirtualKeySearchConditions(s.DB().WithContext(ctx), params.Search))
 	}
 
 	// Get total count before pagination
@@ -3857,6 +3905,18 @@ func (s *RDBConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *table
 			virtualKey.PreviousValueHash = existing.PreviousValueHash
 			virtualKey.PreviousValueExpiresAt = existing.PreviousValueExpiresAt
 			virtualKey.RotatedAt = existing.RotatedAt
+		}
+		// Preserve NULL when a VK-scoped MC already owns the rate limit; prevents config sync from reverting migration.
+		if existing.RateLimitID == nil && virtualKey.RateLimitID != nil {
+			var mcCount int64
+			if err := txDB.WithContext(ctx).Model(&tables.TableModelConfig{}).
+				Where("scope = 'virtual_key' AND scope_id = ? AND model_name = '*' AND provider IS NULL AND rate_limit_id IS NOT NULL", virtualKey.ID).
+				Count(&mcCount).Error; err != nil {
+				return s.parseGormError(err)
+			}
+			if mcCount > 0 {
+				virtualKey.RateLimitID = nil
+			}
 		}
 		if err := txDB.WithContext(ctx).
 			Select("name", "description", "value", "is_active", "expires_at", "team_id", "customer_id", "rate_limit_id", "calendar_aligned", "allow_all_providers", "config_hash", "updated_at", "encryption_status", "value_hash", "previous_value", "previous_value_hash", "previous_value_expires_at", "rotated_at").
@@ -4580,6 +4640,18 @@ func (s *RDBConfigStore) MCPEndpointSlugTaken(ctx context.Context, slug string) 
 func (s *RDBConfigStore) GetVirtualMCPByID(ctx context.Context, id uint) (*tables.TableVirtualMCP, error) {
 	var def tables.TableVirtualMCP
 	err := s.ScopedDB(ctx).First(&def, id).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &def, nil
+}
+
+func (s *RDBConfigStore) GetVirtualMCPByName(ctx context.Context, name string) (*tables.TableVirtualMCP, error) {
+	var def tables.TableVirtualMCP
+	err := s.ScopedDB(ctx).Where("name = ?", name).First(&def).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrNotFound
 	}
@@ -5351,6 +5423,11 @@ func (s *RDBConfigStore) UpdateBudget(ctx context.Context, budget *tables.TableB
 		// applied by CreateBudget on first import, and inert thereafter.
 		budget.CurrentUsage = existing.CurrentUsage
 		budget.LastReset = existing.LastReset
+		// Preserve MC ownership if already migrated; config.json sync would otherwise revert it.
+		if existing.ModelConfigID != nil {
+			budget.ModelConfigID = existing.ModelConfigID
+			budget.VirtualKeyID = nil
+		}
 		// Overrides are managed by the dedicated override path, not UpdateBudget;
 		// carry them forward so partial updates can't wipe an active override.
 		// The grant columns must travel with the derived remaining count: dropping

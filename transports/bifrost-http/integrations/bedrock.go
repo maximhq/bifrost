@@ -703,13 +703,13 @@ func extractBedrockJobArnFromPath(handlerStore lib.HandlerStore) PreRequestCallb
 }
 
 // NewBedrockRouter creates a new BedrockRouter with the given bifrost client
-func NewBedrockRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *BedrockRouter {
+func NewBedrockRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *BedrockRouter {
 	routes := CreateBedrockRouteConfigs("/bedrock", handlerStore)
 	routes = append(routes, createBedrockBatchRouteConfigs("/bedrock", handlerStore)...)
 	routes = append(routes, createBedrockFilesRouteConfigs("/bedrock/files", handlerStore)...)
 
 	return &BedrockRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, routes, nil, logger),
+		GenericRouter: NewGenericRouter(client, handlerStore, accessResolver, routes, nil, logger),
 	}
 }
 
