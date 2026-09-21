@@ -827,3 +827,58 @@ func TestSpanDataCarriesAttachments(t *testing.T) {
 		})
 	}
 }
+
+// Raw is built only when a connector declared RawPayloadConsumer.
+func TestRawPayloadsOnlyBuiltUnderDemand(t *testing.T) {
+	resp := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{ID: "c1", Model: "gpt-4o-mini"},
+	}
+	resp.ChatResponse.ExtraFields.RawRequest = map[string]any{"prompt": "secret-request"}
+	resp.ChatResponse.ExtraFields.RawResponse = map[string]any{"text": "secret-response"}
+
+	off := BuildLLMSpanData(nil, resp, nil, SpanBuildOptions{})
+	if off.RawRequest != "" || off.RawResponse != "" {
+		t.Errorf("raw built without demand: req=%q resp=%q", off.RawRequest, off.RawResponse)
+	}
+	if attrs := off.Attributes(); attrs[schemas.AttrBifrostRawRequest] != nil || attrs[schemas.AttrBifrostRawResponse] != nil {
+		t.Error("raw attributes emitted without demand")
+	}
+
+	on := BuildLLMSpanData(nil, resp, nil, SpanBuildOptions{WantRawPayloads: true})
+	if !strings.Contains(on.RawRequest, "secret-request") {
+		t.Errorf("raw request not captured under demand: %q", on.RawRequest)
+	}
+	if !strings.Contains(on.RawResponse, "secret-response") {
+		t.Errorf("raw response not captured under demand: %q", on.RawResponse)
+	}
+	// Even under demand, raw stays off span.Attributes.
+	attrs := on.Attributes()
+	if attrs[schemas.AttrBifrostRawRequest] != nil || attrs[schemas.AttrBifrostRawResponse] != nil {
+		t.Error("raw leaked into span attributes under demand")
+	}
+}
+
+// An oversized body is dropped, not truncated.
+func TestRawPayloadsOverCapAreDropped(t *testing.T) {
+	huge := strings.Repeat("x", schemas.RawPayloadCap+1)
+	resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{ID: "c1"}}
+	resp.ChatResponse.ExtraFields.RawResponse = huge
+	resp.ChatResponse.ExtraFields.RawRequest = "small"
+
+	d := BuildLLMSpanData(nil, resp, nil, SpanBuildOptions{WantRawPayloads: true})
+	if d.RawResponse != "" {
+		t.Errorf("over-cap payload kept (%d bytes)", len(d.RawResponse))
+	}
+	if d.RawRequest != "small" {
+		t.Errorf("under-cap payload dropped: %q", d.RawRequest)
+	}
+}
+
+// Raw is content, so disable_content_logging strips it.
+func TestRawPayloadsAreContentAttributes(t *testing.T) {
+	for _, k := range []string{schemas.AttrBifrostRawRequest, schemas.AttrBifrostRawResponse} {
+		if !schemas.IsContentAttribute(k) {
+			t.Errorf("%s is not classified as content; disable_content_logging would not strip it", k)
+		}
+	}
+}

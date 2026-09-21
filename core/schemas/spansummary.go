@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	neturl "net/url"
 	"strings"
 )
@@ -9,6 +10,39 @@ import (
 // InlineAttachmentCap bounds an inline attachment payload carried on a span.
 // Larger payloads are summarized to media type and size only.
 const InlineAttachmentCap = 256 << 10
+
+// RawPayloadCap bounds a raw body on a span. Over-cap bodies are dropped, not truncated.
+const RawPayloadCap = 256 << 10
+
+// EncodeRawPayload JSON-encodes a raw body, returning "" if absent or over RawPayloadCap.
+func EncodeRawPayload(v any) string {
+	if v == nil {
+		return ""
+	}
+	// Byte slices are already-encoded bodies; marshalling would base64 them.
+	switch b := v.(type) {
+	case string:
+		if len(b) > RawPayloadCap {
+			return ""
+		}
+		return b
+	case []byte:
+		if len(b) > RawPayloadCap {
+			return ""
+		}
+		return string(b)
+	case json.RawMessage:
+		if len(b) > RawPayloadCap {
+			return ""
+		}
+		return string(b)
+	}
+	data, err := MarshalString(v)
+	if err != nil || len(data) > RawPayloadCap {
+		return ""
+	}
+	return data
+}
 
 // AttachmentOptions controls how non-text content blocks are summarized.
 // The zero value carries references only, which is the default.

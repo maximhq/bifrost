@@ -167,6 +167,7 @@ func AllContentAttributeKeys() []string {
 		AttrRespTools, AttrRespToolChoiceType, AttrRespToolChoiceName,
 		AttrOutputMessages, AttrRespReasoningText,
 		AttrToolName, AttrToolCallID, AttrToolCallArguments, AttrToolCallResult, AttrToolType,
+		AttrBifrostRawRequest, AttrBifrostRawResponse,
 	}
 }
 

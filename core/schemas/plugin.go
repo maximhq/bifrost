@@ -501,3 +501,8 @@ type ObservabilityLimits struct {
 type OverheadSpanConsumer interface {
 	ConsumesOverheadSpans() bool
 }
+
+// RawPayloadConsumer opts a connector into raw provider bodies. Unimplemented means no.
+type RawPayloadConsumer interface {
+	ConsumesRawPayloads() bool
+}

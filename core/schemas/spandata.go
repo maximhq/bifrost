@@ -49,6 +49,10 @@ type LLMSpanData struct {
 	// itself branches on whether the provider reported a cost.
 	Cost *BifrostCost
 
+	// Raw provider bodies, JSON-encoded and capped. Content: stripped with messages.
+	RawRequest  string
+	RawResponse string
+
 	// Streaming
 	TimeToFirstChunkMs *float64
 	TotalChunks        int
@@ -215,4 +219,38 @@ type ReasoningDetailSummary struct {
 type AudioSummary struct {
 	ID         string `json:"id,omitempty"`
 	Transcript string `json:"transcript,omitempty"`
+}
+
+// redact applies guardrail replacements to the typed payload. Request-side fields
+// take input replacements, response-side take output.
+func (d *LLMSpanData) redact(input, output map[string]string) {
+	if d == nil {
+		return
+	}
+	if len(input) > 0 {
+		d.RawRequest = ApplyLiteralReplacements(d.RawRequest, input)
+		redactMessageSummaries(d.InputMessages, input)
+	}
+	if len(output) > 0 {
+		d.RawResponse = ApplyLiteralReplacements(d.RawResponse, output)
+		redactMessageSummaries(d.OutputMessages, output)
+		d.ReasoningText = ApplyLiteralReplacements(d.ReasoningText, output)
+	}
+}
+
+func redactMessageSummaries(msgs []MessageSummary, replacements map[string]string) {
+	for i := range msgs {
+		msgs[i].Content = ApplyLiteralReplacements(msgs[i].Content, replacements)
+		msgs[i].Reasoning = ApplyLiteralReplacements(msgs[i].Reasoning, replacements)
+		msgs[i].Refusal = ApplyLiteralReplacements(msgs[i].Refusal, replacements)
+		for j := range msgs[i].ToolCalls {
+			msgs[i].ToolCalls[j].Args = ApplyLiteralReplacements(msgs[i].ToolCalls[j].Args, replacements)
+		}
+		for j := range msgs[i].ReasoningDetails {
+			msgs[i].ReasoningDetails[j].Text = ApplyLiteralReplacements(msgs[i].ReasoningDetails[j].Text, replacements)
+		}
+		if msgs[i].Audio != nil {
+			msgs[i].Audio.Transcript = ApplyLiteralReplacements(msgs[i].Audio.Transcript, replacements)
+		}
+	}
 }

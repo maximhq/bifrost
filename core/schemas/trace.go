@@ -37,6 +37,49 @@ const (
 	TraceAttrDimensions = "bifrost.dimensions"
 )
 
+// GetStringAttr returns a string attribute, or "" when absent or another type.
+func GetStringAttr(attrs map[string]any, key string) string {
+	v, _ := attrs[key].(string)
+	return v
+}
+
+// GetInt64Attr returns an integer attribute, widening int and float64.
+func GetInt64Attr(attrs map[string]any, key string) int64 {
+	switch v := attrs[key].(type) {
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	case float64:
+		return int64(v)
+	}
+	return 0
+}
+
+// GetIntAttr is GetInt64Attr narrowed to int, for callers whose field is int.
+func GetIntAttr(attrs map[string]any, key string) int {
+	return int(GetInt64Attr(attrs, key))
+}
+
+// GetFloat64AttrOK returns a numeric attribute and whether one was present.
+func GetFloat64AttrOK(attrs map[string]any, key string) (float64, bool) {
+	switch v := attrs[key].(type) {
+	case float64:
+		return v, true
+	case int:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	}
+	return 0, false
+}
+
+// GetFloat64Attr returns a numeric attribute, or 0 when absent.
+func GetFloat64Attr(attrs map[string]any, key string) float64 {
+	v, _ := GetFloat64AttrOK(attrs, key)
+	return v
+}
+
 // TraceSessionID returns the session ID trace attribute, or "" when absent.
 func TraceSessionID(attrs map[string]any) string {
 	v, _ := attrs[TraceAttrSessionID].(string)
@@ -87,6 +130,28 @@ func (t *Trace) GetSpan(spanID string) *Span {
 		}
 	}
 	return nil
+}
+
+// FinalAttemptSpan returns the last-ending LLM or retry span, which is the
+// attempt a trace's metrics are labelled from. Datadog and Splunk each had a
+// copy and they drifted — only one guarded against a nil span.
+func FinalAttemptSpan(trace *Trace) *Span {
+	if trace == nil {
+		return nil
+	}
+	var final *Span
+	for _, span := range trace.Spans {
+		if span == nil {
+			continue
+		}
+		if span.Kind != SpanKindLLMCall && span.Kind != SpanKindRetry {
+			continue
+		}
+		if final == nil || span.EndTime.After(final.EndTime) {
+			final = span
+		}
+	}
+	return final
 }
 
 // GetRequestID retrieves the request ID from the trace
@@ -440,9 +505,10 @@ func traceContentAttributeScopeForKey(key string) traceContentAttributeScope {
 	case AttrInputMessages, AttrInputText, AttrInputSpeech, AttrInputEmbedding,
 		AttrPrompt, AttrInstructions,
 		AttrTools, AttrToolChoiceType, AttrToolChoiceName,
-		AttrRespTools, AttrRespToolChoiceType, AttrRespToolChoiceName:
+		AttrRespTools, AttrRespToolChoiceType, AttrRespToolChoiceName,
+		AttrBifrostRawRequest:
 		return traceContentAttributeScopeInput
-	case AttrOutputMessages, AttrRespReasoningText:
+	case AttrOutputMessages, AttrRespReasoningText, AttrBifrostRawResponse:
 		return traceContentAttributeScopeOutput
 	case AttrToolName, AttrToolCallID, AttrToolCallArguments, AttrToolCallResult, AttrToolType:
 		return traceContentAttributeScopeMixed
@@ -474,6 +540,11 @@ func redactSpanAttributes(span *Span, inputReplacements map[string]string, outpu
 				span.Events[i].Attributes[key] = RedactAttributeValue(value, replacements)
 			}
 		}
+	}
+	// The typed payload is a separate carrier from Attributes, so it needs its own
+	// pass or connectors reading it would see unredacted content.
+	if span.LLM != nil {
+		span.LLM.redact(inputReplacements, outputReplacements)
 	}
 }
 
@@ -1085,7 +1156,9 @@ const (
 	AttrBifrostUserID              = "bifrost.user.id"
 	AttrBifrostUserName            = "bifrost.user.name"
 	AttrBifrostUserEmail           = "bifrost.user.email"
-	AttrBifrostApp                 = "bifrost.app" // calling client, classified from User-Agent
+	AttrBifrostApp                 = "bifrost.app"          // calling client, classified from User-Agent
+	AttrBifrostRawRequest          = "bifrost.raw_request"  // raw provider request body; content, opt-in
+	AttrBifrostRawResponse         = "bifrost.raw_response" // raw provider response body; content, opt-in
 	AttrBifrostRetries             = "bifrost.retries"
 	AttrBifrostFallbackIndex       = "bifrost.fallback_index"
 	AttrBifrostAlias               = "bifrost.alias"                // original requested model when it differs from the resolved model
