@@ -4025,6 +4025,11 @@ func updateGovernanceConfigInStore(
 
 		// Create team-owned budgets after teams exist.
 		for _, budget := range pendingTeamBudgetsToAdd {
+			if skip, err := skipBudgetGovernedElsewhere(ctx, governance.LegacyLimitHolderTeam, budget.TeamID, budget.ID); err != nil {
+				return err
+			} else if skip {
+				continue
+			}
 			if err := config.ConfigStore.CreateBudget(ctx, &budget, tx); err != nil {
 				return fmt.Errorf("failed to create budget %s: %w", budget.ID, err)
 			}
@@ -4032,6 +4037,11 @@ func updateGovernanceConfigInStore(
 
 		// Update team-owned budgets after teams exist.
 		for _, budget := range pendingTeamBudgetsToUpdate {
+			if skip, err := skipBudgetGovernedElsewhere(ctx, governance.LegacyLimitHolderTeam, budget.TeamID, budget.ID); err != nil {
+				return err
+			} else if skip {
+				continue
+			}
 			if err := config.ConfigStore.UpdateBudget(ctx, &budget, tx); err != nil {
 				return fmt.Errorf("failed to update budget %s: %w", budget.ID, err)
 			}
@@ -4039,6 +4049,11 @@ func updateGovernanceConfigInStore(
 
 		// Create customer-owned budgets after customers exist (inline budgets + top-level with customer_id).
 		for _, budget := range pendingCustomerBudgetsToAdd {
+			if skip, err := skipBudgetGovernedElsewhere(ctx, governance.LegacyLimitHolderCustomer, budget.CustomerID, budget.ID); err != nil {
+				return err
+			} else if skip {
+				continue
+			}
 			if err := config.ConfigStore.CreateBudget(ctx, &budget, tx); err != nil {
 				return fmt.Errorf("failed to create budget %s: %w", budget.ID, err)
 			}
@@ -4046,6 +4061,11 @@ func updateGovernanceConfigInStore(
 
 		// Update customer-owned budgets declared in top-level governance.budgets.
 		for _, budget := range pendingCustomerBudgetsToUpdate {
+			if skip, err := skipBudgetGovernedElsewhere(ctx, governance.LegacyLimitHolderCustomer, budget.CustomerID, budget.ID); err != nil {
+				return err
+			} else if skip {
+				continue
+			}
 			if err := config.ConfigStore.UpdateBudget(ctx, &budget, tx); err != nil {
 				return fmt.Errorf("failed to update budget %s: %w", budget.ID, err)
 			}
@@ -7861,4 +7881,26 @@ func DeepCopy[T any](in T) (T, error) {
 	}
 	err = sonic.Unmarshal(b, &out)
 	return out, err
+}
+
+// skipBudgetGovernedElsewhere reports whether a budget declared in config.json must be left unwritten
+// because an access profile already governs the team or customer that owns it: the two would be caps
+// on the same keys.
+//
+// It is skipped with a warning rather than refused, because a config file left declaring a budget for
+// an entity since moved onto a profile is stale, not broken, and the rest of the file should still
+// apply. A lookup that fails is different: the answer is unknown, so the reconcile stops.
+func skipBudgetGovernedElsewhere(ctx context.Context, holderKind string, holderID *string, budgetID string) (bool, error) {
+	if holderID == nil || *holderID == "" {
+		return false, nil
+	}
+	governedBy, err := governance.LegacyLimitsGovernedBy(ctx, holderKind, *holderID)
+	if err != nil {
+		return false, fmt.Errorf("failed to check whether %s %s is governed before writing budget %s: %w", holderKind, *holderID, budgetID, err)
+	}
+	if governedBy == "" {
+		return false, nil
+	}
+	logger.Warn("config.json declares a budget for %s %s, which is governed by access profile %q: the budget is skipped, since an entity cannot have both. Edit the profile, or remove the budget from config.json.", holderKind, *holderID, governedBy)
+	return true, nil
 }
