@@ -92,6 +92,7 @@ type backfillRow struct {
 type backfillCursor struct {
 	Timestamp time.Time
 	ID        string
+	Set       bool
 }
 
 // backfillConditionalStore atomically applies the lightweight-row rewrite only
@@ -175,6 +176,9 @@ func (h *HybridLogStore) BackfillObjects(ctx context.Context, opts BackfillOptio
 		opts.Progress(snapshot)
 	}
 
+	// Cancellation stops scanning and feeding new rows. Work already accepted by
+	// a worker finishes with the caller's values but without its cancellation.
+	workCtx := context.WithoutCancel(ctx)
 	for i := 0; i < opts.Concurrency; i++ {
 		workerWG.Add(1)
 		go func() {
@@ -183,9 +187,9 @@ func (h *HybridLogStore) BackfillObjects(ctx context.Context, opts BackfillOptio
 				var bytes int64
 				var err error
 				if w.mcp {
-					bytes, err = h.backfillMCPRow(ctx, w.row, opts.DryRun)
+					bytes, err = h.backfillMCPRow(workCtx, w.row, opts.DryRun)
 				} else {
-					bytes, err = h.backfillLogRow(ctx, w.row, opts.DryRun)
+					bytes, err = h.backfillLogRow(workCtx, w.row, opts.DryRun)
 				}
 				switch {
 				case err == nil:
@@ -246,7 +250,7 @@ func (h *HybridLogStore) BackfillObjects(ctx context.Context, opts BackfillOptio
 				break
 			}
 			last := batch[len(batch)-1]
-			cursor = backfillCursor{Timestamp: last.Timestamp, ID: last.ID}
+			cursor = backfillCursor{Timestamp: last.Timestamp, ID: last.ID, Set: true}
 			if len(batch) < opts.BatchSize {
 				break
 			}
@@ -299,7 +303,7 @@ func scanBackfillCandidates(ctx context.Context, db *gorm.DB, table string, afte
 		Where("has_object = ?", false).
 		Order("timestamp ASC, id ASC").
 		Limit(pageSize)
-	if !after.Timestamp.IsZero() {
+	if after.Set {
 		query = query.Where("timestamp > ? OR (timestamp = ? AND id > ?)", after.Timestamp, after.Timestamp, after.ID)
 	}
 	if !cutoff.IsZero() {
@@ -405,7 +409,9 @@ func (h *HybridLogStore) backfillMCPRow(ctx context.Context, row backfillRow, dr
 	if !ok {
 		return 0, fmt.Errorf("logstore: inner store does not support conditional backfill updates")
 	}
-	updated, err := updater.updateMCPForBackfill(ctx, entry.ID, updates)
+	updateCtx, cancel := context.WithTimeout(ctx, backfillUpdateTimeout)
+	defer cancel()
+	updated, err := updater.updateMCPForBackfill(updateCtx, entry.ID, updates)
 	if err != nil {
 		return 0, fmt.Errorf("failed to rewrite DB row (object %s is orphaned and safe to delete): %w", key, err)
 	}

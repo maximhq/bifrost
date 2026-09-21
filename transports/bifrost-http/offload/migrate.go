@@ -45,6 +45,11 @@ func RunMigrateOffload(args []string) int {
 		}
 		return 2
 	}
+	if fs.NArg() != 0 {
+		fmt.Fprintf(os.Stderr, "unexpected positional arguments: %v\n", fs.Args())
+		fs.Usage()
+		return 2
+	}
 
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)
 	// lib.LoadConfig uses the package logger, which is nil until set.
@@ -108,6 +113,11 @@ func RunMigrateOffload(args []string) int {
 
 	result, err := hybrid.BackfillObjects(ctx, opts)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			logger.Info("backfill stopped by operator; rerun the command to resume")
+			report(logger, result, *dryRun)
+			return 0
+		}
 		logger.Error("backfill aborted: %v", err)
 		report(logger, result, *dryRun)
 		return 1

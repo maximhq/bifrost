@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,6 +23,19 @@ func newBackfillHybrid(t *testing.T, excludeFields []string) (*HybridLogStore, L
 	hybrid := newHybridLogStore(inner, objStore, "bf", hybridTestLogger{}, excludeFields)
 	cleanup := func() { _ = hybrid.Close(context.Background()) }
 	return hybrid, inner, objStore, cleanup
+}
+
+type blockingBackfillObjectStore struct {
+	*objectstore.InMemoryObjectStore
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *blockingBackfillObjectStore) Put(ctx context.Context, key string, data []byte, tags map[string]string) error {
+	s.once.Do(func() { close(s.started) })
+	<-s.release
+	return s.InMemoryObjectStore.Put(ctx, key, data, tags)
 }
 
 // seedLegacyLog inserts a full-payload row straight through the inner store so
@@ -181,7 +195,8 @@ func TestBackfill_HandlesContentHiddenRows(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	seedLegacyLog(t, inner, "bf-hidden", time.Now().UTC().Add(-24*time.Hour), true)
+	old := time.Now().UTC().Add(-24 * time.Hour)
+	seedLegacyLog(t, inner, "bf-hidden", old, true)
 
 	result, err := hybrid.BackfillObjects(ctx, BackfillOptions{})
 	require.NoError(t, err)
@@ -189,7 +204,7 @@ func TestBackfill_HandlesContentHiddenRows(t *testing.T) {
 	require.Equal(t, 1, objStore.Len())
 
 	// The object holds the FULL payload (hidden rows are never filtered).
-	raw, err := objStore.Get(ctx, ObjectKey("bf", time.Now().UTC().Add(-24*time.Hour).Truncate(time.Hour), "bf-hidden"))
+	raw, err := objStore.Get(ctx, ObjectKey("bf", old, "bf-hidden"))
 	require.NoError(t, err)
 	assert.Contains(t, string(raw), "migrate me bf-hidden")
 
@@ -308,26 +323,49 @@ func TestBackfill_ProgressAndSummary(t *testing.T) {
 	assert.Greater(t, calls, 0)
 }
 
-func TestBackfill_ContextCancellation(t *testing.T) {
-	hybrid, inner, _, cleanup := newBackfillHybrid(t, nil)
-	defer cleanup()
+func TestBackfill_ContextCancellationFinishesAcceptedWork(t *testing.T) {
 	ctx := context.Background()
-
-	seedLegacyLog(t, inner, "bf-cancel", time.Now().UTC().Add(-24*time.Hour), false)
-
-	ctx, cancel := context.WithCancel(ctx)
-	cancel()
-
-	result, err := hybrid.BackfillObjects(ctx, BackfillOptions{})
-	// Cancellation is graceful: either a clean result or a context error, never
-	// a corrupt state. The row either fully migrated or stayed untouched.
-	if err == nil {
-		assert.Zero(t, result.Failed)
+	inner, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "cancel.db")}, hybridTestLogger{})
+	require.NoError(t, err)
+	objects := &blockingBackfillObjectStore{
+		InMemoryObjectStore: objectstore.NewInMemoryObjectStore(),
+		started:             make(chan struct{}),
+		release:             make(chan struct{}),
 	}
-	row, err2 := inner.FindByID(context.Background(), "bf-cancel")
-	require.NoError(t, err2)
-	if row.HasObject {
-		t.Log("row migrated before cancellation took effect")
+	hybrid := newHybridLogStore(inner, objects, "bf", hybridTestLogger{}, nil)
+	defer hybrid.Close(context.Background())
+
+	ts := time.Now().UTC().Add(-24 * time.Hour)
+	seedLegacyLog(t, inner, "bf-cancel-1", ts, false)
+	seedLegacyLog(t, inner, "bf-cancel-2", ts.Add(time.Second), false)
+
+	runCtx, cancel := context.WithCancel(ctx)
+	type outcome struct {
+		result *BackfillResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := hybrid.BackfillObjects(runCtx, BackfillOptions{BatchSize: 2, Concurrency: 1})
+		done <- outcome{result: result, err: err}
+	}()
+
+	select {
+	case <-objects.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the first upload")
+	}
+	cancel()
+	close(objects.release)
+
+	select {
+	case got := <-done:
+		require.ErrorIs(t, got.err, context.Canceled)
+		require.NotNil(t, got.result)
+		assert.Equal(t, int64(1), got.result.Migrated)
+		assert.Zero(t, got.result.Failed, "accepted work must finish without cancellation failures")
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for cancellation")
 	}
 }
 
@@ -380,6 +418,31 @@ func TestBackfill_PaginatesRowsWithIdenticalTimestamps(t *testing.T) {
 		require.NoError(t, err)
 		assert.True(t, row.HasObject)
 	}
+}
+
+func TestBackfill_ZeroTimestampCursorAdvances(t *testing.T) {
+	hybrid, inner, _, cleanup := newBackfillHybrid(t, nil)
+	defer cleanup()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	for i := 0; i < 2; i++ {
+		entry := &Log{
+			ID:        fmt.Sprintf("bf-zero-%d", i),
+			Timestamp: time.Now().UTC(),
+			Provider:  "openai",
+			Model:     "gpt-4o",
+			Status:    "success",
+			Object:    "chat.completion",
+		}
+		require.NoError(t, inner.Create(ctx, entry))
+		require.NoError(t, inner.Update(ctx, entry.ID, map[string]interface{}{"timestamp": time.Time{}}))
+	}
+
+	result, err := hybrid.BackfillObjects(ctx, BackfillOptions{BatchSize: 1, Concurrency: 1})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), result.Skipped)
+	assert.Zero(t, result.Migrated)
 }
 
 func TestBackfill_ConditionalRewriteDoesNotClobberMigratedRow(t *testing.T) {
