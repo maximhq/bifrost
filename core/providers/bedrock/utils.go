@@ -1506,42 +1506,11 @@ func convertToolMessages(ctx context.Context, model string, msgs []schemas.ChatM
 	for _, msg := range msgs {
 		var toolResultContent []BedrockContentBlock
 		if msg.Content.ContentStr != nil {
-			// Bedrock expects JSON to be a parsed object, not a string
-			// Validate and compact JSON without parsing into Go types (preserves key ordering)
-			var buf bytes.Buffer
-			if err := json.Compact(&buf, []byte(*msg.Content.ContentStr)); err != nil {
-				// If it's not valid JSON, wrap it as a text block instead
-				toolResultContent = append(toolResultContent, BedrockContentBlock{
-					Text: msg.Content.ContentStr,
-				})
-			} else {
-				compacted := buf.Bytes()
-				// Bedrock does not accept primitives or arrays directly in the json field
-				if len(compacted) > 0 && compacted[0] == '{' {
-					// Objects are valid as-is
-					toolResultContent = append(toolResultContent, BedrockContentBlock{
-						JSON: json.RawMessage(compacted),
-					})
-				} else if len(compacted) > 0 && compacted[0] == '[' {
-					// Arrays need to be wrapped
-					wrapped := make([]byte, 0, len(compacted)+len(`{"results":}`))
-					wrapped = append(wrapped, `{"results":`...)
-					wrapped = append(wrapped, compacted...)
-					wrapped = append(wrapped, '}')
-					toolResultContent = append(toolResultContent, BedrockContentBlock{
-						JSON: json.RawMessage(wrapped),
-					})
-				} else {
-					// Primitives (string, number, boolean, null) need to be wrapped
-					wrapped := make([]byte, 0, len(compacted)+len(`{"value":}`))
-					wrapped = append(wrapped, `{"value":`...)
-					wrapped = append(wrapped, compacted...)
-					wrapped = append(wrapped, '}')
-					toolResultContent = append(toolResultContent, BedrockContentBlock{
-						JSON: json.RawMessage(wrapped),
-					})
-				}
-			}
+			// Bedrock expects JSON to be a parsed object, not a string. The helper
+			// validates, compacts, wraps arrays and primitives, falls back to a text
+			// block for non-JSON, and refuses json documents Converse rejects (such
+			// as objects carrying an empty-string key).
+			toolResultContent = append(toolResultContent, tryParseJSONIntoContentBlock(*msg.Content.ContentStr))
 		} else if msg.Content.ContentBlocks != nil {
 			for _, block := range msg.Content.ContentBlocks {
 				switch block.Type {
@@ -2989,6 +2958,15 @@ func tryParseJSONIntoContentBlock(text string) BedrockContentBlock {
 	}
 	compacted := buf.Bytes()
 
+	// Converse rejects a json document containing an empty-string object key with
+	// "The format of the value at ...toolResult.content.N.json is invalid" (verified live
+	// against us.anthropic.claude-haiku-4-5; Cursor's list_directory results carry such
+	// keys for extensionless files). A text block holding the same JSON string reads
+	// identically to the model, so fall back to text instead of mutating the payload.
+	if len(compacted) > 0 && (compacted[0] == '{' || compacted[0] == '[') && jsonHasEmptyObjectKey(compacted) {
+		return BedrockContentBlock{Text: schemas.Ptr(text)}
+	}
+
 	// Bedrock does not accept primitives or arrays directly in the json field
 	if len(compacted) > 0 && compacted[0] == '{' {
 		// Objects are valid as-is
@@ -3008,6 +2986,29 @@ func tryParseJSONIntoContentBlock(text string) BedrockContentBlock {
 		wrapped = append(wrapped, '}')
 		return BedrockContentBlock{JSON: json.RawMessage(wrapped)}
 	}
+}
+
+// jsonHasEmptyObjectKey reports whether the given JSON document contains an object key
+// that is the empty string, at any nesting depth. Callers only reach this after
+// json.Compact succeeded, so the input is known-valid and gjson's lazy parse is safe.
+// The empty-key check is gated on IsObject because ForEach over an array passes
+// synthetic keys that must not be mistaken for object keys.
+func jsonHasEmptyObjectKey(data []byte) bool {
+	var walk func(v gjson.Result) bool
+	walk = func(v gjson.Result) bool {
+		found := false
+		isObject := v.IsObject()
+		v.ForEach(func(key, value gjson.Result) bool {
+			if isObject && key.Str == "" {
+				found = true
+			} else if value.IsObject() || value.IsArray() {
+				found = walk(value)
+			}
+			return !found
+		})
+		return found
+	}
+	return walk(gjson.ParseBytes(data))
 }
 
 // BedrockMaxCachePoints is the number of cache checkpoints Bedrock accepts in one Converse
