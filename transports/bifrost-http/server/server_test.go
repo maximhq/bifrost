@@ -1125,3 +1125,46 @@ func TestMarshalPluginConfig_WithComplexType(t *testing.T) {
 		t.Errorf("Expected nested name=nested-config, got %s", result.Nested.Name)
 	}
 }
+
+// GetConfiguredProviders hands back the live provider map uncopied, which is safe for the callers
+// that index it once. The name listing cannot be written that way: provider add, delete and status
+// updates all write to that map in place under the write lock, so a caller ranging it after the read
+// lock is released hits a concurrent map iteration and write. That is fatal rather than merely
+// stale — it takes the process down — so the slice is built under the lock instead. Run with -race.
+func TestGetConfiguredProviderNamesIsSafeAgainstConcurrentProviderEdits(t *testing.T) {
+	config := &lib.Config{
+		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}},
+	}
+	store := &GovernanceInMemoryStore{Config: config}
+
+	churn := []schemas.ModelProvider{"churn-a", "churn-b", "churn-c"}
+	done := make(chan struct{})
+	var writers sync.WaitGroup
+	writers.Add(1)
+	go func() {
+		defer writers.Done()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			// The same in-place mutation AddProvider and RemoveProvider make.
+			for _, provider := range churn {
+				config.Mu.Lock()
+				config.Providers[provider] = configstore.ProviderConfig{}
+				delete(config.Providers, provider)
+				config.Mu.Unlock()
+			}
+		}
+	}()
+
+	for range 500 {
+		if names := store.GetConfiguredProviderNames(); len(names) == 0 {
+			t.Fatal("expected the configured providers to be listed")
+		}
+	}
+
+	close(done)
+	writers.Wait()
+}
