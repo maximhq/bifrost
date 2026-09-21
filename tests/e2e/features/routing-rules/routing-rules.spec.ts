@@ -10,6 +10,7 @@ test.describe('Routing Rules', () => {
   })
 
   test.afterEach(async ({ routingRulesPage }) => {
+    await routingRulesPage.cancelRule()
     // Clean up any rules created during tests
     for (const ruleName of [...createdRules]) {
       try {
@@ -213,6 +214,66 @@ test.describe('Routing Rules', () => {
 
       const exists = await routingRulesPage.ruleExists(ruleData.name)
       expect(exists).toBe(true)
+    })
+
+    test('should create rule with a fallback', async ({ routingRulesPage }) => {
+      const ruleData = createRoutingRuleData({
+        name: `Fallback Rule ${Date.now()}`,
+        enabled: false,
+        provider: 'openai',
+        fallbacks: [{ provider: 'anthropic' }],
+      })
+      createdRules.push(ruleData.name)
+
+      await routingRulesPage.createRoutingRule(ruleData)
+
+      expect(await routingRulesPage.ruleExists(ruleData.name)).toBe(true)
+
+      // The fallback must survive the round-trip through the API's legacy string form.
+      await routingRulesPage.openEditSheet(ruleData.name)
+      expect(await routingRulesPage.getFallbackProvider(0)).toMatch(/anthropic/i)
+      await routingRulesPage.cancelRule()
+    })
+
+    test('should pin and clear a provider key on a fallback', async ({ routingRulesPage }) => {
+      const ruleData = createRoutingRuleData({
+        name: `Pinned Fallback Rule ${Date.now()}`,
+        enabled: false,
+        provider: 'openai',
+      })
+      createdRules.push(ruleData.name)
+
+      await routingRulesPage.createRoutingRule(ruleData)
+      await routingRulesPage.openEditSheet(ruleData.name)
+
+      const index = await routingRulesPage.addFallbackProvider('openai')
+      const pinned = await routingRulesPage.pinFallbackKey(index)
+      // The key select only renders once the chosen provider has keys configured.
+      test.skip(!pinned, 'no provider keys configured in this environment')
+
+      const selectedKey = await routingRulesPage.getPinnedFallbackKey(index)
+      expect(selectedKey).toBeTruthy()
+      expect(selectedKey).not.toMatch(/Select key/i)
+
+      await routingRulesPage.saveBtn.click()
+      // The rule already exists, so waiting for its row alone can pass while the sheet is
+      // still closing, and the reopen below would then act on the sheet that is on its way out.
+      await expect(routingRulesPage.sheet).not.toBeVisible()
+      await routingRulesPage.waitForRuleToAppear(ruleData.name)
+
+      // Reopening must preselect the same key rather than falling back to the placeholder.
+      await routingRulesPage.openEditSheet(ruleData.name)
+      expect(await routingRulesPage.getPinnedFallbackKey(index)).toBe(selectedKey)
+
+      // Clearing returns the fallback to load-balanced key selection.
+      await routingRulesPage.clearFallbackKey(index)
+      expect(await routingRulesPage.getPinnedFallbackKey(index)).toMatch(/Select key/i)
+      await routingRulesPage.saveBtn.click()
+      await expect(routingRulesPage.sheet).not.toBeVisible()
+      await routingRulesPage.openEditSheet(ruleData.name)
+      expect(await routingRulesPage.getPinnedFallbackKey(index)).toMatch(/Select key/i)
+      expect(await routingRulesPage.getFallbackProvider(index)).toMatch(/openai/i)
+      await routingRulesPage.cancelRule()
     })
 
     test('should reorder rules by changing priority', async ({ routingRulesPage }) => {

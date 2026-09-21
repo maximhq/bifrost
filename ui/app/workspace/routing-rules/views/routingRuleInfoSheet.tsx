@@ -10,8 +10,9 @@ import { getOperatorLabel } from "@/lib/config/celOperatorsRouting";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
 import { useGetCustomerQuery, useGetTeamQuery, useGetVirtualKeyQuery } from "@/lib/store/apis/governanceApi";
-import { RoutingRule } from "@/lib/types/routingRules";
+import { RoutingFallbackWire, RoutingRule } from "@/lib/types/routingRules";
 import { getScopeLabel } from "@/lib/utils/labels";
+import { normalizeFallback } from "@/lib/utils/routingRules";
 import { formatDistanceToNow } from "date-fns";
 import { Check, Copy, GitMerge, Key } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -227,20 +228,25 @@ function TargetCard({ target, total }: { target: RoutingRule["targets"][0]; inde
 
 // ─── fallback chain ───────────────────────────────────────────────────────────
 
-function FallbackChain({ fallbacks }: { fallbacks: string[] }) {
+function FallbackChain({ fallbacks }: { fallbacks: RoutingFallbackWire[] }) {
 	return (
 		<div className="flex flex-wrap items-center gap-y-2">
-			{fallbacks.map((fb, i) => {
-				const parts = fb.split("/");
-				const provider = parts[0] || "Incoming provider";
-				const model = parts.length > 1 ? parts.slice(1).join("/") : "Incoming model";
+			{fallbacks.map((fallback, i) => {
+				const { provider, model, key_id } = normalizeFallback(fallback);
+				const providerLabel = provider || "Incoming provider";
 
 				return (
 					<div key={i} className="flex items-center">
 						{i > 0 && <span className="text-muted-foreground mx-1.5 text-xs">&rarr;</span>}
 						<Badge variant="outline" className="gap-1.5 font-normal">
 							{provider && <RenderProviderIcon provider={provider as ProviderIconType} size="sm" className="h-3.5 w-3.5 shrink-0" />}
-							<span className="font-mono text-xs">{model ? `${provider}/${model}` : fb}</span>
+							<span className="font-mono text-xs">{model ? `${providerLabel}/${model}` : providerLabel}</span>
+							{key_id && (
+								<span className="text-muted-foreground flex items-center gap-1 border-l pl-1.5" title={`Pinned key: ${key_id}`}>
+									<Key className="h-3 w-3 shrink-0" />
+									<span className="max-w-24 truncate font-mono text-xs">{key_id}</span>
+								</span>
+							)}
 						</Badge>
 					</div>
 				);
