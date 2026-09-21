@@ -3,6 +3,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { X } from "lucide-react";
 import { type ReactNode, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ModelAccessChipLabel } from "./modelAccessChip";
 import { RegexPatternInput } from "./regexPatternInput";
 import {
@@ -66,6 +67,7 @@ export function ModelAccessSelector({
 	className,
 	...rest
 }: ModelAccessSelectorProps) {
+	const { t } = useTranslation();
 	const testId = rest["data-testid"];
 	// FormControl injects these onto its child; forward them to whichever input is showing
 	// so the label, the error message and the invalid state still point at a real element.
@@ -85,14 +87,18 @@ export function ModelAccessSelector({
 
 	const toggle = (
 		<Tabs value={tab} onValueChange={(next) => setPickedTab(next as EditorTab)} className="shrink-0">
-			<TabsList aria-label="Model entry type" className="h-6 rounded-sm p-0.5" data-testid={testId ? `${testId}-mode` : undefined}>
+			<TabsList
+				aria-label={t("modelAccess.entryTypeAria")}
+				className="h-6 rounded-sm p-0.5"
+				data-testid={testId ? `${testId}-mode` : undefined}
+			>
 				<TabsTrigger
 					value="models"
 					disabled={disabled}
 					className="rounded-[3px] px-2 text-[11px] leading-5"
 					data-testid={testId ? `${testId}-mode-models` : undefined}
 				>
-					Models
+					{t("modelAccess.modelsTab")}
 				</TabsTrigger>
 				<TabsTrigger
 					value="regex"
@@ -100,7 +106,7 @@ export function ModelAccessSelector({
 					className="rounded-[3px] px-2 text-[11px] leading-5"
 					data-testid={testId ? `${testId}-mode-regex` : undefined}
 				>
-					Regex
+					{t("modelAccess.regexTab")}
 				</TabsTrigger>
 			</TabsList>
 		</Tabs>
@@ -152,7 +158,7 @@ export function ModelAccessSelector({
 									<ModelAccessChipLabel entry={toRegexEntry(pattern)} />
 									<button
 										type="button"
-										aria-label={`Remove ${pattern}`}
+										aria-label={t("modelAccess.removePatternAria", { pattern })}
 										disabled={disabled}
 										onClick={() => onChange(removePattern(list, pattern))}
 										className="text-muted-foreground hover:text-foreground shrink-0"
@@ -164,9 +170,7 @@ export function ModelAccessSelector({
 						</div>
 					) : (
 						<p className="text-muted-foreground text-xs">
-							{mode === "allow"
-								? "No patterns. Add an RE2 pattern to allow models by name shape."
-								: "No patterns. Add an RE2 pattern to block models by name shape."}
+							{mode === "allow" ? t("modelAccess.noPatternsAllow") : t("modelAccess.noPatternsBlock")}
 						</p>
 					)}
 				</div>
