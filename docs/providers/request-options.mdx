@@ -39,7 +39,7 @@ Bifrost provides request options that control behavior, enable features, and pas
 | `maxim.TraceIDKey`                         | `x-bf-maxim-trace-id`                                | `string`              | Maxim trace ID                                                                                                                        |
 | `maxim.GenerationIDKey`                    | `x-bf-maxim-generation-id`                           | `string`              | Maxim generation ID                                                                                                                   |
 | `maxim.TagsKey`                            | `x-bf-maxim-*`                                       | `map[string]string`   | Maxim tags (custom tag names)                                                                                                         |
-| `BifrostContextKeyDimensions` | `x-bf-dim-*` | `map[string]string` | Unified per-request dimensions forwarded to logs, spans, Prometheus custom labels, and Maxim tags |
+| `BifrostContextKeyDimensions` | `x-bf-dim-*` | `map[string]string` | Unified per-request dimensions forwarded to logs, spans, Prometheus custom labels, Datadog metric dimensions, and Maxim tags |
 | `BifrostContextKey(labelName)` | `x-bf-prom-*` | `string` | Deprecated Prometheus-only label headers for backward compatibility |
 
 ## Request Configuration Options

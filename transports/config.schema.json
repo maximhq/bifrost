@@ -4078,6 +4078,16 @@
                       },
                       "description": "Additional tags to add to all traces and metrics (values can use env. prefix)"
                     },
+                    "metric_dimensions": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "^[A-Za-z0-9_.-]+$"
+                      },
+                      "uniqueItems": true,
+                      "description": "Names of x-bf-dim-* request dimensions to forward as DogStatsD metric tags (e.g. [\"team\", \"environment\"]). Off by default: dimension names are operator-defined and unbounded, and each new tag key multiplies custom-metric cardinality. Dimensions already reach Datadog APM spans without this setting; it only affects metrics."
+                    },
                     "enable_metrics": {
                       "type": "boolean",
                       "description": "Enable metrics emission (default: true)",

@@ -1703,6 +1703,9 @@ false
 {{- if hasKey $inputConfig "request_headers" }}
 {{- $_ := set $datadogConfig "request_headers" $inputConfig.request_headers }}
 {{- end }}
+{{- if hasKey $inputConfig "metric_dimensions" }}
+{{- $_ := set $datadogConfig "metric_dimensions" $inputConfig.metric_dimensions }}
+{{- end }}
 {{- if $inputConfig.plugin_span_filter }}
 {{- $_ := set $datadogConfig "plugin_span_filter" $inputConfig.plugin_span_filter }}
 {{- end }}
