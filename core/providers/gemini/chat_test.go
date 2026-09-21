@@ -1,6 +1,7 @@
 package gemini_test
 
 import (
+	"math"
 	"strings"
 	"testing"
 
@@ -396,20 +397,39 @@ func TestToGeminiChatCompletionRequest_MidConversationSystemInlined(t *testing.T
 }
 
 func TestToGeminiChatCompletionRequest_NMapsToCandidateCount(t *testing.T) {
+	cases := []struct {
+		name    string
+		n       int
+		want    int32
+		wantErr string
+	}{
+		{name: "normal", n: 3, want: 3},
+		{name: "maximum int32", n: math.MaxInt32, want: math.MaxInt32},
+		{name: "above maximum int32", n: math.MaxInt32 + 1, wantErr: "n must be between 1 and 2147483647"},
+		{name: "zero", n: 0, wantErr: "n must be between 1 and 2147483647"},
+		{name: "negative", n: -1, wantErr: "n must be between 1 and 2147483647"},
+	}
+
 	for _, provider := range []schemas.ModelProvider{schemas.Gemini, schemas.Vertex} {
-		t.Run(string(provider), func(t *testing.T) {
-			result, err := gemini.ToGeminiChatCompletionRequest(nil, &schemas.BifrostChatRequest{
-				Provider: provider,
-				Model:    "gemini-2.5-flash",
-				Input: []schemas.ChatMessage{{
-					Role:    schemas.ChatMessageRoleUser,
-					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")},
-				}},
-				Params: &schemas.ChatParameters{N: schemas.Ptr(3)},
+		for _, tt := range cases {
+			t.Run(string(provider)+"/"+tt.name, func(t *testing.T) {
+				result, err := gemini.ToGeminiChatCompletionRequest(nil, &schemas.BifrostChatRequest{
+					Provider: provider,
+					Model:    "gemini-2.5-flash",
+					Input: []schemas.ChatMessage{{
+						Role:    schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")},
+					}},
+					Params: &schemas.ChatParameters{N: schemas.Ptr(tt.n)},
+				})
+				if tt.wantErr != "" {
+					require.ErrorContains(t, err, tt.wantErr)
+					return
+				}
+				require.NoError(t, err)
+				require.NotNil(t, result)
+				assert.Equal(t, tt.want, result.GenerationConfig.CandidateCount)
 			})
-			require.NoError(t, err)
-			require.NotNil(t, result)
-			assert.Equal(t, int32(3), result.GenerationConfig.CandidateCount)
-		})
+		}
 	}
 }
