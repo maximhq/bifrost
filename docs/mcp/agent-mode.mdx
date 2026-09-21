@@ -308,7 +308,7 @@ When a response contains both auto-executable and non-auto-executable tools:
 ```
 
 <Note>
-The `content` field contains a JSON summary of executed tool results. The `tool_calls` array contains only the non-auto-executable tools that require your approval. The `finish_reason` is set to `"stop"` to exit the agent loop.
+The `content` field contains a JSON summary of executed tool results. When a tool runs more than once, its value is an object keyed by `tool_call_id`. The `tool_calls` array contains only the non-auto-executable tools that require your approval. The `finish_reason` is set to `"stop"` to exit the agent loop.
 </Note>
 
 Your application then:
