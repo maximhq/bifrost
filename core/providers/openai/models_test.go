@@ -67,6 +67,8 @@ func TestListModelsByKeyResponseShapes(t *testing.T) {
 	}
 }
 
+// TestListModelsPreservesDisplayNameAndReasoningMetadata verifies that optional
+// OpenAI-compatible catalog metadata survives the complete conversion round trip.
 func TestListModelsPreservesDisplayNameAndReasoningMetadata(t *testing.T) {
 	t.Parallel()
 
