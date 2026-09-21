@@ -14,6 +14,10 @@ If your Allowed Headers are already set to `*`, you can skip this note. If not a
 
 ## Setup
 
+<Tip>
+OpenCode sends `x-session-affinity` and `x-session-id` on every request, so a session sticks to the provider and key that served it and keeps hitting the same prompt cache, with nothing to configure. See [Session Affinity](/providers/session-affinity).
+</Tip>
+
 ### 1. Configure OpenCode to work with Bifrost
 
 OpenCode uses a JSON config file (`opencode.json`) to configure providers. Point your provider's `baseURL` to Bifrost.

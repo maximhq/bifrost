@@ -482,7 +482,7 @@ func (p *RoutingPlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *sche
 	var computeComplexity func() *complexity.ComplexityResult
 	if p.complexityAnalyzer.Load() != nil {
 		computeComplexity = func() *complexity.ComplexityResult {
-			return p.computeComplexity(ctx, req, scope.VirtualKeyID)
+			return p.computeComplexity(ctx, req)
 		}
 	}
 

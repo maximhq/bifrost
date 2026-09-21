@@ -945,3 +945,64 @@ func TestDeepCopyResponsesMessagePreservesMediaResolution(t *testing.T) {
 		t.Fatalf("numTokens = %d, want 512", *got.NumTokens)
 	}
 }
+
+// TestResponsesWebSearchSourceRoundTrip pins web_search_call action sources
+// through a decode -> re-encode cycle. OpenAI's hosted web search can return
+// specialized API sources ({"type":"api","name":"oai-weather"}) that carry a
+// name and no URL; they must survive the round-trip without losing the name or
+// fabricating an empty url.
+func TestResponsesWebSearchSourceRoundTrip(t *testing.T) {
+	roundTripSource := func(t *testing.T, raw string) map[string]any {
+		t.Helper()
+		var msg ResponsesMessage
+		if err := Unmarshal([]byte(raw), &msg); err != nil {
+			t.Fatalf("unmarshal web_search_call: %v", err)
+		}
+		encoded, err := MarshalSorted(msg)
+		if err != nil {
+			t.Fatalf("marshal web_search_call: %v", err)
+		}
+		var out struct {
+			Action struct {
+				Sources []map[string]any `json:"sources"`
+			} `json:"action"`
+		}
+		if err := json.Unmarshal(encoded, &out); err != nil {
+			t.Fatalf("unmarshal encoded web_search_call: %v", err)
+		}
+		if len(out.Action.Sources) != 1 {
+			t.Fatalf("expected 1 source after round-trip, got %d (encoded: %s)", len(out.Action.Sources), encoded)
+		}
+		return out.Action.Sources[0]
+	}
+
+	t.Run("api source keeps name and gains no url", func(t *testing.T) {
+		raw := `{"id":"ws_1","type":"web_search_call","status":"completed","action":{"type":"search","queries":["weather in paris"],"sources":[{"type":"api","name":"oai-weather"}]}}`
+
+		source := roundTripSource(t, raw)
+		if source["type"] != "api" {
+			t.Fatalf("expected source type %q, got %v", "api", source["type"])
+		}
+		if source["name"] != "oai-weather" {
+			t.Fatalf("expected source name %q, got %v", "oai-weather", source["name"])
+		}
+		if _, ok := source["url"]; ok {
+			t.Fatalf("expected no url key on an api source, got %v", source["url"])
+		}
+	})
+
+	t.Run("url source round-trips unchanged", func(t *testing.T) {
+		raw := `{"id":"ws_1","type":"web_search_call","status":"completed","action":{"type":"search","queries":["weather in paris"],"sources":[{"type":"url","url":"https://example.com"}]}}`
+
+		source := roundTripSource(t, raw)
+		if source["type"] != "url" {
+			t.Fatalf("expected source type %q, got %v", "url", source["type"])
+		}
+		if source["url"] != "https://example.com" {
+			t.Fatalf("expected source url %q, got %v", "https://example.com", source["url"])
+		}
+		if _, ok := source["name"]; ok {
+			t.Fatalf("expected no name key on a plain url source, got %v", source["name"])
+		}
+	})
+}
