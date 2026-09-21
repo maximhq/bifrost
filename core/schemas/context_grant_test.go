@@ -3,6 +3,7 @@ package schemas
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 // fakeForeignContextKey is a context key that belongs to no package here, standing in for
@@ -160,5 +161,29 @@ func TestDerivedContextWithoutAncestorGrantHasNone(t *testing.T) {
 	foreign := NewBifrostContext(context.WithValue(context.Background(), fakeForeignContextKey{}, "v"), NoDeadline)
 	if foreign.Grant() != nil {
 		t.Fatal("a foreign parent offers no grant")
+	}
+}
+
+// A tool handler receives a plain context wrapped around the request's BifrostContext (mcp-go
+// adds its own WithValue, core adds a timeout); GrantFromContext must see through both.
+func TestGrantFromContextSeesThroughForeignWrappers(t *testing.T) {
+	root := NewBifrostContext(context.Background(), NoDeadline)
+	g := &fakeGrant{}
+	root.SetGrant(g)
+
+	wrapped, cancel := context.WithTimeout(context.WithValue(root, fakeForeignContextKey{}, 1), time.Minute)
+	defer cancel()
+
+	if GrantFromContext(root) != Grant(g) {
+		t.Fatal("the BifrostContext itself answers with its grant")
+	}
+	if GrantFromContext(wrapped) != Grant(g) {
+		t.Fatal("a foreign wrapper still reaches the request's grant")
+	}
+	if GrantFromContext(context.Background()) != nil {
+		t.Fatal("a context with no request has no grant")
+	}
+	if GrantFromContext(NewBifrostContext(context.Background(), NoDeadline)) != nil {
+		t.Fatal("a request with no grant installed answers nil")
 	}
 }

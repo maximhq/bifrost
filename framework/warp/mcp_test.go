@@ -10,11 +10,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/mcptools"
+	"github.com/stretchr/testify/require"
 )
 
 // Test doubles for the MCP side of the loop.
@@ -293,4 +295,47 @@ func errorChatMessage(message string) *schemas.ChatMessage {
 		Content:         &schemas.ChatMessageContent{ContentStr: &message},
 		ChatToolMessage: &schemas.ChatToolMessage{IsError: schemas.Ptr(true)},
 	}
+}
+
+// Routing rules, provider keys, error types and the rest were added as filters,
+// ranking dimensions and lookups inside tools Warp already had, not as tools of
+// their own - so the allow-list did not change. What has to hold is that they
+// survive the trip: declared by the server, listed over MCP, filtered to the
+// allow-list and re-ordered by restoreAuthoredOrder. This reads what the model
+// is actually offered.
+func TestWarpIsOfferedTheFiltersAndDimensionsItsToolsGained(t *testing.T) {
+	declared, err := declaredTools(context.Background(), newTestMCP(t, &fakeLogReader{}).list)
+	require.NoError(t, err)
+
+	offered := map[string]string{}
+	for _, tool := range declared {
+		encoded, err := sonic.MarshalString(tool)
+		require.NoError(t, err)
+		offered[*tool.Name] = encoded
+	}
+	for _, name := range allowedTools {
+		if name == mcptools.SemanticSearchToolName {
+			continue // registered only when an embedding executor exists
+		}
+		require.Contains(t, offered, name, "allow-listed tool %s is not on the server", name)
+	}
+
+	// Every tool that takes filters offers the whole filter set.
+	for _, name := range []string{"query_logs", "count_logs", "query_metrics", "query_usage_by", "query_model_performance"} {
+		for _, filter := range []string{
+			"routing_rule_ids", "routing_engine_used", "selected_key_ids", "aliases", "complexity_tiers",
+			"complexity_mechanisms", "tool_call_names", "metadata_filters", "session_id",
+			"error_types", "error_codes", "status_codes",
+		} {
+			require.Contains(t, offered[name], `"`+filter+`"`, "%s does not offer the %s filter", name, filter)
+		}
+	}
+	// And the ranking tool offers each dimension by name, in its enum.
+	for _, dimension := range []string{
+		"routing_rule", "routing_engine", "selected_key", "alias", "complexity_tier", "complexity_mechanism",
+		"tool_call_name", "error_type", "error_code", "status_code",
+	} {
+		require.Contains(t, offered["query_usage_by"], `"`+dimension+`"`, "query_usage_by does not offer dimension %s", dimension)
+	}
+	require.Contains(t, offered["describe_filter_space"], "routing rules")
 }

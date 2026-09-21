@@ -299,3 +299,12 @@ const LogsViewPath = logsViewPath
 
 // LogsViewLink is logsViewLink for callers outside this package.
 func LogsViewLink(filters *logstore.SearchFilters) string { return logsViewLink(filters) }
+
+const mcpLogsViewPath = "/workspace/mcp-logs"
+
+func mcpLogDetailLink(id string) string {
+	if id == "" {
+		return ""
+	}
+	return mcpLogsViewPath + "?" + url.Values{"selected_log": {id}}.Encode()
+}

@@ -6,10 +6,12 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"maps"
 	"math/rand"
 	"net"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,6 +41,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/prompts"
 	"github.com/maximhq/bifrost/plugins/routing"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
+	"github.com/maximhq/bifrost/plugins/routing/rules"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
 	"github.com/maximhq/bifrost/plugins/telemetry"
 	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
@@ -357,10 +360,14 @@ func (s *GovernanceInMemoryStore) GetMCPClientBySlug(slug string) (string, strin
 	return s.Config.GetMCPClientBySlug(slug)
 }
 
-// registerBifrostMCPServer hosts Warp's read-only log/metrics/governance query
-// tools (framework/mcptools) as an ordinary MCP client named
-// warp.BifrostMCPClientName, reachable at /mcp/bifrost by any virtual-key-
-// authenticated MCP client. Ordinary is the point: it is persisted like a
+// registerBifrostMCPServer hosts the log/metrics/governance tools
+// (framework/mcptools) as an ordinary MCP client named
+// warp.BifrostMCPClientName, reachable at /mcp/bifrost by whatever MCP caller
+// governance admits. Every tool, read or write, follows the caller's virtual
+// key grants: what a key may do on Bifrost it may do here. A request
+// governance does not govern (no key) gets the write tools only under the
+// admin API's rule (see AuthMiddleware.InferenceMiddleware and mcptools.writeAllowed):
+// open when dashboard auth is disabled, otherwise for an admin credential. Ordinary is the point: it is persisted like a
 // user-added client, so VK grants, the dashboard's client picker and the
 // pricing lookup all work without special-casing it.
 //
@@ -372,13 +379,13 @@ func (s *GovernanceInMemoryStore) GetMCPClientBySlug(slug string) (string, strin
 // the client registered directly. Without a config store nothing persists and
 // the in-memory registration is all there is.
 func (s *BifrostHTTPServer) registerBifrostMCPServer(ctx context.Context) error {
-	warpService := s.WarpHandler.Service()
 	// Resolved per tool call rather than captured here: AddPlugin/RemovePlugin
 	// rebind Warp's log reader and semantic searcher at runtime, and a Deps
 	// snapshotted at boot would keep reading through whatever existed then. A
 	// nil LogReader (logging disabled) still gets a server: every tool that
-	// needs it reports itself unavailable.
-	server := mcptools.NewServer(warpService.MCPDeps)
+	// needs it reports itself unavailable. Reloader, runtimes and pingers are
+	// attached here because they live on the HTTP server, not on Warp.
+	server := mcptools.NewServer(s.bifrostMCPDeps)
 	if s.Config.MCPConfig != nil {
 		for _, existing := range s.Config.MCPConfig.ClientConfigs {
 			if existing != nil && existing.Name == warp.BifrostMCPClientName {
@@ -401,7 +408,7 @@ func (s *BifrostHTTPServer) registerBifrostMCPServer(ctx context.Context) error 
 		ConnectionType:  schemas.MCPConnectionTypeInProcess,
 		InProcessServer: server,
 		EndpointSlug:    "bifrost",
-		ToolsToExecute:  schemas.WhiteList{"*"}, // narrowed per-VK by governance tool grants
+		ToolsToExecute:  schemas.WhiteList{"*"}, // narrowed per-VK by governance tool grants; keyless writes follow admin-API auth
 	}
 	// A failed persist stops here: registered in memory only, the client would
 	// get a fresh ID on the next boot and every VK grant made against this one
@@ -418,6 +425,83 @@ func (s *BifrostHTTPServer) registerBifrostMCPServer(ctx context.Context) error 
 		return fmt.Errorf("failed to register %s MCP client: %w", warp.BifrostMCPClientName, err)
 	}
 	return nil
+}
+
+// bifrostMCPDeps snapshots Warp's log/governance readers and attaches the
+// write/health dependencies that live on this HTTP server.
+func (s *BifrostHTTPServer) bifrostMCPDeps() *mcptools.Deps {
+	var deps *mcptools.Deps
+	if s.WarpHandler != nil {
+		if service := s.WarpHandler.Service(); service != nil {
+			deps = service.MCPDeps()
+		}
+	}
+	if deps == nil {
+		deps = &mcptools.Deps{}
+	}
+	deps.Reloader = s
+	deps.Version = handlers.GetVersion()
+	if s.Config != nil {
+		// Read per call, so under the config lock: settings updates write
+		// ClientConfig while tool calls are in flight.
+		s.Config.Mu.RLock()
+		if s.Config.ClientConfig != nil {
+			deps.DisableDBPings = s.Config.ClientConfig.DisableDBPingsInHealth
+		}
+		s.Config.Mu.RUnlock()
+		if s.Config.ConfigStore != nil {
+			deps.ConfigPing = s.Config.ConfigStore
+			if warpStore, ok := s.Config.ConfigStore.(configstore.WarpStore); ok {
+				deps.Warp = warpStore
+			}
+		}
+		if s.Config.LogsStore != nil {
+			deps.LogsPing = s.Config.LogsStore
+		}
+		if s.Config.VectorStore != nil {
+			deps.VectorPing = s.Config.VectorStore
+		}
+		deps.ProviderRuntime = s.Config
+		deps.ModelCatalog = s.Config.ModelCatalog
+		deps.FeatureFlags = s.Config.FeatureFlags
+	}
+	if s.Client != nil {
+		deps.MCPRuntime = s
+		deps.MCPClients = s
+	}
+	deps.PluginRuntime = s
+	deps.ModelsRuntime = s
+	deps.RoutingCEL = routingCELValidator{}
+	deps.ProviderKeys = s
+	return deps
+}
+
+// ValidateProviderKey runs the provider-key handler's checks for the MCP
+// tools: none on a keyless provider, then the checks on the key itself.
+func (s *BifrostHTTPServer) ValidateProviderKey(provider schemas.ModelProvider, key schemas.Key, creating bool) error {
+	providerConfig, err := s.Config.GetProviderConfigRaw(provider)
+	if err != nil {
+		return fmt.Errorf("provider %q: %w", provider, err)
+	}
+	if providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.IsKeyLess {
+		if creating {
+			return fmt.Errorf("cannot add keys to a keyless provider")
+		}
+		return fmt.Errorf("cannot update keys on a keyless provider")
+	}
+	return handlers.ValidateProviderKeyContent(handlers.ProviderKeyBaseProvider(providerConfig, provider), key)
+}
+
+// The MCP tools add, drop and redial clients through the server rather than
+// the core client, so the config's client list and /mcp stay in step.
+var _ mcptools.MCPRuntime = (*BifrostHTTPServer)(nil)
+
+// routingCELValidator hands the routing plugin's CEL check to the MCP tools,
+// which cannot import plugins/routing from framework.
+type routingCELValidator struct{}
+
+func (routingCELValidator) ValidateCELExpression(expression string) error {
+	return rules.ValidateCELExpression(expression)
 }
 
 // AddMCPClient adds a new MCP client to the in-memory store
@@ -469,6 +553,75 @@ func (s *BifrostHTTPServer) ReconnectMCPClient(ctx context.Context, id string) e
 // discovery path, so there is nothing to sync here.
 func (s *BifrostHTTPServer) RefreshMCPClientTools(ctx context.Context, id string) (int, error) {
 	return s.Client.RefreshMCPClientTools(ctx, id)
+}
+
+// GetMCPClientConfig returns a copy of an MCP client's live config for an edit
+// to be applied through UpdateMCPClient. A deep copy, because the stored
+// pointer is the one the runtime reads: a shallow one shares every map, slice
+// and pointer field, so an edit - applied or not - would change the live
+// client in place.
+func (s *BifrostHTTPServer) GetMCPClientConfig(id string) (*schemas.MCPClientConfig, error) {
+	current, err := s.Config.GetMCPClient(id)
+	if err != nil {
+		return nil, err
+	}
+	return cloneMCPClientConfig(current), nil
+}
+
+// cloneMCPClientConfig copies every mutable field of an MCP client config.
+// InProcessServer is shared on purpose: it is the running server, not config.
+func cloneMCPClientConfig(current *schemas.MCPClientConfig) *schemas.MCPClientConfig {
+	copied := *current
+	copied.ConnectionString = cloneSecretVar(current.ConnectionString)
+	copied.OauthClientID = cloneSecretVar(current.OauthClientID)
+	copied.OauthClientSecret = cloneSecretVar(current.OauthClientSecret)
+	if current.StdioConfig != nil {
+		stdio := *current.StdioConfig
+		stdio.Args = slices.Clone(stdio.Args)
+		stdio.Envs = slices.Clone(stdio.Envs)
+		copied.StdioConfig = &stdio
+	}
+	if current.TLSConfig != nil {
+		tls := *current.TLSConfig
+		tls.CACertPEM = cloneSecretVar(tls.CACertPEM)
+		copied.TLSConfig = &tls
+	}
+	if current.TokenExchange != nil {
+		exchange := *current.TokenExchange
+		exchange.ClientID = cloneSecretVar(exchange.ClientID)
+		exchange.ClientSecret = cloneSecretVar(exchange.ClientSecret)
+		exchange.Scopes = slices.Clone(exchange.Scopes)
+		copied.TokenExchange = &exchange
+	}
+	copied.OauthConfigID = clonePtr(current.OauthConfigID)
+	copied.IsPingAvailable = clonePtr(current.IsPingAvailable)
+	copied.NeedsSessionStickiness = clonePtr(current.NeedsSessionStickiness)
+	copied.OauthScopes = slices.Clone(current.OauthScopes)
+	copied.PerUserHeaderKeys = slices.Clone(current.PerUserHeaderKeys)
+	copied.AllowedExtraHeaders = slices.Clone(current.AllowedExtraHeaders)
+	copied.ToolsToExecute = slices.Clone(current.ToolsToExecute)
+	copied.ToolsToAutoExecute = slices.Clone(current.ToolsToAutoExecute)
+	copied.Headers = maps.Clone(current.Headers)
+	copied.ToolPricing = maps.Clone(current.ToolPricing)
+	copied.DiscoveredTools = maps.Clone(current.DiscoveredTools)
+	copied.DiscoveredToolNameMapping = maps.Clone(current.DiscoveredToolNameMapping)
+	return &copied
+}
+
+func cloneSecretVar(v *schemas.SecretVar) *schemas.SecretVar {
+	if v == nil {
+		return nil
+	}
+	c := *v
+	return &c
+}
+
+func clonePtr[T any](v *T) *T {
+	if v == nil {
+		return nil
+	}
+	c := *v
+	return &c
 }
 
 // UpdateMCPClient updates an MCP client in the in-memory store
@@ -1352,6 +1505,23 @@ func (s *BifrostHTTPServer) RemoveRoutingRule(ctx context.Context, id string) er
 	if err := routingPlugin.GetRuleStore().DeleteRule(ctx, id); err != nil {
 		return fmt.Errorf("failed to delete routing rule from rule store: %w", err)
 	}
+	return nil
+}
+
+// ReloadRateLimit republishes a rate limit's config into the in-memory
+// governance store after an in-place update, keeping its current usage
+// counters. Owners reference rate limits by ID, so refreshing the one row is
+// enough for every virtual key, team, customer or model config that uses it.
+func (s *BifrostHTTPServer) ReloadRateLimit(ctx context.Context, id string) error {
+	rateLimit, err := s.Config.ConfigStore.GetRateLimit(ctx, id)
+	if err != nil {
+		return err
+	}
+	governancePlugin, err := s.getGovernancePlugin()
+	if err != nil {
+		return err
+	}
+	governancePlugin.GetGovernanceStore().UpsertRateLimitConfig(ctx, id, rateLimit)
 	return nil
 }
 
@@ -2363,6 +2533,18 @@ func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path 
 	return nil
 }
 
+// DisablePlugin stops a plugin whose stored row is now disabled, the same way
+// the plugins handler does: removal under PluginDisabledKey marks it disabled
+// and keeps its config marshaller, unlike a delete. A plugin that is not loaded
+// is already stopped, so ErrPluginNotFound is success.
+func (s *BifrostHTTPServer) DisablePlugin(ctx context.Context, name string) error {
+	disabledCtx := context.WithValue(ctx, handlers.PluginDisabledKey, true)
+	if err := s.RemovePlugin(disabledCtx, name); err != nil && !errors.Is(err, dynamicPlugins.ErrPluginNotFound) {
+		return err
+	}
+	return nil
+}
+
 // RemovePlugin removes a plugin from the server.
 // The plugin is removed from both LLM and MCP arrays independently if it exists in them.
 func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, displayName string) error {
@@ -2553,7 +2735,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if s.WarpHandler != nil {
 		s.WarpHandler.Shutdown()
 	}
-	s.WarpHandler = handlers.NewWarpHandler(s.Config.ConfigStore, loggerPlugin, s.Client, s.Config.LogsStore, s.Config.VectorStore, s.SidekiqRunner, s.Config.ModelCatalog, logger, func() bool { return s.Config.FeatureFlags != nil && s.Config.FeatureFlags.IsEnabled(lib.FeatureFlagWarp) })
+	s.WarpHandler = handlers.NewWarpHandler(s.Config.ConfigStore, loggerPlugin, s.Client, s.Config.LogsStore, s.Config.VectorStore, s.SidekiqRunner, s.Config.ModelCatalog, logger, func() bool {
+		return s.Config.FeatureFlags != nil && s.Config.FeatureFlags.IsEnabled(lib.FeatureFlagWarp)
+	})
 	// Start WebSocket heartbeat
 	s.WebSocketHandler.StartHeartbeat()
 	// Adding telemetry middleware

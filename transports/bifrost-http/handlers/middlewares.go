@@ -19,6 +19,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/encrypt"
+	"github.com/maximhq/bifrost/framework/mcptools"
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/plugins/governance"
@@ -1087,9 +1088,74 @@ func (m *AuthMiddleware) tryTempTokenOrUnauthorized(ctx *fasthttp.RequestCtx, ne
 // is not an admin/session credential. Admin-password auth therefore stays exclusive to
 // dashboard/API routes (APIMiddleware) and is never required for inference.
 func (m *AuthMiddleware) InferenceMiddleware() schemas.BifrostHTTPMiddleware {
-	return m.middleware(func(authConfig *configstore.AuthConfig, url string) bool {
+	inner := m.middleware(func(authConfig *configstore.AuthConfig, url string) bool {
 		return true
 	}, true)
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return inner(func(ctx *fasthttp.RequestCtx) {
+			// Write tools on Bifrost's own MCP server follow the caller's virtual
+			// key grants when governance governs the request (mcptools checks
+			// that itself). For a request with no key, they follow the admin
+			// API's rule instead: open when dashboard auth is disabled (the
+			// inner middleware marks that as AuthBypassed, the same state that
+			// leaves /api open), otherwise only with an admin credential.
+			// Checked only on the MCP routes: a session lookup on every
+			// inference request would cost the hot path a database round trip.
+			if isMCPToolRoute(string(ctx.Path())) {
+				if bypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool); bypassed || m.hasAdminCredential(ctx) {
+					mcptools.GrantWriteAccess(ctx)
+				}
+			}
+			next(ctx)
+		})
+	}
+}
+
+// isMCPToolRoute reports whether path can execute a tool on Bifrost's MCP
+// server: the /mcp gateway and the direct tool-execute endpoint.
+func isMCPToolRoute(path string) bool {
+	return path == "/mcp" || strings.HasPrefix(path, "/mcp/") || path == "/v1/mcp/tool/execute"
+}
+
+// hasAdminCredential reports whether the request carries a credential the
+// admin API would accept: a live dashboard session (cookie or Bearer), or the
+// admin username and password (Basic, or the legacy base64 Bearer form). It
+// never rejects - inference admission is governance's call. It is false when
+// dashboard auth is disabled, as there is no credential to check; that case is
+// handled by the caller, which follows the admin API and leaves writes open.
+func (m *AuthMiddleware) hasAdminCredential(ctx *fasthttp.RequestCtx) bool {
+	authConfig := m.authConfig.Load()
+	if authConfig == nil || !authConfig.IsEnabled {
+		return false
+	}
+	// Sessions live in the config store; without one only the password forms apply.
+	hasSessions := m.store != nil
+	if cookieToken := string(ctx.Request.Header.Cookie("token")); hasSessions && cookieToken != "" && validateSession(ctx, m.store, cookieToken) {
+		return true
+	}
+	scheme, token, ok := strings.Cut(string(ctx.Request.Header.Peek("Authorization")), " ")
+	if !ok || token == "" {
+		return false
+	}
+	switch scheme {
+	case "Bearer":
+		if hasSessions && validateSession(ctx, m.store, token) {
+			return true
+		}
+	case "Basic":
+	default:
+		return false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(token)
+	if err != nil {
+		return false
+	}
+	username, password, ok := strings.Cut(string(decoded), ":")
+	if !ok || authConfig.AdminUserName == nil || authConfig.AdminPassword == nil || username != authConfig.AdminUserName.GetValue() {
+		return false
+	}
+	matches, err := encrypt.CompareHash(authConfig.AdminPassword.GetValue(), password)
+	return err == nil && matches
 }
 
 // APIMiddleware is for API requests if authConfig is set, it will verify authentication based on the request type.

@@ -232,7 +232,7 @@ func (s *Service) SemanticSearcher() *SemanticSearcher {
 func (s *Service) MCPDeps() *mcptools.Deps {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	deps := &mcptools.Deps{LogManager: s.logs, Governance: s.governance}
+	deps := &mcptools.Deps{LogManager: s.logs, Governance: s.governance, WarpConfig: s}
 	// Assigned only when set: a nil *SemanticSearcher stored in the interface
 	// is not a nil interface, and semantic_search_logs' "not configured" check
 	// would pass and call Search on it.

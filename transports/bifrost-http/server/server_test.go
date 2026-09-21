@@ -1168,3 +1168,85 @@ func TestGetConfiguredProviderNamesIsSafeAgainstConcurrentProviderEdits(t *testi
 	close(done)
 	writers.Wait()
 }
+
+// The MCP tools add and redial clients through the HTTP server, not the core
+// client directly: only the server also records the client in the config's
+// in-memory list (which update_mcp_client edits through) and resyncs /mcp.
+func TestBifrostMCPDepsUseServerBackedMCPRuntime(t *testing.T) {
+	server := &BifrostHTTPServer{Client: &bifrost.Bifrost{}, Config: &lib.Config{}}
+	deps := server.bifrostMCPDeps()
+	if any(deps.MCPRuntime) != any(server) {
+		t.Fatalf("expected MCPRuntime to be the HTTP server, got %T", deps.MCPRuntime)
+	}
+}
+
+// GetMCPClientConfig hands an MCP tool a config to edit before applying it
+// through UpdateMCPClient. Every mutable field is copied, so an edit - even
+// one that is never applied - cannot reach the config the runtime reads.
+func TestGetMCPClientConfigReturnsDeepCopy(t *testing.T) {
+	oauthID := "oauth-1"
+	ping := true
+	live := &schemas.MCPClientConfig{
+		ID:                  "c-1",
+		ConnectionString:    schemas.NewSecretVar("https://live.example.com"),
+		StdioConfig:         &schemas.MCPStdioConfig{Command: "run", Args: []string{"a"}, Envs: []string{"E"}},
+		TLSConfig:           &schemas.MCPTLSConfig{CACertPEM: schemas.NewSecretVar("pem")},
+		OauthConfigID:       &oauthID,
+		OauthScopes:         []string{"read"},
+		Headers:             map[string]schemas.SecretVar{"Authorization": *schemas.NewSecretVar("Bearer live")},
+		PerUserHeaderKeys:   []string{"X-User"},
+		TokenExchange:       &schemas.MCPTokenExchangeConfig{Audience: "api://live", ClientID: schemas.NewSecretVar("cid"), Scopes: []string{"s"}},
+		AllowedExtraHeaders: schemas.WhiteList{"x-a"},
+		ToolsToExecute:      schemas.WhiteList{"*"},
+		ToolsToAutoExecute:  schemas.WhiteList{"echo"},
+		IsPingAvailable:     &ping,
+		ToolPricing:         map[string]float64{"echo": 0.1},
+	}
+	config := &lib.Config{MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{live}}}
+	config.SetBifrostClient(&bifrost.Bifrost{})
+	server := &BifrostHTTPServer{Config: config}
+
+	copied, err := server.GetMCPClientConfig("c-1")
+	if err != nil {
+		t.Fatalf("GetMCPClientConfig: %v", err)
+	}
+	copied.ConnectionString.Val = "https://edited"
+	copied.StdioConfig.Args[0] = "edited"
+	copied.StdioConfig.Envs[0] = "edited"
+	copied.TLSConfig.CACertPEM.Val = "edited"
+	*copied.OauthConfigID = "edited"
+	copied.OauthScopes[0] = "edited"
+	copied.Headers["Authorization"] = *schemas.NewSecretVar("Bearer edited")
+	copied.Headers["X-New"] = *schemas.NewSecretVar("v")
+	copied.PerUserHeaderKeys[0] = "edited"
+	copied.TokenExchange.Audience = "edited"
+	copied.TokenExchange.ClientID.Val = "edited"
+	copied.TokenExchange.Scopes[0] = "edited"
+	copied.AllowedExtraHeaders[0] = "edited"
+	copied.ToolsToExecute[0] = "edited"
+	copied.ToolsToAutoExecute[0] = "edited"
+	*copied.IsPingAvailable = false
+	copied.ToolPricing["echo"] = 9
+
+	checks := map[string]bool{
+		"ConnectionString":    live.ConnectionString.Val == "https://live.example.com",
+		"StdioConfig.Args":    live.StdioConfig.Args[0] == "a",
+		"StdioConfig.Envs":    live.StdioConfig.Envs[0] == "E",
+		"TLSConfig.CACertPEM": live.TLSConfig.CACertPEM.Val == "pem",
+		"OauthConfigID":       *live.OauthConfigID == "oauth-1",
+		"OauthScopes":         live.OauthScopes[0] == "read",
+		"Headers":             live.Headers["Authorization"].Val == "Bearer live" && len(live.Headers) == 1,
+		"PerUserHeaderKeys":   live.PerUserHeaderKeys[0] == "X-User",
+		"TokenExchange":       live.TokenExchange.Audience == "api://live" && live.TokenExchange.ClientID.Val == "cid" && live.TokenExchange.Scopes[0] == "s",
+		"AllowedExtraHeaders": live.AllowedExtraHeaders[0] == "x-a",
+		"ToolsToExecute":      live.ToolsToExecute[0] == "*",
+		"ToolsToAutoExecute":  live.ToolsToAutoExecute[0] == "echo",
+		"IsPingAvailable":     *live.IsPingAvailable,
+		"ToolPricing":         live.ToolPricing["echo"] == 0.1,
+	}
+	for field, unchanged := range checks {
+		if !unchanged {
+			t.Errorf("editing the copy changed the live %s", field)
+		}
+	}
+}

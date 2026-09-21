@@ -6,6 +6,7 @@ import (
 	"compress/zlib"
 	"context"
 	cryptoRand "crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
+	"github.com/maximhq/bifrost/framework/mcptools"
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -1051,6 +1053,72 @@ func TestAuthMiddleware_InferenceMiddleware_DelegatesAuthToGovernance(t *testing
 
 			if !nextCalled {
 				t.Fatalf("expected inference request %q to pass the middleware (governance enforces auth downstream), got %d", tc.name, ctx.Response.StatusCode())
+			}
+		})
+	}
+}
+
+// The write tools on Bifrost's MCP server change what the admin API guards, so
+// they follow the admin API's rule: open when dashboard auth is disabled, and
+// otherwise only for a request that proves the admin credential. Admission still
+// belongs to governance: every case below passes the middleware; what differs
+// is whether write access is granted.
+func TestAuthMiddleware_InferenceMiddleware_GrantsMCPWriteAccessLikeAdminAPI(t *testing.T) {
+	SetLogger(&mockLogger{})
+	hashed, err := encrypt.Hash("s3cret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	basic := func(user, pass string) string {
+		return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))
+	}
+	enabled := &configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar(hashed),
+		IsEnabled:     true,
+	}
+	cases := []struct {
+		name   string
+		config *configstore.AuthConfig
+		uri    string
+		auth   string
+		vk     string
+		want   bool
+	}{
+		{name: "admin basic on /mcp", config: enabled, uri: "/mcp/bifrost", auth: basic("admin", "s3cret"), want: true},
+		{name: "admin basic on tool execute", config: enabled, uri: "/v1/mcp/tool/execute", auth: basic("admin", "s3cret"), want: true},
+		{name: "legacy base64 bearer", config: enabled, uri: "/mcp", auth: "Bearer " + base64.StdEncoding.EncodeToString([]byte("admin:s3cret")), want: true},
+		{name: "wrong password", config: enabled, uri: "/mcp/bifrost", auth: basic("admin", "nope")},
+		{name: "virtual key bearer", config: enabled, uri: "/mcp/bifrost", auth: "Bearer sk-bf-abc123"},
+		{name: "virtual key header", config: enabled, uri: "/mcp/bifrost", vk: "sk-bf-abc123"},
+		{name: "no credentials", config: enabled, uri: "/mcp/bifrost"},
+		// Matches the admin API, which is open when dashboard auth is off.
+		{name: "auth disabled leaves writes open", config: &configstore.AuthConfig{IsEnabled: false}, uri: "/mcp/bifrost", want: true},
+		{name: "auth disabled, no config at all", uri: "/mcp/bifrost", want: true},
+		{name: "auth disabled still only MCP routes", config: &configstore.AuthConfig{IsEnabled: false}, uri: "/v1/chat/completions"},
+		{name: "not an MCP route", config: enabled, uri: "/v1/chat/completions", auth: basic("admin", "s3cret")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			am := &AuthMiddleware{}
+			if tc.config != nil {
+				am.UpdateAuthConfig(tc.config)
+			}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetRequestURI(tc.uri)
+			if tc.auth != "" {
+				ctx.Request.Header.Set("Authorization", tc.auth)
+			}
+			if tc.vk != "" {
+				ctx.Request.Header.Set("x-bf-vk", tc.vk)
+			}
+			nextCalled := false
+			am.InferenceMiddleware()(func(ctx *fasthttp.RequestCtx) { nextCalled = true })(ctx)
+			if !nextCalled {
+				t.Fatalf("inference request must pass the middleware, got %d", ctx.Response.StatusCode())
+			}
+			if got := mcptools.HasWriteAccess(ctx); got != tc.want {
+				t.Fatalf("write access = %v, want %v", got, tc.want)
 			}
 		})
 	}

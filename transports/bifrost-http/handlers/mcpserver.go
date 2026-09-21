@@ -573,6 +573,9 @@ func stampQueryScope(bifrostCtx *schemas.BifrostContext) {
 	customerID, _ := bifrostCtx.Value(schemas.BifrostContextKeyGovernanceCustomerID).(string)
 	teamID, _ := bifrostCtx.Value(schemas.BifrostContextKeyGovernanceTeamID).(string)
 	var scope queryscope.QueryScope
+	// Team first: a key in a team sees its own team's rows, not every sibling
+	// team under the same customer. The MCP tools draw the same boundary for
+	// writes and for the routes this gateway does not stamp (mcptools/tenant.go).
 	switch {
 	case teamID != "":
 		scope = func(db *gorm.DB) *gorm.DB { return db.Where("team_id = ?", teamID) }

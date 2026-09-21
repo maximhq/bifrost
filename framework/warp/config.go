@@ -196,6 +196,18 @@ func (s *Service) ConfigView(ctx context.Context) (ConfigView, error) {
 // SaveConfig validates and stores a configuration, returning the view a caller
 // would get from ConfigView afterwards. Validation failures wrap
 // ErrInvalidConfig; anything else is a store error.
+// SaveConfigJSON is SaveConfig for a caller that holds the request as JSON,
+// so field presence reaches the embedding-settings merge exactly as it does
+// from the HTTP handler. It is how the MCP tools write Warp's configuration.
+func (s *Service) SaveConfigJSON(ctx context.Context, body []byte) error {
+	var input ConfigInput
+	if err := sonic.Unmarshal(body, &input); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidConfig, err)
+	}
+	_, err := s.SaveConfig(ctx, &input)
+	return err
+}
+
 func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigView, error) {
 	if s.store == nil {
 		return ConfigView{}, ErrUnavailable
