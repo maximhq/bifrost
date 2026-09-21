@@ -23,8 +23,8 @@ func isUnsupportedOperation(err *schemas.BifrostError) bool {
 const decisionSystemPrompt = "You are a judgment engine. Read the given state and answer every question by " +
 	"calling the provided function exactly once. For each question emit the requested value and your " +
 	"confidence from 0 to 1. For every choice and score question also report the full probability " +
-	"distribution over its options or levels; the probabilities must sum to about 1. Base every answer " +
-	"only on the state; do not invent facts."
+	"distribution over its options or levels; the probabilities must sum to 1. For choice, select an option " +
+	"with the highest probability. Base every answer only on the state; do not invent facts."
 
 // emulateDecisionViaResponses answers a decision request through a general model
 // when the provider has no native decision support. It runs against the provider's
