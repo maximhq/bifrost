@@ -5465,6 +5465,11 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Trying fallback %d/%d: %s/%s (previous attempt failed: %s)", i+1, len(fallbacks), fallback.Provider, fallback.Model, routingErrorSummary(lastErr)))
 		ctx.SetValue(schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
 		clearCtxForFallback(ctx)
+		// Re-pin after the clear: RunPreRequestHooks, which commits a target's pin, runs once per request, not per fallback.
+		if keyID := strings.TrimSpace(fallback.KeyID); keyID != "" {
+			ctx.SetFallbackPinnedAPIKeyID(keyID)
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Fallback %d/%d pinned to provider key %s", i+1, len(fallbacks), keyID))
+		}
 
 		// Start span for fallback attempt
 		tracer := bifrost.getTracer()
@@ -5617,6 +5622,11 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Trying fallback %d/%d: %s/%s (previous attempt failed: %s)", i+1, len(fallbacks), fallback.Provider, fallback.Model, routingErrorSummary(lastErr)))
 		ctx.SetValue(schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
 		clearCtxForFallback(ctx)
+		// Re-pin after the clear: RunPreRequestHooks, which commits a target's pin, runs once per request, not per fallback.
+		if keyID := strings.TrimSpace(fallback.KeyID); keyID != "" {
+			ctx.SetFallbackPinnedAPIKeyID(keyID)
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Fallback %d/%d pinned to provider key %s", i+1, len(fallbacks), keyID))
+		}
 
 		// Start span for fallback attempt
 		tracer := bifrost.getTracer()
