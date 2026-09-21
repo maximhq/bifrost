@@ -32,6 +32,7 @@ export const KnownProvidersNames = [
 	"wafer",
 	"databricks",
 	"github-copilot",
+	"typesafe",
 ] as const;
 
 // Local Provider type derived from KNOWN_PROVIDERS constant
@@ -86,6 +87,7 @@ export const RequestTypes = [
 	"responses_input_items",
 	"embedding",
 	"rerank",
+	"decisions",
 	"speech",
 	"speech_stream",
 	"transcription",
@@ -171,6 +173,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	wafer: "Wafer",
 	databricks: "Databricks",
 	"github-copilot": "GitHub Copilot",
+	typesafe: "TypeSafe",
 } as const;
 
 // Helper function to get provider label, supporting custom providers
@@ -297,6 +300,7 @@ export const RequestTypeLabels = {
 
 	embedding: "Embedding",
 	rerank: "Rerank",
+	decisions: "Decisions",
 
 	speech: "Speech",
 	speech_stream: "Speech Stream",
@@ -386,6 +390,7 @@ export const RequestTypeColors = {
 
 	embedding: "bg-red-100 text-red-800",
 	rerank: "bg-fuchsia-100 text-fuchsia-800",
+	decisions: "bg-cyan-100 text-cyan-800",
 
 	speech: "bg-purple-100 text-purple-800",
 	speech_stream: "bg-pink-100 text-pink-800",

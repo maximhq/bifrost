@@ -221,6 +221,13 @@ var rerankParamsKnownFields = map[string]bool{
 	"next_token":         true,
 }
 
+var decisionParamsKnownFields = map[string]bool{
+	"model":     true,
+	"state":     true,
+	"questions": true,
+	"fallbacks": true,
+}
+
 var ocrParamsKnownFields = map[string]bool{
 	"model":                      true,
 	"id":                         true,
@@ -573,6 +580,13 @@ type RerankRequest struct {
 	*schemas.RerankParameters
 }
 
+// DecisionHandlerRequest is a bifrost decision request
+type DecisionHandlerRequest struct {
+	State     interface{}                         `json:"state"`
+	Questions map[string]schemas.DecisionQuestion `json:"questions"`
+	BifrostParams
+}
+
 // OCRHandlerRequest is a bifrost OCR request
 type OCRHandlerRequest struct {
 	ID       *string             `json:"id,omitempty"`
@@ -720,6 +734,7 @@ var PathToTypeMapping = map[string]schemas.RequestType{
 	"/v1/responses":              schemas.ResponsesRequest,
 	"/v1/embeddings":             schemas.EmbeddingRequest,
 	"/v1/rerank":                 schemas.RerankRequest,
+	"/v1/decisions":              schemas.DecisionRequest,
 	"/v1/ocr":                    schemas.OCRRequest,
 	"/v1/audio/speech":           schemas.SpeechRequest,
 	"/v1/audio/transcriptions":   schemas.TranscriptionRequest,
@@ -775,6 +790,7 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.GET("/v1/responses/{response_id}/input_items", lib.ChainMiddlewares(h.responsesInputItems, responsesInputItemsMW...))
 	r.POST("/v1/embeddings", lib.ChainMiddlewares(h.embeddings, baseMiddlewares...))
 	r.POST("/v1/rerank", lib.ChainMiddlewares(h.rerank, baseMiddlewares...))
+	r.POST("/v1/decisions", lib.ChainMiddlewares(h.evaluation, baseMiddlewares...))
 	r.POST("/v1/ocr", lib.ChainMiddlewares(h.ocr, baseMiddlewares...))
 	// ElevenLabs sound-effect models also flow through /v1/audio/speech; the
 	// provider routes them to /v1/sound-generation by model id, keeping SDK and
@@ -1276,6 +1292,61 @@ func (h *CompletionHandler) rerank(ctx *fasthttp.RequestCtx) {
 	}
 
 	resp, bifrostErr := h.client.RerankRequest(bifrostCtx, bifrostRerankReq)
+	if bifrostErr != nil {
+		forwardProviderHeadersFromContext(ctx, bifrostCtx)
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
+	}
+
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
+	// Send successful response
+	SendJSON(ctx, resp)
+}
+
+// prepareDecisionRequest prepares a BifrostDecisionRequest from the HTTP request body
+func prepareDecisionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*DecisionHandlerRequest, *schemas.BifrostDecisionRequest, error) {
+	req, base, err := prepareRequest[DecisionHandlerRequest](ctx, config, decisionParamsKnownFields)
+	if err != nil {
+		return nil, nil, err
+	}
+	if req.State == nil {
+		return nil, nil, fmt.Errorf("state is required for decision")
+	}
+	if len(req.Questions) == 0 {
+		return nil, nil, fmt.Errorf("questions are required for decision")
+	}
+	return req, &schemas.BifrostDecisionRequest{
+		Provider:  base.Provider,
+		Model:     base.ModelName,
+		State:     req.State,
+		Questions: req.Questions,
+		Fallbacks: base.Fallbacks,
+	}, nil
+}
+
+// evaluation handles POST /v1/decisions - Process decision requests
+func (h *CompletionHandler) evaluation(ctx *fasthttp.RequestCtx) {
+	_, bifrostDecisionReq, err := prepareDecisionRequest(ctx, h.config)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Convert context
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
+		return
+	}
+
+	resp, bifrostErr := h.client.DecisionRequest(bifrostCtx, bifrostDecisionReq)
 	if bifrostErr != nil {
 		forwardProviderHeadersFromContext(ctx, bifrostCtx)
 		SendBifrostError(ctx, bifrostErr)

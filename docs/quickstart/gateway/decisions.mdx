@@ -1,0 +1,94 @@
+---
+title: "Decisions"
+description: "Evaluate state against named questions using /v1/decisions."
+icon: "scale-balanced"
+---
+
+Use decisions to get structured judgments - probabilities, choices, and rubric scores - from judgment models like TypeSafe's jev family. A decision request carries a `state` (what to evaluate) and a map of named `questions`; every question produces one typed answer.
+
+## Provider Model Examples
+
+- TypeSafe: `typesafe/jev-1.13.0`, `typesafe/jev-latest`, `typesafe/jev-preview`
+
+## Basic Request
+
+```bash
+curl --location 'http://localhost:8080/v1/decisions' \
+--header 'Content-Type: application/json' \
+--data '{
+  "model": "typesafe/jev-1.13.0",
+  "state": "Customer message: I was double charged and nobody replied to my two emails. I want a refund today.",
+  "questions": {
+    "is_frustrated": {
+      "kind": "noul",
+      "instructions": "Is the customer frustrated?"
+    },
+    "category": {
+      "kind": "choice",
+      "instructions": "Pick the ticket category",
+      "criteria": { "billing": "charges and refunds", "bug": "product defects", "other": "anything else" }
+    },
+    "urgency": {
+      "kind": "score",
+      "instructions": "Rate how urgently this needs a human reply",
+      "criteria": ["can wait a week", "should be answered soon", "needs a reply today"]
+    }
+  }
+}'
+```
+
+## Question Kinds
+
+| Kind | Answer value | Criteria |
+|------|--------------|----------|
+| `noul` | Probability between 0 and 1 | Optional `true`/`false` descriptions |
+| `choice` | One option string | Required map of option to description (max 255 options) |
+| `score` | Probability-weighted rubric score, including fractions | Required ordered array of 2-10 level descriptions |
+
+`state` and `instructions` accept a plain string or structured data (object or array), preserved losslessly.
+
+## Response
+
+```json
+{
+  "model": "jev-1.13.0",
+  "answers": {
+    "is_frustrated": { "kind": "noul", "value": 0.98 },
+    "category": {
+      "kind": "choice",
+      "value": "billing",
+      "confidence": 1,
+      "probabilities": { "billing": 1, "bug": 0, "other": 0 }
+    },
+    "urgency": {
+      "kind": "score",
+      "value": 2,
+      "confidence": 1,
+      "probabilities": { "0": 0, "1": 0, "2": 1 },
+      "legend": { "0": "can wait a week", "1": "should be answered soon", "2": "needs a reply today" }
+    }
+  },
+  "usage": { "prompt_tokens": 437, "completion_tokens": 72, "total_tokens": 509 }
+}
+```
+
+Every declared question produces an answer of its declared kind. `confidence`, `probabilities`, and `legend` are included when the provider supplies them.
+
+## Fallbacks
+
+Standard fallback syntax applies:
+
+```json
+{
+  "model": "typesafe/jev-preview",
+  "fallbacks": ["typesafe/jev-1.13.0"]
+}
+```
+
+## Validation
+
+Requests are validated before dispatch and rejected with a `400` rather than silently approximated: unsupported kinds, missing instructions, missing choice criteria, score criteria outside 2-10 levels or with non-string entries, and states or instructions that are neither string, object, nor array.
+
+<Note>
+TypeSafe's native API is also available 1:1 at `POST /typesafe/v1/systemone` - see the [TypeSafe provider page](/providers/supported-providers/typesafe) for the mapping between the two.
+</Note>
