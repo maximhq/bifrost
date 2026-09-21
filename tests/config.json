@@ -155,6 +155,19 @@
         "default_request_timeout_in_seconds": 300
       }
     },
+    "nadir": {
+      "keys": [
+        {
+          "name": "Nadir API Key",
+          "value": "env.NADIR_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
     "parasail": {
       "keys": [
         {
