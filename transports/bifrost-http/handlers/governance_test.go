@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"path/filepath"
 	"sort"
@@ -4347,4 +4348,107 @@ func TestApplyAssignees(t *testing.T) {
 			t.Fatal("expected no resolver call for an empty page")
 		}
 	})
+}
+
+// TestUpdateVirtualKey_PutWithoutKeyIDsPreservesKeyAssociations is the regression
+// for the GET -> edit -> PUT round-trip dropping key associations: the GET
+// response carries allow_all_keys/keys but not key_ids, so a client that echoes
+// the config back with only another field changed silently flips AllowAllKeys to
+// false and detaches every key (issue #7347). An omitted key_ids must leave the
+// existing associations untouched; only an explicit list (including []) changes
+// them.
+func TestUpdateVirtualKey_PutWithoutKeyIDsPreservesKeyAssociations(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &budgetOverrideTestGovernanceManager{store: store}
+	handler := &GovernanceHandler{configStore: store, governanceManager: manager}
+	ctx := context.Background()
+
+	const providerName = "openai"
+	require.NoError(t, store.AddProvider(ctx, schemas.ModelProvider(providerName), configstore.ProviderConfig{}))
+
+	// Seed one provider key so the explicit-list case has something to attach.
+	require.NoError(t, store.CreateProviderKey(ctx, schemas.ModelProvider(providerName), schemas.Key{
+		ID:    "key-a",
+		Name:  "key-a",
+		Value: *schemas.NewSecretVar("sk-test-a"),
+	}))
+
+	newVK := func(t *testing.T, id string, allowAll bool, keys []configstoreTables.TableKey) *configstoreTables.TableVirtualKey {
+		t.Helper()
+		active := true
+		vk := &configstoreTables.TableVirtualKey{
+			ID:       id,
+			Name:     id,
+			Value:    *schemas.NewSecretVar("sk-bf-" + id),
+			IsActive: &active,
+		}
+		require.NoError(t, store.CreateVirtualKey(ctx, vk))
+		pc := &configstoreTables.TableVirtualKeyProviderConfig{
+			VirtualKeyID:  vk.ID,
+			Provider:      providerName,
+			AllowedModels: schemas.WhiteList{"*"},
+			AllowAllKeys:  allowAll,
+			Keys:          keys,
+		}
+		require.NoError(t, store.CreateVirtualKeyProviderConfig(ctx, pc))
+		return vk
+	}
+
+	putVK := func(t *testing.T, vkID, body string) *fasthttp.RequestCtx {
+		t.Helper()
+		putCtx := newTestRequestCtx(body)
+		putCtx.SetUserValue("vk_id", vkID)
+		handler.updateVirtualKey(putCtx)
+		require.Equal(t, fasthttp.StatusOK, putCtx.Response.StatusCode(), "PUT body=%s resp=%s", body, putCtx.Response.Body())
+		return putCtx
+	}
+
+	providerConfigOf := func(t *testing.T, vkID string) *configstoreTables.TableVirtualKeyProviderConfig {
+		t.Helper()
+		vk, err := store.GetVirtualKey(ctx, vkID)
+		require.NoError(t, err)
+		require.Len(t, vk.ProviderConfigs, 1)
+		return &vk.ProviderConfigs[0]
+	}
+
+	// Case 1: allow_all_keys=true survives a PUT that omits key_ids entirely.
+	vk1 := newVK(t, "vk-roundtrip-allowall", true, nil)
+	pc1 := providerConfigOf(t, vk1.ID)
+	putVK(t, vk1.ID, fmt.Sprintf(
+		`{"description":"edited via GET->PUT","is_active":true,"provider_configs":[{"id":%d,"provider":"%s","allowed_models":["*"]}]}`,
+		pc1.ID, providerName))
+	got := providerConfigOf(t, vk1.ID)
+	require.True(t, got.AllowAllKeys, "omitted key_ids wiped allow_all_keys")
+
+	// Case 2: explicit key list survives a PUT that omits key_ids.
+	keys, err := store.GetKeysByIDs(ctx, []string{"key-a"})
+	require.NoError(t, err)
+	require.Len(t, keys, 1)
+	vk2 := newVK(t, "vk-roundtrip-keys", false, keys)
+	pc2 := providerConfigOf(t, vk2.ID)
+	putVK(t, vk2.ID, fmt.Sprintf(
+		`{"description":"edited via GET->PUT","is_active":true,"provider_configs":[{"id":%d,"provider":"%s","allowed_models":["*"]}]}`,
+		pc2.ID, providerName))
+	got2 := providerConfigOf(t, vk2.ID)
+	require.False(t, got2.AllowAllKeys)
+	require.Len(t, got2.Keys, 1, "omitted key_ids detached the existing key")
+	require.Equal(t, "key-a", got2.Keys[0].KeyID)
+
+	// Case 3: an explicit key_ids list still replaces the associations, and an
+	// explicit empty list still clears them - omitted is not the same as empty.
+	putVK(t, vk1.ID, fmt.Sprintf(
+		`{"is_active":true,"provider_configs":[{"id":%d,"provider":"%s","allowed_models":["*"],"key_ids":[]}]}`,
+		pc1.ID, providerName))
+	got3 := providerConfigOf(t, vk1.ID)
+	require.False(t, got3.AllowAllKeys, "explicit empty key_ids must still deny-all")
+	require.Empty(t, got3.Keys)
+
+	putVK(t, vk1.ID, fmt.Sprintf(
+		`{"is_active":true,"provider_configs":[{"id":%d,"provider":"%s","allowed_models":["*"],"key_ids":["key-a"]}]}`,
+		pc1.ID, providerName))
+	got4 := providerConfigOf(t, vk1.ID)
+	require.False(t, got4.AllowAllKeys)
+	require.Len(t, got4.Keys, 1)
+	require.Equal(t, "key-a", got4.Keys[0].KeyID)
 }
