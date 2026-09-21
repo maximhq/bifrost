@@ -92,6 +92,7 @@ type TestScenarios struct {
 	PassThroughExtraParams       bool // Pass through extra params functionality
 	Rerank                       bool // Rerank functionality
 	Decision                     bool // Decision functionality (annotated function-tool evaluation)
+	DecisionEmulation            bool // Decision emulated via a general LLM (tool-calling / structured output)
 	PassthroughAPI               bool // Raw HTTP passthrough API (Passthrough + PassthroughStream)
 	WebSocketResponses           bool // WebSocket Responses API mode
 	Realtime                     bool // Realtime API (bidirectional audio/text)
@@ -116,6 +117,7 @@ type ComprehensiveTestConfig struct {
 	EmbeddingModel           string
 	RerankModel              string
 	DecisionModel            string
+	DecisionEmulationModel   string // a general LLM model used to emulate a decision
 	TranscriptionModel       string
 	SpeechSynthesisModel     string
 	ChatAudioModel           string
