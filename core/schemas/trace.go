@@ -1085,6 +1085,7 @@ const (
 	AttrBifrostUserID              = "bifrost.user.id"
 	AttrBifrostUserName            = "bifrost.user.name"
 	AttrBifrostUserEmail           = "bifrost.user.email"
+	AttrBifrostApp                 = "bifrost.app" // calling client, classified from User-Agent
 	AttrBifrostRetries             = "bifrost.retries"
 	AttrBifrostFallbackIndex       = "bifrost.fallback_index"
 	AttrBifrostAlias               = "bifrost.alias"                // original requested model when it differs from the resolved model

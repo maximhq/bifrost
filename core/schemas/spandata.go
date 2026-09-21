@@ -117,6 +117,7 @@ type SpanEnrichment struct {
 	UserID           string
 	UserName         string
 	UserEmail        string
+	App              string
 
 	TeamIDs           []string
 	TeamNames         []string

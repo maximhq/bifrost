@@ -1187,10 +1187,12 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// A request is scoped to at most one project, so there is no plural form to canonicalize.
 	projectID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectID)
 	projectName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectName)
+	app := schemas.DetectAppFromUserAgent(bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserAgent))
 
 	// Extract ALL context values BEFORE spawning the goroutine.
 	labelValues := map[string]string{
 		"provider":             string(provider),
+		"app":                  app,
 		"model":                model,
 		"alias":                alias,
 		"method":               string(requestType),

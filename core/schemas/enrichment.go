@@ -56,6 +56,7 @@ var EnrichmentDims = []EnrichmentDim{
 	{Name: "method", Column: "request_type", SpanAttr: AttrLegacyRequestType, Tier: TierMetric},
 	// Derived post-response in framework/tracing, then read like any other dimension.
 	{Name: "alias", SpanAttr: AttrBifrostAlias, Tier: TierMetric},
+	{Name: "app", SpanAttr: AttrBifrostApp, Tier: TierMetric},
 	{Name: "routing_engine_used", SpanAttr: AttrBifrostRoutingEngineUsed, Tier: TierMetric},
 	{Name: "virtual_key_id", SpanAttr: AttrBifrostVirtualKeyID, Tier: TierMetric},
 	{Name: "virtual_key_name", SpanAttr: AttrBifrostVirtualKeyName, Tier: TierMetric},

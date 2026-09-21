@@ -45,6 +45,35 @@ var contextDimSources = []struct {
 	{schemas.AttrBifrostFallbackIndex, schemas.BifrostContextKeyFallbackIndex, 2},
 }
 
+// derivedDimSources are dims applyContextSpanAttributes emits by deriving from a
+// context value rather than copying it, so they cannot use contextDimSources'
+// key-equals-value pairing.
+var derivedDimSources = []struct {
+	spanAttr string
+	ctxKey   schemas.BifrostContextKey
+	ctxValue any
+	want     any
+}{
+	{schemas.AttrBifrostApp, schemas.BifrostContextKeyUserAgent, "claude-code/1.0", "Claude Code"},
+}
+
+// TestDerivedContextSpanAttributesEmit pins the derivation, not just the wiring.
+func TestDerivedContextSpanAttributesEmit(t *testing.T) {
+	for _, d := range derivedDimSources {
+		ctx := context.WithValue(context.Background(), d.ctxKey, d.ctxValue)
+		span := &schemas.Span{}
+		applyContextSpanAttributes(span, ctx)
+		got, ok := span.Attributes[d.spanAttr]
+		if !ok {
+			t.Errorf("span attribute %q was not emitted (context key %q)", d.spanAttr, d.ctxKey)
+			continue
+		}
+		if !reflect.DeepEqual(got, d.want) {
+			t.Errorf("span attribute %q = %v, want %v", d.spanAttr, got, d.want)
+		}
+	}
+}
+
 // dimsEmittedElsewhere are registry dimensions NOT emitted by
 // applyContextSpanAttributes: request-sourced ones written at span creation, and
 // post-response ones written in framework/tracing from ExtractedFields or context.
@@ -94,8 +123,11 @@ func TestContextSpanAttributesEmit(t *testing.T) {
 // classification: a context source or "elsewhere" entry for a key no longer in
 // the registry.
 func TestEnrichmentRegistryDimsAllEmitted(t *testing.T) {
-	inContext := make(map[string]bool, len(contextDimSources))
+	inContext := make(map[string]bool, len(contextDimSources)+len(derivedDimSources))
 	for _, d := range contextDimSources {
+		inContext[d.spanAttr] = true
+	}
+	for _, d := range derivedDimSources {
 		inContext[d.spanAttr] = true
 	}
 	registry := make(map[string]bool)
@@ -111,6 +143,11 @@ func TestEnrichmentRegistryDimsAllEmitted(t *testing.T) {
 	for _, d := range contextDimSources {
 		if !registry[d.spanAttr] {
 			t.Errorf("contextDimSources references %q which is no longer in EnrichmentDims", d.spanAttr)
+		}
+	}
+	for _, d := range derivedDimSources {
+		if !registry[d.spanAttr] {
+			t.Errorf("derivedDimSources references %q which is no longer in EnrichmentDims", d.spanAttr)
 		}
 	}
 	for attr := range dimsEmittedElsewhere {

@@ -1,6 +1,9 @@
 package schemas
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 // TestArrayDimsAreNeverMetricSafe keeps arrays out of both metric tiers: a value
 // like "team-a,team-b" is one label value per combination.
@@ -56,5 +59,28 @@ func TestEnrichmentDimNamesUnique(t *testing.T) {
 			t.Errorf("duplicate enrichment dimension name %q", d.Name)
 		}
 		seen[d.Name] = true
+	}
+}
+
+// app is derived from the User-Agent, not carried on the context like the other
+// dimensions, so the derivation is pinned here.
+func TestAppDerivedFromUserAgent(t *testing.T) {
+	for _, tc := range []struct{ ua, want string }{
+		{"claude-code/1.2.3", "Claude Code"},
+		{"Cursor/0.42 (darwin)", "Cursor"},
+		{"python-requests/2.31", UserAgentAppOther},
+		{"", ""},
+	} {
+		ctx := context.WithValue(context.Background(), BifrostContextKeyUserAgent, tc.ua)
+		e := SpanEnrichmentFromContext(ctx)
+		if e.App != tc.want {
+			t.Errorf("UA %q: App = %q, want %q", tc.ua, e.App, tc.want)
+		}
+		span := &Span{Attributes: map[string]any{}}
+		e.ApplyToSpan(span)
+		got, _ := span.Attributes[AttrBifrostApp].(string)
+		if got != tc.want {
+			t.Errorf("UA %q: span attr = %q, want %q", tc.ua, got, tc.want)
+		}
 	}
 }
