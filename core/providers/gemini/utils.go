@@ -1290,6 +1290,9 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 	}
 
 	// Map standard parameters
+	if params.N != nil {
+		config.CandidateCount = int32(*params.N)
+	}
 	if params.Stop != nil {
 		config.StopSequences = params.Stop
 	}

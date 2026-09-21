@@ -394,3 +394,22 @@ func TestToGeminiChatCompletionRequest_MidConversationSystemInlined(t *testing.T
 	}
 	assert.Equal(t, 2, inline, "both trailing reminders must be inlined in place, none hoisted")
 }
+
+func TestToGeminiChatCompletionRequest_NMapsToCandidateCount(t *testing.T) {
+	for _, provider := range []schemas.ModelProvider{schemas.Gemini, schemas.Vertex} {
+		t.Run(string(provider), func(t *testing.T) {
+			result, err := gemini.ToGeminiChatCompletionRequest(nil, &schemas.BifrostChatRequest{
+				Provider: provider,
+				Model:    "gemini-2.5-flash",
+				Input: []schemas.ChatMessage{{
+					Role:    schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")},
+				}},
+				Params: &schemas.ChatParameters{N: schemas.Ptr(3)},
+			})
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			assert.Equal(t, int32(3), result.GenerationConfig.CandidateCount)
+		})
+	}
+}
